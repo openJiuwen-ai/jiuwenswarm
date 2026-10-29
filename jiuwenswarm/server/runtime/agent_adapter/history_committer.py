@@ -33,7 +33,9 @@ class HistoryCommitter:
         decorate_cross_session: Callable,
         resolve_final_timestamp: Callable,
         inherit_request_source: bool = True,
+        history_user_extra: Callable | None = None,
     ) -> None:
+        self._history_user_extra = history_user_extra
         self.params = params
         self.session_id = session_id
         self.request_id = request_id
@@ -384,6 +386,7 @@ class HistoryCommitter:
             content=payload["content"],
             timestamp=payload["timestamp"] / 1000,
             extra={
+                **((self._history_user_extra({"media_items": payload.get("media_items")}) or {}) if self._history_user_extra is not None else {}),
                 "output_order": payload.get("output_order"),
                 "is_supplemental_input": True,
                 **{

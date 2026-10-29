@@ -10,6 +10,7 @@ import logging
 import shutil
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -60,6 +61,28 @@ def _wait_for_terminal_state(manager: ShareImageExportManager, job_id: str) -> d
             return status
         time.sleep(0.01)
     raise AssertionError("share image export job did not finish")
+
+
+@pytest.mark.parametrize("module", [
+    "jiuwenswarm.channels.web.share_image_export", "agent_gateway.channel_manager.web.share_image_export",
+])
+def test_share_image_module_cli_is_executable(module, tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[4]
+    help_result = subprocess.run([sys.executable, "-m", module, "--help"], cwd=root,
+                                 capture_output=True, text=True, timeout=45)
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--allow-browser-render" in help_result.stdout
+    result = tmp_path / "share.png"
+    result.write_bytes(_test_png())
+    validated = subprocess.run([sys.executable, "-m", module, "--validate-result", str(result)],
+                               cwd=root, capture_output=True, text=True, timeout=45)
+    assert validated.returncode == 0, validated.stderr
+    events = [json.loads(line) for line in validated.stdout.splitlines() if line.startswith('{')]
+    assert events[-1] == {"phase": "completed", "filename": "share.png"}
+    result.write_bytes(b"not a PNG")
+    invalid = subprocess.run([sys.executable, "-m", module, "--validate-result", str(result)],
+                             cwd=root, capture_output=True, text=True, timeout=45)
+    assert invalid.returncode != 0
 
 
 @pytest.mark.parametrize("error", [None, "render_failed\n下一行"])

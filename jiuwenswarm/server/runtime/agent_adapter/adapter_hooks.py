@@ -92,7 +92,7 @@ class ExtensionAdapterHookServices:
 
     async def before_memory(self, request: Any) -> str:
         from jiuwenswarm.common.hook_event import AgentServerHookEvents
-        from gateway.extensions.registry import ExtensionRegistry
+        from agent_gateway.extensions.registry import ExtensionRegistry
 
         context = self._context(request)
         await ExtensionRegistry.get_instance().trigger(
@@ -102,7 +102,7 @@ class ExtensionAdapterHookServices:
 
     async def after_memory(self, request: Any, assistant_message: str) -> None:
         from jiuwenswarm.common.hook_event import AgentServerHookEvents
-        from gateway.extensions.registry import ExtensionRegistry
+        from agent_gateway.extensions.registry import ExtensionRegistry
 
         await ExtensionRegistry.get_instance().trigger(
             AgentServerHookEvents.MEMORY_AFTER_CHAT,

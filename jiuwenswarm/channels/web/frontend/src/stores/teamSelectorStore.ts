@@ -52,6 +52,10 @@ export interface TeamSnapshotMember {
   mode?: string;
   role?: string;
   cli_agent?: string | null;
+  /** 后端把镜像 worker 带进名册时才有；真实成员无此字段。 */
+  workflow_run_id?: string;
+  agent_template?: string | null;
+  display_name?: string | null;
 }
 
 export interface TeamSnapshotTask {
@@ -65,7 +69,10 @@ export interface TeamSnapshotTask {
 }
 
 export interface TeamSnapshotPayload {
+  /** 在册成员（新后端已排除 shut_down；旧后端可能混有离队成员）。 */
   members?: TeamSnapshotMember[];
+  /** 已离队成员，只用于按 member_id 查名字 / 头像，不进名册。 */
+  departed_members?: TeamSnapshotMember[];
   tasks?: TeamSnapshotTask[];
   team_id?: string | null;
 }

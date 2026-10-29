@@ -16,5 +16,7 @@ from jiuwenswarm.common.host_services import (  # noqa: F401
     restore_runtime_push_handler,
     restore_runtime_wake_handler,
     restore_runtime_xiaoyi_channel_provider,
+    scoped_runtime_push_handler,
     send_runtime_push,
+    send_runtime_wake,
 )

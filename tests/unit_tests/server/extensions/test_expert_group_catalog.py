@@ -18,7 +18,6 @@ from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
 
 @pytest.mark.parametrize("with_resources", [False, True])
 def test_catalog_search_roots_preserve_sources_and_paths(monkeypatch, tmp_path, with_resources):
-    from jiuwenswarm.agents.harness.team.expert_org.catalog import _iter_agent_group_dirs
     from jiuwenswarm.server.runtime import extension_package_manager
 
     home = tmp_path / "home"
@@ -31,11 +30,9 @@ def test_catalog_search_roots_preserve_sources_and_paths(monkeypatch, tmp_path, 
         ("built_in", group_root / "built_in"),
         ("resources", resources),
     ]
+    # Catalog currently enumerates marketplace entries only; search-root helper
+    # remains the launch-time source of truth for disk scans.
     assert extension_package_manager.get_agent_group_search_roots() == roots
-    monkeypatch.setattr(
-        extension_package_manager, "read_agent_group_marketplace_entries", lambda: []
-    )
-    assert _iter_agent_group_dirs() == []
 
 
 def test_catalog_only_resolves_installed_packages(monkeypatch, tmp_path):

@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.server.ws_send import send_wire_payload
+
 from jiuwenswarm.server.runtime.session.session_history import list_session_subagent_ids
 
 import logging
@@ -31,7 +35,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 from jiuwenswarm.server.runtime.session.session_history import history_exists
-from gateway.common.mode_matrix import is_team_mode
+from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
@@ -185,6 +189,8 @@ class HistoryManagement:
                 timestamp=timestamp,
                 event_type=event_type,
                 mode=mode,
+                extra={"cron_failure_record": True, "error": str(content)}
+                if params.get("cron_failure_record") is True else None,
             )
             title = str(params.get("title") or "").strip()
             if title:
@@ -342,10 +348,11 @@ class HistoryManagement:
         subagent_id = params.get("subagent_id")
         try:
             if cursor_protocol:
-                if request_cursor is not None and (not isinstance(request_cursor, str)):
-                    raise InvalidHistoryCursor(
-                        "history cursor must be null or a string"
-                    )
+                if request_cursor is not None and not isinstance(request_cursor, str):
+                    raise InvalidHistoryCursor("history cursor must be null or a string")
+                # Query-string / gateway may pass "" for a dropped null; treat as first page.
+                if isinstance(request_cursor, str) and not request_cursor.strip():
+                    request_cursor = None
                 data = await asyncio.to_thread(
                     host.get_conversation_history_cursor,
                     session_id,

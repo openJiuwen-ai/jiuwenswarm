@@ -6,17 +6,6 @@ import { CategoryTabs, EmptyState } from '../ui';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { GroupCard } from './GroupCard';
 
-const GROUP_CATEGORIES = [
-  'ProductDevelopment',
-  'Marketing',
-  'Efficiency',
-  'DataAnalysis',
-  'ContentCreation',
-  'SafetyCompliance',
-  'Communication',
-  'Other',
-];
-
 /** 首批渲染数量；触底后每批追加同数量（组目录一次性载入内存，这里做增量展示）。 */
 const GROUP_CATALOG_BATCH_SIZE = 15;
 /** 触底判定余量：距滚动底部不足该像素即视为到底。 */
@@ -27,6 +16,8 @@ type GroupCatalogPageProps = {
   items: AgentGroupCatalogItem[];
   query: string;
   category: string;
+  /** 分类页签：由父组件从已加载组目录动态统计（collectCategories），市场有几个分类出几个页签 */
+  categories?: readonly string[];
   installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
@@ -44,6 +35,7 @@ export function GroupCatalogPage({
   items,
   query,
   category,
+  categories = [],
   installation = 'all',
   status,
   error,
@@ -125,7 +117,7 @@ export function GroupCatalogPage({
           <CategoryTabs
             items={[
               { value: '', label: t('agentManagement.categoryAll') },
-              ...GROUP_CATEGORIES.map((item) => ({
+              ...categories.map((item) => ({
                 value: item,
                 label: t(`agentManagement.categories.${item}`, { defaultValue: item }),
               })),

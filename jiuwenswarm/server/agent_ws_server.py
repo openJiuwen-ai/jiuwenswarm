@@ -28,20 +28,20 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import encode_json_parse_error_wire
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.security.ws_origin import (
+from agent_gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
-from gateway.common.ws_diagnostics import (
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
-from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 from jiuwenswarm.server.worker.execution_services import ProductionHostServices, TransportClosed
@@ -530,19 +530,19 @@ _COMPAT_EXPORTS = {
     "get_config_file": ("jiuwenswarm.common.utils", "get_config_file"),
     "mask_sensitive": ("jiuwenswarm.common.utils", "mask_sensitive"),
     "SESSION_MESSAGE_INTERNAL_KEY": (
-        "gateway.common.session_message",
+        "agent_gateway.common.session_message",
         "SESSION_MESSAGE_INTERNAL_KEY",
     ),
     "SESSION_MESSAGE_ORIGIN": (
-        "gateway.common.session_message",
+        "agent_gateway.common.session_message",
         "SESSION_MESSAGE_ORIGIN",
     ),
     "SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY": (
-        "gateway.common.session_message",
+        "agent_gateway.common.session_message",
         "SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY",
     ),
     "SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY": (
-        "gateway.common.session_message",
+        "agent_gateway.common.session_message",
         "SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY",
     ),
     "load_todo_snapshot_for_frontend": (
@@ -599,16 +599,16 @@ _COMPAT_EXPORTS = {
     "AgentResponseChunk": ("jiuwenswarm.common.schema.agent", "AgentResponseChunk"),
     "get_runtime_version": ("jiuwenswarm.common.version", "get_runtime_version"),
     "describe_ws_exception": (
-        "gateway.common.ws_diagnostics",
+        "agent_gateway.common.ws_diagnostics",
         "describe_ws_exception",
     ),
-    "describe_ws_peer": ("gateway.common.ws_diagnostics", "describe_ws_peer"),
+    "describe_ws_peer": ("agent_gateway.common.ws_diagnostics", "describe_ws_peer"),
     "format_ws_diagnostics": (
-        "gateway.common.ws_diagnostics",
+        "agent_gateway.common.ws_diagnostics",
         "format_ws_diagnostics",
     ),
     "AGENT_WS_MAX_MESSAGE_BYTES": (
-        "gateway.common.ws_limits",
+        "agent_gateway.common.ws_limits",
         "AGENT_WS_MAX_MESSAGE_BYTES",
     ),
     "AgentServerHookEvents": (
@@ -771,10 +771,10 @@ _COMPAT_EXPORTS = {
         "validate_sandbox_files_runtime",
     ),
     "is_team_params": ("jiuwenswarm.server.utils.utils", "is_team_params"),
-    "deprecate_mode": ("gateway.common.mode_matrix", "deprecate_mode"),
-    "is_plan_mode": ("gateway.common.mode_matrix", "is_plan_mode"),
-    "is_single_agent_mode": ("gateway.common.mode_matrix", "is_single_agent_mode"),
-    "is_team_mode": ("gateway.common.mode_matrix", "is_team_mode"),
+    "deprecate_mode": ("agent_gateway.common.mode_matrix", "deprecate_mode"),
+    "is_plan_mode": ("agent_gateway.common.mode_matrix", "is_plan_mode"),
+    "is_single_agent_mode": ("agent_gateway.common.mode_matrix", "is_single_agent_mode"),
+    "is_team_mode": ("agent_gateway.common.mode_matrix", "is_team_mode"),
     "get_permissions_config_req_methods": (
         "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc",
         "get_permissions_config_req_methods",
@@ -845,20 +845,20 @@ _COMPAT_EXPORTS = {
     ),
     "load_hooks_config": ("jiuwenswarm.common.hooks_config", "load_hooks_config"),
     "extract_handshake_request": (
-        "gateway.common.security.ws_origin",
+        "agent_gateway.common.security.ws_origin",
         "extract_handshake_request",
     ),
     "forbidden_origin_response": (
-        "gateway.common.security.ws_origin",
+        "agent_gateway.common.security.ws_origin",
         "forbidden_origin_response",
     ),
-    "get_header_value": ("gateway.common.security.ws_origin", "get_header_value"),
+    "get_header_value": ("agent_gateway.common.security.ws_origin", "get_header_value"),
     "is_origin_check_enabled": (
-        "gateway.common.security.ws_origin",
+        "agent_gateway.common.security.ws_origin",
         "is_origin_check_enabled",
     ),
     "is_allowed_browser_origin": (
-        "gateway.common.security.ws_origin",
+        "agent_gateway.common.security.ws_origin",
         "is_allowed_browser_origin",
     ),
     "PLAN_MODE_EXITED_EVENT_TYPE": (

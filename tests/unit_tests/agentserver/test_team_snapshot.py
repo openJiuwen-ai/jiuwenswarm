@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for AgentWebSocketServer._handle_team_snapshot.
+"""Tests for handle_team_snapshot.
 
 History restore must not keep a truthy-but-empty live monitor board
 (``{tasks: [], members: [], team_id: ...}``) when ``team.db`` still has the

@@ -11,6 +11,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from agent_gateway.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_INTERNAL_KEY,
+)
 
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRouteRail,
@@ -22,7 +27,6 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     session_messaging_route_context,
     with_session_messaging_route,
 )
-from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
     SessionRunAdmission,
 )
@@ -57,16 +61,28 @@ from jiuwenswarm.server.agent_ws_server import (
     AgentWebSocketServer,
     _strip_untrusted_session_message_context,
 )
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers._default import handle_stream, handle_unary
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
-from gateway.common.session_message import (
-    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
-    SESSION_MESSAGE_INTERNAL_KEY,
-)
+
+
+def _stub_ws() -> SimpleNamespace:
+    """Minimal WebSocket stand-in for build_ws_request_context / WSSink."""
+
+    return SimpleNamespace(send=AsyncMock())
+
+
+async def _send_runtime_event_ok(*_args: object, **_kwargs: object) -> bool:
+    return True
+
+
+async def _send_runtime_event_fail(*_args: object, **_kwargs: object) -> bool:
+    return False
 
 
 @pytest.mark.asyncio
@@ -104,7 +120,7 @@ async def test_cross_session_question_can_be_answered(
 
     agent = _Agent()
     manager = SimpleNamespace(
-        get_agent_for_session_nowait=Mock(return_value=agent),
+        borrow_agent_nowait=lambda candidate: candidate,
         cleanup=AsyncMock(),
         cancel_all_inflight_work=AsyncMock(),
         cleanup_session_runtime=AsyncMock(return_value=True),
@@ -159,7 +175,7 @@ async def test_cross_session_question_can_be_answered(
         execution = coordinator.snapshot_session("target-1").executions[-1]
         assert execution.work_kind is SessionWorkKind.SESSION_MESSAGE
         assert execution.state is SessionExecutionState.WAITING_FOR_CONTROL
-        assert execution.waiting_control_id == "permission-1"
+        assert execution.waiting_control_ids == {"permission-1"}
 
         answer = AgentRequest(
             request_id="answer-1",
@@ -207,16 +223,16 @@ async def test_plain_user_turn_releases_superseded_session_question(
         await coordinator.run_unary(
             "target-1", "session-message-1", SessionWorkKind.SESSION_MESSAGE,
             lambda: asyncio.sleep(0),
-            suspension_key=lambda _: "permission-1",
+            interaction_ids=lambda _: frozenset({"permission-1"}),
         )
         waiting = coordinator.snapshot_session("target-1").executions[-1]
         assert waiting.state is SessionExecutionState.WAITING_FOR_CONTROL
         await admission.mark_interaction_pending("target-1", "permission-1")
         if follow_up:
             await coordinator.deliver_control(
-                "target-1", "permission-1",
+                "target-1", ("permission-1",),
                 lambda: asyncio.sleep(0),
-                suspension_key=lambda _: "permission-2",
+                interaction_ids=lambda _: frozenset({"permission-2"}),
             )
             await admission.clear_interaction_pending("target-1", "permission-1")
             await admission.mark_interaction_pending("target-1", "permission-2")
@@ -291,6 +307,8 @@ async def test_session_message_status_content_is_web_only(monkeypatch, channel_i
     assert message["metadata"]["_jiuwenswarm_session_message_owner_scope_id"] == "owner"
     assert message["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] is False
     assert ("content" in message["payload"]["message"]) is include_content
+    # Only the target conversation is told; the sender gets no copy.
+    assert len(pushed) == 1
 
 
 @pytest.mark.asyncio
@@ -345,6 +363,11 @@ async def _wait_for_status(
             await asyncio.sleep(0.01)
 
     await asyncio.wait_for(_check(), timeout=timeout)
+
+
+def _answered_only(request: AgentRequest) -> frozenset[str]:
+    """A Runtime with no paused execution: an answer resumes only the question it names."""
+    return frozenset({request.params["request_id"]})
 
 
 def _enqueue(
@@ -770,20 +793,26 @@ async def test_restart_keeps_queued_message_idle_until_user_continues(
         queue_state = await service.queue_state_for_target("target-1", "user-1")
         assert queue_state["can_continue_queued"] is True
 
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_message_continue_queued
+
         server = AgentWebSocketServer.__new__(AgentWebSocketServer)
         server._session_message_service = service
         ws = SimpleNamespace(send=AsyncMock())
-        await server._handle_session_message_continue_queued(
-            ws,
-            AgentRequest(
-                request_id="continue-1",
-                channel_id="web",
-                session_id="target-1",
-                req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
-                params={"session_id": "target-1"},
-                user_id="user-1",
-            ),
-            asyncio.Lock(),
+        await handle_session_message_continue_queued(
+            build_ws_request_context(
+                server,
+                ws,
+                AgentRequest(
+                    request_id="continue-1",
+                    channel_id="web",
+                    session_id="target-1",
+                    req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+                    params={"session_id": "target-1"},
+                    user_id="user-1",
+                ),
+                asyncio.Lock(),
+            )
         )
         response = json.loads(ws.send.await_args.args[0])
         assert response["body"]["result"]["accepted"] is True
@@ -1537,12 +1566,10 @@ async def test_resumed_target_answer_unblocks_next_mailbox_item(tmp_path) -> Non
     _enqueue(store, key="queued", content="next")
 
     assert store.next_queued("target-1") is None
-    completed = await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-1",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=False,
-        failed=False,
+    completed = await service.finalize_waiting_message(
+        message_id=waiting.message_id,
+        target_session_id="target-1",
+        status="succeeded",
     )
 
     assert completed is True
@@ -1569,23 +1596,14 @@ async def test_repeated_user_question_replaces_resume_correlation(tmp_path) -> N
         interrupt_source="ask_user_interrupt",
     )
 
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-first",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=True,
-        failed=False,
-        next_interrupt_request_id="tool-call-second",
-        next_interrupt_source="permission_interrupt",
+    assert await service.rebind_waiting_question(
+        waiting.message_id,
+        interrupt_request_id="tool-call-second",
+        interrupt_source="permission_interrupt",
     ) is True
-    assert store.waiting_for_resume(
-        "target-1", "tool-call-first", "ask_user_interrupt"
-    ) is None
-    rebound = store.waiting_for_resume(
-        "target-1", "tool-call-second", "permission_interrupt"
-    )
-    assert rebound is not None
-    assert rebound.message_id == waiting.message_id
+    rebound = store.get(waiting.message_id)
+    assert rebound.status == "waiting_user"
+    assert (rebound.interrupt_request_id, rebound.interrupt_source) == ("tool-call-second", "permission_interrupt")
     await service.stop()
 
 
@@ -1609,13 +1627,7 @@ async def test_unrelated_interrupt_answer_does_not_resolve_waiting_message(
         interrupt_source="permission_interrupt",
     )
 
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-stale",
-        interrupt_source="permission_interrupt",
-        waiting_user=False,
-        failed=False,
-    ) is False
+    assert await service.find_waiting_for_pause("target-1", frozenset({"tool-call-stale"})) is None
     assert store.get(waiting.message_id).status == "waiting_user"
     await service.stop()
 
@@ -1650,12 +1662,10 @@ async def test_resume_completion_wins_race_with_original_waiting_result(
     )
     await asyncio.wait_for(waiting_persisted.wait(), timeout=1)
 
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-1",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=False,
-        failed=False,
+    assert await service.finalize_waiting_message(
+        message_id=sent["message_id"],
+        target_session_id="target-1",
+        status="succeeded",
     ) is True
     allow_original_return.set()
     await _wait_for_status(store, sent["message_id"], "succeeded")
@@ -2173,6 +2183,7 @@ async def test_agentserver_persists_question_correlation_before_push(
     ordering = []
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         agent_manager = object()
 
         def stream(self, request, **kwargs):
@@ -2242,6 +2253,61 @@ async def test_agentserver_persists_question_correlation_before_push(
 
 
 @pytest.mark.asyncio
+async def test_a_message_paused_by_client_tools_and_questions_waits_on_the_whole_pause(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="execute-mixed")
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+    correlations = []
+    pause = [
+        ("chat.ask_user_question", "ask-1", "ask_user_interrupt"),
+        ("chat.client_tool_request", "read-1", "client_tool_interrupt"),
+        ("chat.client_tool_request", "read-2", "client_tool_interrupt"),
+        ("chat.ask_user_question", "bash-1", "permission_interrupt"),
+    ]
+
+    class _Runtime:
+        agent_manager = object()
+
+        def stream(self, request, **kwargs):
+            async def events():
+                for index, (event_type, request_id, source) in enumerate(pause):
+                    yield RuntimeEvent(
+                        request_id=request.request_id, channel_id=request.channel_id,
+                        session_id=request.session_id,
+                        payload={"event_type": event_type, "request_id": request_id, "source": source},
+                        is_complete=index == len(pause) - 1,
+                    )
+
+            return events()
+
+    class _Service:
+        async def mark_waiting(self, message_id, **kwargs):
+            correlations.append(("mark", kwargs["interrupt_request_id"]))
+            return True
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = _Runtime()
+    server._agent_manager = server._runtime.agent_manager
+    server._session_message_service = _Service()
+
+    async def send_push(message):
+        return True
+
+    server.send_push = send_push
+    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    result = await server.execute_internal_session_message(record)
+
+    assert result.status == "waiting_user"
+    # An answer to any interaction of the pause finds the message (resumed_interactions).
+    assert correlations == [("mark", "ask-1")]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("history_failure", [False, True])
 async def test_failed_session_question_releases_runtime_wait(
     tmp_path, monkeypatch: pytest.MonkeyPatch, history_failure: bool
@@ -2251,6 +2317,7 @@ async def test_failed_session_question_releases_runtime_wait(
     record = store.claim(queued.message_id, "execution-1", "run-1")
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         agent_manager = object()
         release_session_message_interactions = AsyncMock()
 
@@ -2317,57 +2384,60 @@ async def test_failed_session_question_releases_runtime_wait(
 async def test_agentserver_failure_after_repeated_question_closes_message(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = SessionMessageStore(tmp_path / "messages.sqlite3")
-    service = SessionMessageService(
-        store=store,
-        admission=_RecordingAdmission(),
-        execute=lambda record: asyncio.sleep(0),
-        available=False,
-    )
-    await service.start()
-    waiting, _ = _enqueue(store, key="repeated-question-failure")
-    store.claim(waiting.message_id, "execution-1", "run-1")
-    store.mark_waiting(
-        waiting.message_id,
-        interrupt_request_id="tool-call-first",
-        interrupt_source="ask_user_interrupt",
-    )
-    assert await service.complete_waiting_after_resume(
-        "target-1",
-        interrupt_request_id="tool-call-first",
-        interrupt_source="ask_user_interrupt",
-        waiting_user=True,
-        failed=False,
-        next_interrupt_request_id="tool-call-second",
-        next_interrupt_source="permission_interrupt",
+    store, service, waiting = await _waiting_mailbox(
+        tmp_path, key="repeated-question-failure"
     )
     request = AgentRequest(
         request_id="answer-1",
+        channel_id="web",
         session_id="target-1",
         req_method=ReqMethod.CHAT_ANSWER,
+        is_stream=True,
         params={
             "request_id": "tool-call-first",
             "source": "ask_user_interrupt",
             "answers": [{"answer": "yes"}],
         },
     )
+
+    class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload={
+                        "event_type": "chat.ask_user_question",
+                        "request_id": "tool-call-second",
+                        "source": "permission_interrupt",
+                    },
+                )
+                yield RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload={"event_type": "chat.error", "error": "failed after repeated question"},
+                    is_complete=True,
+                )
+
+            return events()
+
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
+    server._session_stream_tasks = {}
+    server._execution_runtime = lambda: _Runtime()
+    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
+        0, result=True
+    )
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
         lambda *a, **k: None,
     )
 
-    await server._complete_waiting_session_message_after_external_turn(
-        request,
-        waiting_user=True,
-        waiting_correlation_persisted=True,
-        failed=True,
-        error="failed after repeated question",
-        next_interrupt_request_id="tool-call-second",
-        next_interrupt_source="permission_interrupt",
-    )
+    await server._handle_stream_impl(object(), request, asyncio.Lock())
 
     failed = store.get(waiting.message_id)
     assert failed.status == "failed"
@@ -2396,6 +2466,7 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2426,23 +2497,96 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
+
+    rebound = store.get(waiting.message_id)
+    assert rebound.status == "waiting_user"
+    assert rebound.interrupt_request_id == "tool-call-third"
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_question_is_correlated_by_its_request_id_alone(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, service, waiting = await _waiting_mailbox(tmp_path, key="question-without-source")
+    request = AgentRequest(
+        request_id="answer-1", channel_id="web", session_id="target-1", req_method=ReqMethod.CHAT_ANSWER,
+        is_stream=True,
+        params={"request_id": "tool-call-first", "source": "ask_user_interrupt", "answers": [{"answer": "yes"}]},
+    )
+
+    class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                                   session_id=request.session_id, is_complete=True,
+                                   payload={"event_type": "chat.ask_user_question", "request_id": "tool-call-second"})
+
+            return events()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._session_message_service = service
+    server._session_stream_tasks = {}
+    server._execution_runtime = lambda: _Runtime()
+    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(0, result=True)
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
     await server._handle_stream_impl(object(), request, asyncio.Lock())
 
-    rebound = store.waiting_for_resume(
-        "target-1", "tool-call-third", "ask_user_interrupt"
-    )
-    assert rebound is not None
-    assert rebound.message_id == waiting.message_id
+    rebound = store.get(waiting.message_id)
+    assert (rebound.status, rebound.interrupt_request_id) == ("waiting_user", "tool-call-second")
     await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_first_turn_question_is_correlated_by_its_request_id_alone(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="first-question-without-source")
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+    marked = []
+
+    class _Runtime:
+        agent_manager = object()
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                                   session_id=request.session_id, is_complete=True,
+                                   payload={"event_type": "chat.ask_user_question", "request_id": "q-1"})
+
+            return events()
+
+    class _Service:
+        async def mark_waiting(self, message_id, **kwargs):
+            marked.append(kwargs["interrupt_request_id"])
+            return True
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = _Runtime()
+    server._agent_manager = server._runtime.agent_manager
+    server._session_message_service = _Service()
+
+    async def send_push(message):
+        return True
+
+    server.send_push = send_push
+    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    result = await server.execute_internal_session_message(record)
+
+    assert (result.status, marked) == ("waiting_user", ["q-1"])
 
 
 @pytest.mark.asyncio
@@ -2466,6 +2610,7 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2482,16 +2627,14 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=False
-    )
+    server.send_runtime_event = _send_runtime_event_fail
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
-    await server._handle_stream_impl(object(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2519,6 +2662,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         async def answer_interaction(self, request, **kwargs):
             return [
                 RuntimeEvent(
@@ -2536,7 +2680,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = disconnect
+    server.send_runtime_event = disconnect
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -2573,6 +2717,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         def stream(self, request, **kwargs):
             async def events():
                 yield RuntimeEvent(
@@ -2589,9 +2734,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -2599,7 +2742,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     )
 
     with pytest.raises(RuntimeError, match="uncorrelated follow-up question"):
-        await server._handle_stream_impl(object(), request, asyncio.Lock())
+        await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_persistence = store.get(waiting.message_id)
     assert failed_persistence.status == "unknown"
@@ -2627,7 +2770,9 @@ async def test_history_barrier_timeout_marks_resumed_message_unknown(
     )
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
-    runtime = SimpleNamespace(release_session_message_interactions=AsyncMock())
+    runtime = SimpleNamespace(
+        release_session_message_interactions=AsyncMock(), resumed_interactions=_answered_only
+    )
     server._execution_runtime = lambda: runtime
     state = await server._open_session_message_resume(request)
     assert state is not None
@@ -2918,6 +3063,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     )
 
     class _Runtime:
+        resumed_interactions = staticmethod(_answered_only)
         async def answer_interaction(self, request, **kwargs):
             return [accepted]
 
@@ -2931,9 +3077,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         execution_requests_module,
         "enqueue_history_request_completion",
@@ -2941,9 +3085,9 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     )
     try:
         if streaming:
-            await server._handle_stream_impl(object(), request, asyncio.Lock())
+            await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
         else:
-            await server._handle_unary_impl(object(), request, asyncio.Lock())
+            await handle_unary(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
         record = store.get(waiting.message_id)
         assert record is not None
@@ -4178,3 +4322,129 @@ async def test_target_delete_lock_wait_is_bounded(
     finally:
         service._target_state_lock.release()
         await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_a_resumed_mailbox_turn_that_asks_its_client_again_moves_the_correlation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    store = SessionMessageStore(tmp_path / "client-again.sqlite3")
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(),
+                                    execute=lambda record: asyncio.sleep(0), available=False)
+    await service.start()
+    waiting, _ = _enqueue(store, key="client-again")
+    store.claim(waiting.message_id, "execution-1", "run-1")
+    store.mark_waiting(waiting.message_id, interrupt_request_id="read-1",
+                       interrupt_source="client_tool_interrupt")
+    request = AgentRequest(
+        request_id="resume-1", channel_id="web", session_id="target-1", req_method=ReqMethod.CHAT_SEND,
+        is_stream=streaming,
+        params={"source": "client_tool_interrupt",
+                "answers": [{"interrupt_id": "intr-read-1", "request_id": "read-1", "result": {"text": "one"}}]},
+    )
+    # The resumed turn pauses again: a client tool call, then a question of the same pause.
+    pause = [("chat.client_tool_request", "write-2", "client_tool_interrupt"),
+             ("chat.ask_user_question", "bash-3", "permission_interrupt")]
+
+    def _events(request):
+        return [RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                             session_id=request.session_id,
+                             payload={"event_type": event_type, "request_id": rid, "source": source},
+                             is_complete=index == len(pause) - 1)
+                for index, (event_type, rid, source) in enumerate(pause)]
+
+    class _Runtime:
+        @staticmethod
+        def resumed_interactions(request):
+            return frozenset({"read-1"})  # the pause the client's answer resumes
+
+        def stream(self, request, **kwargs):
+            async def events():
+                for event in _events(request):
+                    yield event
+
+            return events()
+
+        async def invoke(self, request, **kwargs):
+            return _events(request)
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._session_message_service = service
+    server._session_stream_tasks = {}
+    server._execution_runtime = lambda: _Runtime()
+    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(0, result=True)
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    if streaming:
+        await server._handle_stream_impl(object(), request, asyncio.Lock())
+    else:
+        await server._handle_unary_impl(object(), request, asyncio.Lock())
+
+    # The next answer, to either interaction of the new pause, finds the message.
+    moved = store.waiting_for_pause("target-1", {"write-2", "bash-3"})
+    assert moved is not None and moved.message_id == waiting.message_id
+    await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["chat.ask_user_question", "chat.client_tool_request"])
+async def test_a_first_turn_interaction_without_a_request_id_fails_the_message(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, event_type: str
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="uncorrelated")
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+    marked = []
+
+    class _Runtime:
+        agent_manager = object()
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                                   session_id=request.session_id,
+                                   payload={"event_type": event_type, "source": "ask_user_interrupt"},
+                                   is_complete=True)
+
+            return events()
+
+    class _Service:
+        async def mark_waiting(self, message_id, **kwargs):
+            marked.append(kwargs)
+            return True
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = _Runtime()
+    server._agent_manager = server._runtime.agent_manager
+    server._session_message_service = _Service()
+
+    async def send_push(message):
+        return True
+
+    server.send_push = send_push
+    monkeypatch.setattr(agent_ws_server_module, "get_session_metadata", lambda *a, **k: _metadata("target-1"))
+    monkeypatch.setattr(agent_ws_server_module, "build_server_push_message", lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    result = await server.execute_internal_session_message(record)
+
+    assert result.status == "failed" and "uncorrelated" in result.error
+    assert marked == []
+
+
+@pytest.mark.asyncio
+async def test_send_message_without_input_mode_uses_the_documented_default():
+    # The tool layer fills an omitted optional field from the schema; without a default it
+    # passes None, which the service rejects as an unsupported input_mode.
+    toolkit = SessionMessagingToolkit()
+    received = {}
+
+    async def send_message(target_session_id, message, input_mode="steer"):
+        received["input_mode"] = input_mode
+        return {"ok": True}
+
+    toolkit.send_message = send_message
+    tool = next(tool for tool in toolkit.get_tools() if tool.card.name == "session_send_message")
+    await tool.invoke({"target_session_id": "target-1", "message": "count the slides"})
+    assert received["input_mode"] == "steer"

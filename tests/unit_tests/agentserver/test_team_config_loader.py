@@ -75,7 +75,7 @@ def test_agentos_team_placeholder_fallback_keeps_global_index(monkeypatch):
 
 
 def test_agentos_team_wire_projection_and_explicit_member_model(monkeypatch):
-    from gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
+    from agent_gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
 
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
     config = _agentos_test_config()
@@ -516,6 +516,18 @@ def test_member_messaging_flag_reaches_team_spec(team_value, expected):
     spec = load_team_spec_dict(config_base=_organization_switch_config({}, team_extra))
 
     assert spec["enable_member_messaging"] is expected
+
+
+@pytest.mark.parametrize(
+    ("team_value", "expected"),
+    [(2, 2), (0, 0), (None, 0), ("3", 3), (-1, 0), ("abc", 0), (True, 0)],
+)
+def test_subtask_depth_reaches_team_spec(team_value, expected):
+    """``modes.team.jiuwen_team.max_subtask_depth`` becomes the spec field (core F_128), malformed values off."""
+    team_extra = {} if team_value is None else {"max_subtask_depth": team_value}
+    spec = load_team_spec_dict(config_base=_organization_switch_config({}, team_extra))
+
+    assert spec["max_subtask_depth"] == expected
 
 
 def test_legacy_template_enable_organization_cannot_override_switch():

@@ -9,11 +9,16 @@ await build({
   platform: 'node',
   format: 'esm',
   outdir: 'node_modules/.cache/agent-management-client',
+  outExtension: { '.js': '.mjs' },
+  banner: { js: 'const window = globalThis.window ?? (globalThis.window = {});' },
   define: { 'import.meta.env': '{}' },
 });
-const { createLiveAgentManagementClient } =
-  await import('../node_modules/.cache/agent-management-client/features/agentManagement/client.js');
-const { webClient } = await import('../node_modules/.cache/agent-management-client/services/webClient.js');
+globalThis.window = Object.assign(globalThis.window ?? {}, {
+  location: globalThis.window?.location ?? { search: '' },
+});
+const { createLiveAgentManagementClient, retryWhilePodStarting } =
+  await import('../node_modules/.cache/agent-management-client/features/agentManagement/client.mjs');
+const { webClient } = await import('../node_modules/.cache/agent-management-client/services/webClient.mjs');
 const templates = [
   {
     id: 'cached',
@@ -323,4 +328,121 @@ test('returns base skills before delayed Team Skills Hub enrichment and reports 
     ['local-review', 'market-team'],
   );
   assert.deepEqual(marketplaceUpdates[0].cache, { state: 'stale', refreshing: true, complete: false });
+});
+
+test('personal catalog keeps templates', async () => {
+  const previous = globalThis.window.__JIUWENSWARM_EDITION__;
+  globalThis.window.__JIUWENSWARM_EDITION__ = 'personal';
+  try {
+    webClient.request = async (method) => {
+      assert.equal(method, 'agent_templates.list');
+      return {
+        templates: [{ id: 'builtin', source: 'builtin', installed: false, tags: [] }],
+      };
+    };
+    const items = await createLiveAgentManagementClient().listCatalog({ filter: 'builtin+hub' });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, 'builtin');
+  } finally {
+    if (previous === undefined) delete globalThis.window.__JIUWENSWARM_EDITION__;
+    else globalThis.window.__JIUWENSWARM_EDITION__ = previous;
+  }
+});
+
+test('enterprise catalog reads templates the same way as personal', async () => {
+  const previous = globalThis.window.__JIUWENSWARM_EDITION__;
+  globalThis.window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  const calls = [];
+  try {
+    webClient.request = async (method) => {
+      calls.push(method);
+      if (method === 'agent_templates.list') {
+        return {
+          templates: [{ id: 'contract', source: 'hub', installed: true, tags: [] }],
+          items: [{ id: 'ignored', display_name: 'Nope' }],
+        };
+      }
+      if (method === 'agent_templates.show') {
+        return {
+          template: { id: 'contract', source: 'hub', installed: true, skills: [], tags: [] },
+        };
+      }
+      if (method === 'agent_templates.file.list') {
+        return {
+          tree: [{ name: 'manifest.json', path: 'manifest.json', type: 'file', size: 4 }],
+        };
+      }
+      throw new Error(method);
+    };
+    const client = createLiveAgentManagementClient();
+    const items = await client.listCatalog({ filter: 'builtin+hub' });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, 'contract');
+    assert.equal(items[0].installed, true);
+    const detail = await client.getDefinition('contract');
+    assert.equal(detail.id, 'contract');
+    const files = await client.getDefinitionFiles('contract');
+    assert.equal(files.length, 1);
+    assert.equal(files[0].relativePath, 'manifest.json');
+    assert.deepEqual(calls, ['agent_templates.list', 'agent_templates.show', 'agent_templates.file.list']);
+  } finally {
+    if (previous === undefined) delete globalThis.window.__JIUWENSWARM_EDITION__;
+    else globalThis.window.__JIUWENSWARM_EDITION__ = previous;
+  }
+});
+
+test('enterprise list retries pod cold start and stops other errors immediately', async () => {
+  const previous = globalThis.window.__JIUWENSWARM_EDITION__;
+  globalThis.window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  try {
+    let calls = 0;
+    webClient.request = async () => {
+      calls += 1;
+      const error = new Error('catalog down');
+      error.code = 'OTHER';
+      throw error;
+    };
+    await assert.rejects(() => createLiveAgentManagementClient().listCatalog({ filter: 'builtin+hub' }));
+    assert.equal(calls, 1);
+
+    let now = 0;
+    let attempts = 0;
+    const waits = [];
+    const ready = await retryWhilePodStarting(async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error('Pod 冷启动中');
+        error.code = 'NO_POD_AVAILABLE';
+        throw error;
+      }
+      return 'ready';
+    }, {
+      onWaiting: () => waits.push(now),
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+    assert.equal(ready, 'ready');
+    assert.equal(attempts, 3);
+    assert.deepEqual(waits, [0, 2000]);
+
+    now = 0;
+    await assert.rejects(
+      () => retryWhilePodStarting(async () => {
+        const error = new Error('NO_POD_AVAILABLE');
+        throw error;
+      }, {
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      }),
+      (error) => error.code === 'pod_start_timeout',
+    );
+    assert.equal(now, 60000);
+  } finally {
+    if (previous === undefined) delete globalThis.window.__JIUWENSWARM_EDITION__;
+    else globalThis.window.__JIUWENSWARM_EDITION__ = previous;
+  }
 });

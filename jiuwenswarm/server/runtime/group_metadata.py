@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
-from gateway.common.protocol_ids import validate_session_id
+from agent_gateway.common.protocol_ids import validate_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 
@@ -20,6 +21,11 @@ GROUP_METHODS = frozenset(
         "group.update",
         "group.member.add",
         "group.history.get",
+        "group.execution.list",
+        "group.execution.get",
+        "group.file.rename",
+        "group.file.delete",
+        "group.history.clear",
     }
 )
 
@@ -32,6 +38,19 @@ class GroupError(ValueError):
 
 def group_path(group_id: str) -> Path:
     return get_agent_sessions_dir() / validate_session_id(group_id) / "group.json"
+
+
+def normalize_group_member(member: dict) -> dict:
+    """Read legacy roster fields without changing the stored or requested object."""
+    if not isinstance(member, dict):
+        raise GroupError("BAD_REQUEST", "invalid group member fields")
+    result = copy.deepcopy(member)
+    result["kind"] = {"expert": "agent_template", "expert_team": "agent_group"}.get(
+        result.get("kind"), result.get("kind")
+    )
+    if "definition_id" in result:
+        result.setdefault("id", result.pop("definition_id"))
+    return result
 
 
 def read_group(group_id: str, *, path: Path | None = None) -> dict | None:
@@ -64,4 +83,17 @@ def read_group(group_id: str, *, path: Path | None = None) -> dict | None:
         or not required <= state.keys()
     ):
         raise GroupError("GROUP_CORRUPT", "invalid persisted group")
+    state.setdefault("configs", {})
+    state.setdefault("avatar", "")
+    state["members"] = [normalize_group_member(member) for member in state["members"]]
+    state["receipts"] = {
+        key: normalize_group_member(member) for key, member in state["receipts"].items()
+    }
+    retired_tools = {"swarm.group_adjust_task", "swarm.group_submit_task"}
+    for member in state["compiled"].values():
+        template = member.get("template")
+        if template is not None:
+            template["tools"] = [
+                tool for tool in template.get("tools", []) if tool.get("type") not in retired_tools
+            ]
     return state

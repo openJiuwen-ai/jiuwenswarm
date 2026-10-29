@@ -61,8 +61,8 @@ async def _construct_runtime_server(
     its cleanup owner before a sibling preparation failure is propagated.
     """
     from openjiuwen.core.runner import Runner
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 
     extension_registry = ExtensionRegistry.create_instance(

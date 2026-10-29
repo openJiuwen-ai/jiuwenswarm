@@ -10,12 +10,18 @@ in this process, which is allowed to import agents.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
 from typing import Any, Awaitable, Callable, Iterable
 
 logger = logging.getLogger(__name__)
+
+# Lane identity used while no search provider is usable. Preset pools written under
+# it are incompatible with a later configured lane, so they are rebuilt once search
+# is set up.
+UNCONFIGURED_SEARCH_PROVIDER_ID = "search-unconfigured"
 
 _ACTIVE_HOST: "RecommendationHost | None" = None
 
@@ -44,6 +50,8 @@ def _build_topic_starter_services(
     topic_starter_store: Any,
     *,
     active_request_ids_loader: Callable[[], Iterable[str]] | None = None,
+    prepare_service: Any = None,
+    outcome_queue: Any = None,
 ) -> tuple[Any, Any | None, Any]:
     """Always build the prepare lane; leave a misconfigured product lane disabled."""
 
@@ -87,34 +95,37 @@ def _build_topic_starter_services(
         return {sid: permitted_recommendation_history(rows, control)
                 for sid, rows in load_all_session_records().items()}
 
-    topic_prepare = TopicPreparePipeline(topic_starter_store, records_loader=permitted_records)
-    topic_prepare_service = TopicPrepareService(
-        topic_starter_store,
-        generate=topic_prepare.generate_prepared,
-        prepare_state=topic_prepare.refresh_state,
-    )
-    topic_outcome_queue = NewPageOutcomeQueue()
-    topic_outcome_queue.attach_sink(
-        TopicStarterStoreOutcomeSink(topic_starter_store)
-    )
-
-    try:
-        topic_pipeline = TopicPipeline(
+    topic_prepare_service = prepare_service
+    if topic_prepare_service is None:
+        topic_prepare = TopicPreparePipeline(topic_starter_store, records_loader=permitted_records)
+        topic_prepare_service = TopicPrepareService(
             topic_starter_store,
-            records_loader=permitted_records,
-            active_request_ids_loader=active_request_ids_loader,
+            generate=topic_prepare.generate_prepared,
+            prepare_state=topic_prepare.refresh_state,
         )
+    topic_outcome_queue = outcome_queue
+    if topic_outcome_queue is None:
+        topic_outcome_queue = NewPageOutcomeQueue()
+        topic_outcome_queue.attach_sink(
+            TopicStarterStoreOutcomeSink(topic_starter_store)
+        )
+
+    topic_pipeline = TopicPipeline(
+        topic_starter_store,
+        records_loader=permitted_records,
+        active_request_ids_loader=active_request_ids_loader,
+    )
+    try:
         search_provider_id = topic_pipeline.search_provider_id
     except OpenJiuwenNativeSearchContractError as exc:
+        # The packaged preset corpus needs neither the model nor the search lane.
+        # Keep the product lane so the homepage can still serve it; a configured
+        # search lane writes a different compatibility key and rebuilds the pool.
         logger.warning(
-            "[Topic] disabled at startup: %s",
+            "[Topic] search lane unavailable; serving preset cards only: %s",
             exc,
         )
-        return (
-            topic_prepare_service,
-            None,
-            topic_outcome_queue,
-        )
+        search_provider_id = UNCONFIGURED_SEARCH_PROVIDER_ID
 
     # Bounds the cross-thread wait for one RID pair, so a stalled loop cannot wedge collection.
     summary_pair_match_timeout_seconds = 60.0
@@ -280,7 +291,9 @@ async def _topic_starter_seed_loop(seed: Callable[[str], None]) -> None:
             await asyncio.sleep(max(0.0, (next_midnight - now).total_seconds()))
         started = True
         try:
-            seed(f"topic-starter-v6:{int(time.time())}")
+            outcome = seed(f"topic-starter-v6:{int(time.time())}")
+            if inspect.isawaitable(outcome):
+                await outcome
         except Exception as exc:  # noqa: BLE001 - isolated scheduled wake
             logger.warning("[Topic] starter seed wake failed: %s", exc)
 
@@ -323,17 +336,30 @@ class RecommendationHost:
 
     def ensure_services(self) -> None:
         if self._services_built:
-            return
+            if self.topic_service is not None:
+                return
+            from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
+                OpenJiuwenNativeSearchContractError,
+                selected_topic_search_provider_id,
+            )
+
+            try:
+                selected_topic_search_provider_id()
+            except OpenJiuwenNativeSearchContractError:
+                return
         from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
             TopicStarterStore,
         )
         from jiuwenswarm.common.schema.message import TOPIC_STARTERS_READY_EVENT
         from jiuwenswarm.common.utils import get_agent_workspace_dir
 
-        self.store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
+        if self.store is None:
+            self.store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
         prepare, service, queue = _build_topic_starter_services(
             self.store,
             active_request_ids_loader=lambda: self._active_request_ids(),
+            prepare_service=self.topic_prepare_service if self._services_built else None,
+            outcome_queue=self.topic_outcome_queue if self._services_built else None,
         )
         self.topic_prepare_service = prepare
         self.topic_service = service
@@ -356,17 +382,24 @@ class RecommendationHost:
             service.on_prepared = _on_prepared
         self._services_built = True
 
+    async def _seed_with_prune(self, run_id: str) -> None:
+        """Age the local store before a seed; retention never blocks seeding."""
+
+        try:
+            await asyncio.to_thread(self.store.prune, now=time.time())
+        except Exception:  # noqa: BLE001 - a pruning failure must not stop the seed
+            logger.warning("[Topic] recommendation store prune failed", exc_info=True)
+        _seed_topic_starter_services(
+            self.topic_prepare_service,
+            self.topic_service,
+            run_id,
+        )
+
     async def start(self) -> None:
         self.ensure_services()
         if self._seed_task is None:
             self._seed_task = asyncio.create_task(
-                _topic_starter_seed_loop(
-                    lambda run_id: _seed_topic_starter_services(
-                        self.topic_prepare_service,
-                        self.topic_service,
-                        run_id,
-                    ),
-                )
+                _topic_starter_seed_loop(self._seed_with_prune)
             )
 
     async def shutdown(self) -> None:

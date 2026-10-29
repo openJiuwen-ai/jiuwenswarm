@@ -16,9 +16,6 @@
 #    （应用名 / exe 名 / 版本号均来自 build_config，与 Python 打包一致）
 
 param(
-    [string]$SourceRoot = "",
-    [string]$BuildRoot = "",
-    [string]$WorkerIdentityFile = "",
     [string]$ElectronDir = $(if ($env:ELECTRON_DIR) { $env:ELECTRON_DIR } else { "" }),
     [string]$NodeDir = "",
     [string]$SigningCertificateThumbprint = "",
@@ -37,10 +34,6 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-$PreviousBuildEnvironment = @{}
-foreach ($Key in @('WORKSWARM_SOURCE_ROOT', 'WORKSWARM_PACKAGING_ROOT', 'WORKSWARM_BUILD_ROOT', 'WORKSWARM_WORKER_IDENTITY')) {
-    $PreviousBuildEnvironment[$Key] = [Environment]::GetEnvironmentVariable($Key, 'Process')
-}
 $PreviousProcessorArchitecture = $env:PROCESSOR_ARCHITECTURE
 $env:PROCESSOR_ARCHITECTURE = "AMD64"
 
@@ -251,6 +244,121 @@ function Invoke-SignToolBatchVerification {
     }
 }
 
+function Get-EmbeddedSigningThumbprint {
+    param([string]$Path)
+
+    $Certificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($Path)
+    return $Certificate.GetCertHashString()
+}
+
+function Get-PESigningState {
+    param(
+        [string]$Path,
+        [string]$ResolvedSignTool,
+        [string]$CertificateThumbprint,
+        [hashtable]$OriginalFileHashes = @{}
+    )
+
+    # Only an unchanged, explicitly forced input may retain its original signature.
+    # Once its bytes change, require the release certificate and full verification.
+    if ($OriginalFileHashes.ContainsKey($Path) -and
+        (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -eq $OriginalFileHashes[$Path]) {
+        return 'unsigned'
+    }
+    if (-not (Test-EmbeddedAuthenticodeSignature -Path $Path)) { return 'unsigned' }
+    if ((Get-EmbeddedSigningThumbprint -Path $Path) -ne $CertificateThumbprint) {
+        throw "Unexpected embedded signing certificate for '$Path'."
+    }
+    $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+        -Arguments @('verify', '/pa', '/all', '/tw', $Path)
+    if ($Result.ExitCode -eq 0) { return 'complete' }
+    if ($Result.ExitCode -eq 2) {
+        # /tw exit 2 means warnings, not necessarily a missing timestamp.
+        # Accept that interpretation only if verification without /tw passes.
+        $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+            -Arguments @('verify', '/pa', '/all', $Path)
+        if ($Result.ExitCode -eq 0) { return 'timestamp' }
+    }
+    throw "Timestamp verification failed for '$Path' (SignTool exit code $($Result.ExitCode))."
+}
+
+function Invoke-PESigningCommand {
+    param([string]$ResolvedSignTool, [string[]]$Arguments)
+
+    # Capture native stderr on Windows PowerShell as well as PowerShell 7.
+    # These preference overrides are local to this function.
+    $ErrorActionPreference = 'Continue'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $global:LASTEXITCODE = $null
+    $CommandOutput = @(& $ResolvedSignTool @Arguments 2>&1)
+    $ExitCode = $LASTEXITCODE
+    $CommandOutput | Out-Host
+    if ($null -eq $ExitCode) { throw "Unable to execute SignTool: $ResolvedSignTool" }
+
+    # Retry only explicit timeout, busy, retry, or provider-not-ready errors.
+    # Unknown errors and certificate/key errors remain fatal, regardless of locale.
+    $TransientCodes = @('800705B4', '800700AA', '800704D5', '80090030', '80072EE2', '80072EFD', '80072EFF')
+    $ErrorCodes = @([regex]::Matches(($CommandOutput -join "`n"), '(?i)\b0x(8[0-9a-f]{7})\b') |
+        ForEach-Object { $_.Groups[1].Value.ToUpperInvariant() })
+    $Retryable = ($ErrorCodes.Count -gt 0) -and
+        (@($ErrorCodes | Where-Object { $_ -notin $TransientCodes }).Count -eq 0)
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        Retryable = $Retryable
+        HasErrorCodes = $ErrorCodes.Count -gt 0
+    }
+}
+
+function Repair-PESigningBatch {
+    param(
+        [string[]]$Paths,
+        [string]$ResolvedSignTool,
+        [string]$CertificateThumbprint,
+        [string]$TimestampServer,
+        [hashtable]$OriginalFileHashes = @{}
+    )
+
+    $PendingPaths = @($Paths)
+    $RetryDelays = @(5, 15)
+    foreach ($Delay in $RetryDelays) {
+        Write-Warning "Retrying signing for up to $($PendingPaths.Count) PE files in $Delay seconds."
+        Start-Sleep -Seconds $Delay
+        $IncompletePaths = @()
+        foreach ($Path in $PendingPaths) {
+            $State = Get-PESigningState -Path $Path -ResolvedSignTool $ResolvedSignTool `
+                -CertificateThumbprint $CertificateThumbprint -OriginalFileHashes $OriginalFileHashes
+            if ($State -eq 'complete') { continue }
+            if ($State -eq 'unsigned') {
+                $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+                    -Arguments @('sign', '/sha1', $CertificateThumbprint, '/fd', 'SHA256', '/v', $Path)
+                if ($Result.ExitCode -ne 0) {
+                    if (-not $Result.Retryable) { throw "SignTool signing failed for '$Path'." }
+                    $IncompletePaths += $Path
+                    continue
+                }
+            }
+            $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+                -Arguments @('timestamp', '/tr', $TimestampServer, '/td', 'SHA256', $Path)
+            if ($Result.ExitCode -ne 0 -and $Result.HasErrorCodes -and -not $Result.Retryable) {
+                throw "SignTool timestamping failed for '$Path'."
+            }
+            if ($Result.ExitCode -ne 0 -and
+                (Get-PESigningState -Path $Path -ResolvedSignTool $ResolvedSignTool `
+                    -CertificateThumbprint $CertificateThumbprint -OriginalFileHashes $OriginalFileHashes) -ne 'complete') {
+                $IncompletePaths += $Path
+            }
+        }
+        $PendingPaths = @($IncompletePaths)
+        if ($PendingPaths.Count -eq 0) { return }
+    }
+    foreach ($Path in $PendingPaths) {
+        if ((Get-PESigningState -Path $Path -ResolvedSignTool $ResolvedSignTool `
+                -CertificateThumbprint $CertificateThumbprint -OriginalFileHashes $OriginalFileHashes) -ne 'complete') {
+            throw "PE signing failed after 3 attempts: $($PendingPaths -join ', ')"
+        }
+    }
+}
+
 function Invoke-CodeSigning {
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -274,12 +382,16 @@ function Invoke-CodeSigning {
     )
     $UnsignedFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
     $AlreadySignedFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    $OriginalFileHashes = @{}
     foreach ($File in $PortableExecutables) {
         $FileFullPath = [System.IO.Path]::GetFullPath($File.FullName)
         $ForceResign = $ForceResignFullPaths | Where-Object {
             $_.Equals($FileFullPath, [System.StringComparison]::OrdinalIgnoreCase)
         }
         if ($ForceResign -or -not (Test-EmbeddedAuthenticodeSignature -Path $File.FullName)) {
+            if ($ForceResign) {
+                $OriginalFileHashes[$File.FullName] = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash
+            }
             $UnsignedFiles.Add($File)
         } else {
             $AlreadySignedFiles.Add($File)
@@ -296,15 +408,22 @@ function Invoke-CodeSigning {
     for ($Offset = 0; $Offset -lt $UnsignedFiles.Count; $Offset += $BatchSize) {
         $LastIndex = [Math]::Min($Offset + $BatchSize - 1, $UnsignedFiles.Count - 1)
         $BatchPaths = @($UnsignedFiles[$Offset..$LastIndex] | ForEach-Object { $_.FullName })
-        & $ResolvedSignTool sign `
-            /sha1 $CertificateThumbprint `
-            /fd SHA256 `
-            /tr $TimestampServer `
-            /td SHA256 `
-            /v `
-            @BatchPaths
-        if ($LASTEXITCODE -ne 0) {
-            throw "SignTool failed for PE batch beginning with '$($BatchPaths[0])'."
+        $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+            -Arguments (@('sign', '/sha1', $CertificateThumbprint, '/fd', 'SHA256', '/v') + $BatchPaths)
+        if ($Result.ExitCode -ne 0 -and -not $Result.Retryable) {
+            throw "SignTool failed for PE batch beginning with '$($BatchPaths[0])' (exit code $($Result.ExitCode))."
+        }
+        if ($Result.ExitCode -eq 0) {
+            $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+                -Arguments (@('timestamp', '/tr', $TimestampServer, '/td', 'SHA256') + $BatchPaths)
+            if ($Result.ExitCode -ne 0 -and $Result.HasErrorCodes -and -not $Result.Retryable) {
+                throw "SignTool timestamping failed for PE batch beginning with '$($BatchPaths[0])'."
+            }
+        }
+        if ($Result.ExitCode -ne 0) {
+            Repair-PESigningBatch -Paths $BatchPaths -ResolvedSignTool $ResolvedSignTool `
+                -CertificateThumbprint $CertificateThumbprint -TimestampServer $TimestampServer `
+                -OriginalFileHashes $OriginalFileHashes
         }
     }
 
@@ -314,9 +433,9 @@ function Invoke-CodeSigning {
             -ResolvedSignTool $ResolvedSignTool `
             -RequireTimestamp
         foreach ($File in $UnsignedFiles) {
-            $EmbeddedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($File.FullName)
-            if ($EmbeddedCertificate.GetCertHashString() -ne $CertificateThumbprint) {
-                throw "Unexpected embedded signing certificate for '$($File.FullName)': $($EmbeddedCertificate.GetCertHashString())"
+            $Thumbprint = Get-EmbeddedSigningThumbprint -Path $File.FullName
+            if ($Thumbprint -ne $CertificateThumbprint) {
+                throw "Unexpected embedded signing certificate for '$($File.FullName)': $Thumbprint"
             }
         }
     }
@@ -327,18 +446,7 @@ function Invoke-CodeSigning {
     ) -ForegroundColor Gray
 }
 
-$PackagingRoot = Split-Path -Parent $PSScriptRoot
-if (-not $SourceRoot) { $SourceRoot = $env:WORKSWARM_SOURCE_ROOT }
-if (-not $SourceRoot) { $SourceRoot = $PackagingRoot }
-$ProjectRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
-if (-not $BuildRoot) { $BuildRoot = $env:WORKSWARM_BUILD_ROOT }
-if (-not $BuildRoot) { $BuildRoot = $ProjectRoot }
-$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
-New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
-$env:WORKSWARM_SOURCE_ROOT = $ProjectRoot
-$env:WORKSWARM_PACKAGING_ROOT = $PackagingRoot
-$env:WORKSWARM_BUILD_ROOT = $BuildRoot
-if ($WorkerIdentityFile) { $env:WORKSWARM_WORKER_IDENTITY = (Resolve-Path -LiteralPath $WorkerIdentityFile).Path }
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $ProjectRoot
 
 # Keep the architecture override process-local, verify the value Python-backed
@@ -410,7 +518,7 @@ $DesktopDir = Join-Path $ProjectRoot "jiuwenswarm\channels\desktop\electron"
 # synchronization or npm installation, matching scripts/build-exe.ps1. The
 # FrontendOnly path also needs these values for package.json and installer names.
 $BuildConfigJson = uv run --no-project --python 3.11 python `
-    "$PackagingRoot\scripts\build_config.py" --root "$ProjectRoot" --sync --emit-json
+    "$ProjectRoot\scripts\build_config.py" --sync --emit-json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $BuildConfig = $BuildConfigJson | ConvertFrom-Json
 $BuildDistDirName = [string]$BuildConfig.dist_dir_name
@@ -505,17 +613,14 @@ if (-not (Test-Path -LiteralPath $ElectronExe -PathType Leaf)) {
 Write-Host "  Electron: $ElectronExe" -ForegroundColor Gray
 
 # ── 4. PyInstaller: build backend exe ─────────────────────────────────────────
-$BackendDist = Join-Path $BuildRoot "dist\$BuildDistDirName"
+$BackendDist = Join-Path $ProjectRoot "dist\$BuildDistDirName"
 if ($FrontendOnly) {
     Write-Host "`n[4/6] Skipping PyInstaller (FrontendOnly)" -ForegroundColor Gray
 } elseif ($ReuseBackend -and (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
     Write-Host "`n[4/6] Reusing existing PyInstaller backend: $BackendDist" -ForegroundColor Yellow
-    $IdentityContract = Join-Path $ProjectRoot "jiuwenswarm\common\worker_build_identity.py"
-    uv run python "$IdentityContract" --source-root "$ProjectRoot" --packaging-root "$PackagingRoot" --verify "$BackendDist\_internal\jiuwenswarm\_worker_build_identity.json"
-    if ($LASTEXITCODE -ne 0) { throw "Reused backend identity does not match the selected inputs." }
 } else {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
-    uv run pyinstaller "$PackagingRoot\scripts\jiuwenswarm.spec" --noconfirm --distpath "$BuildRoot\dist" --workpath "$BuildRoot\build"
+    uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts\jiuwenswarm.spec --noconfirm
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
         throw "PyInstaller output not found: $BackendDist\$BuildExecutableNameWindows"
@@ -524,18 +629,13 @@ if ($FrontendOnly) {
     # Verify the actual frozen runtime, not only the source configuration
     # (same self-check as the Python packaging build in build-exe.ps1).
     $FrozenExe = Join-Path $BackendDist $BuildExecutableNameWindows
-    $GatewayVerifier = Join-Path $PackagingRoot "scripts\verify_gateway_adapter_bundle.py"
-    $GatewayVerifyProcess = Start-Process `
-        -FilePath $FrozenExe `
-        -ArgumentList @("`"$GatewayVerifier`"") `
-        -Wait `
-        -PassThru `
-        -NoNewWindow
-    if ($GatewayVerifyProcess.ExitCode -ne 0) {
-        throw "Frozen Gateway adapter bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    $GatewayVerifier = Join-Path $ProjectRoot "scripts\verify_gateway_adapter_bundle.py"
+    uv run --no-sync python $GatewayVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen Gateway adapter bundle verification failed. See verifier output above."
     }
 
-    $A2UIVerifier = Join-Path $PackagingRoot "scripts\verify_a2ui_bundle.py"
+    $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
     $VerifyProcess = Start-Process `
         -FilePath $FrozenExe `
         -ArgumentList @("`"$A2UIVerifier`"") `
@@ -546,7 +646,7 @@ if ($FrontendOnly) {
         throw "Frozen A2UI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
-    $RsiVerifier = Join-Path $PackagingRoot "scripts\verify_rsi_bundle.py"
+    $RsiVerifier = Join-Path $ProjectRoot "scripts\verify_rsi_bundle.py"
     $RsiVerifyProcess = Start-Process `
         -FilePath $FrozenExe `
         -ArgumentList @("`"$RsiVerifier`"") `
@@ -557,6 +657,17 @@ if ($FrontendOnly) {
         throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
+    $CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
+    $CuaVerifyProcess = Start-Process `
+        -FilePath $FrozenExe `
+        -ArgumentList @("`"$CuaVerifier`"") `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+    if ($CuaVerifyProcess.ExitCode -ne 0) {
+        throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    }
+
     # The PyInstaller spec intentionally allows platforms for which gitcode-cli
     # publishes no native binary (currently including Windows) and falls back to
     # the connector's pip-based initialization. Only run the frozen CLI verifier
@@ -564,7 +675,7 @@ if ($FrontendOnly) {
     # would make every Windows Electron build fail after PyInstaller succeeded.
     $BundledGitCodeExe = Join-Path $BackendDist "_internal\gitcode.exe"
     if (Test-Path -LiteralPath $BundledGitCodeExe -PathType Leaf) {
-        $GitCodeVerifier = Join-Path $PackagingRoot "scripts\verify_gitcode_cli_bundle.py"
+        $GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"
         $GitCodeVerifyProcess = Start-Process `
             -FilePath $FrozenExe `
             -ArgumentList @("`"$GitCodeVerifier`"") `
@@ -582,7 +693,7 @@ if ($FrontendOnly) {
 # ── 5. Assemble final Electron app ────────────────────────────────────────────
 Write-Host "`n[5/6] Assembling Electron desktop app..." -ForegroundColor Yellow
 
-$ElectronAppDir = Join-Path $BuildRoot "dist\$BuildDisplayName-Electron"
+$ElectronAppDir = Join-Path $ProjectRoot "dist\$BuildDisplayName-Electron"
 if (Test-Path $ElectronAppDir) {
     Remove-Item $ElectronAppDir -Recurse -Force
 }
@@ -639,10 +750,12 @@ New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 Write-Host "  Copying Electron desktop shell..." -ForegroundColor Gray
 Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "update_shutdown.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "cdp_port.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "display_media_picker.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "target_mcp_wrapper.cjs") -Destination $AppDir -Force
 
@@ -679,7 +792,7 @@ if (-not $FrontendOnly) {
         # 与 build-exe.ps1 同款自检：此时 runtime\node-runtime 已就位，冻结入口会
         # 把它前置到 PATH，验证包内 Playwright MCP + Node 真能跑起来。
         $BackendFrozenExe = Join-Path $BackendDir $BuildExecutableNameWindows
-        $PlaywrightVerifier = Join-Path $PackagingRoot "scripts\verify_playwright_mcp_bundle.py"
+        $PlaywrightVerifier = Join-Path $ProjectRoot "scripts\verify_playwright_mcp_bundle.py"
         $PlaywrightVerifyProcess = Start-Process `
             -FilePath $BackendFrozenExe `
             -ArgumentList @("`"$PlaywrightVerifier`"") `
@@ -746,8 +859,10 @@ $RequiredFiles = @(
     (Join-Path $ElectronAppDir $ShellExeName),
     (Join-Path $AppDir "main.cjs"),
     (Join-Path $AppDir "update_shutdown.cjs"),
+    (Join-Path $AppDir "cdp_port.cjs"),
     (Join-Path $AppDir "browser_downloads.cjs"),
     (Join-Path $AppDir "browser_download_bubble.cjs"),
+    (Join-Path $AppDir "display_media_picker.cjs"),
     (Join-Path $AppDir "preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
     (Join-Path $AppDir "dist\bubble.html"),
@@ -783,6 +898,9 @@ if ($DoSign) {
         -ForceResignPaths @($ShellExePath)
 } else {
     Write-Host "  Skipping PE signing (unsigned local build)." -ForegroundColor Yellow
+}
+if ((-not $FrontendOnly) -and (Test-Truthy $BundleNode)) {
+    Write-NodeRuntimeManifest -DistDir $BackendDir
 }
 $TotalSize = [math]::Round((Get-ChildItem $ElectronAppDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host "  Assembled app size: $TotalSize MB" -ForegroundColor Gray
@@ -847,7 +965,7 @@ if ($FrontendOnly) {
 } else {
     $InstallerFileName = $BuildSetupFilename
 }
-$InstallerPath = Join-Path $BuildRoot "dist\$InstallerFileName"
+$InstallerPath = Join-Path $ProjectRoot "dist\$InstallerFileName"
 if (Test-Path -LiteralPath $InstallerPath) {
     Remove-Item -LiteralPath $InstallerPath -Force
 }
@@ -868,8 +986,7 @@ if ($DoSign) {
         " /tr $TimestampUrl /td SHA256 /v " + '$f'
     $IsccArguments += "/Scertumsha256=$InnoSignCommand"
 }
-$IsccArguments += "/DSourceRoot=$ProjectRoot", "/DBuildRoot=$BuildRoot"
-$IsccArguments += "$PackagingRoot\scripts\installer-electron.iss"
+$IsccArguments += "$ProjectRoot\scripts\installer-electron.iss"
 & $Iscc @IsccArguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -895,9 +1012,6 @@ if ($DoSign) {
     Write-Host "Signature: not applied; this installer is for local testing only" -ForegroundColor Yellow
 }
 } finally {
-    foreach ($Key in $PreviousBuildEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($Key, $PreviousBuildEnvironment[$Key], 'Process')
-    }
     if ($null -eq $PreviousProcessorArchitecture) {
         Remove-Item Env:\PROCESSOR_ARCHITECTURE -ErrorAction SilentlyContinue
     } else {

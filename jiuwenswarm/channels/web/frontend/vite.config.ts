@@ -1,5 +1,5 @@
 import type { Plugin } from 'vite'
-import { defineConfig, searchForWorkspaceRoot } from 'vite'
+import { defineConfig, loadEnv, searchForWorkspaceRoot } from 'vite'
 import react from '@vitejs/plugin-react'
 import svgr from 'vite-plugin-svgr'
 import { spawn, spawnSync, type ChildProcess } from 'child_process'
@@ -251,6 +251,26 @@ function downloadContentType(filePath: string): string {
   return DOWNLOAD_CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream'
 }
 
+// Parse one HTTP byte range without accepting multipart ranges; mirrors the
+// gateway ``_parse_single_byte_range`` semantics for the dev middleware.
+function parseSingleByteRange(rangeHeader: string, fileSize: number): [number, number] | null {
+  if (fileSize <= 0 || !rangeHeader.startsWith('bytes=') || rangeHeader.includes(',')) return null
+  const value = rangeHeader.slice('bytes='.length)
+  const dash = value.indexOf('-')
+  if (dash < 0) return null
+  const startText = value.slice(0, dash)
+  const endText = value.slice(dash + 1)
+  if (!startText) {
+    if (!/^\d+$/.test(endText) || Number(endText) <= 0) return null
+    return [Math.max(0, fileSize - Number(endText)), fileSize - 1]
+  }
+  if (!/^\d+$/.test(startText) || (endText && !/^\d+$/.test(endText))) return null
+  const start = Number(startText)
+  if (start >= fileSize) return null
+  const end = endText ? Math.min(Number(endText), fileSize - 1) : fileSize - 1
+  return end >= start ? [start, end] : null
+}
+
 function handleFileStreamError(res: ServerResponse, error: NodeJS.ErrnoException): void {
   if (res.headersSent) {
     res.destroy(error)
@@ -446,6 +466,8 @@ function devWsTrafficLogger(): Plugin {
 }
 
 const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
+const DESIGNER_VIDEO_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
+const DESIGNER_UPLOAD_REQUEST_MAX_BYTES = DESIGNER_VIDEO_UPLOAD_MAX_BYTES + 64 * 1024
 
 interface MultipartFilePart {
   filename: string
@@ -496,6 +518,10 @@ function devFileContentApi(): Plugin {
   const workspaceRootDir = path.resolve(projectRootDir, 'agent')
   const sessionsRootDir = path.resolve(workspaceRootDir, 'sessions')
   const agentTeamsRootDir = path.resolve(projectRootDir, '.agent_teams')
+  // Team-organization summaries live here, outside .agent_teams. A group
+  // attachment points at this tree; rejecting it makes the chat card call an
+  // existing file expired.
+  const organizationsRootDir = path.resolve(projectRootDir, '.organizations')
   const webLogsRootDir = path.resolve(workspaceRootDir, '.logs')
   const autoHarnessDir = path.resolve(projectRootDir, 'auto-harness')
   // Projectless tasks (no bound project_dir) write generated media under
@@ -658,10 +684,12 @@ function devFileContentApi(): Plugin {
     const inWebLogs = !relativeLogsPath.startsWith('..') && !path.isAbsolute(relativeLogsPath)
     const relativeAutoHarnessPath = path.relative(autoHarnessDir, targetPath)
     const inAutoHarness = !relativeAutoHarnessPath.startsWith('..') && !path.isAbsolute(relativeAutoHarnessPath)
+    const relativeOrganizationsPath = path.relative(organizationsRootDir, targetPath)
+    const inOrganizations = !relativeOrganizationsPath.startsWith('..') && !path.isAbsolute(relativeOrganizationsPath)
     const relativeProjectlessTasksPath = path.relative(projectlessTasksDir, targetPath)
     const inProjectlessTasks =
       !relativeProjectlessTasksPath.startsWith('..') && !path.isAbsolute(relativeProjectlessTasksPath)
-    return inWorkspace || inAgentTeams || inWebLogs || inAutoHarness || inProjectlessTasks
+    return inWorkspace || inAgentTeams || inWebLogs || inAutoHarness || inOrganizations || inProjectlessTasks
       || registeredProjectDirs().some((dir) => isInsideRoot(dir, targetPath))
   }
 
@@ -1509,14 +1537,35 @@ function devFileContentApi(): Plugin {
             return
           }
 
-          res.statusCode = 200
-          res.setHeader('content-type', downloadContentType(fullPath))
-          res.setHeader('cache-control', 'no-store')
-          if (req.method === 'HEAD') {
+          // Browsers cannot seek media (designer video preview) unless the
+          // endpoint honors Range requests; answer 206/416 like app_web.
+          const fileSize = fs.statSync(fullPath).size
+          const rangeHeader = String(req.headers.range || '').trim()
+          const byteRange = rangeHeader ? parseSingleByteRange(rangeHeader, fileSize) : null
+          if (rangeHeader && byteRange === null) {
+            res.statusCode = 416
+            res.setHeader('content-range', `bytes */${fileSize}`)
+            res.setHeader('content-length', '0')
+            res.setHeader('accept-ranges', 'bytes')
+            res.setHeader('cache-control', 'no-store')
             res.end()
             return
           }
-          const fileStream = fs.createReadStream(fullPath)
+          const [start, end] = byteRange ?? [0, Math.max(fileSize - 1, 0)]
+          const contentLength = fileSize === 0 ? 0 : end - start + 1
+          res.statusCode = byteRange ? 206 : 200
+          res.setHeader('content-type', downloadContentType(fullPath))
+          res.setHeader('content-length', String(contentLength))
+          res.setHeader('accept-ranges', 'bytes')
+          res.setHeader('cache-control', 'no-store')
+          if (byteRange) {
+            res.setHeader('content-range', `bytes ${start}-${end}/${fileSize}`)
+          }
+          if (req.method === 'HEAD' || contentLength === 0) {
+            res.end()
+            return
+          }
+          const fileStream = fs.createReadStream(fullPath, { start, end })
           fileStream.once('error', (error) => {
             server.config.logger.error(`[file-api] Failed to read ${fullPath}: ${(error as Error).message}`)
             handleFileStreamError(res, error)
@@ -1543,15 +1592,20 @@ function devFileContentApi(): Plugin {
         req.on('end', () => {
           try {
             const body = Buffer.concat(chunks)
-            if (body.length > DESIGNER_UPLOAD_MAX_BYTES) {
+            const requestTooLarge = body.length > DESIGNER_UPLOAD_REQUEST_MAX_BYTES
+            const parts = !requestTooLarge && contentType.includes('multipart/form-data')
+              ? parseMultipartFiles(contentType, body)
+              : []
+            const partLimit = (part: MultipartFilePart) => (
+              part.mimeType.startsWith('video/') ? DESIGNER_VIDEO_UPLOAD_MAX_BYTES : DESIGNER_UPLOAD_MAX_BYTES
+            )
+            const tooLarge = requestTooLarge || parts.some((part) => part.data.length > partLimit(part))
+            if (tooLarge) {
               res.statusCode = 413
               res.setHeader('content-type', 'application/json; charset=utf-8')
               res.end(JSON.stringify({ error: 'file_too_large', files: [], errors: [{ error: 'file_too_large' }] }))
               return
             }
-            const parts = contentType.includes('multipart/form-data')
-              ? parseMultipartFiles(contentType, body)
-              : []
             if (parts.length === 0) {
               res.statusCode = 400
               res.setHeader('content-type', 'application/json; charset=utf-8')
@@ -1815,10 +1869,9 @@ const webTarget = `http://127.0.0.1:${webPort}`
 // a second in-memory handoff implementation.
 const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
-const isElectronBuild = process.env.ELECTRON === 'true'
-
-export default defineConfig({
-  base: isElectronBuild ? './' : '/',
+export default defineConfig(({ mode }) => ({
+  // Standalone Web uses root URLs; container builds may specify a Manager/portal base.
+  base: process.env.ELECTRON === 'true' ? './' : loadEnv(mode, process.cwd(), '').VITE_BASE_PATH?.trim() || '/',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   build: {
     rollupOptions: {
@@ -1836,6 +1889,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'virtual:login-auth-simulate-provider': path.resolve(__dirname, './src/auth/simulate/available.ts'),
       'lucide-react': path.resolve(__dirname, './node_modules/lucide-react'),
       react: path.resolve(__dirname, './node_modules/react'),
       'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
@@ -1885,4 +1939,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

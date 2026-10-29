@@ -34,6 +34,13 @@ from jiuwenswarm.server.runtime.designer.user_references import carry_user_refer
 
 logger = logging.getLogger(__name__)
 
+_BGM_LOCK_RULE = (
+    "bgm_lock.user_request copies the user's own music words verbatim (empty when they "
+    "gave none). Expand vague style words into concrete English fields: style = genre, "
+    "instruments = lead + supporting instruments, tempo_bpm = a range such as 110-128 that "
+    "fits the energy, key = a tonal center. "
+)
+
 
 def _llm_character_card(
     raw: dict[str, Any],
@@ -662,9 +669,11 @@ def assign_audio_node_agents(graph: DesignerExecutionGraph) -> dict[str, Any]:
                 cfg["delegate"] = "agent"
                 cfg["director_task"] = (
                     cfg.get("director_task")
-                    or "Compose ONE non-vocal BGM bed from the Brief / bgm_lock for the "
-                    "full concatenated film. call_music_model. Never generate per-shot scores. "
-                    "Keep headroom so shot dialogue stays intelligible."
+                    or "Compose ONE BGM bed for the full concatenated film: expand the user's "
+                    "style words and bgm_lock into a concrete English sound spec (genre, lead and "
+                    "supporting instruments, key, texture, energy build) and pass it to "
+                    "call_music_model once. Film length, tempo and the setup/rise/climax/release "
+                    "timing at the clip cuts are added by the tool. Never generate per-shot scores."
                 )
                 cfg["placeholder_until_api"] = False
                 embedded_assigned.append(f"{nid}:music_agent")
@@ -674,7 +683,7 @@ def assign_audio_node_agents(graph: DesignerExecutionGraph) -> dict[str, Any]:
                 cfg["placeholder_until_api"] = True
                 cfg["director_task"] = (
                     "No music API yet. Output a silent/empty placeholder file only. "
-                    "Do not invent a score. When MUSIC_API_KEY / models.music is "
+                    "Do not invent a score. When the MUSIC_GEN_* slot is "
                     "configured, this node will call_music_model instead."
                 )
                 embedded_assigned.append(f"{nid}:music_placeholder")
@@ -818,6 +827,36 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     )
 
     return _shared_extract_json_object(text)
+
+
+_JSON_RETRY_RULE = (
+    " Your previous reply could not be parsed. Reply with exactly one JSON object: "
+    "no reasoning, no markdown fences, and every newline or quote inside a string escaped."
+)
+
+
+async def _model_json_object(
+    *, phase: str, prompt: str, system: str, max_tokens: int
+) -> dict[str, Any] | None:
+    """Ask the chat model for a JSON object, re-asking once when the reply does not parse."""
+    from jiuwenswarm.server.runtime.designer.model_tools import model_text_or_raise
+
+    for attempt in (1, 2):
+        result = await call_model_tool(
+            prompt=prompt,
+            system=system if attempt == 1 else system + _JSON_RETRY_RULE,
+            max_tokens=max_tokens,
+        )
+        parsed = _extract_json_object(model_text_or_raise(result))
+        if parsed is not None:
+            return parsed
+        logger.warning(
+            "Director %s reply was not a JSON object (attempt %d, finish=%s)",
+            phase,
+            attempt,
+            result.get("finish_reason"),
+        )
+    return None
 
 
 def validate_plan_occupancy(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -1408,9 +1447,10 @@ class Director:
                 "Shots are self-contained continuity windows — do not rely on prior "
                 "clip media. "
                 + "Film-wide locks: language_lock (e.g. en/zh — ALL dialogue in that "
-                "language), bgm_lock {mood,style,instruments,continuity,rule}, "
-                "include_speech, include_music. "
-                "Respond JSON only: "
+                "language), bgm_lock {user_request,mood,style,instruments,tempo_bpm,key,"
+                "continuity,rule}, include_speech, include_music. "
+                + _BGM_LOCK_RULE
+                + "Respond JSON only: "
                 '{"style_lock":{"look":"...","medium":"..."},'
                 '"characters":[{"id":"char_1","name":"...","description":"...",'
                 '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
@@ -1427,8 +1467,9 @@ class Director:
                 '"exiting_character_ids":[],'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
                 '"language_lock":"<spoken language code, e.g. zh or en>",'
-                '"bgm_lock":{"mood":"...","style":"...","instruments":"...",'
-                '"continuity":"same bed","rule":"non-vocal underscore"},'
+                '"bgm_lock":{"user_request":"<user\'s music words verbatim, or empty>",'
+                '"mood":"...","style":"...","instruments":"...","tempo_bpm":"110-128",'
+                '"key":"D minor","continuity":"same bed","rule":"non-vocal underscore"},'
                 '"include_speech":true,"include_music":true,'
                 '"notes":"...","target_clip_count":N}'
             ) + _language_rule() + POSITIVE_VISUAL_RULE
@@ -1505,9 +1546,10 @@ class Director:
             if parsed.get("language_lock"):
                 analysis["language_lock"] = str(parsed.get("language_lock"))[:16]
                 audio["language_lock"] = analysis["language_lock"]
-            if isinstance(parsed.get("bgm_lock"), dict):
+            bgm_lock = parsed.get("bgm_lock")
+            if isinstance(bgm_lock, dict):
                 analysis["bgm_lock"] = {
-                    str(k): str(v)[:280] for k, v in parsed["bgm_lock"].items()
+                    str(k): str(v)[:280] for k, v in bgm_lock.items()
                 }
                 audio["bgm_lock"] = analysis["bgm_lock"]
             if "include_speech" in parsed:
@@ -1687,7 +1729,6 @@ class Director:
         from jiuwenswarm.server.runtime.designer.model_tools import (
             DesignerLlmError,
             LLM_API_ERROR,
-            model_text_or_raise,
         )
 
         meta = dict(graph.get("metadata") or {})
@@ -1773,7 +1814,8 @@ class Director:
             )
 
             shot_ceiling = infer_shot_budget(user_prompt, analysis)
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="execution graph",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,
@@ -1798,8 +1840,6 @@ class Director:
                 system=system,
                 max_tokens=65536,
             )
-            text = model_text_or_raise(result)
-            parsed = _extract_json_object(text)
             if parsed is None:
                 raise DesignerLlmError(
                     "Chat model did not return valid execution graph JSON.",
@@ -3178,7 +3218,6 @@ class Director:
         from jiuwenswarm.server.runtime.designer.model_tools import (
             DesignerLlmError,
             LLM_API_ERROR,
-            model_text_or_raise,
         )
 
         try:
@@ -3196,7 +3235,8 @@ class Director:
                 "Respond JSON only: "
                 '{"ok":true,"patched_brief_markdown":"...","notes":"...","issues":["..."]}'
             ) + _language_rule()
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="brief review",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,
@@ -3209,13 +3249,9 @@ class Director:
                 system=system,
                 max_tokens=32768,
             )
-            text = model_text_or_raise(result)
-            parsed = _extract_json_object(text)
             if parsed is None:
-                raise DesignerLlmError(
-                    "Chat model did not return valid brief review JSON.",
-                    code=LLM_API_ERROR,
-                )
+                ack["review_skipped"] = "invalid_json"
+                parsed = {"notes": "Brief review reply was not valid JSON; kept the authored brief."}
             patched_md = str(parsed.get("patched_brief_markdown") or "").strip()
             if patched_md and len(patched_md) > 80:
                 brief = patched_md[:12000]
@@ -3320,7 +3356,6 @@ class Director:
         from jiuwenswarm.server.runtime.designer.model_tools import (
             DesignerLlmError,
             LLM_API_ERROR,
-            model_text_or_raise,
         )
 
         try:
@@ -3340,6 +3375,7 @@ class Director:
                 "speech), per-shot speech_by_character (exact lines for every speaking shot; "
                 "{} only when that shot has no speaker or the user asked for mime or no dialogue), and "
                 "film-wide bgm_lock. "
+                + _BGM_LOCK_RULE
                 + "Respond JSON only: "
                 '{"ok":true,"shot_fixes":[{"clip_index":1,"action":"...","camera":"...",'
                 '"timeline":"<copy this shot timeline from the approved brief>",'
@@ -3347,10 +3383,12 @@ class Director:
                 '"character_ids":["char_1"],'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
                 '"language_lock":"<spoken language code, e.g. zh or en>",'
-                '"bgm_lock":{"mood":"...","style":"...","rule":"..."},'
+                '"bgm_lock":{"user_request":"...","mood":"...","style":"...","instruments":"...",'
+                '"tempo_bpm":"...","key":"...","rule":"..."},'
                 '"include_speech":true,"include_music":true,"notes":"..."}'
             ) + _language_rule() + POSITIVE_VISUAL_RULE
-            result = await call_model_tool(
+            parsed = await _model_json_object(
+                phase="storyboard review",
                 prompt=json.dumps(
                     {
                         "user_prompt": user_prompt,
@@ -3366,13 +3404,11 @@ class Director:
                 system=system,
                 max_tokens=32768,
             )
-            text = model_text_or_raise(result)
-            parsed = _extract_json_object(text)
             if parsed is None:
-                raise DesignerLlmError(
-                    "Chat model did not return valid storyboard review JSON.",
-                    code=LLM_API_ERROR,
-                )
+                ack["review_skipped"] = "invalid_json"
+                parsed = {
+                    "notes": "Storyboard review reply was not valid JSON; kept the authored storyboard."
+                }
             for fix in parsed.get("shot_fixes") or []:
                 if not isinstance(fix, dict):
                     continue
@@ -3402,9 +3438,10 @@ class Director:
             if parsed.get("language_lock"):
                 analysis["language_lock"] = str(parsed.get("language_lock"))[:16]
                 patched.append("language_lock")
-            if isinstance(parsed.get("bgm_lock"), dict):
+            bgm_lock = parsed.get("bgm_lock")
+            if isinstance(bgm_lock, dict):
                 analysis["bgm_lock"] = {
-                    str(k): str(v)[:280] for k, v in parsed["bgm_lock"].items()
+                    str(k): str(v)[:280] for k, v in bgm_lock.items()
                 }
                 patched.append("bgm_lock")
             audio = dict(analysis.get("audio") or {})

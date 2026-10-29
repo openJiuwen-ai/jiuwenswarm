@@ -2,7 +2,7 @@
 
 """兼容别名：已归 ``gateway.extensions.auth(ssh_authenticator)``。"""
 
-from gateway.extensions.auth.ssh_authenticator import (  # noqa: F401
+from agent_gateway.extensions.auth.ssh_authenticator import (  # noqa: F401
     SshPublicKeyAuthenticator,
 )
 

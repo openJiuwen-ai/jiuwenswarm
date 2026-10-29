@@ -298,3 +298,56 @@ def test_host_config_normalizes_migrated_and_legacy_cli_paths(tmp_path, monkeypa
         [{"cli_agent": agent, field: str(old / "cli.cmd")}], "external_cli_agents",
     )
     assert entries == [{"cli_agent": agent, "cli_path": str(active / "cli.cmd")}]
+
+
+def test_refresh_seeds_the_catalog_of_a_kind_enabled_again(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    """Turning a kind off drops its catalog; turning it on again probes a fresh one."""
+    _write_config(
+        temp_config_file,
+        [{"cli_agent": "claude", "cli_path": "/usr/bin/claude"}, {"cli_agent": "codex"}],
+    )
+    _use_config(monkeypatch, temp_config_file)
+    probes: list[dict[str, str | None]] = []
+
+    def run_probes(targets: dict[str, str | None], timeout_s: float) -> dict[str, Any]:
+        probes.append(dict(targets))
+        return {"claude": {"default": ["low"], "opus": ["low", "high"], "haiku": []}}
+
+    monkeypatch.setattr(catalog_module, "_run_probes", run_probes)
+
+    assert refresh_external_cli_builtin_models(enabled_now=["claude"]) == []
+
+    entries = {item["cli_agent"]: item for item in _saved_entries(temp_config_file)}
+    assert entries["claude"]["builtin_models"] == [{"name": "opus"}, {"name": "haiku"}]
+    assert "builtin_models" not in entries["codex"], "a kind not enabled by this save is left alone"
+    assert load_reported_models()["claude"]["opus"] == ["low", "high"]
+    assert probes == [{"claude": "/usr/bin/claude"}]
+
+
+def test_refresh_keeps_a_kind_enabled_again_without_catalog_when_the_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    _write_config(temp_config_file, [{"cli_agent": "claude"}])
+    _use_config(monkeypatch, temp_config_file)
+    monkeypatch.setattr(
+        catalog_module,
+        "_run_probes",
+        lambda targets, timeout_s: {"claude": "CLINotFoundError: claude is not logged in"},
+    )
+
+    assert refresh_external_cli_builtin_models(enabled_now=["claude"]) == []
+    assert "builtin_models" not in _saved_entries(temp_config_file)[0]
+
+
+def test_newly_enabled_kinds_are_those_absent_before_the_save() -> None:
+    from jiuwenswarm.common.config_panel.config_set_handlers import newly_enabled_external_cli_agents
+
+    raw = {"modes": {"team": {"jiuwen_team": {"external_cli_agents": [{"cli_agent": "codex"}, "kimi"]}}}}
+    after = [{"cli_agent": "codex"}, {"cli_agent": "kimi"}, {"cli_agent": "claude"}]
+
+    assert newly_enabled_external_cli_agents(raw, after) == ["claude"]
+    assert newly_enabled_external_cli_agents({}, [{"cli_agent": "claude"}]) == ["claude"]

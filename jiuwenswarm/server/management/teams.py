@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.server.worker.execution_support import _group_organization_owner_team_ids
+from jiuwenswarm.server.ws_send import send_wire_payload
+
 from jiuwenswarm.common.schema.message import ReqMethod
 
 import logging
@@ -20,7 +24,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import get_session_meta
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.runtime.request import resolve_agent_request_mode
 import time
-from gateway.common.mode_matrix import is_team_mode
+from agent_gateway.common.mode_matrix import is_team_mode
 
 logger = logging.getLogger(__name__)
 
@@ -889,7 +893,9 @@ class TeamsManagement:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         channel_id = request.channel_id or "web"
-        empty_payload = {"members": [], "tasks": [], "team_id": None}
+        empty_payload = {"members": [], "departed_members": [], "tasks": [], "team_id": None}
+
+        # ``team_name`` 显式指定了要看的 team（team 选择器切 team 时就是这么调的）。
         requested_team_name = str(params.get("team_name") or "").strip()
         team_manager = get_team_manager(channel_id)
         monitor_handler = (
@@ -1084,7 +1090,7 @@ class TeamsManagement:
                     e,
                 )
         team_manager = get_team_manager(channel_id)
-        metadata_team_name = ""
+        owner_team_name = ""
         live_team_name = ""
         if session_id:
             session_info = team_manager.get_runtime_team_snapshot().get(session_id)
@@ -1105,13 +1111,33 @@ class TeamsManagement:
                 _upsert(pending_name, state="pending", source="manager")
             metadata = get_session_metadata(session_id) or {}
             metadata_team_name = str(metadata.get("team_name") or "").strip()
-            if metadata_team_name:
+            owner_team_name = metadata_team_name or live_team_name
+            if owner_team_name:
                 _upsert(
-                    metadata_team_name,
+                    owner_team_name,
                     state="configured",
                     agent_group_name=metadata.get("agent_group_name"),
                     source="metadata",
                 )
+                owner = entries[owner_team_name]
+                group_name = str(owner.get("agent_group_name") or "").strip()
+                if group_name:
+                    from jiuwenswarm.server.runtime.extension_package_manager import (
+                        normalize_agent_group_display_identity,
+                    )
+
+                    # Restore display metadata only for this session's bound Team.
+                    identity = normalize_agent_group_display_identity(
+                        owner.get("team_group_identity"), binding_name=group_name,
+                    )
+                    if identity is None and group_name == str(metadata.get("agent_group_name") or "").strip():
+                        identity = normalize_agent_group_display_identity(
+                            metadata.get("team_group_identity"), binding_name=group_name,
+                        )
+                    if identity is not None:
+                        owner["team_group_identity"] = identity
+                    else:
+                        owner.pop("team_group_identity", None)
 
         from jiuwenswarm.server.runtime.team_organization_history import (
             organization_enabled,
@@ -1182,9 +1208,26 @@ class TeamsManagement:
         # flip to the empty team panel until the next poll. Metadata stays
         # authoritative once it has been persisted.
         owner_team_name = metadata_team_name or live_team_name
+        try:
+            from jiuwenswarm.server.runtime.group_service import group_organization_teams
+
+            for item in group_organization_teams(session_id):
+                _upsert(str(item.get("team_id") or ""), state="paused", source="group")
+        except Exception:
+            logger.debug(
+                "[AgentWebSocketServer] group organization teams skipped session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+        group_owner_ids = _group_organization_owner_team_ids(session_id)
         for entry in entries.values():
-            entry["is_owner"] = bool(
-                owner_team_name and entry["team_id"] == owner_team_name
+            entry["is_owner"] = (
+                entry["team_id"] in group_owner_ids
+                if group_owner_ids
+                else bool(
+                    owner_team_name
+                    and entry["team_id"] == owner_team_name
+                )
             )
             if not entry.get("organization_id"):
                 org_id = host._lookup_session_org_binding(session_id, entry["team_id"])
@@ -1536,10 +1579,12 @@ class TeamsManagement:
         """返回 team human_agent 席位列表供 /join 校验。
 
         纯查询透传：mismatch 校验与对外文案均在 gateway，server 只查 member、过滤
-        human_agent、回 ok/members。查不到或异常 → ok=False（payload 不带文案，由
-        gateway 拼"team 不存在"）。
+        human_agent、回 ok/members。已离队（``shut_down``）的席位不再投递消息，
+        与 ``team.snapshot`` 同口径剔除。查不到或异常 → ok=False（payload 不带文案，
+        由 gateway 拼"team 不存在"）。
         """
         host = self.host
+        from jiuwenswarm.agents.harness.team.member_status import is_departed_member
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             query_team_human_members_for_join,
         )
@@ -1558,11 +1603,11 @@ class TeamsManagement:
             )
             members_raw = []
         members = [
-            m
-            for m in members_raw
+            m for m in members_raw
             if isinstance(m, dict)
             and m.get("role") == "human_agent"
             and m.get("member_id")
+            and not is_departed_member(m.get("status"))
         ]
         resp = AgentResponse(
             request_id=request.request_id,

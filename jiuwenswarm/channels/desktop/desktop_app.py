@@ -27,7 +27,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from logging.handlers import RotatingFileHandler
 
@@ -86,6 +86,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
 _MACOS_RUNTIME_REF: weakref.ReferenceType[Any] | None = None
+
 DESKTOP_WINDOW_PREFERENCES_FILENAME = "desktop-window.json"
 CLOSE_ACTION_ASK = "ask"
 CLOSE_ACTION_HIDE = "hide"
@@ -93,6 +94,92 @@ CLOSE_ACTION_QUIT = "quit"
 VALID_CLOSE_ACTIONS = frozenset(
     {CLOSE_ACTION_ASK, CLOSE_ACTION_HIDE, CLOSE_ACTION_QUIT}
 )
+
+
+# Only the current frontend origin may request microphone access.
+_WK_MEDIA_CAPTURE_MICROPHONE = 1  # WKMediaCaptureTypeMicrophone
+_WK_PERMISSION_GRANT = 1  # WKPermissionDecisionGrant
+_WK_PERMISSION_DENY = 2  # WKPermissionDecisionDeny
+
+
+def _install_macos_media_capture_permission(get_frontend_url: Callable[[], str]) -> None:
+    """给 pywebview 的 WKUIDelegate 补上媒体授权回调。
+
+    pywebview 的 BrowserDelegate 没实现
+    webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:，
+    WKWebView 因此直接拒绝 getUserMedia（NotAllowedError，不弹框）。
+    回调只在网页调用 getUserMedia 时触发，所以启动阶段不会要权限；
+    放行后首次使用由 macOS 弹系统麦克风授权。getDisplayMedia 不走这个回调。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import objc  # type: ignore[import-not-found]
+        from webview.platforms.cocoa import BrowserView
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] media permission hook unavailable: %s", exc)
+        return
+    delegate_cls = BrowserView.BrowserDelegate
+    if getattr(delegate_cls, "_jiuwenswarm_media_permission_installed", False):
+        return
+
+    def media_permission(_self, _webview, origin, _frame, media_type, decision_handler):
+        allowed = False
+        try:
+            expected = urlsplit(get_frontend_url())
+            default_port = 443 if expected.scheme == "https" else 80
+            expected_origin = (expected.scheme, expected.hostname, expected.port or default_port)
+            request_origin = (
+                str(origin.protocol()), str(origin.host()), int(origin.port()) or default_port,
+            )
+            allowed = (
+                expected.scheme in {"http", "https"}
+                and request_origin == expected_origin
+                and int(media_type) == _WK_MEDIA_CAPTURE_MICROPHONE
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+        logger.info(
+            "[desktop] media capture request type=%s allowed=%s",
+            media_type, allowed,
+        )
+        decision_handler(_WK_PERMISSION_GRANT if allowed else _WK_PERMISSION_DENY)
+
+    objc.classAddMethods(
+        delegate_cls,
+        [
+            objc.selector(
+                media_permission,
+                selector=b"webView:requestMediaCapturePermissionForOrigin:"
+                b"initiatedByFrame:type:decisionHandler:",
+                signature=b"v@:@@@q@?",
+            )
+        ],
+    )
+    delegate_cls._jiuwenswarm_media_permission_installed = True  # pylint: disable=protected-access
+
+
+def _macos_display_capture_supported() -> bool:
+    """WKWebView 的 getDisplayMedia 只能经 ScreenCaptureKit 系统选屏框拿到画面。
+
+    选屏框类 SCContentSharingPicker 自 macOS 14 起才有；更早的系统 WebKit
+    只弹“允许共享屏幕”确认，之后永远拿不到画面，网页收到 NotAllowedError，
+    与用户取消无法区分。这里把能力告诉前端，不支持时直接降级纯语音。
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        from Foundation import NSBundle  # type: ignore[import-not-found]
+        import objc  # type: ignore[import-not-found]
+
+        bundle = NSBundle.bundleWithPath_("/System/Library/Frameworks/ScreenCaptureKit.framework")
+        if bundle is None or not bundle.load():
+            return False
+        objc.lookUpClass("SCContentSharingPicker")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.info("[desktop] screen capture picker unavailable: %s", exc)
+        return False
 
 
 def _desktop_window_preferences_path() -> Path:
@@ -446,7 +533,7 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-        base = [sys.executable, "-m", "gateway.app_gateway"]
+        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -691,7 +778,7 @@ def _wait_for_port_release(host: str, port: int, timeout: float = 15.0) -> bool:
 def _shutdown_runtime_before_update() -> None:
     from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
 
-    result = asyncio.run(shutdown_resident_worker(timeout=30))
+    result = asyncio.run(shutdown_resident_worker(timeout=30, include_legacy=True))
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise RuntimeError(f"Worker shutdown incomplete: {result}")
 
@@ -773,8 +860,6 @@ class _WindowApi:
     @staticmethod
     def open_external_url(url: str) -> bool:
         """Open SkillHub OAuth in the system browser, outside the desktop WebView."""
-        from urllib.parse import urlsplit
-
         base = (
             os.getenv("SKILLHUB_OAUTH_BASE_URL")
             or os.getenv("TEAM_SKILLS_HUB_BASE_URL")
@@ -791,6 +876,19 @@ class _WindowApi:
         return bool(webbrowser.open(url))
 
     @staticmethod
+    def open_app_link(url: str) -> bool:
+        """Open an MCP App's ``ui/open-link`` URL in the system browser.
+
+        Only plain http(s) URLs without embedded credentials are accepted.
+        """
+        parsed = urlsplit(str(url))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        return bool(webbrowser.open(parsed.geturl()))
+
+    @staticmethod
     def capture_oauth_token(options: dict) -> dict | None:
         """隐式授权一键授权（对齐 Electron 的 desktop:capture-oauth-token）。
 
@@ -804,7 +902,7 @@ class _WindowApi:
         import html as html_module
         import re
         import urllib.request
-        from urllib.parse import parse_qs, urlsplit
+        from urllib.parse import parse_qs
 
         if not isinstance(options, dict):
             return None
@@ -1258,7 +1356,7 @@ class DesktopRuntime:
         ``wait`` seconds for a still-shutting-down Gateway from an upgrade
         restart to release the lock, then raises if a live holder remains.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         workspace = get_user_workspace_dir()
         holder = GatewayLock.find_holder(workspace)
@@ -1991,7 +2089,12 @@ class DesktopRuntime:
             if isinstance(url, str) and url.startswith("data:"):
                 temp_path.write_bytes(self._bytes_from_download_data_url(url))
             else:
-                urllib.request.urlretrieve(url, temp_path)
+                # urllib 的 HTTP 请求行只接受 ASCII：中文文件名/空格等非 ASCII 字符
+                # 必须先百分号编码，否则抛 UnicodeEncodeError，表现为桌面端下载失败。
+                # safe 保留 URL 结构字符与已有的 %xx 转义，避免二次编码。
+                urllib.request.urlretrieve(
+                    quote(url, safe=":/?#[]@!$&'()*+,;=%"), temp_path
+                )
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)
@@ -2471,6 +2574,8 @@ class DesktopRuntime:
         require ``copy`` — ``move``/``none`` are rejected and show the forbidden
         cursor.
         """
+        if not _macos_display_capture_supported():
+            self._run_js("window.__JIUWEN_DESKTOP_SCREEN_CAPTURE__ = false;")
         self._run_js(
             """
 (function () {
@@ -3201,18 +3306,18 @@ nohup {q_executable} >/dev/null 2>&1 &
                     shutdown_ok = False
                     logger.exception("[desktop] service tree cleanup incomplete")
 
-        if processes:
-            # Front restarts detach. The desktop application owns final exit
-            # and upgrade, so it explicitly drains the resident Worker here.
-            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
-            try:
-                result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
-                if not isinstance(result, dict) or result.get("ok") is not True:
-                    shutdown_ok = False
-                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
-            except Exception:
+        # A previous launch may own a resident Worker even before this
+        # application's first service is registered. Final exit owns both.
+        from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+        try:
+            result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic()),
+                include_legacy=True))
+            if not isinstance(result, dict) or result.get("ok") is not True:
                 shutdown_ok = False
-                logger.exception("[desktop] resident Worker final shutdown incomplete")
+                logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
+        except Exception:
+            shutdown_ok = False
+            logger.exception("[desktop] resident Worker final shutdown incomplete")
 
         while time.monotonic() < deadline:
             if all(process.poll() is not None for process in processes):
@@ -3295,6 +3400,7 @@ nohup {q_executable} >/dev/null 2>&1 &
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
+        _install_macos_media_capture_permission(lambda: self.frontend_display_url)
 
         self.window = webview.create_window(
             window_title,
@@ -3633,60 +3739,10 @@ if(bridgeNeverResponded||bridgeStoppedResponding){
 
 
 def _psutil_terminate(pid: int, force: bool = False) -> None:
-    """Terminate a process and all its descendants using psutil.
+    """Signal owned services while preserving resident Worker branches."""
+    from jiuwenswarm.common.process_supervision import signal_service_tree
 
-    Unlike ``taskkill.exe``, this is a pure-Python operation that does not
-    spawn an external console process, avoiding console window flashes on
-    Windows (console=False builds).
-    """
-    try:
-        import psutil
-
-        parent = psutil.Process(pid)
-        # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
-        children = parent.children(recursive=True)
-        # Runtime lives in a separate process session on POSIX. On Windows a
-        # recursive psutil termination must similarly preserve that subtree
-        # during Front/Gateway restart; final exit uses explicit Worker IPC.
-        retained = set()
-        by_pid = {child.pid: child for child in children}
-        for child in children:
-            try:
-                argv = child.cmdline()
-                if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.Error as exc:
-                raise RuntimeError("Desktop process tree ownership could not be established") from exc
-        for child in children:
-            try:
-                ancestor = child.ppid()
-                while ancestor in by_pid and ancestor not in retained:
-                    ancestor = by_pid[ancestor].ppid()
-                if ancestor in retained:
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.Error as exc:
-                raise RuntimeError("Desktop process tree ownership could not be established") from exc
-        kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
-        # 先杀子孙，再杀父进程，避免子孙变成孤儿
-        for child in reversed(children):
-            if child.pid in retained:
-                continue
-            try:
-                kill_fn(child)
-            except psutil.NoSuchProcess:
-                pass
-        try:
-            kill_fn(parent)
-        except psutil.NoSuchProcess:
-            pass
-    except psutil.NoSuchProcess:
-        pass
-    except psutil.Error as exc:
-        raise RuntimeError("Desktop process tree termination incomplete") from exc
+    signal_service_tree(pid, force=force)
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:

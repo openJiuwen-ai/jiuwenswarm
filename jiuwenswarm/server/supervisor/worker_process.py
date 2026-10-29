@@ -13,7 +13,39 @@ import time
 import uuid
 from pathlib import Path
 
+from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
+
 logger = logging.getLogger(__name__)
+
+
+def _runtime_instance_token() -> str:
+    """Pod/process discriminator for IPC endpoints on a shared workspace volume.
+
+    Enterprise AgentServer Pods share one RWX PVC for workspace data. Without a
+    Pod-local token they all derive the same ``runtime-<scope>.sock`` path, so a
+    second Pod reattaches to the first Pod's resident Worker, times out on
+    HELLO, never binds :8766, and stays 1/2 Ready. K8s sets ``HOSTNAME`` to the
+    Pod name; ``JIUWENSWARM_RUNTIME_INSTANCE`` overrides when needed.
+    """
+    import hashlib
+
+    instance = (
+        os.environ.get("JIUWENSWARM_RUNTIME_INSTANCE", "").strip()
+        or os.environ.get("HOSTNAME", "").strip()
+    )
+    if not instance:
+        return ""
+    return hashlib.sha256(instance.encode()).hexdigest()[:8]
+
+
+def _make_runtime_dir(base: Path) -> Path:
+    """Create a uid-owned 0o700 runtime dir for the fallback IPC socket."""
+    directory = base / f"jiuwenswarm-runtime-{os.getuid()}"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+        raise RuntimeError("Runtime IPC directory has an unexpected owner")
+    directory.chmod(0o700)
+    return directory
 
 
 def default_socket_path() -> str:
@@ -21,18 +53,25 @@ def default_socket_path() -> str:
     if override:
         return override
     from jiuwenswarm.common.utils import get_user_workspace_dir
-    from jiuwenswarm.server.supervisor.identity import data_scope
+    from jiuwenswarm.server.supervisor.identity import deployment_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
-    path = get_user_workspace_dir() / "run" / f"runtime-{data_scope()[:16]}.{suffix}"
+    scope = deployment_scope()[:16]
+    instance = _runtime_instance_token()
+    sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
+    path = get_user_workspace_dir() / "run" / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
-        directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        if directory.is_symlink() or directory.stat().st_uid != os.getuid():
-            raise RuntimeError("Runtime IPC directory has an unexpected owner")
-        directory.chmod(0o700)
-        path = directory / f"runtime-{data_scope()[:16]}.sock"
+
+        directory = _make_runtime_dir(Path(tempfile.gettempdir()))
+        path = directory / sock_name
+        # macOS 的 tempfile.gettempdir() 解析为 /var/folders/<32>/T（约 49 字
+        # 节），兜底路径自身仍会超过 AF_UNIX sun_path 预算，worker bind 时抛
+        # "unix socket path is too long" 起不来。退回字面量 /tmp：bind 时内核
+        # 解析符号链接，实际可用。
+        if len(os.fsencode(path)) >= 100:
+            directory = _make_runtime_dir(Path("/tmp"))
+            path = directory / sock_name
     return str(path)
 
 
@@ -43,11 +82,26 @@ def legacy_socket_paths() -> list[str]:
     from jiuwenswarm.common.utils import get_user_workspace_dir
 
     suffix = "pipe" if os.name == "nt" else "sock"
-    return [str(get_user_workspace_dir() / "run" / f"runtime-worker.{suffix}")]
+    from jiuwenswarm.server.supervisor.identity import data_scope
+
+    root = get_user_workspace_dir() / "run"
+    instance = _runtime_instance_token()
+    scoped = f"runtime-{data_scope()[:16]}-{instance}.{suffix}" if instance else f"runtime-{data_scope()[:16]}.{suffix}"
+    paths = [
+        str(root / scoped),
+        str(root / f"runtime-{data_scope()[:16]}.{suffix}"),
+        str(root / f"runtime-worker.{suffix}"),
+    ]
+    if os.name != "nt":
+        import tempfile
+
+        fallback = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
+        paths.extend([str(fallback / scoped), str(fallback / f"runtime-{data_scope()[:16]}.sock")])
+    return list(dict.fromkeys(paths))
 
 
 def build_worker_command(
-    socket_path: str,
+    socket_path: str | None,
     *,
     host: str,
     port: int,
@@ -59,13 +113,13 @@ def build_worker_command(
         sys.executable,
         "-m",
         "jiuwenswarm.server.worker.main",
-        "--socket",
-        socket_path,
         "--host",
         host,
         "--port",
         str(port),
     ]
+    if socket_path is not None:
+        command.extend(["--socket", socket_path])
     if stub:
         command.append("--stub")
         command.extend(["--stub-ready-delay", str(stub_ready_delay)])
@@ -114,6 +168,7 @@ class WorkerProcess:
         stub: bool = False,
         stub_ready_delay: float = 0.0,
         stub_exit_on_request: bool = False,
+        ipc_listener: FrontLoopbackListener | None = None,
     ) -> None:
         self.socket_path = socket_path
         self._host = host
@@ -121,6 +176,7 @@ class WorkerProcess:
         self._stub = stub
         self._stub_ready_delay = stub_ready_delay
         self._stub_exit_on_request = stub_exit_on_request
+        self._ipc_listener = ipc_listener
         self._proc: subprocess.Popen[bytes] | None = None
         self.launch_identity: str | None = None
         self._stderr_path = (
@@ -146,10 +202,17 @@ class WorkerProcess:
         return self._proc.poll()
 
     async def spawn(self) -> None:
-        from jiuwenswarm.server.supervisor.identity import launch_identity_payload
+        from jiuwenswarm.server.supervisor.identity import data_scope, launch_identity_payload
         from jiuwenswarm.server.supervisor.identity_probe import probe_identity
+
+        runtime_ipc = None
+        observation = None
+        if self._ipc_listener is not None:
+            self.launch_identity, observation = await probe_identity()
+            await self._ipc_listener.start(code_identity=self.launch_identity, data_scope=data_scope())
+            runtime_ipc = self._ipc_listener.launch_payload()
         command = build_worker_command(
-            self.socket_path,
+            self.socket_path if self._ipc_listener is None else None,
             host=self._host,
             port=self._port,
             stub=self._stub,
@@ -158,32 +221,39 @@ class WorkerProcess:
         )
         command.append("--identity-from-parent")
         logger.info("[Supervisor] spawning runtime worker: %s", " ".join(command))
-        # Popen, not asyncio's subprocess transport: that transport kills the
-        # child when the Front event loop closes. A new session keeps the
-        # Worker alive across Front restarts.
-        self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._stderr_path.open("ab") as stderr:
-            self._proc = subprocess.Popen(
-                command,
-                env=os.environ.copy(),
-                start_new_session=True,
-                stdin=subprocess.PIPE,
-                stderr=stderr,
-            )
+        # Resident Workers outlive the Front. Attached Workers share its
+        # process session and also stop on IPC EOF.
+        try:
+            self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._stderr_path.open("ab") as stderr:
+                self._proc = subprocess.Popen(
+                    command,
+                    env=os.environ.copy(),
+                    start_new_session=self._ipc_listener is None,
+                    stdin=subprocess.PIPE,
+                    stderr=stderr,
+                )
+        except OSError as exc:
+            if self._ipc_listener is not None:
+                raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=spawn errno={exc.errno}") from None
+            raise
         try:
             # The child can import code while the private launch identity is
             # calculated. It cannot migrate configuration or execute yet.
-            self.launch_identity, observation = await probe_identity()
-            payload = launch_identity_payload(self.launch_identity, source_observation=observation)
+            if runtime_ipc is None:
+                self.launch_identity, observation = await probe_identity()
+            payload = launch_identity_payload(self.launch_identity, source_observation=observation, runtime_ipc=runtime_ipc)
             self._proc.stdin.write(payload)
             self._proc.stdin.close()
-        except BaseException:
+        except BaseException as exc:
             if self._proc.stdin is not None:
                 try:
                     self._proc.stdin.close()
                 except OSError:
                     logger.debug("[Supervisor] closing failed launch pipe", exc_info=True)
             await self.stop(timeout=5)
+            if isinstance(exc, OSError) and self._ipc_listener is not None:
+                raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=launch-pipe errno={exc.errno}") from None
             raise
         logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)
 

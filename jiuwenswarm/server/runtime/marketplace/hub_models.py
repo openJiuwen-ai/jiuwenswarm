@@ -107,11 +107,14 @@ class HubVersionDetail:
     publisher_id: str
     publisher_name: str
     changelog: str
+    # Published package profile (capabilities/quick inputs/persona); absent on old versions.
+    package_profile: dict[str, Any] | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "HubVersionDetail":
         asset_id = _required_string(payload, "asset_id")
         name = _optional_string(payload, "name") or asset_id
+        profile = payload.get("agent_package_profile")
         return cls(
             asset_id=asset_id,
             asset_type=_optional_string(payload, "asset_type"),
@@ -126,6 +129,7 @@ class HubVersionDetail:
             publisher_id=_optional_string(payload, "publisher_id"),
             publisher_name=_optional_string(payload, "publisher_name"),
             changelog=_optional_string(payload, "changelog"),
+            package_profile=profile if isinstance(profile, dict) else None,
         )
 
 

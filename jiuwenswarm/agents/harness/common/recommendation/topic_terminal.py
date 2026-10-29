@@ -23,6 +23,22 @@ RID_RESULT_SCHEMA_VERSION = "topic-starter-v6-rid-result-v2"
 RID_API_PROMPT_VERSION = "topic-starter-v6-rid-api-proxy-v20"
 RID_COMPONENT_ID = "icebreaker_rid"
 
+# Hand-typed turns and composer prompt-suggestion accepts both feed RID / revisit.
+# Starter-card clicks stay out (injected content must not pollute interests).
+_USER_REVISIT_ORIGIN_PAIRS = frozenset(
+    {
+        ("manual_free_text", "none"),
+        ("prompt_suggestion", "prompt_suggestion"),
+    }
+)
+
+
+def is_user_revisit_eligible(input_origin: str, assistance_origin: str) -> bool:
+    """Whether a user turn may feed RID, session-summary revisit, and continuation."""
+
+    return (input_origin, assistance_origin) in _USER_REVISIT_ORIGIN_PAIRS
+
+
 _RID_API_SYSTEM_PROMPT = f"""\
 You are the Topic Starter IceBreaker-adapted RID API proxy
 ({RID_API_PROMPT_VERSION}).
@@ -369,9 +385,7 @@ class SessionSummaryArtifact:
 
     @property
     def natural_revisit_eligible(self) -> bool:
-        return (
-            self.input_origin == "manual_free_text" and self.assistance_origin == "none"
-        )
+        return is_user_revisit_eligible(self.input_origin, self.assistance_origin)
 
     def as_payload(self) -> dict[str, Any]:
         return {
@@ -510,7 +524,7 @@ def eligible_natural_revisit_summaries(
     *,
     context_scope: str,
 ) -> tuple[SessionSummaryArtifact, ...]:
-    """Return natural, unassisted summaries in the requested serving scope."""
+    """Return revisit-eligible summaries in the requested serving scope."""
 
     return tuple(
         summary

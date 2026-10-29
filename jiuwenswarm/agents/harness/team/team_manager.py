@@ -35,13 +35,13 @@ from openjiuwen.harness.rails import (
 )
 from openjiuwen.harness_protocol.state import HarnessState
 
-from gateway.common.cron_team_completion import (
+from agent_gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
-from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -111,6 +111,7 @@ _TEAM_STREAM_EXIT_GRACE_TIMEOUT_SEC = 1.5
 # event emitted by a long-running team session.
 TEAM_EVENT_QUEUE_MAXSIZE = 64
 _WAITER_PUT_RECHECK_TIMEOUT_SEC = 0.1
+_WAITER_PUT_TIMEOUT_LOG_INTERVAL_SEC = 5.0
 _TEAM_ROUND_FINAL_GRACE_SECONDS = 2.0
 
 
@@ -392,6 +393,8 @@ class TeamManager:
         # describes the single actual round admitted for a Session and owns
         # its admission release until terminal/cancel cleanup.
         self._active_rounds: dict[str, _ActiveTeamRound] = {}
+        self._stopping_requests: set[str] = set()
+        self._request_stop_events: dict[str, asyncio.Event] = {}
         # session_id → cron team round completion state. Lifetime-coupled to
         # _pending_waiters: set by _try_finish_cron_team_stream, popped by the
         # finisher coroutines once the cron stream ends.
@@ -484,6 +487,10 @@ class TeamManager:
         if not self.generation_matches(session_id, generation):
             return False
         return session_id in self._stream_tasks
+
+    def get_stream_task(self, session_id: str) -> asyncio.Task | None:
+        """Return the registered worker without changing its ownership."""
+        return self._stream_tasks.get(session_id)
 
     def pop_stream_task(
         self,
@@ -696,6 +703,22 @@ class TeamManager:
             and event.get("is_complete") is True
         )
         current_round = self._active_rounds.get(session_id)
+        if event_type == "chat.processing_status":
+            logger.log(
+                logging.INFO if terminal else logging.DEBUG,
+                "[TeamProcessingStatus] broadcast_event received: session_id=%s channel_id=%s "
+                "event_type=%s request_id=%s round_request_id=%s round_id=%s "
+                "is_processing=%s is_complete=%s registered_waiter_count=%s",
+                session_id,
+                channel_id,
+                event_type,
+                event.get("request_id"),
+                current_round.request_id if current_round is not None else None,
+                event.get("rid"),
+                event.get("is_processing"),
+                event.get("is_complete"),
+                len(self._pending_waiters.get(session_id, ())),
+            )
         if terminal and current_round is not None and not current_round.terminal_armed:
             # A persistent Runner stream can emit duplicate terminal frames
             # after the previous round has released.  A follow-up round is not
@@ -703,10 +726,12 @@ class TeamManager:
             # least one event for the newly submitted interaction.  Dropping
             # the stale control frame also keeps it out of the new exclusive
             # waiter.
-            logger.debug(
-                "[TeamManager] ignored unarmed terminal: session_id=%s request_id=%s",
+            logger.info(
+                "[TeamManager] ignored unarmed terminal: session_id=%s request_id=%s "
+                "round_id=%s is_processing=False",
                 session_id,
                 current_round.request_id,
+                event.get("rid"),
             )
             return False
         if not terminal and current_round is not None:
@@ -735,6 +760,12 @@ class TeamManager:
             }:
                 current_round.continued_after_flow = True
 
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        projected = await project_group_stream_event(session_id, event)
+        if projected is None:
+            return
+        event = projected
         waiters = self._select_broadcast_waiters(session_id)
 
         if not waiters:
@@ -762,6 +793,7 @@ class TeamManager:
             queue: asyncio.Queue,
         ) -> None:
             queued_event = dict(event)
+            next_timeout_log_at = 0.0
             while any(
                 rid == request_id and registered_queue is queue
                 for rid, registered_queue in self._pending_waiters.get(session_id, ())
@@ -771,17 +803,59 @@ class TeamManager:
                         queue.put(queued_event),
                         timeout=_WAITER_PUT_RECHECK_TIMEOUT_SEC,
                     )
+                    if event_type == "chat.processing_status":
+                        logger.log(
+                            logging.INFO if terminal else logging.DEBUG,
+                            "[TeamProcessingStatus] enqueued_to_waiter: session_id=%s request_id=%s "
+                            "channel_id=%s is_processing=%s is_complete=%s round_id=%s",
+                            session_id,
+                            request_id,
+                            channel_id,
+                            event.get("is_processing"),
+                            event.get("is_complete"),
+                            event.get("rid"),
+                        )
                     break
                 except asyncio.TimeoutError:
+                    now = time.monotonic()
+                    if now >= next_timeout_log_at:
+                        logger.warning(
+                            "[TeamManager] waiter queue put timed out; retrying: "
+                            "session_id=%s request_id=%s event_type=%s is_processing=%s round_id=%s "
+                            "queue_size=%s queue_capacity=%s timeout_sec=%s",
+                            session_id,
+                            request_id,
+                            event_type,
+                            event.get("is_processing"),
+                            event.get("rid"),
+                            queue.qsize(),
+                            queue.maxsize,
+                            _WAITER_PUT_RECHECK_TIMEOUT_SEC,
+                        )
+                        next_timeout_log_at = now + _WAITER_PUT_TIMEOUT_LOG_INTERVAL_SEC
                     continue
                 except Exception:
-                    logger.debug(
-                        "[TeamManager] broadcast failed: session_id=%s request_id=%s",
+                    logger.warning(
+                        "[TeamManager] broadcast failed: session_id=%s request_id=%s "
+                        "event_type=%s is_processing=%s round_id=%s",
                         session_id,
                         request_id,
+                        event_type,
+                        event.get("is_processing"),
+                        event.get("rid"),
                         exc_info=True,
                     )
                     break
+            else:
+                if event_type == "chat.processing_status":
+                    logger.info(
+                        "[TeamProcessingStatus] waiter_removed_before_enqueue: "
+                        "session_id=%s request_id=%s is_processing=%s round_id=%s",
+                        session_id,
+                        request_id,
+                        event.get("is_processing"),
+                        event.get("rid"),
+                    )
 
         await asyncio.gather(*(
             _put_to_waiter(request_id, queue)
@@ -841,10 +915,21 @@ class TeamManager:
             )
             logger.info(
                 "[TeamManager] terminal event pushed without waiter: "
-                "session_id=%s event_type=%s status=%s",
+                "session_id=%s event_type=%s status=%s is_processing=%s round_id=%s",
                 session_id,
                 str(payload.get("event_type") or ""),
                 status,
+                payload.get("is_processing"),
+                event.get("rid"),
+            )
+        else:
+            logger.warning(
+                "[TeamManager] waiter-less terminal event not delivered: "
+                "session_id=%s event_type=%s is_processing=%s round_id=%s",
+                session_id,
+                str(payload.get("event_type") or ""),
+                payload.get("is_processing"),
+                event.get("rid"),
             )
 
     def _observe_interactive_round_event(
@@ -895,6 +980,12 @@ class TeamManager:
             return
         if not cron_team_round_should_end(current.completion_state):
             return
+        logger.info(
+            "[TeamProcessingStatus] generated: original_event=chat.final source=interactive_round_grace_finished "
+            "session_id=%s request_id=%s is_processing=False is_complete=True",
+            session_id,
+            request_id,
+        )
         await self.broadcast_event(
             session_id,
             {
@@ -1081,6 +1172,85 @@ class TeamManager:
     def get_cron_completion(self, session_id: str) -> dict[str, Any] | None:
         """Return the cron team round completion state for the session, if any."""
         return self._cron_team_completion.get(session_id)
+
+    def cron_completion_is_current(self, session_id: str, completion: dict[str, Any]) -> bool:
+        """Fence a delayed cron callback against a new round or producer."""
+        if self.get_cron_completion(session_id) is not completion:
+            return False
+        if not self.generation_matches(session_id, completion.get("generation")):
+            return False
+        current = self._active_rounds.get(session_id)
+        request_id = completion.get("request_id")
+        if current is not None and current.request_id != request_id:
+            return False
+        if any(rid != request_id for rid in self._inflight_requests.get(session_id, ())):
+            return False
+        return self._stream_tasks.get(session_id) is completion.get("stream_task")
+
+    def cron_completion_owner(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """Capture immutable callback ownership, rather than looking it up later."""
+        return {
+            "request_id": request_id,
+            "generation": self._session_generations.get(session_id),
+            "stream_task": self._stream_tasks.get(session_id),
+        }
+
+    async def finish_cron_stream(self, session_id: str, completion: dict[str, Any], round_id: Any) -> None:
+        """Close only the producer captured by this cron round."""
+        task: asyncio.Task | None = None
+        async with self._get_lifecycle_lock(session_id):
+            if not self.cron_completion_is_current(session_id, completion):
+                if self.get_cron_completion(session_id) is completion:
+                    self.pop_cron_completion(session_id)
+                return
+            # The marker keeps a new round from starting while the producer is
+            # being handed off, so awaiting it below cannot admit a stale round.
+            self._begin_request_stop(session_id)
+            task = self.pop_stream_task(session_id, generation=completion.get("generation"))
+            if task is not None and not task.done():
+                task.cancel()
+        try:
+            # Await the producer outside the lifecycle lock. Its cleanup may
+            # enter lifecycle operations, and holding the lock over an
+            # unbounded wait would stall every other stop/pause/delete for the
+            # session (for all sessions in distributed mode, where the lock is
+            # shared).  A cancelled producer only raises CancelledError here,
+            # so an unexpected failure is surfaced to the caller's log.
+            if task is not None and not task.done():
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+            await self.broadcast_event(session_id, {
+                "event_type": "chat.processing_status", "session_id": session_id,
+                "request_id": completion.get("request_id"), "rid": round_id,
+                "is_processing": False, "is_complete": True,
+            }, channel_id=completion.get("channel_id"))
+        finally:
+            # Registry markers are plain per-session mappings, so they are
+            # released even when the awaiting caller is cancelled; taking the
+            # lifecycle lock here would reintroduce an await in the cancel path.
+            if self.get_cron_completion(session_id) is completion:
+                self.pop_cron_completion(session_id)
+            self._end_request_stop(session_id)
+
+    def _begin_request_stop(self, session_id: str) -> None:
+        self._stopping_requests.add(session_id)
+        self._request_stop_events.setdefault(session_id, asyncio.Event())
+
+    def _end_request_stop(self, session_id: str) -> None:
+        self._stopping_requests.discard(session_id)
+        event = self._request_stop_events.pop(session_id, None)
+        if event is not None:
+            event.set()
+
+    async def wait_for_request_stop(self, session_id: str) -> None:
+        """Queue new input until the previous producer has finished teardown."""
+        while session_id in self._request_stop_events:
+            await self._request_stop_events[session_id].wait()
+        self._assert_session_not_deleting(session_id)
 
     def setdefault_cron_completion(
         self, session_id: str, default: dict[str, Any]
@@ -1298,7 +1468,7 @@ class TeamManager:
         selection: SwarmModelSelection,
     ) -> CompiledModelSelection:
         """Resolve a stable Team selection through the server-side boundary."""
-        from gateway.common.model_selection import ResolvedModelGroup
+        from agent_gateway.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.common.model_errors import (
             TEAM_MODEL_SELECTION_STALE,
             ModelSelectionError,
@@ -1420,6 +1590,17 @@ class TeamManager:
         return name
 
     @staticmethod
+    def _model_group_display_name(group_id: str) -> str:
+        """Return a model group's display name, falling back to its id."""
+        from jiuwenswarm.common.model_catalog import ModelCatalog
+
+        try:
+            return ModelCatalog().group_display_name(group_id)
+        except Exception:  # noqa: BLE001 - naming must never fail the Team build
+            logger.debug("[TeamManager] model group %s has no catalog entry", group_id, exc_info=True)
+            return group_id
+
+    @staticmethod
     def _apply_compiled_team_selection(
         spec_dict: dict[str, Any],
         selection: SwarmModelSelection,
@@ -1462,6 +1643,15 @@ class TeamManager:
                 entry.model_dump(exclude_none=True)
                 for entry in materialize_model_group(compiled, selection)
             ]
+            # Name the group for the Team: members run on the logical "*"
+            # model, so history records and the leader's roster show this name
+            # until the router reports the model that actually served a call.
+            group_name = TeamManager._model_group_display_name(selection.id)
+            for entry in spec_dict["model_pool"]:
+                entry.setdefault("metadata", {})["model_group"] = {
+                    "id": selection.id,
+                    "display_name": group_name,
+                }
             spec_dict["model_pool_strategy"] = "intelli_router"
             # The compiled selection is authoritative. Clear convenience
             # sources from a legacy template and normalize every predefined
@@ -1529,8 +1719,58 @@ class TeamManager:
 
     @staticmethod
     def load_default_team_spec(session_id: str) -> TeamAgentSpec:
-        """Load the default Team specification for host organization adapters."""
-        return TeamManager._load_team_spec(session_id)
+        """Load the default Team specification for host organization adapters.
+
+        Group member instances are built from this spec, so it follows the
+        model the session selected instead of the global default model. A
+        selection that can no longer be compiled falls back to the default
+        model so member and summary Teams can still start.
+        """
+        from jiuwenswarm.common.model_errors import ModelSelectionError
+
+        metadata = get_session_metadata(session_id, cache_bust=True)
+        team_name = str(metadata.get("team_name") or "").strip()
+        selection = TeamManager._stored_model_selection(session_id, team_name)
+        if selection is None:
+            return TeamManager._load_team_spec(session_id)
+        try:
+            return TeamManager._load_team_spec(
+                session_id,
+                model_selection=TeamManager._default_if_deleted(selection),
+            )
+        except ModelSelectionError as exc:
+            logger.warning(
+                "stored model selection of session %s cannot be restored (%s); using the default model",
+                session_id,
+                getattr(exc, "code", exc),
+            )
+            return TeamManager._load_team_spec(session_id)
+
+    @staticmethod
+    def _stored_model_selection(session_id: str, team_name: str) -> dict[str, Any] | None:
+        """Return the persisted model selection of a Team, else of its session."""
+        # Team bindings own the long-lived business selection.  Keep the
+        # session field as a read-only compatibility fallback for legacy
+        # sessions/checkpoints that predate Team-level persistence.
+        if team_name:
+            try:
+                from jiuwenswarm.server.runtime.team_binding_store import (
+                    get_team_binding_store,
+                )
+                stored_team = get_team_binding_store().get_team_selection(team_name)
+            except Exception:
+                stored_team = None
+            if isinstance(stored_team, dict) and stored_team.get("type") and stored_team.get("id"):
+                return stored_team
+        from jiuwenswarm.server.runtime.session.model_selection_store import (
+            get_session_model_selection,
+        )
+
+        try:
+            stored = get_session_model_selection(session_id)
+        except ValueError:
+            stored = None
+        return stored.model_dump(exclude_none=True) if stored is not None else None
 
     @staticmethod
     def _load_team_spec(
@@ -1725,31 +1965,8 @@ class TeamManager:
         restored_selection = model_selection is None
         if restored_selection:
             metadata = get_session_metadata(session_id, cache_bust=True)
-            # Team bindings own the long-lived business selection.  Keep the
-            # session field as a read-only compatibility fallback for legacy
-            # sessions/checkpoints that predate Team-level persistence.
             team_name = str(metadata.get("team_name") or "").strip()
-            if team_name:
-                try:
-                    from jiuwenswarm.server.runtime.team_binding_store import (
-                        get_team_binding_store,
-                    )
-                    stored_team = get_team_binding_store().get_team_selection(team_name)
-                except Exception:
-                    stored_team = None
-                if isinstance(stored_team, dict) and stored_team.get("type") and stored_team.get("id"):
-                    model_selection = stored_team
-            if model_selection is None:
-                from jiuwenswarm.server.runtime.session.model_selection_store import (
-                    get_session_model_selection,
-                )
-
-                try:
-                    stored = get_session_model_selection(session_id)
-                except ValueError:
-                    stored = None
-                if stored is not None:
-                    model_selection = stored.model_dump(exclude_none=True)
+            model_selection = self._stored_model_selection(session_id, team_name)
 
         if model_selection is not None:
             if restored_selection:
@@ -1864,6 +2081,7 @@ class TeamManager:
             if dispatch_mode != "scheduled":
                 spec.enable_task_verification = False
                 spec.enable_member_messaging = False
+                spec.max_subtask_depth = 0
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":
@@ -1880,7 +2098,7 @@ class TeamManager:
         *,
         request_metadata: dict[str, Any] | None,
     ) -> None:
-        from gateway.common.mode_matrix import is_team_plan_mode
+        from agent_gateway.common.mode_matrix import is_team_plan_mode
 
         mode = (request_metadata or {}).get("mode")
         if is_team_plan_mode(mode):
@@ -2240,6 +2458,9 @@ class TeamManager:
             ).strip()
             or None,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(spec, deep_agent)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 
@@ -2541,6 +2762,8 @@ class TeamManager:
         """Reject execution admission after permanent-delete quiesce starts."""
         if session_id in self._terminal_delete_sessions:
             raise RuntimeError(f"session is being permanently deleted: {session_id}")
+        if session_id in self._stopping_requests:
+            raise RuntimeError(f"session is stopping its previous request: {session_id}")
 
     async def _cancel_team_evolution_watcher(self, session_id: str) -> None:
         watcher_task = self._team_evolution_watchers.pop(session_id, None)
@@ -3403,6 +3626,7 @@ class TeamManager:
         *,
         stop_runner: bool = True,
         generation: int | None = None,
+        expected_request_id: str | None = None,
     ) -> bool:
         """Stop local runtime resources and, by default, the Runner runtime.
 
@@ -3413,75 +3637,92 @@ class TeamManager:
         if not self.generation_matches(session_id, generation):
             return False
         async with self._get_lifecycle_lock(session_id):
-            has_stream_task = session_id in self._stream_tasks
-            has_local_team_runtime = self._has_local_team_runtime(session_id)
-            has_team_runtime = (
-                has_local_team_runtime
-                or session_id in self._runner_team_agents
-                or session_id in self._team_monitors
-                or self.is_runtime_active(session_id)
-                or self.is_runtime_pending(session_id)
-            )
-            if (
-                not has_stream_task
-                and not has_team_runtime
-                and not self.has_swarmflow_runs(session_id)
-            ):
+            if expected_request_id:
+                current = self._active_rounds.get(session_id)
+                inflight = self._inflight_requests.get(session_id, set())
+                if current is not None:
+                    if current.request_id != expected_request_id:
+                        return False
+                elif expected_request_id not in inflight:
+                    return False
+                if any(rid != expected_request_id for rid in inflight):
+                    return False
+            if expected_request_id:
+                self._begin_request_stop(session_id)
+            try:
+                has_stream_task = session_id in self._stream_tasks
+                has_local_team_runtime = self._has_local_team_runtime(session_id)
+                has_team_runtime = (
+                    has_local_team_runtime
+                    or session_id in self._runner_team_agents
+                    or session_id in self._team_monitors
+                    or self.is_runtime_active(session_id)
+                    or self.is_runtime_pending(session_id)
+                )
+                if (
+                    not has_stream_task
+                    and not has_team_runtime
+                    and not self.has_swarmflow_runs(session_id)
+                ):
+                    await self.release_current_round(session_id)
+                    self._clear_terminal_session_markers(session_id)
+                    return False
+
+                logger.info(
+                    "[TeamManager] %s stop team session runtime: session_id=%s",
+                    reason,
+                    session_id,
+                )
+                # Drive the swarmflow controller BEFORE the teardown below drops
+                # it: without a controller-driven stop the run dies as a plain
+                # cancel — no abort reason, no seal record (same ordering
+                # rationale as the cancel path).
+                await self._dispatch_swarmflow_controller(session_id, action="stop")
+                team_agent = self._team_agents.pop(session_id, None) if has_local_team_runtime else None
+                await self._cleanup_runtime_locals(session_id)
+
+                stopped = False
+                if has_local_team_runtime and team_agent is not None:
+                    stopped = await self._stop_local_team_runtime(session_id, team_agent)
+
+                team_name = self._resolve_session_team_name(session_id)
+
+                if team_name and stop_runner:
+                    try:
+                        runner_stopped = await Runner.stop_agent_team(team_name=team_name, session_id=session_id)
+                        stopped = runner_stopped or stopped
+                    except Exception as exc:
+                        logger.warning(
+                            "[TeamManager] runner stop failed: session_id=%s team_name=%s error=%s",
+                            session_id,
+                            team_name,
+                            exc,
+                        )
+                if not has_local_team_runtime:
+                    try:
+                        team_agent = self._runner_team_agents.get(session_id)
+                        await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
+                    except Exception as exc:
+                        logger.warning(
+                            "[TeamManager] release A2X reservations failed: session_id=%s error=%s",
+                            session_id,
+                            exc,
+                        )
+                    if stop_runner:
+                        await self._stop_runner_team_agent_transport(session_id)
+                    else:
+                        # Runner.delete_agent_team(force=True) still owns the
+                        # actual TeamAgent stop; drop only Jiuwenswarm's mirror.
+                        self._runner_team_agents.pop(session_id, None)
+
+                self.clear_active_runtime(session_id)
+                self.clear_pending_runtime(session_id)
                 await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
-                return False
 
-            logger.info(
-                "[TeamManager] %s stop team session runtime: session_id=%s",
-                reason,
-                session_id,
-            )
-            # Drive the swarmflow controller BEFORE the teardown below drops
-            # it: without a controller-driven stop the run dies as a plain
-            # cancel — no abort reason, no seal record (same ordering
-            # rationale as the cancel path).
-            await self._dispatch_swarmflow_controller(session_id, action="stop")
-            team_agent = self._team_agents.pop(session_id, None) if has_local_team_runtime else None
-            await self._cleanup_runtime_locals(session_id)
-
-            stopped = False
-            if has_local_team_runtime and team_agent is not None:
-                stopped = await self._stop_local_team_runtime(session_id, team_agent)
-
-            team_name = self._resolve_session_team_name(session_id)
-
-            if team_name and stop_runner:
-                try:
-                    runner_stopped = await Runner.stop_agent_team(team_name=team_name, session_id=session_id)
-                    stopped = runner_stopped or stopped
-                except Exception as exc:
-                    logger.warning(
-                        "[TeamManager] runner stop failed: session_id=%s team_name=%s error=%s",
-                        session_id,
-                        team_name,
-                        exc,
-                    )
-            if not has_local_team_runtime:
-                try:
-                    team_agent = self._runner_team_agents.get(session_id)
-                    await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
-                except Exception as exc:
-                    logger.warning(
-                        "[TeamManager] release A2X reservations failed: session_id=%s error=%s",
-                        session_id,
-                        exc,
-                    )
-                if stop_runner:
-                    await self._stop_runner_team_agent_transport(session_id)
-                else:
-                    # Runner.delete_agent_team(force=True) still owns the
-                    # actual TeamAgent stop; drop only Jiuwenswarm's mirror.
-                    self._runner_team_agents.pop(session_id, None)
-
-            self.clear_active_runtime(session_id)
-            self.clear_pending_runtime(session_id)
-            await self.release_current_round(session_id)
-            self._clear_terminal_session_markers(session_id)
+            finally:
+                if expected_request_id:
+                    self._end_request_stop(session_id)
 
         logger.info(
             "[TeamManager] %steam session stopped: session_id=%s stopped=%s",
@@ -3877,6 +4118,23 @@ def is_team_session_running(session_id: str) -> bool:
         and run.status == "running"
         and any(agent.status == "running" for phase in run.phases for agent in phase.agents)
         for run_id, run in handler.get_run_states().items()
+    )
+
+
+def team_session_has_active_work(session_id: str) -> bool:
+    """Whether a round, an admitted turn or an executing member still owns the Session.
+
+    Unlike :func:`is_team_session_running` this also counts the windows before
+    and between member execution, so a ``false`` here means no Team signal will
+    later settle the Session's processing state on its own.
+    """
+    manager = _team_manager
+    if manager is None:
+        return False
+    return (
+        manager.is_round_active(session_id)
+        or manager.has_inflight_request(session_id)
+        or is_team_session_running(session_id)
     )
 
 

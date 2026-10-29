@@ -1,6 +1,11 @@
 # 包含 package resources 目录
 recursive-include jiuwenswarm/resources *
+# Keep generated local configuration and advisory locks out of distributions.
+exclude jiuwenswarm/resources/.env
+exclude jiuwenswarm/resources/*.lock
 include jiuwenswarm/agents/harness/common/rsi/harness_config.yaml
+include jiuwenswarm/agents/harness/common/auto_harness/issue_fix/code_rule.txt
+include jiuwenswarm/server/runtime/agent_adapter/browser_runtime_network_guard.js
 include OPEN_SOURCE_SOFTWARE_NOTICE.md
 include scripts/build_config.py
 include third_party/playwright-mcp/package.json

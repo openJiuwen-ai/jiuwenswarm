@@ -2,11 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  audioDurationLabelForm,
+  audioDurationParts,
+  effectiveAudioDurationSec,
   effectiveImageSettings,
   effectiveVideoDuration,
   effectiveVideoSettings,
   generatesTimedVideo,
   generationModelLabel,
+  parseAudioDurationFields,
+  withAudioDuration,
 } from '../node_modules/.cache/designer-media-settings/designerMediaSettings.js';
 
 const caps = {
@@ -84,6 +89,35 @@ test('only generated video nodes that do not concat their inputs get a length', 
   };
   const timed = graph.nodes.filter((node) => generatesTimedVideo(graph, node.id)).map((node) => node.id);
   assert.deepEqual(timed, ['n_clip_1', 'v_free', 'v_from_image']);
+});
+
+test('audio duration is the node value, else the film value, else unset', () => {
+  assert.equal(effectiveAudioDurationSec(90, 8), 90);
+  assert.equal(effectiveAudioDurationSec(undefined, 8), 8);
+  assert.equal(effectiveAudioDurationSec(0, -1), null);
+  assert.equal(effectiveAudioDurationSec(12.9), 12);
+});
+
+test('audio duration fields accept any positive total and reject zero', () => {
+  assert.equal(parseAudioDurationFields('2', '30'), 150);
+  assert.equal(parseAudioDurationFields('0', '45'), 45);
+  assert.equal(parseAudioDurationFields('1', '90'), 150);
+  assert.equal(parseAudioDurationFields('1000', '0'), 60000);
+  assert.equal(parseAudioDurationFields('0', '0'), null);
+  assert.equal(parseAudioDurationFields('', '12'), 12);
+  assert.equal(parseAudioDurationFields('2', ' '), 120);
+  assert.equal(parseAudioDurationFields('', ''), null);
+  assert.equal(parseAudioDurationFields('', 'x'), null);
+  assert.equal(parseAudioDurationFields('-1', '10'), null);
+  assert.equal(parseAudioDurationFields('1.5', '0'), null);
+});
+
+test('a set audio length can be cleared back to the film duration', () => {
+  const set = withAudioDuration({ prompt: 'piano', duration_sec: 5 }, 90);
+  assert.deepEqual(set, { prompt: 'piano', duration_sec: 90, film_duration_sec: 90 });
+  const cleared = withAudioDuration(set, null);
+  assert.deepEqual(cleared, { prompt: 'piano' });
+  assert.equal(effectiveAudioDurationSec(cleared.duration_sec, cleared.film_duration_sec), null);
 });
 
 test('the toolbar names the configured model, else the provider that needs no model name', () => {

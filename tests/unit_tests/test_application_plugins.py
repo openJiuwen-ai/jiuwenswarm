@@ -8,15 +8,15 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from gateway.extensions.application_host import (
+from agent_gateway.extensions.application_host import (
     application_plugin_manifest,
     iter_websocket_routes,
     mount_application_plugin_http_routes,
 )
-from gateway.extensions.loader import ExtensionLoader
-from gateway.extensions.registry import ExtensionRegistry
-from gateway.extensions.types import ExtensionMetadata
-from gateway.extensions.sdk import (
+from agent_gateway.extensions.loader import ExtensionLoader
+from agent_gateway.extensions.registry import ExtensionRegistry
+from agent_gateway.extensions.types import ExtensionMetadata
+from agent_gateway.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
     FrontendContribution,

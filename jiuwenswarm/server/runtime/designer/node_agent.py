@@ -28,6 +28,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_role,
 )
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_prompt,
@@ -1028,6 +1029,15 @@ class DesignerGraphToolkit:
         except Exception:  # noqa: BLE001
             pass
         cfg["prompt"] = text
+        # Per-node check before the model call, so a Settings gap names this node
+        # on the canvas for a first run and a regenerate alike (#5266).
+        from jiuwenswarm.server.runtime.designer.handlers.common import (
+            note_media_settings_gap,
+        )
+
+        note_media_settings_gap(
+            self.ctx, "image", f"designer_image_{self.ctx.run_id}_{self.ctx.node_id}"
+        )
         beat = asyncio.create_task(
             _heartbeat_while(self.ctx, "call_image_model", "image model running")
         )
@@ -1100,7 +1110,7 @@ class DesignerGraphToolkit:
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
             extract_last_frame,
-            resolve_gated_last_frame_chain,
+            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
             stamp_last_frame_onto_next_clips,
             stamp_scene_last_frame_chain,
@@ -1128,7 +1138,7 @@ class DesignerGraphToolkit:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = resolve_gated_last_frame_chain(cfg, graph=graph, ctx=self.ctx)
+        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, self.ctx)
         if scene_chain:
             cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
             node["config"] = cfg
@@ -1328,6 +1338,7 @@ class DesignerGraphToolkit:
                 force_reference_mode=overrides["force_reference_mode"],
                 aspect_ratio=video.aspect_ratio,
                 resolution=video.resolution,
+                node_label=f"designer_video_{self.ctx.run_id}_{self.ctx.node_id}",
             )
         except Exception as exc:  # noqa: BLE001
             self.fail_media(exc)
@@ -1376,7 +1387,7 @@ class DesignerGraphToolkit:
             logger.debug("call_video_model wan-prompt stamp failed", exc_info=True)
         try:
             frame_out = path.with_name(f"{path.stem}_lastframe.jpg")
-            extracted = extract_last_frame(path, dest=frame_out)
+            extracted = await run_off_loop(extract_last_frame, path, frame_out)
             if extracted is not None:
                 stamp_last_frame_onto_next_clips(
                     graph,
@@ -1398,6 +1409,24 @@ class DesignerGraphToolkit:
         )
         return f"video_ready uri={path.resolve().as_uri()} path={path} audio={want_audio}"
 
+    async def call_music_model(self, *, instructions: str = "") -> str:
+        """One instrumental BGM bed for the whole film; silence plus a warning on failure."""
+        from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import (
+            is_silent_music_placeholder,
+            render_bgm,
+        )
+
+        node = _node_from_ctx(self.ctx)
+        beat = asyncio.create_task(_heartbeat_while(self.ctx, "call_music_model", "BGM generation running"))
+        try:
+            result = await render_bgm(node, self.ctx, instructions=str(instructions or ""))
+        finally:
+            beat.cancel()
+        self.completed = result
+        ref = result.output_ref or {}
+        state = "music_placeholder" if is_silent_music_placeholder(ref.get("label")) else "music_ready"
+        return f"{state} uri={ref.get('uri') or ''} message={result.message}"
+
     async def ffmpeg_compose(self, *, prompt: str = "") -> str:
         """Run the compose handler for this node (ffmpeg assemble)."""
         from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
@@ -1408,11 +1437,12 @@ class DesignerGraphToolkit:
                 compose_required_predecessor_ids,
             )
             from jiuwenswarm.server.runtime.designer.handlers.compose import (
-                compose_predecessor_media_ready,
+                compose_predecessors_missing_media,
             )
 
             states = (self.ctx.run or {}).get("node_states") or {}
             waiting: list[str] = []
+            completed: list[str] = []
             required = compose_required_predecessor_ids(
                 self.ctx.graph if isinstance(self.ctx.graph, dict) else {}
             )
@@ -1428,12 +1458,14 @@ class DesignerGraphToolkit:
                 if status not in {"completed", "complete", "done", "success"}:
                     waiting.append(f"{nid}:{status or 'pending'}")
                     continue
-                if not compose_predecessor_media_ready(
-                    self.ctx.graph if isinstance(self.ctx.graph, dict) else {},
-                    self.ctx.run if isinstance(self.ctx.run, dict) else {},
-                    nid,
-                ):
-                    waiting.append(f"{nid}:media_missing")
+                completed.append(nid)
+            missing = await run_off_loop(
+                compose_predecessors_missing_media,
+                deepcopy(self.ctx.graph if isinstance(self.ctx.graph, dict) else {}),
+                deepcopy(self.ctx.run if isinstance(self.ctx.run, dict) else {}),
+                completed,
+            )
+            waiting.extend(f"{nid}:media_missing" for nid in missing)
             if waiting:
                 return (
                     "ffmpeg_compose blocked: waiting for clips/audio "
@@ -1680,6 +1712,12 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
             first_frame=str(payload.get("first_frame") or payload.get("firstFrame") or ""),
         )
 
+    async def call_music_model(**kwargs: Any) -> str:
+        payload = _payload(**kwargs)
+        return await toolkit.call_music_model(
+            instructions=str(payload.get("instructions") or payload.get("prompt") or ""),
+        )
+
     async def ffmpeg_compose(**kwargs: Any) -> str:
         payload = _payload(**kwargs)
         return await toolkit.ffmpeg_compose(prompt=str(payload.get("prompt") or ""))
@@ -1869,6 +1907,39 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                 properties={"resilience": {"timeout_s": video_tool_timeout_seconds()}},
             )
         )
+    if "call_music_model" in wanted:
+        from jiuwenswarm.server.runtime.designer.music_generation import music_tool_timeout_seconds
+
+        tools.append(
+            make_tool(
+                "call_music_model",
+                (
+                    "Generate the ONE instrumental BGM bed for the whole concatenated film. "
+                    "The user's own music words, the film-wide bgm_lock and a timed cue sheet "
+                    "(film length, BPM chosen so the clip cuts land on bar lines, setup/rise/"
+                    "climax/release sections at the clip cuts) are merged in for you, vocals are "
+                    "always off, and compose re-times the result onto the edit. Call once; the "
+                    "node completes with the audio file (or a silent placeholder plus a warning "
+                    "when the music backend fails)."
+                ),
+                {
+                    "type": "object",
+                    "properties": {
+                        "instructions": {
+                            "type": "string",
+                            "description": (
+                                "Concrete English sound spec expanding the user's style words: "
+                                "genre, lead and supporting instruments, key, texture, how the "
+                                "energy builds. No lyrics, no timestamps, no negations."
+                            ),
+                        },
+                    },
+                    "required": ["instructions"],
+                },
+                call_music_model,
+                properties={"resilience": {"timeout_s": music_tool_timeout_seconds()}},
+            )
+        )
     if "ffmpeg_compose" in wanted:
         tools.append(
             make_tool(
@@ -1910,11 +1981,21 @@ def _json_object(value: Any) -> dict[str, Any] | None:
 
 
 def _is_agent_error(payload: dict[str, Any]) -> bool:
-    return str(payload.get("result_type") or "").strip().lower() == "error"
+    if str(payload.get("result_type") or "").strip().lower() == "error":
+        return True
+    # A failed task-loop round (TASK_FAILED, e.g. an LLM stream ReadError)
+    # resolves as a bare ``{"error": ...}`` dict without ``result_type`` or
+    # ``output``. Treat it as an error so the original cause is kept instead
+    # of being masked as "node agent returned empty output".
+    error = payload.get("error")
+    if error is None or not str(error).strip():
+        return False
+    return not str(payload.get("output") or payload.get("content") or "").strip()
 
 
 def _agent_failure_message(result: Any) -> str | None:
-    """Failure text when a DeepAgent invoke ended as ``result_type=error``.
+    """Failure text when a DeepAgent invoke ended as ``result_type=error``
+    or as a bare ``{"error": ...}`` from a failed task-loop round.
 
     A task-loop timeout is a normal return value, not an exception. Its
     ``output`` is the timeout sentence. Treating that sentence as creative

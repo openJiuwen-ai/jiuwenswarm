@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import queue
+import contextvars
 import re
 import tempfile
 import threading
@@ -18,16 +19,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from gateway.common.mode_matrix import is_team_mode
-from gateway.common.protocol_ids import is_valid_session_id
-from gateway.common.session_message import SESSION_MESSAGE_ORIGIN
+from agent_gateway.common.mode_matrix import is_team_mode
+from agent_gateway.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 logger = logging.getLogger(__name__)
 FILE_LOCK = threading.Lock()
 WRITE_QUEUE: queue.Queue[
-    tuple[str, dict[str, Any], str | None, Future[None] | None, int]
+    tuple[str, dict[str, Any], str | None, Future[None] | None, int, contextvars.Context | None]
 ] = queue.Queue(maxsize=20000)
 _QUEUE_ENQUEUE_LOCK = threading.Lock()
 _WORKER_STARTED = False
@@ -499,6 +500,16 @@ def _has_persistable_assistant_payload(
     if et == "chat.ask_user_answer":
         answers = payload.get("answers")
         return isinstance(answers, list) and bool(answers)
+    # Prompt / usage capture records — no display content but persisted so
+    # the exact LLM prompt can be retrieved offline.
+    if et == "chat.llm_call_start" and str(payload.get("prompt") or "").strip():
+        return True
+    if et == "chat.usage_metadata" and payload.get("metadata"):
+        return True
+    # llm_call_end closes a model call; keep it even when the call produced no
+    # text (e.g. a tool-calling call) so start/end stay symmetric in the timeline.
+    if et == "chat.llm_call_end":
+        return True
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False
@@ -1304,12 +1315,38 @@ def _write_item(
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id)
             records = _read_history(target_path)
+            if _is_error_record(item) and _has_request_error(records, item):
+                return
             records.append(item)
             _write_records_to_path(target_path, records)
             return
 
         target_path = _ensure_jsonl_bootstrap(session_id)
+        if _is_error_record(item) and _has_request_error(_read_history_jsonl(target_path), item):
+            return
         _append_record_jsonl(target_path, item)
+
+
+def _is_error_record(item: dict[str, Any]) -> bool:
+    return bool(item.get("cron_failure_record")) or item.get("event_type") in {
+        "chat.error", "execution.error", "team.error",
+    }
+
+
+def _has_request_error(records: list[dict[str, Any]], item: dict[str, Any]) -> bool:
+    """Deduplicate cron fallback and primary error regardless of write order."""
+    if not item.get("request_id") or item.get("role") != "assistant":
+        return False
+    # The legacy JSON reader returns its array verbatim, so a corrupted file can
+    # carry non-object entries; they must not fail the write.
+    return any(
+        record.get("request_id") == item.get("request_id")
+        and record.get("role") == "assistant"
+        and _is_error_record(record)
+        and (item.get("cron_failure_record") or record.get("cron_failure_record"))
+        for record in records
+        if isinstance(record, dict)
+    )
 
 
 def _ensure_worker_started() -> None:
@@ -1322,18 +1359,21 @@ def _ensure_worker_started() -> None:
 
         def _worker() -> None:
             while True:
-                sid, item, subagent_id, receipt, generation = WRITE_QUEUE.get()
+                sid, item, subagent_id, receipt, generation, context = WRITE_QUEUE.get()
                 try:
                     if sid is None:
                         item.set()
                         continue
-                    from jiuwenswarm.server.runtime.session import lifecycle as lc
-                    with lc.resource_lock("session", sid):
-                        lc.write_guard(sid, generation)
-                        if receipt is not None and subagent_id:
-                            _write_item(sid, item, subagent_id=subagent_id, require_written=True)
-                        else:
-                            _write_item(sid, item, subagent_id=subagent_id)
+
+                    def write() -> None:
+                        from jiuwenswarm.server.runtime.session import lifecycle as lc
+                        with lc.resource_lock("session", sid):
+                            lc.write_guard(sid, generation)
+                            if receipt is not None and subagent_id:
+                                _write_item(sid, item, subagent_id=subagent_id, require_written=True)
+                            else:
+                                _write_item(sid, item, subagent_id=subagent_id)
+                    context.run(write)
                 except Exception as exc:  # noqa: BLE001
                     _settle_history_receipt(receipt, error=exc)
                     logger.warning("history 异步写入失败: %s", exc)
@@ -1352,7 +1392,7 @@ def flush_pending_writes(timeout: float = 10) -> bool:
     deadline = time.monotonic() + timeout
     barrier = threading.Event()
     try:
-        WRITE_QUEUE.put((None, barrier, None, None, 0), timeout=timeout)
+        WRITE_QUEUE.put((None, barrier, None, None, 0, None), timeout=timeout)
     except queue.Full:
         return False
     return barrier.wait(max(0, deadline - time.monotonic()))
@@ -1402,13 +1442,18 @@ def _enqueue_history_item(
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     generation = lc.state("session", session_id).get("generation", 0)
     normalized_subagent_id = (subagent_id or "").strip() or None
+    context = contextvars.copy_context()
     with _QUEUE_ENQUEUE_LOCK:
         try:
-            WRITE_QUEUE.put_nowait((session_id, item, normalized_subagent_id, receipt, generation))
+            WRITE_QUEUE.put_nowait(
+                (session_id, item, normalized_subagent_id, receipt, generation, context)
+            )
         except queue.Full:
             # A synchronous disk-write fallback can overtake queued records.
             # Block only under backpressure so request boundaries remain FIFO.
-            WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt, generation))
+            WRITE_QUEUE.put(
+                (session_id, item, normalized_subagent_id, receipt, generation, context)
+            )
 
 
 def resolve_final_record_timestamp(

@@ -130,6 +130,8 @@ CLI 发出审批事件（省略其他观察事件）：
 
 拒绝使用事件中提供的 `reject` 值。权限卡复制原始 card_id；普通问题没有 card_id 时省略。Python `on_interaction` / TypeScript `onInteraction` 只返回上述 answers 数组，SDK 自动组装外层。无回调时 SDK 只自动拒绝权限请求；普通提问仍需要宿主回答，否则取消并报 `InteractionRequired`。
 
+`card_id` 已弃用，仅供兼容回传，不应作为第二交互标识。当前服务器的智能审批将其设为 Runtime 内层工具调用 `request_id` 的同值别名，最多512字符；兼容期仍须复制服务端下发值。Process CLI 外层运行 `request_id` 与 `interaction_id` 继续保持各自语义。支持旧服务器的宿主仍需接受旧异值载荷。
+
 宿主工具结果：
 
 ```json

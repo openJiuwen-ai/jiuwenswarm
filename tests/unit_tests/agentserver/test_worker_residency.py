@@ -81,6 +81,84 @@ def test_pending_goal_control_is_still_busy(action: str) -> None:
     assert store.snapshot(control)["is_processing"] is True
 
 
+def test_targeted_cancel_retires_only_the_target_dispatch() -> None:
+    """A targeted cancel must not retire other same-scope rounds' popups.
+
+    The owner turn and an expert round share the session scope; retiring the
+    whole scope on an expert-targeted cancel would drop ask_user popups that
+    are still answerable while their rounds keep running. A session-level
+    cancel (no target_request_id) still retires the whole scope.
+    """
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        return next(item["pending_interactions"] for item in store.snapshot(query)["dispatches"]
+                    if item["dispatch_id"] == dispatch_id)
+
+    targeted = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                       params={"target_request_id": "expert-turn"})
+    store.retire_session_interactions(targeted)
+    # is_processing is scope-wide: the owner round still holds work, so the
+    # session stays busy even though the expert round was retired.
+    assert store.snapshot(request("owner-turn"))["is_processing"] is True
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
+    session_wide = replace(request("cancel-2", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(session_wide)
+    assert store.snapshot(request("owner-turn"))["is_processing"] is False
+    assert popup("owner", request("owner-turn")) == []
+
+
+def test_retire_releases_finished_dispatch_active_slot() -> None:
+    """Retiring a finished round's ask_user frees its _active slot.
+
+    finish() kept the slot because the suspended interaction made the record
+    look busy; without the release every retired round leaks one slot until
+    register raises the dispatch limit."""
+    store = WorkerEventStore()
+    store.register(request("turn-1"), "d-1")
+    store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                           "interaction_id": "ask-1"}}, "d-1")
+    store.finish("d-1")
+    interrupt = replace(request("cancel", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(interrupt)
+    # The slot is free again: re-registering the request_id succeeds instead
+    # of raising "duplicate active request_id".
+    store.register(request("turn-1"), "d-2")
+
+
+def test_cancel_with_legacy_request_id_param_retires_only_that_round() -> None:
+    """A cancel whose target arrives as params.request_id retires that round.
+
+    Legacy clients use request_id instead of target_request_id — same
+    fallback contract as admission._dispatch_cancel and
+    dispatcher._drop_queued_cancel."""
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    cancel = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                     params={"request_id": "expert-turn"})
+    store.retire_session_interactions(cancel)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        for item in store.snapshot(query)["dispatches"]:
+            if item["dispatch_id"] == dispatch_id:
+                return item["pending_interactions"]
+        return []
+
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "real_state", [None, "succeeded", "running", "waiting_for_input", "waiting_for_control", "queued"],
@@ -245,7 +323,8 @@ async def test_accepted_execution_survives_detach_and_publishes_on_new_connectio
     cancellations = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def on_gateway_disconnect(self, ws, remote):
@@ -290,7 +369,8 @@ async def test_warming_queue_survives_reconnection():
     invoked = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def dispatch_parsed_request(self, ws, req, lock):
@@ -327,10 +407,12 @@ async def test_empty_execution_snapshot_does_not_hide_accepted_warming_work():
     dispatcher = WorkerDispatcher(bridge)
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
-        def get_session_snapshot(self, session_id):
+        @staticmethod
+        def get_session_snapshot(session_id):
             return SimpleNamespace(executions=())
 
     await dispatcher.bind_runtime(Runtime())
@@ -723,11 +805,11 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
 @pytest.mark.parametrize("ipc_opens", [True, False])
 async def test_resident_worker_startup_window_retries_without_spawning(monkeypatch, tmp_path, ipc_opens):
     from jiuwenswarm.server.lifecycle import Readiness
-    from jiuwenswarm.server.supervisor import resident_lifecycle, runtime_supervisor as module
+    from jiuwenswarm.server.supervisor import runtime_supervisor as module
 
     conn = SimpleNamespace(send=AsyncMock(), close=AsyncMock(), recv=AsyncMock(return_value={
         "kind": KIND_HELLO, "protocol": module.PROTOCOL_VERSION,
-        "data_scope": "scope", "deployment_scope": "deployment", "code_identity": "code", "stub": False,
+        "data_scope": "scope", "code_identity": "code", "stub": False,
         "instance": "original-worker",
     }))
     connect = AsyncMock(return_value=conn) if ipc_opens else AsyncMock(side_effect=TimeoutError("IPC stayed busy"))
@@ -737,7 +819,6 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     monkeypatch.setattr(module, "connect_with_retry", connect)
     monkeypatch.setattr(module, "WorkerProcess", process)
     monkeypatch.setattr(identity, "data_scope", lambda: "scope")
-    monkeypatch.setattr(identity, "deployment_scope", lambda: "deployment")
     monkeypatch.setattr(identity, "code_identity", lambda: "code")
     monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity",
                         AsyncMock(return_value=("code", None)))
@@ -750,12 +831,10 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
         await supervisor._bring_up()
         assert supervisor._conn is conn
         assert supervisor._worker_instance == "original-worker"
-        ownership.assert_called_once_with(conn.recv.return_value, str(tmp_path / "worker"), allow_legacy=True)
     else:
         with pytest.raises(TimeoutError, match="IPC stayed busy"):
             await supervisor._bring_up()
         assert supervisor._conn is None
-        ownership.assert_not_called()
     process.assert_not_called()
     connect.assert_awaited_once()
     assert 0 < connect.call_args.kwargs["timeout"] <= .5

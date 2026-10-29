@@ -1,0 +1,50 @@
+ARG NODE_IMAGE=registry.access.redhat.com/ubi9/nodejs-22:1
+ARG NGINX_IMAGE=registry.access.redhat.com/ubi9/nginx-126:1
+
+# ---------- 阶段1:前端构建 ----------
+FROM ${NODE_IMAGE} AS web-builder
+
+USER root
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+
+WORKDIR /build/jiuwenswarm/channels/web/frontend
+COPY jiuwenswarm/channels/web/frontend/package.json \
+     jiuwenswarm/channels/web/frontend/package-lock.json ./
+RUN npm install
+
+COPY jiuwenswarm/channels/web/frontend/ ./
+COPY jiuwenswarm/scripts/ /build/jiuwenswarm/scripts/
+COPY jiuwenswarm/resources/ /build/jiuwenswarm/resources/
+# User Web images retain their Manager-compatible base; standalone builds can pass '/'.
+ARG VITE_BASE_PATH=./
+ARG VITE_API_PREFIX=""
+RUN VITE_BASE_PATH="${VITE_BASE_PATH}" VITE_API_PREFIX="${VITE_API_PREFIX}" npm run build
+
+# ---------- 阶段2:nginx 运行 ----------
+FROM ${NGINX_IMAGE}
+
+USER root
+
+COPY docker/openshift/web.nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
+COPY docker/openshift/web-nginx-start.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh
+RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh /app/jiuwenswarm/docker/openshift/web-nginx-start.sh \
+    && mkdir -p /opt/app-root/etc/nginx/optional-upstreams \
+    && ln -sfn /opt/app-root/etc/nginx/optional-upstreams /etc/nginx/optional-upstreams \
+    && chown -R 1001:0 /opt/app-root/etc/nginx/optional-upstreams \
+    && chmod -R g+rwX /opt/app-root/etc/nginx/optional-upstreams
+
+# worker 进程用户:s2i 启动链路启用 nss_wrapper,用户查询走 passwd.template 生成的
+# /opt/app-root/etc/passwd,master 以 root 运行时按编译默认用户 nginx 启动 worker,
+# 须保证该条目在 /etc/passwd 与 passwd.template 中同时存在
+RUN getent passwd nginx >/dev/null || useradd -M -s /sbin/nologin nginx \
+    && getent passwd nginx >> /opt/app-root/etc/passwd.template
+
+COPY --from=web-builder /build/jiuwenswarm/channels/web/frontend/dist \
+     /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
+
+CMD ["/app/jiuwenswarm/docker/openshift/web-nginx-start.sh"]
+
+EXPOSE 5173

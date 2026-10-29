@@ -4,21 +4,13 @@
 # 2. 构建 wheel 包（包含前端 dist）
 
 set -e
-PACKAGING_ROOT="${WORKSWARM_PACKAGING_ROOT:-$(cd "$(dirname "$(dirname "$0")")" && pwd)}"
-PROJECT_ROOT="${WORKSWARM_SOURCE_ROOT:-$PACKAGING_ROOT}"
-BUILD_ROOT="${WORKSWARM_BUILD_ROOT:-$PROJECT_ROOT}"
-mkdir -p "$BUILD_ROOT"
-PACKAGING_ROOT="$(cd "$PACKAGING_ROOT" && pwd)"
-PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
-BUILD_ROOT="$(cd "$BUILD_ROOT" && pwd)"
-export WORKSWARM_PACKAGING_ROOT="$PACKAGING_ROOT" WORKSWARM_SOURCE_ROOT="$PROJECT_ROOT" WORKSWARM_BUILD_ROOT="$BUILD_ROOT"
-cd "$PROJECT_ROOT"
+PROJECT_ROOT="$(cd "$(dirname "$(dirname "$0")")" && pwd)"
 
 echo "[build] 项目根目录: $PROJECT_ROOT"
 
 
 # 版本 PR 只修改根 pyproject.toml；构建入口自动同步 TUI 与 Python 运行时元数据。
-uv run --no-project --python 3.11 python "$PACKAGING_ROOT/scripts/build_config.py" --root "$PROJECT_ROOT" --sync
+uv run --no-project --python 3.11 python "$PROJECT_ROOT/scripts/build_config.py" --sync
 uv sync --all-extras \
   --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
   --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple
@@ -68,16 +60,16 @@ trap cleanup EXIT
 # 2. 构建 wheel
 echo "[build] 正在构建 wheel 包..."
 pip install -q --upgrade build wheel
-python -m build --wheel --no-isolation --outdir "$BUILD_ROOT/dist"
+python -m build --wheel --no-isolation
 
 # 确保 dist 目录存在
-DIST_OUTPUT="$BUILD_ROOT/dist"
+DIST_OUTPUT="$PROJECT_ROOT/dist"
 if [[ ! -d "$DIST_OUTPUT" ]]; then
     mkdir -p "$DIST_OUTPUT"
     echo "[build] 创建 dist 目录: $DIST_OUTPUT"
 fi
 echo "[build] 完成! wheel 包位于: $DIST_OUTPUT"
-ls -la "$BUILD_ROOT"/dist/*.whl 2>/dev/null || true
+ls -la dist/*.whl 2>/dev/null || true
 
 # 3. 构建 TUI wheel
 if ! command -v bun &>/dev/null; then
@@ -86,6 +78,6 @@ if ! command -v bun &>/dev/null; then
 else
     echo "[build] 正在构建TUI的 wheel包..."
     cd "$PROJECT_ROOT"
-    python "$PACKAGING_ROOT/scripts/build_python_packages.py" --target all --clean --install-js-deps
+    python scripts/build_python_packages.py --target all --clean --install-js-deps
     echo "[build] TUI的 wheel 包构建完成"
 fi

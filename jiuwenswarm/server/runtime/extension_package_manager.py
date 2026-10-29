@@ -17,6 +17,7 @@ import tempfile
 import time
 import zipfile
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -750,7 +751,11 @@ def _build_list_card(
     card: dict[str, Any] = {
         "id": pkg_dir.name,
         "displayName": manifest.get("display_name") or pkg_dir.name,
-        "displayDescription": manifest.get("display_description") or {},
+        "displayDescription": (
+            _manifest_display_description(manifest)
+            if package_type == "agent_template"
+            else (manifest.get("display_description") or {})
+        ),
         "category": category if isinstance(category, str) else "",
         "tags": manifest.get("tags") if isinstance(manifest.get("tags"), list) else [],
         "source": source,
@@ -1618,6 +1623,15 @@ def resolve_plugin_dir(name: Any) -> Path:
     )
 
 
+def plugin_package_exists(name: Any) -> bool:
+    """Whether a plugin package directory of this name is installed, valid or not."""
+    safe_name = _reject_package_name(name, "plugin")
+    return any(
+        _package_dir_if_present(root, safe_name) is not None
+        for root in (_local_root(_PLUGIN_PACKAGE_KIND), _built_in_root(_PLUGIN_PACKAGE_KIND))
+    )
+
+
 def read_manifest_version(pkg_dir: Path) -> str:
     """Return stripped manifest.json version, or empty string if missing/invalid."""
     manifest = _read_package_manifest(pkg_dir)
@@ -1941,6 +1955,85 @@ def _assert_agent_group_name_available(name: str) -> None:
                 f"agent_group display name already exists: {name} ({package_dir.name})",
                 "AGENT_GROUP_DUPLICATE",
             )
+
+
+def _package_id_claimed(kind: str, package_id: str) -> bool:
+    """Report whether a local, built-in or shelf package owns this directory name.
+
+    Built-in copies stay in place (no orphan cleanup), so any built_in hit
+    blocks the name and the caller takes the next suffix.
+    """
+    if (_local_root(kind) / package_id).exists():
+        return True
+    resources_root = _resources_root(kind)
+    if resources_root is not None and (resources_root / package_id).is_dir():
+        return True
+    return (_built_in_root(kind) / package_id).exists()
+
+
+def _hub_package_id_resolver(kind: str) -> Callable[[str, str], str]:
+    """Pick a free local id when several Hub assets share one package name.
+
+    Hub keys assets by asset_id, so two publishers can both own
+    ``business-planning``. Local packages are keyed by directory name, which is
+    why the second asset used to fail with a duplicate error. Resolve it to
+    ``business-planning-2`` instead: the display name stays the same and both
+    copies keep an independent lifecycle. Reinstalling the same asset reuses
+    its recorded id so retries stay idempotent instead of piling up suffixes.
+    """
+    store = _hub_install_state_store(kind)
+
+    def resolve(hub_package_id: str, asset_id: str) -> str:
+        recorded = store.get(asset_id)
+        if recorded is not None and recorded.package_id:
+            return recorded.package_id
+        if not _package_id_claimed(kind, hub_package_id):
+            return hub_package_id
+        for index in range(2, 100):
+            candidate = f"{hub_package_id}-{index}"
+            if not _package_id_claimed(kind, candidate):
+                logger.info(
+                    "[extension_package_manager] Hub %s package %r is taken; "
+                    "installing as %r",
+                    kind,
+                    hub_package_id,
+                    candidate,
+                )
+                return candidate
+        raise ValueError(
+            f"too many Hub packages share the name {hub_package_id!r}"
+        )
+
+    return resolve
+
+
+def _rename_hub_package_identity(
+    package_root: Path, package_id: str, package_type: str
+) -> None:
+    """Rewrite only the identity field so an aliased package loads under its own id.
+
+    agent_template and agent_group key on ``manifest["name"]``; plugin keys on
+    ``manifest["id"]``. ``display_name`` stays untouched on purpose: the two
+    copies must keep showing the same product name.
+
+    Only an alias may rename: the resolver appends ``-<n>`` and keeps the Hub
+    package name as the stem. Any other mismatch is a Hub packaging error that
+    the id check must report instead of silently rewriting it.
+    """
+    manifest = _read_package_manifest(package_root)
+    if manifest is None:
+        return  # the package validator reports the precise manifest error
+    key = "id" if package_type == "plugin" else "name"
+    current = manifest.get(key)
+    if not isinstance(current, str) or not current.strip():
+        return  # missing identity, let _package_id_from_manifest reject it
+    if current == package_id:
+        return
+    stem, separator, suffix = package_id.rpartition("-")
+    if not separator or not suffix.isdigit() or stem != current:
+        return  # not an alias of this package, keep it for the id check
+    manifest[key] = package_id
+    _write_json(package_root / "manifest.json", manifest)
 
 
 def _skills_manifest_entries(skill_names: list[str]) -> list[dict[str, str]]:
@@ -2293,9 +2386,10 @@ async def list_agent_templates_with_hub(
     hub_port: HubAssetPort | None = None,
     downloader: Any = None,
 ) -> list[dict]:
-    return await _list_equipment_with_hub(
+    cards = await _list_equipment_with_hub(
         _AGENT_TEMPLATE_KIND, params, hub_port=hub_port, downloader=downloader
     )
+    return _omit_enterprise_hidden_cards(_filter_allowed_cards("agent_template", cards))
 
 
 async def list_plugin_packages_with_hub(
@@ -2388,7 +2482,12 @@ async def list_agent_groups_with_hub(
         by_id[card["id"]] = card
     source_filter = params.get("filter") if isinstance(params, dict) else None
     if source_filter in {"local", "mine"}:
-        return _apply_list_source_filter(list(by_id.values()), params)
+        return _omit_enterprise_hidden_cards(
+            _filter_allowed_cards(
+                "agent_group",
+                _apply_list_source_filter(list(by_id.values()), params),
+            )
+        )
 
     query = str((params or {}).get("query") or "").strip()
     if query:
@@ -2463,8 +2562,52 @@ async def list_agent_groups_with_hub(
     result = _apply_list_source_filter(list(by_id.values()), params)
     if cache_state is not None:
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
-        return CatalogCards(result, cache_state)
-    return result
+        result = CatalogCards(result, cache_state)
+    return _omit_enterprise_hidden_cards(_filter_allowed_cards("agent_group", result))
+
+
+def _omit_enterprise_hidden_cards(cards: list[dict]) -> list[dict]:
+    """企业版不展示依赖外部连接器的 Hub 包。保留 Hub 缓存标记。"""
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+        hidden_from_enterprise,
+    )
+
+    filtered = [
+        card
+        for card in cards
+        if not hidden_from_enterprise(str(card.get("id") or ""))
+    ]
+    cache = getattr(cards, "cache", None)
+    if cache is None:
+        return filtered
+    from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
+
+    return CatalogCards(filtered, cache)
+
+
+def _filter_allowed_cards(kind: str, cards: list[dict]) -> list[dict]:
+    """企业版按允许名单收目录。保留 Hub 缓存标记。"""
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import filter_cards
+
+    filtered = filter_cards(kind, list(cards))
+    cache = getattr(cards, "cache", None)
+    if cache is None:
+        return filtered
+    from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
+
+    return CatalogCards(filtered, cache)
+
+
+def _require_package_allowed(kind: str, package_id: str) -> None:
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import require_allowed
+
+    require_allowed(kind, package_id)
+
+
+def _package_allowed(kind: str, package_id: str) -> bool:
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
+
+    return allows(kind, package_id)
 
 
 def _build_agent_group_card(
@@ -2636,6 +2779,14 @@ async def show_agent_group_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None
 ) -> dict | None:
     """Return local group details or public Hub metadata before installation."""
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+        hidden_from_enterprise,
+    )
+
+    if hidden_from_enterprise(name):
+        return None
+    if not _package_allowed("agent_group", name):
+        return None
     store = _hub_install_state_store(_AGENT_GROUP_KIND)
     record = store.get(name)
     if record is not None and record.kind == "agent_group":
@@ -2750,6 +2901,52 @@ def _hub_detail_card(
         "pending_connectors": [],
         "quickInputs": [],
     }
+
+
+_CAPABILITY_FIELDS = {
+    "skill": "skills",
+    "tool": "tools",
+    "rail": "rails",
+    "mcp": "mcps",
+}
+
+
+def _hub_card_with_capabilities(detail: HubAssetDetail) -> dict[str, Any]:
+    """Render a detail card from Hub metadata plus the published package profile.
+
+    The version endpoint already returns ``agent_package_profile``, so skills/tools/rails/
+    connectors and quick inputs can be shown without downloading the package archive.
+    """
+    card = _hub_detail_card(detail)
+    profile = detail.package_profile if isinstance(detail.package_profile, dict) else {}
+    capabilities = profile.get("capabilities")
+    if isinstance(capabilities, list):
+        for entry in capabilities:
+            if not isinstance(entry, dict):
+                continue
+            field = _CAPABILITY_FIELDS.get(str(entry.get("kind") or "").strip())
+            if field is None:
+                continue
+            identifier = str(entry.get("id") or "").strip()
+            if not identifier:
+                continue
+            card[field].append(
+                {
+                    "id": identifier,
+                    "displayName": _i18n(entry.get("name"), identifier),
+                    "displayDescription": _i18n(entry.get("description")),
+                }
+            )
+    quick_inputs = profile.get("quick_inputs")
+    if isinstance(quick_inputs, list):
+        card["quickInputs"] = [item for item in quick_inputs if isinstance(item, str)]
+    persona = profile.get("persona_markdown")
+    if isinstance(persona, str) and persona.strip():
+        card["persona"] = persona
+    manifest_tags = profile.get("manifest_tags")
+    if isinstance(manifest_tags, list) and manifest_tags and not card["tags"]:
+        card["tags"] = [_i18n(tag, str(tag)) for tag in manifest_tags]
+    return card
 
 
 def _apply_hub_identity(card: dict[str, Any], detail: HubAssetDetail) -> dict[str, Any]:
@@ -2877,27 +3074,32 @@ async def _show_equipment_with_hub(
             f"Hub asset id mismatch: expected {remote_asset_id!r}, "
             f"got {remote.asset_id!r}"
         )
-    archive = await _load_hub_preview_archive(
-        kind,
-        remote.asset_id,
-        hub_port=port,
-        downloader=downloader,
-        detail=remote,
-    )
-    card = _build_show_card_from_zip(
-        archive.body,
-        archive.package_root,
-        package_type=hub_asset_kind,
-        package_id=remote.package_name or remote.asset_id,
-    )
-    if card is None:
-        return _hub_detail_card(remote)
-    return _apply_hub_identity(card, remote)
+    # Return the Hub metadata card immediately instead of downloading the package.
+    # The ZIP is only required for the files tab and for installing, and both of those
+    # paths load it on demand, so opening a detail page never waits for a download.
+    card = _hub_card_with_capabilities(remote)
+    if not card["details"]:
+        # Packages imported from outside the app may carry no description at all; read the
+        # README instead of leaving the detail page empty. This never downloads the archive.
+        reader = getattr(port, "read_public_readme", None)
+        if callable(reader):
+            readme = await reader(remote.asset_id, remote.version)
+            if readme:
+                card["details"] = readme
+    return card
 
 
 async def show_agent_template_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+        hidden_from_enterprise,
+    )
+
+    if hidden_from_enterprise(name):
+        return None
+    if not _package_allowed("agent_template", name):
+        return None
     return await _show_equipment_with_hub(
         _AGENT_TEMPLATE_KIND, name, hub_port=hub_port, downloader=downloader
     )
@@ -3069,6 +3271,9 @@ async def _prepare_hub_equipment(
 
     def validate_package(package_root: Path, expected_package_id: str) -> None:
         _normalize_hub_equipment_manifest(package_root, package_type=package_type)
+        # An aliased install must answer to its own directory id, otherwise the
+        # id check below and the runtime loader still see the Hub package name.
+        _rename_hub_package_identity(package_root, expected_package_id, package_type)
         _validate_package_manifest(package_root, kind_label, package_type)
         manifest = _read_package_manifest(package_root)
         if manifest is None:
@@ -3112,6 +3317,7 @@ async def _prepare_hub_equipment(
             value, f"Hub {kind_label} package"
         ),
         package_validator=validate_package,
+        package_id_resolver=_hub_package_id_resolver(kind),
         conflict_validator=reject_conflict,
         on_committed=write_marketplace,
         on_rollback=lambda runtime_package_id: _remove_marketplace_entry(
@@ -3132,6 +3338,14 @@ async def install_equipment_from_hub_gated(
 ) -> tuple[bool, dict[str, Any]]:
     kind_label = _hub_asset_kind(kind)
     requested_id = _lifecycle_package_id(params, kind_label)
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+        hidden_from_enterprise,
+    )
+
+    if hidden_from_enterprise(requested_id):
+        return False, {"error": f"package not available: {requested_id}"}
+    if kind == _AGENT_TEMPLATE_KIND and not _package_allowed(kind_label, requested_id):
+        return False, {"error": f"package not allowed: {kind_label} {requested_id}"}
     state_store = _hub_install_state_store(kind)
     record = state_store.get(requested_id) or state_store.get_by_package_id(
         requested_id
@@ -3531,6 +3745,7 @@ async def list_agent_template_files_with_hub(
     downloader: Any = None,
 ) -> list[dict]:
     """List files, downloading an uninstalled Hub expert if needed."""
+    _require_package_allowed("agent_template", name)
     pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
         name, hub_port=hub_port, downloader=downloader
     )
@@ -3549,6 +3764,7 @@ async def read_agent_template_file_with_hub(
     downloader: Any = None,
 ) -> dict:
     """Read one previewable file, downloading an uninstalled Hub expert if needed."""
+    _require_package_allowed("agent_template", name)
     pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
         name, hub_port=hub_port, downloader=downloader
     )
@@ -3586,6 +3802,7 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
 
 
 async def list_agent_group_files_with_hub(name: str) -> list[dict]:
+    _require_package_allowed("agent_group", name)
     record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
     package_id = record.package_id if record is not None else name
     if _resolve_agent_group_definition_dir(package_id) is not None:
@@ -3595,6 +3812,7 @@ async def list_agent_group_files_with_hub(name: str) -> list[dict]:
 
 
 async def read_agent_group_file_with_hub(name: str, rel_path: str) -> dict:
+    _require_package_allowed("agent_group", name)
     record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
     package_id = record.package_id if record is not None else name
     if _resolve_agent_group_definition_dir(package_id) is not None:
@@ -4379,6 +4597,7 @@ def _install_package(
 def install_agent_template(params: dict) -> None:
     """Install an expert package."""
     package_id = _lifecycle_package_id(params, "agent_template")
+    _require_package_allowed("agent_template", package_id)
     resolved = _resolve_agent_template_definition_dir(package_id)
     if resolved is not None:
         _validate_agent_template_runtime_package(resolved[0])
@@ -4396,6 +4615,7 @@ def install_agent_group(params: dict) -> None:
     from openjiuwen.agent_teams.experts import load_agent_group_package
 
     package_id = _lifecycle_package_id(params, "agent_group")
+    _require_package_allowed("agent_group", package_id)
     resolved = _resolve_agent_group_definition_dir(package_id)
     if resolved is None:
         raise ValueError(f"agent_group package not found: {package_id}")
@@ -4451,14 +4671,22 @@ async def install_agent_group_with_hub(
     params: dict, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> None:
     """Acquire a Hub group by its asset ID, then install its local runtime package."""
+    requested_id = _lifecycle_package_id(params, "agent_group")
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
+        hidden_from_enterprise,
+    )
+
+    if hidden_from_enterprise(requested_id):
+        raise ValueError(f"package not available: {requested_id}")
     from openjiuwen.agent_teams.experts import load_agent_group_package
 
-    requested_id = _lifecycle_package_id(params, "agent_group")
+    _require_package_allowed("agent_group", requested_id)
     store = _hub_install_state_store(_AGENT_GROUP_KIND)
     record = store.get(requested_id) or store.get_by_package_id(requested_id)
     package_id = record.package_id if record is not None else requested_id
     if _resolve_agent_group_definition_dir(package_id) is None:
         def validate(package_root: Path, expected_name: str) -> None:
+            _rename_hub_package_identity(package_root, expected_name, "agent_group")
             _validate_package_manifest(package_root, "agent_group", "agent_group")
             manifest = _read_package_manifest(package_root)
             if (
@@ -4483,6 +4711,7 @@ async def install_agent_group_with_hub(
             state_store=store,
             package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
             package_validator=validate,
+            package_id_resolver=_hub_package_id_resolver(_AGENT_GROUP_KIND),
             conflict_validator=reject_conflict,
             on_committed=lambda value: upsert_agent_group_marketplace_entry(
                 value.package_id, installed=False, source="hub"

@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 from contextvars import ContextVar
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
@@ -37,15 +38,15 @@ class ConnHolder:
         self.generation = 0
         self.last_readiness: dict[str, Any] | None = None
 
-    def open_session(self, conn: IpcConnection) -> int:
+    def open_session(self, conn: IpcConnection, *, generation: int | None = None) -> int:
         """Bind a new supervisor connection and return its generation."""
-        generation = self.begin_session()
+        generation = self.begin_session(generation=generation)
         self.activate_session(conn, generation)
         return generation
 
-    def begin_session(self) -> int:
+    def begin_session(self, *, generation: int | None = None) -> int:
         """Reserve a HELLO generation without publishing to an unvalidated peer."""
-        self.generation += 1
+        self.generation = self.generation + 1 if generation is None else generation
         self.conn = None
         return self.generation
 
@@ -156,10 +157,13 @@ class WorkerGatewayBridge:
             if future is not None and not future.done():
                 future.set_result(False)
 
-    async def replay(self, frames: list[dict[str, Any]], generation: int) -> None:
+    async def replay(self, frames: list[dict[str, Any]], generation: int,
+                     include: Callable[[dict[str, Any]], bool] | None = None) -> None:
         for index, frame in enumerate(frames):
             if self._holder.generation != generation or self._holder.conn is None:
                 return
+            if include is not None and not include(frame):
+                continue
             frame["payload"]["metadata"]["runtime_event"]["replayed"] = True
             await self._holder.conn.send({**frame, "kind": KIND_WIRE,
                                          "generation": generation, "replayed": True})

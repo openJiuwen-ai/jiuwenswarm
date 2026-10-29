@@ -16,15 +16,15 @@ PROJECT_ROOT = Path(__file__).parents[3]
 # 无状态共享件以 gateway 为唯一真源，runtime 允许引用；其余 gateway 子包属传输层。
 # 扩展治理层 registry/manager/loader 同为单份实现（进程内单例，双份会状态分裂）。
 ALLOWED_IMPORT_PREFIXES = (
-    "gateway.common",
-    "gateway.extensions.registry",
-    "gateway.extensions.manager",
-    "gateway.extensions.loader",
-    "gateway.extensions.sdk",
-    "gateway.extensions.types",
-    "gateway.extensions.callback_compat",
+    "agent_gateway.common",
+    "agent_gateway.extensions.registry",
+    "agent_gateway.extensions.manager",
+    "agent_gateway.extensions.loader",
+    "agent_gateway.extensions.sdk",
+    "agent_gateway.extensions.types",
+    "agent_gateway.extensions.callback_compat",
 )
-ALLOWED_IMPORT_MODULES = ("gateway", "gateway.extensions")
+ALLOWED_IMPORT_MODULES = ("gateway", "agent_gateway.extensions")
 FORBIDDEN_IMPORT_PREFIXES = (
     "gateway",
     "jiuwenswarm.server.agent_ws_server",
@@ -154,14 +154,14 @@ from jiuwenswarm.runtime import AgentRuntime
 
 ALLOWED = (
     'gateway',
-    'gateway.extensions',
-    'gateway.common',
-    'gateway.extensions.registry',
-    'gateway.extensions.manager',
-    'gateway.extensions.loader',
-    'gateway.extensions.sdk',
-    'gateway.extensions.types',
-    'gateway.extensions.callback_compat',
+    'agent_gateway.extensions',
+    'agent_gateway.common',
+    'agent_gateway.extensions.registry',
+    'agent_gateway.extensions.manager',
+    'agent_gateway.extensions.loader',
+    'agent_gateway.extensions.sdk',
+    'agent_gateway.extensions.types',
+    'agent_gateway.extensions.callback_compat',
 )
 
 def _is_transport(name):
@@ -216,6 +216,17 @@ def test_runtime_does_not_reintroduce_alternate_agent_implementations() -> None:
 async def test_agentserver_injects_runtime_manager_into_teammate_daemon(monkeypatch) -> None:
     """The control-plane daemon runs outside a request ContextVar."""
     from jiuwenswarm.server.worker.capabilities import _spawn_teammate_bootstrap
+
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "capabilities.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    daemon_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "run_teammate_bootstrap_daemon"
+    ]
+    assert daemon_calls, "teammate bootstrap must still be spawned from Worker capabilities"
 
     manager = object()
     observed = []
@@ -369,13 +380,13 @@ def test_agentserver_session_delete_is_transport_only() -> None:
 
 
 def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "execution_requests.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "handlers" / "session.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_handle_session_switch"
+        and node.name == "handle_session_switch"
     ]
     assert len(handlers) == 1
     handler = handlers[0]
@@ -391,11 +402,10 @@ def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
     }
 
     assert {
-        "_execution_runtime",
+        "execution_runtime",
         "prepare_session_switch",
         "commit_session_provision",
-        "encode_response",
-        "send",
+        "send_response",
     } <= called_attributes
     assert {
         "SessionSwitchInput",
@@ -430,13 +440,13 @@ def test_legacy_kvc_delete_orchestration_modules_are_removed() -> None:
 
 
 def test_agentserver_team_delete_is_transport_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "management" / "teams.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "handlers" / "team.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_handle_team_delete"
+        and node.name == "handle_team_delete"
     ]
     assert len(handlers) == 1
     handler_text = ast.unparse(handlers[0])

@@ -75,6 +75,7 @@ class StreamResponsePipeline:
             await self.ports.run_history_io(self.ports.append_history_record, wait_for_write=True, **record)
 
         self.history_committer = HistoryCommitter(
+            history_user_extra=ports.history_user_extra,
             params=self.request.params,
             session_id=self.session_id,
             request_id=self.rid,
@@ -443,7 +444,7 @@ class StreamResponsePipeline:
         ):
             et = str(data.payload.get("event_type"))
             self.history_committer.note_goal_stream_payload(et, data.payload)
-            should_record = et.startswith("chat.") or et == "context.usage"
+            should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
             final_segment_started_at: float | None = None
             final_segment_order = None
             if not should_record and et == EventType.TEAM_MESSAGE.value:
@@ -735,7 +736,7 @@ class StreamResponsePipeline:
         )
         et = str(data.get("event_type"))
         self.history_committer.note_goal_stream_payload(et, data)
-        should_record = et.startswith("chat.") or et == "context.usage"
+        should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
         final_segment_started_at = None
         if not should_record and et == EventType.TEAM_MESSAGE.value:
             should_record = True

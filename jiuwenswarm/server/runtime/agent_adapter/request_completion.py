@@ -7,7 +7,7 @@ import asyncio
 import logging
 from concurrent.futures import Future
 from jiuwenswarm.common.schema.agent import AgentRequest
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.server.runtime.session.session_history import (
     enqueue_history_request_completion, SESSION_REQUEST_COMPLETED_EVENT,
 )

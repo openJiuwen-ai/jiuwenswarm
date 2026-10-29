@@ -120,7 +120,10 @@ class SessionSwitchServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_switch(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_switch
+
+        await handle_session_switch(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_message_for_test(
         self,

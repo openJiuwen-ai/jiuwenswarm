@@ -20,10 +20,13 @@ from jiuwenswarm.runtime.project_activity import (
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,
@@ -1245,6 +1248,7 @@ class ProjectAdapter(GatewayAdapter):
             ReqMethod.PROJECT_GET_SESSIONS.value,
             ReqMethod.PROJECT_GET_CRON_SESSIONS.value,
             ReqMethod.PROJECT_CRON_RESOLVE_BINDING.value,
+            ReqMethod.PROJECT_LIFECYCLE.value,
             ReqMethod.PROJECT_LIST.value,
             ReqMethod.PROJECT_CREATE.value,
             ReqMethod.PROJECT_RENAME.value,
@@ -1270,7 +1274,8 @@ class ProjectAdapter(GatewayAdapter):
         method = request.req_method
         params = _request_params(request)
         if method not in {ReqMethod.PROJECT_LIST, ReqMethod.PROJECT_INFO, ReqMethod.PROJECT_PINNED_SESSIONS,
-                          ReqMethod.PROJECT_GET_SESSIONS, ReqMethod.PROJECT_GET_CRON_SESSIONS}:
+                          ReqMethod.PROJECT_GET_SESSIONS, ReqMethod.PROJECT_GET_CRON_SESSIONS,
+                          ReqMethod.PROJECT_LIFECYCLE}:
             from jiuwenswarm.server.runtime.session.lifecycle import guard
             try:
                 guard(project_id=str(params.get("project_id") or ""))
@@ -1388,6 +1393,28 @@ class ProjectAdapter(GatewayAdapter):
             return await _run_threaded(
                 request, "project.cron.resolve_binding", _resolve_cron_binding,
                 params, request.channel_id,
+            )
+        if method == ReqMethod.PROJECT_LIFECYCLE:
+            from jiuwenswarm.server.runtime.session.lifecycle import (
+                events_feed,
+                inventory_feed,
+                project_admission_snapshot,
+            )
+
+            # 与 WS ``_handle_lifecycle_request`` 同契约：events / inventory
+            # 无 project_id；单项目准入才走 project_admission_snapshot。
+            if params.get("events"):
+                return await _run_threaded(
+                    request, "project.lifecycle", events_feed, result_mode="plain",
+                )
+            if params.get("inventory"):
+                return await _run_threaded(
+                    request, "project.lifecycle", inventory_feed, result_mode="plain",
+                )
+            return await _run_threaded(
+                request, "project.lifecycle", project_admission_snapshot,
+                str(params.get("project_id") or ""),
+                result_mode="plain",
             )
         if method == ReqMethod.PROJECT_INFO:
             return await _run_threaded(request, "project.info", _load_project_info, params)

@@ -11,6 +11,7 @@ import argparse
 import errno
 import hmac
 import http.client
+import io
 import json
 import logging
 import mimetypes
@@ -54,9 +55,6 @@ if TYPE_CHECKING:
         ShareImageRenderAuth,
     )
 
-_share_image_export_manager: ShareImageExportManager | None = None
-_share_image_export_manager_lock = threading.Lock()
-
 
 class _BadRequestError(ValueError):
     """Client-supplied input the web handler cannot process.
@@ -68,17 +66,12 @@ class _BadRequestError(ValueError):
 
 
 def _get_share_image_export_manager() -> ShareImageExportManager:
-    """Create the share-image job registry on first use to keep startup lazy."""
-    global _share_image_export_manager
-    if _share_image_export_manager is None:
-        with _share_image_export_manager_lock:
-            if _share_image_export_manager is None:
-                from jiuwenswarm.channels.web.share_image_export import (
-                    ShareImageExportManager,
-                )
+    """Forward to the gateway-owned singleton (shared job registry)."""
+    from agent_gateway.channel_manager.web.share_image_export import (
+        get_share_image_export_manager,
+    )
 
-                _share_image_export_manager = ShareImageExportManager()
-    return _share_image_export_manager
+    return get_share_image_export_manager()
 
 
 def _get_user_workspace_dir() -> Path:
@@ -121,13 +114,13 @@ def _format_ws_diagnostics(
     *parts: Mapping[str, Any] | None,
     **fields: Any,
 ) -> str:
-    from gateway.common.ws_diagnostics import format_ws_diagnostics
+    from agent_gateway.common.ws_diagnostics import format_ws_diagnostics
 
     return format_ws_diagnostics(*parts, **fields)
 
 
 def _describe_ws_exception(exc: BaseException) -> dict[str, Any]:
-    from gateway.common.ws_diagnostics import describe_ws_exception
+    from agent_gateway.common.ws_diagnostics import describe_ws_exception
 
     return describe_ws_exception(exc)
 
@@ -289,6 +282,32 @@ def _uses_agentos_routing() -> bool:
         return False
 
 
+def _runtime_web_transport() -> str:
+    """WEB_TRANSPORT 优先；没写时企业版 http，个人版 websocket。"""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    value = (os.getenv("WEB_TRANSPORT") or "").strip().lower()
+    if value in {"http", "a2"}:
+        return "http"
+    if value in {"websocket", "ws"}:
+        return "websocket"
+    return "http" if is_enterprise() else "websocket"
+
+
+def _inject_user_web_runtime_config(document: str) -> str:
+    from jiuwenswarm.enterprise import is_enterprise
+
+    edition = "enterprise" if is_enterprise() else "personal"
+    login_auth_simulate = (os.getenv("LOGIN_AUTH_SIMULATE") or "").strip().lower() or "true"
+    if login_auth_simulate not in {"true", "false"}:
+        raise ValueError("LOGIN_AUTH_SIMULATE must be true or false")
+    return (
+        document.replace("__JIUWENSWARM_EDITION_VALUE__", edition)
+        .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
+        .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
+    )
+
+
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
     """Static file handler with SPA fallback to index.html."""
 
@@ -322,6 +341,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir()
     auto_harness_root = project_root / "auto-harness"
+    # Team-organization summaries live under <home>/.organizations, outside
+    # .agent_teams. Without this root, a delivered group attachment 403s and
+    # the chat card labels the existing file expired.
+    organizations_root = project_root / ".organizations"
     # Projectless tasks (no bound project_dir) write their generated media under
     # <Documents>/JiuwenSwarm/<date>/chat-<n>/outputs/, outside workspace_root —
     # without this, any @-referenced or inline-rendered media from a projectless
@@ -1040,6 +1063,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             or cls._is_path_under(Path(cls.agent_teams_root), target_resolved)
             or cls._is_path_under(Path(cls.logs_root), target_resolved)
             or cls._is_path_under(Path(cls.auto_harness_root), target_resolved)
+            or cls._is_path_under(Path(cls.organizations_root), target_resolved)
             or cls._is_path_under(Path(cls.projectless_tasks_root), target_resolved)
             or any(cls._is_path_under(root, target_resolved) for root in cls._registered_project_dirs())
         )
@@ -1480,19 +1504,45 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._write_json(404, {"error": "file_not_found"})
                 return
 
+            file_size = full_path.stat().st_size
             mime_type, _ = mimetypes.guess_type(full_path.name)
-            self.send_response(200)
+            # Browsers cannot seek media (e.g. the designer video preview
+            # timeline) unless the endpoint honors Range requests; answer
+            # 206/416 like the gateway ``serve_file_chunks`` implementation.
+            range_header = str(self.headers.get("Range") or "").strip()
+            byte_range = (
+                _parse_single_byte_range(range_header, file_size)
+                if range_header
+                else None
+            )
+            if range_header and byte_range is None:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            start, end = byte_range or (0, max(file_size - 1, 0))
+            content_length = 0 if file_size == 0 else end - start + 1
+            self.send_response(206 if byte_range is not None else 200)
             self.send_header("Content-Type", mime_type or "application/octet-stream")
-            self.send_header("Content-Length", str(full_path.stat().st_size))
+            self.send_header("Content-Length", str(content_length))
+            self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
+            if byte_range is not None:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
-            if self.command != "HEAD":
+            if self.command != "HEAD" and content_length > 0:
+                remaining = content_length
                 with full_path.open("rb") as file_obj:
-                    while True:
-                        chunk = file_obj.read(65536)
+                    file_obj.seek(start)
+                    while remaining > 0:
+                        chunk = file_obj.read(min(65536, remaining))
                         if not chunk:
                             break
                         self.wfile.write(chunk)
+                        remaining -= len(chunk)
             return
 
         if path == "/file-api/file-content":
@@ -2073,7 +2123,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/file-api/upload":
-            self._handle_file_upload_proxy(parsed)
+            if self._is_designer_upload(parsed):
+                self._handle_designer_upload()
+            else:
+                self._handle_file_upload_proxy(parsed)
             return
 
         if parsed.path == "/file-api/file-content":
@@ -2176,6 +2229,45 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         status, payload = handle_custom_agent_upload_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
+
+    def _is_designer_upload(self, parsed) -> bool:
+        if parse_qs(parsed.query).get("token"):
+            return False
+        return "multipart/form-data" in self.headers.get("Content-Type", "").lower()
+
+    def _discard_request_body(self, length: int) -> None:
+        # Answering before the body is consumed resets the connection, which
+        # the browser reports as "Failed to fetch" instead of the JSON error.
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
+    def _handle_designer_upload(self) -> None:
+        from jiuwenswarm.channels.web.designer_upload_http import (
+            MAX_DESIGNER_UPLOAD_REQUEST_BYTES,
+            handle_designer_upload_http,
+        )
+
+        length = self._parse_content_length()
+        # A routed AgentServer keeps uploads in a per-user sandbox this process cannot write.
+        if _uses_agentos_routing():
+            self._discard_request_body(length)
+            self._write_json(503, {"error": "agentserver_file_rpc_required"})
+            return
+        if length > MAX_DESIGNER_UPLOAD_REQUEST_BYTES:
+            self._discard_request_body(length)
+            self._write_json(413, {"error": "file_too_large", "files": [], "errors": [{"error": "file_too_large"}]})
+            return
+        status, payload = handle_designer_upload_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self.rfile,
+            length=length,
+            workspace_root=Path(self.workspace_root),
         )
         self._write_json(status, payload)
 
@@ -2363,6 +2455,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _IMMUTABLE_ASSET_RE = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$")
     _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
     _REVALIDATE_CACHE_CONTROL = "no-cache"
+    _STATIC_EXTENSIONS = frozenset({
+        ".js", ".mjs", ".css", ".map", ".svg", ".png", ".jpg", ".jpeg",
+        ".ico", ".webp", ".gif", ".woff", ".woff2", ".ttf", ".eot",
+        ".json", ".webmanifest",
+    })
 
     @classmethod
     def _cache_control_for_static(cls, rel_path: str) -> str:
@@ -2400,9 +2497,49 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             base_dir = Path(self.directory or os.getcwd()).resolve()
             target = (base_dir / rel_path).resolve()
             in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+
+            # Relative Vite URLs on nested SPA routes resolve to /chat/assets/...
+            # (or deeper prefixes). Match the nginx deployment's assets alias.
+            asset_request = "/assets/" in req_path
+            if in_base and not target.exists() and asset_request:
+                asset_rel_path = "assets/" + req_path.split("/assets/", 1)[1]
+                asset_root = (base_dir / "assets").resolve()
+                asset_target = (base_dir / asset_rel_path).resolve()
+                in_assets = os.path.commonpath([str(asset_root), str(asset_target)]) == str(asset_root)
+                asset_in_base = os.path.commonpath([str(base_dir), str(asset_target)]) == str(base_dir)
+                if in_assets and asset_in_base and asset_target.is_file():
+                    rel_path = asset_rel_path
+                    target = asset_target
+                    self.path = quote("/" + rel_path, safe="/")
+                    if parsed.query:
+                        self.path += "?" + parsed.query
+            # Reuse dev-stable's static-prefix fallback for named public files.
+            # Asset requests stay confined to assets/ and never fall back to public files.
+            missing_public_path = in_base and not target.exists() and not asset_request
+            if missing_public_path and Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS:
+                parts = rel_path.split('/')
+                for index in range(1, len(parts)):
+                    candidate_rel = '/'.join(parts[index:])
+                    candidate = (base_dir / candidate_rel).resolve()
+                    candidate_in_base = os.path.commonpath([str(base_dir), str(candidate)]) == str(base_dir)
+                    if candidate_in_base and candidate.is_file():
+                        rel_path = candidate_rel
+                        target = candidate
+                        self.path = quote('/' + rel_path, safe='/')
+                        if parsed.query:
+                            self.path += '?' + parsed.query
+                        break
         except (OSError, ValueError):
             self._static_cache_control = None
             self._write_json(400, {"error": "invalid_path"})
+            return None
+
+        # Missing assets must never receive an HTML document with status 200.
+        if (asset_request or Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS) and not (
+            in_base and target.is_file()
+        ):
+            self._static_cache_control = None
+            self.send_error(404, "File not found")
             return None
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
@@ -2415,12 +2552,28 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return None
 
         if in_base and target.exists():
+            index_file = target / "index.html" if target.is_dir() else target
+            if index_file.is_file() and index_file.resolve() == spa_index:
+                return self._injected_index(index_file)
             self._static_cache_control = self._cache_control_for_static(rel_path)
             return super().send_head()
 
         self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
         self.path = "/index.html"
+        if spa_index.is_file():
+            return self._injected_index(spa_index)
         return super().send_head()
+
+    def _injected_index(self, file_path: Path):
+        body = _inject_user_web_runtime_config(
+            file_path.read_text(encoding="utf-8")
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
+        self.end_headers()
+        return io.BytesIO(body)
 
 
 def _normalize_api_target(value: str) -> str:

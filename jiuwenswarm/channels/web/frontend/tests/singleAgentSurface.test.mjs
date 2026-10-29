@@ -114,6 +114,15 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(teamWorkspaceStyles, /border-radius: 0\.5rem/);
   assert.match(teamWorkspaceStyles, /\.lanes[\s\S]*?overflow-y: auto/);
   assert.match(teamWorkspaceStyles, /\.laneRowExpanded[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceSource,
+    /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
+  );
+  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceStyles,
+    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+  );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
   assert.match(
@@ -685,7 +694,10 @@ test('trajectory analysis page hosts the raw trajectory and diagnosis as sub-pag
   assert.match(pageSource, /highlightStepKeys: focused\.keys/);
   // The header button enters selection mode instead of starting a run by itself.
   assert.match(pageSource, /onClick=\{enterSelection\}/);
-  assert.match(pageSource, /\{\.\.\.\(selecting \? \{ selection: \{ state: selectionState, onChange: setSelectionState \} \} : \{\}\)\}/);
+  assert.match(
+    pageSource,
+    /\{\.\.\.\(selecting\s*\?\s*\{\s*selection: \{ state: selectionState, onChange: setSelectionState \},\s*fullScopeSelection: fullScope,\s*onFullScopeChange: setFullScope,\s*\}\s*:\s*\{\}\)\}/,
+  );
   assert.match(pageSource, /<DiagnosisSelectionBar/);
   // Sub-pages stay put while a pick is open, and Esc, hiding the page or a new session end it.
   assert.match(pageSource, /disabled=\{selecting\}/);
@@ -703,10 +715,31 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   );
   assert.match(panelSource, /const laneLayout = teamMode \|\| sharedTimeAxis/);
   assert.match(panelSource, /useSharedTimeAxis\(sharedTimeAxis, sessionId, subjectSnapshots\)/);
+  assert.match(panelSource, /collectUserInteractionWallRanges\(turns\)/);
+  assert.match(panelSource, /turnMarkers=\{sharedAxisTurnMarkers\}/);
+  assert.match(panelSource, /userTurnGapRanges: sharedAxisTurnMarkers/);
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /placeUserTurnAxisEdges\(ranges, visibleDuration\)/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /clipIntervalAgainstGaps\(span\.start, span\.end, userTurnGaps\)/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/diagnosis/diagnosisTimeSelection.ts', import.meta.url), 'utf8'),
+    /USER_TURN_GAP_FRACTION = 0\.02/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/diagnosis/useSharedTimeAxis.ts', import.meta.url), 'utf8'),
+    /isTeamHarnessNoiseCell\(sample\)/,
+  );
   assert.match(panelSource, /const teamContent = laneLayout &&/);
   // Without the selection prop the lanes stay read-only; with it they pick per agent.
   assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
   assert.match(panelSource, /spanSelectsRange: selecting/);
+  // Browse/zoom uses grab-to-pan; diagnosis selection locks the viewport for brush drag.
+  assert.match(panelSource, /lockTimelineViewport: selecting/);
   assert.match(panelSource, /agentSelection: \{/);
   // Include checkbox only while a shared brush / full-scope pick is active.
   assert.match(panelSource, /shouldShowIncludeToggle\(selection\.state, fullScopeSelection, subjectId\)/);
@@ -724,8 +757,24 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
 });
 
+test('scheduled team lanes retain swarmflow grouping for regular members', () => {
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /const workflowGroupingLanes = laneSections === null \? flatLanes : standaloneMembers;/);
+  assert.match(
+    workspaceSource,
+    /data-testid="team-trajectory-member-group"[\s\S]*?ungrouped\.map\(renderLane\)[\s\S]*?workflowGroups\.map\(renderWorkflowGroup\)/,
+  );
+});
+
 test('diagnosis sub-page folds finished stages and offers record management', () => {
   const dir = '../src/features/trajectory/diagnosis/';
+  const sessionHook = readFileSync(new URL(`${dir}useDiagnosisSession.ts`, import.meta.url), 'utf8');
+  // Team sessions may 403 list before team_name exists; keep the empty state, do not banner.
+  assert.match(sessionHook, /isUnsupportedSessionMode\(error\)/);
+  assert.match(sessionHook, /LIST_UNSUPPORTED_RETRIES/);
   const subpage = readFileSync(new URL(`${dir}DiagnosisSubpage.tsx`, import.meta.url), 'utf8');
   const select = readFileSync(new URL(`${dir}DiagnosisRecordSelect.tsx`, import.meta.url), 'utf8');
   assert.match(subpage, /isStageExpanded\(view\.status, userChoice\)|isStageExpanded\(view\.status/);

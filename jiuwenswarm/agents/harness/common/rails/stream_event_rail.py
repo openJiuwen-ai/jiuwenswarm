@@ -40,6 +40,7 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_verified_permission_ask_user_question,
     convert_interactions_to_ask_user_question,
+    question_interactions,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
     consume_reviewer_tool_result_metadata,
@@ -78,9 +79,16 @@ from jiuwenswarm.common.tool_display import (
 from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+from jiuwenswarm.server.wire_truncate import _json_wire_size
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
 _TERMINAL_PROJECTION_STATE_ATTRIBUTE = "_jiuwenswarm_terminal_projection_v1"
+# Text fields of a tool_result event are cut to this many characters.
+_TOOL_RESULT_TEXT_LIMIT = 60000
+# raw_output above this size is trimmed so the event stays well inside the
+# AgentServer WebSocket send budget (6 MiB, gateway/common/ws_limits.py);
+# an oversized frame is replaced by a response_too_large error.
+_RAW_OUTPUT_WIRE_BUDGET_BYTES = 2**20
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
@@ -92,17 +100,32 @@ def _structured_tool_result_payload(result: Any) -> Any | None:
     return None
 
 
-def _parse_tool_call_arguments(tool_call: Any) -> dict[str, Any]:
-    raw_args = getattr(tool_call, "arguments", None) if tool_call else None
-    if isinstance(raw_args, dict):
-        return raw_args
-    if isinstance(raw_args, str):
-        try:
-            parsed = json.loads(raw_args)
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
+def _cut_long_strings(value: Any) -> Any:
+    if isinstance(value, str):
+        return value[:_TOOL_RESULT_TEXT_LIMIT]
+    if isinstance(value, dict):
+        return {key: _cut_long_strings(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_cut_long_strings(item) for item in value]
+    return value
+
+
+def _bounded_raw_output(raw_output: Any) -> tuple[Any, bool]:
+    """Return ``raw_output`` sized for the wire, and whether it was trimmed.
+
+    Long strings are cut to the same limit as ``result``; if that is still too
+    large, only the ``mcp_app`` block is kept. ``mcp_app`` is never trimmed:
+    MCP Apps parse it as data (see ``wire_truncate._restore_mcp_app_block``).
+    """
+    if _json_wire_size(raw_output) <= _RAW_OUTPUT_WIRE_BUDGET_BYTES:
+        return raw_output, False
+    mcp_app = raw_output.get("mcp_app") if isinstance(raw_output, dict) else None
+    trimmed = _cut_long_strings(raw_output)
+    if mcp_app is not None:
+        trimmed["mcp_app"] = mcp_app
+    if _json_wire_size(trimmed) > _RAW_OUTPUT_WIRE_BUDGET_BYTES:
+        trimmed = {} if mcp_app is None else {"mcp_app": mcp_app}
+    return trimmed, True
 
 
 def _extract_tool_interrupt(value: Any) -> Any | None:
@@ -118,54 +141,6 @@ def _extract_tool_interrupt(value: Any) -> Any | None:
             if interrupt is not None:
                 return interrupt
     return None
-
-
-def _normalize_ask_user_interrupt_value(value_obj: Any, tool_args: dict[str, Any]) -> Any:
-    """Attach ask_user tool metadata so plain-query interrupts are not misclassified."""
-    if isinstance(value_obj, dict):
-        if str(value_obj.get("tool_name") or "").strip() == "ask_user":
-            return value_obj
-        if value_obj.get("tool_args"):
-            return value_obj
-        return {
-            **value_obj,
-            "tool_name": "ask_user",
-            "tool_args": tool_args,
-            "message": value_obj.get("message") or tool_args.get("query") or "",
-        }
-
-    tool_name = str(getattr(value_obj, "tool_name", "") or "").strip()
-    existing_args = getattr(value_obj, "tool_args", None)
-    if tool_name == "ask_user" and existing_args:
-        return value_obj
-
-    return {
-        "tool_name": "ask_user",
-        "tool_args": tool_args,
-        "message": str(getattr(value_obj, "message", "") or tool_args.get("query") or ""),
-        "questions": getattr(value_obj, "questions", None) or tool_args.get("questions") or [],
-    }
-
-
-def _ask_user_question_payload_from_interrupt(tool_call: Any, interrupt: Any) -> dict[str, Any] | None:
-    request_id = str(
-        getattr(getattr(interrupt, "request", None), "tool_call_id", None)
-        or getattr(tool_call, "id", "")
-        or ""
-    ).strip()
-    if not request_id:
-        return None
-
-    args = _parse_tool_call_arguments(tool_call)
-    value_obj = getattr(interrupt, "request", None)
-    if value_obj is None:
-        if not args:
-            return None
-        value_obj = {"tool_name": "ask_user", "tool_args": args, "questions": args.get("questions", [])}
-    elif args:
-        value_obj = _normalize_ask_user_interrupt_value(value_obj, args)
-
-    return convert_interactions_to_ask_user_question([{"id": request_id, "value": value_obj}])
 
 
 def _boolish_false(value: Any) -> bool:
@@ -209,6 +184,13 @@ def _infer_tool_result_error(value: Any) -> bool | None:
             exit_failed = _nonzero_exit(value.get(key))
             if exit_failed is not None:
                 return exit_failed
+        # ``sdd_advance`` and the shipped skill scripts state a failure as
+        # ``ok`` with ``error`` beside it. This reads last, so a payload that
+        # also states one of the keys above is still classified by that key.
+        if _boolish_false(value.get("ok")):
+            return True
+        if _boolish_true(value.get("ok")):
+            return False
         for key in ("data", "raw_output", "rawOutput", "result"):
             nested = value.get(key)
             if isinstance(nested, (dict, list)):
@@ -351,12 +333,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         member_name: str | None = None,
         role: str | None = None,
         root_permission_queue: RootPermissionQueue | None = None,
+        project_interruption_snapshots: bool = False,
     ) -> None:
         super().__init__()
         self._deep_agent: Optional[Any] = None
         self._member_name = str(member_name or "").strip()
         self._role = str(role or "").strip().lower()
         self._root_permission_queue = root_permission_queue
+        self.project_interruption_snapshots = project_interruption_snapshots
         # Per-session pause/abort state.  Keyed by session_id (conversation_id).
         # Shared adapter instances serve multiple concurrent sessions; scalar state
         # would cause cross-session contamination (session A cancel kills session B).
@@ -879,6 +863,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     keys=(),
                     reason="permission_queue_unavailable",
                 )
+            elif self.project_interruption_snapshots:
+                await self._project_ordinary_interruption(ctx)
             return
         try:
             snapshot = queue.reconcile(
@@ -893,6 +879,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             return
         if snapshot is None:
+            if self.project_interruption_snapshots:
+                await self._project_ordinary_interruption(ctx)
             return
         payload = build_verified_permission_ask_user_question(
             snapshot.interactions[0],
@@ -912,6 +900,30 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 payload=payload,
             )
         )
+
+    async def _project_ordinary_interruption(self, ctx: AgentCallbackContext) -> None:
+        """Expose the SDK's current head without retaining a second pending list."""
+        result = ctx.inputs.result
+        if not isinstance(result, dict) or result.get("result_type") != "interrupt":
+            return
+        state = result.get("state") or []
+        if state and not question_interactions(state):
+            return
+        payload = convert_interactions_to_ask_user_question(
+            state, root_permission_queue=self._root_permission_queue,
+        )
+        interrupt_ids = result.get("interrupt_ids")
+        if payload is None or not isinstance(interrupt_ids, list) or (
+            payload["request_id"] not in interrupt_ids
+        ):
+            await ctx.session.write_stream(OutputSchema(
+                type="error", index=0,
+                payload={"error": self._interruption_retry_message()},
+            ))
+            return
+        await ctx.session.write_stream(OutputSchema(
+            type="chat.ask_user_question", index=0, payload=payload,
+        ))
 
     async def _cancel_interruption_snapshot(
         self,
@@ -996,6 +1008,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
 
+        await self._emit_llm_call_signal(ctx, "llm_call_start")
+
         self._inject_tool_call_goal_schema(ctx)
 
         if ctx.context is not None:
@@ -1059,6 +1073,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        await self._emit_llm_call_signal(ctx, "llm_call_end")
         build_context = getattr(self._deep_agent, "_build_context", None)
         usage_role = self._role or getattr(build_context, "role", None)
         await record_model_token_usage(
@@ -1083,6 +1098,128 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             member_name=self._member_name or None,
             role=self._role or None,
         )
+
+    async def _emit_llm_call_signal(self, ctx: AgentCallbackContext, phase: str) -> None:
+        """Emit an ``llm_call_start`` / ``llm_call_end`` stream event.
+
+        Lets the IDE show a live "thinking" indicator at the *beginning* of a
+        model call (before the first token) instead of only learning the call
+        happened once output arrives. Fires on every model call; in team mode
+        ``member_name`` / ``role`` identify which agent's lane to update.
+        """
+        session = ctx.session
+        if session is None:
+            return
+        payload: dict[str, Any] = {}
+        if self._member_name:
+            payload["member_name"] = self._member_name
+        if self._role:
+            payload["role"] = self._role
+        try:
+            if phase == "llm_call_start":
+                prompt_preview = self._summarize_call_prompt(ctx)
+                if prompt_preview:
+                    payload["prompt"] = prompt_preview
+            elif phase == "llm_call_end":
+                response_text = self._extract_response_text(ctx)
+                if response_text:
+                    payload["content"] = response_text
+            await session.write_stream(
+                OutputSchema(type=phase, index=0, payload=payload)
+            )
+        except Exception:
+            logger.debug("[StreamEventRail] %s emit failed", phase, exc_info=True)
+
+    @staticmethod
+    def _extract_response_text(ctx: AgentCallbackContext, max_chars: int = 16000) -> str | None:
+        """Best-effort extraction of the model's text output for ``llm_call_end``.
+
+        Tolerates the content shapes providers use: a plain string, a list of
+        content parts (``[{"type": "text", "text": ...}]``), or a nested
+        ``message.content``.
+        """
+        response = getattr(ctx.inputs, "response", None)
+        if response is None:
+            return None
+        if isinstance(response, dict):
+            content = response.get("content")
+            if content is None:
+                message = response.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+        else:
+            content = getattr(response, "content", None)
+            if content is None:
+                message = getattr(response, "message", None)
+                content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+
+        text = JiuSwarmStreamEventRail._coerce_content_text(content)
+        if not text:
+            return None
+        if len(text) > max_chars:
+            return text[:max_chars] + "\n… (truncated)"
+        return text
+
+    @staticmethod
+    def _coerce_content_text(content: Any) -> str | None:
+        if isinstance(content, str):
+            return content.strip() or None
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    ptext = part.get("text")
+                    if isinstance(ptext, str) and ptext.strip():
+                        parts.append(ptext)
+                elif isinstance(part, str) and part.strip():
+                    parts.append(part)
+            joined = " ".join(parts).strip()
+            return joined or None
+        if isinstance(content, dict):
+            ptext = content.get("text")
+            if isinstance(ptext, str) and ptext.strip():
+                return ptext.strip()
+        return None
+
+    @staticmethod
+    def _summarize_call_prompt(ctx: AgentCallbackContext, max_chars: int | None = None) -> str | None:
+        """Serialize the full prompt sent to the model.
+
+        Carried inside ``llm_call_start`` so the IDE can show the exact final
+        prompt: system message included, tool results kept, no truncation by
+        default. Inline base64 images are replaced with ``[image]`` to keep the
+        dump readable.
+        """
+        messages = getattr(ctx.inputs, "messages", None) or []
+        if not messages:
+            return None
+        parts: list[str] = []
+        total = 0
+        for msg in messages:
+            if isinstance(msg, dict):
+                role = str(msg.get("role") or "?")
+                content = msg.get("content")
+            else:
+                role = str(getattr(msg, "role", None) or "?")
+                content = getattr(msg, "content", None)
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = "\n".join(
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            else:
+                text = str(content) if content else ""
+            if "data:image" in text:
+                text = "[image]"
+            segment = f"<{role}>\n{text}"
+            if max_chars is not None and total + len(segment) > max_chars:
+                parts.append(segment[: max(0, max_chars - total)] + "\n… (truncated)")
+                break
+            parts.append(segment)
+            total += len(segment)
+        return "\n\n".join(parts)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         sid = self._resolve_sid(ctx, ctx.session)
@@ -1218,13 +1355,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ctx,
                 tc,
             )
-        await self._emit_ask_user_question_if_interrupted(
-            session,
-            tc,
-            ctx.inputs.tool_name,
-            tool_result,
-            ctx.exception,
-        )
 
         tool_name = ctx.inputs.tool_name
         sid = self._resolve_sid(ctx, session)
@@ -1306,16 +1436,24 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             tool_result_payload = {
                 "tool_name": getattr(tool_call, "name", "") if tool_call else "",
                 "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
-                "result": str(result)[:60000] if result is not None else "",
+                "result": str(result)[:_TOOL_RESULT_TEXT_LIMIT] if result is not None else "",
             }
             if rendered_result is not None:
-                tool_result_payload["rendered_result"] = rendered_result[:60000]
+                tool_result_payload["rendered_result"] = rendered_result[:_TOOL_RESULT_TEXT_LIMIT]
             if raw_output is not None:
-                tool_result_payload["raw_output"] = raw_output
+                wire_raw_output, trimmed = _bounded_raw_output(raw_output)
+                tool_result_payload["raw_output"] = wire_raw_output
+                if trimmed:
+                    tool_result_payload["raw_output_truncated"] = True
+                    logger.warning(
+                        "[StreamEventRail] tool_result raw_output trimmed for the wire: tool=%s bytes=%d",
+                        tool_result_payload["tool_name"],
+                        _json_wire_size(raw_output),
+                    )
                 self._symphony_stream_handler.enrich_result_payload(
                     tool_call,
                     tool_result_payload,
-                    raw_output,
+                    wire_raw_output,
                 )
             tool_name = str(tool_result_payload["tool_name"] or "").strip().lower()
             if tool_name == "ttse_consult" and isinstance(result, str):
@@ -1406,34 +1544,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "interrupted team leader ask_user projection failed",
                 exc_info=True,
             )
-
-    @staticmethod
-    async def _emit_ask_user_question_if_interrupted(
-        session: Session,
-        tool_call: Any,
-        tool_name: str,
-        result: Any,
-        exception: Any = None,
-    ) -> None:
-        if str(tool_name or "").strip() != "ask_user":
-            return
-        interrupt = _extract_tool_interrupt(result) or _extract_tool_interrupt(exception)
-        if interrupt is None:
-            return
-        payload = _ask_user_question_payload_from_interrupt(tool_call, interrupt)
-        if not payload:
-            logger.debug("[StreamEventRail] ask_user interrupt payload unavailable")
-            return
-        try:
-            await session.write_stream(
-                OutputSchema(
-                    type="chat.ask_user_question",
-                    index=0,
-                    payload=payload,
-                )
-            )
-        except Exception:
-            logger.debug("ask_user question emit failed", exc_info=True)
 
     @staticmethod
     async def _emit_reviewer_tool_update(

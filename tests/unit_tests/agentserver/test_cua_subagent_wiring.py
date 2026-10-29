@@ -22,6 +22,7 @@ from openjiuwen.harness.image_modality_probe import (
     reset_image_support_cache,
     set_cached_image_support,
 )
+from openjiuwen.harness.rails.subagent import SubagentRail
 from openjiuwen.harness.schema.deep_agent_spec import SubAgentConfig
 from openjiuwen.harness.subagents.cua_agent import (
     CUA_AGENT_FACTORY_NAME,
@@ -37,6 +38,9 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
 )
 from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_task_prompt,
+)
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
+    SubagentToolActivityRail,
 )
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
@@ -93,6 +97,8 @@ def test_single_agent_mounts_cua_agent_only_when_explicitly_enabled(
     # Shares the parent's filesystem boundary like every other built-in spec.
     assert spec.sys_operation is adapter._sys_operation
     assert spec.workspace == str(tmp_path)
+    # Without it the subagent panel shows only thinking (issue #8637).
+    assert any(isinstance(rail, SubagentToolActivityRail) for rail in spec.rails)
 
 
 def test_single_agent_skips_cua_agent_when_absent_or_disabled(monkeypatch, tmp_path):
@@ -146,6 +152,8 @@ def test_code_mode_mounts_cua_agent_when_enabled(monkeypatch, tmp_path):
     assert spec.sys_operation is adapter._sys_operation
     # Code mode never lets sub-agents create their own workspace.
     assert spec.factory_kwargs["auto_create_workspace"] is False
+    # Without it the subagent panel shows only thinking (issue #8637).
+    assert any(isinstance(rail, SubagentToolActivityRail) for rail in spec.rails)
 
 
 def test_code_mode_skips_cua_agent_when_absent(monkeypatch, tmp_path):
@@ -586,6 +594,44 @@ def test_parent_is_told_why_cua_agent_is_missing():
     assert "Desktop Capability Routing Rules" not in text
 
 
+def test_mounted_cua_is_found_when_ctx_agent_is_the_inner_react_agent(mocker):
+    # At model-call time ctx.agent is the inner ReActAgent, which has no
+    # deep_config. Reading subagents from it found nothing, so every session
+    # with cua enabled was told the model cannot read images (#8436) and
+    # instruction-following models refused desktop tasks outright.
+    mocker.patch.object(SubagentRail, "init")
+    rail = BrowserTaskPromptRail(cua_agent_enabled=True)
+    rail.init(_rail_agent("browser_agent", "cua_agent").agent)
+    react_ctx = SimpleNamespace(agent=SimpleNamespace())
+
+    text = rail._task_prompt_extension(react_ctx, "en")
+
+    assert "Desktop Capability Routing Rules" in text
+    assert "## Browser Capability Routing Rules" in text
+    assert "Desktop Capability Unavailable" not in text
+
+
+def test_cua_is_withdrawn_when_the_request_model_rejects_images(mocker, image_cache):
+    # The session adapter mounts cua_agent against the config default model,
+    # then swaps in the user's selected model. If that model cannot see the
+    # screenshots, routing desktop tasks to cua_agent drives the GUI blind
+    # while reporting success, so the parent must be told it is unavailable.
+    mocker.patch.object(SubagentRail, "init")
+    rail = BrowserTaskPromptRail(cua_agent_enabled=True)
+    deep_agent = _rail_agent("cua_agent").agent
+    deep_agent.deep_config.model = _model("vision-default", supports_images=True)
+    rail.init(deep_agent)
+    react_ctx = SimpleNamespace(agent=SimpleNamespace())
+
+    assert "Desktop Capability Routing Rules" in rail._task_prompt_extension(react_ctx, "en")
+
+    deep_agent.deep_config.model = _model("text-only-request", supports_images=False)
+    text = rail._task_prompt_extension(react_ctx, "en")
+
+    assert "## Desktop Capability Unavailable" in text
+    assert "Desktop Capability Routing Rules" not in text
+
+
 def test_no_unavailable_notice_when_cua_is_mounted_or_not_enabled():
     mounted = BrowserTaskPromptRail(cua_agent_enabled=True)._task_prompt_extension(
         _rail_agent("cua_agent"), "en"
@@ -600,3 +646,49 @@ def test_no_unavailable_notice_when_cua_is_mounted_or_not_enabled():
         )
         is None
     )
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_cua_factory_keeps_caller_rails_in_both_builds(monkeypatch, tmp_path, frozen):
+    # The panel's tool activity rail is passed in by the adapters; the desktop
+    # installer build must keep it next to its own CuaExtensionRail, not drop either.
+    from jiuwenswarm.agents.harness.common import cua_factory
+    from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
+
+
+    def _fake_core(model, **kwargs):
+        return SimpleNamespace(rails=list(kwargs["rails"]), system_prompt="core prompt")
+
+    monkeypatch.setattr(cua_factory, "build_core_cua_config", _fake_core)
+    (tmp_path / "__init__.pyi").write_text("class Computer: ...", encoding="utf-8")
+    monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
+    monkeypatch.setattr(cua_factory.sys, "frozen", frozen, raising=False)
+    monkeypatch.setattr(cua_factory.sys, "platform", "win32")
+    caller_rail = object()
+
+    spec = cua_factory.build_cua_agent_config(MagicMock(), card=AgentCard(name="cua_agent"), rails=[caller_rail])
+
+    rails = spec.rails
+    assert rails[0] is caller_rail
+    assert any(isinstance(rail, CuaExtensionRail) for rail in rails) is frozen
+
+
+def test_panel_rail_is_added_to_the_cua_default_rails_not_replacing_them(monkeypatch, tmp_path):
+    # The adapter puts the panel rail on the spec; agent-core's factory must
+    # append its own desktop rails after it. If it ever switched to replacing
+    # them, the subagent would lose its desktop runtime and context window.
+    from openjiuwen.harness.subagents import cua_agent as core_cua_agent
+    from openjiuwen.harness.tools.cua.rails import CuaRuntimeRail
+
+    adapter = _deep_adapter(monkeypatch, tmp_path)
+    subagents, _ = adapter._build_configured_subagents(
+        MagicMock(), {"subagents": {"cua_agent": {"enabled": True}}}, {}
+    )
+    captured = {}
+    monkeypatch.setattr(core_cua_agent, "create_deep_agent", lambda **kwargs: captured.update(kwargs))
+
+    create_cua_agent(MagicMock(), rails=list(_cua_spec(subagents).rails))
+
+    rails = captured["rails"]
+    assert isinstance(rails[0], SubagentToolActivityRail)
+    assert any(isinstance(rail, CuaRuntimeRail) for rail in rails)

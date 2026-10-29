@@ -8,6 +8,9 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.sqlite_config import normalize_journal_mode, workspace_sqlite_journal_mode
+
 _MAX_TOKEN_COUNT = (1 << 53) - 1
 _CATEGORIES = ("main", "others")
 
@@ -48,9 +51,23 @@ def classify_usage_owner(
 class SessionTokenUsageLedger:
     """SQLite ledger keyed by Core's model-call request ID."""
 
-    def __init__(self, session_dir: Path, session_id: str) -> None:
+    def __init__(self, session_dir: Path, session_id: str, *, journal_mode: str = "WAL") -> None:
         self._path = Path(session_dir) / "session_token_usage.sqlite3"
         self._session_id = session_id
+        self._journal_mode = normalize_journal_mode(journal_mode)
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._path, timeout=10, isolation_level=None)
+        try:
+            connection.execute("PRAGMA busy_timeout = 10000")
+            if self._journal_mode == "DELETE":
+                actual = connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+                if actual.upper() != self._journal_mode:
+                    raise sqlite3.OperationalError("could not select SQLite DELETE journal mode")
+            return connection
+        except Exception:
+            connection.close()
+            raise
 
     def record(
         self,
@@ -68,9 +85,9 @@ class SessionTokenUsageLedger:
         safe_input = _token_count(input_tokens)
         safe_output = _token_count(output_tokens)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self._path, timeout=10, isolation_level=None)) as connection:
+        with closing(self._connect()) as connection:
             connection.execute("PRAGMA busy_timeout = 10000")
-            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute(f"PRAGMA journal_mode = {self._journal_mode}")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS usage_events (
@@ -106,7 +123,7 @@ class SessionTokenUsageLedger:
     def snapshot(self) -> dict[str, Any]:
         if not self._path.exists():
             return self._empty_snapshot()
-        with closing(sqlite3.connect(self._path, timeout=10)) as connection:
+        with closing(self._connect()) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("BEGIN")
             table_rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -190,7 +207,10 @@ def record_session_token_usage(
         raise ValueError("invalid session_id")
     with lifecycle.resource_lock("session", session_id):
         lifecycle.write_guard(session_id)
-        ledger = SessionTokenUsageLedger(session_dir, session_id)
+        ledger = SessionTokenUsageLedger(
+            session_dir, session_id,
+            journal_mode=workspace_sqlite_journal_mode(get_config()) or "WAL",
+        )
         ledger.record(
             request_id,
             classify_usage_owner(attribution, fallback_role=fallback_role),
@@ -204,4 +224,7 @@ def get_session_token_usage(session_id: str) -> dict[str, Any]:
     from jiuwenswarm.server.runtime.session import session_history
 
     history_path = session_history.get_read_history_path(session_id)
-    return SessionTokenUsageLedger(history_path.parent, session_id).snapshot()
+    return SessionTokenUsageLedger(
+        history_path.parent, session_id,
+        journal_mode=workspace_sqlite_journal_mode(get_config()) or "WAL",
+    ).snapshot()

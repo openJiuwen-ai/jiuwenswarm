@@ -1,50 +1,128 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""统一消息模型."""
+"""转发别名：实现已迁 ``openjiuwen_protocol.message``。
 
-import logging
-from dataclasses import dataclass
+仅保留 ``jiuwenswarm.common.schema.message`` 旧 import 路径兼容，re-export 协议包
+的同一对象——``Message`` / ``ReqMethod`` / ``EventType`` / ``Mode`` 及线协议事件名
+常量。``ReqMethod`` 的成员扩展（``RECOMMENDATION`` / ``TRAJECTORY_*``）现由协议包
+直接提供；仅协议包当前 pin 尚未发布的成员（``SESSION_ASSETS_REMOVE``）保留最小
+运行时补齐，避免两仓各维护一份枚举类。
+"""
+
+from __future__ import annotations
+
 from enum import Enum
-from typing import Any, Literal
 
-from openjiuwen_protocol.message import ReqMethod
+from openjiuwen_protocol.message import (  # noqa: F401
+    PROMPT_SUGGESTION_READY_EVENT,
+    SESSION_REQUEST_COMPLETED_EVENT,
+    TEAM_ATTACH_ONLY_PARAM,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+    EventType,
+    Message,
+    Mode,
+    ReqMethod,
+)
 
-from gateway.common.mode_matrix import deprecate_mode
 
-# Wire names shared by gateway and AgentServer. Gateway matches these strings
-# and does not import the agents or server modules that produce them.
-SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
-PROMPT_SUGGESTION_READY_EVENT = "prompt_suggestion.ready"
-TOPIC_STARTERS_READY_EVENT = "topic_starters.ready"
-TOPIC_STARTERS_CONTROL_CHANGED_EVENT = "topic_starters.control_changed"
+def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
+    """Register a member of a protocol enum the pinned protocol package does not ship yet.
 
-
-def _ensure_req_method(name: str, value: str) -> None:
-    """Register a ReqMethod member the pinned protocol package does not ship yet.
-
-    ``openjiuwen-protocol`` owns the enum. These members are the recommendation
-    RPCs this process already speaks. Once the pinned revision defines the same
-    name and value, this registration leaves that member in place.
+    ``openjiuwen-protocol`` owns the enum; 这里只为协议包尚未发布的成员开一个缺口，
+    待协议包提供同名同值成员后本函数与调用一并删除。
     """
-    existing = ReqMethod.__members__.get(name)
+    existing = enum_cls.__members__.get(name)
     if existing is not None:
         if existing.value != value:
             raise RuntimeError(
-                f"ReqMethod.{name} is {existing.value!r}, expected {value!r}"
+                f"{enum_cls.__name__}.{name} is {existing.value!r}, expected {value!r}"
             )
         return
-    if any(item.value == value for item in ReqMethod):
-        raise RuntimeError(f"ReqMethod value {value!r} is already registered")
+    if any(item.value == value for item in enum_cls):
+        raise RuntimeError(f"{enum_cls.__name__} value {value!r} is already registered")
     # Enum exposes no public API for adding a member, so extending the pinned
     # protocol enum requires its internal registries. Keep those accesses here.
-    member = object.__new__(ReqMethod)
+    member = object.__new__(enum_cls)
     member._name_ = name  # pylint: disable=protected-access
     member._value_ = value  # pylint: disable=protected-access
-    type.__setattr__(ReqMethod, name, member)
-    ReqMethod._member_map_[name] = member  # pylint: disable=protected-access
-    ReqMethod._value2member_map_[value] = member  # pylint: disable=protected-access
-    ReqMethod._member_names_.append(name)  # pylint: disable=protected-access
+    type.__setattr__(enum_cls, name, member)
+    enum_cls._member_map_[name] = member  # pylint: disable=protected-access
+    enum_cls._value2member_map_[value] = member  # pylint: disable=protected-access
+    enum_cls._member_names_.append(name)  # pylint: disable=protected-access
 
+
+def _ensure_req_method(name: str, value: str) -> None:
+    _ensure_protocol_member(ReqMethod, name, value)
+
+
+# Published release methods required by JiuwenMate and its existing callers.
+_ensure_req_method("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound")
+_ensure_req_method("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound")
+_ensure_req_method("JIUWENMATE_DINGTALK_BINDING_CHECK", "jiuwenmate.dingtalk.binding_check")
+_ensure_req_method("JIUWENMATE_WELINK_INBOUND", "jiuwenmate.welink.inbound")
+_ensure_req_method("JIUWENMATE_CONNECTION_ATTACH", "jiuwenmate.connection.attach")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_CONNECTIONS", "jiuwenmate.colleague.connections")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_REMOVE", "jiuwenmate.colleague.remove")
+_ensure_req_method("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare")
+_ensure_req_method("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack")
+_ensure_req_method("JIUWENMATE_THINKING_NOTICE_ACK", "jiuwenmate.thinking_notice.ack")
+_ensure_req_method("JIUWENMATE_GROUP_RESPONSE", "jiuwenmate.group.response")
+_ensure_req_method("GROUP_EXECUTION_LIST", "group.execution.list")
+_ensure_req_method("GROUP_EXECUTION_GET", "group.execution.get")
+_ensure_req_method("GROUP_FILE_RENAME", "group.file.rename")
+_ensure_req_method("GROUP_FILE_DELETE", "group.file.delete")
+_ensure_req_method("GROUP_HISTORY_CLEAR", "group.history.clear")
+_ensure_req_method("MODELS_REFRESH_STATUS", "models.refresh_status")
+_ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
+_ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT", "jiuwenmate.colleague.ensure_default")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_LIST", "jiuwenmate.colleague.list")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_GET", "jiuwenmate.colleague.get")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_CREATE", "jiuwenmate.colleague.create")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_SETTINGS_GET", "jiuwenmate.colleague.settings.get")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE", "jiuwenmate.colleague.settings.update")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_PUBLISH", "jiuwenmate.colleague.publish")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_SET_ENABLED", "jiuwenmate.colleague.set_enabled")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_DELETE", "jiuwenmate.colleague.delete")
+_ensure_req_method("JIUWENMATE_MODELS_LIST", "jiuwenmate.models.list")
+_ensure_req_method("JIUWENMATE_CHAT_SEND", "jiuwenmate.chat.send")
+_ensure_req_method("JIUWENMATE_CHAT_HISTORY", "jiuwenmate.chat.history")
+_ensure_req_method("JIUWENMATE_REQUEST_GET", "jiuwenmate.request.get")
+_ensure_req_method("JIUWENMATE_REQUEST_ABORT", "jiuwenmate.request.abort")
+_ensure_req_method("JIUWENMATE_PERMISSION_DECIDE", "jiuwenmate.permission.decide")
+_ensure_req_method("JIUWENMATE_SHARING_LIST", "jiuwenmate.sharing.list")
+_ensure_req_method("JIUWENMATE_SHARING_DECIDE", "jiuwenmate.sharing.decide")
+_ensure_req_method("JIUWENMATE_SHARING_REVOKE", "jiuwenmate.sharing.revoke")
+_ensure_req_method("JIUWENMATE_CONVERSATION_LIST", "jiuwenmate.conversation.list")
+_ensure_req_method("JIUWENMATE_CONVERSATION_RENAME", "jiuwenmate.conversation.rename")
+_ensure_req_method("JIUWENMATE_CONVERSATION_PIN", "jiuwenmate.conversation.pin")
+_ensure_req_method("JIUWENMATE_CONVERSATION_DELETE", "jiuwenmate.conversation.delete")
+_ensure_req_method("JIUWENMATE_ACTIVITY_GET", "jiuwenmate.activity.get")
+_ensure_req_method("JIUWENMATE_KNOWLEDGE_LIST", "jiuwenmate.knowledge.list")
+_ensure_req_method("JIUWENMATE_SCHEDULE_LIST", "jiuwenmate.schedule.list")
+_ensure_req_method("JIUWENMATE_SCHEDULE_CREATE", "jiuwenmate.schedule.create")
+_ensure_req_method("JIUWENMATE_SCHEDULE_SET_ENABLED", "jiuwenmate.schedule.set_enabled")
+_ensure_req_method("JIUWENMATE_SCHEDULE_DELETE", "jiuwenmate.schedule.delete")
+_ensure_req_method("JIUWENMATE_SCHEDULE_UPDATE", "jiuwenmate.schedule.update")
+_ensure_req_method("JIUWENMATE_SCHEDULE_RUN", "jiuwenmate.schedule.run")
+_ensure_req_method("JIUWENMATE_SCHEDULE_HISTORY", "jiuwenmate.schedule.history")
+_ensure_req_method("JIUWENMATE_CHANNEL_LIST", "jiuwenmate.channel.list")
+_ensure_req_method("JIUWENMATE_CHANNEL_MESSAGES", "jiuwenmate.channel.messages")
+_ensure_req_method("JIUWENMATE_CHANNEL_TRACE", "jiuwenmate.channel.trace")
+_ensure_req_method("JIUWENMATE_WELINK_OFFICE_STATUS", "jiuwenmate.welink_office.status")
+_ensure_req_method("JIUWENMATE_WELINK_OFFICE_CONNECT", "jiuwenmate.welink_office.connect")
+_ensure_req_method("JIUWENMATE_WELINK_OFFICE_DISCONNECT", "jiuwenmate.welink_office.disconnect")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_STATUS", "jiuwenmate.agent_mail.status")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_BEGIN", "jiuwenmate.agent_mail.auth.begin")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_POLL", "jiuwenmate.agent_mail.auth.poll")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_CANCEL", "jiuwenmate.agent_mail.auth.cancel")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_DISCONNECT", "jiuwenmate.agent_mail.disconnect")
+_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_STATUS", "jiuwenmate.dingtalk_auth.status")
+_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_BEGIN", "jiuwenmate.dingtalk_auth.begin")
+_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_POLL", "jiuwenmate.dingtalk_auth.poll")
+_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_CANCEL", "jiuwenmate.dingtalk_auth.cancel")
+_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_DISCONNECT", "jiuwenmate.dingtalk_auth.disconnect")
 
 _ensure_req_method("PROMPT_SUGGESTION_CANCEL", "prompt_suggestion.cancel")
 _ensure_req_method("RECOMMENDATION", "recommendation.job")
@@ -65,181 +143,68 @@ _ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
 _ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
 _ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
 _ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
+# Enterprise verify still registers these wire methods in HANDLERS / adapters,
+# but the pinned openjiuwen-protocol revision does not ship them yet. Without
+# ensure, importing dispatch crashes the runtime worker and HTTP :8766 never
+# binds (readiness stays connection-refused).
+_ensure_req_method("FILE_READ_UPLOAD_CHUNK", "file.read_upload_chunk")
+_ensure_req_method("WORKSPACE_TREE", "workspace.tree")
+_ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
+_ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
+_ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
+_ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
+_ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
+_ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
+_ensure_req_method("SKILLS_UPDATES_CHECK", "skills.updates.check")
+_ensure_req_method("SKILLS_UPDATE", "skills.update")
+_ensure_req_method("SKILLS_ENTERPRISE_LIST", "skills.enterprise.list")
+_ensure_req_method("SKILLS_ENTERPRISE_INSTALL", "skills.enterprise.install")
+_ensure_req_method("SKILLS_ENTERPRISE_UNINSTALL", "skills.enterprise.uninstall")
+_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_PROVIDERS", "skills.enterprise.source.providers")
+_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_SEARCH", "skills.enterprise.source.search")
+_ensure_req_method("SKILLDEV_START", "skilldev.start")
+_ensure_req_method("SKILLDEV_RESPOND", "skilldev.respond")
+_ensure_req_method("SKILLDEV_STATUS", "skilldev.status")
+_ensure_req_method("SKILLDEV_DOWNLOAD", "skilldev.download")
+_ensure_req_method("SKILLDEV_CANCEL", "skilldev.cancel")
+_ensure_req_method("SKILLDEV_FILE_LIST", "skilldev.file.list")
+_ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
 # Removing a composer attachment chip should also drop the session-asset
 # registry entry it created (see session_assets.py). The pinned protocol
 # package does not define this member yet.
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
+# Hub expert/equipment catalog served by AgentServer (dispatch.py / methods.py /
+# http_invoke.py reference this member); 协议包当前 pin 尚未定义。
+_ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")
+# MCP Apps host bridge (io.modelcontextprotocol/ui); 协议包当前 pin 尚未定义。
+_ensure_req_method("MCP_APP_LIST_TOOLS", "mcp_app.list_tools")
+_ensure_req_method("MCP_APP_READ_RESOURCE", "mcp_app.read_resource")
+_ensure_req_method("MCP_APP_CALL_TOOL", "mcp_app.call_tool")
+# The Gateway forwards an event only when the protocol EventType knows it; the
+# pinned protocol package does not define this one yet.
+_ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")
+# Client attachments (e.g. the Office add-in task pane): a client attaches the
+# resource it edits to a conversation, renews the attachment's lease, and reads
+# the other attachments and their conversations. The pinned protocol package
+# does not define these members yet.
+_ensure_req_method("CLIENT_ATTACH", "client.attach")
+_ensure_req_method("CLIENT_RENEW", "client.renew")
+_ensure_req_method("CLIENT_LIST", "client.list")
+_ensure_req_method("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages")
+_ensure_req_method("CLIENT_CONVERSATIONS", "client.conversations")
+_ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachments_changed")
 
-logger = logging.getLogger(__name__)
+_ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
+_ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
 
-
-# ``chat.send`` 请求携带该 truthy 参数时，仅为已在运行的 Team Session 附加
-# 响应订阅，不提交新输入（gateway / runtime / server 三方共用的协议参数名）。
-TEAM_ATTACH_ONLY_PARAM = "attach_only"
-
-
-class EventType(Enum):
-    SESSION_ARCHIVED = "session.archived"
-    SESSION_UNARCHIVED = "session.unarchived"
-    SESSION_DELETED = "session.deleted"
-    SESSION_LIFECYCLE_UPDATED = "session.lifecycle.updated"
-    PROJECT_LIFECYCLE_UPDATED = "project.lifecycle.updated"
-    # 项目移除(软删除)/恢复：其会话与定时任务的可见性随之变化，
-    # 其他端必须据此刷新工作区、归档页与定时任务列表。
-    PROJECT_REMOVED = "project.removed"
-    PROJECT_RESTORED = "project.restored"
-    CONNECTION_ACK = "connection.ack"
-    HELLO = "hello"
-    CHAT_DELTA = "chat.delta"
-    CHAT_REASONING = "chat.reasoning"
-    CHAT_USAGE_METADATA = "chat.usage_metadata"
-    CHAT_USAGE_SUMMARY = "chat.usage_summary"
-    CHAT_FINAL = "chat.final"
-    CHAT_RETRACT = "chat.retract"
-    CHAT_MEDIA = "chat.media"
-    CHAT_FILE = "chat.file"
-    CHAT_TOOL_CALL = "chat.tool_call"
-    CHAT_TOOL_UPDATE = "chat.tool_update"
-    CHAT_TOOL_RESULT = "chat.tool_result"
-    CHAT_SYMPHONY_STATUS = "chat.symphony_status"
-    CHAT_MESSAGE_UPDATED = "chat.message_updated"
-    CONTEXT_USAGE = "context.usage"
-    TODO_UPDATED = "todo.updated"
-    CHAT_PROCESSING_STATUS = "chat.processing_status"
-    CHAT_ERROR = "chat.error"
-    CHAT_INTERRUPT_RESULT = "chat.interrupt_result"
-    CHAT_EVOLUTION_STATUS = "chat.evolution_status"
-    CHAT_SUBTASK_UPDATE = "chat.subtask_update"
-    CHAT_SUBAGENT_ACTIVITY = "chat.subagent_activity"
-    CHAT_ASK_USER_QUESTION = "chat.ask_user_question"
-    PLAN_APPROVAL_REQUIRED = "plan.approval_required"
-    CHAT_SESSION_RESULT = "chat.session_result"
-    GOAL_SNAPSHOT = "goal.snapshot"
-    GOAL_UPDATED = "goal.updated"
-    RUNTIME_ACCEPTED = "runtime.accepted"
-    EXECUTION_ERROR = "execution.error"
-    TEAM_MEMBER = "team.member"
-    TEAM_TASK = "team.task"
-    TEAM_MESSAGE = "team.message"
-    WORKFLOW_UPDATED = "workflow.updated"
-    DESIGNER_RUN_UPDATED = "designer.run.updated"
-    DESIGNER_NODE_UPDATED = "designer.node.updated"
-    DESIGNER_GRAPH_UPDATED = "designer.graph.updated"
-    DESIGNER_LEADER_ACTIVITY = "designer.leader.activity"
-    # 旧探活结果通过 health_check.relay 发送。
-    # 新心跳任务(heartbeat.job.*)不使用 relay 事件,结果通过普通 chat.send 进入原会话。
-    HEALTH_CHECK_RELAY = "health_check.relay"
-    # Deprecated source-level alias. Legacy wire frames are normalized by
-    # _missing_ so every downstream channel sees HEALTH_CHECK_RELAY.
-    HEARTBEAT_RELAY = "health_check.relay"
-    HISTORY_GET = "history.message"
-    PROACTIVE_RECOMMENDATION = "proactive_recommendation"
-
-    @classmethod
-    def _missing_(cls, value):
-        if value == "heartbeat.relay":
-            return cls.HEALTH_CHECK_RELAY
-        return None
-
-
-class Mode(Enum):
-    AGENT = "agent"
-    # 历史值：plan / fast 已合并为 agent，保留以兼容旧序列化数据的反解析。
-    AGENT_PLAN = "agent.plan"
-    AGENT_FAST = "agent.fast"
-    CODE_PLAN = "code.plan"
-    CODE_NORMAL = "code.normal"
-    CODE_TEAM = "code.team"
-    TEAM = "team"
-    TEAM_PLAN_NORMAL = "team.plan.normal"
-    TEAM_PLAN_CODE = "team.plan.code"
-    # 新三段命名 canonical（P2 引入；旧成员保留以兼容历史持久化反解析）。
-    AGENT_WORK_NORMAL = "agent.work.normal"
-    AGENT_WORK_PLAN = "agent.work.plan"
-    AGENT_CODE_NORMAL = "agent.code.normal"
-    AGENT_CODE_PLAN = "agent.code.plan"
-    TEAM_WORK_NORMAL = "team.work.normal"
-    TEAM_WORK_PLAN = "team.work.plan"
-    TEAM_CODE_NORMAL = "team.code.normal"
-    TEAM_CODE_PLAN = "team.code.plan"
-
-    @classmethod
-    def from_raw(cls, raw_mode: Any, default: "Mode | None" = None) -> "Mode":
-        """解析 mode：新 canonical 原样返回，旧 canonical 静默映射到新 canonical。
-
-        单一逻辑路径——不再维护手写白名单：``deprecate_mode`` 对新 canonical
-        原样返回（不在 :data:`DEPRECATION_MAP` 里），对旧 canonical 映射到新串，
-        对未知串原样返回后由 ``cls(...)`` 抛 ``ValueError`` 兜底到 ``fallback``。
-        裸 ``plan`` / ``fast`` 与 CLI ``MODE_ALIASES`` 同语义，直接落到
-        :attr:`AGENT_WORK_NORMAL`，不绕 ``agent.fast`` 中间步。
-        """
-        fallback = default or cls.AGENT_WORK_NORMAL
-        if isinstance(raw_mode, Mode):
-            raw_mode = raw_mode.value
-        if not isinstance(raw_mode, str):
-            return fallback
-        normalized = raw_mode.strip().lower()
-        if not normalized:
-            return fallback
-        if normalized in ("plan", "fast"):
-            logger.debug("Mode.from_raw: bare '%s' -> AGENT_WORK_NORMAL", normalized)
-            return cls.AGENT_WORK_NORMAL
-        new_mode_str = deprecate_mode(normalized)
-        try:
-            mode = cls(new_mode_str)
-        except ValueError:
-            logger.warning(
-                "Mode.from_raw: 无法识别的 mode=%r (deprecate 后=%r)，兜底 %s",
-                raw_mode, new_mode_str, fallback.value,
-            )
-            return fallback
-        if new_mode_str != normalized:
-            logger.debug(
-                "Mode.from_raw: '%s' -> '%s' (legacy canonical 静默迁移)",
-                normalized, new_mode_str,
-            )
-        return mode
-
-    def to_runtime_mode(self) -> str:
-        """输出 runtime mode 值；历史 agent.plan / agent.fast 归一为 agent。
-
-        新枚举原样返回（canonical 串即 runtime 串）。旧枚举按历史语义归一为
-        合并后的 ``agent`` / 自身 canonical 串。
-        """
-        if self in (Mode.AGENT_PLAN, Mode.AGENT_FAST):
-            return Mode.AGENT.value
-        return self.value
-
-
-@dataclass
-class Message:
-    """统一消息结构."""
-    id: str
-    type: Literal["req", "res", "event"]
-    channel_id: str
-    session_id: str | None
-    params: dict
-    timestamp: float
-    ok: bool
-    provider: str | None = None
-    chat_id: str | None = None
-    user_id: str | None = None
-    bot_id: str | None = None  # 已弃用，请使用 app_id + agent_ref 替代
-    app_id: str | None = None  # V2: 应用实例标识，从 bot_id 拆出
-    agent_ref: Any = None      # V2: AgentRef(mode, id)，后端智能体标识
-    payload: dict | None = None
-    req_method: ReqMethod | None = None
-    event_type: EventType | None = None
-    # 与 Mode.from_raw 的 fallback 对齐：客户端不传 mode 时落到 canonical
-    # ``agent.work.normal``，避免 schema 默认值与 from_raw 不一致导致
-    # Message.mode 在两条入口路径下产生不同默认值。旧 ``Mode.AGENT`` 仍由
-    # from_raw("agent") 经 DEPRECATION_MAP 映射到 AGENT_WORK_NORMAL，故不会
-    # 丢失旧 canonical 的反解析能力。
-    mode: Mode = Mode.AGENT_WORK_NORMAL
-    is_stream: bool = False
-    stream_seq: int | None = None
-    stream_id: str | None = None
-    metadata: dict[str, Any] | None = None
-    group_digital_avatar: bool = False
-    enable_memory: bool | None = None
-    enable_streaming: bool = True
+__all__ = [
+    "PROMPT_SUGGESTION_READY_EVENT",
+    "SESSION_REQUEST_COMPLETED_EVENT",
+    "TEAM_ATTACH_ONLY_PARAM",
+    "TOPIC_STARTERS_CONTROL_CHANGED_EVENT",
+    "TOPIC_STARTERS_READY_EVENT",
+    "EventType",
+    "Message",
+    "Mode",
+    "ReqMethod",
+]

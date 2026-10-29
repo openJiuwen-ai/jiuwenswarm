@@ -19,6 +19,7 @@ import {
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
+import { isEnterprise } from '../../edition';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
@@ -34,17 +35,30 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
 }
 
 export default function ChatModelSelector({
-  disabled = false,
+  disabled: disabledByParent = false,
+  locked = false,
+  lockedTitle,
   sessionId,
+  includeModelGroups: modelGroupsOverride,
+  testIdPrefix = 'chat-panel-model-selector',
   allowModelGroups = true,
 }: {
   disabled?: boolean;
+  /** Blocks picking another model while keeping the deleted-model fallback
+   * running. Lifted while the current selection is unavailable so the user can
+   * pick a working model again. */
+  locked?: boolean;
+  /** Tooltip shown while the selector is locked. */
+  lockedTitle?: string;
   /** Session this selector edits. Surfaces that own a session (the design
    * canvas) pass it explicitly: `activeSessionId` follows the app route and can
    * point at another conversation while the surface stays mounted (#5394). */
   sessionId?: string;
   allowModelGroups?: boolean;
+  includeModelGroups?: boolean;
+  testIdPrefix?: string;
 }): JSX.Element | null {
+  const disabled = disabledByParent || isEnterprise();
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
@@ -76,8 +90,9 @@ export default function ChatModelSelector({
   );
   const collaborationEnabled = useMultiModelCollaborationEnabled();
   const singleAgent = supportsMultiModelCollaboration(mode, cronId);
-  const includeModelGroups = allowModelGroups && (!singleAgent || collaborationEnabled);
-  const selectableGroups = allowModelGroups ? modelGroups : [];
+  const groupsAllowed = allowModelGroups && modelGroupsOverride !== false && !cronId;
+  const includeModelGroups = groupsAllowed && (modelGroupsOverride ?? (!singleAgent || collaborationEnabled));
+  const selectableGroups = groupsAllowed ? modelGroups : [];
   const groupBlocked = isConversationModelGroupBlocked({
     mode,
     cronId,
@@ -89,7 +104,7 @@ export default function ChatModelSelector({
   useEffect(() => {
     if (selectedChildTeam) return;
     if (!boundSessionId || disabled) return;
-    if (groupBlocked && allowModelGroups) return;
+    if (groupBlocked && groupsAllowed) return;
     if (!selectedModelSelection) return;
     // Empty catalog means models.list has not arrived yet — not that the selection
     // was deleted. Clearing here races metadata restore on refresh (#5860).
@@ -115,7 +130,7 @@ export default function ChatModelSelector({
     });
   }, [
     boundSessionId,
-    allowModelGroups,
+    groupsAllowed,
     disabled,
     groupBlocked,
     selectedModelSelection,
@@ -133,11 +148,13 @@ export default function ChatModelSelector({
     ?? selectionFromModel(selected)
     ?? null;
   const catalogPending = isModelCatalogPending(models, modelGroups);
-  const healedSelection = selectedModelSelection
+  const selectionUnavailable = Boolean(selectedModelSelection)
     && !catalogPending
-    && !isModelSelectionAvailable(selectedModelSelection, models, selectableGroups)
+    && !isModelSelectionAvailable(selectedModelSelection, models, selectableGroups);
+  const healedSelection = selectedModelSelection && selectionUnavailable
     ? resolveAvailableModelSelection(selectedModelSelection, models, selectableGroups)
     : inferredSelection;
+  const pickLocked = locked && !selectionUnavailable;
   const pickerSelection =
     singleAgent && collaborationEnabled && healedSelection?.type === 'model_group'
       ? { type: 'model_group' as const, id: healedSelection.id }
@@ -148,7 +165,7 @@ export default function ChatModelSelector({
 
   const persistSelection = async (next: ModelSelection) => {
     if (selectedChildTeam) return;
-    if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
+    if (!boundSessionId || disabled || pickLocked || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
     setSelectionError('');
     setSelectedModelSelection(boundSessionId, next);
     if (boundSessionId === NEW_CONVERSATION_ID) return;
@@ -165,27 +182,28 @@ export default function ChatModelSelector({
   };
 
   return (
-    <div className="chat-model-selector" data-testid="chat-panel-model-selector-wrap">
+    <div className="chat-model-selector" data-testid={`${testIdPrefix}-wrap`}
+      title={pickLocked ? lockedTitle : undefined} data-locked={pickLocked || undefined}>
       <ModelPicker
-        testIdPrefix="chat-panel-model-selector"
+        testIdPrefix={testIdPrefix}
         value={selectedChildTeam?.execution_model_name ?? selected?.model_name ?? selectedModelName}
         selection={selectedChildTeam?.execution_model_selection ?? pickerSelection}
         includeModelGroups={includeModelGroups}
         unavailableSelectionLabel={groupBlocked ? t('chat.modelSelector.selectOrdinaryModel') : undefined}
         onChange={(modelName) => {
           if (selectedChildTeam) return;
-          if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
+          if (!boundSessionId || disabled || pickLocked || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
           setSelectionError('');
           setSelectedModelName(boundSessionId, modelName);
         }}
         onSelectionChange={(next) => {
           void persistSelection(next);
         }}
-        disabled={disabled || Boolean(selectedChildTeam)}
-        onAddModel={openModelSettings}
+        disabled={disabled || pickLocked || Boolean(selectedChildTeam)}
+        onAddModel={disabled || pickLocked ? undefined : openModelSettings}
       />
       {selectionError ? (
-        <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">
+        <div className="chat-model-selector__error" role="alert" data-testid={`${testIdPrefix}-error`}>
           {selectionError}
         </div>
       ) : null}

@@ -51,6 +51,41 @@ def fields():
     }
 
 
+@pytest.mark.parametrize("interval,expected_interval", [(None, "3"), (5, "5")])
+@pytest.mark.parametrize("through_adapter", [False, True], ids=["panel", "agentserver"])
+@pytest.mark.asyncio
+async def test_config_get_moa_interval_preserves_configuration(panel_config, interval, expected_interval, through_adapter):
+    if interval is not None:
+        raw = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+        raw["experimental"] = {"multi_model_collaboration": {"verifier_interval": interval}}
+        panel_config.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    before = panel_config.read_bytes()
+
+    if through_adapter:
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
+
+        on_config_saved = AsyncMock()
+        adapter = ConfigAdapter(on_config_saved=on_config_saved)
+        response = await adapter.handle(AgentRequest(
+            request_id="get-moa", channel_id="web", session_id="session",
+            req_method=ReqMethod.CONFIG_GET, params={}, user_id="test-user",
+        ))
+        assert response.ok is True
+        public = response.payload
+        on_config_saved.assert_not_awaited()
+    else:
+        channel = SimpleNamespace(send_response=AsyncMock())
+        await handlers.config_get_handler(channel, None, "get", {}, None)
+        response = channel.send_response.call_args.kwargs
+        assert response["ok"] is True
+        public = response["payload"]
+
+    assert public["moa_verifier_interval"] == expected_interval
+    assert panel_config.read_bytes() == before
+
+
 @pytest.mark.asyncio
 async def test_save_all_round_trips_with_ui_reload(panel_config, fields):
     channel = SimpleNamespace(send_response=AsyncMock())
@@ -172,10 +207,28 @@ async def test_agentserver_config_adapter_uses_same_moa_persistence(panel_config
 
 
 def test_transport_log_formatter_redacts_jev_secret():
-    from gateway.routing.agent_client import _to_json
+    from agent_gateway.routing.agent_client import _to_json
 
     payload = {"params": {"config": {"moa_jev_api_key": "test-write-only-secret"}}}
     formatted = _to_json(payload)
     assert "test-write-only-secret" not in formatted
     assert "****" in formatted
     assert payload["params"]["config"]["moa_jev_api_key"] == "test-write-only-secret"
+
+
+@pytest.mark.asyncio
+async def test_a2ui_panel_without_registered_provider(panel_config, monkeypatch):
+    original = handlers.provider
+
+    def without_a2ui(domain):
+        if domain == "a2ui":
+            raise RuntimeError("A2UI provider not registered in Gateway")
+        return original(domain)
+
+    monkeypatch.setattr(handlers, "provider", without_a2ui)
+    monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
+    monkeypatch.delenv("JIUWENSWARM_A2UI_PROTOCOL_VERSION", raising=False)
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_get_handler(channel, None, "get", {}, None)
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    assert channel.send_response.call_args.kwargs["payload"]["a2ui_enabled"] == "true"

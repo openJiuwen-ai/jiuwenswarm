@@ -47,6 +47,11 @@ from openjiuwen.agent_teams.schema.team import (
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_DESIGN,
+    is_code_profile_mode,
+    is_team_mode,
+)
 
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
@@ -62,11 +67,6 @@ from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
-)
-from gateway.common.mode_matrix import (
-    NEW_TEAM_DESIGN,
-    is_code_profile_mode,
-    is_team_mode,
 )
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
@@ -142,7 +142,15 @@ def _apply_agent_group(
     agent_group_name: str,
     package: LoadedAgentGroupPackage | None = None,
 ) -> None:
-    """Seed a hybrid roster from one resolved AgentGroup package."""
+    """Seed the team from one resolved AgentGroup package.
+
+    The leader always takes the group's leader template. Under scheduled
+    dispatch the team starts with an empty roster: the group's other members
+    are not assembled here, and the leader spawns the ones a task needs, which
+    core loads from the installed package on demand (``spawn_expert``, inline
+    ``create_task`` members, swarmflow ``agent_template``). Otherwise they
+    become a hybrid predefined roster.
+    """
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_member_display_name,
     )
@@ -181,6 +189,8 @@ def _apply_agent_group(
         }
     )
     spec.agents["leader"] = leader_member.spec
+    if spec.dispatch_mode == "scheduled":
+        return
 
     predefined_members: list[TeamMemberSpec] = []
     for agent_name, template in templates.items():
@@ -239,6 +249,12 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "把用户的完整需求原文传给 prompt 参数——导演链（分析→简报→审核→分镜→审核→建图→校验）在服务端完成，产出带完整锁体系的图。不要自己用 graph_patch 从零拼整图。"
     "designer_graph_autorun 返回 error 时，把错误原因转告用户并等用户决定，不要改用 graph_patch 手动拼图。"
     "\n2. designer_graph_patch 只用于用户要求的小改：加减个别节点、改 config.prompt、连线/断连、删节点。"
+    "用户修改故事层面的事实（人物的性别/身份/外貌/服装、地点、时间、情节、出现在镜头里的道具或场景细节等，"
+    "如\"把全片的女店员改成男店员\"\"把白色杯子改成红色杯子\"）时，"
+    "先调 designer_story_edit（edit=用户的修改要求原话）同步修订大纲（Brief）、角色设定和分镜表——只 patch 下游节点改不到它们，"
+    "镜头（clip）的视频提示词每次运行都按分镜表对应行重新生成；"
+    "再用 graph_patch 改仍写着旧事实的角色/场景/镜头节点 config.prompt（改过的镜头提示词按用户编辑对待，运行时不会被分镜覆盖）；"
+    "最后从大纲节点起重跑：swarmflow(node_id=大纲节点 id, cascade=true)（用户明确说先不要跑时除外）。"
     "patch 字段是 {\"upsert_nodes\": [...], \"upsert_edges\": [{\"id\",\"source\",\"target\"}], \"remove_node_ids\": [], "
     "\"remove_edge_ids\": []}。\n3. 节点 type 只能是五种模态之一：text、table、image、video、"
     "audio——outline/character/storyboard/script/scene/clip/film 等叙事角色绝不是 type，一律 type=\"text\"。"
@@ -254,6 +270,18 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "系统已创建并连好线：不要删除、不要重建、不要改它们的连线。只有图片参考可以被角色/场景节点引用"
     "（参考图是视觉权威，从中提取可兼容的可见特征）；音频和视频参考只连创意简报（brief），不要把它们连到分镜或其他节点。"
     "\nuser_canvas_edits 是用户的画布操作日志（add/remove/connect/disconnect/replace）——把这些当作已发生的事实，不要恢复被删除的节点或被断开的边。"
+    "\n7. 背景音乐（BGM）：整部片最多一个 BGM 节点，即 type=\"audio\"、config.pipeline=\"music\" 的节点（规划生成的 id 是 n_music）。"
+    "用户用自然语言要求加 BGM / 配乐 / 背景音乐时：已有 BGM 节点就只改它；没有就 upsert 一个"
+    "{\"id\":\"n_music\",\"type\":\"audio\",\"label\":\"BGM\",\"config\":"
+    "{\"role\":\"audio\",\"pipeline\":\"music\",\"inputs\":[\"n_brief\"]}}，"
+    "加 n_brief→n_music 和 n_music→成片节点（config.pipeline=compose）两条边，并把 n_music 加进成片节点的 config.inputs。"
+    "用户对音乐的描述（风格、情绪、乐器、节奏、调性）原样写进 BGM 节点的 config.prompt，不要写成片时长或镜头时间点，工具会按剪辑点自动对齐。"
+    "BGM 以创意简报为先：用户要求生成或重新生成 BGM 时，先用 designer_graph_get 看 BGM 的上游（n_brief）是否已有产出；"
+    "还没有产出就只 patch 不运行，告诉用户 BGM 要等创意简报生成后才能生成，请先运行画布等简报生成完再来生成 BGM；"
+    "designer_node_run 返回 upstream not ready 也按这条如实告诉用户，不要说已启动。"
+    "上游已有产出时，patch 完直接 designer_node_run 这个 BGM 节点（只跑它，不必再问）；"
+    "BGM 要混进成片还需重跑成片节点，跑完 BGM 后询问用户是否重跑成片。"
+    "节点结果是静音占位（placeholder / no music API）说明音频生成没开，提示用户在 设置→实验功能→设计模式 打开「音频生成」并配置模型。"
     "\n详细创作规则见你的成员设定（team-context）。"
 )
 
@@ -535,6 +563,10 @@ def enrich_team_spec_for_swarm(
         assemble_group_members(spec, group_members)
         # Future members use the shared role without rewriting a running spec.
         teammate = spec.agents["teammate"]
+        from jiuwenswarm.agents.swarm.group_execution import install_execution_policy
+
+        install_execution_policy(teammate)
+        install_execution_policy(spec.agents["leader"], include_tools=False)
         teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
             params={"initial_names": [member["member_name"] for member in group_members]})]
     logger.info(
@@ -602,4 +634,56 @@ async def preflight_team_mcps(spec: Any) -> list[str]:
     return dropped
 
 
-__all__ = ["enrich_team_spec_for_swarm", "preflight_team_mcps"]
+def assign_shared_sandbox_sys_operation(spec: Any, deep_agent: Any) -> None:
+    """Point every team member at the main agent's sandbox SysOperation.
+
+    ``setup_agent`` keeps a member's own ``sys_operation`` when the spec
+    already has one. Reusing the main agent's id makes ``SysOperationSpec.resolve``
+    return that registered sandbox instead of creating a local one.
+
+    No-op when the main agent has no sandbox SysOperation.
+    """
+    shared = _shared_sandbox_sys_operation_spec(deep_agent)
+    if shared is None:
+        return
+    agents = getattr(spec, "agents", None)
+    if isinstance(agents, dict):
+        for name, agent_spec in list(agents.items()):
+            if not hasattr(agent_spec, "model_copy"):
+                continue
+            agents[name] = agent_spec.model_copy(update={"sys_operation": shared})
+    reviewer = getattr(spec, "reviewer_agent", None)
+    if hasattr(reviewer, "model_copy"):
+        spec.reviewer_agent = reviewer.model_copy(update={"sys_operation": shared})
+    logger.info(
+        "[swarm.assembly] team members share sandbox sys_operation %s",
+        shared.id,
+    )
+
+
+def _shared_sandbox_sys_operation_spec(deep_agent: Any) -> Any:
+    """Copy the main agent's sandbox card into a member SysOperationSpec."""
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.core.sys_operation.config import SandboxGatewayConfig
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    config = getattr(deep_agent, "deep_config", None)
+    sys_operation = getattr(config, "sys_operation", None)
+    if getattr(sys_operation, "mode", None) != OperationMode.SANDBOX:
+        return None
+    run_config = getattr(sys_operation, "_run_config", None)
+    gateway = getattr(run_config, "config", None)
+    if not isinstance(gateway, SandboxGatewayConfig):
+        return None
+    return SysOperationSpec(
+        id=str(sys_operation.id),
+        mode=OperationMode.SANDBOX,
+        gateway_config=gateway,
+    )
+
+
+__all__ = [
+    "assign_shared_sandbox_sys_operation",
+    "enrich_team_spec_for_swarm",
+    "preflight_team_mcps",
+]

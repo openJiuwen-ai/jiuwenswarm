@@ -8,7 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
+from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.runtime.cron.cron_job_mutations import (
     apply_cron_job_patch,
     build_new_cron_job,
@@ -178,6 +178,8 @@ class EtcdCronJobStore:
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
         credential_ref: str = "",
     ) -> CronJob:
         job = build_new_cron_job(
@@ -201,6 +203,8 @@ class EtcdCronJobStore:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
             credential_ref=credential_ref,
         )
         async with self._lock:

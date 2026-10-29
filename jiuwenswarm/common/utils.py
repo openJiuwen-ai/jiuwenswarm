@@ -40,13 +40,19 @@ import stat
 import time
 import zipfile
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler
 
+from openjiuwen_protocol.logging_config import (
+    LOGGING_LEVEL_FIELDS,
+    LOG_CONFIG_OP_DELETE,
+    LOG_CONFIG_OP_FIELD,
+)
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+from jiuwenswarm.enterprise import is_enterprise
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
@@ -421,6 +427,7 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
         initialized: If True, skip cache reset (use when paths are already initialized elsewhere).
     """
     global _user_home, _initialized, _config_dir, _workspace_dir, _root_dir
+    global _workspace_base_dir
     _user_home = Path(path)
     if initialized:
         return
@@ -428,6 +435,13 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
     _config_dir = None
     _workspace_dir = None
     _root_dir = None
+    # _workspace_base_dir caches ``<home>/.jiuwenswarm`` and is filled on the first path
+    # lookup -- which happens at import time, from the *real* home, via setup_logger().
+    # Leaving it set made the promise above false: get_user_workspace_dir() returns the
+    # cached value before it ever consults get_user_home(), so a test that redirected the
+    # home still resolved to the developer's own workspace, and a force init deleted the
+    # real ~/.jiuwenswarm/config subdirectories.
+    _workspace_base_dir = None
 
 
 def get_user_workspace_dir() -> Path:
@@ -1767,16 +1781,30 @@ def get_root_dir() -> Path:
     return _root_dir
 
 
-def get_agent_workspace_dir() -> Path:
+def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
     """Get the agent workspace directory path.
 
     This is the DeepAgent standard workspace directory under the agent root.
     It contains standard nodes like skills, memory, todo, messages, etc.
 
-    Returns:
-        Path to agent workspace: ~/.jiuwenswarm/agent/workspace
+    - 个人版: ``~/.jiuwenswarm/agent/workspace``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/workspace``
+
+    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
+    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / "workspace"``。
     """
-    return get_agent_root_dir() / "workspace"
+    if tenant_key is None:
+        try:
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            bound = TenantContext.current_agent_workspace_root()
+            if bound is not None:
+                return bound
+        except ImportError:
+            logger.debug(
+                "tenant_context unavailable for workspace bind", exc_info=True
+            )
+    return get_agent_root_dir(tenant_key) / "workspace"
 
 
 def get_default_project_workspace_dir() -> Path:
@@ -1813,8 +1841,28 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
-def get_agent_root_dir() -> Path:
-    return get_user_workspace_dir() / "agent"
+def get_agent_root_dir(tenant_key: str | None = None) -> Path:
+    """Get the agent root directory path.
+
+    - 个人版: ``~/.jiuwenswarm/agent/``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/``
+
+    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
+    ``TenantContext`` 绑定路径，再兜底 ``get_multi_tenant_user_workspace_dir()``
+    （个人版即 ``get_user_workspace_dir()``，企业版未绑定则为 default 三元组）。
+    """
+    if tenant_key is None:
+        try:
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            bound = TenantContext.current_agent_root()
+            if bound is not None:
+                return bound
+        except ImportError:
+            logger.debug(
+                "tenant_context unavailable for agent root bind", exc_info=True
+            )
+    return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
 
 
 def get_agent_home_dir() -> Path:
@@ -2805,6 +2853,32 @@ def _mask_named_sensitive_kv(text: str) -> str:
     return "".join(chunks)
 
 
+def _has_possible_json_container_prefix(text: str, start: int) -> bool:
+    """Reject SDK/Python repr prefixes without constructing JSONDecodeError.
+
+    Failed decoding computes line/column information over the entire prefix,
+    which is expensive for many fragments in a large log. Only reject starts
+    that cannot be JSON; let the decoder validate everything else. Bound the
+    nested-container lookahead so deeply nested input stays the decoder's job.
+    """
+    position = start
+    for _ in range(64):
+        container = text[position]
+        position += 1
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        if position == len(text):
+            return False
+        token = text[position]
+        if container == "{":
+            return token in '"}'
+        if token in "[{":
+            continue
+        # JSONDecoder also accepts the nonstandard NaN/Infinity constants.
+        return token in '"]-0123456789tfnNI'
+    return True
+
+
 def _sanitize_log_text(text: str) -> str:
     """Redact JSON by value, preserving numbers and valid serialization.
 
@@ -2827,6 +2901,8 @@ def _sanitize_log_text(text: str) -> str:
         start = match.start()
         search_from = start + 1
         candidates += 1
+        if not _has_possible_json_container_prefix(text, start):
+            continue
         try:
             value, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):
@@ -3067,6 +3143,9 @@ def install_source_record_masking() -> None:
     _source_record_masking_installed = True
 
 
+_RECORD_BYTE_LIMIT = 64 * 1024
+
+
 def _sanitize_record_text(text: str) -> str:
     """Bound regex/JSON work per log record without truncating a credential.
 
@@ -3075,14 +3154,18 @@ def _sanitize_record_text(text: str) -> str:
     a partial credential at a truncation boundary. Public mask_sensitive keeps
     its full-text behavior.
     """
-    if len(text) > 64 * 1024:
+    # Short-circuit on characters to avoid encoding unbounded input.
+    if len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    ):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,
                 "original_characters": len(text),
-                "character_limit": 64 * 1024,
+                "character_limit": _RECORD_BYTE_LIMIT,  # Retain the previous summary field.
+                "byte_limit": _RECORD_BYTE_LIMIT,
             }, separators=(",", ":"))
-        return f"[log payload omitted: {len(text)} characters exceeds 65536 character limit]"
+        return f"[log payload omitted: exceeds {_RECORD_BYTE_LIMIT} UTF-8 bytes]"
     return _sanitize_log_text(text)
 
 
@@ -3138,14 +3221,14 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         handler.close()
         root.removeHandler(handler)
 
-    # M0-c：gateway 升为顶层包后，其模块 logger（``gateway.*``）不再位于
-    # ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式把
-    # ``gateway`` logger 挂回 ``jiuwenswarm`` 树，保持 gateway.log / 控制台
-    # 路由不变（否则 gateway 日志全部丢失）。
-    gateway_logger = logging.getLogger("gateway")
-    gateway_logger.setLevel(logging.NOTSET)
-    gateway_logger.propagate = True
-    gateway_logger.parent = root
+    # gateway 已拆为独立包 agent_gateway，其模块 logger（``agent_gateway.*``）
+    # 不在 ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式挂回
+    # ``jiuwenswarm`` 树，保持 gateway.log / 控制台路由不变（否则日志全部丢失）。
+    for gateway_logger_name in ("gateway", "agent_gateway"):
+        gateway_logger = logging.getLogger(gateway_logger_name)
+        gateway_logger.setLevel(logging.NOTSET)
+        gateway_logger.propagate = True
+        gateway_logger.parent = root
 
     formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
@@ -3215,6 +3298,95 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
 
     wrap_log_handlers(root)
     return root
+
+
+
+_FILE_HANDLER_LEVEL_MAP: dict[str, str] = {
+    "gateway.log": "gateway",
+    "gateway.json": "gateway",
+    "channel.log": "channel",
+    "channel.json": "channel",
+    "agent_server.log": "agent_server",
+    "agent_server.json": "agent_server",
+    "full.log": "full",
+    "full.json": "full",
+    "permissions.log": "agent_server",
+}
+
+
+def update_log_levels(
+    log_level: Optional[str] = None,
+    *,
+    console_level: Optional[str] = None,
+    gateway: Optional[str] = None,
+    channel: Optional[str] = None,
+    agent_server: Optional[str] = None,
+    full: Optional[str] = None,
+) -> logging.Logger:
+    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别，无需重建 handler。"""
+    levels = _resolve_logging_levels(log_level)
+
+    if console_level is not None:
+        levels = replace(levels, console=_parse_log_level(console_level, levels.console))
+    if gateway is not None:
+        levels = replace(levels, gateway=_parse_log_level(gateway, levels.gateway))
+    if channel is not None:
+        levels = replace(levels, channel=_parse_log_level(channel, levels.channel))
+    if agent_server is not None:
+        levels = replace(levels, agent_server=_parse_log_level(agent_server, levels.agent_server))
+    if full is not None:
+        levels = replace(levels, full=_parse_log_level(full, levels.full))
+
+    logger_level = min(levels.gateway, levels.channel, levels.agent_server, levels.full)
+    levels = replace(levels, logger=logger_level)
+
+    root = logging.getLogger("jiuwenswarm")
+    root.setLevel(levels.logger)
+
+    from jiuwenswarm.common.background_logging import _QueuedHandler
+
+    def update_handler(h: logging.Handler) -> None:
+        if isinstance(h, _QueuedHandler):
+            for target in h.handlers:
+                update_handler(target)
+            h.setLevel(min(target.level for target in h.handlers))
+        elif isinstance(h, SafeRotatingFileHandler):
+            attr = _FILE_HANDLER_LEVEL_MAP.get(Path(h.baseFilename).name)
+            if attr is not None:
+                h.setLevel(getattr(levels, attr))
+        elif isinstance(h, logging.StreamHandler):
+            h.setLevel(levels.console)
+
+    for h in root.handlers:
+        update_handler(h)
+    return root
+
+
+def _logging_config_row_to_dict(obj: dict[str, Any] | Any) -> dict[str, Any]:
+    if isinstance(obj, dict):
+        return {
+            key: obj.get(key, "INFO" if key == "level" else None)
+            for key in LOGGING_LEVEL_FIELDS
+        }
+    return {
+        key: getattr(obj, key, "INFO" if key == "level" else None)
+        for key in LOGGING_LEVEL_FIELDS
+    }
+
+
+def apply_logging_config_payload(payload: dict[str, Any] | None) -> None:
+    """将 DB 行 / WS payload 转为 :func:`update_log_levels` 调用。"""
+    if not payload or payload.get(LOG_CONFIG_OP_FIELD) == LOG_CONFIG_OP_DELETE:
+        update_log_levels()
+        return
+
+    kwargs: dict[str, Any] = {}
+    for key in LOGGING_LEVEL_FIELDS:
+        if payload.get(key) is None:
+            continue
+        # ``level`` 对应 ``update_log_levels`` 的 ``log_level`` 形参。
+        kwargs["log_level" if key == "level" else key] = str(payload[key])
+    update_log_levels(**kwargs)
 
 
 def wait_for_tcp_port(
@@ -3303,6 +3475,18 @@ def wait_for_pid_exit(pid: int, timeout: float = 60.0) -> None:
             time.sleep(0.5)
     logger.warning("process %d did not exit within %.1f seconds", pid, timeout)
 
+
+
+# 多租户路径实现在 enterprise.tenant.tenant_paths；此处再导出以兼容既有调用方。
+from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
+    build_tenant_key,
+    get_agent_root_relative_dir,
+    get_agent_sessions_relative_dir,
+    get_agent_workspace_relative_dir,
+    get_multi_tenant_user_workspace_dir,
+    normalize_tenant_key_part,
+    seed_tenant_agent_workspace,
+)
 
 logger = logging.getLogger(__name__)
 setup_logger()

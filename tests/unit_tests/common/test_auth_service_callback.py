@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.auth import session_store as store_mod
-from gateway.auth.account_kit import Credential, LoginOutcome, OAuthError
-from gateway.auth.service import AuthService
+from agent_gateway.auth import session_store as store_mod
+from agent_gateway.auth.account_kit import Credential, LoginOutcome, OAuthError
+from agent_gateway.auth.service import AuthService
 
 
 class _Pending:

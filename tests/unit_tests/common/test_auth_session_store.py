@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from gateway.auth import session_store as store_mod
-from gateway.auth.account_kit import Credential, LoginOutcome
-from gateway.auth.session_store import AuthSessionStore
+from agent_gateway.auth import session_store as store_mod
+from agent_gateway.auth.account_kit import Credential, LoginOutcome
+from agent_gateway.auth.session_store import AuthSessionStore
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +30,38 @@ def _outcome(user_id: str = "openid-1", refresh: str = "SUPER-SECRET-REFRESH") -
         user_id=user_id,
         user_name="138******00",
     )
+
+
+def test_harmony_publishes_new_file_without_hard_link(tmp_path, monkeypatch):
+    temporary = tmp_path / "install_key.tmp"
+    target = tmp_path / ".install_key"
+    temporary.write_text("new-key", encoding="utf-8")
+
+    monkeypatch.setattr(store_mod.os, "name", "posix")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PLATFORM", "harmony")
+    monkeypatch.setattr(
+        store_mod.os,
+        "link",
+        lambda *_args: pytest.fail("HarmonyOS must not publish keys with os.link"),
+    )
+
+    assert store_mod._publish_new_file(temporary, target) is True
+    assert target.read_text(encoding="utf-8") == "new-key"
+    assert not temporary.exists()
+
+
+def test_harmony_does_not_overwrite_existing_file(tmp_path, monkeypatch):
+    temporary = tmp_path / "install_key.tmp"
+    target = tmp_path / ".install_key"
+    temporary.write_text("new-key", encoding="utf-8")
+    target.write_text("existing-key", encoding="utf-8")
+
+    monkeypatch.setattr(store_mod.os, "name", "posix")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PLATFORM", "harmony")
+
+    assert store_mod._publish_new_file(temporary, target) is False
+    assert target.read_text(encoding="utf-8") == "existing-key"
+    assert not temporary.exists()
 
 
 def test_create_and_get(_isolated_auth_dir):

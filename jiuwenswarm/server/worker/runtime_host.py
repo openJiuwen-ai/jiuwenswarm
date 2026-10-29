@@ -54,7 +54,8 @@ class WorkerRuntime:
         finally:
             registry_owner = getattr(self.server, "worker_callback_registry_owner", None)
             if registry_owner is not None:
-                await registry_owner.aclose()
+                registry_owner.close()
+                await asyncio.shield(registry_owner.aclose())
 
     async def _shutdown_owned_resources(self) -> None:
         """Keep registry dispatch available until SDK teardown has settled."""
@@ -77,6 +78,12 @@ class WorkerRuntime:
             if isinstance(result, Exception):
                 logger.warning("[Worker] optional preparation stop failed: %s", result)
         await telemetry.unbind_runtime_observability()
+        try:
+            from jiuwenswarm.server.agent_http_server import stop_http_server
+
+            await stop_http_server()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentHTTPServer] stop failed: %s", exc)
         stop = getattr(self.server, "stop", None)
         if callable(stop):
             await stop()

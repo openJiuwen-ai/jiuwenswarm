@@ -33,34 +33,65 @@ class FakeWebSocket:
 
 class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
     async def handle_browser_runtime_restart_for_test(self, ws, request, send_lock):
-        await self._handle_browser_runtime_restart(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.ops import handle_browser_runtime_restart
+
+        await handle_browser_runtime_restart(
+            build_ws_request_context(self, ws, request, send_lock)
+        )
+
+    async def _call_command(self, handler, ws, request, send_lock):
+        from jiuwenswarm.server.context import build_ws_request_context
+
+        await handler(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_command_add_dir_for_test(self, ws, request, send_lock):
-        await self._handle_command_add_dir(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_add_dir
+
+        await self._call_command(handle_command_add_dir, ws, request, send_lock)
 
     async def handle_command_compact_for_test(self, ws, request, send_lock):
-        await self._handle_command_compact(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_compact
+
+        await self._call_command(handle_command_compact, ws, request, send_lock)
 
     async def handle_command_diff_for_test(self, ws, request, send_lock):
-        await self._handle_command_diff(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_diff
+
+        await self._call_command(handle_command_diff, ws, request, send_lock)
 
     async def handle_command_simplify_for_test(self, ws, request, send_lock):
-        await self._handle_command_simplify(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_simplify
+
+        await self._call_command(handle_command_simplify, ws, request, send_lock)
 
     async def handle_command_model_for_test(self, ws, request, send_lock):
-        await self._handle_command_model(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_model
+
+        await self._call_command(handle_command_model, ws, request, send_lock)
 
     async def handle_command_mcp_for_test(self, ws, request, send_lock):
-        await self._handle_command_mcp(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.mcp import handle_command_mcp
+
+        await self._call_command(handle_command_mcp, ws, request, send_lock)
 
     async def handle_command_resume_for_test(self, ws, request, send_lock):
-        await self._handle_command_resume(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_resume
+
+        await self._call_command(handle_command_resume, ws, request, send_lock)
 
     async def handle_command_session_for_test(self, ws, request, send_lock):
-        await self._handle_command_session(ws, request, send_lock)
+        from jiuwenswarm.server.handlers.commands import handle_command_session
+
+        await self._call_command(handle_command_session, ws, request, send_lock)
 
     async def handle_permissions_config_for_test(self, ws, request, send_lock):
-        await self._handle_permissions_config(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.permissions import handle_permissions_config
+
+        await handle_permissions_config(
+            build_ws_request_context(self, ws, request, send_lock)
+        )
 
     def get_agent_manager_for_test(self):
         return self._agent_manager
@@ -89,6 +120,10 @@ def patch_wire_encoder(monkeypatch):
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
 
@@ -250,11 +285,9 @@ async def test_browser_runtime_restart_resets_active_agent_runtimes(
 
 @pytest.mark.asyncio
 async def test_browser_runtime_restart_supports_sdk_without_runtime_reset():
-    reset_runtimes = (
-        await agent_ws_server_module._reset_active_browser_runtimes_if_available(
-            SimpleNamespace()
-        )
-    )
+    from jiuwenswarm.server.handlers.ops import _reset_active_browser_runtimes_if_available
+
+    reset_runtimes = await _reset_active_browser_runtimes_if_available(SimpleNamespace())
 
     assert reset_runtimes == 0
 
@@ -267,7 +300,9 @@ async def test_browser_runtime_restart_uses_identity_scoped_sdk_reset():
         calls.append(kwargs)
         return 1
 
-    reset_runtimes = await agent_ws_server_module._reset_requested_browser_runtime_if_available(
+    from jiuwenswarm.server.handlers.ops import _reset_requested_browser_runtime_if_available
+
+    reset_runtimes = await _reset_requested_browser_runtime_if_available(
         SimpleNamespace(
             reset_managed_browser_runtime=reset_managed_browser_runtime,
         ),
@@ -987,11 +1022,7 @@ async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypat
     async def _pre_check_ok(_payload):
         return True, "pre-check ok"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_server",
-        staticmethod(_pre_check_ok),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_server", _pre_check_ok)
 
     # Mock the live-connect probe: success → record is flipped to connected
     # and reload runs (this is the path that was missing before the fix; an
@@ -1053,11 +1084,7 @@ async def test_handle_command_mcp_add_probe_fails_rolls_back(server, fake_ws, mo
     async def _pre_check_ok(_payload):
         return True, "pre-check ok"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_server",
-        staticmethod(_pre_check_ok),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_server", _pre_check_ok)
 
     async def _probe_fail(_name):
         return False, "stdio spawn failed: handshake timeout"
@@ -1137,11 +1164,7 @@ async def test_handle_command_mcp_add_unchanged_skips_probe(server, fake_ws, mon
     async def _pre_check_ok(_payload):
         return True, "pre-check ok"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_http_auth",
-        staticmethod(_pre_check_ok),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_http_auth", _pre_check_ok)
 
     probe_called = {"n": 0}
 
@@ -1204,11 +1227,7 @@ async def test_handle_command_mcp_update_config_yaml_skips_probe(server, fake_ws
     async def _pre_check_ok(_payload):
         return True, "pre-check ok"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_http_auth",
-        staticmethod(_pre_check_ok),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_http_auth", _pre_check_ok)
 
     probe_called = {"n": 0}
 
@@ -1370,11 +1389,7 @@ async def test_handle_command_mcp_add_http_auth_rejected(server, fake_ws, monkey
     async def _pre_check_fail(_payload):
         return False, "github (streamable-http) pre-check failed: auth rejected (HTTP 401)"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_http_auth",
-        staticmethod(_pre_check_fail),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_http_auth", _pre_check_fail)
 
     called = {"reload": 0}
 
@@ -1426,11 +1441,7 @@ async def test_handle_command_mcp_add_http_timeout(server, fake_ws, monkeypatch)
     async def _pre_check_timeout(_payload):
         return False, "stuck (streamable-http) pre-check failed: timed out after 10s (server not responding): TimeoutException"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_http_auth",
-        staticmethod(_pre_check_timeout),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_http_auth", _pre_check_timeout)
 
     monkeypatch.setattr(
         server.get_agent_manager(), "reload_agents_config", lambda _c, _e: None
@@ -1467,11 +1478,7 @@ async def test_handle_command_mcp_add_http_passed(server, fake_ws, monkeypatch):
     async def _pre_check_ok(_payload):
         return True, "github (streamable-http) pre-check passed (http 200)"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_http_auth",
-        staticmethod(_pre_check_ok),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_http_auth", _pre_check_ok)
 
     # pre-check passes → add branch runs the live probe before flipping to
     # connected; mock probe success so reload runs and "added" is returned.
@@ -1573,11 +1580,7 @@ async def test_handle_command_mcp_update_http_auth_rejected(server, fake_ws, mon
     async def _pre_check_fail(_payload):
         return False, "github (streamable-http) pre-check failed: auth rejected (HTTP 401)"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_http_auth",
-        staticmethod(_pre_check_fail),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_http_auth", _pre_check_fail)
 
     monkeypatch.setattr(
         server.get_agent_manager(), "reload_agents_config", lambda _c, _e: None
@@ -1637,11 +1640,7 @@ async def test_handle_command_mcp_minimal_flow_add_list_disable(server, fake_ws,
     async def _pre_check_ok(_payload):
         return True, "pre-check ok (mock)"
 
-    monkeypatch.setattr(
-        agent_ws_server_module.AgentWebSocketServer,
-        "_pre_check_mcp_http_auth",
-        staticmethod(_pre_check_ok),
-    )
+    monkeypatch.setattr("jiuwenswarm.server.handlers.mcp._pre_check_mcp_http_auth", _pre_check_ok)
 
     # add branch runs the live probe before flipping to connected — mock
     # success so the flow (add→list→disable) proceeds without real I/O.
@@ -1754,6 +1753,7 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
     class _Resp:
         ok = True
         payload = {"ok": True}
+        request_id = "req-perm-update"
 
     monkeypatch.setattr(_rpc_mod, "dispatch_permissions_config_request", lambda _req: _Resp())
     # dispatch 在 _handle_permissions_config 内部是延迟 import 取的符号, 需同时 patch 该符号

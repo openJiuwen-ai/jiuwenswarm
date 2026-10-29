@@ -508,6 +508,9 @@ async def test_compose_handler_merges_clips_in_shot_order(
         "jiuwenswarm.server.runtime.designer.handlers.compose._clip_video_usable",
         lambda path, ffmpeg=None: Path(path).is_file() and Path(path).stat().st_size >= 512,
     )
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose._find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose._media_duration_seconds", lambda *args: 10.0)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose.mix_compose_soundtrack", lambda video, *args, **kwargs: video)
     result = await ComposeNodeHandler().execute(
         graph["nodes"][-1],
         NodeExecutionContext(
@@ -585,7 +588,7 @@ def test_concatenate_clip_videos_concats_shot1_then_shot2(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
     assert merged == dest.resolve()
     assert dest.read_bytes() == b"concatenated"
@@ -634,7 +637,7 @@ def test_concatenate_clip_videos_falls_back_to_filter_concat(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
     assert merged == dest.resolve()
     assert dest.read_bytes() == b"reencoded"
@@ -675,7 +678,7 @@ def test_mismatched_inputs_skip_stream_copy(tmp_path: Path, monkeypatch: pytest.
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     compose_mod.concatenate_clip_videos([shot, upload], dest)
 
     assert not any("-f" in cmd and "concat" in cmd for cmd in calls)

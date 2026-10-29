@@ -185,6 +185,7 @@ def test_explicit_auto_builder_wires_isolated_reviewer_from_llm(tmp_path) -> Non
                 "auto": {
                     "reviewer_timeout_ms": 4321,
                     "reviewer_min_confidence": 0.0,
+                    "reviewer_output_format": "prompt",
                 },
             }
         },
@@ -202,7 +203,8 @@ def test_explicit_auto_builder_wires_isolated_reviewer_from_llm(tmp_path) -> Non
     )
     assert rail.auto_reviewer.client._model.model_config == model.model_config
     assert rail.auto_reviewer.timeout_seconds == pytest.approx(4.321)
-    assert rail.auto_reviewer.min_confidence == 0.0
+    assert not hasattr(rail.auto_reviewer, "min_confidence")
+    assert rail.auto_reviewer.client.output_format == "prompt"
 
 
 def test_explicit_auto_builder_with_unrebuildable_model_fails_closed(
@@ -311,7 +313,9 @@ def test_structured_evolution_approval_interrupt_is_classified(
     operation,
     approval_kind,
     question,
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     interaction = _evolution_interrupt(tool_name, operation)
 
     result = convert_interactions_to_ask_user_question([interaction])
@@ -328,6 +332,25 @@ def test_structured_evolution_approval_interrupt_is_classified(
         "allow_once",
         "allow_always",
         "reject",
+    ]
+
+
+def test_enterprise_evolution_approval_hides_allow_always(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    interaction = _evolution_interrupt("evolve_skill_experiences", "evolve")
+
+    result = convert_interactions_to_ask_user_question([interaction])
+
+    assert result is not None
+    assert result["source"] == "evolution_interrupt"
+    assert [option["value"] for option in result["questions"][0]["options"]] == [
+        "allow_once",
+        "reject",
+    ]
+    assert "总是允许" not in [
+        option["label"] for option in result["questions"][0]["options"]
     ]
 
 
@@ -358,6 +381,111 @@ def test_legacy_skill_evolution_approval_metadata_is_classified():
     result = convert_interactions_to_ask_user_question([interaction])
 
     assert result is not None
+    assert result["source"] == "evolution_interrupt"
+    assert result["approval_kind"] == "evolve"
+
+
+_PERMISSION_WORDING = "**Tool `bash` requires your approval**"
+
+
+def _approval(kind: str, tool_name: str, message: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="call_approval",
+        value={
+            "interrupt_id": "intr_approval",
+            "interrupt_kind": kind,
+            "tool_name": tool_name,
+            "message": message,
+        },
+    )
+
+
+def test_the_kind_decides_between_permission_and_confirm_over_the_wording():
+    confirm = convert_interactions_to_ask_user_question([_approval("confirm", "bash", _PERMISSION_WORDING)])
+    permission = convert_interactions_to_ask_user_question([_approval("permission", "switch_mode", "")])
+
+    assert confirm["source"] == "confirm_interrupt"
+    assert permission["source"] == "permission_interrupt"
+
+
+def test_a_request_without_a_kind_is_still_told_by_its_wording():
+    result = convert_interactions_to_ask_user_question([_approval("", "bash", _PERMISSION_WORDING)])
+
+    assert result["source"] == "permission_interrupt"
+    assert result["interrupt_id"] == "intr_approval"
+    assert result["kind"] == ""
+
+
+def test_an_ask_user_kind_is_a_question_even_without_a_tool_name():
+    interaction = SimpleNamespace(
+        id="call_q",
+        value={"interrupt_kind": "ask_user", "tool_args": {"query": "Which colour?"}},
+    )
+
+    result = convert_interactions_to_ask_user_question([interaction])
+
+    assert result["source"] == "ask_user_interrupt"
+    assert result["questions"][0]["question"] == "Which colour?"
+
+
+def test_a_permission_kind_on_the_ask_user_tool_is_not_a_question():
+    from openjiuwen.core.single_agent.interrupt import ToolCallInterruptRequest
+
+    questions = [{"question": "Which colour?", "header": "Colour", "options": []}]
+    with_questions = SimpleNamespace(
+        id="call_approval",
+        value=ToolCallInterruptRequest(
+            interrupt_id="intr_approval",
+            interrupt_kind="permission",
+            tool_name="ask_user",
+            tool_args=json.dumps({"query": "Which colour?", "questions": questions}),
+        ),
+    )
+
+    for interaction in (_approval("permission", "ask_user", ""), with_questions):
+        result = convert_interactions_to_ask_user_question([interaction])
+
+        assert result["source"] == "permission_interrupt"
+
+
+def test_every_projection_carries_the_interrupt_id_and_kind():
+    questions = SimpleNamespace(
+        id="call_q",
+        value={
+            "interrupt_id": "intr_q",
+            "interrupt_kind": "ask_user",
+            "tool_name": "ask_user",
+            "questions": [{"question": "Which?", "header": "Q", "options": [], "multi_select": False}],
+        },
+    )
+    plain = SimpleNamespace(
+        id="call_p",
+        value={"interrupt_id": "intr_p", "interrupt_kind": "ask_user", "tool_args": {"query": "Why?"}},
+    )
+
+    for interaction in (questions, plain, _approval("permission", "bash", "")):
+        result = convert_interactions_to_ask_user_question([interaction])
+        assert result["interrupt_id"] == interaction.value["interrupt_id"]
+        assert result["kind"] == interaction.value["interrupt_kind"]
+
+    verified = _approval("permission", "bash", "")
+    queue = _bind_single_permission_interaction(verified)
+    card = queue.pending_for_call(
+        root_session_id="root-session", execution_session_id="root-session", tool_call_id="call_approval",
+    )
+    result = build_verified_permission_ask_user_question(verified, card)
+    assert result["interrupt_id"] == "intr_approval"
+    assert result["kind"] == "permission"
+
+
+def test_the_evolution_kind_is_classified_without_metadata_or_a_known_tool():
+    interaction = SimpleNamespace(
+        id="call_evo",
+        value={"interrupt_kind": "skill_evolution_approval", "tool_name": "future_tool", "message": "Approve?"},
+    )
+
+    result = convert_interactions_to_ask_user_question([interaction])
+
     assert result["source"] == "evolution_interrupt"
     assert result["approval_kind"] == "evolve"
 
@@ -399,7 +527,10 @@ def _write_test_value(value, name, item) -> None:
         setattr(value, name, item)
 
 
-def test_permission_interrupt_exposes_only_reviewer_ui_metadata() -> None:
+def test_permission_interrupt_exposes_only_reviewer_ui_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     interaction = SimpleNamespace(
         id="tool-call-17",
         metadata={
@@ -431,7 +562,13 @@ def test_permission_interrupt_exposes_only_reviewer_ui_metadata() -> None:
         "永久记住",
         "拒绝",
     ]
-    assert question["card_id"] == "invocation:tool-call-17"
+    assert [option.get("value") for option in question["options"]] == [
+        "allow_once",
+        "session_allow",
+        "always_allow",
+        "reject",
+    ]
+    assert question["card_id"] == "tool-call-17"
     assert "tool_call_id" not in question
     assert "tool_invocation_key" not in question
     assert question["reviewer_metadata"] == {
@@ -441,6 +578,52 @@ def test_permission_interrupt_exposes_only_reviewer_ui_metadata() -> None:
         "reviewer_status": "manual",
     }
     assert "secret_context" not in question["reviewer_metadata"]
+
+
+def test_enterprise_permission_interrupt_hides_permanent_remember(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    interaction = SimpleNamespace(
+        id="tool-call-ee",
+        metadata={
+            "decision_source": "auto_reviewer",
+            "reviewer_status": "manual",
+        },
+        value={
+            "message": (
+                "需要确认 bash。\n\n"
+                "> 选择「会话内记住」可在本会话内自动放行 ``bash:ls`` 类调用；"
+                "选择「永久记住」可将此规则写回磁盘，所有会话均自动放行。"
+            ),
+            "tool_name": "bash",
+            "ui_options": [
+                {"value": "allow_once", "label": "本次允许"},
+                {"value": "session_allow", "label": "会话内记住"},
+                {"value": "always_allow", "label": "永久记住"},
+                {"value": "reject", "label": "拒绝"},
+            ],
+            "metadata": {
+                "final_reviewer_status": "manual",
+            },
+        },
+    )
+
+    registry = _bind_single_permission_interaction(interaction)
+    result = convert_interactions_to_ask_user_question(
+        [interaction], root_permission_queue=registry
+    )
+
+    assert result is not None
+    assert result["source"] == "permission_interrupt"
+    question = result["questions"][0]
+    assert [option["label"] for option in question["options"]] == [
+        "本次允许",
+        "会话内记住",
+        "拒绝",
+    ]
+    assert "永久记住" not in question["question"]
+    assert "会话内记住" in question["question"]
 
 
 def test_verified_permission_card_keeps_core_locator_backend_only() -> None:
@@ -462,7 +645,7 @@ def test_verified_permission_card_keeps_core_locator_backend_only() -> None:
     assert result is not None
     assert result["request_id"] == "tool-call-fail-closed"
     question = result["questions"][0]
-    assert question["card_id"] == "invocation:tool-call-fail-closed"
+    assert question["card_id"] == "tool-call-fail-closed"
     assert "tool_call_id" not in question
     assert "tool_invocation_key" not in question
 
@@ -502,13 +685,17 @@ def test_permission_interrupt_projects_reviewer_metadata_from_request_object() -
 
 
 def test_permission_interrupt_projects_sanitized_bounded_tool_payload() -> None:
+    reason = "Check /home/user/report.txt，保留后文。\ntoken=plain-secret\n" + "完整理由。" * 400
     interaction = SimpleNamespace(
         id="tool-call-payload",
         metadata={
             "reviewer_assessment_id": "internal-id",
             "decision_digest": "internal-digest",
             "reviewer_prompt": "internal-prompt",
-            "manual_reason_summary": "Check token=plain-secret before approval.",
+            "manual_reason_summary": reason,
+            "evidence_summary": reason,
+            "user_review_hint": reason,
+            "action_summary": "bash token=machine-secret",
             "contract_gate_missing_evidence": [
                 f"missing-{index}" for index in range(10)
             ],
@@ -538,9 +725,9 @@ def test_permission_interrupt_projects_sanitized_bounded_tool_payload() -> None:
         "nested": {"safe": True},
     }
     reviewer = question["reviewer_metadata"]
-    assert (
-        reviewer["manual_reason_summary"] == "Check token=[redacted] before approval."
-    )
+    for key in ("manual_reason_summary", "evidence_summary", "user_review_hint"):
+        assert reviewer[key] == reason
+    assert reviewer["action_summary"] == "bash token=[redacted]"
     assert reviewer["contract_gate_missing_evidence"][-1] == "[TRUNCATED]"
     assert len(reviewer["contract_gate_missing_evidence"]) == 9
     for forbidden in (
@@ -583,7 +770,7 @@ def test_permission_interrupt_projects_only_opaque_live_card_id() -> None:
     )
 
     question = result["questions"][0]
-    assert question["card_id"] == "invocation:tool-call-17"
+    assert question["card_id"] == "tool-call-17"
     assert "tool_invocation_key" not in question
     assert "tool_call_id" not in question
 

@@ -4,6 +4,12 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
+from jiuwenswarm.runtime.plan import PlanModeController
+from jiuwenswarm.runtime.session.model import NoControlTargetError
+from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+from weakref import WeakValueDictionary
+
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -14,7 +20,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
 from jiuwenswarm.server.worker.execution_services import HostServices, TransportClosed
 
-logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
+logger = logging.getLogger(__name__)
 
 
 async def _reuse_server_runtime_dependencies() -> None:
@@ -280,3 +286,104 @@ def _request_query_text(request: AgentRequest) -> str:
     if not isinstance(query, str):
         return ""
     return query.strip()
+
+
+_UNDELIVERED_ANSWER_ERRORS: tuple[type[Exception], ...] = (NoControlTargetError, ClientToolAnswerMismatch)
+
+
+_DIAGNOSIS_REQ_METHODS = frozenset(
+    {
+        ReqMethod.DIAGNOSIS_RUN,
+        ReqMethod.DIAGNOSIS_LIST,
+        ReqMethod.DIAGNOSIS_GET,
+        ReqMethod.DIAGNOSIS_CANCEL,
+        ReqMethod.DIAGNOSIS_DELETE,
+        ReqMethod.DIAGNOSIS_TTSE_TRIGGER,
+    },
+)
+
+
+def _renew_server_plan_controller() -> PlanModeController:
+    """Create the plan-state owner for the next AgentServer lifecycle.
+
+    The compatibility aliases are rebound together so handlers and diagnostics
+    cannot retain state from the Runtime that has just been closed.
+    """
+    global _SERVER_PLAN_CONTROLLER
+    global _session_mode_sync_locks
+    global _plan_exited_sessions
+    global _plan_active_sessions
+
+    controller = PlanModeController()
+    _SERVER_PLAN_CONTROLLER = controller
+    _session_mode_sync_locks = controller.sync_locks
+    _plan_exited_sessions = controller.exited_sessions
+    _plan_active_sessions = controller.active_sessions
+    return controller
+
+
+_SERVER_PLAN_CONTROLLER = PlanModeController()
+
+
+def _group_organization_owner_team_ids(session_id: str) -> set[str]:
+    """Owner instances created for a swarm group chat.
+
+    The session's own team stays the outer group team. The expert team that
+    owns the organization is a different id, and the web timeline only keeps
+    a team's replies in the main chat when that team is marked as owner.
+    """
+    if not str(session_id or "").strip():
+        return set()
+    try:
+        from jiuwenswarm.server.runtime.group_service import (
+            group_organization_owner_team_ids,
+        )
+
+        return group_organization_owner_team_ids(session_id)
+    except Exception:
+        logger.debug(
+            "[AgentWebSocketServer] group organization lookup failed session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return set()
+
+
+def _conversation_route(session_id: str) -> tuple[str, str]:
+    """``(channel_id, owner_id)`` a client_gone resume of the conversation runs under."""
+    metadata = get_session_metadata(session_id, enable_writeback=False) or {}
+    return str(metadata.get("channel_id") or ""), str(metadata.get("user_id") or "")
+
+
+def get_plan_active_sessions():
+    """公开读取本进程 plan 活跃会话集合（handlers 用，避免 G.CLS.11）."""
+    return _plan_active_sessions
+
+
+_plan_active_sessions = _SERVER_PLAN_CONTROLLER.active_sessions
+
+
+def get_session_switch_locks() -> WeakValueDictionary[str, asyncio.Lock]:
+    """公开读取连接级会话切换锁表（handlers 用，避免 G.CLS.11）."""
+    return _session_switch_locks
+
+
+_session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = (
+    WeakValueDictionary()
+)
+
+
+
+class _AppField:
+    """把原来放在 WebSocket 服务器上的字段，转到进程工具箱里的同名数据。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        if obj is None:
+            return self
+        return getattr(obj._ensure_app_services(), self.name)
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        setattr(obj._ensure_app_services(), self.name, value)

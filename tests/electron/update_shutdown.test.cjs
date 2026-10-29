@@ -51,7 +51,7 @@ for (const failure of ['exit', 'spawn', 'timeout', 'service', 'survivor']) {
     let saves = 0;
     const context = vm.createContext({
       shutdownPromise: null, finalShutdownPromise: null, shutdownComplete: false,
-      shuttingDown: false, quitRequested: false, requestedExitCode: 0,
+      shuttingDown: false, quitRequested: false, requestedExitCode: 0, isFrontendOnly: false,
       serviceProcesses: new Map([['agent', { pid: 123 }]]), RUNTIME_SHUTDOWN_TIMEOUT_MS: 1,
       terminateService: async () => { if (failure === 'service') throw new Error('Front cleanup failed'); },
       serviceTreeRunning: () => failure === 'survivor',
@@ -108,7 +108,7 @@ for (const packaged of [false, true]) {
     const child = { pid: 123, exitCode: null, spawnEnvironment: { JIUWENSWARM_DATA_DIR: 'this-deployment' } };
     const calls = [];
     const context = vm.createContext({
-      app: { isPackaged: packaged }, VITE_DEV_MODE: false,
+      app: { isPackaged: packaged }, VITE_DEV_MODE: false, isFrontendOnly: false,
       backendExecutable: () => 'backend.exe',
       process: { platform: 'win32', env: {}, execPath: 'node' },
       serviceProcesses: new Map([['agent', child]]), shutdownPromise: null, shuttingDown: false,
@@ -196,6 +196,7 @@ for (const failure of ['success', 'retry', 'nonzero', 'spawn', 'timeout']) {
     const context = vm.createContext({
       serviceProcesses: new Map([['agent', child]]), shutdownPromise: null, shuttingDown: false,
       SERVICE_SHUTDOWN_TIMEOUT_MS: 20, SERVICE_KILL_TIMEOUT_MS: 20, RUNTIME_SHUTDOWN_TIMEOUT_MS: 200,
+      isFrontendOnly: false,
       serviceCommand: (_, args) => ({ command: 'backend', args }), serviceWorkingDirectory: () => root,
       process: { platform: 'win32', env: {} }, setTimeout, clearTimeout,
       console: { log() {}, warn() {}, error() {} },
@@ -253,13 +254,48 @@ for (const exited of ['agent', 'gateway']) {
   });
 }
 
+test('Front helper gets time to finish its own deadline after process startup latency', async () => {
+  const source = await fs.readFile(path.join(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs'), 'utf8');
+  const signal = source.slice(source.indexOf('function signalServiceTree('), source.indexOf('function stopServices()'));
+  const child = { pid: 123, exitCode: null };
+  const helper = new EventEmitter();
+  let killed = false;
+  let innerBudget;
+  let spawned = 0;
+  const timers = [];
+  helper.kill = () => { killed = true; };
+  helper.unref = () => {};
+  const context = vm.createContext({
+    serviceProcesses: new Map([['agent', child]]),
+    SERVICE_SHUTDOWN_TIMEOUT_MS: 5000, SERVICE_KILL_TIMEOUT_MS: 1500,
+    serviceCommand: (_, args) => ({ command: 'backend', args }), serviceWorkingDirectory: () => '.',
+    process: { platform: 'win32', env: {} }, console: { error() {}, warn() {} },
+    spawn: (_, args) => { spawned += 1; innerBudget = Number(args[args.indexOf('--timeout') + 1]) * 1000; return helper; },
+    setTimeout: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; },
+    clearTimeout: timer => { timer.cleared = true; },
+  });
+  vm.runInContext(signal, context);
+  context.waitForServiceTreeExit = async () => {
+    // The root wait expires at 5s; Python spends 500ms starting before its own 5s budget.
+    for (const timer of timers) if (!timer.cleared && timer.delay <= innerBudget + 500) timer.callback();
+    child.exitCode = 0;
+    helper.emit('exit', 0);
+    return false;
+  };
+  await assert.doesNotReject(context.terminateService(child));
+  assert.equal(killed, false);
+  assert.equal(spawned, 1, 'Successful helper cleanup must not start another forced attempt');
+  assert.ok(timers.every(timer => timer.cleared));
+});
+
 test('startup failure preserves its original error and consumes background cleanup failures', async () => {
   const source = await fs.readFile(path.join(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs'), 'utf8');
   const block = source.slice(source.indexOf('async function startBackendServices('), source.indexOf('function signalServiceTree('));
   const startupError = new Error('Backend startup failed');
   const errors = [];
   const context = vm.createContext({
-    BACKEND_HOST: '127.0.0.1', prepareRuntimeWorkspace: async () => {}, spawnService: name => ({ name }),
+    BACKEND_HOST: '127.0.0.1', shuttingDown: false,
+    prepareRuntimeWorkspace: async () => {}, spawnService: name => ({ name }),
     waitForTcp: async () => { throw startupError; },
     terminateService: async () => { throw new Error('Background stop failed'); },
     console: { error: (...args) => errors.push(args) },

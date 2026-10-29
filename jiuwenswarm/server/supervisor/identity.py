@@ -11,6 +11,10 @@ import sys
 from pathlib import Path
 
 
+class WorkerIdentityError(RuntimeError):
+    """Deployment identity needs correction before an explicit recovery."""
+
+
 def _deployment_path() -> str:
     path = Path(sys.executable).resolve() if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
     return os.path.normcase(str(path))
@@ -18,8 +22,17 @@ def _deployment_path() -> str:
 
 def deployment_scope() -> str:
     """A stable installation/environment owner, independent of its build ID."""
-    environment = os.path.normcase(str(Path(sys.prefix).resolve()))
-    return hashlib.sha256(f"{_deployment_path()}\0{environment}\0{data_scope()}".encode()).hexdigest()
+    environment_path = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(sys.prefix).resolve()
+    )
+    environment = os.path.normcase(str(environment_path))
+    owner = f"{_deployment_path()}\0{environment}\0{data_scope()}"
+    instance = os.environ.get("JIUWENSWARM_RUNTIME_INSTANCE", "").strip() or os.environ.get("HOSTNAME", "").strip()
+    if instance:
+        owner += f"\0{instance}"
+    return hashlib.sha256(owner.encode()).hexdigest()
 
 
 def _identity_path() -> Path:
@@ -56,7 +69,7 @@ def _is_launch_parent(parent_pid: int) -> bool:
         return False
 
 
-def launch_identity_payload(fingerprint: str, *, source_observation: dict | None = None) -> bytes:
+def launch_identity_payload(fingerprint: str, *, source_observation: dict | None = None, runtime_ipc: dict | None = None) -> bytes:
     """Describe the parent's validated deployment on a private spawn pipe."""
     observation = source_observation
     if not getattr(sys, "frozen", False) and not _identity_path().is_file():
@@ -64,11 +77,14 @@ def launch_identity_payload(fingerprint: str, *, source_observation: dict | None
 
         if observation is None:
             observation = launch_source_observation()
-    return (json.dumps({"schema": 1, "parent_pid": os.getpid(),
+    payload = {"schema": 1, "parent_pid": os.getpid(),
         "package": _deployment_path(),
         "data_scope": data_scope(), "deployment_scope": deployment_scope(),
         "build_label": os.environ.get("JIUWENSWARM_BUILD_ID", "").strip(),
-        "code_identity": fingerprint, "source_observation": observation}) + "\n").encode()
+        "code_identity": fingerprint, "source_observation": observation}
+    if runtime_ipc is not None:
+        payload["runtime_ipc"] = runtime_ipc
+    return (json.dumps(payload) + "\n").encode()
 
 
 def _valid_fingerprint(value: object) -> bool:
@@ -76,6 +92,11 @@ def _valid_fingerprint(value: object) -> bool:
 
 
 def read_launch_identity() -> str:
+    """Return the validated code identity from the private spawn pipe."""
+    return read_launch_payload()["code_identity"]
+
+
+def read_launch_payload() -> dict:
     """Consume a one-use parent pipe; environment build labels cannot bypass validation."""
     if sys.stdin is not None:
         value = sys.stdin.buffer.readline(4097)
@@ -127,7 +148,7 @@ def read_launch_identity() -> str:
             observed_identity = code_identity()
         if observed_identity != fingerprint:
             raise ValueError("Worker source changed after the parent validated it")
-        return fingerprint
+        return payload
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError("Invalid Worker parent identity") from exc
 
@@ -141,6 +162,13 @@ def data_scope() -> str:
 
 
 def code_identity() -> str:
+    try:
+        return _code_identity()
+    except RuntimeError as exc:
+        raise WorkerIdentityError(str(exc)) from exc
+
+
+def _code_identity() -> str:
     override = os.environ.get("JIUWENSWARM_BUILD_ID", "").strip()
     bundled = _identity_path()
     if bundled.exists() or getattr(sys, "frozen", False):

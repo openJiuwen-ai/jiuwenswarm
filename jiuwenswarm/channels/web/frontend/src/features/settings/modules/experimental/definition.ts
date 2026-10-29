@@ -5,10 +5,13 @@ import {
   ExternalCliCustomAgentsItem,
   ProactiveLimitsSetting,
   RSISetting,
+  TaskAsrSetting,
+  TaskFullDuplexSetting,
   TrajectoryDiagnosisSetting,
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
+import { MusicGenSettings } from '../agent/AgentSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -16,6 +19,16 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
+    {
+      id: 'asr',
+      titleKey: 'settingsPanel.experimental.taskAsr',
+      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
+    },
+    {
+      id: 'task-full-duplex',
+      titleKey: 'settingsPanel.experimental.taskFullDuplex',
+      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
+    },
     {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
@@ -86,6 +99,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             items: [
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
+              { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },
             ],
           },
         },
@@ -119,7 +133,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             show: 'when-parent-checked',
             disabled: 'never',
             items: [
-              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled' },
+              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled', errorDisplay: 'inline' },
               { id: 'multi-model-verification', component: 'custom', render: CollaborationVerifierInterval },
             ],
           },
@@ -138,6 +152,12 @@ export const experimentalModule: SettingsModuleDefinition = {
       ],
     },
     {
+      id: 'computer-control',
+      visibleWhen: 'cua_backend_available',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
+    },
+    {
       id: 'design-mode',
       titleKey: 'settingsPanel.experimental.designMode',
       items: [
@@ -146,6 +166,7 @@ export const experimentalModule: SettingsModuleDefinition = {
           component: 'switch',
           key: 'comfyui_workflow_enabled',
         },
+        { id: 'music-gen-settings', component: 'custom', render: MusicGenSettings },
       ],
     },
   ],

@@ -19,7 +19,7 @@ from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveSer
 
 
 def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
-    from gateway.cron.lifecycle_owners import LifecycleOwners
+    from agent_gateway.cron.lifecycle_owners import LifecycleOwners
 
     path = tmp_path / "cron_jobs.json"
     first = LifecycleOwners(path)
@@ -32,7 +32,7 @@ def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
-    from gateway.channel_manager.web import lifecycle_handlers
+    from agent_gateway.channel_manager.web import lifecycle_handlers
 
     service, create, root, _ = archive
     create()
@@ -87,6 +87,43 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     assert event == "session.deleted"
     assert payload["session_id"] == "sess_a"
     assert payload["project_id"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_session_delete_forwards_group_and_bot(monkeypatch):
+    """删除会话时把网页上的群、机器人交给执行端，否则企业版会去默认目录里找。"""
+    from agent_gateway.channel_manager.web import lifecycle_handlers
+
+    seen: dict = {}
+
+    async def fetch(**kwargs):
+        seen["metadata"] = kwargs.get("metadata")
+        return True, {"session_id": "sess_a", "project_id": "default"}
+
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fetch)
+    methods = {}
+    channel = SimpleNamespace(
+        channel_id="web",
+        clients=[],
+        register_method=lambda name, fn: methods.update({name: fn}),
+        send_response=AsyncMock(),
+        send_event=AsyncMock(),
+    )
+    lifecycle_handlers.register_lifecycle_handlers(
+        channel, lambda: object(), lambda: None
+    )
+    ws = SimpleNamespace(
+        _web_routing={
+            "user_id": "zxy",
+            "group_id": "group-1",
+            "bot_id": "bot-1",
+        }
+    )
+    await methods["session.delete"](
+        ws, "req", {"session_id": "sess_a"}, None, "zxy"
+    )
+    assert seen["metadata"]["user_id"] == "zxy"
+    assert seen["metadata"]["routing"] == {"group_id": "group-1", "bot_id": "bot-1"}
 
 
 @pytest.fixture
@@ -583,6 +620,36 @@ def test_conflicts_and_batch_validation(archive):
     for params in ({"session_ids": []}, {"session_ids": "x"}, {"session_ids": [False]}):
         with pytest.raises(lc.LifecycleError):
             lc.parse_ids(params)
+
+
+@pytest.mark.parametrize("work_mode", ["work", "code", "design"])
+def test_archived_page_filters_every_supported_work_mode(work_mode):
+    items = [
+        {"session_id": f"sess_{mode}", "work_mode": mode, "archived_at": 1}
+        for mode in ("work", "code", "design")
+    ]
+
+    result = lc.page(items, {"work_mode": work_mode}, "sessions", 200)
+
+    assert [item["session_id"] for item in result["sessions"]] == [f"sess_{work_mode}"]
+    assert result["total"] == 1
+
+
+def test_archived_page_design_filter_returns_empty_without_design_items():
+    items = [{"session_id": "sess_work", "work_mode": "work", "archived_at": 1}]
+
+    result = lc.page(items, {"work_mode": "design"}, "sessions", 200)
+
+    assert result["sessions"] == []
+    assert result["total"] == 0
+
+
+@pytest.mark.parametrize("work_mode", ["unknown", "", 1])
+def test_archived_page_rejects_unsupported_work_mode(work_mode):
+    with pytest.raises(lc.LifecycleError) as error:
+        lc.page([], {"work_mode": work_mode}, "sessions", 200)
+
+    assert error.value.code == "BAD_REQUEST"
 
 
 @pytest.mark.asyncio
@@ -1166,6 +1233,9 @@ async def test_cancelled_restore_marks_failed_and_recovers_promptly(archive):
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert (root / "sessions/sess_a").exists()
     lc.guard("sess_a")
     await service.close()
@@ -1184,6 +1254,9 @@ async def test_interrupted_archive_is_finalized_by_recovery(archive):
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert not (root / "sessions/sess_a").exists()
     assert (root / "sessions_archived/sess_a").exists()
     with pytest.raises(lc.LifecycleError) as error:
@@ -1209,6 +1282,9 @@ async def test_abandoned_archive_with_moved_directory_finalizes_archived(archive
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert lc.state("session", "sess_a")["blocked"] is True
     with pytest.raises(lc.LifecycleError) as error:
         lc.guard("sess_a")

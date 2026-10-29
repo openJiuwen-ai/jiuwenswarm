@@ -656,35 +656,25 @@ def test_stop_keeps_state_when_process_survives(debug_root: Path):
 # --------------------------------------------------------------------------
 
 
-def _patch_worker_shutdown(result):
-    async def fake(*, timeout):
+def _patch_worker_shutdown(result: dict | Exception):
+    async def _fake(**kwargs):
+        assert kwargs["include_legacy"] is True
         if isinstance(result, Exception):
             raise result
         return result
 
-    return patch("jiuwenswarm.server.supervisor.shutdown.shutdown_resident_worker", side_effect=fake)
+    return patch("jiuwenswarm.server.supervisor.shutdown.shutdown_resident_worker", side_effect=_fake)
 
 
-def test_stop_resident_worker_noop_without_worker():
-    with _patch_worker_shutdown({"ok": True, "absent": True}):
+@pytest.mark.parametrize("result", [{"ok": True, "absent": True}, {"ok": True, "pid": 7777}])
+def test_stop_resident_worker_accepts_confirmed_shutdown(result):
+    with _patch_worker_shutdown(result):
         assert debug_launcher._stop_resident_worker(timeout=1.0) is True
 
 
-def test_stop_resident_worker_waits_for_validated_lifecycle_result():
-    with _patch_worker_shutdown({"ok": True, "pid": 7777}) as shutdown:
-        with patch.object(debug_launcher, "stop_process_by_pid") as killer:
-            assert debug_launcher._stop_resident_worker(timeout=5.0) is True
-    shutdown.assert_awaited_once_with(timeout=5.0)
-    killer.assert_not_called()
-
-
-def test_stop_resident_worker_reports_incomplete_persistence():
-    with _patch_worker_shutdown(RuntimeError("graceful shutdown/persistence incomplete")):
-        assert debug_launcher._stop_resident_worker(timeout=1.0) is False
-
-
-def test_stop_resident_worker_reports_unreachable_worker():
-    with _patch_worker_shutdown(RuntimeError("expected worker hello")):
+@pytest.mark.parametrize("result", [{"ok": False}, RuntimeError("Worker forced to exit; persistence incomplete")])
+def test_stop_resident_worker_reports_incomplete_shutdown(result):
+    with _patch_worker_shutdown(result):
         assert debug_launcher._stop_resident_worker(timeout=1.0) is False
 
 
@@ -797,15 +787,16 @@ def test_stop_process_tree_sweeps_group_of_dead_leader():
     assert signalled == [(7000, signal.SIGTERM)]
 
 
-def test_stop_process_tree_uses_taskkill_on_windows():
-    """Windows has no process groups here; taskkill /T already walks the tree."""
-    with patch.object(debug_launcher.platform, "system", return_value="Windows"):
-        with patch.object(
-            debug_launcher, "stop_process_by_pid", return_value=True
-        ) as single:
-            assert debug_launcher._stop_process_tree(7000, timeout=2.0) is True
+def test_stop_process_tree_preserves_workers_on_windows():
+    """The IPC lifecycle, rather than taskkill, must retire resident Workers."""
+    from jiuwenswarm.common import process_supervision
 
-    single.assert_called_once_with(7000, timeout=2.0)
+    with patch.object(debug_launcher.platform, "system", return_value="Windows"), \
+         patch.object(process_supervision, "terminate_service_tree") as tree, \
+         patch.object(debug_launcher, "stop_process_by_pid") as single:
+        assert debug_launcher._stop_process_tree(7000, timeout=2.0) is True
+    tree.assert_called_once_with(7000, timeout=2.0)
+    single.assert_not_called()
 
 
 # --------------------------------------------------------------------------

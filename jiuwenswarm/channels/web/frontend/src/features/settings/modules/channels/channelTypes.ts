@@ -1,6 +1,6 @@
 export type SettingsChannelId = 'xiaoyi' | 'feishu' | 'dingtalk' | 'telegram' | 'discord' | 'slack' | 'whatsapp';
 
-export type SingleSettingsChannelId = Exclude<SettingsChannelId, 'feishu'>;
+export type SingleSettingsChannelId = Exclude<SettingsChannelId, 'feishu' | 'dingtalk'>;
 
 export type ChannelItem = {
   channel_id: SettingsChannelId;
@@ -52,11 +52,26 @@ export type XiaoyiAppConfig = XiaoyiConfig & {
 
 export type XiaoyiFormValues = XiaoyiAppConfig;
 
-export type DingtalkFormValues = {
+export type DingtalkAppConfig = {
+  name: string;
   enabled: boolean;
   client_id: string;
   client_secret: string;
+  robot_code: string;
+  allow_from: string[];
+  is_default: boolean;
+  /** Set by a colleague binding; shown but never sent by the settings form. */
+  persistent_agent_id: string;
+  /** The stored allowlist is malformed; it is kept on the server until the user enters a new one. */
+  allow_from_invalid: boolean;
+};
+
+export type DingtalkAppDraft = Omit<DingtalkAppConfig, 'allow_from'> & {
   allow_from: string;
+};
+
+export type DingtalkFormValues = {
+  apps: DingtalkAppDraft[];
 };
 
 export type TelegramFormValues = {
@@ -102,6 +117,8 @@ export type ChannelDialogTarget = {
   channelId: SettingsChannelId;
   feishuAppIndex?: number;
   addFeishuApp?: boolean;
+  dingtalkAppIndex?: number;
+  addDingtalkApp?: boolean;
 };
 
 export type PendingDiscardAction = { type: 'close' } | { type: 'open'; target: ChannelDialogTarget };

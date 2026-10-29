@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from contextlib import aclosing
 from typing import Any, AsyncIterator, Callable
 
-from gateway.common.mode_matrix import is_team_mode as is_team_runtime_mode
+from agent_gateway.common.mode_matrix import is_team_mode as is_team_runtime_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
@@ -62,6 +62,7 @@ class StreamExecutionPorts:
     person_drove_turn: Callable
     complete_history_request: Callable
     session_message_owns_completion: Callable
+    team_preflight_failure_chunks: Callable
     await_history_receipt: Callable
 
 
@@ -354,6 +355,12 @@ class StreamExecutionService:
         except (asyncio.CancelledError, GeneratorExit):
             completion.complete("cancelled")
             raise
+        except RuntimeError as exc:
+            completion.complete("error")
+            if not is_team_mode:
+                raise
+            async for chunk in ports.team_preflight_failure_chunks(request.request_id, request.channel_id, session_id, exc):
+                yield chunk
         except Exception:
             completion.complete("error")
             raise

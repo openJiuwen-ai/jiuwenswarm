@@ -13,6 +13,13 @@ import os
 import re
 from typing import Any
 
+from jiuwenswarm.common.schema.designer_graph import (
+    CONFIG_KEY_INPUTS,
+    PIPELINE_COMPOSE,
+    PIPELINE_MUSIC,
+    node_config,
+    node_pipeline,
+)
 from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
     current_content_language,
     dialogue_language_display,
@@ -272,8 +279,31 @@ def _speech_lines(
     return [phrase(_PHRASES, lang, "voice_says", line=line)]
 
 
-def _music_line(cfg: dict[str, Any], lang: str = "en") -> str:
+def film_scored_by_music_node(graph: dict[str, Any] | None) -> bool:
+    """A music node feeding compose owns the film score."""
+    nodes = [n for n in ((graph or {}).get("nodes") or []) if isinstance(n, dict)]
+    music = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_MUSIC}
+    music.discard("")
+    if not music:
+        return False
+    compose = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_COMPOSE}
+    for edge in (graph or {}).get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        if str(edge.get("source") or "") in music and str(edge.get("target") or "") in compose:
+            return True
+    return any(
+        music.intersection(str(item) for item in (node_config(n).get(CONFIG_KEY_INPUTS) or []))
+        for n in nodes
+        if node_pipeline(n) == PIPELINE_COMPOSE
+    )
+
+
+def _music_line(cfg: dict[str, Any], lang: str = "en", graph: dict[str, Any] | None = None) -> str:
     """One positive score phrase. Lock rules and generic defaults stay off the call."""
+    # Each clip would otherwise score itself, so the cut jumps and the film carries two scores.
+    if film_scored_by_music_node(graph):
+        return ""
     bgm = cfg.get("bgm_lock") if isinstance(cfg.get("bgm_lock"), dict) else {}
     generic = {"cinematic", "soft underscore", "tasteful non-vocal", "same bed across clips"}
     bits: list[str] = []
@@ -1027,7 +1057,7 @@ def compose_practice_prompt(
     lang_sent = _language_sentence(cfg, lang)
     if lang_sent:
         sentences.append(lang_sent)
-    music = _music_line(cfg, lang)
+    music = _music_line(cfg, lang, graph)
     if music:
         sentences.append(music)
     look = _style_phrase(cfg)
@@ -1223,6 +1253,10 @@ def prompt_respects_practice(
     if str(cfg.get("previous_clip_wan_prompt") or cfg.get("previous_clip_action") or "").strip():
         if not re.search(r"(?i)\b(?:continue|continues|same setting|same placement|same room)\b", text):
             reasons.append("missing_prior_continue")
+    if film_scored_by_music_node(graph):
+        scored = (_music_line(cfg, lang) for lang in _PHRASES)
+        if any(line and line.casefold() in text.casefold() for line in scored):
+            reasons.append("clip_scores_film_music")
     # Toolbar user edits are authoritative for beat fidelity; do not force stale clip_action.
     if not honor_user_origin:
         action = str(cfg.get("clip_action") or "").strip()

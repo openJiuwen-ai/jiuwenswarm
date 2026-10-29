@@ -16,6 +16,14 @@ from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope
 from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
 
 
+class WorkerShutdownIncomplete(RuntimeError):
+    """Exit was observed, but graceful persistence was not confirmed."""
+
+
+class LegacyWorkerUnowned(RuntimeError):
+    """An operator must explicitly select a legacy Python Worker before shutdown."""
+
+
 @asynccontextmanager
 async def startup_lock(socket_path: str, deadline: float):
     path = Path(socket_path + ".startup.lock")
@@ -35,7 +43,13 @@ async def startup_lock(socket_path: str, deadline: float):
         lock.release()
 
 
-def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False) -> tuple[psutil.Process, float]:
+def worker_process(
+    hello: dict,
+    socket_path: str,
+    *,
+    allow_legacy: bool = False,
+    expected_pid: int | None = None,
+) -> tuple[psutil.Process, float]:
     """Establish ownership from the OS as well as the peer's HELLO fields."""
     if not isinstance(hello, dict) or hello.get("kind") != "hello" or hello.get("protocol") not in (1, 2, PROTOCOL_VERSION):
         raise RuntimeError("Worker lifecycle refused an unknown IPC protocol")
@@ -50,6 +64,8 @@ def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False)
     pid = hello.get("pid")
     if not isinstance(pid, int) or isinstance(pid, bool):
         raise RuntimeError("Worker lifecycle refused an invalid PID")
+    if expected_pid is not None and pid != expected_pid:
+        raise RuntimeError("Worker PID does not match the explicitly selected legacy process")
     if pid <= 0 or pid == os.getpid():
         raise RuntimeError("Worker lifecycle refused an invalid PID")
     try:
@@ -67,13 +83,14 @@ def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False)
         if ("--socket" not in argv
                 or argv[argv.index("--socket") + 1:argv.index("--socket") + 2] != [socket_path]):
             raise RuntimeError("Worker lifecycle refused an unrelated process")
-        if legacy and not getattr(sys, "frozen", False):
+        if legacy and not getattr(sys, "frozen", False) and expected_pid is None:
             # One interpreter can import either a source checkout or a wheel.
             # Neither cwd nor the caller's package location proves the peer's
             # loaded deployment. Frozen peers are bound to their OS executable.
-            raise RuntimeError(
-                "Legacy Python Worker deployment could not be established; automatic termination refused. "
-                "Stop it using its original source/WHL service before restarting."
+            raise LegacyWorkerUnowned(
+                f"Legacy Python Worker PID={pid} at {socket_path} has no deployment identity. "
+                "Its process was left running. After checking its installation, stop that "
+                f"specific Worker with: jiuwenswarm-stop --legacy-worker-pid {pid}"
             )
         if hello.get("process_created") not in (None, created):
             raise RuntimeError("Worker PID identity changed")
@@ -99,9 +116,9 @@ async def _wait_exit(process: psutil.Process, created: float, deadline: float) -
 
 
 async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: float,
-                        allow_legacy: bool = False) -> dict:
+                        allow_legacy: bool = False, expected_pid: int | None = None) -> dict:
     """Send shutdown, observe actual exit and refuse incomplete persistence."""
-    process, created = worker_process(hello, socket_path, allow_legacy=allow_legacy)
+    process, created = worker_process(hello, socket_path, allow_legacy=allow_legacy, expected_pid=expected_pid)
     grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 5)
     outcome = None
     error = None
@@ -137,11 +154,11 @@ async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: 
             if _alive(process, created):
                 process.kill()
         await _wait_exit(process, created, deadline)
-        raise RuntimeError("Worker forced to exit; graceful shutdown/persistence incomplete") from error
+        raise WorkerShutdownIncomplete("Worker forced to exit; graceful shutdown/persistence incomplete") from error
     if outcome is not None and outcome.get("ok") is not True:
-        raise RuntimeError(f"Worker reported incomplete shutdown: {outcome.get('error', '')}")
-    if outcome is None and hello.get("protocol") != 1:
-        raise RuntimeError("Worker exited without a shutdown acknowledgement") from error
+        raise WorkerShutdownIncomplete(f"Worker reported incomplete shutdown: {outcome.get('error', '')}")
+    if outcome is None and (hello.get("protocol") != 1 or hello.get("shutdown_ack") is True):
+        raise WorkerShutdownIncomplete("Worker exited without a shutdown acknowledgement") from error
     # The Worker releases this lifetime lease before exit. Hold the startup
     # lock in the caller until the replacement has also passed HELLO validation.
     lease = FileLock(socket_path + ".owner.lock", timeout=0, thread_local=False)

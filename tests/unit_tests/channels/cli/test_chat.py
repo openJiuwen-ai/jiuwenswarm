@@ -689,6 +689,20 @@ def _permission_question(card_id: str) -> dict:
 
 class TestPermissionCardAnswer:
     @staticmethod
+    @pytest.mark.parametrize("size", [128, 129, 512, 513])
+    def test_call_id_alias_boundary(size: int):
+        from jiuwenswarm.channels.cli.chat import _permission_answer_for_card
+
+        call_id = "c" * size
+        answers = _permission_answer_for_card(
+            [_permission_question(call_id)], selected="allow_once", custom_input="",
+        )
+        assert answers == (
+            [{"selected_options": ["allow_once"], "custom_input": "", "card_id": call_id}]
+            if size <= 512 else []
+        )
+
+    @staticmethod
     def test_builds_one_opaque_card_answer():
         from jiuwenswarm.channels.cli.chat import _permission_answer_for_card
 
@@ -748,6 +762,45 @@ class TestInteractiveLoop:
         client = GatewayClient("ws://127.0.0.1:19001/tui")
         client.set_mock_ws(FakeWs())
         return client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("interrupt_id", ["intr-1", ""])
+    async def test_interrupt_answer_echoes_the_interrupt_id_of_the_question(self, interrupt_id):
+        from jiuwenswarm.channels.cli.chat import _run_interactive_loop
+
+        question = {
+            "request_id": "call-1",
+            "source": "ask_user_interrupt",
+            "questions": [{"question": "Which?", "options": [{"label": "A"}]}],
+        }
+        if interrupt_id:
+            question["interrupt_id"] = interrupt_id
+        client = await self._make_connected_client([
+            {"type": "event", "event": "chat.ask_user_question", "payload": question},
+            {"type": "event", "event": "chat.final", "payload": {"content": "before the answer"}},
+            {"type": "event", "event": "chat.final", "payload": {"content": "done"}},
+        ])
+        sent = []
+
+        async def record(frame):
+            sent.append(frame)
+
+        request = {
+            "type": "req", "id": "r1", "method": "chat.send", "is_stream": True,
+            "params": {"session_id": "s1", "query": "hi", "mode": "code.normal"},
+        }
+        with (
+            patch.object(client, "send_request", record),
+            patch("jiuwenswarm.channels.cli.chat.sys.stdin.isatty", return_value=True),
+            patch("builtins.input", return_value="1"),
+        ):
+            assert await _run_interactive_loop(client, HumanRenderer(), request) == 0
+
+        params = sent[-1]["params"]
+        assert sent[-1]["method"] == "chat.send"
+        assert params["request_id"] == "call-1"
+        assert params.get("interrupt_id", "") == interrupt_id
+        assert ("interrupt_id" in params) is bool(interrupt_id)
 
     @pytest.mark.asyncio
     async def test_stream_delta_until_final(self):

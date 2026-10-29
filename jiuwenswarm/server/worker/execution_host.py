@@ -2,6 +2,23 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.server.worker.execution_support import _AppField
+
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
+from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.server.app_services import AppServices
+from jiuwenswarm.server.client_attachments import close_client_attachments
+from jiuwenswarm.server.client_attachments import set_conversation_access
+from jiuwenswarm.server.client_attachments import start_client_attachment_sweep
+from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.server.personal_context import PersonalContextHostAPI
+from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+from jiuwenswarm.server.worker.execution_support import _SERVER_PLAN_CONTROLLER
+from jiuwenswarm.server.worker.execution_support import _conversation_route
+from jiuwenswarm.server.worker.execution_support import _renew_server_plan_controller
+from jiuwenswarm.server.ws_send import send_wire_payload
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 
 from typing import Protocol
@@ -65,6 +82,18 @@ class EventSink(Protocol):
 class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
     """Resident Runtime owner; Front owns all socket listening and reconnects."""
 
+    _runtime = _AppField("runtime")
+    _agent_manager = _AppField("agent_manager")
+    _session_message_service = _AppField("session_message_service")
+    _proactive_engine = _AppField("proactive_engine")
+    _scheduler_service = _AppField("scheduler_service")
+    _scheduler_agent = _AppField("scheduler_agent")
+    _session_stream_tasks = _AppField("session_stream_tasks")
+    _model_cache = _AppField("model_cache")
+    _default_model = _AppField("default_model")
+    _tokenizer_warmup_tasks = _AppField("tokenizer_warmup_tasks")
+    _image_modality_refresh_task = _AppField("image_modality_refresh_task")
+
     @property
     def services(self) -> HostServices:
         """Host-owned integrations; lazy default also supports legacy fixtures."""
@@ -75,28 +104,44 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         return value
 
     @property
+    def _tokenizer_service_instance(self) -> Any:
+        return self._ensure_app_services().tokenizer_service
+
+    @_tokenizer_service_instance.setter
+    def _tokenizer_service_instance(self, value: Any) -> None:
+        self._ensure_app_services().tokenizer_service = value
+
+    @property
+    def _jiuwenbox_runner_instance(self) -> Any:
+        return self._ensure_app_services().jiuwenbox_runner
+
+    @_jiuwenbox_runner_instance.setter
+    def _jiuwenbox_runner_instance(self, value: Any) -> None:
+        self._ensure_app_services().jiuwenbox_runner = value
+
+    @property
     def _tokenizer_service(self) -> Any:
-        if getattr(self, "_tokenizer_service_instance", None) is None:
+        if self._ensure_app_services().tokenizer_service is None:
             from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 
-            self._tokenizer_service_instance = TokenizerService()
-        return self._tokenizer_service_instance
+            self._ensure_app_services().tokenizer_service = TokenizerService()
+        return self._ensure_app_services().tokenizer_service
 
     @_tokenizer_service.setter
     def _tokenizer_service(self, service: Any) -> None:
-        self._tokenizer_service_instance = service
+        self._ensure_app_services().tokenizer_service = service
 
     @property
     def _jiuwenbox_runner(self) -> Any:
-        if getattr(self, "_jiuwenbox_runner_instance", None) is None:
+        if self._ensure_app_services().jiuwenbox_runner is None:
             from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 
-            self._jiuwenbox_runner_instance = JiuwenBoxRunner.instance()
-        return self._jiuwenbox_runner_instance
+            self._ensure_app_services().jiuwenbox_runner = JiuwenBoxRunner.instance()
+        return self._ensure_app_services().jiuwenbox_runner
 
     @_jiuwenbox_runner.setter
     def _jiuwenbox_runner(self, runner: Any) -> None:
-        self._jiuwenbox_runner_instance = runner
+        self._ensure_app_services().jiuwenbox_runner = runner
 
     @property
     def _personal_context_host(self) -> Any:
@@ -124,6 +169,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self._host_services = (
             services if services is not None else ProductionHostServices()
         )
+        # MCP Apps: patch MCPTool.invoke before any request can create MCP
+        # tools (openjiuwen binds invoke per instance at construction).
+        from jiuwenswarm.server.runtime.mcp.apps import apply_mcp_apps_patch
+        apply_mcp_apps_patch()
         self._host = host
         self._port = port
         self._server: Any = None
@@ -145,6 +194,13 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
         self._group_service = None
+        self._feishu_runtime_lock = asyncio.Lock()
+        self._feishu_group_fanout = None
+        self._feishu_agent_manager = None
+        self._dingtalk_group_poller = None
+        self._feishu_group_waiters: dict[str, tuple] = {}
+        self._thinking_notice_waiters: dict[str, asyncio.Future] = {}
+        self._result_delivery_waiters: dict[str, asyncio.Future] = {}
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
@@ -165,6 +221,8 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
     
         self._adapter_registry = LazyAdapterRegistry(self)
         self._tokenizer_service_instance = None
+        self._jiuwenmate_web_instance = None
+        self._ensure_app_services().adapter_registry = self._adapter_registry
         # Tokenizer downloads are best-effort background work. Context creation
         # is local-only and falls back to string length while these tasks run.
         self._tokenizer_warmup_tasks: set[asyncio.Task] = set()
@@ -216,6 +274,13 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         get_acp_output_manager().set_send_push_callback(
             self._schedule_acp_push
         )
+        set_conversation_access(
+            lambda session_id: self._execution_runtime().pending_interactions(session_id),
+            lambda: self._execution_runtime().sessions_awaiting_answers(),
+            _conversation_route,
+            self._answer_calls_no_client_runs,
+            self.send_push,
+        )
 
     def spawn_background(self, coroutine: Any, *, name: str) -> asyncio.Task:
         """Keep finite management/notification work with this resource owner."""
@@ -254,7 +319,8 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
 
         service = SessionMessageService(
             store=SessionMessageStore(
-                get_agent_root_dir() / "session_messages.sqlite3"
+                get_agent_root_dir() / "session_messages.sqlite3",
+                journal_mode=workspace_sqlite_journal_mode(get_config()) or "WAL",
             ),
             admission=self._heartbeat_runtime.admission,
             execute=self.execute_internal_session_message,
@@ -413,7 +479,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         try:
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
-            from jiuwenswarm.symphony.config import (
+            from jiuwenswarm.common.symphony_config import (
                 evolution_flow_enabled,
                 load_symphony_config,
             )
@@ -423,9 +489,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 return True
             import importlib
 
-            service_module = await asyncio.to_thread(
-                importlib.import_module, "jiuwenswarm.symphony.service"
-            )
+            service_module = await asyncio.to_thread(importlib.import_module, "jiuwenswarm.runtime.symphony.service")
             get_swarm_symphony_service = service_module.get_swarm_symphony_service
 
             await get_swarm_symphony_service().start()
@@ -505,6 +569,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         else:
             self._server = None
         self._runtime_services_started = True
+        start_client_attachment_sweep()
         await self._start_recommendation_host()
         self._runtime_push_handler = self.send_push
         self._previous_runtime_push_handler = install_runtime_push_handler(
@@ -556,6 +621,12 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
+                try:
+                    await self._ensure_persistent_group_fanout()
+                except Exception:
+                    # JM-08 is optional: a local JM binding must not prevent
+                    # personal-mode AgentServer readiness.
+                    logger.exception("[AgentWebSocketServer] JM-08 startup failed")
                 ready = self._on_runtime_ready
                 if callable(ready):
                     ready()
@@ -590,11 +661,8 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             "personal_context", self._start_personal_context_best_effort
         )
         self._personal_context_start_task = preparation.start("personal_context")
-        preparation.register(
-            "symphony",
-            self._start_symphony_recovery,
-            imports=("jiuwenswarm.symphony.config",),
-        )
+        preparation.register("symphony", self._start_symphony_recovery,
+                             imports=("jiuwenswarm.common.symphony_config",))
         # 登录模型的 id_token 一小时过期：在用且快过期的，请Gateway续期后推回来
 
         async def _start_login_refresh() -> None:
@@ -939,6 +1007,21 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        # Runtime startup owns the preparation registry and heartbeat services.
+        # Join it before releasing those resources, including a completed task
+        # whose exception still needs to be retrieved.
+        warmup = self._checkpointer_warmup_task
+        self._checkpointer_warmup_task = None
+        if warmup is not None:
+            if not warmup.done():
+                warmup.cancel()
+            try:
+                await warmup
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
+        close_client_attachments()
         await self._stop_recommendation_host()
         await self._close_background_tasks()
         preparation = getattr(self, "_preparation_registry", None)
@@ -964,6 +1047,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 await diagnosis_host.shutdown()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentWebSocketServer] diagnosis shutdown failed: %s", exc)
+        try:
+            await self._close_persistent_group_fanout()
+        except Exception:
+            logger.exception("[AgentWebSocketServer] JM-08 shutdown failed")
         task = getattr(self, "_asset_start_task", None)
         if task is not None:
             task.cancel()
@@ -1014,6 +1101,9 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 logger.warning(
                     "[AgentWebSocketServer] checkpointer warmup cancel failed: %s", exc
                 )
+        jiuwenmate_web = getattr(self, "_jiuwenmate_web_instance", None)
+        if jiuwenmate_web is not None:
+            await jiuwenmate_web.aclose()
         await self._heartbeat_runtime.stop()
         # 同理取消 MCP 连接缓存预热任务.
         mcp_prewarm = self._mcp_prewarm_task
@@ -1084,7 +1174,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 self._runtime_services_started = False
     
         try:
-            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+            from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
     
             await get_swarm_symphony_service().close()
         except Exception as exc:  # noqa: BLE001
@@ -1189,11 +1279,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
     
         payload 格式与 AgentResponse.payload 一致，
         可含 event_type 等字段供 Gateway 转为 Message 派发到 Channel。
+
+        企业版 runtime 模式没有 Gateway WebSocket：同一帧还会写入
+        ``events/stream`` 的 HttpPushHub，供 Gateway 的 SSE 推送环拉取。
         """
-        if self._current_ws is None or self._current_send_lock is None:
-            self._warn_push_without_gateway()
-            return False
-    
         try:
             payload = msg.get("payload") if isinstance(msg, dict) else None
             if isinstance(payload, dict) and payload.get("event_type") == "chat.error":
@@ -1201,30 +1290,51 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 msg = {**msg, "payload": dict(payload)}
                 self._annotate_model_error(msg["payload"], msg.get("session_id"))
             wire = self.services.push_payload(msg)
-            async with self._current_send_lock:
-                sent_original = await self.services.send(self._current_ws, wire)
-            if not sent_original:
-                logger.warning(
-                    "[AgentWebSocketServer] send_push 内容过大已降级为错误帧: channel_id=%s",
-                    msg.get("channel_id", ""),
-                )
-                return False
-            response_kind = str(msg.get("response_kind") or "").strip()
-            if response_kind:
-                logger.info(
-                    "[AgentWebSocketServer] send_push response_kind wire sent: channel_id=%s kind=%s",
-                    msg.get("channel_id", ""),
-                    response_kind,
-                )
-            else:
-                logger.info(
-                    "[AgentWebSocketServer] send_push 已发送(E2A wire): channel_id=%s",
-                    msg.get("channel_id", ""),
-                )
-            return True
         except Exception as e:
-            logger.warning("[AgentWebSocketServer] send_push 失败: %s", e)
+            logger.warning("[AgentWebSocketServer] send_push 编码失败: %s", e)
             return False
+
+        delivered = False
+        if self._current_ws is not None and self._current_send_lock is not None:
+            try:
+                async with self._current_send_lock:
+                    sent_original = await self.services.send(self._current_ws, wire)
+                if sent_original:
+                    delivered = True
+                else:
+                    logger.warning(
+                        "[AgentWebSocketServer] send_push 内容过大已降级为错误帧: channel_id=%s",
+                        msg.get("channel_id", ""),
+                    )
+            except Exception as e:
+                logger.warning("[AgentWebSocketServer] send_push WS 失败: %s", e)
+
+        try:
+            from jiuwenswarm.server.gateway_push.http_hub import get_http_push_hub
+
+            if get_http_push_hub().publish(wire) > 0:
+                delivered = True
+        except Exception as e:
+            logger.warning("[AgentWebSocketServer] send_push HTTP hub 失败: %s", e)
+
+        if not delivered:
+            self._warn_push_without_gateway()
+            return False
+
+        self._reset_push_no_gateway_warning()
+        response_kind = str(msg.get("response_kind") or "").strip()
+        if response_kind:
+            logger.info(
+                "[AgentWebSocketServer] send_push response_kind wire sent: channel_id=%s kind=%s",
+                msg.get("channel_id", ""),
+                response_kind,
+            )
+        else:
+            logger.info(
+                "[AgentWebSocketServer] send_push 已发送(E2A wire): channel_id=%s",
+                msg.get("channel_id", ""),
+            )
+        return True
 
     def get_agent(self):
         """获取 default agent 实例（向后兼容）."""
@@ -1321,3 +1431,131 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         if service is None:
             service = self._group_service = GroupService(self._execution_runtime())
         return service
+
+
+    def _ensure_app_services(self) -> AppServices:
+        """拿出这一份服务器共用的工具箱。还没有就现造一个。"""
+
+        app = self.__dict__.get("_app_services")
+        if app is None:
+            app = AppServices()
+            self.__dict__["_app_services"] = app
+        if app.runtime is not None:
+            controller = getattr(app.runtime, "_plan_controller", None)
+            if controller is not None:
+                app.plan_controller = controller
+        if app.build_runtime is None:
+            app.build_runtime = self._build_runtime
+            app.plan_controller = _SERVER_PLAN_CONTROLLER
+        return app
+
+
+    @property
+    def app_services(self) -> AppServices:
+        """进程级工具箱。以后的 HTTP 应拿这一份，不要再新造一份。"""
+
+        return self._ensure_app_services()
+
+
+    def set_acp_client_capabilities(
+        self, connection_id: str | int, capabilities: Any
+    ) -> None:
+        """按连接编号记下 ACP 客户端能力（ServerContext 公开入口）."""
+        key = int(connection_id)
+        if isinstance(capabilities, dict):
+            self._acp_client_capabilities_by_ws[key] = dict(capabilities)
+        else:
+            self._acp_client_capabilities_by_ws.pop(key, None)
+
+
+    async def _ensure_persistent_group_fanout(self):
+        """Start the shared IM manager when Feishu or DingTalk has a valid Agent binding."""
+        lock = getattr(self, "_feishu_runtime_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._feishu_runtime_lock = lock
+        async with lock:
+            fanout = getattr(self, "_feishu_group_fanout", None)
+            if fanout is not None:
+                return fanout
+
+            from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
+                configured_feishu_bindings,
+                create_default_persistent_group_fanout,
+            )
+
+            from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
+            from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_bindings
+
+            feishu_bindings = configured_feishu_bindings()
+            dingtalk_bindings = configured_dingtalk_bindings()
+            welink_bindings = configured_welink_bindings()
+            bindings = (*feishu_bindings, *dingtalk_bindings)
+            if not bindings and not welink_bindings:
+                return None
+            fanout, manager = create_default_persistent_group_fanout(
+                send_delivery=self._send_result_delivery,
+                thinking_notice_sender=self._send_thinking_notice,
+                verify_membership=self._inspect_feishu_group,
+            )
+            poller = None
+            try:
+                await manager.start()
+                from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE
+
+                channel_bindings = (
+                    ("feishu", feishu_bindings),
+                    ("dingtalk", dingtalk_bindings),
+                    ("welink", welink_bindings),
+                )
+                channels = frozenset(name for name, configured in channel_bindings if configured)
+                namespaces = {item.namespace_id for item in bindings}
+                namespaces.update(item.namespace_id for item in welink_bindings)
+                for namespace_id in sorted(namespaces or {WEB_NAMESPACE}):
+                    await manager.recover(
+                        namespace_id, channels=channels, include_unrouted=False,
+                    )
+                dingtalk_inbound = getattr(fanout, "dingtalk_inbound", None)
+                if dingtalk_inbound is not None:
+                    from jiuwenswarm.server.jiuwenmate.dingtalk_group_polling import DingTalkGroupPoller
+                    poller = DingTalkGroupPoller(manager, dingtalk_inbound)
+                    await poller.start()
+            except BaseException:
+                if poller is not None:
+                    await poller.aclose()
+                await manager.aclose()
+                raise
+            self._feishu_group_fanout = fanout
+            self._feishu_agent_manager = manager
+            self._dingtalk_group_poller = poller
+            logger.info("[AgentWebSocketServer] shared JiuwenMate IM runtime started")
+            return fanout
+
+
+    async def _close_persistent_group_fanout(self) -> None:
+        """Close the JM-08 scheduler and JM-09 result delivery service during shutdown."""
+        lock = getattr(self, "_feishu_runtime_lock", None)
+        if lock is None:
+            return
+        async with lock:
+            manager = getattr(self, "_feishu_agent_manager", None)
+            poller = getattr(self, "_dingtalk_group_poller", None)
+            self._feishu_agent_manager = None
+            self._feishu_group_fanout = None
+            self._dingtalk_group_poller = None
+            try:
+                if poller is not None:
+                    await poller.aclose()
+            finally:
+                if manager is not None:
+                    await manager.aclose()
+
+
+    @property
+    def _jiuwenmate_web(self):
+        value = getattr(self, "_jiuwenmate_web_instance", None)
+        if value is None:
+            from jiuwenswarm.server.jiuwenmate.web_adapter import JiuwenMateWebAdapter
+
+            value = self._jiuwenmate_web_instance = JiuwenMateWebAdapter(push=self.send_push)
+        return value

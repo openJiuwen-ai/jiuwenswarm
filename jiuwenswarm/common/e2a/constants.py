@@ -5,8 +5,6 @@
 本模块仅保留 ``jiuwenswarm.common.e2a.constants`` 旧 import 路径兼容，re-export openjiuwen-protocol
 包的同一对象（含原模块从兄弟模块引入的符号，保持命名空间一致）；
 唯一真源在协议包，本仓不持有实现。过渡期结束后随 common 副本收敛一并删除。
-
-例外：``E2A_AUTH_SESSION_PARAM_KEY`` 协议包尚未同步，暂在本模块本地定义，协议包补齐后删除。
 """
 
 from __future__ import annotations
@@ -17,6 +15,7 @@ from openjiuwen_protocol.e2a.constants import (  # noqa: F401
     ACP_NOTIFICATION_NAMES,
     ACP_SESSION_UPDATE_KINDS,
     E2A_A2A_STREAM_BRANCHES,
+    E2A_AUTH_SESSION_PARAM_KEY,
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
     E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
@@ -46,11 +45,6 @@ from openjiuwen_protocol.e2a.constants import (  # noqa: F401
     E2A_WIRE_LEGACY_AGENT_RESPONSE_KEY,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-
-#: 登录会话 id 的请求参数键（models.list 等读模型清单的 RPC 用）。Gateway 从
-#: 受认证的 WS 连接属性写入、AgentServer 侧 ConfigAdapter 消费后构造 ws 上下文；
-#: 客户端传来的该键一律由 Gateway 先删（与 ``_model_auth`` 同款硬规则）。
-E2A_AUTH_SESSION_PARAM_KEY = "_jiuwen_auth_session"
 
 __all__ = [
     "ACP_AGENT_TO_CLIENT_METHODS",

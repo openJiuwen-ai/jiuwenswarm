@@ -17,7 +17,7 @@ from openjiuwen.harness.goal.schema import GoalStatus
 from openjiuwen.harness.schema.interaction import InputDispatchMode, SendInputRequest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
     ROOT_PERMISSION_ANSWER_KEY as _ROOT_PERMISSION_ANSWER_KEY,
     ROOT_PERMISSION_HANDOFF_KEY as _ROOT_PERMISSION_HANDOFF_KEY,
@@ -540,6 +540,43 @@ class SDKExecutionDriver:
         """
         owner = self._owner
         root_session_id = owner._resolve_interrupt_session_id(request.session_id)
+        managed_task_request = str(
+            (request.params or {}).get("managed_task_request") or ""
+        ).strip() if request.channel_id == "video_tool" else ""
+        from .managed_subagent_control import (
+            active_cua_executions, cancel_cua_execution, has_active_cua,
+        )
+
+        cua_active = bool(managed_task_request) and has_active_cua(managed_task_request)
+        if request.channel_id == "video_tool" and intent == "cancel":
+            from jiuwenswarm.server.runtime.video_task.execution import managed_request_detached
+
+            managed = managed_task_request
+            detached = bool(managed and managed_request_detached(owner._voice_agent_task_rail, request)
+                            and not cua_active)
+            if managed and (request.params or {}).get("managed_task_probe"):
+                # Probe only: report whether this Core still runs the request.
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={"event_type": "chat.interrupt_result", "intent": intent,
+                             "success": True, "managed_task_settled": detached,
+                             "managed_task_status": "unknown" if detached else "running"},
+                    metadata=request.metadata,
+                )
+            if detached:
+                # The managed execution is gone; cancelling the round would hit
+                # other work on this session. Report the settled fact instead.
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={"event_type": "chat.interrupt_result", "intent": intent,
+                             "success": True, "message": "任务已不在执行",
+                             "managed_task_settled": True},
+                    metadata=request.metadata,
+                )
         paused_goal_payload: dict[str, Any] | None = None
         if intent == "cancel":
             try:
@@ -576,6 +613,19 @@ class SDKExecutionDriver:
         # otherwise block behind that child work and never return an
         # interrupt_result to the TUI.  This does not cancel the registered
         # session stream producer -- cancel_round still owns that lifecycle.
+        cua_cancel_requested = False
+        if cua_active:
+            from jiuwenswarm.server.runtime.video_task.execution import capture_task_execution
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
+
+            executions = active_cua_executions(managed_task_request)
+            for execution in executions:
+                capture_task_execution(owner._voice_agent_task_rail, request, execution.task)
+            cua_cancel_requested = cancel_cua_execution(managed_task_request)
+            trace_task("agent_cancel_target_resolved", request_id=managed_task_request,
+                       cancel_request_id=request.request_id, core_session_id=request.session_id,
+                       cua_active=True, execution_count=len(executions),
+                       cua_cancel_requested=cua_cancel_requested)
         owner._cancel_scheduler_running_tasks()
         # Collect in-flight tools without cancelling the stream producer task —
         # interaction cancel must keep round ownership in cancel_round().
@@ -637,6 +687,8 @@ class SDKExecutionDriver:
             "success": continuation_discarded,
             "message": message,
         }
+        if cua_cancel_requested:
+            payload["cua_cancel_requested"] = True
         if not continuation_discarded:
             payload["error"] = "permission_continuation_discard_failed"
         if new_input:
@@ -685,7 +737,7 @@ class SDKExecutionDriver:
             sdk_input_mode,
         )
 
-        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError, SessionInputTargetError
 
         mode = sdk_input_mode(request.params)
         cross_session_steer = mode is InputDispatchMode.STEER and isinstance(
@@ -693,10 +745,13 @@ class SDKExecutionDriver:
         )
         if cross_session_steer:
             owner._require_cross_session_task_admission(request)
+        image_steer = mode is InputDispatchMode.STEER and bool(request.params.get("media_items"))
         instance = owner._instance
-        if instance is None or instance.active_round is None:
-            return False
-        if not instance.has_output_stream():
+        if instance is None or instance.active_round is None or not instance.has_output_stream():
+            if image_steer:
+                raise SessionInputTargetError(
+                    "image supplemental input requires an active execution; supplemental input was not sent"
+                )
             return False
         if owner._stream_completion_state(had_interaction=False) == "suspended":
             raise SessionInputRejectedError(
@@ -722,16 +777,23 @@ class SDKExecutionDriver:
                     )
 
         require_open_input()
+        media_items = []
+        if image_steer:
+            inputs, media_items = await owner._prepare_steer_image_inputs(request, inputs)
         prepared = await owner._prepare_root_input_dispatch(request, inputs)
         try:
             if instance.active_round is None or not instance.has_output_stream():
+                if image_steer:
+                    raise SessionInputTargetError(
+                        "the targeted execution ended during image preparation; supplemental input was not sent"
+                    )
                 return False
 
             async def send(sdk_request: SendInputRequest) -> None:
                 require_open_input()
                 if mode is InputDispatchMode.STEER:
                     entry = enqueue_bound_session_input(
-                        instance, bound_round, request, sdk_request
+                        instance, bound_round, request, sdk_request, media_items=media_items,
                     )
                     await owner._session_input_guard.publish_input_received(entry)
                     return

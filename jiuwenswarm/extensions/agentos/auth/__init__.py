@@ -6,19 +6,19 @@ gateway 为认证套件的宿主（SSH 协议通道）；本 shim 仅服务于�
 agentos_router 的过渡引用，gateway 独立成仓时随之处理归属。
 """
 
-from gateway.extensions.auth.credential_authenticator import (  # noqa: F401
+from agent_gateway.extensions.auth.credential_authenticator import (  # noqa: F401
     AuthContext,
     AuthResult,
     CredentialAuthenticator,
 )
-from gateway.extensions.auth.ssh_authenticator import (  # noqa: F401
+from agent_gateway.extensions.auth.ssh_authenticator import (  # noqa: F401
     SshPublicKeyAuthenticator,
 )
-from gateway.extensions.auth.ssh_key_issuer import (  # noqa: F401
+from agent_gateway.extensions.auth.ssh_key_issuer import (  # noqa: F401
     AgentOSSshKeyIssuer,
     SshKeyIssuer,
 )
-from gateway.extensions.auth.ssh_key_registry import (  # noqa: F401
+from agent_gateway.extensions.auth.ssh_key_registry import (  # noqa: F401
     KeyRegistry,
     KeyRegistryEntry,
 )

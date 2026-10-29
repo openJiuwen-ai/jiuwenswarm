@@ -22,7 +22,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from gateway.common.mode_matrix import is_code_profile_mode, is_team_mode, normalize_work_mode
+from openjiuwen.harness.schema.task import TodoStatus
+
+from agent_gateway.common.mode_matrix import is_code_profile_mode, is_team_mode, normalize_work_mode
 from jiuwenswarm.common.utils import get_deepagent_todo_dir
 
 _STATUS_TO_FRONTEND = {

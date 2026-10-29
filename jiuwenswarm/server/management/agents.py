@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.server.ws_send import send_wire_payload
+
 import logging
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
@@ -594,6 +597,14 @@ class AgentsManagement:
                     warm_zen_free_models(reason="agent.reload_config"), name="zen-models-reload"
                 )
             if should_reload_agents:
+                # 企业配置源：失效本进程的企业配置缓存（模板实体 + 实例/模板行
+                # TTL 缓存）——reload 只在处理进程做一次；存量 session 适配器走
+                # stale 懒重载，而**新建会话**的首次企业加载不经过懒重载，必须
+                # 能看到最新模板行（如动态 token 凭据热更），否则读到 600s TTL
+                # 旧行（与 dev-stable 的 refresh_config_source 语义对齐）。
+                from jiuwenswarm.enterprise.config.config_provider import refresh_config_source
+
+                await refresh_config_source()
                 await host._agent_manager.reload_agents_config(
                     config_payload, env_overrides, **reload_kwargs
                 )
@@ -644,11 +655,14 @@ class AgentsManagement:
                     prewarmer.start()
                 except Exception as exc:  # optional preparation never rejects a config reload
                     logger.warning("[Worker] profile prewarm reload skipped: %s", type(exc).__name__)
+            payload = {"reloaded": True}
+            if should_warm_tokenizers:
+                payload["persistent_model_refresh"] = host._jiuwenmate_web.schedule_model_refresh(config_payload)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={"reloaded": True},
+                payload=payload,
             )
         except Exception as e:
             logger.exception("[AgentWebSocketServer] agent.reload_config failed: %s", e)

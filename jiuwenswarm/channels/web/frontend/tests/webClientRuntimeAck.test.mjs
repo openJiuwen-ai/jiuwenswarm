@@ -50,6 +50,18 @@ const { attachTeamSession, resetTeamAttachments } = await import(
   '../node_modules/.cache/web-client-runtime-ack/teamAttach.mjs'
 );
 
+test('HTTP Team sessions do not submit a persistent WebSocket attachment', async () => {
+  window.__JIUWEN_WEB_TRANSPORT__ = 'http';
+  try {
+    const socket = FakeWebSocket.instance;
+    const count = socket?.sentRequests.length ?? 0;
+    await attachTeamSession('http-team', 'team');
+    assert.equal(socket?.sentRequests.length ?? 0, count);
+  } finally {
+    delete window.__JIUWEN_WEB_TRANSPORT__;
+  }
+});
+
 await webClient.connect();
 
 function gatewayResponse(id, ok = true) {
@@ -63,6 +75,21 @@ function runtimeEvent(event, requestId, payload = {}) {
     payload: { request_id: requestId, ...payload },
   });
 }
+
+test('request without a deadline accepts delayed receipts and remains abortable', async () => {
+  const pending = webClient.request('video.qwen.tool', {}, { timeoutMs: 0 });
+  await Promise.resolve();
+  const id = FakeWebSocket.instance.lastRequest.id;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  gatewayResponse(id);
+  assert.deepEqual(await pending, { accepted: true });
+
+  const controller = new AbortController();
+  const aborted = webClient.request('video.qwen.tool', {}, { timeoutMs: 0, signal: controller.signal });
+  await Promise.resolve();
+  controller.abort();
+  await assert.rejects(aborted, error => error.code === 'REQUEST_ABORTED');
+});
 
 test('runtime-ack request stays pending after gateway response and resolves exact ack', async () => {
   let settled = false;

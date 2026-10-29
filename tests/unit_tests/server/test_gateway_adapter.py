@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
+from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter import (
@@ -35,6 +35,14 @@ from jiuwenswarm.server.runtime.gateway_adapter.base import (
 from jiuwenswarm.server.runtime.harmonyos.harmonyos_project import (
     HarmonyOSProjectError,
 )
+
+
+@pytest.fixture(autouse=True)
+def register_config_dependencies(monkeypatch):
+    from jiuwenswarm.common import external_providers
+    from jiuwenswarm.server.runtime.a2ui import integration
+
+    monkeypatch.setitem(external_providers._providers, "a2ui", integration)
 
 
 def _request(
@@ -623,6 +631,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 evict_calls.append(
                     {
@@ -692,6 +703,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 return True
 
@@ -728,6 +742,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 return True
 

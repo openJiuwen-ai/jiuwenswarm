@@ -3,9 +3,11 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -16,6 +18,35 @@ from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_interrupted_cold_load_uses_remaining_shared_shutdown_budget():
+    """A load beyond ten seconds can still drain inside the total deadline."""
+    from jiuwenswarm.server.worker.service import _close_worker
+
+    runtime = SimpleNamespace(shutdown=AsyncMock())
+    loaded = {"runtime": None}
+    dispatcher = SimpleNamespace(drain=AsyncMock(return_value=True))
+    server = SimpleNamespace(close=AsyncMock())
+
+    async def load():
+        await asyncio.sleep(10.1)
+        loaded["runtime"] = runtime
+        return runtime
+
+    task = asyncio.create_task(load())
+    started = time.monotonic()
+    try:
+        await _close_worker(dispatcher, task, loaded, server, total_timeout=12)
+        assert task.done() and not task.cancelled()
+        runtime.shutdown.assert_awaited_once()
+        server.close.assert_awaited_once()
+        assert time.monotonic() - started < 12
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -43,7 +74,11 @@ async def test_final_stop_reserves_time_to_reap_owned_child(monkeypatch, validat
     front._conn = peer
     front._validated_conn = peer if validated else None
     front._process = Process()
-    await front._shutdown_owned_worker(deadline=1.0)
+    if validated:
+        with pytest.raises(RuntimeError, match="forced to exit"):
+            await front._shutdown_owned_worker(deadline=1.0)
+    else:
+        await front._shutdown_owned_worker(deadline=1.0)
     assert stops and stops[0] >= .5
     assert sum(waits) + stops[0] <= 1.0
     if validated:
@@ -119,7 +154,8 @@ async def test_shutdown_ack_timeout_keeps_owned_exit_budget(monkeypatch):
     front._process = Process()
     front._loop_task = object()
     try:
-        await front._shutdown_owned_worker(deadline=1.0)
+        with pytest.raises(RuntimeError, match="acknowledgement missing"):
+            await front._shutdown_owned_worker(deadline=1.0)
         assert stop_budgets == [.5]
         assert clock[0] + stop_budgets[0] <= 1.0
     finally:
@@ -358,8 +394,9 @@ async def test_complete_stop_can_reap_its_own_child_without_sending_unverified_i
 def test_shutdown_cli_emits_one_json_line_to_stdout(monkeypatch, capsys, caplog, result):
     from jiuwenswarm.server.supervisor import shutdown
 
-    async def shutdown_worker(*, timeout):
+    async def shutdown_worker(*, timeout, include_legacy):
         assert timeout == 2.0
+        assert include_legacy is True
         return result
 
     monkeypatch.setattr(sys, "argv", ["shutdown", "--shutdown-worker", "--timeout", "2"])
@@ -402,7 +439,8 @@ async def test_final_shutdown_bounds_missing_ack_and_stuck_cleanup(monkeypatch, 
     supervisor._loop_task = asyncio.create_task(asyncio.Event().wait())
     started = time.monotonic()
     try:
-        await asyncio.wait_for(supervisor.stop(terminate_worker=True), 0.5)
+        with pytest.raises(RuntimeError, match="acknowledgement missing"):
+            await asyncio.wait_for(supervisor.stop(terminate_worker=True), 0.5)
         assert time.monotonic() - started < 0.5
         assert budgets and sum(budgets) <= .06
         assert closed.is_set()
@@ -469,6 +507,73 @@ def test_final_exit_never_kills_a_reused_pid(monkeypatch):
         supervisor._reap_validated_worker(deadline=time.monotonic() + 0.1)
 
 
+@pytest.mark.parametrize("budget", [0.5, 5.0])
+def test_retirement_confirms_forced_exit_within_original_deadline(monkeypatch, budget):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(supervisor_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    signals = []
+
+    class Process:
+        def create_time(self):
+            return 1.0
+
+        def terminate(self):
+            signals.append("terminate")
+
+        def kill(self):
+            signals.append("kill")
+
+        def wait(self, *, timeout):
+            if "kill" not in signals:
+                clock.now += timeout
+                raise psutil.TimeoutExpired(timeout, pid=123)
+            # SIGKILL delivery and exit observation are not instantaneous.
+            if timeout < 0.1:
+                raise psutil.TimeoutExpired(timeout, pid=123)
+            clock.now += 0.1
+            return -9
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Process())
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = 123
+    supervisor._worker_create_time = 1.0
+    supervisor._owns_process = True
+    deadline = clock.now + budget
+    supervisor._reap_validated_worker(deadline=deadline, terminate=True)
+    assert signals == ["terminate", "kill"]
+    assert clock.now <= deadline
+    assert not supervisor._owns_process
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SIGTERM/SIGKILL exit semantics")
+async def test_retirement_reaps_child_that_ignores_sigterm(monkeypatch):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
+    proc = subprocess.Popen([
+        sys.executable, "-c",
+        "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+        "print('ready',flush=True); time.sleep(60)",
+    ], stdout=subprocess.PIPE)
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = proc.pid
+    supervisor._worker_create_time = psutil.Process(proc.pid).create_time()
+    try:
+        assert (await asyncio.to_thread(proc.stdout.readline)).strip() == b"ready"
+        started = time.monotonic()
+        await asyncio.wait_for(supervisor._retire_unhealthy_worker(), 6)
+        assert time.monotonic() - started < 6
+        assert proc.poll() is not None
+        assert supervisor.worker_pid is None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        await asyncio.to_thread(proc.wait, 2)
+        proc.stdout.close()
+
+
 @pytest.mark.asyncio
 async def test_missing_shutdown_ack_forces_validated_native_child_exit(monkeypatch):
     monkeypatch.setattr(supervisor_module, "_FINAL_SHUTDOWN_TIMEOUT", 0.1)
@@ -496,7 +601,8 @@ async def test_missing_shutdown_ack_forces_validated_native_child_exit(monkeypat
     try:
         assert (await asyncio.to_thread(proc.stdout.readline)).strip() == b"ready"
         started = time.monotonic()
-        await asyncio.wait_for(supervisor.stop(terminate_worker=True), 0.6)
+        with pytest.raises(RuntimeError, match="acknowledgement missing"):
+            await asyncio.wait_for(supervisor.stop(terminate_worker=True), 0.6)
         assert time.monotonic() - started < 0.6
         # Popen waits on this child's native process handle. A PID-only lookup
         # after exit can observe PID reuse or a retained Windows process object.

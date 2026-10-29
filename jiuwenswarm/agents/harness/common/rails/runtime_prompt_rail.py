@@ -42,6 +42,26 @@ from jiuwenswarm.common.utils import (
 
 
 A4P_PROMPT_VERSION = "2026-10-19.1"
+# The model name a Team model-group pool gives every member; the router picks
+# the real model per call (openjiuwen ``INTELLI_ROUTER_UNIFIED_MODEL``).
+_MODEL_GROUP_LOGICAL_MODEL = "*"
+
+
+def _routed_model_placeholder() -> str:
+    """Placeholder the model-group router fills with the model it routes to.
+
+    Empty when the installed openjiuwen does not fill it, so a prompt never
+    shows an unfilled placeholder to the model.
+    """
+    try:
+        from openjiuwen.core.foundation.llm.model_clients.intelli_router_model_client import (
+            ROUTED_MODEL_PLACEHOLDER,
+        )
+    except ImportError:
+        return ""
+    return ROUTED_MODEL_PLACEHOLDER
+
+
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -77,6 +97,10 @@ class RuntimePromptRail(DeepAgentRail):
             default=-1,
         )
         self._model_name: str = ""
+        # Model group id -> display name, looked up once per group.
+        self._model_group_names: dict[str, str] = {}
+        # Model group this rail's agent was last seen running on.
+        self._model_group_id: str = ""
         self._mode: str = ""
         self._session_id: str | None = None
         self._force_english: bool = False
@@ -89,9 +113,23 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self.attachment_manager = getattr(agent, "prompt_attachment_manager", None)
 
+    def _apply_voice_summary_policy(self, ctx: AgentCallbackContext) -> None:
+        """Apply voice receipt policy only when the optional module is present."""
+        try:
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
+        except ModuleNotFoundError as exc:
+            if exc.name != "jiuwenswarm.extensions.video_duplex.backend.session_receipts":
+                raise
+            if self.system_prompt_builder is not None:
+                self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
+            return
+        if self.system_prompt_builder is not None:
+            apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
         if self.system_prompt_builder is not None:
+            self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
             self.system_prompt_builder.remove_section("time")
             self.system_prompt_builder.remove_section("runtime.model_answer_policy")
             self.system_prompt_builder.remove_section("language_output")
@@ -292,8 +330,8 @@ class RuntimePromptRail(DeepAgentRail):
             return []
 
     @staticmethod
-    def _agent_model_name(ctx: AgentCallbackContext) -> str:
-        """Read this callback's live model instead of the shared session model."""
+    def _agent_model(ctx: AgentCallbackContext) -> tuple[Any, Any]:
+        """Return this callback's live model and the agent config holding it."""
         agent = ctx.agent
         config = getattr(agent, "config", None)
         model = getattr(config, "model", None)
@@ -303,6 +341,25 @@ class RuntimePromptRail(DeepAgentRail):
                 model = get_llm()
             except Exception as exc:
                 logger.debug("Failed to read the current agent model: %s", exc)
+        if getattr(model, "model_client_config", None) is None:
+            # before_invoke runs on the outer DeepAgent, which may hold no
+            # model itself; for a model-group agent read the inner agent's,
+            # so before_invoke and before_model_call render the same runtime
+            # state. Other agents are left as they were.
+            inner = getattr(agent, "react_agent", None)
+            inner_client = getattr(getattr(inner, "config", None), "model_client_config", None)
+            inner_get_llm = getattr(inner, "get_llm", None)
+            if getattr(inner_client, "intelli_router", None) is not None and callable(inner_get_llm):
+                try:
+                    model = inner_get_llm() or model
+                except Exception as exc:
+                    logger.debug("Failed to read the inner agent model: %s", exc)
+        return model, config
+
+    @staticmethod
+    def _agent_model_name(ctx: AgentCallbackContext) -> str:
+        """Read this callback's live model instead of the shared session model."""
+        model, config = RuntimePromptRail._agent_model(ctx)
         # Model calls run on the inner ReActAgent; before_invoke can run on
         # the outer DeepAgent, whose config holds the same Model directly.
         for request_config in (
@@ -314,6 +371,62 @@ class RuntimePromptRail(DeepAgentRail):
             if isinstance(name, str) and name.strip():
                 return name.strip()
         return ""
+
+    @staticmethod
+    def _agent_group_model_names(ctx: AgentCallbackContext) -> list[str]:
+        """Models this agent's model group can route to; empty outside a group.
+
+        Delegates to the Team allocator's ``_selectable_route_tags`` rather
+        than copying it, so the list always matches the ``selectable_models``
+        that ``spawn_teammate`` accepts in the installed openjiuwen version.
+        A ``tag-filtered`` router (a pinned member or a tag-restricted group)
+        only routes to its own tag.
+        """
+        model, _ = RuntimePromptRail._agent_model(ctx)
+        client_config = getattr(model, "model_client_config", None)
+        router = getattr(client_config, "intelli_router", None)
+        if not getattr(router, "deployments", None):
+            return []
+        try:
+            from openjiuwen.agent_teams.models.allocator import _selectable_route_tags
+
+            return _selectable_route_tags(router.model_dump(mode="json"))
+        except Exception as exc:
+            logger.debug("Failed to read model group route tags: %s", exc)
+            return []
+
+    def _model_group_model_label(self, ctx: AgentCallbackContext) -> str:
+        """Name this agent's model group; empty when it never ran on one.
+
+        The group is remembered once seen: a callback whose agent exposes no
+        live model (e.g. an outer agent) still belongs to the same group.
+        """
+        model, _ = RuntimePromptRail._agent_model(ctx)
+        client_config = getattr(model, "model_client_config", None)
+        router = getattr(client_config, "intelli_router", None)
+        group_id = str(getattr(router, "model_group_id", "") or "").strip()
+        if group_id:
+            self._model_group_id = group_id
+        group_id = self._model_group_id
+        if not group_id:
+            return ""
+        if group_id not in self._model_group_names:
+            self._model_group_names[group_id] = self._lookup_model_group_name(group_id)
+        name = self._model_group_names[group_id]
+        if not self._force_english and self._language == "cn":
+            return f"模型组 {name}"
+        return f"model group {name}"
+
+    @staticmethod
+    def _lookup_model_group_name(group_id: str) -> str:
+        """Return a model group's display name, falling back to its id."""
+        try:
+            from jiuwenswarm.common.model_catalog import ModelCatalog
+
+            return ModelCatalog().group_display_name(group_id)
+        except Exception as exc:
+            logger.debug("Failed to read model group %s: %s", group_id, exc)
+            return group_id
 
     def _resolve_current_mode(
         self,
@@ -383,6 +496,8 @@ class RuntimePromptRail(DeepAgentRail):
             "tui_current_project_policy",
             "trusted_dirs_policy"):
             self.system_prompt_builder.remove_section(name)
+
+        self._apply_voice_summary_policy(ctx)
 
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
@@ -710,9 +825,25 @@ class RuntimePromptRail(DeepAgentRail):
             configured_models = self._configured_model_names()
         if not available_models:
             available_models = configured_models
+        # The session-wide list names every configured model, but a model-group
+        # agent can only route to its group's models.
+        group_models = self._agent_group_model_names(ctx)
+        if group_models:
+            available_models = group_models
         fallback_model = configured_models[0] if configured_models else ""
+        agent_model = self._agent_model_name(ctx)
+        group_label = self._model_group_model_label(ctx)
+        if agent_model == _MODEL_GROUP_LOGICAL_MODEL or (not agent_model and group_label):
+            # A model-group agent runs on the logical "*" model and the router
+            # picks the real one inside each call, after this prompt is built.
+            # Leave the placeholder the router fills, right before sending each
+            # attempt, with the model that attempt goes to -- so every call
+            # names the model actually answering it. Without router support,
+            # name the group. Never fall back to the session model, which this
+            # agent does not run on.
+            agent_model = _routed_model_placeholder() or group_label or agent_model
         model = str(
-            self._agent_model_name(ctx)
+            agent_model
             or runtime_state.get("model")
             or self._model_name
             or fallback_model
@@ -728,6 +859,8 @@ class RuntimePromptRail(DeepAgentRail):
             or runtime_state.get("language")
             or "unknown"
         ).strip()
+        self._apply_voice_summary_policy(ctx)
+
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
         if not self._force_english and self._language == "cn":
@@ -755,6 +888,31 @@ class RuntimePromptRail(DeepAgentRail):
             kind=PromptAttachmentKind.RUNTIME,
             priority=95,
         )
+        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            current_multimodal_image_files,
+        )
+
+        if current_multimodal_image_files():
+            await self._clear_prompt_attachment(ctx, section="runtime.current_media")
+        else:
+            media_content = (
+                "本轮没有附带屏幕或摄像头画面。用户询问当前屏幕内容时，如实说明看不到，"
+                "建议开启屏幕共享或提供截图，不得编造。历史图片、聊天记录和用户文字不能"
+                "证明当前屏幕内容；只有工具实际获取的新截图才能作为当前画面的依据。"
+                if not self._force_english and self._language == "cn"
+                else
+                "No screen or camera image is attached to this turn. If asked about the current screen, "
+                "say you cannot see it and suggest enabling screen sharing or attaching a screenshot. "
+                "Do not invent its contents or treat old images, chat history, or user text as the current view. "
+                "A fresh screenshot actually obtained through a tool can ground your answer."
+            )
+            await self._upsert_prompt_attachment(
+                ctx,
+                section="runtime.current_media",
+                content=media_content,
+                kind=PromptAttachmentKind.RUNTIME,
+                priority=95,
+            )
         await self._sync_a4p_intent_authorization_attachment(ctx)
         await self._sync_a4p_cron_authorization_scope_attachment(ctx)
 
@@ -921,7 +1079,9 @@ class RuntimePromptRail(DeepAgentRail):
         cron = self._request_metadata.get("cron")
         cron = cron if isinstance(cron, dict) else {}
         job_id = str(cron.get("job_id") or cron.get("jobId") or "").strip()
-        if self._channel not in {"cron", "__cron__"} or not job_id:
+        # Ordinary Web cron runs on the Web channel; the trusted scheduler
+        # metadata is the identity signal, not the transport channel.
+        if not job_id:
             await self._clear_prompt_attachment(ctx, section=section)
             return
         try:

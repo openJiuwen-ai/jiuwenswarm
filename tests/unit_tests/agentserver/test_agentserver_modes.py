@@ -8,6 +8,8 @@ from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.runtime.request import resolve_agent_request_mode
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 
 
@@ -33,7 +35,10 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         )
 
     async def handle_stream_for_test(self, ws, request, send_lock):
-        await self._handle_stream(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers._default import handle_stream
+
+        await handle_stream(build_ws_request_context(self, ws, request, send_lock))
 
 
 def fake_encode_agent_chunk_for_wire(chunk, response_id, sequence):
@@ -492,6 +497,7 @@ def test_build_inputs_maps_skill_evolution_interrupt_answers_to_actions(monkeypa
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
 
@@ -567,6 +573,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     request = AgentRequest(
@@ -580,7 +587,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
                 {
                     "selected_options": [selected_option],
                     "custom_input": "",
-                    "card_id": "tool-invocation-17",
+                    "card_id": "tool-call-17",
                 }
             ],
             "source": "permission_interrupt",
@@ -591,7 +598,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
 
     assert isinstance(inputs["query"], InteractiveInput)
     assert inputs["query"].user_inputs == {
-        "tool-invocation-17": expected_payload
+        "tool-call-17": expected_payload
     }
 
 
@@ -2399,20 +2406,19 @@ async def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
             is_stream=True,
         )
 
-        await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
-        return fake_manager, fake_ws, request
+    monkeypatch.setattr(server._runtime, "stream", fake_stream)
+    async def _no_resume(_request):
+        return None
 
-    fake_manager, fake_ws, request = await run_case()
+    monkeypatch.setattr(server, "_open_session_message_resume", _no_resume)
+    monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
 
-    assert fake_manager.calls == [
-        {
-            "channel_id": "feishu",
-            "mode": "team",
-            "project_dir": None,
-            "sub_mode": None,
-        }
-    ]
-    assert fake_manager.agent.seen_request is request
+    await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
+
+    mode, sub_mode, _canonical = resolve_agent_request_mode(request.params.get("mode"))
+    assert streamed == [request]
+    assert mode == "team"
+    assert sub_mode is None
     assert request.params["mode"] == "team"
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 
@@ -2471,20 +2477,19 @@ async def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
             is_stream=True,
         )
 
-        await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
-        return fake_manager, fake_ws, request
+    monkeypatch.setattr(server._runtime, "stream", fake_stream)
+    async def _no_resume(_request):
+        return None
 
-    fake_manager, fake_ws, request = await run_case()
+    monkeypatch.setattr(server, "_open_session_message_resume", _no_resume)
+    monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
 
-    assert fake_manager.calls == [
-        {
-            "channel_id": "tui",
-            "mode": "code",
-            "project_dir": None,
-            "sub_mode": "team",
-        }
-    ]
-    assert fake_manager.agent.seen_request is request
+    await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
+
+    mode, sub_mode, _canonical = resolve_agent_request_mode(request.params.get("mode"))
+    assert streamed == [request]
+    assert mode == "code"
+    assert sub_mode == "team"
     assert request.params["mode"] == "code.team"
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 
@@ -2902,8 +2907,8 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
     )
 
     assert isinstance(rail, FakeTTSERail)
-    assert captured["config"]["store_path"] == str(tenant_ws / ".ttse" / "bank.json")
-    assert captured["config"]["store_path"] != str(shared_ws / ".ttse" / "bank.json")
+    assert captured["config"]["store_path"] == str(tenant_ws / ".ttse" / "work" / "bank.json")
+    assert captured["config"]["store_path"] != str(shared_ws / ".ttse" / "work" / "bank.json")
     assert captured["config"]["evolve_enabled"] is False
     assert captured["config"]["inject_enabled"] is True
     assert "trajectory_export_enabled" not in captured["config"]
@@ -2912,6 +2917,9 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
     assert captured["config"]["dream_interval"] == 50
     assert captured["config"]["dream_min_hours"] == 24.0
     assert captured["config"]["dream_ttl_days"] == 90
+    induce_policy = captured["config"]["induce_llm_policy"]
+    assert induce_policy.attempt_timeout_secs == 300.0
+    assert induce_policy.total_budget_secs == 300.0
     assert captured["rail"]["model"] == "test-model"
     assert captured["rail"]["trajectory_span_processor"] is fake_processor
 

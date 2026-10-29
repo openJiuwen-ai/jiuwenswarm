@@ -6,13 +6,10 @@ import {
   vendorSelectionKey,
   type ModelInputMode,
 } from '../models/modelAdapters';
-import {
-  mediaCapabilityContextWindowField,
-  mediaCapabilityEnabledField,
-  type MediaCapabilityModality,
-} from './mediaCapabilities';
+import type { MediaCapabilityModality } from './mediaCapabilities';
 
 const MODEL_PLANS: readonly ModelPlan[] = ['token_plan', 'coding_plan', 'custom_api'];
+export type ModelConfigurationSlot = MediaCapabilityModality | 'topic';
 
 export type MediaModelDraft = {
   vendor_selection: string;
@@ -32,13 +29,13 @@ function isModelPlan(value: string): value is ModelPlan {
   return (MODEL_PLANS as readonly string[]).includes(value);
 }
 
-function readConfig(config: Readonly<Record<string, unknown>>, modality: MediaCapabilityModality, suffix: string) {
+function readConfig(config: Readonly<Record<string, unknown>>, modality: ModelConfigurationSlot, suffix: string) {
   return String(config[`${modality}_${suffix}`] ?? '');
 }
 
 export function createMediaModelDraft(
   config: Readonly<Record<string, unknown>>,
-  modality: MediaCapabilityModality,
+  modality: ModelConfigurationSlot,
 ): MediaModelDraft {
   const apiBase = readConfig(config, modality, 'api_base');
   const apiKey = readConfig(config, modality, 'api_key');
@@ -74,7 +71,7 @@ export function createMediaModelDraft(
 export function buildMediaModelConfigUpdates(
   draft: MediaModelDraft,
   catalog: VendorPresetMap,
-  modality: MediaCapabilityModality,
+  modality: ModelConfigurationSlot,
   enableOnSave: boolean,
 ): Record<string, string> {
   const preset = findVendorPreset(catalog, draft.vendor_selection);
@@ -86,7 +83,7 @@ export function buildMediaModelConfigUpdates(
     [`${modality}_endpoint_profile`]: (preset ? (preset.endpoint_profile ?? '') : draft.endpoint_profile).trim(),
     [`${modality}_vendor_key`]: (preset?.vendor_key ?? '').trim(),
     [`${modality}_plan`]: (preset?.plan ?? '').trim(),
-    [mediaCapabilityContextWindowField(modality)]: String(resolveDraftContextWindowTokens(draft.context_window_tokens)),
-    ...(enableOnSave ? { [mediaCapabilityEnabledField(modality)]: 'true' } : {}),
+    [`${modality}_context_window_tokens`]: String(resolveDraftContextWindowTokens(draft.context_window_tokens)),
+    ...(enableOnSave ? { [`${modality}_enabled`]: 'true' } : {}),
   };
 }

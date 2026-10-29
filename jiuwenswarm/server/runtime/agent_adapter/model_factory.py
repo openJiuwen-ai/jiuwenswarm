@@ -81,7 +81,7 @@ class ModelFactory:
         previously prepared object. Its resolved content also keys credentials
         and route overrides, so edits cannot reuse an obsolete client.
         """
-        from gateway.common.model_selection import ModelSelection
+        from agent_gateway.common.model_selection import ModelSelection
         from jiuwenswarm.runtime.kernel import (
             KernelIdentity,
             ResourceKey,
@@ -282,6 +282,9 @@ class ModelFactory:
             return owner._model
 
         owner._model_cache.clear()
+        label_cache = getattr(owner, "_model_group_label_cache", None)
+        if label_cache:
+            label_cache.clear()
         owner._model_recipes = {}
         owner._model_alias_to_key = {}
         owner._model_name_to_keys.clear()

@@ -145,7 +145,7 @@ async def test_default_task_ports_avoid_imports_for_ordinary_requests(monkeypatc
     original = builtins.__import__
 
     def guarded(name, *args, **kwargs):
-        if name.startswith("gateway.extensions"):
+        if name.startswith("agent_gateway.extensions"):
             pytest.fail("ordinary task ports must not import extension implementations")
         return original(name, *args, **kwargs)
 
@@ -349,10 +349,10 @@ def test_execution_core_cannot_import_concrete_swarm_extensions_or_gateway():
     # Upstream moved these shared value contracts into gateway.common. They
     # carry no Gateway application, transport, configuration or extension owner.
     shared_contracts = {
-        "gateway.common.mode_matrix", "gateway.common.model_selection",
-        "gateway.common.model_vendor_registry", "gateway.common.session_message",
-        "gateway.common.work_mode", "gateway.common.attachment_safety",
-        "gateway.common.cron_team_completion",
+        "agent_gateway.common.mode_matrix", "agent_gateway.common.model_selection",
+        "agent_gateway.common.model_vendor_registry", "agent_gateway.common.session_message",
+        "agent_gateway.common.work_mode", "agent_gateway.common.attachment_safety",
+        "agent_gateway.common.cron_team_completion",
     }
     failures = []
     for path in package.glob("*.py"):

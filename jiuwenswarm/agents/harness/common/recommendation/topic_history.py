@@ -303,10 +303,14 @@ def rescan_history(
     which record was injected, so every same-prompt user record in the bound
     session is excluded: dropping a natural duplicate only costs evidence,
     while admitting an injection would pollute the profile (D7). New records
-    with explicit input provenance are supported only for
-    ``manual_free_text + none``; legacy records without provenance keep the
+    with explicit input provenance are supported for hand-typed turns and
+    prompt-suggestion accepts; legacy records without provenance keep the
     established click-projection behavior.
     """
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
+        is_user_revisit_eligible,
+    )
 
     previous = ledger if isinstance(ledger, dict) else _empty_ledger()
     next_index = int(previous.get("next_behavior_index") or 1)
@@ -356,9 +360,9 @@ def rescan_history(
             provenance_is_explicit = (
                 "input_origin" in record or "assistance_origin" in record
             )
-            provenance_is_natural = (
-                record.get("input_origin") == "manual_free_text"
-                and record.get("assistance_origin") == "none"
+            provenance_is_natural = is_user_revisit_eligible(
+                str(record.get("input_origin") or ""),
+                str(record.get("assistance_origin") or ""),
             )
             currently_supported = (
                 _normalized_role(record) == "user"

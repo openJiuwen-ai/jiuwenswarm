@@ -113,6 +113,28 @@ def test_python_update_helper_rejects_non_ok_shutdown(monkeypatch, result):
         namespace[method.name]()
 
 
+def test_python_update_preflight_retires_owned_historical_endpoint(monkeypatch):
+    from jiuwenswarm.server.supervisor import shutdown
+
+    root = Path(__file__).resolve().parents[3]
+    tree = ast.parse((root / "jiuwenswarm/channels/desktop/desktop_app.py").read_text(encoding="utf-8"))
+    method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "_shutdown_runtime_before_update")
+    namespace = {"asyncio": asyncio}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), "update-preflight", "exec"), namespace)
+    retired = []
+
+    async def lifecycle(*, timeout, include_legacy=False):
+        if include_legacy:
+            retired.append(4242)
+            return {"ok": True, "pid": 4242}
+        return {"ok": True, "absent": True}
+
+    monkeypatch.setattr(shutdown, "shutdown_resident_worker", lifecycle)
+    namespace[method.name]()
+    assert retired == [4242]
+
+
 def test_python_linux_updater_forwards_its_attempt_receipt_before_replacing_files(tmp_path):
     root = Path(__file__).resolve().parents[3]
     tree = ast.parse((root / "jiuwenswarm/channels/desktop/desktop_app.py").read_text(encoding="utf-8"))

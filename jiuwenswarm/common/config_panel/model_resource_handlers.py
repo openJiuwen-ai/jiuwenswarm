@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gateway.common.model_selection import ModelSelection
+from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.config import (
     delete_model_resource,
     upsert_model_group_resource,
@@ -105,12 +105,17 @@ async def model_resource_handler(
 
 async def session_selection_handler(channel, ws, req_id, params, session_id):
     from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
-    from gateway.common.model_selection_store import set_session_model_selection
+    from agent_gateway.common.model_selection_store import set_session_model_selection
 
     try:
         params = params or {}
         target = str(params.get("session_id") or session_id or "")
         selection = ModelSelection.model_validate(params.get("model_selection"))
+        if selection.type == "model_group":
+            from jiuwenswarm.common.external_providers import provider
+
+            if (provider("session_metadata").get_session_metadata(target) or {}).get("cron_id"):
+                raise ValueError("Scheduled task sessions only support a single model")
         ModelSelectionResolver().resolve(selection)
         set_session_model_selection(target, selection)
         await channel.send_response(ws, req_id, ok=True, payload={"model_selection": selection.model_dump()})

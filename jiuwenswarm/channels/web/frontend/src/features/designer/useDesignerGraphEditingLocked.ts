@@ -1,6 +1,6 @@
 import { useChatStore } from '../../stores/chatStore';
 import { useDesignerRunStore } from './designerRunStore';
-import { isDesignerGraphEditingLocked } from './designerGraphLock';
+import { isDesignerGraphEditingLocked, isDesignerLeaderBusy } from './designerGraphLock';
 import { useDesignerStore } from './designerStore';
 
 export function useDesignerGraphEditingLocked(): boolean {
@@ -10,7 +10,7 @@ export function useDesignerGraphEditingLocked(): boolean {
   const runStatus = useDesignerRunStore((state) => state.run?.status ?? null);
   const sessionId = String(graph?.metadata?.session_id ?? '').trim();
   const leaderBusy = useChatStore((state) =>
-    sessionId ? state.runtimes[sessionId]?.isProcessing ?? false : false,
+    sessionId ? isDesignerLeaderBusy(state.runtimes[sessionId]) : false,
   );
   return isDesignerGraphEditingLocked({
     bootstrapInProgress,

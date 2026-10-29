@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from jiuwenswarm.server.ipc.protocol import KIND_REQUEST
 from jiuwenswarm.server.worker import diagnostics, service
+from jiuwenswarm.server.worker.main import main
 
 
 class SlowShellProbe:
@@ -147,11 +148,15 @@ class TrafficRuntime:
         if self.mode == "slow-shell":
             await self._slow_shell_request(ws, request)
             return
-        if self.mode == "freeze" and request.params.get("freeze", True):
+        if self.mode == "heartbeat-loss":
+            await ws.send(json.dumps({"request_id": request.request_id, "phase": "heartbeats_muted"}))
+            await asyncio.Event().wait()  # Keep the business loop responsive.
+            return
+        if self.mode in {"freeze", "freeze-long"} and request.params.get("freeze", True):
             await ws.send(
                 json.dumps({"request_id": request.request_id, "phase": "freezing"})
             )
-            time.sleep(60)  # Intentional event-loop stall, in this owned child only.
+            time.sleep(200 if self.mode == "freeze-long" else 60)  # Owned child fault injection.
             return
         frames = int(request.params.get("frames", 64))
         size = int(request.params.get("bytes", 8192))
@@ -233,6 +238,7 @@ class TrafficRuntime:
 
 
 def configure(mode: str) -> None:
+    """Inject traffic faults while retaining the production Worker entrypoint."""
     async def load_runtime(host, port, signals, dispatcher, loaded):
         runtime = TrafficRuntime(mode)
         await dispatcher.bind_runtime(runtime)
@@ -261,12 +267,12 @@ def configure(mode: str) -> None:
                 diagnostics.cancel_stall_dump()
 
         service._read_session = crashing_session
-def run() -> None:
-    from jiuwenswarm.server.worker.main import main
 
+
+def run() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell", "slow-logging", "regex-logging"], required=True
+        "--mode", choices=["pool-pressure", "freeze", "freeze-long", "heartbeat-loss", "crash", "slow-shell", "slow-logging", "regex-logging"], required=True
     )
     args, remaining = parser.parse_known_args()
     configure(args.mode)

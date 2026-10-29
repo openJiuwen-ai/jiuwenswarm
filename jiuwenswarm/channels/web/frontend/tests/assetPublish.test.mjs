@@ -150,14 +150,14 @@ test('exhausted refresh stops loading and exposes an error notice', (context) =>
     ({ scheduleCatalogRefresh, catalogAwaitingItems, catalogCacheNotice }) => {
       const pending = { state: 'miss', refreshing: true };
       let cache;
-      for (let i = 0; i < 31; i++) {
+      for (let i = 0; i < 151; i++) {
         cache = scheduleCatalogRefresh(
           'exhausted-test',
           pending,
           () => {},
           () => true,
         );
-        context.mock.timers.tick(4000);
+        context.mock.timers.tick(400);
       }
       assert.equal(catalogAwaitingItems(0, cache), false);
       assert.equal(catalogCacheNotice(cache)?.kind, 'error');

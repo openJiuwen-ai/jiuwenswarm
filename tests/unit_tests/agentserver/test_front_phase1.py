@@ -219,7 +219,7 @@ os.environ["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
 forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
-    "gateway.channel_manager.web.app_web_handlers",
+    "agent_gateway.channel_manager.web.app_web_handlers",
     "jiuwenswarm.agents.harness",
     "jiuwenswarm.common.config",
     "jiuwenswarm.server.runtime.gateway_adapter",
@@ -959,8 +959,8 @@ async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callba
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.worker import execution_host, runtime_backend, runtime_bootstrap
     from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 

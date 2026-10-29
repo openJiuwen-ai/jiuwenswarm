@@ -10,6 +10,16 @@
 
 from __future__ import annotations
 
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.extensions.registry import ExtensionRegistry
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hooks_context import MemoryHookContext
+from jiuwenswarm.common.utils import get_agent_home_dir
+from jiuwenswarm.common.utils import mask_sensitive
+from jiuwenswarm.enterprise import is_enterprise
+from jiuwenswarm.runtime.client_tools import client_tool_answers
+from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
+
 import json
 from concurrent.futures import Future
 from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
@@ -26,7 +36,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from gateway.common.session_message import (
+from agent_gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
     with_cross_session_history_metadata,
@@ -87,7 +97,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_team_mode as is_team_runtime_mode,
@@ -581,6 +591,13 @@ def _history_media_record(value: Any, *, default_type: str = "image") -> dict[st
     )
     mime_type = _history_media_string(value, "mime_type", "mimeType")
     size = _history_media_size(value)
+    # The composer draft's own id (session.assets.register's idempotency key, see
+    # session_assets.py): without it surviving a history reload, a historical
+    # message's attachment can only be matched back to the session asset it
+    # created by path alone -- ambiguous once the same path legitimately backs
+    # more than one asset (a deliberate re-attach), see
+    # resolveAssetDisplayNames (assetReferences.ts).
+    client_id = _history_media_string(value, "clientId", "client_id")
 
     record: dict[str, Any] = {
         "type": media_type,
@@ -594,6 +611,8 @@ def _history_media_record(value: Any, *, default_type: str = "image") -> dict[st
         record["url"] = url
     if size is not None:
         record["size_bytes"] = size
+    if client_id:
+        record["client_id"] = client_id
     return record
 
 
@@ -1718,6 +1737,7 @@ class JiuWenSwarm:
                     request_id,
                     answers,
                     source,
+                    interrupt_id=str(params.get("interrupt_id") or ""),
                 )
                 if interactive_input is not None:
                     final_query = interactive_input
@@ -1920,6 +1940,8 @@ class JiuWenSwarm:
             request_id: str,
             answers: list[dict],
             source: str = "",
+            *,
+            interrupt_id: str = "",
     ) -> Any:
         """从用户答案构建 InteractiveInput.
 
@@ -1927,6 +1949,10 @@ class JiuWenSwarm:
             request_id: 工具调用 ID
             answers: 用户答案列表，每个答案对应一个问题
             source: 中断来源，用于区分 PermissionRail 和 AskUserRail
+            interrupt_id: 所答中断的 id（chat.ask_user_question 事件携带）。
+                没有时按工具调用 ID 回答：升级前挂起的中断、agent-core 分配
+                id 之前流出的 ask_user 问题都没有 id，单独发布的旧版 IDE 插件
+                也不会带
 
         Returns:
             InteractiveInput 实例
@@ -1935,7 +1961,23 @@ class JiuWenSwarm:
 
         interactive_input = InteractiveInput()
 
+        def address(value: Any) -> None:
+            if interrupt_id:
+                interactive_input.answer(interrupt_id, value)
+            else:
+                interactive_input.update(request_id, value)
+
+        if source == CLIENT_TOOL_INTERRUPT_SOURCE:
+            # One result per paused client tool call, by its interrupt id; a call left unanswered stays paused.
+            for answer in client_tool_answers(answers):
+                interactive_input.answer(answer.interrupt_id, answer.result)
+            return interactive_input
+
         if source == "ask_user_interrupt":
+            if not interrupt_id:
+                from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
+
+                return build_ask_user_interactive_input(request_id, answers)
             answers_dict = {}
             free_text_answer: str | None = None
             for answer in answers:
@@ -1986,7 +2028,7 @@ class JiuWenSwarm:
                         )
             if not answers_dict and free_text_answer:
                 answers_dict["__free_text__"] = free_text_answer
-            interactive_input.update(request_id, {"answers": answers_dict})
+            address({"answers": answers_dict})
             logger.info(
                 "[JiuWenSwarm] AskUserRail InteractiveInput.update: request_id=%s "
                 "answer_count=%s",
@@ -2020,10 +2062,13 @@ class JiuWenSwarm:
                     "SkillEvolutionApproval", source, request_id, value, "rejected_as_unknown_option"
                 )
                 action = "reject"
+            elif action == "allow_always" and is_enterprise():
+                # 企业版不提供「总是允许」；旧前端或伪造请求仍回传时降级为本次允许。
+                action = "allow_once"
             payload = {"action": action}
             if custom_input:
                 payload["feedback"] = custom_input
-            interactive_input.update(request_id, payload)
+            address(payload)
             logger.info(
                 "[JiuWenSwarm] SkillEvolutionApproval InteractiveInput.update: request_id=%s payload=%s",
                 request_id, payload
@@ -2056,10 +2101,12 @@ class JiuWenSwarm:
                 "feedback": "",
             }
         elif action == ALWAYS_ALLOW:
+            # 企业版权限卡不提供「永久记住」；若旧前端或伪造请求仍回传该动作，
+            # 降级为会话内记住，避免写回本地 user overlay / approval_overrides。
             confirm_payload = {
                 "approved": True,
                 "auto_confirm": True,
-                "persist_allow": True,
+                "persist_allow": not is_enterprise(),
                 "feedback": "",
             }
         elif value in PLAN_EXECUTE_OPTION_VALUES:
@@ -2111,20 +2158,11 @@ class JiuWenSwarm:
             )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
-        card_ids = (
-            _permission_card_ids_from_answers(answers)
-            if source == "permission_interrupt" else []
-        )
-        if not card_ids:
+        if source == "permission_interrupt" and _validate_permission_card_alias(request_id, answers):
+            # The Smart queue reserves its head by tool call id.
             interactive_input.update(request_id, confirm_payload)
-            return interactive_input
-        interactive_input.update(card_ids[0], confirm_payload)
-        logger.info(
-            "[JiuWenSwarm] PermissionRail card InteractiveInput.update: "
-            "request_id=%s card_id=%s",
-            request_id,
-            card_ids[0],
-        )
+        else:
+            address(confirm_payload)
         return interactive_input
 
     async def _handle_skilldev_request(self, request: AgentRequest) -> AgentResponse | None:
@@ -2221,32 +2259,32 @@ class JiuWenSwarm:
 
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
-    
+
         根据 intent 分流：
         - pause: 暂停 ReAct 循环（不取消任务）
         - resume: 恢复已暂停的 ReAct 循环
         - cancel: 取消当前 session 正在运行的任务
         - supplement: 取消当前任务但保留 todo
-    
+
         Args:
             request: AgentRequest，params 中可包含：
                 - intent: 中断意图 ('pause' | 'cancel' | 'resume' | 'supplement')
                 - new_input: 新的用户输入（用于切换任务）
-    
+
         Returns:
             AgentResponse 包含 interrupt_result 事件数据
         """
         intent = request.params.get("intent", "cancel")
         session_id = self._session_manager.get_session_id(request.session_id)
         is_team_mode = is_team_params(request.params if isinstance(request.params, dict) else None)
-    
+
         if is_team_mode:
             return await self._process_team_interrupt(
                 request=request,
                 intent=intent,
                 session_id=session_id,
             )
-    
+
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         external_session_checker = getattr(
             adapter,
@@ -2257,15 +2295,15 @@ class JiuWenSwarm:
             callable(external_session_checker)
             and external_session_checker(request.session_id)
         )
-    
+
         if intent == "pause":
             # 暂停：不取消任务，只暂停 ReAct 循环
             return await adapter.process_interrupt(request)
-    
+
         if intent == "resume":
             # 恢复：恢复 ReAct 循环
             return await adapter.process_interrupt(request)
-    
+
         if intent == "supplement":
             # 取消当前 session 的任务
             response = await adapter.process_interrupt(request)
@@ -2273,7 +2311,7 @@ class JiuWenSwarm:
                 return response
             await self._session_manager.cancel_session_task(session_id, "interrupt(supplement): ")
             return response
-    
+
         # cancel: 先调用 adapter.process_interrupt（此时 session 仍在 _active_session_ids 中，
         # guard 能通过），再 cancel_session_task（其 finally 会把 session 从 _active_session_ids 移除）。
         # 顺序不能反，否则 process_interrupt 的 session guard 会误判为 "not active" 而跳过 abort。
@@ -2321,7 +2359,7 @@ class JiuWenSwarm:
         session_id: str,
     ) -> AgentResponse:
         """Handle interrupt requests for Team mode.
-    
+
         Team runtime is persistent and owned by openjiuwen Runner pool. For team sessions:
         - pause stops the foreground stream and parks the runtime in paused state
           via Runner.pause_agent_team, allowing same-session resume.
@@ -2331,10 +2369,13 @@ class JiuWenSwarm:
           message directly to continue a paused session.
         """
         from jiuwenswarm.agents.harness.team import get_team_manager
-    
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import control_target
+
+        voice_round = control_target(request)
+
         team_manager = get_team_manager(request.channel_id)
         reason = f"interrupt(intent={intent}): "
-    
+
         if intent == "resume":
             return self._build_interrupt_result_response(
                 request,
@@ -2342,25 +2383,12 @@ class JiuWenSwarm:
                 success=True,
                 message="团队暂停后，直接发送下一条消息即可继续。",
             )
-    
+
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
-                if paused:
-                    # The persistent foreground stream survives pause, so the
-                    # gateway's stream-exit fallback never fires.  Emit the
-                    # terminal frame explicitly; shape matches the old
-                    # gateway fallback exactly.
-                    await team_manager.broadcast_event(
-                        session_id,
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                        },
-                        channel_id=request.channel_id,
-                    )
+                # Runtime retains pure observation subscriptions and broadcasts
+                # completion after the cancelled business response streams exit.
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -2386,13 +2414,15 @@ class JiuWenSwarm:
                 )
                 message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
             success = paused if intent == "pause" else cancelled
+            if voice_round is not None and intent == "cancel" and cancelled:
+                await voice_round.settle(cancelled=True)
             return self._build_interrupt_result_response(
                 request,
                 intent=intent,
                 success=success,
                 message=message,
             )
-    
+
         return self._build_interrupt_result_response(
             request,
             intent=intent,
@@ -2441,11 +2471,17 @@ class JiuWenSwarm:
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
-        return await self._process_message(request, schedule_session=True)
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
-        return await self._process_message(request, schedule_session=False)
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=False)
 
     async def _process_message(
         self,
@@ -2454,13 +2490,18 @@ class JiuWenSwarm:
         schedule_session: bool,
     ) -> AgentResponse:
         """处理非流式请求.
-    
+
         支持多 session 并发执行，同 session 内任务按先进后出顺序执行.
         """
         if request.req_method == ReqMethod.CHAT_CANCEL:
             return await self._process_interrupt(request)
-    
+
         if request.req_method == ReqMethod.CHAT_ANSWER:
+            if (request.channel_id == "video_tool" and (request.params or {}).get("mode") == "team.design"
+                    and (request.params or {}).get("managed_task_request")):
+                from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import answer_design_task
+
+                return await answer_design_task(request, self._build_inputs)
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
             validator = getattr(
                 adapter, "validate_auto_permission_workspace_request", None
@@ -2468,11 +2509,11 @@ class JiuWenSwarm:
             if callable(validator):
                 validator(request)
             return await adapter.handle_user_answer(request)
-    
+
         if request.req_method == ReqMethod.CHAT_SWARMFLOW_REPLY:
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
             return await adapter.handle_swarmflow_reply(request)
-    
+
         # Non-stream goal command (GET, PAUSE, CLEAR)
         if request.req_method == ReqMethod.COMMAND_GOAL:
             try:
@@ -2573,39 +2614,39 @@ class JiuWenSwarm:
                     payload={"error": f"Goal command error: {exc}"},
                     metadata=request.metadata,
                 )
-    
+
         # 无状态请求（skills / skilldev / plugins / Skill Graph）不需要 adapter，
         # 在 _ensure_adapter 之前检查，避免触发 adapter 懒初始化。
         # COMMAND_GOAL 已在上方单独处理（其内部按需 ensure），不影响本顺序。
         skilldev_response = await self._handle_skilldev_request(request)
         if skilldev_response is not None:
             return skilldev_response
-    
+
         skills_response = await self._handle_skills_request(request)
         if skills_response is not None:
             return skills_response
-    
+
         session_asset_response = await self._handle_session_asset_request(request)
         if session_asset_response is not None:
             return session_asset_response
-    
+
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
             return plugins_response
-    
+
         package_catalog_response = await self._handle_package_catalog_request(request)
         if package_catalog_response is not None:
             return package_catalog_response
-    
+
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         validator = getattr(adapter, "validate_auto_permission_workspace_request", None)
         if callable(validator):
             validator(request)
-    
+
         heartbeat_response = await adapter.handle_heartbeat(request)
         if heartbeat_response is not None:
             return heartbeat_response
-    
+
         session_id = self._session_manager.get_session_id(request.session_id)
         if isinstance(request.params, dict):
             restore_chat_send_equipment_params(session_id, request.params)
@@ -2656,12 +2697,12 @@ class JiuWenSwarm:
             )
         # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
         # resume 走 control-input 路径，不经过本方法。
-    
+
         logger.info(
             "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
         )
-    
+
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
         except asyncio.CancelledError:
@@ -2808,7 +2849,7 @@ class JiuWenSwarm:
             # cloud memory: after chat hook
             if memory_mode == "cloud":
                 await self._get_hook_services().after_memory(request, content_str)
-    
+
             # auto memory: extract memories after conversation ends
             # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
             mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
@@ -2876,38 +2917,24 @@ class JiuWenSwarm:
     async def deliver_control_input(
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
-        """Delegate continuation execution and persistence to its owned service."""
-        from jiuwenswarm.server.runtime.agent_adapter.control_input_execution import (
-            ControlInputExecutionService, ControlInputPorts,
-        )
+        """Inject an interaction answer into this Session's active execution."""
+        if not is_interrupt_resume_payload(request.params):
+            raise ValueError("control input must answer an active interaction")
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
 
-        service = ControlInputExecutionService(self, request, ControlInputPorts(
-            is_interrupt_resume_payload=is_interrupt_resume_payload,
-            restore_equipment=restore_chat_send_equipment_params,
-            compute_mcp_needed=compute_chat_send_mcp_needed,
-            persist_answer=_persist_ask_user_answer_history,
-            run_history_io=_run_history_io,
-            append_history_record=append_history_record,
-            decorate_web=_with_web_agent_template_metadata,
-            decorate_heartbeat=_with_heartbeat_history_metadata,
-            decorate_cross_session=_with_cross_session_history_metadata,
-            resolve_final_timestamp=_resolve_final_record_timestamp,
-            person_drove_turn=_person_drove_turn,
-            complete_history_request=_complete_history_request,
-            session_message_owns_completion=_session_message_owns_completion,
-            await_history_receipt=_await_history_receipt,
-        ))
-        owners = getattr(self, "_control_input_executions", None)
-        if owners is None:
-            owners = self._control_input_executions = set()
-        owners.add(service)
+        # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
+        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        stream = self._stream_control_input(request)
         try:
-            async with aclosing(service.run()) as stream:
-                async for chunk in stream:
-                    yield chunk
+            while True:
+                with bind_request_subject(request.metadata):
+                    try:
+                        chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        return
+                yield chunk
         finally:
-            if service.closed:
-                owners.discard(service)
+            await stream.aclose()
 
     async def _close_control_input_executions(self, session_id=None) -> None:
         owners = getattr(self, "_control_input_executions", ())
@@ -2917,6 +2944,26 @@ class JiuWenSwarm:
                 owners.discard(service)
 
     async def process_message_stream(
+        self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """处理流式请求，并带上本次请求的用户身份。"""
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+
+        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        stream = self._process_message_stream(request)
+        try:
+            while True:
+                with bind_request_subject(request.metadata):
+                    try:
+                        chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        return
+                yield chunk
+        finally:
+            await stream.aclose()
+
+
+    async def _process_message_stream(
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """Dispatch execution through request-owned projection/history services."""
@@ -2956,6 +3003,7 @@ class JiuWenSwarm:
             person_drove_turn=_person_drove_turn,
             complete_history_request=_complete_history_request,
             session_message_owns_completion=_session_message_owns_completion,
+            team_preflight_failure_chunks=_team_preflight_failure_chunks,
             await_history_receipt=_await_history_receipt,
         )
         service = StreamExecutionService(self, ports)
@@ -3049,7 +3097,7 @@ class JiuWenSwarm:
         retain_moa_snapshot: bool = False,
     ) -> None:
         """Reconcile this session's MCP set to ``needed`` (idempotent diff).
-    
+
         Session-level enable driven by chat.send: callers should pass the union
         of ``params.mcp`` and connectors from ``agent_template_name`` /
         ``plugin_names`` (see ``compute_chat_send_mcp_needed``). ``None`` /
@@ -3447,9 +3495,12 @@ class JiuWenSwarm:
     ) -> dict[str, Any] | None:
         """Resolve one chat's runtime before any session-child side effects."""
         if request.req_method is not ReqMethod.CHAT_SEND:
+            # Stamp absence so deep-adapter paths can getattr safely.
+            request.trusted_runtime_binding = None
             return None
         resolver = getattr(adapter, "resolve_runtime_binding", None)
         if not callable(resolver):
+            request.trusted_runtime_binding = None
             return None
         params = request.params if isinstance(request.params, dict) else {}
         runtime_binding = resolver(session_id, params)
@@ -3459,9 +3510,122 @@ class JiuWenSwarm:
         return runtime_binding
 
 
+    async def _stream_control_input(
+        self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """Delegate continuation execution and persistence to its owned service."""
+        from jiuwenswarm.server.runtime.agent_adapter.control_input_execution import (
+            ControlInputExecutionService, ControlInputPorts,
+        )
+
+        service = ControlInputExecutionService(self, request, ControlInputPorts(
+            is_interrupt_resume_payload=is_interrupt_resume_payload,
+            restore_equipment=restore_chat_send_equipment_params,
+            compute_mcp_needed=compute_chat_send_mcp_needed,
+            persist_answer=_persist_ask_user_answer_history,
+            run_history_io=_run_history_io,
+            append_history_record=append_history_record,
+            decorate_web=_with_web_agent_template_metadata,
+            decorate_heartbeat=_with_heartbeat_history_metadata,
+            decorate_cross_session=_with_cross_session_history_metadata,
+            resolve_final_timestamp=_resolve_final_record_timestamp,
+            person_drove_turn=_person_drove_turn,
+            complete_history_request=_complete_history_request,
+            session_message_owns_completion=_session_message_owns_completion,
+            await_history_receipt=_await_history_receipt,
+        ))
+        owners = getattr(self, "_control_input_executions", None)
+        if owners is None:
+            owners = self._control_input_executions = set()
+        owners.add(service)
+        try:
+            async with aclosing(service.run()) as stream:
+                async for chunk in stream:
+                    yield chunk
+        finally:
+            if service.closed:
+                owners.discard(service)
+
+
+    async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
+        """What this Session's paused turn still asks, as the events that asked it."""
+        return await self._adapter.pending_interactions(session_id) if self._adapter is not None else []
+
+
+
 def __getattr__(name: str):
     if name == "package_manager":
         from jiuwenswarm.server.runtime import extension_package_manager
 
         return extension_package_manager
     raise AttributeError(name)
+
+
+def _validate_permission_card_alias(request_id: str, answers: list[dict]) -> bool:
+    """Return whether an answer carries a valid deprecated Smart card alias."""
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+        RootPermissionQueueError,
+    )
+
+    for answer in answers:
+        if not isinstance(answer, dict) or "card_id" not in answer:
+            continue
+        if len(answers) != 1:
+            raise RootPermissionQueueError("permission_queue_one_answer_required")
+        raw_card_id = answer["card_id"]
+        if not isinstance(raw_card_id, str):
+            raise RootPermissionQueueError("permission_card_alias_invalid")
+        card_id = raw_card_id.strip()
+        if not card_id or len(card_id) > 512:
+            raise RootPermissionQueueError("permission_card_alias_invalid")
+        if card_id != request_id:
+            raise RootPermissionQueueError("permission_card_alias_conflict")
+        return True
+    return False
+
+
+async def _team_preflight_failure_chunks(
+    request_id: str,
+    channel_id: str | None,
+    session_id: str,
+    exc: Exception,
+) -> AsyncIterator[AgentResponseChunk]:
+    """Report a Team turn rejected before it reached the team runtime.
+
+    The persistent leader stream of an earlier round keeps the Gateway from
+    sending its fallback ``processing=false`` for this request, so when no Team
+    work remains to settle the Session the terminal status is sent here.
+    """
+    from jiuwenswarm.agents.harness.team.team_manager import team_session_has_active_work
+
+    logger.warning(
+        "[JiuWenSwarm] Team turn rejected before dispatch: session_id=%s request_id=%s error=%s",
+        session_id,
+        request_id,
+        exc,
+    )
+    yield AgentResponseChunk(
+        request_id=request_id,
+        channel_id=channel_id,
+        payload={"event_type": "chat.error", "error": mask_sensitive(str(exc))},
+        is_complete=False,
+    )
+    if not team_session_has_active_work(session_id):
+        yield AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload={
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+                "is_complete": True,
+            },
+            is_complete=False,
+        )
+    yield AgentResponseChunk(
+        request_id=request_id,
+        channel_id=channel_id,
+        payload=None,
+        is_complete=True,
+    )

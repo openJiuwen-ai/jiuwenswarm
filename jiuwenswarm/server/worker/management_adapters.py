@@ -148,6 +148,61 @@ _PROVIDERS["designer"] = (
     frozenset(method.value for method in ReqMethod if method.value.startswith("designer.")),
 )
 
+
+_PROVIDERS["jiuwenmate"] = (
+    "jiuwenswarm.server.jiuwenmate.web_adapter",
+    "JiuwenMateWebAdapter",
+    frozenset({
+        ReqMethod.JIUWENMATE_ACTIVITY_GET.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_BEGIN.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_CANCEL.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_POLL.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_DISCONNECT.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_STATUS.value,
+        ReqMethod.JIUWENMATE_CHANNEL_LIST.value,
+        ReqMethod.JIUWENMATE_CHANNEL_MESSAGES.value,
+        ReqMethod.JIUWENMATE_CHANNEL_TRACE.value,
+        ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
+        ReqMethod.JIUWENMATE_CHAT_SEND.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_CREATE.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_GET.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_GET.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_SET_ENABLED.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_LIST.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_PIN.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS.value,
+        ReqMethod.JIUWENMATE_KNOWLEDGE_LIST.value,
+        ReqMethod.JIUWENMATE_MODELS_LIST.value,
+        ReqMethod.JIUWENMATE_PERMISSION_DECIDE.value,
+        ReqMethod.JIUWENMATE_REQUEST_ABORT.value,
+        ReqMethod.JIUWENMATE_REQUEST_GET.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_CREATE.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_DELETE.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_HISTORY.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_LIST.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_RUN.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_SET_ENABLED.value,
+        ReqMethod.JIUWENMATE_SCHEDULE_UPDATE.value,
+        ReqMethod.JIUWENMATE_SHARING_DECIDE.value,
+        ReqMethod.JIUWENMATE_SHARING_LIST.value,
+        ReqMethod.JIUWENMATE_SHARING_REVOKE.value,
+        ReqMethod.JIUWENMATE_WELINK_OFFICE_CONNECT.value,
+        ReqMethod.JIUWENMATE_WELINK_OFFICE_DISCONNECT.value,
+        ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS.value,
+        ReqMethod.MODELS_REFRESH_STATUS.value,
+    }),
+)
+
 _METHOD_PROVIDERS = {
     method: key for key, (_, _, methods) in _PROVIDERS.items() for method in methods
 }
@@ -167,6 +222,8 @@ class LazyAdapterRegistry:
         key = _METHOD_PROVIDERS.get(method)
         if key is None:
             return None
+        if key == "jiuwenmate":
+            return self._host._jiuwenmate_web
         if key not in self._instances:
             module_name, class_name, _ = _PROVIDERS[key]
             factory = getattr(import_module(module_name), class_name)
