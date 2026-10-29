@@ -138,6 +138,7 @@ class ExecutionDriver:
         cli: FeishuCliRuntime | None = None,
         agent_mail_runtime: AgentMailRuntimeService | None = None,
         permission_approvals: PermissionApprovalRepository | None = None,
+        group_sharing=None,
     ) -> None:
         self._snapshots = snapshots
         self._commit_port = commit_port
@@ -162,6 +163,7 @@ class ExecutionDriver:
         self._cli = cli or FeishuCliRuntime(windows.db_path.parent)
         self._agent_mail_runtime = agent_mail_runtime
         self._permission_approvals = permission_approvals
+        self._group_sharing = group_sharing
 
     def new_handle(self) -> ExecutionHandle:
         return ExecutionHandle(self._abort)
@@ -199,6 +201,10 @@ class ExecutionDriver:
                     cursors=self._group_search_cursors,
                     clock=self._clock,
                 )
+                if self._group_sharing is not None:
+                    from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
+
+                    group_chat_port = GuardedGroupChatPort(group_chat_port, self._group_sharing)
             ports = core.PersistentPorts(
                 commit=self._commit_port,
                 budget=self._budget_port,
@@ -328,6 +334,19 @@ class ExecutionDriver:
                 record.namespace_id, record.request_id, execution.execution_id,
                 reason=reason, detail=detail, now=self._clock(),
             )
+            # A durable failure cannot be continued. Settle even when preflight
+            # failed before the saved reply was loaded, or no terminal was yielded.
+            if self._permission_approvals is not None:
+                approval = await asyncio.to_thread(
+                    self._permission_approvals.resume_reply, record.namespace_id, record.request_id,
+                )
+                if approval is not None:
+                    await core.discard_persistent_confirmation(
+                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                        agent_id=record.agent_id, session_id=record.session_id,
+                        request_id=record.request_id, spec_fingerprint=record.config_fingerprint,
+                    )
+                    await asyncio.to_thread(self._permission_approvals.consume, approval.approval_id)
         except Exception:
             logger.exception("[JiuwenMate] execution failure notice could not be persisted: request=%s",
                              record.request_id)

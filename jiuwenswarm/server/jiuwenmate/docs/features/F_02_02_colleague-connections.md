@@ -9,45 +9,47 @@
 | 方案成熟度 | 已确认：产品取舍、D-01、D-08、企业飞书处理方式与架构修订均由本 session 用户于 2026-10-26 确认（第 3 节） |
 | 计划条目 | [JM-02](../designs/jiuwenmate-development-plan.md) 的子特性；同时修改 JM-08（飞书入站检查）、JM-10（同事页面）和 JM-21 钉钉子范围的接线。保留这些条目的整项负责人、排期与状态；本子范围负责人同步登记到计划 |
 | 负责人 | 本子特性方案与实现：Song Haoran；JM-02、JM-10 整项负责人常钰聪，JM-08、JM-21 整项负责人闫祉君，不变 |
-| 状态 | 本地实现；第二轮五项修复与第三轮 Gateway 绑定保存窗口修复均已有组件和接线（替身）验证，见第 8、10 节；本次作为 PR2 提交子仓并提请审阅，未进行完整浏览器核对、原生 PA 执行与真实飞书、钉钉联调 |
+| 状态 | D-10 的 Web/飞书共享身份已在本地实现，尚未验证；本次未运行测试，未进行真实渠道联调。原连接隔离实现的历史验证见第 8、10 节 |
 | 设计依据 | [架构](../designs/jiuwenmate-architecture.md)第 2.1、4.1、9.2 节（按 6.2 节修订，已获确认）；[S_03](../specs/S_03_im-direct-message-and-delivery.md) |
 | 关联 feature | 前置：[F_02](F_02_colleague-management.md)、[F_21_02 钉钉单聊](F_21_02_dingtalk-direct-message.md)（本方案替代其第 9 节的合入依赖和 D-07 的临时检查）；相关：[F_08](F_08_feishu-group-fanout.md)、[F_10](F_10_web-colleague-management.md)、[F_14](F_14_workspace-read.md)、[F_24](F_24_personal-data-access.md) |
-| 验证摘要 | 第三轮：聚合专项 44 passed（新增 24 项），后端完整集合 985 passed、6 failed、1 skipped，集成与渠道 163 passed、4 failed、1 skipped；失败项与 HEAD 基线相同。推送前复核重新执行后端集合，仍为 985 passed、6 failed、1 skipped；前端 108 项、设置页 64 项与构建通过。完整浏览器、原生 PA 与真实平台未验证，当前预览模型创建员工受分词器准备失败阻塞，详见第 8、9 节 |
+| 验证摘要 | 2026-10-26 的历史结果只证明当时的按连接隔离实现。本次 D-10 代码尚未验证；测试、浏览器与真实飞书联调均未运行 |
 | Refs | 无独立 issue；需求来源为本 session 用户决定。[PR1 !76（钉钉，提交 `1d6f9445`）](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/76) 与 [PR2 !77（本方案）](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/77) 配套审阅和交付；均为草稿，未经用户审批不合入 |
+
+> **当前规则修订（2026-10-28）：** D-10 已将 Web 与飞书收敛到同一 canonical Agent ID；新飞书绑定不再创建 IM Persistent Agent。钉钉仍使用独立连接 Agent。2026-10-26 起的“每个连接一个运行 Agent”仅继续适用于钉钉及历史飞书记录；与 D-10 冲突的早期描述按 D-10 解释。
 
 ## 2. 背景、目标与范围
 
 ### 2.1 背景与问题
 
-当前一位同事只有一个 `agent_id`，Web 私聊、飞书和钉钉都由这一个 Agent 服务，共用同一个办公目录、Session 库和飞书 CLI 身份。已核实的问题：
+2026-10-26 的连接隔离改造为每个 IM 应用另建 Persistent Agent。实际使用中，Web 与飞书之间因此出现不同 Agent ID，Web 下已有的群访问和上下文不能由飞书入口按同一身份检索。原连接隔离仍用于隔离钉钉数据；本次按用户确认，将 Web 与飞书恢复为共享同一 canonical Agent ID：
 
 - **跨平台读取。** 飞书单聊与群聊拿到 `workspace_read`，可以读取该 Agent 办公目录中的全部共享输出，包括为钉钉用户生成的文件（PR1 检视中已复现）。
 - **换应用复用数据。** 同一同事换绑另一个钉钉应用后，新应用的用户能读到旧应用用户留下的文件。
 - **PR1 的临时措施不对称。** 钉钉入站和绑定接口拒绝已服务其他连接的 Agent（`has_sessions_outside_dingtalk_app`、`has_feishu_binding`、`jiuwenmate.dingtalk.binding_check`），飞书路径没有对应检查。F_21_02 第 9 节因此把“PR1 不单独发布”列为合入依赖。
 
-用户的决定是：用户看到的一个“同事”是一份配置；每个连接（Web、每个飞书应用、每个钉钉应用）有自己的运行 Agent 和工作空间，隔离单位是连接。
+当前决定（2026-10-28）：一位同事的 Web 与飞书使用同一 Persistent Agent、版本和工作空间；Web 与飞书的会话仍由各自会话标识隔离。钉钉继续使用原有的独立连接 Agent 与工作空间。此前“所有连接均独立”的决定仅保留为历史背景。
 
 ### 2.2 目标与关键场景
 
 | 场景 / 触发条件 | 当前行为 | 目标行为 |
 | --- | --- | --- |
-| 给“会计助手”绑定飞书应用 A 和钉钉应用 B | 三个入口共用一个 Agent | Web、A、B 各有独立的运行 Agent、办公目录和 Session；同事列表仍只显示一个“会计助手” |
+| 给“会计助手”绑定飞书应用 A 和钉钉应用 B | Web、飞书、钉钉各自使用不同 ID | Web 与 A 使用同一个 Agent ID、发布版本和工作空间；B 仍使用独立 Agent；同事列表仍只显示一个“会计助手” |
 | 修改人设并发布 | 发布一个 Agent | 同一次发布在一个事务内切换该配置全部运行 Agent 的版本；任一失败或并发冲突时全部保持原版本 |
 | 飞书用户请求读取文件 | 能读到钉钉连接的输出 | 只能读到飞书应用 A 这个连接的办公目录 |
 | 手工修改 YAML，把某 Agent 绑到另一个应用或平台 | 飞书照常运行，钉钉拒绝 | 飞书和钉钉入站都拒绝，不回落普通助手 |
 | 同一配置重新绑定原来的应用 | — | 沿用原连接的 Agent 和数据 |
 | 应用改绑到另一个配置 | — | 新配置得到新的 Agent；旧 Agent 的数据保留、不再被该应用使用 |
-| 在工作台切换到“飞书·A”工作空间 | 不支持 | 聊天、历史、文件、执行轨迹和群记录都来自应用 A 的 Agent；定时任务、邮件授权和活跃统计仍在 Web Agent 上 |
+| 在工作台查看 Web 与飞书 | 当前会出现两个 Agent 工作空间 | Web 与飞书指向同一个工作空间；会话历史仍按会话隔离 |
 | 删除同事 | 删除 Agent，YAML 绑定残留 | 用户选择“仅解除连接”或“全部删除”，两者都先移除 YAML 中的绑定应用 |
 
 ### 2.3 本次范围与非目标
 
-- 本次包含：连接登记、按连接派生运行 Agent、全有或全无的发布、Gateway 绑定与解除接入登记、飞书和钉钉入站共用的登记检查、两种删除、配置级启停、工作空间选择、撤回 PR1 的临时检查。
+- 本次补充范围：飞书绑定使用同事 canonical ID，不为飞书新建 Persistent Agent；Web 与飞书共享发布版本、工作空间及 Agent 级群访问记录；钉钉路径及其独立连接 Agent 不变。现有旧飞书连接数据保留，不在本次自动迁移或删除。
 - 本次不包含：恢复已解除的同事或查看已解除连接的数据（不提供入口）；单个连接的启停；旧数据迁移（见第 7 节）；定时任务、邮件授权和活跃统计按连接切换；企业飞书（`channels.feishu_enterprise`）的界面绑定与登记（见第 3 节约束 10）；改动 agent-core。
 
 ## 3. 设计约束、假设与待决问题
 
-**已确认约束**（本 session 用户，2026-10-26）：
+**原方案决策记录**（本 session 用户，2026-10-26；当前规则有修订时以 D-10 为准）：
 
 1. 一份配置对应每个连接各自的运行 Agent；每份配置固定一个 Web Agent。
 2. 隔离单位是连接；更换 client_id 或 app_id 就是新连接。
@@ -60,6 +62,8 @@
 9. 不修改 agent-core；不做格式化和静态检查；不提交、不推送。
 10. 企业飞书暂不纳入登记检查：未登记的 Agent 照旧受理，问题记入遗留（第 9.2 节）。
 11. D-01、D-08 及第 6.2 节的架构修订按本文执行。
+
+**当前规则（D-10，2026-10-28）：** Web 与飞书使用同一个同事 canonical Agent ID、发布版本和工作空间；新飞书绑定不创建 Persistent Agent 行、连接登记、版本或工作空间。聊天 Session 仍按各自会话标识隔离。钉钉继续为每个连接使用独立 Agent。旧飞书绑定在重新绑定前沿用原连接 Agent；重新绑定后指向 canonical ID，旧数据保留。
 
 **关键假设：**
 
@@ -77,7 +81,7 @@
 
 ### 4.1 方案概览
 
-配置仍是 `colleagues` 表中的一行，这一行同时就是它的 Web 运行 Agent。每添加一个 IM 连接，AgentServer 新建一个运行 Agent（`colleagues` 表中的另一行），并在新表 `colleague_connections` 中登记“这个 Agent 专属于哪份配置的哪个平台应用”。YAML 中的 `persistent_agent_id` 改为写入连接的运行 Agent。飞书和钉钉入站在原有绑定解析之后再核对登记：YAML 绑定到的 Agent 必须登记为本平台、本应用的连接，否则拒绝。
+配置仍是 `colleagues` 表中的一行，这一行同时就是 Web 运行 Agent。当前规则按渠道区分：飞书 YAML 的 `persistent_agent_id` 指向该配置行的 canonical Agent ID，不新建 Persistent Agent；钉钉仍为每个应用创建独立运行 Agent，并在 `colleague_connections` 登记。飞书入站校验配置 ID 与当前接收应用绑定，钉钉入站校验登记与平台、应用一致。
 
 ```mermaid
 flowchart LR
@@ -192,21 +196,21 @@ flowchart LR
 
 | 模块 | 本次责任 |
 | --- | --- |
-| `repository.py` | `colleague_connections` 表；`colleagues` 新增 `hidden`、`published_settings_json` 列；配置发布事务、连接 Agent 的创建与首次发布 |
-| `service.py` | 区分配置与运行 Agent；运行视图按配置解析名称、设置和启停；全有或全无的发布；添加连接、查询连接、隐藏配置 |
+| `repository.py` | `colleague_connections` 表（钉钉新连接及历史飞书记录）；`colleagues` 配置与发布事务 |
+| `service.py` | 区分配置与钉钉运行 Agent；飞书 `attach_connection` 返回 canonical ID，不新建记录；配置发布及连接查询 |
 | `agent_manager.py` | 群名单与 CLI 对账改为遍历全部运行 Agent；提供结束单个 Agent 工作的入口供另一运行时调用 |
 | `web_adapter.py` | 同事视图带 `config_id` 与 `connections`；配置操作要求配置标识；连接、删除的内部处理 |
 | `agent_ws_server.py` | 分派三个内部方法；清除时同时结束 IM 运行时中的工作 |
-| `feishu_group_fanout.py`、`dingtalk_inbound.py` | 入站核对登记 |
+| `feishu_group_fanout.py`、`dingtalk_inbound.py` | 飞书核对配置 ID 与接收应用；钉钉核对独立 Agent 登记 |
 | `app_web_handlers.py` | 飞书和钉钉的绑定、解除，同事删除的编排 |
 | 前端 `features/jiuwenmate/` | 连接列表、添加 / 解除连接、两种删除、工作空间选择 |
 
 关键保证：
 
-- **C-1 专属：** 一个运行 Agent 至多登记一个连接；同一配置的同一平台应用至多一个 Agent。
-- **C-2 入站一致：** 飞书和钉钉只受理 YAML 绑定到的 Agent 恰好登记为本平台、本应用的事件；否则拒绝，不回落普通助手。
+- **C-1 身份：** Web 与飞书共用配置行的 canonical Agent ID；一个钉钉运行 Agent 至多登记一个钉钉应用；同一配置同一平台应用至多一个绑定。
+- **C-2 入站一致：** 飞书只受理唯一 YAML 绑定到可见配置 Agent ID 的接收应用；旧飞书连接 Agent 仅在登记的应用与 YAML 一致时兼容受理。钉钉仍要求登记与平台、本应用完全匹配。失败均拒绝且不回落普通助手。
 - **C-3 发布一致：** 发布成功时，配置名下全部运行 Agent 都切换到这次修订；失败或冲突时全部保持原版本。
-- **C-4 新连接不带草稿：** 新连接 Agent 只由已发布设置生成。
+- **C-4 新连接不带草稿：** 新钉钉 Agent 只由已发布设置生成；飞书复用配置 Agent，不单独发布。
 - **C-5 删除先断流：** 两种删除都在 AgentServer 改动数据之前移除 YAML 中的绑定应用。
 - **C-6 原有按 agent_id 的行为不变：** Session、Request、窗口、办公目录、群访问、投递和恢复仍按运行 agent_id 工作。
 - **C-7 删除可重试且不误报：** 每个运行 Agent 的清理全部完成后才删除它的登记与同事表行，同事自身的行最后删除；任何清理失败都返回错误并留下可再次找到的对象。已完成的删除在原样重试时被识别为完成，未知的配置 ID 仍返回 `NOT_FOUND`。
@@ -234,7 +238,7 @@ flowchart LR
 | `PersistentAgentService.read_settings(namespace_id, agent_id) -> ColleagueSettings` | 修改 | IM Agent 解析为其配置的当前设置，保持 [F_23](F_23_group-reply-mode.md) “入站读取当前设置”的语义 |
 | `update_settings`、`set_enabled`、`publish(namespace_id, agent_id, ...)` | 修改 | 参数必须是配置标识；传入 IM Agent 返回 `BAD_REQUEST`。`publish` 按 D-03 发布全部运行 Agent，返回 Web Agent 的版本视图 |
 | `PersistentAgentService.refresh_published(namespace_id, *, models=None) -> bool` | 修改 | 只遍历未隐藏的配置，逐个按 D-03 发布；其余语义不变 |
-| `PersistentAgentService.attach_connection(namespace_id, config_id, channel, connection_key) -> str` | 新增 | 返回连接 Agent；不存在时新建并按 D-04 发布；重复调用返回同一 Agent |
+| `PersistentAgentService.attach_connection(namespace_id, config_id, channel, connection_key) -> str` | 新增 | 飞书校验配置后直接返回 `config_id`，不新增 Agent、版本或 workspace；钉钉保留新建并发布专属连接 Agent；旧飞书记录不迁移 |
 | `PersistentAgentService.connection_of(namespace_id, agent_id) -> ConnectionRecord \| None` | 新增 | 入站检查使用 |
 | `PersistentAgentService.connections(namespace_id, config_id) -> list[ConnectionRecord]` | 新增 | 删除编排与页面使用 |
 | `PersistentAgentService.hide_colleague(namespace_id, config_id) -> None` | 新增 | `unbind` 模式；接受已隐藏的同事 |
@@ -256,13 +260,13 @@ flowchart LR
 | 聊天、会话、请求、群记录、执行轨迹方法 | `agent_id` 可以是配置的任一已绑定连接 Agent，含 Web |
 | 定时任务、邮件授权、活跃统计 | 不变，前端只传 Web Agent |
 
-`connections` 元素：`{channel, connection_key, agent_id, workspace_dir}`。第一个元素是 Web 连接（`channel = "web"`，`connection_key = "web"`）；IM 连接只列出 YAML 当前绑定到该连接 Agent、且应用启用的项。
+`connections` 元素：`{channel, connection_key, agent_id, workspace_dir}`。第一个元素是 Web 连接；新式飞书连接也返回同一个 `agent_id` 和 workspace，用于展示渠道绑定，不代表第二个运行实例。钉钉项指向其独立运行 Agent。旧飞书配置在重新绑定前仍显示既有运行 Agent。
 
 Gateway 渠道方法：
 
 | 方法 | 输入 | 行为与失败语义 |
 | --- | --- | --- |
-| `channel.feishu.bind_agent` | `config_id`、`app_id`、`app_secret` | 先调用内部 `attach` 得到 `agent_id`，再写入或更新应用条目的 `persistent_agent_id` 与密钥并重启飞书渠道；参数名由 `persistent_agent_id` 改为 `config_id`。AgentServer 不可达返回 `SERVICE_UNAVAILABLE`，配置不存在返回 `NOT_FOUND`，都不写 YAML |
+| `channel.feishu.bind_agent` | `config_id`、`app_id`、`app_secret` | 内部 `attach` 返回同一个 `config_id`，再将其写入应用条目的 `persistent_agent_id`；不创建第二份 Persistent Agent。参数错误、配置不存在或 AgentServer 不可达时不写 YAML |
 | `channel.dingtalk.bind_agent` | `config_id`、`client_id`、`client_secret`、`robot_code?` | 同上，写入沿用 PR1 的 `update_dingtalk_section`；去掉绑定前的 `binding_check` 询问 |
 | `channel.feishu.unbind_agent` / `channel.dingtalk.unbind_agent` | `app_id` / `client_id` | 删除该应用条目，仅当它带有 `persistent_agent_id`；登记保留；不存在时成功返回 |
 | `jiuwenmate.colleague.delete` | `agent_id`、`mode` | 见 5.7 节流程 |
@@ -280,8 +284,8 @@ Gateway 渠道方法：
 ### 5.4 配置与能力控制
 
 - 配置启停：`set_enabled` 改配置行；IM Agent 的运行视图按配置计算 `enabled`，因此飞书和钉钉入站的 `_im_open`、定时任务的同事检查自动生效。
-- 飞书 CLI：`FeishuCliRuntime._binding` 仍按 YAML 中的 `persistent_agent_id` 找应用，现在找到的是飞书连接 Agent；Web Agent 在重新绑定后找不到绑定，下一次准备会清除它原有的 CLI 资料（F_24 的用户登录态随之移到飞书连接 Agent 上，需要在该 Agent 重新登录）。
-- 能力派生：每个运行 Agent 的版本各自套用自己的飞书 Skill，指纹因此可以不同；`refresh_feishu_capability` 仍按单个 Agent 生成能力版本，不读草稿。
+- 飞书 CLI：`FeishuCliRuntime._binding` 仍按 YAML 中的 `persistent_agent_id` 查应用；新式绑定指向 canonical Web Agent，因此 Web 与飞书共用该 Agent 的飞书 CLI 身份和能力快照。
+- 能力派生：Feishu CLI skill 刷新作用于 canonical Agent；钉钉的版本仍按独立连接 Agent 发布。
 
 ### 5.5 数据模型与事实归属
 
@@ -290,9 +294,10 @@ Gateway 渠道方法：
 | 配置 | 用户看到的同事；`config_id` = 其 Web Agent 的 `agent_id` | `colleagues` 中没有登记行的行 | 创建同事时插入；`unbind` 设隐藏；`purge` 删除 |
 | 已发布设置 | 配置最近一次发布的设置，含人设 | `colleagues.published_settings_json`（新列，仅配置行） | 发布成功时写入 |
 | 隐藏标记 | 配置是否在列表中 | `colleagues.hidden`（新列，默认 0） | `unbind` 设为 1 |
-| 连接登记 | Agent 专属的平台与应用 | `colleague_connections`（新表） | 添加连接时插入；`purge` 删除；`unbind` 保留 |
-| IM 运行 Agent | 一个连接的执行身份 | `colleagues` 中有登记行的行 | 添加连接时插入；发布时更新版本；`purge` 删除 |
-| 应用当前由谁服务 | 平台应用 → Agent | `config.yaml` 的 `persistent_agent_id` | Gateway 绑定、解除、删除时改写 |
+| 连接登记 | 钉钉新连接及历史 IM 连接与配置的关系 | `colleague_connections` | 新钉钉连接时插入；`purge` 删除；`unbind` 保留；新飞书绑定不写登记 |
+| Feishu Agent 身份 | Web 与飞书共用的执行身份 | 配置行，即 `config_id` | 绑定时只写 YAML；不插入新的 `colleagues` 行 |
+| DingTalk Agent 身份 | 一个钉钉连接的执行身份 | `colleagues` 中有钉钉登记行 | 添加钉钉连接时插入；发布时更新版本；`purge` 删除 |
+| 应用当前由谁服务 | 平台应用 → Agent | `config.yaml` 的 `persistent_agent_id` | Gateway 绑定、解除、删除时改写；新飞书指向 `config_id` |
 | 人设草稿 | 配置的人设 | `templates/<config_id>/`（位置不变） | 配置设置保存时替换；`purge` 删除 |
 | 删除记录 | 已被 `purge` 删除的配置 ID，用于识别响应丢失后的重试 | `removed_colleagues`（新表，主键 `(namespace_id, agent_id)`） | 与配置行在同一事务中写入；不删除 |
 
@@ -324,7 +329,7 @@ CREATE TABLE IF NOT EXISTS colleague_connections (
 
 ### 5.7 正常执行流程
 
-**添加连接（以钉钉为例，飞书相同）：**
+**添加连接：** 飞书绑定校验同事后直接将 `config_id` 写入 Feishu 应用配置；不建登记行或独立版本。钉钉沿用旧流程，创建并登记一个连接 Agent。两条渠道均由 Gateway 保存 YAML 并重启对应渠道。
 
 ```mermaid
 sequenceDiagram
@@ -379,13 +384,13 @@ sequenceDiagram
     GW-->>UI: ok
 ```
 
-**入站检查（飞书 `PersistentGroupFanout.handle`、钉钉 `DingTalkInboundHandler.handle`）：** 现有绑定解析得到唯一 `binding` 后，读取 `connection_of(binding.agent_id)`；记录不存在，或其 `channel`、`connection_key` 与本次平台和接收应用不同，返回 `REJECTED`。检查位于群消息存档、Session 创建和受理之前，读取失败时同样拒绝。飞书群接力 `continue_handoff` 经同一入口，自动适用。
+**入站检查：** Feishu 绑定解析得到唯一应用后，若 ID 是配置 Agent，则验证 `get_config(namespace_id, agent_id)` 成功；再依据当前唯一 `app_id → persistent_agent_id` 绑定受理。旧飞书连接 Agent 在重绑前仍要求登记的平台和 `connection_key` 匹配。钉钉继续检查 `connection_of` 的登记。检查均发生在存档、Session 创建和请求受理之前，错误时关闭；飞书群接力 `continue_handoff` 同样经过校验。
 
 企业飞书的绑定（`FeishuBinding.enterprise` 为真）在 Agent 没有登记时照旧受理（约束 10）；Agent 已登记给其他连接时仍然拒绝，避免企业飞书借用另一个连接的工作空间。
 
 ### 5.8 异常、中断与重试处理
 
-- **绑定：** `attach` 成功而 YAML 保存失败时，只留下一个尚未被 YAML 引用的 Agent，原有连接不受影响；重试得到同一 Agent。YAML 已保存而渠道重启失败时沿用 PR1 的 `CHANNEL_APPLY_FAILED`。
+- **绑定：** Feishu `attach` 只验证并返回配置 ID；YAML 保存失败不会留下新 Agent、版本或 workspace。钉钉仍沿用“attach 成功但 YAML 保存失败可能留下未引用连接 Agent”的旧语义。YAML 已保存而渠道重启失败时沿用原错误语义。
 - **删除：** YAML 删除部分成功（例如飞书已删、钉钉失败）时返回错误，AgentServer 数据未动，重试会跳过已删的应用。YAML 全部删除后 AgentServer 失败时，同事仍可见、已没有 IM 连接，重试只执行第二步。
 - **清除中途失败：** 某个 Agent 的任一清理步骤失败（含目录删除后仍存在）时返回错误，该 Agent 的登记与同事表行保留，重试会再次找到它并重复全部清理；已完成的 Agent 不会恢复。配置行最后删除，因此失败后仍能从列表重试。
 - **绑定或删除失败、超时、取消：** 串行化随操作结束释放，包括 AgentServer 无响应（`_connection_request` 的 120 秒超时）、返回错误与请求被取消；之后的绑定与删除照常进行。持有期间同一同事的其他绑定与删除最长等待上述超时。
@@ -447,18 +452,18 @@ sequenceDiagram
 ### 6.2 文档同步
 
 - spec：新增 `S_04_colleague-connections`（配置、连接登记、入站检查、删除模式的契约），实现完成后建立；修订 S_03（绑定参数、撤回 `binding_check`、合入依赖关闭）。
-- 架构（待确认后修改，Q4）：
-  - 第 2.1 节：“数字同事”拆为“配置”和“运行 Agent / 连接”两层；
-  - 第 4.1 节：发布对象是配置，一次发布覆盖全部运行 Agent；
-  - 第 9.2 节：隔离表增加“不同连接”一行（可复用配置与已发布设置，必须分别管理办公目录、Session、CLI 身份）。
+- 架构（已按用户确认修订）：
+  - 第 2.1、4.1 节：Web 与飞书共用 canonical Agent 身份、发布版本和工作空间；钉钉保留独立运行 Agent；
+  - 第 9.2 节：区分 Web/飞书共享身份与钉钉连接隔离，并分别说明会话和渠道身份边界。
 - 开发计划：在 JM-02 的“设计索引”增加本文链接，登记 Song Haoran 为 F_02_02 子范围负责人；同时登记 F_21_02 钉钉子范围负责人。保留 JM-02、JM-21 的整项负责人、状态与验收口径。
 - F_21_02：第 9 节合入依赖标为由本文关闭；D-07 标为已由本文 D-09 替代；同时修正状态与执行记录中“未提交”的表述（PR1 已提交为 `1d6f9445`）。
 
 ## 7. 兼容与迁移
 
 - **PR2 之前的同事：** 自动成为只有 Web 连接的配置，数据、版本、会话不变，不执行迁移步骤。
-- **旧的飞书、钉钉绑定：** YAML 仍指向旧同事行（现在是 Web Agent），登记检查会拒绝其入站，需要在页面重新绑定；重新绑定生成新的连接 Agent，旧的 IM 会话和群记录留在 Web Agent 上（约束 4，须告知飞书负责人）。
-- **企业飞书：** 绑定方式不变，暂不要求登记（约束 10）；跨连接隔离的缺口见第 9.2 节。
+- **旧的飞书绑定：** YAML 仍指向旧飞书连接 Agent，升级后继续按旧登记工作；在页面重新绑定后将改为 canonical `config_id`。旧 Agent 的 workspace、窗口、Session 和群记录不自动迁移或删除。
+- **旧的钉钉绑定：** 继续使用已登记的独立钉钉 Agent，不修改 YAML 或运行数据。
+- **企业飞书：** 新式绑定指向 canonical 配置 Agent；旧版本中未登记的有效配置继续兼容。
 - **回滚：** 旧版本代码会把 IM 运行 Agent 行当作普通同事显示在列表中，且不认识新列和新表。发布前须声明不可直接回滚，与 F_21_02 第 7 节的回滚限制合并说明。
 
 ## 8. 验证设计、执行记录与结论
@@ -467,18 +472,18 @@ sequenceDiagram
 
 | 验证 ID | 场景 | 通过条件 | 层级 |
 | --- | --- | --- | --- |
-| F_02_02-V-01 | 添加飞书、钉钉连接；同一配置重新绑定同一应用；同一应用绑定到另一配置 | 每个连接一个新 Agent，办公目录不同；重复绑定得到同一 Agent；另一配置得到新 Agent，旧 Agent 数据保留 | 单测，真实 SQLite 与文件 |
-| F_02_02-V-02 | 配置有未发布修改时添加连接；配置从未发布时添加连接 | 新 Agent 的 Spec 使用已发布人设，不含草稿；未发布配置的新 Agent 无版本 | 单测 |
+| F_02_02-V-01 | 添加飞书、钉钉连接；重新绑定同一应用；将应用改绑到另一配置 | 飞书始终指向目标配置的 canonical Agent，不新增 Agent 行、版本或工作空间；钉钉按连接复用或创建独立 Agent；原 Agent 数据保留 | 单测，真实 SQLite 与文件 |
+| F_02_02-V-02 | 配置有未发布修改时添加钉钉连接；配置从未发布时添加钉钉连接；绑定飞书 | 钉钉新 Agent 的 Spec 使用已发布人设、不含草稿，未发布配置不生成版本；飞书直接复用配置 Agent，不新建版本 | 单测 |
 | F_02_02-V-03 | 发布配置；其中一个 Agent 的模型或资源装配失败 | 全部 Agent 切换到同一修订；失败时全部保持原版本，配置仍有未发布修改 | 单测，模型替身注入失败 |
 | F_02_02-V-04 | 发布与添加连接交错；两次发布交错 | 后提交者 `CONFLICT`，不存在只切换了一部分 Agent 的状态 | 单测，控制执行顺序 |
 | F_02_02-V-05 | 运行视图与配置操作 | IM Agent 的名称、群回复方式、启停来自配置；对 IM Agent 调用保存、发布、启停返回 `BAD_REQUEST`；列表只含配置 | 单测 |
 | F_02_02-V-06 | `unbind` 与 `purge` | `unbind` 后列表不显示、IM 视图停用、数据仍在；`purge` 后全部 Agent、版本、办公目录、窗口、登记与配置都被删除 | 单测与接线替身 |
 | F_02_02-V-07 | `purge` 时 IM 运行时有执行中的请求 | 该请求被结束后才删除数据 | 接线测试，执行入口替身 |
-| F_02_02-V-08 | 飞书：YAML 绑定到未登记 Agent、登记为其他应用或钉钉的 Agent | 返回 `REJECTED`，不创建群记录或 Session，不进入普通助手 | 接线测试 |
+| F_02_02-V-08 | 飞书：YAML 绑定到不存在、隐藏或不唯一的配置；历史连接 Agent 绑定到其他应用 | 返回 `REJECTED`，不创建群记录或 Session，不进入普通助手；可见 canonical 配置仅由其当前接收 app 路由 | 接线测试 |
 | F_02_02-V-09 | 钉钉：同上；PR1 原有钉钉用例 | 返回 `REJECTED`；PR1 其余行为不变 | 接线测试 |
-| F_02_02-V-10 | Gateway 绑定：AgentServer 不可达；YAML 保存失败后重试 | 不可达时不写 YAML；重试得到同一 Agent，原连接不受影响 | Gateway 接线测试 |
+| F_02_02-V-10 | Gateway 绑定：AgentServer 不可达；YAML 保存失败后重试 | 不可达时不写 YAML；飞书重试仍绑定同一 canonical ID 且不创建 Agent；钉钉重试复用同一连接 Agent | Gateway 接线测试 |
 | F_02_02-V-11 | Gateway 删除：YAML 删除失败；AgentServer 失败后重试 | 第一种不改 AgentServer 数据；第二种重试完成且只删除本配置的应用 | Gateway 接线测试 |
-| F_02_02-V-12 | 页面：连接列表、添加与解除、两种删除、工作空间切换 | 运行类请求使用所选 Agent；定时任务、邮件、活跃统计使用 Web Agent | 前端单测与构建；浏览器核对视环境 |
+| F_02_02-V-12 | 页面：连接列表、添加与解除、两种删除、工作空间切换 | Web 与飞书显示为同一工作空间；钉钉显示独立工作空间；定时任务、邮件、活跃统计使用 Web canonical Agent | 前端单测与构建；浏览器核对视环境 |
 | F_02_02-V-14 | `purge` 中某个 IM Agent 的办公目录删除失败一次后重试 | 第一次返回错误且该 Agent 仍可找到；重试成功后其办公目录、窗口、会话列表、CLI 与邮件资料、登记与同事行都不存在 | 单测，真实 SQLite 与文件，注入一次失败 |
 | F_02_02-V-15 | `purge`、`unbind` 已在 AgentServer 完成而响应丢失，Gateway 原样重试 | 重试成功；未知 ID 仍返回 `NOT_FOUND`；其他同事的应用条目不变 | Gateway 与真实 Adapter 接线，替身传输丢弃一次响应 |
 | F_02_02-V-16 | 添加连接与删除同事交错：检查通过后同事被删除；删除读取连接后新增连接；准备版本时其 Agent 被删除 | 三种交错结束后都没有父同事不存在的登记、Agent 行或办公目录 | 单测，线程与事件控制执行顺序 |
@@ -578,3 +583,11 @@ sequenceDiagram
 - 旧结论的效力：第 5.9 节相应行与第 9.2 节遗留已更新；第二轮的数据库层修复仍有效。
 - 断点续接与实际落地：中断时只有本节方案、C-9 / S_04 不变量 10 与 V-18 设计，代码和测试尚未修改。续接后在原 Gateway 处理器注册处增加 `_serialize_colleague_operation`，共用按同事 ID 区分的锁；在既有 `test_colleague_connections.py` 增加 24 项接线回归，没有修改 AgentServer、Core 或前端。原复现脚本在释放 attach 响应前等待删除完成，串行化后会让脚本自身互相等待；正式用例先断言删除未越过编排边界，再释放响应并等待两个操作，既能在补丁前失败，也能验证补丁后的合法顺序。
 - 验证：见第 8.2 节“第三轮”记录。
+
+### 2026-10-28 Web 与飞书共享 Agent 身份
+
+- 原结论与适用范围：2026-10-26 的 D-01～D-09 为每个 IM 连接创建独立运行 Agent；飞书配置的 `persistent_agent_id` 因此与 Web Agent ID 不同。
+- 新问题：飞书请求使用另一 Agent ID，导致 JiuwenSwarm Web 与飞书不能按同一 Agent 访问群记录、窗口和工作空间；此处与用户对“一个 Agent 同时服务 Web 和飞书”的预期不符。
+- 最终决定：飞书绑定写入同事的 canonical `config_id`，`attach_connection` 不创建 Agent 行、版本、workspace 或连接登记；飞书和 Web 共用版本与工作空间，会话仍按已有 conversation/session key 隔离。飞书入口仍依据当前唯一 `app_id → persistent_agent_id` 绑定校验。钉钉维持独立连接 Agent。
+- 兼容：既有飞书配置在重新绑定前继续使用原 ID；重新绑定后使用 canonical ID。旧飞书 Agent 的数据库记录、窗口、Session 和文件保留，不自动迁移或删除。钉钉数据与路径不变。
+- 实现状态：代码与文档正在本次工作区修改；本次未运行测试或真实飞书联调。

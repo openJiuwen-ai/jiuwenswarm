@@ -36,6 +36,18 @@ from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, RequestInput
 
+
+def _notice_delivery_job(job: Mapping[str, object], notice_text: str) -> dict[str, object]:
+    """Keep receipt/routing metadata only when replacing a public payload."""
+    fields = (
+        "delivery_id", "namespace_id", "agent_id", "session_id", "request_kind",
+        "request_id", "execution_id", "output_id", "channel", "target_id", "app_id",
+        "source_message_id", "source_reply_to", "is_direct_message", "idempotency_key",
+        "attempt_count", "operation", "external_message_id",
+    )
+    return {**{key: job[key] for key in fields if key in job}, "text": notice_text}
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     namespace_id TEXT NOT NULL,
@@ -853,8 +865,10 @@ class ExecutionRepository(SQLiteStore):
                             (now.isoformat(), namespace_id, row["delivery_id"]),
                         )
                         continue
-                if row["job_json"]:
+                if row["job_json"] and row["notice_text"] is None:
                     job.update(json.loads(row["job_json"]))
+                if row["notice_text"] is not None:
+                    job = _notice_delivery_job(job, row["notice_text"])
                 jobs.append(job)
         return jobs
 
@@ -875,19 +889,26 @@ class ExecutionRepository(SQLiteStore):
             route = record.route_snapshot
             if route is None or route.channel != "welink":
                 continue
-            if row["job_json"]:
-                job = json.loads(row["job_json"])
-                job["operation"] = "reconcile"
-                jobs.append(job)
-                continue
-            jobs.append({"delivery_id": row["delivery_id"], "channel": "welink", "operation": "reconcile",
-                         "app_id": route.app_id, "target_id": route.target_id,
-                         "idempotency_key": row["idempotency_key"]})
+            job = json.loads(row["job_json"]) if row["job_json"] else {}
+            job.update(delivery_id=row["delivery_id"], namespace_id=namespace_id,
+                       agent_id=record.agent_id, session_id=record.session_id,
+                       request_id=row["request_id"], execution_id=row["execution_id"],
+                       output_id=row["output_id"], channel="welink", operation="reconcile",
+                       app_id=route.app_id, target_id=route.target_id, idempotency_key=row["idempotency_key"])
+            if row["notice_text"] is not None:
+                job = _notice_delivery_job(job, row["notice_text"])
+            jobs.append(job)
         return jobs
 
     def save_result_delivery_job(self, namespace_id: str, job: Mapping[str, object]) -> None:
         """Save the resolved public payload before any platform side effect."""
         with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT notice_text FROM result_deliveries WHERE namespace_id=? AND delivery_id=?",
+                (namespace_id, job["delivery_id"]),
+            ).fetchone()
+            if row is not None and row["notice_text"] is not None:
+                job = _notice_delivery_job(job, row["notice_text"])
             conn.execute(
                 "UPDATE result_deliveries SET job_json=?, handoff_done=? "
                 "WHERE namespace_id=? AND delivery_id=? AND status='sending'",
@@ -903,6 +924,7 @@ class ExecutionRepository(SQLiteStore):
             rows = conn.execute(
                 "SELECT job_json, external_message_id FROM result_deliveries WHERE namespace_id=? "
                 "AND channel='welink' AND status='delivered' AND handoff_done=0 AND job_json IS NOT NULL "
+                "AND notice_text IS NULL "
                 "AND delivery_id>? ORDER BY delivery_id LIMIT ?",
                 (namespace_id, after, limit),
             ).fetchall()
@@ -919,6 +941,40 @@ class ExecutionRepository(SQLiteStore):
             conn.execute("UPDATE result_deliveries SET handoff_done=1 WHERE namespace_id=? AND delivery_id=? "
                          "AND status='delivered'", (namespace_id, delivery_id))
 
+    def replace_result_delivery_with_notice(
+        self,
+        namespace_id: str,
+        delivery_id: str,
+        *,
+        notice_text: str,
+        now: datetime,
+    ) -> None:
+        """Replace public content atomically, keeping candidates and receipt facts.
+
+        Pending sends, unknown receipts and delayed archives/handoffs all use the
+        persisted notice. Replacement never makes an unknown row retryable.
+        """
+        if not isinstance(notice_text, str) or not notice_text.strip():
+            raise ValueError("replacement notice must be nonblank text")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM result_deliveries WHERE namespace_id=? AND delivery_id=?",
+                (namespace_id, delivery_id),
+            ).fetchone()
+            if row is None:
+                raise PersistentAgentError("result delivery not found", code="NOT_FOUND")
+            if row["status"] not in {"pending", "sending", "unknown", "delivered"}:
+                raise PersistentAgentError("result delivery cannot be replaced", code="CONFLICT")
+            snapshot = (
+                json.dumps(_notice_delivery_job(json.loads(row["job_json"]), notice_text), ensure_ascii=False)
+                if row["job_json"] else None
+            )
+            conn.execute(
+                "UPDATE result_deliveries SET notice_text=?, file_key=NULL, job_json=?, handoff_done=1, "
+                "updated_at=? WHERE namespace_id=? AND delivery_id=?",
+                (notice_text, snapshot, now.isoformat(), namespace_id, delivery_id),
+            )
+
     def update_result_delivery(
         self,
         namespace_id: str,
@@ -932,8 +988,8 @@ class ExecutionRepository(SQLiteStore):
     ) -> dict[str, object]:
         """Persist a Gateway ACK; a late ACK may resolve an ``unknown`` delivery.
 
-        A ``file_key`` reported by the upload stage is kept whatever the send outcome,
-        and is never replaced by an empty one.
+        Upload keys survive retries unless replaced by a notice. Late upload ACKs
+        cannot restore a redacted file.
         """
         if outcome not in {"pending", "delivered", "failed", "unknown"}:
             raise ValueError("invalid delivery outcome")
@@ -972,7 +1028,8 @@ class ExecutionRepository(SQLiteStore):
                 file_key = None
             conn.execute(
                 "UPDATE result_deliveries SET status = ?, external_message_id = ?, error_code = ?, updated_at = ?, "
-                "file_key = COALESCE(?, file_key) WHERE namespace_id = ? AND delivery_id = ?",
+                "file_key = CASE WHEN notice_text IS NULL THEN COALESCE(?, file_key) ELSE NULL END "
+                "WHERE namespace_id = ? AND delivery_id = ?",
                 (outcome, external_message_id, error_code, now.isoformat(), file_key, namespace_id, delivery_id),
             )
             updated = conn.execute(

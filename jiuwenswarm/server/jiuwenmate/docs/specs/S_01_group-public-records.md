@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / group-public-records |
 | 关联模块 | `jiuwenswarm.server.jiuwenmate` 群归档、访问关系与 `ports.group_chat` |
-| 最近一次修订日期 | 2026-10-20 |
-| 关联 feature | [F_11](../features/F_11_group-public-records.md)、[F_21](../features/F_21_cross-group-search.md) |
+| 最近一次修订日期 | 2026-10-28 |
+| 关联 feature | [F_11](../features/F_11_group-public-records.md)、[F_21](../features/F_21_cross-group-search.md)、[F_21_03](../features/F_21_03_group-sharing-approval.md) |
 
 本规约维护 JM-11 已实现的宿主契约；验证证据、未完成的生产验证及交付状态见 F_11 和开发计划。
 
@@ -84,15 +84,39 @@ Gateway 使用当前渠道凭据查询，并以内部 E2A 方法 `jiuwenmate.gro
 
 ### 4.5 PA-23 跨群搜索
 
-`HostGroupChatPort.search_messages(execution, query)` 是 agent-core `GroupChatPort.search_messages` 的 JiuwenMate 宿主实现。只有由 `ExecutionDriver` 注入该端口的 `web_direct`、`im_direct` 或 `group` Session 可调用；Scheduled Execution 不注入。Session 决定调用上下文，不限制可搜索的目标群。授权主体始终是 `execution.namespace_id` 与 `execution.agent_id`；提问者是否属于目标群不参与授权。
+`HostGroupChatPort.search_messages(execution, query)` 实现底层授权搜索；`ExecutionDriver` 将其包装为 `GuardedGroupChatPort` 后注入 `web_direct`、`im_direct` 或 `group` Session；Scheduled Execution 不注入。底层读取主体是可信 Execution 的 namespace 和 Agent。提问者是否属于来源群不参与底层读取授权，但向当前群之外的接收方分享须独立满足 §4.6 所有者审批。
 
-入口只接受 agent-core 导出的 `GroupMessageQuery`，结果使用 `GroupMessageSearchResult`、`GroupMessageSearchHit`。群 ID 与群名过滤各自在集合内取并集，同时提供二者时取交集；都未提供时搜索该 Agent 本次核验通过的全部群。指定群名按 `group_details` 当前已存名称精确匹配，不做模糊或历史别名匹配，也不以 group_id 伪造缺失名称。授权集合内名称重名时，结果只提示可授权的稳定 group_id；无法命中、目标不在授权范围或游标不属于当前请求时，返回不泄露目标存在性的 `unavailable`。
+入口只接受 agent-core 导出的 `GroupMessageQuery`，结果使用 `GroupMessageSearchResult`、`GroupMessageSearchHit`。`query` 支持单个关键词，`keywords` 支持一次最多 16 个关键词；二者按 OR 语义匹配、重复命中去重，使一次批量查询只生成一个查询快照，审批仍按实际命中的来源群拆分。群 ID 与群名过滤各自在集合内取并集，同时提供二者时取交集；都未提供时搜索该 Agent 本次核验通过的全部群。指定群名按 `group_details` 当前已存名称精确匹配，不做模糊或历史别名匹配，也不以 group_id 伪造缺失名称。授权集合内名称重名时，结果只提示可授权的稳定 group_id；无法命中、目标不在授权范围或游标不属于当前请求时，返回不泄露目标存在性的 `unavailable`。
 
 每次调用首先枚举该 Agent 的 active 访问关系，并逐一核实唯一 app 绑定和 Bot 当前群成员状态；状态为 `left` 的关系不进入搜索集合，当前候选状态未知、关系歧义或核验异常安全失败。核验和目标解析完成前不得打开任何群归档。指定 group_id 对应未解决的 `unknown` 关系时返回 `unavailable`；无群过滤的全范围搜索若存在未解决关系也返回 `unavailable`，不能把未知授权集合报告为完整 `empty`。来源为 `binding:` 的 `unknown` 是已确认退休的旧 Bot 绑定，不视为当前候选授权。群名过滤只在经核验的 active 集合内解析，不读取未授权或状态未知群的名称。各群查询限制在访问关系的 `visible_from` 与首次快照 `upper_ingest_seq` 内，关键词按 Unicode `casefold` 字面匹配；全局顺序为消息接收时间倒序、group_id 升序、message_id 升序。
 
 需要续页时，宿主发放 15 分钟有效的不透明随机游标。`group_search_cursors` 只保存游标 SHA-256 摘要、namespace、Agent、规范化查询摘要及授权／归档快照、上界和最后排序键，不保存正文或物理路径。续页必须使用相同查询并重新核验全部目标授权；授权修订、可见下界或群名变化，归档内容修订／撤回，游标失效或过期均拒绝旧页。首轮上界之后新增的消息不进入该游标结果。
 
 仅当目标范围完整读取且没有已知采集缺口时，才能返回 `found` 或 `empty` 并令 `query_complete=true`。有下一页时返回 `incomplete` 和 next_cursor；存在部分可读目标、已知缺口、读取中变化或无法取得下一页时返回无 cursor 的 `incomplete`；没有任何可读取目标归档时返回 `failed`。授权未知或查询目标不可用返回 `unavailable`，执行身份不匹配返回 `forbidden`。搜索结果不代表飞书平台全量历史，JM-11 §6 的归档限制继续适用。
+
+### 4.6 所有者跨群分享审批
+
+当前群读取维持既有规则；搜索其他群并命中消息时，宿主按实际命中的来源群拆分冻结结果，在候选进入请求模型前分别发到配置所有者 Web 私聊 `sharing-approvals`。无命中的群不生成空审批卡。原渠道只接收通用等待提示，卡片预览不进入请求模型或原群。
+
+`group_share_approvals` 和 `group_share_grants` 保存在宿主 agents.sqlite3，`GroupShareRepository` 为权威；Agent 可写表格、普通工具权限及 full_access 均不能代替分享授权。所有者由当前个人版可信 Web 身份 local 确认；namespace、配置、运行 Agent、提问者和目标来自宿主 Request，不接受模型改写。IM 运行 Agent 通过 connection_of 找回配置所有者。
+
+一次批准覆盖原 Request、完整规范化查询（含 limit 和分页）及冻结候选，不补入新增内容。永久授权按 namespace／配置／运行 Agent／来源群／目标渠道、app、类型和稳定 ID 保存，所有者可撤销；群名不充当授权键。每次仍须通过平台访问、可见下界与来源状态检查。待审批 15 分钟过期；一次决策幂等，同一查询可绑定同一原生暂停的多个工具调用。
+
+RPC 为 `jiuwenmate.sharing.list {agent_id}`、`.decide {agent_id, approval_id, decision: once|permanent|reject}`、`.revoke {agent_id, grant_id}`。agent_id 是配置 ID，统一返回 `{approvals,grants,conversation_id:'sharing-approvals'}`；query 为完整 GroupMessageQuery 对象，正文允许 null。每条审批记录必须只含一个实际命中消息的来源群和一个目标会话；一次搜索命中多个来源群时拆成多条独立审批，分别决策后才恢复原工具调用。重跑搜索时按原查询读取首次冻结的来源群和消息集合，不将新命中加入原审批。卡片展示来源／接收方／请求者／查询、有限正文摘要和完整可展开候选。未绑定原生现场或来源群数量不为一的记录不可批准。
+
+Core 以 GroupMessageApprovalRequired 发出安全中断，事件携带可选 approval_ref 供宿主精确关联。业务 rail 与工具使用稳定 native owner/kind，保存前轮 carried_answers；只消费自己的确认。所有者决定后恢复原 Request／Spec，原 IM 及普通工具审批接口不得自批。拒绝、超时或来源变化均安全结束或返回不可用，不静默放行。
+
+审批操作入口与执行归属分开：Web 运行管理器只恢复 Web 请求，IM 运行管理器只恢复其渠道请求。Web 对 IM 请求仅持久化所有者决定，由 IM 的审批恢复循环继续原 Request，不能使用缺少平台校验能力的 Web driver 代跑。IM 暂未启动时保留已决记录，等待原渠道恢复；普通工具审批、超时、启动恢复也遵守同一渠道归属。
+
+所有者卡片的提问者标签可按原 Request 的目标群及接收 app 查询可见群成员姓名，仅修饰返回视图，不修改 principal、冻结 scope 或批准范围。查不到姓名时返回空标签，由前端显示本地化占位；不能把 open_id 当作姓名。已有卡片的后台轮询不反复切换初次加载状态，须保留展开内容与焦点。
+
+读取前后核对来源集合，拒绝未列来源命中；恢复前验证冻结消息仍有效。投递前复查来源与永久授权。失效时先持久化实际安全提示，清除文件和提及；ACK、重试、公开归档和 WeLink job_json 恢复不能带回原候选或接力目标。保留投递渠道认领隔离，unknown 不盲目重发。
+
+恢复预检或执行流失败时，先持久化本请求失败，再由 Core 的 discard_persistent_confirmation 校验身份与 Spec、结清本请求等待现场，最后消费已决审批并放行 Session；重启补齐此顺序。宿主不解码或删除整个 Core 窗口。
+
+原生审批创建失败时，根据最后一次执行的持久化 confirmation pause 补建，启动和运行中定期重试；已消费或被新执行覆盖的旧暂停不重放。补建保留原暂停时间与到期时间；尚无原生行的有效暂停也阻止同 Session 新任务，两个状态查询使用同一 SQLite 读快照。冻结分享先过期时仍可绑定原中断以结清拒绝，不重新授予期限。
+
+本契约保护群搜索及对应请求投递，不擦除已披露上下文，不提供同 OS 用户无限制 shell 隔离或后续任务的全量文件溯源。真实平台与浏览器验收状态见 F_21_03。
 
 ## 5. 生命周期与部分成功
 

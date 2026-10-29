@@ -87,6 +87,9 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_REQUEST_GET.value,
         ReqMethod.JIUWENMATE_REQUEST_ABORT.value,
         ReqMethod.JIUWENMATE_PERMISSION_DECIDE.value,
+        ReqMethod.JIUWENMATE_SHARING_LIST.value,
+        ReqMethod.JIUWENMATE_SHARING_DECIDE.value,
+        ReqMethod.JIUWENMATE_SHARING_REVOKE.value,
         ReqMethod.JIUWENMATE_CONVERSATION_LIST.value,
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
         ReqMethod.JIUWENMATE_CONVERSATION_PIN.value,
@@ -144,6 +147,17 @@ def _colleague_wire(view, service: PersistentAgentService, bound: Mapping[str, s
                 "agent_id": item.agent_id,
                 "workspace_dir": str(service.workspaces.path(WEB_NAMESPACE, item.agent_id)),
             })
+    seen_feishu_apps = {
+        item["connection_key"] for item in connections if item["channel"] == "feishu"
+    }
+    for app_id, bound_agent_id in bound.get("feishu", ()):
+        if bound_agent_id == view.agent_id and app_id not in seen_feishu_apps:
+            connections.append({
+                "channel": "feishu",
+                "connection_key": app_id,
+                "agent_id": view.agent_id,
+                "workspace_dir": view.workspace_dir,
+            })
     payload["connections"] = connections
     payload["im_configured"] = len(connections) > 1
     return payload
@@ -188,7 +202,7 @@ def _settings(params: Mapping[str, Any]) -> ColleagueSettings:
 
 
 def _default_manager(service: PersistentAgentService, *, on_event: Callable[[AgentEvent], None]) -> AgentManager:
-    return AgentManager.create_default(service, on_event=on_event)
+    return AgentManager.create_default(service, on_event=on_event, approval_channels=frozenset({"web"}))
 
 
 def _coalesce(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -545,6 +559,17 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 tool_call_id=params.get("tool_call_id") if isinstance(params.get("tool_call_id"), str) else None,
             )
             return {"request": view.to_dict()}
+        if method == ReqMethod.JIUWENMATE_SHARING_LIST.value:
+            return await manager.sharing_list(WEB_NAMESPACE, _text_param(params, "agent_id"), access=WEB_ACCESS)
+        if method == ReqMethod.JIUWENMATE_SHARING_DECIDE.value:
+            return await manager.decide_sharing(
+                WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "approval_id"),
+                decision=_text_param(params, "decision"), access=WEB_ACCESS,
+            )
+        if method == ReqMethod.JIUWENMATE_SHARING_REVOKE.value:
+            return await manager.revoke_sharing(
+                WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "grant_id"), access=WEB_ACCESS,
+            )
         if method == ReqMethod.JIUWENMATE_KNOWLEDGE_LIST.value:
             pages = await asyncio.to_thread(InstalledResourceCatalog().list_knowledge)
             return {"pages": [{"name": page.name, "label": page.name} for page in pages]}

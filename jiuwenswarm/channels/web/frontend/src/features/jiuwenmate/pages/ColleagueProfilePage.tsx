@@ -39,6 +39,8 @@ import { ActionMenu } from '../components/ActionMenu';
 import { JiuwenMateConfirmDialog } from '../components/JiuwenMateDialog';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
+import { GroupSharingPermissions } from '../components/GroupSharingPermissions';
+import type { GroupSharingApi } from '../groupSharingApi';
 import type { ColleagueResourceOption, JiuwenMateModelCatalog, JiuwenMateSchedule, JiuwenMateWireSettings } from '../jiuwenmateApi';
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
 import { ScheduleSection } from '../schedules/ScheduleSection';
@@ -138,6 +140,7 @@ interface ColleagueProfilePageProps {
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
   onRunSchedule?: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
+  sharingApi?: GroupSharingApi;
   onLoadAgentMailStatus?: (agentId: string) => Promise<{ status: string; cli_version: string | null; operation_id?: string }>;
   connectionEpoch?: number;
   onBeginAgentMailAuth?: (agentId: string) => Promise<{ status: string; operation_id?: string; auth_url?: string; frontend_opens_auth?: boolean }>;
@@ -188,6 +191,7 @@ export function ColleagueProfilePage({
   onDeleteSchedule,
   onRunSchedule,
   onLoadScheduleHistory,
+  sharingApi,
   onLoadAgentMailStatus,
   connectionEpoch = 0,
   onBeginAgentMailAuth,
@@ -518,6 +522,8 @@ export function ColleagueProfilePage({
           ) : (
             <ProfileSectionDetail
               colleague={colleague}
+              sharingApi={sharingApi}
+              connectionEpoch={connectionEpoch}
               groupReplyMode={groupReplyMode}
               permissionProfile={permissionProfile}
               modelCatalog={modelCatalog}
@@ -1006,6 +1012,8 @@ function IdentityEditor({
 
 function ProfileSectionDetail({
   colleague,
+  sharingApi,
+  connectionEpoch,
   groupReplyMode,
   permissionProfile,
   modelCatalog,
@@ -1049,6 +1057,8 @@ function ProfileSectionDetail({
   onCancelAgentMailAuth,
 }: {
   colleague: JiuwenMateColleague;
+  sharingApi?: GroupSharingApi;
+  connectionEpoch: number;
   groupReplyMode: 'passive' | 'adaptive';
   permissionProfile: 'default' | 'automatic' | 'full_access';
   modelCatalog: JiuwenMateModelCatalog;
@@ -1231,7 +1241,7 @@ function ProfileSectionDetail({
             <ul className="jiuwenmate-profile__connections" data-testid="jiuwenmate-profile-connections">
               {imConnections.map((connection) => (
                 <li
-                  key={connection.agentId}
+                  key={`${connection.channel}:${connection.connectionKey}`}
                   className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered"
                   data-testid="jiuwenmate-profile-connection"
                   data-variant={connection.connectionKey}
@@ -1330,6 +1340,13 @@ function ProfileSectionDetail({
               : t('jiuwenmate.profile.permissions.approvalTimeout')}
           </p>
         </div>
+        {sharingApi ? (
+          <GroupSharingPermissions
+            api={sharingApi}
+            configId={colleague.configId}
+            connectionEpoch={connectionEpoch}
+          />
+        ) : null}
       </section>
     );
   }

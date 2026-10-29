@@ -1,0 +1,18 @@
+{
+  "started_at": "2026-10-23T14:59:26.921059+08:00",
+  "updated_at": "2026-10-23T16:44:57.457998+08:00",
+  "first_request_started_at": "2026-10-23T15:13:09.142616+08:00",
+  "last_request_finished_at": "2026-10-23T16:44:57.445418+08:00",
+  "total_window_seconds": 5508.302802324295,
+  "model_call_count": 26,
+  "input_tokens": 21586,
+  "total_input_tokens": 21586,
+  "output_tokens": 1306,
+  "total_tokens": 22892,
+  "cached_tokens": 7936,
+  "cache_creation_tokens": 0,
+  "cache_miss_tokens": 13650,
+  "kv_cache_hit_tokens": 7936,
+  "kv_cache_creation_tokens": 0,
+  "kv_cache_miss_tokens": 13650
+}

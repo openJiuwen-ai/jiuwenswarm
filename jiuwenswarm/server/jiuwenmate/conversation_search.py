@@ -70,6 +70,7 @@ class ConversationSearch:
         visible = utc_time(visible_from)
         since = utc_time(query.since) if query.since is not None else None
         until = utc_time(query.until) if query.until is not None else None
+        terms = tuple(term.casefold() for term in query.search_terms)
         group_name = self._archive.groups.name_of(namespace_id, group_id)
         matches: list[GroupMessageSearchHit] = []
         with self._archive.connection(namespace_id, group_id) as conn:
@@ -88,9 +89,8 @@ class ConversationSearch:
                     continue
                 if query.sender_id is not None and message.sender_id != query.sender_id:
                     continue
-                if query.query is not None and (
-                    message.text is None or query.query.casefold() not in message.text.casefold()
-                ):
+                folded_text = message.text.casefold() if terms and message.text is not None else None
+                if terms and (folded_text is None or not any(term in folded_text for term in terms)):
                     continue
                 matches.append(
                     GroupMessageSearchHit(
@@ -107,6 +107,7 @@ class ConversationSearch:
     def search_group(self, namespace_id: str, group_id: str, query: GroupMessageQuery,
                      *, visible_from: datetime) -> tuple[GroupMessageSearchHit, ...]:
         query = GroupMessageQuery.model_validate(query)
+        terms = tuple(term.casefold() for term in query.search_terms)
         matches = []
         with self._archive.connection(namespace_id, group_id) as conn:
             for row in conn.execute("SELECT payload FROM messages"):
@@ -119,7 +120,8 @@ class ConversationSearch:
                     continue
                 if query.sender_id is not None and message.sender_id != query.sender_id:
                     continue
-                if query.query is not None and (message.text is None or query.query.casefold() not in message.text.casefold()):
+                folded_text = message.text.casefold() if terms and message.text is not None else None
+                if terms and (folded_text is None or not any(term in folded_text for term in terms)):
                     continue
                 matches.append(message)
         matches.sort(key=lambda item: (-item.received_at.timestamp(), item.message_id))

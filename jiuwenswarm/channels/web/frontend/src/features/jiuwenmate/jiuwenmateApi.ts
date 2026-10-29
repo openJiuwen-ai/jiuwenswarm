@@ -1,4 +1,5 @@
 import { avatarHueToken, readAvatarHue } from './avatarHue';
+import { createGroupSharingApi } from './groupSharingApi';
 import { isColleagueTeamSkill } from './colleagueCapabilities';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './schedules/types';
 import type {
@@ -958,6 +959,7 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     toColleague(record(await request(method, params)).colleague);
 
   return {
+    sharing: createGroupSharingApi(request),
     /** Ensures 小九 exists, then lists every colleague. */
     async loadColleagues(): Promise<JiuwenMateColleague[]> {
       await request(JIUWENMATE_METHODS.ensureDefault);

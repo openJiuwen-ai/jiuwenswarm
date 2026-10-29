@@ -9,13 +9,15 @@
 | 方案成熟度 | 已确认；跨群宿主子范围已实现，整项 JM-21 仍进行中 |
 | 计划条目 | [JM-21](../designs/jiuwenmate-development-plan.md#jm-21-跨群搜索与-im-扩展扩展) |
 | 负责人 | 闫祉君 |
-| 状态 | 进行中（跨群宿主子范围已实现并通过本地测试；真实飞书及 JM-21 其他 IM 扩展未验收） |
+| 状态 | 进行中（跨群宿主子范围已实现并通过本地测试；本次多关键词批量查询尚未验证；真实飞书及 JM-21 其他 IM 扩展未验收） |
 | 设计依据 | agent-core 仓 `openjiuwen/harness/persistent_agent/docs/features/F_23_group-chat-history-retrieval.md` 与 `docs/specs/S_09_group-chat-and-knowledge.md`；[本仓服务端架构](../designs/jiuwenmate-architecture.md)的宿主授权职责 |
 | 关联 feature | 前置：[F_11 群公共记录](F_11_group-public-records.md)；接入：[F_08](F_08_feishu-group-fanout.md)、[F_07](F_07_execution-driver.md)、[F_10_02](F_10_02_web-private-chat.md) |
-| 验证摘要 | JM-21 聚焦单测、执行链接线与真实 core 集成 26 项通过；整组单测／集成回归 345 passed、14 failed（5 项为开发前既有基线失败，9 项受本地 agent-core PA-18 配置限制），真实飞书成员核验未执行，JM-21 整项未完成 |
+| 验证摘要 | 既有 JM-21 聚焦单测、执行链接线与真实 core 集成 26 项通过；本次多关键词批量查询未验证。整组单测／集成回归 345 passed、14 failed（5 项为开发前既有基线失败，9 项受本地 agent-core PA-18 配置限制），真实飞书成员核验未执行，JM-21 整项未完成 |
 | Refs | 开发计划 JM-21；用户已确认跨群只检查 Agent 对目标群的授权，不要求提问者属于目标群 |
 
 ## 2. 背景、目标与范围
+
+2026-10-28 开发补充：[F_21_03 跨群分享审批](F_21_03_group-sharing-approval.md) 在已有 Agent 来源群读取授权之外增加所有者 Web 私聊批准。保留本文底层读取契约；获准读取来源群不能代替向其他接收方分享的许可。迁移开发与验证记录见 F_21_03，不使用旧仓测试统计作为当前验收结果。
 
 目标是让用户在 Web／飞书私聊或群 A 中，向同一个 Agent 查询它获授权群 B 的历史。PA-23 已提供 `search_group_messages`，可信主体固定为当前 Execution 的 Agent；JiuwenSwarm 负责当前授权范围与实际数据查询。
 
@@ -63,7 +65,7 @@ flowchart TD
 
 ### 5.1 参数与目标解析
 
-复用 core 公共导出的 `GroupMessageQuery`、`GroupMessageSearchHit`、`GroupMessageSearchResult`。至少提供关键词、时间或发送者之一，limit 默认 50、最大 500；群 ID／群名各最多 128 项。模型不提供 namespace 或 Agent 身份。
+复用 core 公共导出的 `GroupMessageQuery`、`GroupMessageSearchHit`、`GroupMessageSearchResult`。至少提供单个 `query`、`keywords`、时间或发送者之一；`keywords` 最多 16 项，与 `query` 一起按 OR 合并，重复消息只返回一次。limit 默认 50、最大 500；群 ID／群名各最多 128 项。模型不提供 namespace 或 Agent 身份。
 
 群聊名称是面向用户的目标输入，群 ID 是内部归档定位键。解析顺序固定如下：
 
@@ -80,7 +82,7 @@ flowchart TD
 
 1. 校验 Execution 与当前宿主绑定归属，取得当前授权集合、可见时间下界与访问关系修订信息。
 2. 解析过滤条件并只打开已确认授权群的归档；归档入口核对每库 namespace／group 身份，记录首轮最大 `ingest_seq`、正文修订号和缺口状态。
-3. 每群在固定入库上界内最多查询 limit 条候选，关键词采用 F_11 的 Unicode 字面子串规则；按接收时间降序，再按 `group_id`、`message_id` 升序排序，全局合并后取前 limit 条。任何新增入库都不进入本次分页快照。
+3. 每群在固定入库上界内最多查询 limit 条候选；单个 `query` 与多个 `keywords` 均采用 F_11 的 Unicode 字面子串规则，多关键词按 OR 取并集，每条消息只加入一次。之后按接收时间降序，再按 `group_id`、`message_id` 升序排序，全局合并后取前 limit 条。任何新增入库都不进入本次分页快照。
 4. 若仍有后续结果，返回 incomplete、`query_complete=false`、明确分页原因和 next_cursor；全部目标的请求范围已完整扫描时，非空返回 found，为空返回 empty。结果只代表本地保留范围，不能称平台全量历史。
 5. 返回前再次检查目标授权和正文修订；撤权／解绑拒绝旧页，正文发生编辑或撤回则要求从头查询，不使用旧页缓存返回旧正文。当前读取过程中观察到的限制以安全状态反映。
 
