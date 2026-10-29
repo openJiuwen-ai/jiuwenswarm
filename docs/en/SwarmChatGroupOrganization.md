@@ -75,9 +75,9 @@ A team round calls `record_organization_plan` only when the message has more tha
 
 1. The session is a saved group.
 2. The mentions contain at least two expert teams (`agent_group`) and no single expert (`agent_template`). A message that mentions an expert team and a single expert does not record a plan. It records a direct-reply mark instead. An expert team that is still in an organization waits until that organization posts its result, then uses the original single-team path. That direct reply does not open an organization and does not resume the organization instance. A single expert who is not in that organization may reply immediately.
-3. The group has no Owner yet, or the existing Owner is one of these mentions. If the Owner is absent, the message stays on the per-proxy single-team path.
+3. Whether the previous Owner is mentioned does not matter. A follow-up or a queued round still records a plan.
 
-Every multi-mention round creates a new organization. The first expert team mentioned in this message is the Owner; the previous round's Owner is not reused. If one of those instances is still in an earlier `pending` or `running` plan, the new plan waits until those plans finish. The plan id is the message `client_message_id`. Mentions and body are left unchanged.
+A new organization uses the first expert team mentioned in this message as its Owner. The same expert set keeps that organization's Owner. If one of those instances is still in an earlier `pending` or `running` plan, the new plan waits until those plans finish. The plan id is the message `client_message_id`. Mentions and body are left unchanged.
 
 ### 3.3 How proxies wake
 

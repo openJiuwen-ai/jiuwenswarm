@@ -343,12 +343,18 @@ def _owner_for_organization(
     *,
     legacy_id: str,
 ) -> str:
-    """Owner is always the first @ for this round.
+    """Keep the Owner when this expert set rejoins its organization.
 
-    Rounds no longer rejoin a prior organization id, so there is no retained
-    Owner to prefer. Unused parameters remain for call-site compatibility.
+    A new set uses the first mentioned team. A plan stored before organization
+    ids existed is treated as the legacy session organization.
     """
-    del organization_id, plans, legacy_id
+    for earlier in reversed(plans):
+        saved = str(earlier.get("organization_id") or "").strip() or legacy_id
+        if saved != organization_id:
+            continue
+        previous = str(earlier.get("owner_member") or "")
+        if previous in names:
+            return previous
     return names[0]
 
 
@@ -396,9 +402,9 @@ def record_organization_plan(
     )
     if existing is not None:
         return existing
-    # Each multi-@ round creates a new organization; Owner is the first @.
-    # Expert-team instances are still reused. Overlapping live rounds wait in
-    # _blocking_earlier_plans.
+    # A new expert set takes the first mentioned team as Owner. Rejoining the
+    # same set keeps that organization's Owner, so a different @ order does not
+    # add a second owner. Overlapping instances wait in _blocking_earlier_plans.
     plans = group_organization_plans(session_id)
     organization_id = resolve_organization_id(
         session_id,
