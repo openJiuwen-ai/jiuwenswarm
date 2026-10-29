@@ -352,7 +352,7 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
         await until(lambda: store.read(task["id"])["status"] == "waiting_user"
                     and store.read(task["id"])["output_closed"])
         answer = [{"question": "允许执行？", "custom_input": "", "selected_options": ["allow"]}]
-        with pytest.raises(ValueError, match="card options"):
+        with pytest.raises(ValueError, match="manual click"):
             await service.answer("user", "voice", task["id"], "voice-answer", token(service, task), answers=answer)
         with pytest.raises(ValueError):
             await service.answer("other", "voice", task["id"], "wrong-owner", token(service, task),

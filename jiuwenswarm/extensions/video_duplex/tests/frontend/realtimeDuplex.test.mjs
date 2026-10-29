@@ -183,7 +183,8 @@ test('pending approval cards can be answered by voice under explicit-consent rul
   assert.match(text, /打开微信 is a new task.*Never use a new request as an answer to a card/);
   assert.match(text, /Cards left by typed chat also appear in jiuwen_task_query/);
   assert.match(text, /已批准 only after the answer receipt or a later query confirms the task resumed/);
-  assert.doesNotMatch(text, /click|Voice cannot/);
+  assert.match(text, /execution confirmation cards.*only voice approval cards/i);
+  assert.match(text, /Permission requests .*manual click/i);
 });
 
 test('an open approval card stays in the session instructions until it closes', () => {
@@ -197,7 +198,7 @@ test('an open approval card stays in the session instructions until it closes', 
   assert.equal(updates().length, 1);
   assert.match(updates()[0].session.instructions, /\[Pending approval cards\].*操作确认: cua_agent/);
   assert.match(updates()[0].session.instructions, /answered by voice with jiuwen_task_answer/);
-  assert.doesNotMatch(updates()[0].session.instructions, /click|Voice cannot/);
+  assert.match(updates()[0].session.instructions, /manual click/);
 
   session.enqueueQuestion('cua', card); // A repeated progress event must not resend.
   assert.equal(updates().length, 1);
@@ -234,7 +235,7 @@ test('while a card is open the client answers speech after the card status, with
   assert.match(status, /allow_answer.*reject_answer/);
   assert.match(status, /unclear.*do not submit/);
   assert.match(status, /打开微信.*never use it as a card answer/);
-  assert.doesNotMatch(status, /click|voice cannot/i);
+  assert.doesNotMatch(status, /permission_interrupt/);
 
   // The notice's own item does not trigger another reply, and nothing is ever cancelled.
   session.handleEvent({ type: 'conversation.item.created', item: { id: 'n1', role: 'user', content: [{ type: 'input_text' }] } });
@@ -1743,6 +1744,51 @@ test('converted completed cancellation is announced as a pending Core followup',
   assert.match(continuation, /backend already submitted the original user action to Core/);
   assert.match(continuation, /do not issue another cancellation/);
   assert.match(continuation, /followup means a linked revision/);
+});
+
+
+test('permission cards stay manual and never submit spoken consent', () => {
+  const { session, sent, functionCalls, diagnostics } = createSession();
+  session.enqueueQuestion('permission-job', {
+    id: 'permission-card', request_id: 'core-permission', state: 'pending', source: 'permission_interrupt',
+    questions: [{ question: '允许运行命令？', options: [{ label: '本次允许' }, { label: '拒绝' }] }],
+  });
+  assert.equal(session.pendingApprovals.size, 0);
+  assert.match(JSON.stringify(sent), /click the on-screen permission card manually/);
+  assert.equal(sent.some(event => event.type === "session.update"), false);
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'consent' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'consent' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'consent', transcript: '同意' });
+  assert.equal(functionCalls.length, 0);
+  assert.equal(diagnostics.some(event => event.event === 'qwen_card_spoken_answer'), false);
+});
+
+
+test('execution confirmations accept explicit execute speech using the actual card option', () => {
+  const { session, functionCalls } = createSession();
+  session.enqueueQuestion('execute-job', {
+    id: 'execute-card', request_id: 'execute-request', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '执行此计划？', options: [{ label: '执行' }, { label: '跳过' }] }],
+  });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'execute-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'execute-input', transcript: '按计划执行' });
+  assert.equal(functionCalls.length, 1);
+  assert.deepEqual(JSON.parse(functionCalls[0].arguments), {
+    job_id: 'execute-job', interaction_id: 'execute-card', answers: ['执行'],
+  });
+});
+
+test('a permission card replaces a stale execution confirmation without carrying over consent', () => {
+  const { session, functionCalls } = createSession();
+  openCard(session);
+  session.enqueueQuestion('cua', {
+    id: 'permission-card', request_id: 'permission-request', state: 'pending', source: 'permission_interrupt',
+    questions: [{ question: '允许访问文件？', options: [{ label: '本次允许' }, { label: '拒绝' }] }],
+  });
+  assert.equal(session.pendingApprovals.size, 0);
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'permission-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'permission-input', transcript: '同意' });
+  assert.equal(functionCalls.length, 0);
 });
 
 

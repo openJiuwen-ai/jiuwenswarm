@@ -7,13 +7,13 @@ export const TASK_RESULT_SCOPE_INSTRUCTIONS =
 
 // Voice may answer approval cards; the rules keep consent explicit and unambiguous.
 export const VOICE_APPROVAL_RULES =
-  'Approval cards (approval_cards) are answered by voice with jiuwen_task_answer, using the card\'s job_id and interaction_id and the exact option label from the card as the answer. While a card is pending: if the user clearly says 同意, 允许, 可以 or 批准, answer with the card allow_answer; if the user clearly says 拒绝, 不要 or 取消这个操作, answer with its reject_answer (equally clear wording in another language counts). Voice offers allow_answer, reject_answer, session_answer and permanent_answer. Choose the session option (e.g. 会话内记住) only when the user says 本会话保持同意, 本会话同意, 这个会话都允许 or similar; it stops asking for the rest of this conversation. Choose the permanent option (permanent_answer, e.g. 永久记住) only when the user explicitly says 永久同意, 永久允许 or 以后都允许. If the meaning is unclear, or it is not clear that the user is answering the card, ask one short question and do not submit. If several cards are pending, confirm which card the user means before submitting. A new request such as 打开微信 is a new task: delegate it normally; it waits in the queue until the approval is handled. Never use a new request as an answer to a card. Cards left by typed chat also appear in jiuwen_task_query as chat_approval; answer them with job_id "", chat_approval.interaction_id and an exact option label from chat_approval.interaction.questions[].options[].label. Say 已批准 only after the answer receipt or a later query confirms the task resumed.';
+  'Permission requests (permission_interrupt) require a manual click on the on-screen card, including refusal and remembered permissions. Never answer them through voice tools. Execution confirmation cards (confirm_interrupt) are the only voice approval cards. Approval cards (approval_cards) are answered by voice with jiuwen_task_answer, using the card\'s job_id and interaction_id and the exact option label from the card as the answer. While a card is pending: if the user clearly says 同意, 允许, 可以 or 批准, answer with the card allow_answer; if the user clearly says 拒绝, 不要 or 取消这个操作, answer with its reject_answer (equally clear wording in another language counts). Voice offers allow_answer, reject_answer, session_answer and permanent_answer. Choose the session option (e.g. 会话内记住) only when the user says 本会话保持同意, 本会话同意, 这个会话都允许 or similar; it stops asking for the rest of this conversation. Choose the permanent option (permanent_answer, e.g. 永久记住) only when the user explicitly says 永久同意, 永久允许 or 以后都允许. If the meaning is unclear, or it is not clear that the user is answering the card, ask one short question and do not submit. If several cards are pending, confirm which card the user means before submitting. A new request such as 打开微信 is a new task: delegate it normally; it waits in the queue until the approval is handled. Never use a new request as an answer to a card. Cards left by typed chat also appear in jiuwen_task_query as chat_approval; answer them with job_id "", chat_approval.interaction_id and an exact option label from chat_approval.interaction.questions[].options[].label. Say 已批准 only after the answer receipt or a later query confirms the task resumed.';
 
 export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
   'For every existing task queue query, progress/count question, reorder, cancellation, modification or information answer, call jiuwen_queue_manage with the complete user instruction and necessary references. A dedicated text model queries real task records and executes the operations. You must not select task IDs or call low-level task controls yourself, except jiuwen_task_answer for an observed approval card under the explicit-consent rules.',
   'The same manager owns scheduled jobs: for any question about existing scheduled tasks (定时任务, reminders, alarms), their schedule, enabled state or next run time, or any request to reschedule, rename, pause, resume or delete one, call jiuwen_queue_manage with the complete user instruction. Do not read or change scheduled jobs yourself. Creating a new scheduled job is new work: use jiuwen_delegate so Core creates it. Never claim a scheduled job exists, changed or was removed without the manager receipt.',
   'When the user says first X then Y about existing waiting tasks, immediately call jiuwen_queue_manage; never just promise a new order. Call the tool before acknowledging. Only its actual receipts can confirm a change. If it asks for clarification, ask the user without guessing.',
-  'Completed Core work can still be revised through the queue manager. Further actions on prior results may also be delegated to Core. Cancellation stops execution and never undoes external effects. Permission approvals follow the explicit voice approval rules below.',
+  'Completed Core work can still be revised through the queue manager. Further actions on prior results may also be delegated to Core. Cancellation stops execution and never undoes external effects. Permission requests require manual clicks; execution confirmations follow the voice approval rules below.',
   'For NEW work call jiuwen_delegate; for existing task management call jiuwen_queue_manage instead of creating duplicate tasks. Do not repeat a management request after its receipt unless the user gives a new instruction. A manager error or incomplete result is not success; preserve any earlier applied receipts.',
   'Provide a short title when delegating, usually 8-20 Chinese characters: action plus object and necessary distinguishing details resolved from context. Do not invent goals or claim success. Title is display metadata; preserve full requirements in task. When modifying the goal, optionally provide an updated title.',
   'Follow the configured reply language. Preserve user-provided data, task IDs and file paths exactly.',
@@ -52,7 +52,7 @@ export function taskCancellationNotice(jobId: string): string {
   return `Task stop confirmed: ${JSON.stringify({ job_id: jobId, status: 'cancelled', stopped: true })}. This task was cancelled, not successfully completed. Other tasks are unaffected.`;
 }
 
-export const APPROVAL_SOURCES = new Set(['permission_interrupt', 'confirm_interrupt']);
+export const APPROVAL_SOURCES = new Set(['confirm_interrupt']);
 
 export interface ApprovalInteraction {
   id?: string; request_id: string; state: string; source?: string;
@@ -71,10 +71,10 @@ export function approvalCardHeader(jobId: string, interaction: ApprovalInteracti
       // Name the plain allow/reject labels so a spoken 允许/拒绝 maps to one exact answer.
       return {
         question: q.question, options,
-        allow_answer: options.find(label => /允许|allow/i.test(label) && !/记住|总是|always|remember/i.test(label)),
+        allow_answer: options.find(label => /允许|批准|执行|allow|approve|execute/i.test(label) && !/记住|总是|always|remember/i.test(label)),
         session_answer: options.find(label => /会话|session/i.test(label)),
         permanent_answer: options.find(label => /永久|总是|always|permanent/i.test(label)),
-        reject_answer: options.find(label => /拒绝|reject|deny/i.test(label)),
+        reject_answer: options.find(label => /拒绝|跳过|继续规划|reject|deny|skip|keep planning/i.test(label)),
       };
     }),
   };
@@ -87,7 +87,7 @@ const SPOKEN_CARD_ANSWERS: Array<[string, RegExp]> = [
   ['permanent_answer', /^(永久(同意|允许)|以后都允许)$/],
   ['session_answer', /^(本会话(保持)?(同意|允许)|这个会话都允许)$/],
   ['reject_answer', /^(拒绝|不要|不同意|取消这个操作)$/],
-  ['allow_answer', /^(同意|允许|可以|批准)$/],
+  ['allow_answer', /^(同意|允许|可以|批准|执行|开始执行|按计划执行|按计划实现)$/],
 ];
 
 // One open single-question card plus one of the short answers above gives the exact
@@ -127,6 +127,9 @@ export function pendingCardTurnNotice(cards: unknown[], said = '', beforeCard = 
 
 export function taskQuestionNotice(question: unknown): string {
   const source = (question as { interaction?: { source?: unknown } } | null)?.interaction?.source;
+  if (source === 'permission_interrupt') {
+    return `Background Agent permission request (not a new task): ${JSON.stringify(question)}. Tell the user to click the on-screen permission card manually. Voice cannot allow, reject or remember permissions. Do not call jiuwen_task_answer or jiuwen_queue_manage to answer this card.`;
+  }
   if (typeof source === 'string' && APPROVAL_SOURCES.has(source)) {
     // Approval cards can be answered by voice under explicit-consent rules.
     return `Background Agent approval card (not a new task): ${JSON.stringify(question)}. Briefly tell the user what this card asks to allow and ask whether to allow or reject it. ${VOICE_APPROVAL_RULES}`;

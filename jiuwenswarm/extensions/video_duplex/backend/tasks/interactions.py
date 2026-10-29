@@ -33,6 +33,7 @@ def information_question(payload):
 
 
 NATIVE_APPROVAL_SOURCES = {"permission_interrupt", "confirm_interrupt"}
+VOICE_APPROVAL_SOURCES = {"confirm_interrupt"}
 
 
 def native_approval_question(payload):
@@ -59,7 +60,7 @@ def native_approval_question(payload):
 def approval_cards(interaction):
     """Summarize a pending approval card for voice; None for voice-answerable questions."""
     interaction = interaction or {}
-    if interaction.get("source") not in NATIVE_APPROVAL_SOURCES or interaction.get("state") != "pending":
+    if interaction.get("source") not in VOICE_APPROVAL_SOURCES or interaction.get("state") != "pending":
         return None
     return [
         dict(header=str(q.get("header") or "")[:200], message=str(q.get("question") or "")[:500])
@@ -85,6 +86,8 @@ def voice_approval_answers(interaction, answers):
     guarantees that what reaches Core is an option the card itself offered.
     """
     native_approval_question(interaction)
+    if interaction.get("source") not in VOICE_APPROVAL_SOURCES:
+        raise ValueError("Permission requests require a manual click on the on-screen card; voice answers are not allowed")
     questions = interaction["questions"]
     if not isinstance(answers, list) or len(answers) != len(questions):
         raise ValueError("Answer every approval question exactly once")

@@ -212,16 +212,14 @@ uses native design tools in the current project. Voice and text share the Design
 later typed turns also receive recent saved voice context. Native question cards remain
 answerable. Voice answers and cancellation use the current task binding, so a stale
 cancellation cannot stop a later turn.
-Approval cards (permission approvals, cua desktop confirmations and similar) can be
-answered by voice as well as on screen. Clearly saying "agree", "allow", "OK" or "approve"
-allows; "reject", "no" or "cancel this operation" rejects. Saying "allow for this
-conversation" picks the session option, so the card is not shown again in this conversation;
-the permanent option is picked only when you explicitly say "always allow". If your meaning is unclear,
-the assistant asks once and does not submit; with several open cards it first confirms
-which one. A new request spoken while a card waits (such as "open WeChat") is dispatched
-as a new task and queued until the approval is handled; it is never used as an answer.
-Cards left by typed chat can also be answered by voice. The assistant says a card was
-approved only after it confirms the task resumed. Speech that ended before a card appeared is never taken as its answer.
+Tool permission cards require manual clicks, including allow-once, refusal, session and permanent permissions.
+Voice tools cannot submit permission answers. Execution confirmations (such as cua desktop actions)
+remain answerable by voice or on screen, using only options offered by the card. Information forms
+still accept spoken answers to resume the original task. Unclear speech or multiple open cards
+requires clarification. New requests are queued as new work, never used as card answers.
+Execution confirmations left by typed chat can also be answered by voice. The assistant confirms
+submission only after a receipt; it must not imply task completion. Speech before a card appeared
+is never used as its answer.
 Voice tasks retain their own per-round result subscription even when the Design page
 already has a subscription. Canvas, node, run and assistant activity updates use the
 saved Design session's Web channel, so the page does not need a refresh.
@@ -265,10 +263,12 @@ about time, content and parameters aloud. They collect the user's spoken answers
 ask for missing fields and pass the answers to `jiuwen_queue_manage`, which queries the current interaction before submitting through
 `jiuwen_task_answer`. Answers resume the original task without another delegation.
 Duplicate notices do not repeat questions; other sessions and replay notices do not
-trigger speech. Native forms remain available for manual input. Permission and
-operation approvals support explicit voice answers as well as their existing UI.
+trigger speech. Native forms remain available for manual input. Tool permission requests
+(such as running commands or accessing files) require a manual click; voice cannot grant,
+reject or remember permissions. Execution confirmations (such as confirming a desktop action)
+still support explicit voice answers and on-screen clicks.
 JoyAI does not ask or answer information forms by voice. Users complete the existing
-on-screen forms, and the server rejects JoyAI information-form `jiuwen_task_answer` requests; approval-card answers remain supported. Ordinary
+on-screen forms. Permission requests also reject voice answers; execution-confirmation cards remain voice-answerable. Ordinary
 voice conversation, task management and Core summaries in text and speech remain available.
 Completion notices retain the Core invocation's `job_id`. Resource IDs inside result
 text belong in follow-up instructions and cannot replace the invocation ID. If a

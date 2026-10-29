@@ -645,9 +645,12 @@ class VideoSearchManager:
         ]
         result["files_truncated"] = len(files) != len(result["files"])
         interaction = job.get("interaction")
-        if interaction and len(json.dumps(interaction, ensure_ascii=False).encode("utf-8")) > 8000:
+        if interaction and (interaction.get("source") == "permission_interrupt"
+                            or len(json.dumps(interaction, ensure_ascii=False).encode("utf-8")) > 8000):
             # Never truncate the exact question that an answer must be bound to.
             result["interaction_requires_ui"] = True
+            if interaction.get("source") == "permission_interrupt":
+                result["message"] = "Permission requests require a manual click on the on-screen card; do not submit a voice answer."
         else:
             result["interaction"] = interaction
         # Voice answers approval cards with one of each card's own option labels.
@@ -710,7 +713,10 @@ class VideoSearchManager:
         if not session_id:
             return
         if event_name == "chat.ask_user_question":
-            if payload.get("duplex_job_id") or payload.get("source") not in {"permission_interrupt", "confirm_interrupt"}:
+            if payload.get("source") == "permission_interrupt":
+                self._chat_cards.pop(session_id, None)
+                return
+            if payload.get("duplex_job_id") or payload.get("source") != "confirm_interrupt":
                 return
             self._chat_cards[session_id] = {
                 key: payload.get(key) for key in ("request_id", "source", "questions", "approval_schema")
@@ -734,7 +740,7 @@ class VideoSearchManager:
             return None
         session = scope.removeprefix("task-duplex:")
         card = self._chat_cards.get(session)
-        if not card:
+        if not card or card.get("source") != "confirm_interrupt":
             return None
         from jiuwenswarm.common.schema.message import ReqMethod
 

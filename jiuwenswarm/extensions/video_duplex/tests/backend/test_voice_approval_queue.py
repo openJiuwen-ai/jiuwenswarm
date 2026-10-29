@@ -36,7 +36,7 @@ class CoreSession:
         self.runs.append((task["instruction"], bool(task.get("resume_answer"))))
         if task["instruction"] == "删除文件" and not task.get("resume_answer"):
             await progress(dict(stage="interaction", interaction=native_approval_question({
-                "request_id": "core-approval", "source": "permission_interrupt",
+                "request_id": "core-approval", "source": "confirm_interrupt",
                 "questions": [{"question": "允许删除？", "options": OPTIONS, "card_id": "card-1"}],
             })))
             self.card_live = True
@@ -150,7 +150,7 @@ async def test_voice_answers_typed_card_through_click_path(system, monkeypatch, 
     manager.subscribers[("alice", SCOPE, id(ws))] = ws
     core.card_live = True
     channel.push("chat.ask_user_question", {
-        "request_id": "typed-approval", "source": "permission_interrupt",
+        "request_id": "typed-approval", "source": "confirm_interrupt",
         "questions": [{"question": "允许执行 rm？", "header": "权限审批: bash", "options": OPTIONS,
                        "card_id": "card-9"}],
     })
@@ -174,7 +174,7 @@ async def test_voice_answers_typed_card_through_click_path(system, monkeypatch, 
     assert accepted["state"] == "accepted"
     method, params = channel.dispatched[-1]
     assert method == "chat.send" and params["session_id"] == "chat" and params["query"] == ""
-    assert params["request_id"] == "typed-approval" and params["source"] == "permission_interrupt"
+    assert params["request_id"] == "typed-approval" and params["source"] == "confirm_interrupt"
     assert params["answers"] == [{"custom_input": "", "question": "允许执行 rm？",
                                   "selected_options": [spoken], "card_id": "card-9"}]
     assert ("video.search.confirmation_closed", {"session_id": "chat", "request_id": "typed-approval"}) \
@@ -199,7 +199,7 @@ async def test_typed_card_answer_is_not_reported_applied_until_core_resumes(syst
     monkeypatch.setattr(task_adapter, "CHAT_ANSWER_CONFIRM_TIMEOUT", 0.05)
     core.card_live = True
     channel.push("chat.ask_user_question", {
-        "request_id": "typed-approval", "source": "permission_interrupt",
+        "request_id": "typed-approval", "source": "confirm_interrupt",
         "questions": [{"question": "允许执行 rm？", "header": "权限审批: bash", "options": OPTIONS}],
     })
     receipt = await manager.answer_chat_card(object(), "alice", SCOPE, "typed-approval", ["允许"])
@@ -256,3 +256,42 @@ async def test_web_channel_replays_request_through_its_own_dispatch():
     frame, query = frames[0]
     assert frame["type"] == "req" and frame["method"] == "chat.send"
     assert frame["params"] == {"session_id": "chat"} and query == {"app_id": ["default"]}
+
+
+@pytest.mark.parametrize("label", ["允许", "拒绝"])
+async def test_permission_card_rejects_voice_and_accepts_manual_click(system, label):
+    service, core, store = system
+    task = submit(service, "permission", "删除文件")
+    await until(lambda: store.read(task["id"])["status"] == "waiting_user"
+                and store.read(task["id"])["output_closed"])
+    store.update(task["id"], lambda t: t["interaction"].update(source="permission_interrupt"))
+    interaction_id = store.read(task["id"])["interaction"]["id"]
+    with pytest.raises(ValueError, match="manual click"):
+        await service.answer("alice", SCOPE, task["id"], "voice", interaction_id, answers=[label])
+    current = store.read(task["id"])
+    assert current["status"] == "waiting_user"
+    assert current["interaction"]["state"] == "pending"
+    assert core.runs == [("删除文件", False)]
+    await service.answer("alice", SCOPE, task["id"], "click", interaction_id, native_ui=True,
+                         answers=[{"selected_options": [label], "card_id": "card-1"}])
+    await until(lambda: store.read(task["id"])["status"] == "completed")
+    assert core.runs == [("删除文件", False), ("删除文件", True)]
+
+
+async def test_typed_permission_card_cannot_be_answered_by_voice(system, monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+
+    service, core, _store = system
+    channel = FakeChannel()
+    manager, query = manager_for(service, core, channel)
+    monkeypatch.setattr(task_adapter, "task_agent_query", query)
+    core.card_live = True
+    permission = {"request_id": "permission", "source": "permission_interrupt",
+                  "questions": [{"question": "允许执行？", "options": OPTIONS}]}
+    channel.push("chat.ask_user_question", permission)
+    assert await manager.chat_card("alice", SCOPE) is None
+    # Even stale state from an older connection cannot bypass the source check.
+    manager._chat_cards["chat"] = permission
+    receipt = await manager.answer_chat_card(object(), "alice", SCOPE, "permission", ["允许"])
+    assert receipt["state"] == "rejected"
+    assert not channel.dispatched

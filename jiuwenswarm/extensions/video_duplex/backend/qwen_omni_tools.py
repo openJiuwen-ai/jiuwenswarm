@@ -299,7 +299,7 @@ def task_management_tools():
         (
             "jiuwen_task_answer",
             (
-                "Answer an observed pending Agent information question or approval card so the original task "
+                "Permission requests (permission_interrupt) require a manual click and cannot be answered by this tool. Answer an observed pending Agent information question or approval card so the original task "
                 "continues. Query exact job_id, interaction.id and questions first; pass interaction.id as "
                 "interaction_id. Clarify which task if ambiguous. Never create a new task for an answer, and "
                 "never use a new request (e.g. 打开微信) as an answer. Approval cards: choose the allow option "

@@ -442,7 +442,7 @@ test('JoyAI reads managed and typed-chat approval cards last on every user turn,
 
   provider.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending', source: 'confirm_interrupt',
     questions: [{ header: '操作确认: cua_agent', question: '打开计算器', options: PERMISSION_OPTIONS }] });
-  provider.enqueueQuestion('', { id: 'typed-approval', request_id: 'typed-approval', state: 'pending', source: 'permission_interrupt',
+  provider.enqueueQuestion('', { id: 'typed-approval', request_id: 'typed-approval', state: 'pending', source: 'confirm_interrupt',
     questions: [{ header: '权限审批: bash', question: '允许执行 rm？', options: PERMISSION_OPTIONS }] });
   // Information forms stay on screen for JoyAI.
   provider.enqueueQuestion('trip', { id: 'form', request_id: 'f', state: 'pending', source: 'ask_user_interrupt',
@@ -490,7 +490,7 @@ test('JoyAI reads managed and typed-chat approval cards last on every user turn,
   await pending;
   assert.equal(requests.at(-1).approval_context, undefined);
 
-  provider.enqueueQuestion('cua2', { id: 'c', request_id: 'c', state: 'pending', source: 'permission_interrupt', questions: [] });
+  provider.enqueueQuestion('cua2', { id: 'c', request_id: 'c', state: 'pending', source: 'confirm_interrupt', questions: [] });
   provider.stop();
   assert.equal(provider.pendingApprovals.size, 0, 'stop clears cards');
 });

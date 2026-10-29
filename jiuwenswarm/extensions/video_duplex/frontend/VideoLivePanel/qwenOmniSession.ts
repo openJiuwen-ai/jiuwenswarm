@@ -456,6 +456,7 @@ export class RealtimeDuplexSession {
       this.closeApprovals(jobId);
       return;
     }
+    if (interaction.source === 'permission_interrupt') this.closeApprovals(jobId);
     const key = `question:${jobId}:${interaction.id || interaction.request_id}`;
     if (interaction.source && APPROVAL_SOURCES.has(interaction.source) && !this.pendingApprovals.has(key)) {
       this.pendingApprovals.set(key, approvalCardHeader(jobId, interaction));

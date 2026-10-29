@@ -23,6 +23,7 @@ TASK_RESOURCE_SCOPE_INSTRUCTIONS = (
 
 
 VOICE_APPROVAL_INSTRUCTIONS = (
+    "Permission requests (permission_interrupt) require a manual click on the on-screen card, including refusal and remembered permissions. Never answer them through voice tools. Only execution confirmation cards (confirm_interrupt) are voice approval cards. "
     "Approval cards (approval_cards) are answered by voice with jiuwen_task_answer, using the card's job_id and "
     "interaction_id and the exact option label from the card as the answer. While a card is pending: if the user "
     "clearly says 同意, 允许, 可以 or 批准, choose the allow option; if the user clearly says 拒绝, 不要 or 取消这个操作, "

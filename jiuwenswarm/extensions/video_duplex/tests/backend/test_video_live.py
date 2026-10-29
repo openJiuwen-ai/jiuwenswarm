@@ -3867,7 +3867,7 @@ async def _joyai_turn(channel, monkeypatch, spoken, operation, scope="task-duple
 async def test_joyai_voice_answers_typed_chat_card_with_empty_job_id(monkeypatch, spoken, label):
     channel = _scoped_channel(monkeypatch)
     channel.manager._chat_cards["chat"] = {
-        "request_id": "typed-approval", "source": "permission_interrupt", "approval_schema": "",
+        "request_id": "typed-approval", "source": "confirm_interrupt", "approval_schema": "",
         "questions": [{"question": "允许执行 rm？", "header": "权限审批: bash", "options": PERMISSION_OPTIONS}],
     }
     prompts = await _joyai_turn(channel, monkeypatch, spoken, {"name": "jiuwen_task_answer", "arguments": {
@@ -3889,7 +3889,7 @@ async def test_joyai_voice_answers_managed_task_card(monkeypatch, spoken, label)
     owner, scope = await channel.manager.scope(object(), {"search_session_id": "task-duplex:chat"})
     job = service.submit(owner, scope, "cua", "打开计算器", {"independent": True, "resources": []})
     service.store.update(job["id"], lambda t: t.update(status="waiting_user", interaction={
-        "id": "card-a", "request_id": "core-approval", "state": "pending", "source": "permission_interrupt",
+        "id": "card-a", "request_id": "core-approval", "state": "pending", "source": "confirm_interrupt",
         "questions": [{"question": "打开计算器", "options": PERMISSION_OPTIONS}]}))
     answer = AsyncMock(return_value={"task_id": job["id"], "state": "accepted", "applied": True})
     monkeypatch.setattr(service, "answer", answer)
@@ -3904,7 +3904,7 @@ async def test_joyai_new_request_while_card_waits_is_a_new_task_not_an_answer(mo
 
     channel = _scoped_channel(monkeypatch)
     channel.manager._chat_cards["chat"] = {
-        "request_id": "typed-approval", "source": "permission_interrupt",
+        "request_id": "typed-approval", "source": "confirm_interrupt",
         "questions": [{"question": "允许执行 rm？", "options": PERMISSION_OPTIONS}],
     }
     start = AsyncMock(return_value={"id": "wechat", "status": "queued"})

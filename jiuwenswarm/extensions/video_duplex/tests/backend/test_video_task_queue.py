@@ -790,8 +790,13 @@ async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
 
     query = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
     jobs = {job["id"]: job for job in query["jobs"]}
-    assert jobs[task["id"]]["approval_cards"] == [
-        {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
+    if source == "permission_interrupt":
+        assert "approval_cards" not in jobs[task["id"]]
+        assert "interaction" not in jobs[task["id"]]
+        assert jobs[task["id"]]["interaction_requires_ui"] is True
+    else:
+        assert jobs[task["id"]]["approval_cards"] == [
+            {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
     assert "approval_cards" not in jobs[asking["id"]], "Information questions are not approval cards"
     message = query["message"]
     assert "answered by voice with jiuwen_task_answer" in message
@@ -803,7 +808,7 @@ async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
     assert "Never use a new request as an answer to a card" in message
     assert "Cards left by typed chat also appear in jiuwen_task_query" in message
     assert "已批准 only after the answer receipt or a later query confirms the task resumed" in message
-    assert "click" not in message and "requires_click" not in message
+    assert "permission_interrupt" in message and "manual click" in message
 
 
 @pytest.mark.parametrize("version_kind", ["quoted", "invalid", "omitted"])
