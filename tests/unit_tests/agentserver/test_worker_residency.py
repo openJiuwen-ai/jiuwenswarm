@@ -682,7 +682,13 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     from jiuwenswarm.server.lifecycle import Readiness
     from jiuwenswarm.server.supervisor import runtime_supervisor as module
 
-    conn = SimpleNamespace(recv=AsyncMock(return_value={
+    from jiuwenswarm.server.supervisor import resident_lifecycle
+
+    # This case isolates election while the endpoint is busy; real OS ownership
+    # is covered by the legacy compatibility and shutdown process tests.
+    monkeypatch.setattr(resident_lifecycle, "worker_process",
+        lambda *args, **kwargs: (SimpleNamespace(pid=123), 1.0))
+    conn = SimpleNamespace(close=AsyncMock(), recv=AsyncMock(return_value={
         "kind": KIND_HELLO, "protocol": module.PROTOCOL_VERSION,
         "data_scope": "scope", "code_identity": "code", "stub": False,
         "instance": "original-worker",

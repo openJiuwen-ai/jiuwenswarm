@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: alan_cheng
-author_email: chengshuo5@huawei.com
+author: 刘瑜
+author_email: liuyu524@huawei.com
 generated: true
 ---
 

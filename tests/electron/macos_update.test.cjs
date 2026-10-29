@@ -20,11 +20,14 @@ async function fixture(t) {
   const executable = path.join(root, "Work 'Swarm.app/Contents/MacOS/Electron");
   await fs.mkdir(path.dirname(executable), { recursive: true });
   await fs.writeFile(executable, 'test');
+  const backendExecutable = path.join(root, "Work 'Swarm.app/Contents/Resources/backend/workswarm");
+  await fs.mkdir(path.dirname(backendExecutable), { recursive: true });
+  await fs.writeFile(backendExecutable, 'test');
   const updatesDir = path.join(root, '.updates');
   await fs.mkdir(updatesDir);
   const installerPath = path.join(updatesDir, "Work 'Swarm-electron-setup.dmg");
   await fs.writeFile(installerPath, 'test');
-  return { executable, installerPath, updatesDir, logDir: path.join(root, 'logs'),
+  return { executable, backendExecutable, installerPath, updatesDir, logDir: path.join(root, 'logs'),
     parentPid: 123, childPids: [456], ports: [19000], arch: 'arm64' };
 }
 
@@ -39,12 +42,14 @@ test('only READY permits shutdown; paths are distinct argv', async t => {
     assert.equal(args[1], realInstaller);
     assert.equal(args[3], '123');
     assert.equal(args[4], '456');
-    assert.equal(args.length, 8);
+    assert.equal(args.length, 10);
+    assert.equal(args[8], options.backendExecutable);
     assert.equal(config.detached, true);
     process.nextTick(() => { child.stdout.write('REA'); child.stdout.write('DY\n'); });
     return child;
   });
-  assert.equal(await pending, true);
+  const prepared = await pending;
+  assert.equal(await fs.readFile(prepared.shutdownReceipt, 'utf8'), 'pending\n');
 });
 
 test('preflight failure rejects rather than reporting a successful update', async t => {
@@ -61,8 +66,22 @@ test('a symlink escaping the download directory is rejected before spawning', as
   const options = await fixture(t);
   const outside = path.join(path.dirname(options.updatesDir), 'outside.dmg');
   await fs.rename(options.installerPath, outside);
-  await fs.symlink(outside, options.installerPath);
+  try {
+    await fs.symlink(outside, options.installerPath);
+  } catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') {
+      t.skip('Windows symlink permission is unavailable');
+      return;
+    }
+    throw error;
+  }
   await assert.rejects(launchMacUpdate(options, () => assert.fail('spawned')), /download directory/);
+});
+
+test('a backend outside the installed app is rejected before spawning', async t => {
+  const options = await fixture(t);
+  options.backendExecutable = options.installerPath;
+  await assert.rejects(launchMacUpdate(options, () => assert.fail('spawned')), /lifecycle helper/);
 });
 
 test('both desktop APIs forward the installer path without a private protocol', async () => {
