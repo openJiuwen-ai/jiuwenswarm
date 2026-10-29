@@ -72,7 +72,12 @@ import {
   type SlashCommand,
   type SlashCommandContext,
 } from './slashCommands/registry';
-import { splitComposerSlashChip } from './composerDraftHydrate';
+import {
+  createComposerSkillRange,
+  readComposerSkillPositions,
+  readComposerText,
+  splitComposerSlashChip,
+} from './composerDraftHydrate';
 import {
   canUseSlashCommand,
   getWebSlashCommandsForMode,
@@ -2419,27 +2424,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   /** 从 contenteditable 提取纯文本（技能 chip 不进入纯文本，其它 token 展开为可提交文本） */
   const extractPlainText = useCallback((): string => {
     const el = inputRef.current;
-    if (!el) return '';
-    let text = '';
-    el.childNodes.forEach((node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.textContent || '';
-      } else if (node.nodeType === Node.ELEMENT_NODE) {
-        const elem = node as HTMLElement;
-        if (elem.getAttribute('contenteditable') === 'false' && elem.dataset.slashCommand) {
-          text += `/${elem.dataset.slashCommand}`;
-        } else if (elem.getAttribute('contenteditable') === 'false' && elem.dataset.composerToken) {
-          const prefix = elem.dataset.composerToken === 'role' ? '$' : '@';
-          text += `${prefix}${elem.dataset.value || elem.textContent || ''}`;
-        } else if (elem.getAttribute('contenteditable') === 'false') {
-          // 跳过技能 chip
-        } else {
-          text += elem.textContent || '';
-        }
-      }
-    });
-    return text.replace(/\u200B/g, '');
+    return el ? readComposerText(el) : '';
   }, []);
+
+  // Capture before the next session's passive hydration replaces the editor DOM.
+  useLayoutEffect(() => {
+    const editor = inputRef.current;
+    const sid = activeSessionId;
+    if (!editor || !sid) return;
+    return () => {
+      const runtime = useChatStore.getState().runtimes[sid];
+      const text = readComposerText(editor);
+      // Sending or an external edit may already have replaced the stored draft.
+      if (runtime && runtime.inputValue === text) {
+        useChatStore.getState().setInputValue(sid, text, readComposerSkillPositions(editor));
+      }
+    };
+  }, [activeSessionId]);
 
   // 切会话时用 inputValue 填充 contenteditable。技能 chip 由 selectedSkills 同步效果重建；
   // 有参斜杠 chip（如 /persist）写在纯文本里，这里还原成蓝色标签，避免切回后"标签消失"（#5771）。
@@ -3431,7 +3432,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   /** 在光标处插入技能 chip（不可编辑原子节点） */
   const insertSkillChip = useCallback(
-    (skillName: string) => {
+    (skillName: string, textOffset?: number) => {
       const el = inputRef.current;
       if (!el) return;
       // 输入法合成中不插入
@@ -3443,11 +3444,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
       // 恢复保存的光标，否则用当前光标
       let range: Range;
-      if (savedRangeRef.current && el.contains(savedRangeRef.current.commonAncestorContainer)) {
+      if (textOffset !== undefined) {
+        range = createComposerSkillRange(el, textOffset);
+      } else if (savedRangeRef.current && el.contains(savedRangeRef.current.commonAncestorContainer)) {
         range = savedRangeRef.current;
         sel.removeAllRanges();
         sel.addRange(range);
-      } else if (sel.rangeCount > 0) {
+      } else if (sel.rangeCount > 0 && el.contains(sel.getRangeAt(0).commonAncestorContainer)) {
         range = sel.getRangeAt(0);
       } else {
         // 无光标，追加到末尾
@@ -3614,6 +3617,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         .map((node) => node.getAttribute('data-skill'))
         .filter((name): name is string => Boolean(name)),
     );
+    const positions = useChatStore.getState().runtimes[activeSessionId]?.inputSkillPositions ?? [];
+    // Restore in DOM order, including multiple skills at the same text offset.
+    for (const { name, offset } of positions) {
+      if (selectedSkills.includes(name) && !existing.has(name)) {
+        insertSkillChip(name, offset);
+        existing.add(name);
+      }
+    }
     selectedSkills.forEach((skill) => {
       if (!existing.has(skill)) insertSkillChip(skill);
     });
