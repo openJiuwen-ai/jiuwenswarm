@@ -141,6 +141,69 @@ def backend(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flash_research_updates_the_bound_sandbox_plan_and_rejects_old_plan(backend):
+    from openjiuwen.harness.tools.todo import TodoCreateTool
+    from openjiuwen.harness.tools.todo_store import _BINDING
+
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
+        DEEPRESEARCH_STAGES,
+    )
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
+        capture_deepresearch_todo_target,
+        persist_deepresearch_task_update,
+    )
+    from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import (
+        bind_todo_lifecycle,
+    )
+
+    provider, _, _, root = backend
+    operation = SimpleNamespace(fs=lambda: provider)
+    create = TodoCreateTool(operation, str(root / "todos"))
+    modify = TodoModifyTool(operation, str(root / "todos"))
+    bind_todo_lifecycle(create)
+    bind_todo_lifecycle(modify)
+    session = SimpleNamespace(get_session_id=lambda: "s")
+    tasks = [{"id": f"deepresearch_stage_{i}", "content": title} for i, title in enumerate(DEEPRESEARCH_STAGES, 1)]
+    payload = {"event_type": "task.update", "tasks": [
+        {"task_id": task["id"], "task_content": task["content"], "status": "completed"} for task in tasks
+    ]}
+    token = _BINDING.set(None)
+    try:
+        await create.invoke({"tasks": tasks}, session=session)
+        path = Path(modify.get_file_path("s"))
+        target = await capture_deepresearch_todo_target(path, tool=modify, session_id="s")
+        assert await persist_deepresearch_task_update(payload, todo_path=path, target=target)
+        assert all(item.status.value == "completed" for item in await modify.load_todos("s"))
+
+        create.reset_invoke_marker("s")
+        newer = await create.invoke({"plan_action": "new", "tasks": [{"id": "new", "content": "new"}]}, session=session)
+        with pytest.raises(ValueError, match="older plan"):
+            await persist_deepresearch_task_update(payload, todo_path=path, target=target)
+        assert [item.id for item in await modify.load_todos("s")] == ["new"]
+        assert newer.todo_snapshot["revision"] == 3
+
+        original = path.read_bytes()
+        detached = path.parent.with_name("detached")
+        path.parent.rename(detached)
+        outside = root / "outside"
+        outside.mkdir()
+        (outside / "todo.json").write_bytes(original)
+        path.parent.symlink_to(outside, target_is_directory=True)
+        with pytest.raises(RuntimeError, match="snapshot read failed"):
+            await persist_deepresearch_task_update(payload, todo_path=path, target=target)
+        assert (outside / "todo.json").read_bytes() == original
+        assert (detached / "todo.json").read_bytes() == original
+        path.parent.unlink()
+        detached.rename(path.parent)
+        os.link(path, outside / "hardlink.json")
+        with pytest.raises(RuntimeError, match="snapshot read failed"):
+            await persist_deepresearch_task_update(payload, todo_path=path, target=target)
+        assert path.read_bytes() == original
+    finally:
+        _BINDING.reset(token)
+
+
+@pytest.mark.asyncio
 async def test_actual_sdk_http_daemon_conditional_commit(backend):
     provider, _http, _manager, root = backend
     path = str(root / "todo.json")

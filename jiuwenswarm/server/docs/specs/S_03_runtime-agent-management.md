@@ -180,7 +180,7 @@ UsageReconciler:    start_usage_reconciler()（启动周期回收）
 
 ### Todo 增量提交边界
 
-暂停、恢复和既有清单修改复用 SDK 同对象事务，在最新清单上应用原业务意图，不能整表覆盖并发提交。旧工作保留捕获的 plan_id，冲突不能换绑新计划。历史恢复读取同一权威文件：默认legacy保持原字段、generation/串行展示；成功读取合法空表时发送空数组。显式versioned发送匹配的todo_meta与合法空表。读取失败不发送清空事件。不改变请求取消、HITL状态机或沙箱隔离策略。
+暂停、恢复和既有清单修改复用 SDK 同对象事务，在最新清单上应用原业务意图，不能整表覆盖并发提交。Flash 中断取消复用已装配的 Todo 修改引擎及其会话检查。旧工作保留捕获的 plan_id，冲突不能换绑新计划。历史恢复读取同一权威文件：默认legacy保持原字段、generation/串行展示；成功读取合法空表时发送空数组。显式versioned发送匹配的todo_meta与合法空表。读取失败不发送清空事件。不改变请求取消、HITL状态机或沙箱隔离策略。
 
 `session.create`确认新Flash会话后，在现有元数据登记内部`todo_initialized`标记。SDK调用宿主
 `snapshot_guard`：缺失文件先检查初始化依据，首次可能提交前登记已使用；有效

@@ -140,6 +140,8 @@ class FlashTodoRail(DeepAgentRail):
             ),
         }
         self.engines = engines
+        # Core tools default to their existing create behavior; Flash opts in.
+        engines["create"].require_explicit_plan_action = True
         for engine in engines.values():
             bind_todo_lifecycle(engine)
         unified_tool = UnifiedTodoTool(engines, language, agent_id)
@@ -280,6 +282,15 @@ class FlashTodoRail(DeepAgentRail):
                 new_content = {}
                 for lang_key, text in content.items():
                     if isinstance(text, str):
+                        text = text.replace(
+                            "Once a planning need is identified, call todo_create immediately "
+                            "before starting execution.",
+                            "When a new plan is needed, call todo_create before execution. Continue or adjust "
+                            "an existing plan with todo_modify; replace it only with explicit plan_action=new/rebuild.",
+                        ).replace(
+                            "识别到规划需求后，在开始执行前立即调用 todo_create。",
+                            "需要新计划时在执行前调用 todo_create；继续、追加或调整已有计划使用 todo_modify，明确替换时才传 plan_action=new/rebuild。",
+                        )
                         for old, new in _TODO_NAME_REPLACEMENTS:
                             text = text.replace(old, new)
                     new_content[lang_key] = text

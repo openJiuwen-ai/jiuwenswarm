@@ -75,6 +75,98 @@ async def env(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "cn", "unsupported"])
+async def test_code_tools_preserve_native_creation_and_incremental_updates(env, language):
+    from jiuwenswarm.agents.harness.code.tools.code_todo_tools import (
+        CodeTodoCreateTool,
+        CodeTodoGetTool,
+        CodeTodoListTool,
+        CodeTodoModifyTool,
+    )
+
+    _, base, session, path = env
+    op = SimpleNamespace(fs=lambda: base.fs)
+    workspace = str(path.parent.parent)
+    create = CodeTodoCreateTool(op, workspace, language=language, agent_id="code")
+    modify = CodeTodoModifyTool(op, workspace, language=language, agent_id="code")
+    get = CodeTodoGetTool(op, workspace, language=language, agent_id="code")
+    listing = CodeTodoListTool(op, workspace, language=language, agent_id="code")
+
+    await create.invoke(
+        {"tasks": [{"id": "A", "content": "first"}, {"id": "B", "content": "second"}]}, session=session
+    )
+    await modify.invoke({"action": "update", "todos": [{"id": "A", "status": "completed"}]}, session=session)
+    await modify.invoke(
+        {"action": "append", "todos": [{"id": "C", "content": "third", "status": "pending"}]}, session=session
+    )
+    assert [task["id"] for task in (await listing.invoke({}, session=session))["tasks"]] == ["B", "C"]
+    assert (await get.invoke({"id": "A"}, session=session))["todo"]["status"] == "completed"
+    assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["A", "B", "C"]
+    # Code keeps the prior default: a new turn may replace an active plan.
+    create.reset_invoke_marker(session.get_session_id())
+    await create.invoke({"tasks": [{"id": "D", "content": "new plan"}]}, session=session)
+    assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["D"]
+
+
+@pytest.mark.asyncio
+async def test_code_read_tools_preserve_read_only_legacy_backend(env):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.code.tools.code_todo_tools import (
+        CodeTodoGetTool,
+        CodeTodoListTool,
+    )
+
+    _, _, session, path = env
+    data = SimpleNamespace(
+        content=json.dumps([{"id": "A", "content": "old task", "status": "pending"}]),
+        exists=None,
+        content_sha256=None,
+    )
+    fs = SimpleNamespace(mode="sandbox", read_file=AsyncMock(return_value=SimpleNamespace(code=0, data=data)))
+    op = SimpleNamespace(fs=lambda: fs)
+    listing = CodeTodoListTool(op, str(path.parent.parent))
+    get = CodeTodoGetTool(op, str(path.parent.parent))
+
+    assert (await listing.invoke({}, session=session))["tasks"][0]["id"] == "A"
+    assert (await get.invoke({"id": "A"}, session=session))["todo"]["id"] == "A"
+
+
+@pytest.mark.parametrize("language", ["cn", "en"])
+def test_flash_prompt_keeps_explicit_rebuild_rule(language):
+    from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+
+    sections = []
+    rail = FlashTodoRail()
+    rail.system_prompt_builder = SimpleNamespace(language=language, add_section=sections.append)
+    rail._inject_todo_section()
+    content = sections[0].content[language]
+    assert "plan_action=new/rebuild" in content
+    assert "todo(action=modify)" in content
+    assert "todo_create" not in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("versioned", [False, True])
+async def test_normal_plan_refresh_preserves_legacy_empty_behavior(env, versioned):
+    from openjiuwen.harness.schema.task import TaskPlan, TodoItem
+
+    from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import (
+        ConcurrentSafeTaskPlanningRail,
+    )
+
+    _, modifier, session, path = env
+    path.parent.mkdir()
+    path.write_text(json.dumps({"plan_id": "P", "revision": 1, "todos": []} if versioned else []))
+    state = SimpleNamespace(task_plan=TaskPlan(tasks=[TodoItem(id="old", content="old")]))
+    agent = SimpleNamespace(load_state=lambda _session: state, save_state=lambda *_args: None)
+    rail = ConcurrentSafeTaskPlanningRail()
+    rail.tools = [modifier]
+    await rail._refresh_task_plan_from_todos(SimpleNamespace(session=session, agent=agent))
+    assert (state.task_plan is None) is versioned
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("has_marker", [False, True])
 async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env, has_marker):
     from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
@@ -114,6 +206,25 @@ async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env, has_m
     ]
     assert saved["todos"][1] == result.todo_snapshot["todos"][1]
     assert {completed.todo_snapshot["revision"], appended.todo_snapshot["revision"]} == {2, 3}
+    await rail.before_invoke(ctx)
+    before = path.read_bytes()
+    with pytest.raises(Exception, match="active plan"):
+        await tool.invoke({"action": "create", "tasks": [{"id": "new", "content": "New"}]}, session=session)
+    assert path.read_bytes() == before
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
+        JiuwenSwarmFlashAdapter,
+    )
+
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._instance = SimpleNamespace()
+    adapter._task_planning_rail = rail
+    adapter._stream_event_rail = SimpleNamespace(_format_todos_for_frontend=lambda todos: [t.to_dict() for t in todos])
+    assert adapter._get_todo_modify_tool("s") is rail.engines["modify"]
+    cancelled = await adapter._cancel_pending_todos("s")
+    assert [(row["id"], row["status"]) for row in cancelled] == [
+        ("A", "completed"), ("B", "cancelled"), ("C", "cancelled"),
+    ]
     path.unlink()
     await rail.before_invoke(ctx)
     with pytest.raises(Exception, match="first initialization"):
@@ -408,5 +519,27 @@ async def test_auto_advance_uses_latest_plan_and_refuses_old_work(env):
     )
     rail._todo_map["B"]["status"] = "pending"
     before = path.read_bytes()
+    await rail._auto_advance_pending_to_in_progress(ctx, task_id="B")
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_auto_advance_checks_latest_predecessor_state(env):
+    from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+        TaskExecutionRail,
+    )
+
+    creator, modifier, session, path = env
+    await creator.invoke({"tasks": [{"id": "A", "content": "A"}, {"id": "B", "content": "B"}]}, session=session)
+    await modifier.invoke({"action": "update", "todos": [{"id": "A", "status": "completed"}]}, session=session)
+    rail = TaskExecutionRail()
+    rail._deep_agent = SimpleNamespace(deep_config=SimpleNamespace(
+        sys_operation=SimpleNamespace(fs=lambda: modifier.fs),
+        workspace=SimpleNamespace(get_node_path=lambda _node: path.parent.parent),
+    ))
+    rail._todo_map = rail._build_map_from_todo_items(rail._load_todo_from_json("s"))
+    await modifier.invoke({"action": "update", "todos": [{"id": "A", "status": "pending"}]}, session=session)
+    before = path.read_bytes()
+    ctx = SimpleNamespace(session=session, extra={}, inputs=SimpleNamespace())
     await rail._auto_advance_pending_to_in_progress(ctx, task_id="B")
     assert path.read_bytes() == before

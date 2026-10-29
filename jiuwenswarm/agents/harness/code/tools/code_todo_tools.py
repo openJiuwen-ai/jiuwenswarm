@@ -15,7 +15,6 @@ from openjiuwen.harness.tools.todo import (
     TodoListTool,
     TodoLockManager,
     TodoModifyTool,
-    TodoTool,
 )
 
 from jiuwenswarm.agents.harness.code.prompt.code_todo_tool_prompts import (
@@ -49,13 +48,8 @@ class CodeTodoCreateTool(TodoCreateTool):
         lock_manager: Optional[TodoLockManager] = None,
     ) -> None:
         _ = language
-        TodoTool.__init__(
-            self,
-            _build_code_todo_card("todo_create", "TodoCreateTool", agent_id=agent_id),
-            operation,
-            workspace,
-            lock_manager,
-        )
+        super().__init__(operation, workspace, "en", agent_id, lock_manager)
+        self._card = _build_code_todo_card("todo_create", "TodoCreateTool", agent_id=agent_id)
 
 
 class CodeTodoListTool(TodoListTool):
@@ -68,13 +62,8 @@ class CodeTodoListTool(TodoListTool):
         lock_manager: Optional[TodoLockManager] = None,
     ) -> None:
         _ = language
-        TodoTool.__init__(
-            self,
-            _build_code_todo_card("todo_list", "TodoListTool", agent_id=agent_id),
-            operation,
-            workspace,
-            lock_manager,
-        )
+        super().__init__(operation, workspace, "en", agent_id, lock_manager)
+        self._card = _build_code_todo_card("todo_list", "TodoListTool", agent_id=agent_id)
 
 
 class CodeTodoGetTool(TodoGetTool):
@@ -87,13 +76,8 @@ class CodeTodoGetTool(TodoGetTool):
         lock_manager: Optional[TodoLockManager] = None,
     ) -> None:
         _ = language
-        TodoTool.__init__(
-            self,
-            _build_code_todo_card("todo_get", "TodoGetTool", agent_id=agent_id),
-            operation,
-            workspace,
-            lock_manager,
-        )
+        super().__init__(operation, workspace, "en", agent_id, lock_manager)
+        self._card = _build_code_todo_card("todo_get", "TodoGetTool", agent_id=agent_id)
 
 
 class CodeTodoModifyTool(TodoModifyTool):
@@ -106,10 +90,5 @@ class CodeTodoModifyTool(TodoModifyTool):
         lock_manager: Optional[TodoLockManager] = None,
     ) -> None:
         _ = language
-        TodoTool.__init__(
-            self,
-            _build_code_todo_card("todo_modify", "TodoModifyTool", agent_id=agent_id),
-            operation,
-            workspace,
-            lock_manager,
-        )
+        super().__init__(operation, workspace, "en", agent_id, lock_manager)
+        self._card = _build_code_todo_card("todo_modify", "TodoModifyTool", agent_id=agent_id)

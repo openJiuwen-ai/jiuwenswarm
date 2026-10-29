@@ -199,6 +199,7 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
         agent_id=agent_id,
     )
     target = AsyncMock()
+    todo_tool = object()
 
     async def _invoke(_arguments, **_kwargs):
         assert get_task_env_overlay() == {
@@ -212,6 +213,8 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
             "agent_id": agent_id,
         }
         assert dt._get_effective_request_output_dir() == Path(output_dir).resolve()
+        assert dt._todo_workspace_key(dt._get_route()) == "tenant-workspace"
+        assert dt._deepresearch_route_ctx.get()["todo_tool_provider"]() is todo_tool
         return "ok"
 
     target.invoke.side_effect = _invoke
@@ -224,6 +227,8 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
             "session_id": "session",
             "service_id": service_id,
             "agent_id": agent_id,
+            "workspace_key": "tenant-workspace",
+            "todo_tool_provider": lambda: todo_tool,
             "output_dir": output_dir,
         },
     )
@@ -256,7 +261,8 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
 
 
 @pytest.mark.asyncio
-async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_context():
+@pytest.mark.parametrize("tool_name", ["deepresearch_execute", "deepresearch_stream"])
+async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_context(tool_name):
     service_id = "progressive-eager-service"
     agent_id = "office"
     shared_root = "/trusted/office-claw-skills"
@@ -265,9 +271,8 @@ async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_contex
         service_id=service_id,
         agent_id=agent_id,
     )
-    agent = SimpleNamespace(
-        ability_manager=SimpleNamespace(list=lambda: [de.deepresearch_execute.card]),
-    )
+    tool = dt.deepresearch_stream if tool_name == "deepresearch_stream" else de.deepresearch_execute
+    agent = SimpleNamespace(ability_manager=SimpleNamespace(list=lambda: [tool.card]))
     rail = ProgressiveToolRail(
         eager_tools=["tools_search", "invoke_tool"],
         active_skill_provider=lambda: "deepresearch",
@@ -281,13 +286,13 @@ async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_contex
         },
     )
     tool_call = SimpleNamespace(
-        id="call-1", name="deepresearch_execute", arguments={"query": "q"}
+        id="call-1", name=tool_name, arguments={"query": "q"}
     )
     ctx = SimpleNamespace(
         agent=agent,
         inputs=ToolCallInputs(
             tool_call=tool_call,
-            tool_name="deepresearch_execute",
+            tool_name=tool_name,
             tool_args=tool_call.arguments,
         ),
         extra={},
@@ -300,11 +305,41 @@ async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_contex
         }
         assert dt._get_route()["service_id"] == service_id
         assert dt._get_route()["agent_id"] == agent_id
+        assert dt._get_route()["session_id"] == "session"
+        assert dt._get_route()["request_id"] == "request"
         await rail.after_tool_call(ctx)
         assert get_task_env_overlay() is None
         assert dt._get_route()["service_id"] == "default"
     finally:
         clear_agent_env_ns(service_id, agent_id)
+
+
+@pytest.mark.asyncio
+async def test_direct_stream_contexts_do_not_leak_between_sessions():
+    both_bound = asyncio.Event()
+    count = 0
+
+    async def observe(session_id):
+        nonlocal count
+        rail = ProgressiveToolRail(deepresearch_context_provider=lambda: {
+            "session_id": session_id, "request_id": session_id, "channel_id": "officeclaw",
+        })
+        rail._skill_gate_blocks_direct_call = AsyncMock(return_value=False)
+        call = SimpleNamespace(id=session_id, name="deepresearch_stream", arguments={})
+        ctx = SimpleNamespace(inputs=ToolCallInputs(tool_call=call, tool_name=call.name, tool_args={}), extra={})
+        await rail.before_tool_call(ctx)
+        try:
+            count += 1
+            if count == 2:
+                both_bound.set()
+            await both_bound.wait()
+            return dt._get_route()["session_id"]
+        finally:
+            await rail.after_tool_call(ctx)
+
+    with patch("jiuwenswarm.common.local_env_config.build_effective_env_overlay", return_value={}):
+        assert await asyncio.gather(observe("session-a"), observe("session-b")) == ["session-a", "session-b"]
+    assert dt._get_route()["session_id"] == ""
 
 
 def test_unregistered_deepresearch_prefix_does_not_receive_tenant_context():
