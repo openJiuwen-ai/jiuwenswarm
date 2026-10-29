@@ -151,15 +151,35 @@ class TestDelivery:
     @pytest.mark.asyncio
     @pytest.mark.unit
     async def test_chat_delta_emits_text_part(self):
-        # 修复前：CHAT_DELTA → kind="reasoningText"（正文被误当思考，与正文区重复）
+        """CHAT_DELTA 必须按正文（kind="text"）投递，不得误入思考区。
+
+        2026-09-18 630374805「正文分段末帧补换行」起，正文增量走「扣住最后
+        一片」策略：单个 delta 片挂起（``_text_stream_pending``）不出帧，等
+        本段正文收尾（CHAT_FINAL / 下个工具阶段 / 轮终）补一个换行后发出。
+        本用例断言随该行为更新：连续两个 delta 片，第一片立即以 kind="text"
+        增量发出（append=True、非末块），最后一片挂起不出帧。
+        """
         channel, frames = _make_channel()
-        await channel.send(_msg(EventType.CHAT_DELTA, "第一步正文"))
+        await channel.send(_msg(EventType.CHAT_DELTA, "第一片正文"))
+        # 首片挂起（本段还没有结束），不出帧
+        assert frames == []
+        assert channel._text_stream_pending.get(
+            ("sess-test-001", "task-test-001")
+        ) == ("第一片正文", "text")
+
+        await channel.send(_msg(EventType.CHAT_DELTA, "第二片正文"))
+        # 第二片到达 = 前一片已确定不是本段最后一片：作为普通增量发出
         assert len(frames) == 1
         assert _part_kind(frames) == "text"
         result = frames[0]["response"]["result"]
         # 正文增量：append=True、非末块
+        assert result["artifact"]["parts"][0]["text"] == "第一片正文"
         assert result["append"] is True
         assert result["lastChunk"] is False
+        # 最后一片继续挂起，等收尾补换行
+        assert channel._text_stream_pending.get(
+            ("sess-test-001", "task-test-001")
+        ) == ("第二片正文", "text")
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -205,22 +225,38 @@ class TestDelivery:
     @pytest.mark.asyncio
     @pytest.mark.unit
     async def test_reasoning_and_text_do_not_duplicate(self):
-        """端到端回归：真思考 + 正文 delta + 正文末块依次投递，kind 各归其位。"""
+        """端到端回归：真思考 + 正文 delta + 正文末块依次投递，kind 各归其位。
+
+        正文增量受「扣住最后一片」分段策略影响（630374805）：delta 片挂起、
+        由收尾的 CHAT_FINAL 补换行发出；kind 仍必须是 "text"（断言覆盖挂起
+        片最终落到的帧），思考不受分段策略影响、即时投递。
+        """
         channel, frames = _make_channel()
         await channel.send(_msg(EventType.CHAT_REASONING, "思考A"))
         reasoning_frames = list(frames)
         frames.clear()
+
         await channel.send(_msg(EventType.CHAT_DELTA, "正文增量"))
+        # delta 挂起不出帧（等本段收尾）
         delta_frames = list(frames)
         frames.clear()
+
         await channel.send(
             _msg(EventType.CHAT_FINAL, "完整正文", is_complete=True)
         )
         final_frames = list(frames)
 
         assert _part_kind(reasoning_frames) == "reasoningText"
-        assert _part_kind(delta_frames) == "text"
+        assert delta_frames == []
+        # 收尾帧把挂起的 delta 片补换行发出，kind 仍是 text
         assert _part_kind(final_frames) == "text"
+        texts = [
+            part["text"]
+            for fr in final_frames
+            for part in fr["response"]["result"]["artifact"]["parts"]
+        ]
+        assert any("正文增量" in t for t in texts)
+        assert any(t.endswith("\n") for t in texts)
 
 
 class TestRobustness:
