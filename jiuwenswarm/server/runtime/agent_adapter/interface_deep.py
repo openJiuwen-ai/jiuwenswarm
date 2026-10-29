@@ -5664,8 +5664,21 @@ class JiuWenSwarmDeepAdapter:
             if marked and not ok_registered:
                 unmark_dynamic_token_server(server_id)
 
-    # Public alias for cross-adapter registration (G.CLS.11).
-    register_mcp_server = _register_mcp_server
+    async def register_mcp_server(
+        self,
+        cfg: McpServerConfig,
+        *,
+        tag: str,
+        dynamic_token_url: str | None = None,
+    ) -> bool:
+        """Public entry for cross-adapter registration (G.CLS.11).
+
+        Delegates to ``_register_mcp_server`` so instance-level test doubles
+        patched on the protected name still apply (a bare alias would not).
+        """
+        return await self._register_mcp_server(
+            cfg, tag=tag, dynamic_token_url=dynamic_token_url
+        )
 
     async def _register_static_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
         import uuid
@@ -5944,7 +5957,7 @@ class JiuWenSwarmDeepAdapter:
                 # 登记）——与 _sync_mcp_servers_for_runtime 的透传口径一致；
                 # 漏传会导致 web 会话网关永远走静态头。
                 dynamic_token_url = str(entry.get("dynamic_token_url") or "").strip() or None
-                if await adapter._register_mcp_server(
+                if await adapter.register_mcp_server(
                     cfg, tag=tag, dynamic_token_url=dynamic_token_url
                 ):
                     applied_any = True
@@ -5955,7 +5968,7 @@ class JiuWenSwarmDeepAdapter:
                         f"runner error / cancel-scope error)"
                     )
             except Exception as exc:  # noqa: BLE001
-                # _register_mcp_server (via openjiuwen add_tool_server) surfaces
+                # register_mcp_server (via openjiuwen add_tool_server) surfaces
                 # plain Exceptions only — WorkflowError for connect/register
                 # failures, RuntimeError for ok=False. Collect the first failure
                 # so the caller can report it; raise if none succeeded.

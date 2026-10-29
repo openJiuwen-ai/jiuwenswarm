@@ -4469,23 +4469,15 @@ async def test_handle_message_uses_ws_scoped_acp_client_capabilities(monkeypatch
     await server.handle_initialize_for_test(ws_b, init_request_b, asyncio.Lock())
 
     captured = {}
-    import jiuwenswarm.server.dispatch as dispatch_module
 
-    async def fake_handle_session_create(ctx):
-        captured[int(ctx.connection_id)] = dict(ctx.request.metadata or {})
-        await ctx.sink.send_response(
-            AgentResponse(
-                request_id=ctx.request.request_id,
-                channel_id=ctx.request.channel_id,
-                ok=True,
-                payload={"session_id": "sess-b"},
-            )
-        )
+    async def fake_handle_session_create(ws, request, _send_lock):
+        captured[id(ws)] = dict(request.metadata or {})
 
-    monkeypatch.setitem(
-        dispatch_module.HANDLERS,
-        ReqMethod.SESSION_CREATE,
-        fake_handle_session_create,
+    monkeypatch.setattr(server, "_handle_session_create", fake_handle_session_create)
+    monkeypatch.setattr(
+        server,
+        "_skips_session_lifecycle_guard",
+        lambda _request: True,
     )
 
     env = e2a_from_agent_fields(

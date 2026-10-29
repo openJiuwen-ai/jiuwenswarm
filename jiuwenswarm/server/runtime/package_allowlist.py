@@ -153,8 +153,8 @@ def decode_package_allowlist_header(value: str | None) -> list[dict[str, Any]]:
             raise ValueError("package allowlist exceeds 16384 bytes")
         decoded = json.loads(raw.decode("utf-8"))
         return normalize_packages(decoded)
-    except (ValueError, json.JSONDecodeError):
-        # UnicodeError is a ValueError subclass; do not catch both (G.ERR.09).
+    except ValueError:
+        # json.JSONDecodeError / UnicodeError 都是 ValueError 子类，勿并列捕获 (G.ERR.09)。
         logger.warning("[package_allowlist] allowlist header rejected, treating as empty")
         return []
 

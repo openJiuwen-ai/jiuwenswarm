@@ -710,13 +710,15 @@ async def handle_team_members_get(ctx: RequestContext) -> None:
             session_id, team_name,
         )
         members_raw = []
-    members = [
-        m for m in members_raw
-        if isinstance(m, dict)
-        and m.get("role") == "human_agent"
-        and m.get("member_id")
-        and not is_departed_member(m.get("status"))
-    ]
+    members = []
+    for m in members_raw:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") != "human_agent" or not m.get("member_id"):
+            continue
+        if is_departed_member(m.get("status")):
+            continue
+        members.append(m)
     resp = AgentResponse(
         request_id=request.request_id,
         channel_id=channel_id,
