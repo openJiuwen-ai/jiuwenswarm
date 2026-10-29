@@ -519,12 +519,11 @@ def _a2ui_probe_for_frame(
     (PR9194 review CR#2). Gate the whole probe step on ``foreign`` instead of
     only gating engage, so the state machine input stays clean.
     """
-    if (
-            foreign
-            or not enabled
-            or event_type not in {"chat.delta", "chat.final"}
-            or not content
-    ):
+    # Split guards for G.CTL.03 (<=3 boolean operands per condition): frame
+    # validity first, then event-type whitelist — same short-circuit semantics.
+    if foreign or not enabled or not content:
+        return None, probe
+    if event_type not in {"chat.delta", "chat.final"}:
         return None, probe
     split = _split_a2ui_stream_content(probe, content)
     return split, _extend_a2ui_stream_probe(probe, content)
