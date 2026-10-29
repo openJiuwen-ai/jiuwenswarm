@@ -205,7 +205,11 @@ def filter_evolution_judge(
     index: ScopeIndex,
     profile: ModeProfile,
 ) -> list[EvolutionJudge]:
-    """Apply interface section 5.4 to one list of evolution items."""
+    """Apply interface section 5.4 to one list of evolution items.
+
+    Evidence may cite several subjects. An item with no in-scope reference is
+    dropped. Reward failure causes keep the single-subject rule separately.
+    """
     allowed = _ALLOWED_EVOLUTION_CATEGORIES[profile]
     kept: list[EvolutionJudge] = []
     experience_seen = False
@@ -213,7 +217,7 @@ def filter_evolution_judge(
         if judge.category not in allowed:
             continue
         refs = _scoped_refs(judge.evidence, index)
-        if not refs or _crosses_subjects(refs):
+        if not refs:
             continue
         suggestion = [item for item in judge.suggestion if item.strip()]
         if not suggestion and judge.category != "experience":
