@@ -357,6 +357,13 @@ def _compose_effective_local(
         if isinstance(section, dict):
             out["skill_authorization"] = deepcopy(section)
             break
+    # network 段：overlay 白名单合法键（与 agent-core compose 输出对齐），
+    # 回退合成透传（global 优先，user/session 兜底），防静默丢段。
+    for source in (global_cfg, user_cfg, session_cfg):
+        section = source.get("network") if isinstance(source, dict) else None
+        if isinstance(section, dict):
+            out["network"] = deepcopy(section)
+            break
     if deny_unique:
         out["deny_tools"] = deny_unique
     if ask_unique:
@@ -432,6 +439,10 @@ def _dump_yaml(path: Path, data: dict[str, Any]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     _dump_yaml_round_trip(path, data)
+    # 写后主动失效读缓存：mtime 精度不足（容器/网络 fs）且 size 未变时
+    # (mtime,size) 键可能仍命中旧值，read-modify-write 会基于旧数据
+    # 覆盖写、丢失刚追加的条目（评审 2026-10-29）。
+    _YAML_LOAD_CACHE.pop(path, None)
 
 
 def _permissions_section(raw: dict[str, Any]) -> dict[str, Any]:
@@ -592,22 +603,32 @@ def migrate_and_write_global_permissions() -> dict[str, Any]:
     moved_allow = list(migrated.pop("allow_tools", None) or [])
     moved_ask = list(migrated.pop("ask_tools", None) or [])
     moved_deny = list(migrated.pop("deny_tools", None) or [])
-    # Global 内旧 approval_overrides 迁 User
+    # Global 内旧 approval_overrides 迁 User。去重键：有 str id 按 id，
+    # 无 id 按 _approval_override_key（tools/match_type/pattern）——
+    # 仅 id 去重会让无 id 条目在幂等重跑中无限累积（评审 2026-10-29）。
     global_overrides = migrated.pop("approval_overrides", None)
     if isinstance(global_overrides, list) and global_overrides:
         existing = user_section.get("approval_overrides")
         if not isinstance(existing, list):
             existing = []
-        seen = {entry.get("id") for entry in existing if isinstance(entry, dict)}
+
+        def _dedup_key(entry: dict[str, Any]) -> tuple[str, Any]:
+            oid = entry.get("id")
+            if isinstance(oid, str) and oid:
+                return ("id", oid)
+            return ("key", _approval_override_key(entry))
+
+        seen = {
+            _dedup_key(entry) for entry in existing if isinstance(entry, dict)
+        }
         for item in global_overrides:
             if not isinstance(item, dict):
                 continue
-            oid = item.get("id")
-            if isinstance(oid, str) and oid in seen:
+            dedup = _dedup_key(item)
+            if dedup in seen:
                 continue
             existing.append(deepcopy(item))
-            if isinstance(oid, str):
-                seen.add(oid)
+            seen.add(dedup)
         user_section["approval_overrides"] = existing
 
     if moved_allow or moved_ask or moved_deny:
@@ -890,9 +911,10 @@ def _merge_file_guard_path_entries(
             for axis in ("read", "write", "exec"):
                 new_v = str(entry.get(axis) or "").strip().lower()
                 old_v = str(prev.get(axis) or "").strip().lower()
-                if new_v == "allow" or (new_v and old_v != "allow"):
-                    if new_v:
-                        merged[axis] = new_v
+                # 全级别棘轮（deny<ask<allow，与 _ACTION_RANK 同口径）：
+                # 低级别不得覆盖高级别，ask 不被降级为 deny（评审 2026-10-29）
+                if new_v and _ACTION_RANK.get(new_v, -1) >= _ACTION_RANK.get(old_v, -1):
+                    merged[axis] = new_v
             if entry.get("match"):
                 merged["match"] = entry.get("match")
             by_path[key] = merged
@@ -935,16 +957,20 @@ def _ratchet_merge_approval_overrides(
     ):
         if not isinstance(entry, dict):
             continue
-        if allow_only and str(entry.get("action") or "allow").lower() != "allow":
+        # 缺失/空 action 的条目跳过：默认 allow 属 fail-open（数据损坏
+        # 场景下无 action 条目会被当最高放行级别持久化）（评审 2026-10-29）
+        action = str(entry.get("action") or "").strip().lower()
+        if not action:
+            continue
+        if allow_only and action != "allow":
             continue
         key = _approval_override_key(entry)
         if key not in merged:
             order.append(key)
             merged[key] = deepcopy(entry)
             continue
-        kept_action = str(merged[key].get("action") or "allow").lower()
-        new_action = str(entry.get("action") or "allow").lower()
-        if _ACTION_RANK.get(new_action, 0) > _ACTION_RANK.get(kept_action, 0):
+        kept_action = str(merged[key].get("action") or "").strip().lower()
+        if _ACTION_RANK.get(action, 0) > _ACTION_RANK.get(kept_action, 0):
             merged[key] = deepcopy(entry)
     return [merged[key] for key in order if key in merged]
 
