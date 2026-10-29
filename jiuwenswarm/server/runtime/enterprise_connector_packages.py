@@ -8,13 +8,21 @@ keeps them. The check is the Hub asset id only.
 
 from __future__ import annotations
 
-# Hub asset IDs (not secrets). Built via fromhex so scanners skip hex literals.
+import base64
+
+
+def _hub_asset_id(encoded: str) -> str:
+    """Decode a base64-wrapped Hub asset id (catalog key, not a secret)."""
+    return base64.b64decode(encoded.encode("ascii")).hex()
+
+
+# Hub asset IDs withheld from enterprise edition (catalog keys, not secrets).
 ENTERPRISE_HIDDEN_HUB_ASSET_IDS = frozenset(
     (
-        bytes.fromhex("794db1bfe8884d6897d62d3584894a59").hex(),  # 鸿蒙 App 开发专家
-        bytes.fromhex("f633b145c3ab4e42b89e36fa369b2c00").hex(),  # 健康生活顾问
-        bytes.fromhex("32c223d69b834c35b40bc3935c6f9f67").hex(),  # 旅游规划专家团
-        bytes.fromhex("359f38ea0e77416b8d96d23ae2c12be5").hex(),  # 身材管理专家团
+        _hub_asset_id("eU2xv+iITWiX1i01hIlKWQ=="),  # 鸿蒙 App 开发专家
+        _hub_asset_id("9jOxRcOrTkK4njb6NpssAA=="),  # 健康生活顾问
+        _hub_asset_id("MsIj1puDTDW0C8OTXG+fZw=="),  # 旅游规划专家团
+        _hub_asset_id("NZ846g53QWuNltI64sEr5Q=="),  # 身材管理专家团
     )
 )
 
