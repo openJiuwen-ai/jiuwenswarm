@@ -2892,6 +2892,7 @@ class JiuWenSwarm:
         a2ui_stream_probe = ""
         _yielded_from_queue = 0
         completed_yielded = False
+        sandbox_deletion_error: dict[str, Any] | None = None
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
             rid, is_team_mode, is_team_first_request,
@@ -2959,6 +2960,17 @@ class JiuWenSwarm:
                     )
                 else:
                     payload = data.payload if isinstance(data, AgentResponseChunk) else data
+                    if (
+                        isinstance(payload, dict) and payload.get("event_type") == "chat.error"
+                        and payload.get("code") in {
+                            "SANDBOX_DELETION_PENDING", "SANDBOX_DELETION_FAILED",
+                        }
+                    ):
+                        if sandbox_deletion_error is not None:
+                            if payload.get("code") == "SANDBOX_DELETION_FAILED":
+                                sandbox_deletion_error = dict(payload)
+                            continue
+                        sandbox_deletion_error = dict(payload)
                     if expert_notice_stream is not None and isinstance(payload, dict):
                         updated_payload, notice_delta = expert_notice_stream.consume(payload)
                         if updated_payload is not payload:
@@ -3176,6 +3188,10 @@ class JiuWenSwarm:
                                     final_answer_content = next_final_content
                                     final_answer_chunks.clear()
                         if getattr(data, "is_complete", False):
+                            if sandbox_deletion_error is not None:
+                                # Keep exactly one terminal frame, emitted below
+                                # with the infrastructure failure preserved.
+                                continue
                             completed_yielded = True
                         yield data
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
@@ -3482,7 +3498,7 @@ class JiuWenSwarm:
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=cid,
-            payload={"is_complete": True},
+            payload=sandbox_deletion_error or {"is_complete": True},
             is_complete=True,
         )
 

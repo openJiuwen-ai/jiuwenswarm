@@ -308,6 +308,29 @@ def _infer_tool_result_error(value: Any) -> bool | None:
     return None
 
 
+def _sandbox_deletion_error(result: Any, exception: Any = None) -> dict[str, str] | None:
+    """Read provider markers only from failed tool errors, never successful content."""
+    value = result
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            value = None
+    error = None
+    if isinstance(value, dict) and value.get("success") is False:
+        error = value.get("error")
+    if not isinstance(error, str) and isinstance(exception, BaseException):
+        error = str(exception)
+    if not isinstance(error, str):
+        return None
+    match = re.search(r"\[(SANDBOX_DELETION_PENDING|SANDBOX_DELETION_FAILED)\]", error)
+    if match is None:
+        return None
+    return {"code": match.group(1), "error": error}
+
+
 class JiuSwarmStreamEventRail(DeepAgentRail):
     """Emit frontend stream events and enforce pause/abort checkpoints.
 
@@ -826,7 +849,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             and ctx.inputs.tool_result.get("result_type") == "interrupt"
         )
         if interrupt is None and not is_interrupt_result:
-            await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
+            await self._emit_tool_result(
+                session, tc, ctx.inputs.tool_result, exception=ctx.exception,
+            )
         self._symphony_stream_handler.request_force_finish(
             ctx,
             tc,
@@ -999,6 +1024,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         session: Session,
         tool_call: Any,
         result: Any,
+        *,
+        exception: Any = None,
     ) -> None:
         try:
             raw_output = _structured_tool_result_payload(result)
@@ -1015,6 +1042,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     raw_output,
                 )
             error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
+            deletion_error = _sandbox_deletion_error(result, exception)
+            if deletion_error is not None:
+                error_state = True
             if error_state is not None:
                 tool_result_payload["success"] = not error_state
                 if error_state:
@@ -1029,6 +1059,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     },
                 )
             )
+            if deletion_error is not None:
+                # Request-scoped deduplication and terminal status belong to the
+                # stream consumer, not this rail shared by sessions and turns.
+                await session.write_stream(
+                    OutputSchema(type="chat.error", index=0, payload=deletion_error),
+                )
         except Exception:
             logger.debug("tool_result emit failed", exc_info=True)
 

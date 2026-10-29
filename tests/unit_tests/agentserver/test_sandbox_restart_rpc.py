@@ -118,6 +118,13 @@ async def test_restart_retries_cleanup_and_never_creates_before_revocation(monke
         client.create_sandbox.assert_not_called()
         with pytest.raises(RuntimeError, match="deletion is pending"):
             cls.ensure_not_deleting(key)
+        # A later explicit restart retries the retained deletion before creating.
+        assert (await restart(server, {}))["restarted"] == 1
+        assert events == ["delete"] * 4 + ["create"]
+        assert launcher.extra_params["sandbox_id"] == "new-id"
+        assert not cls._pending_deletions
+        assert "_policy_apply_pending" not in launcher.extra_params
+    assert server_module.get_sandbox_runtime()["enabled"] is True
 
 
 @pytest.mark.asyncio
