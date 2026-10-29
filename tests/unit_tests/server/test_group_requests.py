@@ -39,6 +39,9 @@ def host():
             return_value={"status": "registered", "event_type": "group.member.added"}
         ),
         history=AsyncMock(return_value={"messages": []}),
+        file_rename=AsyncMock(return_value={"name": "renamed.md"}),
+        file_delete=AsyncMock(return_value={"deleted": True}),
+        clear_history=AsyncMock(return_value={"cleared": True}),
         delete=AsyncMock(return_value={"deleted": True}),
         owned=Mock(return_value={"mode": "team"}),
         runtime=SimpleNamespace(
@@ -66,6 +69,8 @@ async def test_management_methods_return_wire_result(host, method):
     name = {
         "group.member.add": "add_member", "group.history.get": "history",
         "group.execution.list": "execution_list", "group.execution.get": "execution_get",
+        "group.file.rename": "file_rename", "group.file.delete": "file_delete",
+        "group.history.clear": "clear_history",
     }.get(
         method, method.split(".")[1]
     )

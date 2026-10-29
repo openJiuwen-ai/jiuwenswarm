@@ -25,6 +25,7 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from jiuwenswarm.common.protocol_ids import validate_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.runtime.session_provisioner import SessionCreateInput
+from jiuwenswarm.server.runtime import group_files
 from jiuwenswarm.server.runtime.session import lifecycle
 from jiuwenswarm.server.runtime.session.session_metadata import update_session_metadata
 
@@ -40,6 +41,9 @@ GROUP_METHODS = frozenset(
         "group.history.get",
         "group.execution.list",
         "group.execution.get",
+        "group.file.rename",
+        "group.file.delete",
+        "group.history.clear",
     }
 )
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -345,6 +349,34 @@ def _public(state: dict) -> dict:
     for key in keys:
         result[key] = copy.deepcopy(state[key])
     return result
+
+
+_FINISHED_EXECUTION_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "interrupted", "timed_out", "stopped"}
+)
+
+
+def _seconds(timestamp) -> float:
+    """History timestamps are milliseconds; tolerate second-based values in older records."""
+    value = float(timestamp or 0)
+    return value / 1000 if value > 1e12 else value
+
+
+def _cleared(at: float, cleared_at) -> bool:
+    return isinstance(cleared_at, (int, float)) and at <= cleared_at
+
+
+def _execution_cleared(record: dict, state: dict) -> bool:
+    return record.get("status") in _FINISHED_EXECUTION_STATUSES and _cleared(
+        _seconds(record.get("created_at")), state.get("history_cleared_at")
+    )
+
+
+def _with_file_overrides(execution: dict, state: dict) -> dict:
+    overrides = state.get("file_overrides") or {}
+    if not overrides or not execution.get("attachments"):
+        return execution
+    return {**execution, "attachments": group_files.apply_file_overrides(execution["attachments"], overrides)}
 
 
 async def resolve_group_backend(state: dict):
@@ -656,6 +688,29 @@ class GroupService:
     async def history(self, group_id, params, *, user_id, channel_id):
         state = self.owned(group_id, user_id, channel_id)
         limit, offset = _page(params)
+        cleared_at = state.get("history_cleared_at")
+        messages = [
+            message for message in await self._messages(state)
+            if not _cleared(_seconds(message.timestamp), cleared_at)
+        ]
+        overrides = state.get("file_overrides") or {}
+        page = []
+        for message in messages[offset:offset + limit]:
+            item = message.model_dump(mode="json")
+            item["attachments"] = group_files.apply_file_overrides(item.get("attachments"), overrides)
+            page.append(item)
+        page_end = offset + limit
+        return dict(
+            group_id=group_id,
+            messages=page,
+            total=len(messages),
+            limit=limit,
+            offset=offset,
+            next_offset=page_end if page_end < len(messages) else None,
+        )
+
+    async def _messages(self, state):
+        group_id = state["group_id"]
         backend = await self.backend_resolver(state)
         if backend is not None:
             token = set_session_id(state["session_id"])
@@ -683,15 +738,46 @@ class GroupService:
         ):
             raise GroupError("GROUP_CORRUPT", "history scope does not match group")
         messages.sort(key=lambda message: (message.timestamp, message.message_id))
-        page_end = offset + limit
-        return dict(
-            group_id=group_id,
-            messages=[m.model_dump(mode="json") for m in messages[offset:page_end]],
-            total=len(messages),
-            limit=limit,
-            offset=offset,
-            next_offset=page_end if page_end < len(messages) else None,
-        )
+        return messages
+
+    async def clear_history(self, group_id, *, user_id, channel_id):
+        """Hide everything published so far; active task cards stay visible until they finish."""
+        async with group_lock(group_id):
+            state = self.owned(group_id, user_id, channel_id)
+            state["history_cleared_at"] = time.time()
+            _save(state)
+        return dict(group_id=group_id, cleared=True, history_cleared_at=state["history_cleared_at"])
+
+    async def _attachment_paths(self, state) -> set[str]:
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+        messages = [message.model_dump(mode="json") for message in await self._messages(state)]
+        executions = list(GroupExecutions(state["group_id"]).read().values())
+        return group_files.group_attachment_paths(messages, executions)
+
+    async def _owned_file(self, group_id, params, *, user_id, channel_id):
+        state = self.owned(group_id, user_id, channel_id)
+        path = group_files.validate_file_path(params.get("path"))
+        if path not in await self._attachment_paths(state):
+            raise GroupError("NOT_FOUND", "file not found in this group")
+        return state, path
+
+    async def file_rename(self, group_id, params, *, user_id, channel_id):
+        name = group_files.validate_file_name(params.get("name"))
+        async with group_lock(group_id):
+            state, path = await self._owned_file(group_id, params, user_id=user_id, channel_id=channel_id)
+            overrides = group_files.record_rename(state, path, name)
+            _save(state)
+        return dict(group_id=group_id, path=path, name=name, file_overrides=overrides)
+
+    async def file_delete(self, group_id, params, *, user_id, channel_id):
+        async with group_lock(group_id):
+            state, path = await self._owned_file(group_id, params, user_id=user_id, channel_id=channel_id)
+            overrides = group_files.record_delete(state, path)
+            # Persist the hidden state first so a failed unlink never resurfaces the file.
+            _save(state)
+            removed = group_files.remove_workspace_file(state["team_name"], path)
+        return dict(group_id=group_id, path=path, deleted=True, file_removed=removed, file_overrides=overrides)
 
     async def prepare_task(self, group_id, params, *, user_id, channel_id, request_id):
         from jiuwenswarm.agents.swarm.group_execution import TASK_POLICY
@@ -719,33 +805,35 @@ class GroupService:
     async def execution_list(self, group_id, params, *, user_id, channel_id):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions, public_execution
 
-        self.owned(group_id, user_id, channel_id)
+        state = self.owned(group_id, user_id, channel_id)
         limit, offset = _page(params)
         store = GroupExecutions(group_id)
         await store.reconcile()
         records = []
         for record in store.read().values():
-            if record.get("presentation", "card") == "card":
+            if record.get("presentation", "card") == "card" and not _execution_cleared(record, state):
                 records.append(record)
         records.sort(key=lambda item: (item["created_at"], item["execution_id"]))
         page_end = offset + limit
         return {
             "group_id": group_id,
-            "executions": [public_execution(item) for item in records[offset:page_end]],
+            "executions": [
+                _with_file_overrides(public_execution(item), state) for item in records[offset:page_end]
+            ],
             "total": len(records), "limit": limit, "offset": offset,
         }
 
     async def execution_get(self, group_id, params, *, user_id, channel_id):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions, public_execution
 
-        self.owned(group_id, user_id, channel_id)
+        state = self.owned(group_id, user_id, channel_id)
         execution_id = _text(params.get("execution_id"), "execution_id", maximum=256)
         store = GroupExecutions(group_id)
         await store.reconcile()
         record = store.get(execution_id)
-        if record.get("presentation", "card") != "card":
+        if record.get("presentation", "card") != "card" or _execution_cleared(record, state):
             raise GroupError("NOT_FOUND", "task card not found")
-        return {"group_id": group_id, **public_execution(record)}
+        return {"group_id": group_id, **_with_file_overrides(public_execution(record), state)}
 
     async def delete(self, group_id, *, user_id, channel_id):
         async with group_lock(group_id):
