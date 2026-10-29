@@ -1,6 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Historical discovery must not control an independently addressed Worker."""
 import asyncio
+import logging
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -17,6 +19,12 @@ from jiuwenswarm.server.supervisor import resident_lifecycle, runtime_supervisor
 async def test_unknown_historical_endpoint_is_warned_and_preserved(monkeypatch, tmp_path, caplog, operation, failure):
     from contextlib import asynccontextmanager
 
+    # Production logging can disable propagation when the full CI suite boots it.
+    logger_name = (runtime_supervisor.__name__ if operation == "startup" else shutdown.__name__)
+    target_logger = logging.getLogger(logger_name)
+    monkeypatch.setattr(target_logger, "propagate", False)
+    monkeypatch.setattr(target_logger, "handlers", [*target_logger.handlers, caplog.handler])
+    caplog.set_level(logging.WARNING, logger=logger_name)
     current, old = str(tmp_path / "current"), str(tmp_path / "legacy")
     peer = SimpleNamespace(recv=AsyncMock(return_value={"kind": "hello", "protocol": 1, "pid": 123}),
                            send=AsyncMock(), close=AsyncMock())
@@ -94,6 +102,15 @@ async def test_proven_historical_owner_failure_still_blocks(monkeypatch, tmp_pat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", [1, 2])
 async def test_real_new_worker_runs_and_stops_while_unknown_old_worker_lives(tmp_path, monkeypatch, protocol):
+    from jiuwenswarm.common import utils
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data))
+    monkeypatch.setattr(utils, "_workspace_base_dir", data)
+    monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
+    monkeypatch.chdir(tmp_path)
     current, old = str(tmp_path / "current"), str(tmp_path / "legacy")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_SOCKET", current)
     monkeypatch.setattr(worker_process, "legacy_socket_paths", lambda: [old])

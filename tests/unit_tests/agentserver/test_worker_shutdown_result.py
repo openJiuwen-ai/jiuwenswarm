@@ -214,3 +214,25 @@ if os.environ['CONTROLLED_DROP_RESULT'] == '1':
             reader.join(timeout=1)
             if worker.stdout is not None:
                 worker.stdout.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [b"[]", b"null", b"not-json"])
+async def test_malformed_shutdown_frame_still_reaps_owned_process(body):
+    import time
+    from jiuwenswarm.server.ipc.protocol import HEADER
+    from jiuwenswarm.server.ipc.stream import StreamConnection
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(HEADER.pack(len(body)) + body)
+    writer = SimpleNamespace(write=Mock(), drain=AsyncMock())
+    peer = StreamConnection(reader, writer)
+    process = SimpleNamespace(wait=AsyncMock(return_value=1))
+    owner = runtime_supervisor.RuntimeSupervisor(Readiness())
+    owner._conn = owner._validated_conn = peer
+    owner._expects_shutdown_result = True
+    owner._process = process
+    with pytest.raises(RuntimeError, match="shutdown result could not be verified"):
+        await owner._shutdown_owned_worker(deadline=time.monotonic() + 1)
+    process.wait.assert_awaited_once()
+    assert owner._process is None and owner._validated_conn is None

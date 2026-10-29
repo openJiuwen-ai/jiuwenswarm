@@ -86,13 +86,20 @@ def _windows_pipe_is_listening(address: str) -> bool:
 
 
 async def try_connect(path: str, *, timeout: float = 0.5) -> IpcConnection | None:
-    """Return None only for an absent/refused endpoint; timeout is not absence."""
+    """Return None for absence/refusal; busy/reset probes raise retryable TimeoutError."""
     if os.name != "nt" and not os.path.exists(path):
         return None
     try:
         return await asyncio.wait_for(connect(path), timeout=timeout)
     except (FileNotFoundError, ConnectionRefusedError):
         return None
+    except OSError as exc:
+        if (isinstance(exc, (BlockingIOError, ConnectionResetError, ConnectionAbortedError))
+                or getattr(exc, "winerror", None) in (121, 231, 232, 233)):
+            # Busy/reset is uncertain availability, never proof of absence.
+            # Keep it on callers' bounded retry paths instead of spawning.
+            raise TimeoutError(f"runtime worker IPC temporarily unavailable: {path}: {exc}") from exc
+        raise
 
 
 async def connect_with_retry(path: str, *, timeout: float) -> IpcConnection:

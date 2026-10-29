@@ -181,6 +181,8 @@ def test_failed_worker_stop_keeps_state_for_retry(monkeypatch, front_alive):
 
 @pytest.mark.asyncio
 async def test_failed_hello_does_not_unload_resident_service(monkeypatch):
+    warning = Mock()
+    monkeypatch.setattr(service.logger, "warning", warning)
     class Connection:
         def __init__(self, index):
             self.index = index
@@ -222,6 +224,9 @@ async def test_failed_hello_does_not_unload_resident_service(monkeypatch):
     assert server.accepted == 2
     assert peers[0].closed
     loader.assert_awaited_once()
+    warning.assert_called_once()
+    assert "HELLO/readiness" in warning.call_args.args[0]
+    assert warning.call_args.args[1] == "BrokenPipeError"
 
 
 @pytest.mark.parametrize("entry_mode", ["module", "frozen-dispatch"])

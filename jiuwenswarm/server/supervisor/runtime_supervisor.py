@@ -16,6 +16,7 @@ from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.protocol import encode_response
 from jiuwenswarm.server.ipc.client import connect_with_retry, endpoint_is_listening, try_connect
 from jiuwenswarm.server.ipc.protocol import (
+    IpcError,
     KIND_GATEWAY_ATTACH,
     KIND_GATEWAY_DETACH,
     KIND_HELLO,
@@ -1108,7 +1109,7 @@ class RuntimeSupervisor:
                                 break
                     if outcome.get("ok") is not True:
                         raise RuntimeError(f"Worker reported incomplete shutdown: {outcome.get('error', '')}")
-            except (OSError, RuntimeError, TimeoutError) as exc:
+            except (OSError, RuntimeError, TimeoutError, IpcError) as exc:
                 if self._expects_shutdown_result:
                     shutdown_error = RuntimeError(f"Worker shutdown result could not be verified: {exc}")
                 logger.warning("[Supervisor] Worker shutdown incomplete: %s: %s", type(exc).__name__, exc)
