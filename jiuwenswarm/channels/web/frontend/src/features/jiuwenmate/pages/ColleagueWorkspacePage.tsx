@@ -13,6 +13,7 @@ import {
   Plus,
   Trash2,
   X,
+  MessageSquarePlus,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -24,6 +25,10 @@ import featureChat from '../../../assets/jiuwenmate/illustrations/feature-chat.p
 import featureSchedule from '../../../assets/jiuwenmate/illustrations/feature-schedule.png';
 import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-empty.png';
 import { ActionMenu } from '../components/ActionMenu';
+import { GroupConversationRecord } from '../components/GroupConversationRecord';
+import { GroupChatWorkspace } from '../../groupChat/GroupChatWorkspace';
+import type { GroupDirectory } from '../../groupChat/useGroupDirectory';
+import { mergeChatEntries } from '../chatEntries';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { GroupSharingInbox } from '../components/GroupSharingInbox';
@@ -97,7 +102,15 @@ export interface JiuwenMateWorkspaceIntent {
   trace: boolean;
 }
 
+/** Group chats shown alongside colleague conversations in the chat sidebar. */
+export interface JiuwenMateGroupChat {
+  directory: GroupDirectory;
+  activeGroupId?: string;
+  onSelectGroup: (groupId?: string) => void;
+}
+
 interface ColleagueWorkspacePageProps {
+  groupChat?: JiuwenMateGroupChat;
   colleagues: readonly JiuwenMateColleague[];
   selectedColleagueId: string;
   intent?: JiuwenMateWorkspaceIntent | null;
@@ -163,8 +176,11 @@ export function ColleagueWorkspacePage({
   onRenameColleague,
   onSavePermissionProfile,
   savingPermissionProfile = false,
+  groupChat,
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
+  const activeGroupId = groupChat?.activeGroupId;
+  const leaveGroup = () => { if (activeGroupId) groupChat?.onSelectGroup(); };
   const platformLabel = (platform: string) => {
     if (platform === 'feishu') return t('jiuwenmate.im.feishu');
     if (platform === 'welink') return t('jiuwenmate.im.welink');
@@ -425,6 +441,7 @@ export function ColleagueWorkspacePage({
     setWorkspaceAgentId(conversationAgentId);
     setWebResult(null);
     setBoard(false);
+    leaveGroup();
     setState((current) => clearManagementChannel(current));
     setPicked({ agentId: conversationAgentId, conversationId });
   };
@@ -757,13 +774,13 @@ export function ColleagueWorkspacePage({
 
   const renderRecordList = () => {
     if (state.recordTab === 'conversations') {
-      const pinnedRecords = records.filter((record) => record.pinned);
-      const unpinnedRecords = records.filter((record) => !record.pinned);
+      const directory = groupChat?.directory;
+      const entries = mergeChatEntries(records, directory?.groups ?? [], directory?.pinnedIds ?? new Set<string>());
       const renderConversation = (record: (typeof records)[number]) => (
         <div
           key={`${record.agentId}:${record.id}`}
           className="jiuwenmate-records__item jiuwenmate-records__item--conversation"
-          aria-current={!board && record.agentId === agentId && record.id === activeConversationId ? 'true' : undefined}
+          aria-current={!board && !activeGroupId && record.agentId === agentId && record.id === activeConversationId ? 'true' : undefined}
           data-testid="jiuwenmate-conversation-record"
         >
           {renamingId === `${record.agentId}:${record.id}` ? (
@@ -820,14 +837,31 @@ export function ColleagueWorkspacePage({
           />
         </div>
       );
+      const renderEntry = (entry: (typeof entries.pinned)[number]) => {
+        if (entry.kind === 'colleague') return renderConversation(entry.record);
+        const { group } = entry;
+        return (
+          <GroupConversationRecord
+            key={entry.key}
+            group={group}
+            active={!board && group.group_id === activeGroupId}
+            pinned={entry.pinned}
+            pinDisabled={directory?.pinningId != null}
+            onOpen={() => { setBoard(false); groupChat?.onSelectGroup(group.group_id); }}
+            onRename={() => directory?.openEdit(group)}
+            onPin={() => directory?.pin(group, !entry.pinned)}
+            onDelete={() => directory?.openDelete(group)}
+          />
+        );
+      };
       return (
         <div className="jiuwenmate-records__section" data-testid="jiuwenmate-conversation-record-list">
-          {pinnedRecords.length > 0 ? (
+          {entries.pinned.length > 0 ? (
             <>
               <header>
                 <strong>{t('jiuwenmate.workspace.pinned')}</strong>
               </header>
-              {pinnedRecords.map(renderConversation)}
+              {entries.pinned.map(renderEntry)}
             </>
           ) : null}
           <header>
@@ -836,11 +870,15 @@ export function ColleagueWorkspacePage({
               <CirclePlus aria-hidden />
             </button>
           </header>
-          {records.length === 0 ? (
+          {entries.pinned.length + entries.others.length === 0 ? (
             <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSessions')}</p>
           ) : (
-            unpinnedRecords.map(renderConversation)
+            entries.others.map(renderEntry)
           )}
+          {directory?.hasMore ? (
+            <button type="button" className="jiuwenmate-records__more" disabled={directory.loadingMore}
+              onClick={directory.loadMore} data-testid="jiuwenmate-group-records-more">{t('groupChat.more')}</button>
+          ) : null}
         </div>
       );
     }
@@ -1120,7 +1158,7 @@ export function ColleagueWorkspacePage({
 
   return (
     <div
-      className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}${!board && rightPanel ? ' jiuwenmate-workspace--panel-open' : ''}`}
+      className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}${!board && !activeGroupId && rightPanel ? ' jiuwenmate-workspace--panel-open' : ''}${activeGroupId && !board ? ' jiuwenmate-workspace--group' : ''}`}
       data-testid="jiuwenmate-colleague-workspace"
     >
       {!state.recordsCollapsed ? (
@@ -1129,7 +1167,13 @@ export function ColleagueWorkspacePage({
             <h2>{t('jiuwenmate.nav.messages')}</h2>
           </header>
           <div className="jiuwenmate-chat-sidebar-actions">
-            <button type="button" aria-pressed={board} onClick={() => setBoard(true)}>
+            {groupChat ? (
+              <button type="button" onClick={groupChat.directory.openCreate} data-testid="jiuwenmate-create-group-chat">
+                <MessageSquarePlus aria-hidden />
+                <span>{t('groupChat.create')}</span>
+              </button>
+            ) : null}
+            <button type="button" aria-pressed={board} onClick={() => { setBoard(true); leaveGroup(); }}>
               <CalendarDays aria-hidden />
               <span>{t('jiuwenmate.workspace.tabs.schedules')}</span>
             </button>
@@ -1159,6 +1203,9 @@ export function ColleagueWorkspacePage({
             onDelete={onDeleteSchedule}
             onLoadHistory={onLoadScheduleHistory}
           />
+        ) : activeGroupId && groupChat ? (
+          <GroupChatWorkspace key={activeGroupId} groupId={activeGroupId} directory={groupChat.directory}
+            onBack={() => groupChat.onSelectGroup()} />
         ) : renderMain()}
       </main>
       {scheduleEditor && onUpdateSchedule ? (
@@ -1172,7 +1219,7 @@ export function ColleagueWorkspacePage({
           onSubmit={(_executor, draft) => onUpdateSchedule(scheduleEditor.id, draft)}
         />
       ) : null}
-      {!board && rightPanel ? (
+      {!board && !activeGroupId && rightPanel ? (
         <aside className="jiuwenmate-side-panel" data-testid={`jiuwenmate-${rightPanel}-panel`}>
           {rightPanel === 'artifacts' && visibleArtifact ? (
             <header className="jiuwenmate-side-panel__preview-header">

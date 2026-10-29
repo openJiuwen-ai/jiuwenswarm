@@ -169,6 +169,9 @@ _ensure_req_method("MODELS_REFRESH_STATUS", "models.refresh_status")
 _ensure_req_method("JIUWENMATE_SHARING_LIST", "jiuwenmate.sharing.list")
 _ensure_req_method("JIUWENMATE_SHARING_DECIDE", "jiuwenmate.sharing.decide")
 _ensure_req_method("JIUWENMATE_SHARING_REVOKE", "jiuwenmate.sharing.revoke")
+_ensure_req_method("GROUP_FILE_RENAME", "group.file.rename")
+_ensure_req_method("GROUP_FILE_DELETE", "group.file.delete")
+_ensure_req_method("GROUP_HISTORY_CLEAR", "group.history.clear")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")
