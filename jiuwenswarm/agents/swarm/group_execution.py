@@ -18,6 +18,8 @@ TASK_POLICY = "swarm.group_task_policy"
 GROUP_MEMBER_RULES = (
     "Your role in this public group is an independent member, not the group leader. "
     "Other public group members are peers, not your subordinates or your internal team. "
+    "Do not send private messages to other public group members or expert teams. "
+    "Use ask_user to request missing information or clarify questions with the user. "
     "Any Leader/coordinator identity in your original expert persona applies only within your own expert team. "
     "The public group's team_leader is a separate coordinator, not a member of your private team. "
 )
@@ -177,6 +179,10 @@ class GroupTaskPolicyRail(DeepAgentRail):
             return
         abilities = getattr(ctx.agent, "ability_manager", None)
         if abilities is not None:
+            public_member = any(item["member_name"] == self.context.member_name for item in group["members"])
+            for card in abilities.list():
+                if public_member and card.name == "send_message":
+                    abilities.remove_ability(card.name)
             for card in abilities.list():
                 if card.name != "group_send_message":
                     continue
@@ -235,6 +241,21 @@ class GroupTaskPolicyRail(DeepAgentRail):
         ))
 
     async def before_tool_call(self, ctx):
+        if ctx.inputs.tool_name == "send_message":
+            group = read_group(self.context.session_id)
+            if group is None:
+                return
+            public_member = any(item["member_name"] == self.context.member_name for item in group["members"])
+            if not public_member:
+                return
+            from openjiuwen.core.foundation.llm import ToolMessage
+
+            error = "Private messaging between public group members is disabled. Use ask_user for questions."
+            call = ctx.inputs.tool_call
+            ctx.extra["_skip_tool"] = True
+            ctx.inputs.tool_result = {"error": error}
+            ctx.inputs.tool_msg = ToolMessage(content=error, tool_call_id=call.id if call else "")
+            return
         if ctx.inputs.tool_name not in {"group_send_message", "send_file"}:
             return
         if read_group(self.context.session_id) is None:
