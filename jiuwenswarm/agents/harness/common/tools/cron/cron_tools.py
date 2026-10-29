@@ -64,32 +64,10 @@ def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
     return next_dt
 
 
-# AgentOS 下 job store 只属于 Gateway。该进程内快照由 Gateway 在每次用户
-# Agent 请求前经 E2A 下发，仅用于 cron 工具的读取和后续 mutation 校验；绝不
-# 写入 cron_jobs.json，因此 AgentServer 回收后不会形成第二份持久状态。
-# Snapshots are scoped by the AgentOS routing user.  An AgentServer can serve
-# several users concurrently, so a single process-wide "last snapshot" would
-# let one request overwrite another user's cron view.
-_gateway_jobs_snapshots: dict[str, dict[str, CronJob]] = {}
-
-
-def install_gateway_jobs_snapshot(rows: list[Any], *, user_id: str = "") -> int:
-    """Replace one routed user's in-memory Gateway-owned cron view."""
-    snapshot: dict[str, CronJob] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        try:
-            job = CronJob.from_dict(row)
-        except Exception as exc:  # noqa: BLE001 - ignore one malformed stored row
-            logger.warning("[CronTools] ignore malformed Gateway cron snapshot row: %s", exc)
-            continue
-        snapshot[job.id] = job
-    normalized_user_id = str(user_id or "").strip()
-    if not normalized_user_id:
-        raise ValueError("user_id is required for Gateway cron snapshots")
-    _gateway_jobs_snapshots[normalized_user_id] = snapshot
-    return len(snapshot)
+# AgentOS 下 job store 只属于 Gateway。历史上的 per-turn 快照推送机制已退役
+# （D-20261028-1105-cron-snapshot-retirement）：生产 ack 直连模式下 cron 工具
+# 的 list/get 每次调用都回环 Gateway 权威 store，mutation 的 existing 前置读
+# 由 pending view 短路与普通 get 直连供给，不再维护进程内快照缓存。
 
 
 # ── run_now 反向确认 ──────────────────────────────────────────────────────────
@@ -280,12 +258,6 @@ class CronTools:
                 self._pending_deletes_by_request.pop(s, None)
                 last_used.pop(s, None)
 
-    def _snapshot_for_route(self) -> dict[str, CronJob] | None:
-        user_id = str(self._route().user_id or "").strip()
-        if not user_id:
-            return None
-        return _gateway_jobs_snapshots.get(user_id)
-
     def _uses_gateway_command_ack(self) -> bool:
         """Whether the selected host transport supports command acknowledgements.
 
@@ -378,16 +350,15 @@ class CronTools:
         return await self._send_split(action, params)
 
     async def _view_jobs(self) -> list[CronJob]:
-        """Return Gateway-store snapshot overlaid by this request process's pending view."""
-        # AgentOS AgentServer has no cron_jobs.json by design.  Its snapshot is
-        # delivered by Gateway immediately before the user request starts.  The
-        # legacy shared-directory layout receives no snapshot and retains the
-        # historical direct read of Gateway's shared store.
-        snapshot = self._snapshot_for_route()
-        if snapshot is None:
-            jobs = {job.id: job for job in await self._local_store.list_jobs()}
-        else:
-            jobs = dict(snapshot)
+        """Return the local read view overlaid by this request process's pending view.
+
+        The per-turn Gateway snapshot has been retired (D-20261028-1105): in ack
+        mode the list tool reads the Gateway store directly over the round trip.
+        This view only serves non-ack transports, reading the legacy
+        shared-directory store; AgentOS containers have no cron_jobs.json by
+        design, so it is empty there.
+        """
+        jobs = {job.id: job for job in await self._local_store.list_jobs()}
         jobs.update(self._pending_view_for_route())
         for job_id in self._pending_deletes_for_route():
             jobs.pop(job_id, None)
@@ -405,10 +376,25 @@ class CronTools:
         pending = self._pending_view_for_route().get(normalized_id)
         if pending is not None:
             return pending
-        snapshot = self._snapshot_for_route()
-        if snapshot is not None:
-            return snapshot.get(normalized_id)
         return await self._local_store.get_job(normalized_id)
+
+    async def _get_existing_via_gateway(self, job_id: str) -> CronJob | None:
+        """Fetch the existing job over the ack round-trip for a mutation pre-read.
+
+        Uses the plain ``get`` branch so the owner scope matches the mutation
+        path that consumes this view (legacy all-owner reads stay permissive
+        on both sides).  Missing or failed reads normalize to ``None``: the
+        not-found verdict stays with the server-side mutation, which reports
+        its KeyError through the ack error channel.
+        """
+        result = await self._send("get", {"job_id": job_id})
+        data = result.get("data")
+        if not isinstance(data, dict) or "error" in data:
+            return None
+        try:
+            return CronJob.from_dict(data)
+        except Exception:
+            return None
 
     @staticmethod
     def _merge_pending_job(existing: CronJob, patch: dict[str, Any]) -> CronJob:
@@ -682,10 +668,21 @@ class CronTools:
         # work_mode / project_id / project_dir 重解析(共享 helper):
         # 与 CronController.update_job 共用同一 ``resolve_cron_job_patch``,
         # 确保 AgentTool 与 Web RPC 两条链路逻辑一致。
-        existing = await self._view_job(job_id)
         remote_gateway = self._uses_gateway_command_ack()
-        if existing is None:
-            if not remote_gateway:
+        # ack 直连(AgentOS 路由)时 existing 由 pending view 短路或 Gateway 普通
+        # get 权威读供给;not-found 归一为 None,由后续 mutation 的服务端
+        # KeyError 呈现,保持 not-found 由服务端裁决的契约(D-20261028-1105)。
+        direct_read = remote_gateway and bool(
+            str(self._route().user_id or "").strip()
+        )
+        if direct_read:
+            normalized_id = str(job_id or "").strip()
+            existing = self._pending_view_for_route().get(normalized_id)
+            if existing is None:
+                existing = await self._get_existing_via_gateway(normalized_id)
+        else:
+            existing = await self._view_job(job_id)
+            if existing is None and not remote_gateway:
                 raise KeyError("job not found")
 
         channel_id_val = self._resolve_channel_id() or "web"
@@ -719,30 +716,23 @@ class CronTools:
         return result
 
     async def delete_job(self, job_id: str) -> Any:
-        # proactive.tick 保护：读只读视图拦截（与 toggle_job 一致），
-        # 避免把受保护的定时任务删除请求转发给 Gateway 后再报错。
+        # 服务端裁决：proactive.tick 保护与存在性校验都在 Gateway（controller
+        # 的 ensure_proactive_deletable），返回真实的 deleted 布尔；本地仅保留
+        # 同轮 pending 记账。非 ack 传输维持本地视图预检。
+        if self._uses_gateway_command_ack():
+            result = await self._send("delete", {"job_id": job_id})
+            return bool((result.get("data") or {}).get("deleted"))
         existing = await self._view_job(job_id)
-        remote_gateway = self._uses_gateway_command_ack()
         if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
             raise RuntimeError(
                 "主动推荐定时任务由设置→主动推荐开关控制，不能删除；请到设置关闭开关。"
             )
         if existing is None:
-            if remote_gateway:
-                result = await self._send("delete", {"job_id": job_id})
-                deleted = bool((result.get("data") or {}).get("deleted"))
-                return deleted
-            # Gateway's AgentOS snapshot is best-effort.  A restarted
-            # AgentServer (or a failed pre-turn sync) must still be able to ask
-            # the Gateway-owned store to delete a real job; Gateway performs
-            # the authoritative existence and ownership checks.
-            if self._agentos_snapshot_unavailable():
-                await self._send("delete", {"job_id": job_id})
-                self._pending_deletes_for_route().add(job_id)
-                return True
-            # 与迁移前 store.delete_job 契约一致：job 不存在时不提交 Gateway，
-            # 返回 False 让调用方可感知（避免 LLM 幻觉 job_id 得到假成功）。
-            return False
+            # 快照机制已退役：无本地视图时不再区分 AgentOS/legacy，直接提交
+            # 由 Gateway 裁决（fire-and-forget 取舍，见 D-20261028-1105 §9.2）。
+            await self._send("delete", {"job_id": job_id})
+            self._pending_deletes_for_route().add(job_id)
+            return True
         await self._send("delete", {"job_id": job_id})
         self._pending_view_for_route().pop(job_id, None)
         self._pending_deletes_for_route().add(job_id)
@@ -752,37 +742,30 @@ class CronTools:
 
     async def toggle_job(self, job_id: str, enabled: bool) -> Any:
         # proactive.tick job 的开关由 config 的 proactive_recommendation.enabled 驱动，
-        # 禁止手动 toggle——否则会与 config 开关不一致。引导用户去设置关开关。
+        # 禁止手动 toggle——否则会与 config 开关不一致。保护与存在性校验统一由
+        # Gateway 服务端裁决（controller.toggle_job），非 ack 传输维持本地视图预检。
+        if self._uses_gateway_command_ack():
+            return (await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})).get("data")
         existing = await self._view_job(job_id)
-        remote_gateway = self._uses_gateway_command_ack()
         if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
             raise RuntimeError(
                 "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
             )
         if existing is None:
-            if remote_gateway:
-                return (await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})).get("data")
-            # See delete_job: do not turn a missing best-effort AgentOS snapshot
-            # into a false "job not found" result.
-            if self._agentos_snapshot_unavailable():
-                await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})
-                return {
-                    "id": job_id,
-                    "enabled": bool(enabled),
-                    "gateway_mutation_status": "submitted",
-                }
-            # 与迁移前 store.toggle_job 契约一致：job 不存在抛 KeyError。
-            raise KeyError("job not found")
+            # 快照机制已退役：无本地视图时直接提交由 Gateway 裁决
+            # （fire-and-forget 取舍，见 D-20261028-1105 §9.2）。
+            await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})
+            return {
+                "id": job_id,
+                "enabled": bool(enabled),
+                "gateway_mutation_status": "submitted",
+            }
         await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})
         updated = self._merge_pending_job(existing, {"enabled": bool(enabled)})
         self._pending_view_for_route()[updated.id] = updated
         result = updated.to_dict()
         result["gateway_mutation_status"] = "submitted"
         return result
-
-    def _agentos_snapshot_unavailable(self) -> bool:
-        """Whether this routed AgentOS request lacks Gateway's ephemeral view."""
-        return bool(str(self._route().user_id or "").strip()) and self._snapshot_for_route() is None
 
     async def preview_job(self, job_id: str, count: int = 5) -> Any:
         if self._uses_gateway_command_ack():

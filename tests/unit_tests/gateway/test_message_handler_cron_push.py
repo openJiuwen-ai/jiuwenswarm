@@ -329,7 +329,7 @@ async def test_cron_command_id_survives_wire_projection_for_gateway_ack() -> Non
     handler = _bare_handler(client_type(), controller)
     acknowledgements: list[tuple[str, object]] = []
 
-    async def _ack(*, command_id: str, data: object, user_id=None) -> None:
+    async def _ack(*, command_id: str, data: object, user_id=None, session_id=None) -> None:
         acknowledgements.append((command_id, data))
 
     handler._push_cron_command_ack = _ack
