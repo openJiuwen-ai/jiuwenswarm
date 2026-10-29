@@ -368,6 +368,49 @@ async def test_filter_team_keeps_skill_but_not_experience() -> None:
 
 
 @pytest.mark.asyncio
+async def test_filter_keeps_skill_evidence_that_spans_subjects() -> None:
+    reader = FakeReader(
+        {
+            "main": [make_row([make_span(2, 210, 300, tool_name="shell")])],
+            "member": [make_row([make_span(1, 100, 200, operation="chat", output_text="done")])],
+        },
+    )
+    snapshot, _excluded = await load_trajectory_snapshot(reader, SESSION_ID)
+    index = ScopeIndex.build(snapshot, resolve_ranges(snapshot, FullScope()))
+    skill = EvolutionJudge(
+        id="evo-skill",
+        category="skill",
+        summary="improve the skill",
+        evidence=[_ref(2, subject="main"), _ref(1, subject="member")],
+        suggestion=["advice"],
+        score=0.4,
+        target="team-skill",
+    )
+    cause = RewardFailureCause(
+        id="rfc-cross",
+        dimension="r1",
+        summary="cross",
+        evidence=[_ref(2, subject="main"), _ref(1, subject="member")],
+        suggestion=["fix"],
+    )
+
+    filtered = filter_engine_result(
+        EngineResult(
+            trajectory_summary="summary",
+            reward=_reward_payload("r1"),
+            reward_failure_causes=[cause],
+            evolution_judge=[skill],
+        ),
+        index=index,
+        profile=ModeProfile.TEAM,
+    )
+
+    assert [item.id for item in filtered.evolution_judge] == ["evo-skill"]
+    assert {ref.subject_id for ref in filtered.evolution_judge[0].evidence} == {"main", "member"}
+    assert filtered.reward_failure_causes == []
+
+
+@pytest.mark.asyncio
 async def test_filter_drops_refs_without_a_valid_node_id() -> None:
     cause = RewardFailureCause(
         id="rfc-1",
