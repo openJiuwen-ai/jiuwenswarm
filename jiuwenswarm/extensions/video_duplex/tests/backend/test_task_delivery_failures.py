@@ -264,7 +264,7 @@ async def test_retry_delivers_newest_snapshot_and_stays_bounded(tmp_path):
 
 async def test_file_query_waits_for_enqueued_history(routed_task, monkeypatch):
     from jiuwenswarm.common.schema.message import ReqMethod
-    from jiuwenswarm.server.runtime.session import session_history, session_metadata
+    from jiuwenswarm.server.runtime.session import lifecycle, session_history, session_metadata
 
     r = routed_task
     sid = r.task["core_session_id"]
@@ -286,6 +286,8 @@ async def test_file_query_waits_for_enqueued_history(routed_task, monkeypatch):
 
     monkeypatch.setattr(session_history, "_write_item", delayed_write)
     monkeypatch.setattr(session_history, "flush_pending_writes", observe_barrier)
+    # Keep lifecycle admission independent from the deliberately held writer lock.
+    monkeypatch.setattr(lifecycle, "guard", lambda *_: None)
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *a, **k: {"user_id": "alice"})
     request = SimpleNamespace(
         req_method=ReqMethod.VOICE_TASK_FILES, session_id=sid, user_id="alice",

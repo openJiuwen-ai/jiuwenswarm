@@ -33,7 +33,7 @@ from jiuwenswarm.extensions.video_duplex.backend import (
     video_search,
     video_voice,
 )
-from jiuwenswarm.server.runtime.attachments.media_attachments import (
+from gateway.channel_manager.web.media.normalizer import (
     normalize_chat_media_attachments,
 )
 
@@ -2995,7 +2995,7 @@ async def test_video_search_returns_failure_when_core_agent_fails(monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_joyai_delegation_sends_trigger_frame_to_full_core_agent(
-    monkeypatch, tmp_path
+    monkeypatch,
 ) -> None:
     requests = []
 
@@ -3022,10 +3022,6 @@ async def test_joyai_delegation_sends_trigger_frame_to_full_core_agent(
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda event: None)
     monkeypatch.setattr(video_live, "_append_video_event_log", lambda event: None)
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.attachments.media_attachments.get_agent_sessions_dir",
-        lambda: tmp_path,
-    )
 
     await channel.handlers["video.joyai.frame"](
         object(),
@@ -3051,12 +3047,10 @@ async def test_joyai_delegation_sends_trigger_frame_to_full_core_agent(
         requests[0].params["video_visual_context"]
         == "画面中的品牌是农夫山泉，我来查询它的资料。"
     )
-    uploaded_image = requests[0].params["files"]["uploaded_images"][0]
-    uploaded_path = Path(uploaded_image["path"])
-    assert uploaded_path.read_bytes() == b"fake"
-    assert uploaded_path.parent.parent.name == requests[0].session_id
-    assert requests[0].params["media_items"][0]["path"] == str(uploaded_path)
-    assert "base64Data" not in requests[0].params["media_items"][0]
+    # Without an upload transport, Gateway forwards the image for AgentServer to persist.
+    image = requests[0].params["media_items"][0]
+    assert image["type"] == "image"
+    assert base64.b64decode(image["base64Data"]) == b"fake"
     assert "image understanding" in requests[0].params["query"]
 
 
