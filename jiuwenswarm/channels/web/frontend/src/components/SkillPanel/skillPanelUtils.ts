@@ -120,7 +120,7 @@ export function isBuiltinSkill(skill: Pick<SkillItem, 'source_type' | 'source'>)
 
 /**
  * 企业预置 / 内置：不展示编辑、卸载、发布。
- * （后端也会拒绝 uninstall；预置还会拒绝 toggle。）
+ * （后端也会拒绝 uninstall；启停见 shouldShowEnableSwitch。）
  */
 export function isAdminManagedSkill(skill: Pick<SkillItem, 'source_type' | 'source'>): boolean {
   return isPrebuiltSkill(skill) || isBuiltinSkill(skill);
@@ -128,15 +128,15 @@ export function isAdminManagedSkill(skill: Pick<SkillItem, 'source_type' | 'sour
 
 /**
  * 是否展示启停开关。
- * - 企业版：预置不可；内置与用户技能可以
- * - 单机版：保持原 adminManaged 逻辑（内置/预置均不展示）
+ * - 企业版：预置 / 内置 / 用户技能均可
+ * - 单机版：内置与用户技能可启停（与 develop 一致）；预置不展示
  */
 export function shouldShowEnableSwitch(
   skill: Pick<SkillItem, 'source_type' | 'source'>,
   enterpriseEdition: boolean,
 ): boolean {
-  if (enterpriseEdition) return !isPrebuiltSkill(skill);
-  return !isAdminManagedSkill(skill);
+  if (enterpriseEdition) return true;
+  return !isPrebuiltSkill(skill);
 }
 
 /** 广场搜索结果列表 key：ClawHub 带 owner，避免同 slug 重复 key。 */

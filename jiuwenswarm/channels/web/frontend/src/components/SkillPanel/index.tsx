@@ -404,7 +404,7 @@ export function SkillPanel({
           withSession({ name: skillName, ...(version ? { version } : {}) }),
         );
         const detail = normalizeSkillItem(data);
-        // skills.get 若未带回 source_type，用列表缓存补齐，避免预置技能详情误显示启停开关
+        // skills.get 若未带回 source_type，用列表缓存补齐（编辑/卸载/启停展示依赖来源类型）
         const listed = skills.find((s) => s.name === skillName);
         if (listed && !detail.source_type && listed.source_type) {
           detail.source_type = listed.source_type;
