@@ -14,7 +14,7 @@ from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmSt
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
-from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
 class StreamSession:
@@ -36,7 +36,8 @@ async def emit_result(result, exception=None):
         ),
     )
     await rail.after_tool_call(ctx)
-    return [parse_stream_chunk(chunk) for chunk in session.chunks]
+    # Exercise the default harness parser, not the generic utility fallback.
+    return [JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) for chunk in session.chunks]
 
 
 @pytest.mark.asyncio
@@ -145,3 +146,82 @@ async def test_request_deduplicates_deletion_errors_and_finishes_with_wire_statu
     recovered = [chunk async for chunk in swarm.process_message_stream(request)]
     wire = e2a_response_from_agent_chunk(recovered[-1], response_id="req", sequence=len(recovered))
     assert wire.status == "succeeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source, previous_code, code", [
+    ("core", None, "SANDBOX_DELETION_PENDING"),
+    ("core", None, "SANDBOX_DELETION_FAILED"),
+    ("wrapped", None, "SANDBOX_DELETION_PENDING"),
+    ("wrapped", None, "SANDBOX_DELETION_FAILED"),
+    ("core", "SANDBOX_DELETION_PENDING", "SANDBOX_DELETION_FAILED"),
+    ("core", "SANDBOX_DELETION_FAILED", "SANDBOX_DELETION_PENDING"),
+    ("marker", None, "SANDBOX_DELETION_FAILED"),
+    ("code", None, "SANDBOX_DELETION_PENDING"),
+    ("ordinary", None, None),
+])
+async def test_producer_exception_sets_terminal_status_and_deduplicates_both_ingresses(
+    monkeypatch, source, previous_code, code,
+):
+    # pylint: disable=protected-access
+    previous_events = await emit_result(ToolOutput(
+        success=False, error=f"[{previous_code}] cleanup blocked",
+    )) if previous_code else []
+    error = RuntimeError("ordinary producer failure")
+    if source in {"core", "wrapped"}:
+        # Raise the real Core deletion barrier; its framework code differs
+        # from the deletion marker carried by message/details.
+        provider = box._JiuwenBoxProviderMixin
+        key = "http://localhost:8321|scope"
+        monkeypatch.setattr(provider, "_pending_deletions", {(key, "old"): (True, None)})
+        monkeypatch.setattr(provider, "_delete_tasks", {})
+        monkeypatch.setattr(provider, "_bulk_deletions", int(code == "SANDBOX_DELETION_PENDING"))
+        with pytest.raises(RuntimeError) as caught:
+            provider.ensure_not_deleting(key)
+        error = caught.value
+        assert error.code != code
+        if source == "wrapped":
+            wrapper = RuntimeError("adapter failed")
+            wrapper.__cause__ = error
+            error = wrapper
+    elif source == "marker":
+        error = RuntimeError(f"[{code}] cleanup blocked")
+    elif source == "code":
+        error.code = code
+
+    class RaisingAdapter:
+        @staticmethod
+        async def process_message_stream_impl(*_args, **_kwargs):
+            for event in previous_events:
+                yield AgentResponseChunk(
+                    request_id="req", channel_id="desktop", payload=event, is_complete=False,
+                )
+            raise error
+
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm, "_ensure_adapter", lambda *_a, **_k: RaisingAdapter(),
+    )
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"memory": {"mode": "disabled"}})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **_record: None)
+    monkeypatch.setattr(interface_module, "_schedule_symphony_session_feedback", lambda *_args: None)
+    request = AgentRequest(
+        request_id="req", channel_id="desktop", session_id="producer-deletion-session",
+        params={"query": "write file", "mode": "agent"}, is_stream=True,
+    )
+    chunks = [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
+
+    assert sum(chunk.is_complete for chunk in chunks) == 1
+    notifications = [
+        chunk for chunk in chunks
+        if not chunk.is_complete and chunk.payload.get("event_type") == "chat.error"
+    ]
+    assert len(notifications) == 1
+    wire = e2a_response_from_agent_chunk(chunks[-1], response_id="req", sequence=len(chunks))
+    assert wire.status == ("failed" if code else "succeeded")
+    if code:
+        expected = "SANDBOX_DELETION_FAILED" if "SANDBOX_DELETION_FAILED" in (previous_code, code) else code
+        assert chunks[-1].payload["code"] == expected
+        assert chunks[-1].payload["event_type"] == "chat.error"
+    if source == "wrapped":
+        assert code in chunks[-1].payload["message"]

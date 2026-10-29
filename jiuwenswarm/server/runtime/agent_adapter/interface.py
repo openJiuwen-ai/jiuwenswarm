@@ -2893,6 +2893,20 @@ class JiuWenSwarm:
         _yielded_from_queue = 0
         completed_yielded = False
         sandbox_deletion_error: dict[str, Any] | None = None
+
+        def _record_sandbox_deletion_error(payload: Any) -> bool:
+            """Remember either error ingress; return whether to suppress a duplicate."""
+            nonlocal sandbox_deletion_error
+            if not (
+                isinstance(payload, dict) and payload.get("event_type") == "chat.error"
+                and payload.get("code") in {"SANDBOX_DELETION_PENDING", "SANDBOX_DELETION_FAILED"}
+            ):
+                return False
+            duplicate = sandbox_deletion_error is not None
+            if not duplicate or payload.get("code") == "SANDBOX_DELETION_FAILED":
+                sandbox_deletion_error = dict(payload)
+            return duplicate
+
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
             rid, is_team_mode, is_team_first_request,
@@ -2931,6 +2945,14 @@ class JiuWenSwarm:
                         type(data).__name__ if isinstance(data, BaseException) else ""
                     )
                     error_code, error_message = _extract_error_code_message(data)
+                    # Core's BaseError.code identifies the provider category;
+                    # the lifecycle state is carried by its explicit marker.
+                    deletion_match = re.search(
+                        r"\[(SANDBOX_DELETION_PENDING|SANDBOX_DELETION_FAILED)\]",
+                        error_message or str(data),
+                    )
+                    if deletion_match is not None:
+                        error_code = deletion_match.group(1)
                     error_payload: dict[str, Any] = {
                         "event_type": "chat.error",
                         "error": str(data),
@@ -2941,6 +2963,8 @@ class JiuWenSwarm:
                         error_payload["code"] = error_code
                     if error_message:
                         error_payload["message"] = error_message
+                    if _record_sandbox_deletion_error(error_payload):
+                        continue
                     append_history_record(
                         session_id=session_id,
                         request_id=rid,
@@ -2960,17 +2984,8 @@ class JiuWenSwarm:
                     )
                 else:
                     payload = data.payload if isinstance(data, AgentResponseChunk) else data
-                    if (
-                        isinstance(payload, dict) and payload.get("event_type") == "chat.error"
-                        and payload.get("code") in {
-                            "SANDBOX_DELETION_PENDING", "SANDBOX_DELETION_FAILED",
-                        }
-                    ):
-                        if sandbox_deletion_error is not None:
-                            if payload.get("code") == "SANDBOX_DELETION_FAILED":
-                                sandbox_deletion_error = dict(payload)
-                            continue
-                        sandbox_deletion_error = dict(payload)
+                    if _record_sandbox_deletion_error(payload):
+                        continue
                     if expert_notice_stream is not None and isinstance(payload, dict):
                         updated_payload, notice_delta = expert_notice_stream.consume(payload)
                         if updated_payload is not payload:

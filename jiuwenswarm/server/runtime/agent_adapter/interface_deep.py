@@ -12577,6 +12577,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         **result_payload,
                     }
 
+                if chunk_type == "chat.error":
+                    if isinstance(payload, dict):
+                        return {**payload, "event_type": "chat.error"}
+                    return None
+
                 if chunk_type == "error":
                     error_msg = (
                         payload.get("error", str(payload))
