@@ -2422,7 +2422,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'harmony'", specifier = ">=0.30" },
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = "==0.22.1" },
-    { name = "websockets", specifier = ">=12.0" },
+    { name = "websockets", specifier = ">=12.0,<17" },
     { name = "wecom-aibot-sdk", specifier = ">=1.0.5" },
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
 ]

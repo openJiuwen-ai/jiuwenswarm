@@ -24,7 +24,11 @@ dependencies = [
     "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable#subdirectory=deepsearch",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
-    "websockets>=12.0",
+    # AgentServer 的 _FastPongServerProtocol（OA.05000010：pong 抑制 drain）
+    # 依赖 websockets.legacy 的 write_frame_sync/prepare_ctrl。上限钉在 17 前：
+    # websockets.legacy 一旦被移除，fast-pong 会退化回默认协议（仅剩 ImportError
+    # warning 可观测）。升级 17+ 前需确认 websockets.legacy 仍存在（实测 15.0.1 可用）。
+    "websockets>=12.0,<17",
     "psutil>=7.2.2",
     "aiosqlite>=0.22.1",
     "pymysql>=1.1.0",
