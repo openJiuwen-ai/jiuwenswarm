@@ -739,6 +739,26 @@ class RsiHarnessInstaller:
             raise RsiHarnessNotPublished(f"published harness refs 不存在: {refs_path}")
         try:
             parsed = parse_published_harness_refs(refs_path, task_run_root=run_root)
+            policy_version = state.get("promotion_policy", {}).get("policy_version")
+            if policy_version in {"continuous_margin_v1", "continuous_two_stage_v2"}:
+                from openjiuwen.rsi.harness_rsi.single_harness.promotion_policy import package_fingerprint
+
+                proof = state.get("best_improvement_proof") or {}
+                evaluation_field = "full_eval_ref_path" if policy_version == "continuous_two_stage_v2" else "confirmation_eval_ref_path"
+                matching = any(
+                    gate.get("accepted") and gate.get("status") == "accepted"
+                    and gate.get("candidate_harness_refs_path") == state.get("best_harness_refs_path")
+                    and gate.get(evaluation_field) == state.get("best_eval_ref_path")
+                    and gate.get("improvement_proof") == proof
+                    and (policy_version != "continuous_two_stage_v2" or (
+                        gate.get("full_engineering_passed") is True and gate.get("full_checks", {}).get("accepted") is True
+                        and proof.get("scope") == "target_cases"
+                    ))
+                    for gate in state.get("candidate_gates", [])
+                )
+                if (not matching or proof.get("qualified") is not True
+                        or package_fingerprint(str(refs_path)) != proof.get("package_fingerprint")):
+                    raise RsiHarnessNotPublished("候选未完成有效的连续评分确认，或发布内容已变化")
             extension_name, _ = _read_manifest_extension_name(parsed.package_path)
             package_sha256 = hash_harness_package(parsed.package_path)
         except RsiHarnessInvalid:

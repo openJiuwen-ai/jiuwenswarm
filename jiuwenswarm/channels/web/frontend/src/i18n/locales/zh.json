@@ -5092,6 +5092,8 @@
       "viewPaper": "查看论文",
       "viewArtifact": "查看产物",
       "baselineScore": "基线分数",
+      "referenceScore": "当前版本首次提升分",
+      "comparisonBaselineScore": "本次修改前基线",
       "usage": "用量（token）",
       "iterations": "迭代轮次",
       "evalCount": "组合评测",

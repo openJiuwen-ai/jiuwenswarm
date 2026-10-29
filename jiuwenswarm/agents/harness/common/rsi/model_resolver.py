@@ -196,6 +196,8 @@ class RsiModelConfigResolver:
         # latter in the task file to match openjiuwen's standalone examples.
         request_data.pop("model_name", None)
         request_data["model"] = model_name
+        # Solver, judge source, diagnosis, and member optimization share this snapshot.
+        request_data["temperature"] = 1.0
         payload = {
             "model_client_config": client_data,
             "model_request_config": request_data,

@@ -5120,6 +5120,8 @@
       "viewPaper": "View paper",
       "viewArtifact": "View artifact",
       "baselineScore": "Baseline score",
+      "referenceScore": "Current version first improvement score",
+      "comparisonBaselineScore": "Baseline before this change",
       "usage": "Usage (tokens)",
       "iterations": "iterations",
       "evalCount": "Eval count",

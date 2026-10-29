@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 from collections.abc import Mapping
 from copy import deepcopy
@@ -286,22 +287,38 @@ class RsiTaskMaterializer:
         if search_width != 1 or "sibling_candidate_count" not in profile_options:
             profile_options["sibling_candidate_count"] = search_width
         profile_options = _profile_options(profile_options)
+        output_repair = {
+            "max_attempts": profile_options["output_repair_max_attempts"],
+            "max_stagnant_attempts": profile_options["output_repair_max_stagnant_attempts"],
+        }
         payload = {
             "workspace_dir": str(run_dir),
             "max_epochs": profile_options["max_epochs"],
             "model_configs": normalized_paths,
+            "promotion": {
+                "policy_version": "continuous_two_stage_v2",
+                "min_improvement": profile_options["min_improvement"],
+                "non_target_max_regression": profile_options["non_target_max_regression"],
+            },
             "data_loader": {
                 "file_pattern": "*.json",
                 "batch_size": profile_options["batch_size"],
                 "batch_balance_keys": ["difficulty", "dimension", "source", "task_type"],
             },
             "evaluator": {
+                "output_repair": dict(output_repair),
+                "judge_max_retries": min(output_repair["max_attempts"] - 1, 5),
                 "backend": "single_harness",
                 "evaluation_method": profile_options["evaluation_method"],
+                "score_mode": "continuous",
+                "solver_max_iterations": profile_options["solver_max_iterations"],
+                "solver_max_iterations_hard_limit": profile_options["solver_max_iterations_hard_limit"],
+                "solver_on_max_iterations": profile_options["solver_on_max_iterations"],
                 "transient_case_retry_limit": 2,
             },
             "evaluation_result_analyzer": {
-                "diagnosis_agent_max_retries": 2,
+                "output_repair": dict(output_repair),
+                "diagnosis_agent_max_retries": output_repair["max_attempts"] - 1,
                 "diagnosis_agent_max_concurrency": 5,
                 "diagnosis_agent_max_iterations": 20,
                 "max_issues": 8,
@@ -309,8 +326,12 @@ class RsiTaskMaterializer:
                 "output_filename": "issues.yaml",
             },
             "member_optimizer": {
-                "action_group_configs": ["prompt", "skill", "tool", "rail"],
-                "allowed_action_groups": ["prompt", "skill", "tool", "rail"],
+                "action_planning_max_attempts": profile_options["action_planning_max_attempts"],
+                "output_repair": dict(output_repair),
+                "stage_retry_limit": output_repair["max_attempts"],
+                "attribution_retry_limit": output_repair["max_attempts"] - 1,
+                "action_group_configs": ["prompt", "skill", "tool", "rail", "config"],
+                "allowed_action_groups": ["prompt", "skill", "tool", "rail", "config"],
                 "allowed_prompt_surfaces": ["prompt_section"],
                 "max_roles_per_run": 1,
                 "execution_concurrency": 1,
@@ -779,12 +800,44 @@ def _copy_harness_source(source: Path, target: Path) -> None:
 
 def _profile_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
     raw = options or {}
+    margin = raw.get("min_improvement", 0.05)
+    if (isinstance(margin, bool) or not isinstance(margin, (int, float))
+            or not math.isfinite(margin) or not 0 <= margin <= 1):
+        raise RsiPathInvalid("min_improvement 必须是 0 到 1 之间的有限数值")
+    regression = raw.get("non_target_max_regression", 0.05)
+    if (isinstance(regression, bool) or not isinstance(regression, (int, float))
+            or not math.isfinite(regression) or not 0 <= regression <= 1):
+        raise RsiPathInvalid("non_target_max_regression 必须是 0 到 1 之间的有限数值")
+    if isinstance(raw.get("solver_max_iterations"), float):
+        raise RsiPathInvalid("Validation profile 参数 solver_max_iterations 必须是整数")
+    if isinstance(raw.get("solver_max_iterations_hard_limit"), (bool, float)):
+        raise RsiPathInvalid("solver_max_iterations_hard_limit 必须是正整数")
+    solver_iterations = _profile_int(raw, "solver_max_iterations", default=300, minimum=1)
+    hard_limit = _profile_int(raw, "solver_max_iterations_hard_limit", default=max(300, solver_iterations), minimum=1)
+    if hard_limit < solver_iterations:
+        raise RsiPathInvalid("solver_max_iterations_hard_limit 不能小于初始迭代预算")
+    on_max_iterations = str(raw.get("solver_on_max_iterations", "error"))
+    if on_max_iterations not in {"error", "return_observations"}:
+        raise RsiPathInvalid("solver_on_max_iterations 必须是 error 或 return_observations；不追加收尾模型调用")
+    for name in ("output_repair_max_attempts", "output_repair_max_stagnant_attempts", "action_planning_max_attempts"):
+        if isinstance(raw.get(name), (bool, float)):
+            raise RsiPathInvalid(f"Validation profile 参数 {name} 必须是整数")
     evaluation_method = str(raw.get("evaluation_method", "script-based")).strip().lower().replace("-", "_")
     if evaluation_method not in {"script_based", "exact_match", "llm_as_judge"}:
         raise RsiPathInvalid("evaluation_method must be script_based, exact_match or llm_as_judge")
     values = {
+        "min_improvement": float(margin),
+        "non_target_max_regression": float(regression),
         "evaluation_method": "script-based" if evaluation_method == "script_based" else evaluation_method,
         "max_epochs": _profile_int(raw, "max_epochs", default=1, minimum=1),
+        "solver_max_iterations": solver_iterations,
+        "solver_max_iterations_hard_limit": hard_limit,
+        "solver_on_max_iterations": on_max_iterations,
+        "output_repair_max_attempts": _profile_int(raw, "output_repair_max_attempts", default=3, minimum=1),
+        "action_planning_max_attempts": _profile_int(raw, "action_planning_max_attempts", default=10, minimum=1),
+        "output_repair_max_stagnant_attempts": _profile_int(
+            raw, "output_repair_max_stagnant_attempts", default=2, minimum=1
+        ),
         "batch_size": _profile_int(raw, "batch_size", default=1, minimum=1),
         "max_issue_attempts": _profile_int(raw, "max_issue_attempts", default=8, minimum=0),
         "max_repair_rounds": _profile_int(raw, "max_repair_rounds", default=3, minimum=1),

@@ -12,6 +12,17 @@ from jiuwenswarm.agents.harness.common.rsi.materializer import RsiTaskMaterializ
 from jiuwenswarm.agents.harness.common.rsi.services import _harness_profile_options
 
 
+def test_solver_iteration_limit_survives_api_and_profile_materialization(tmp_path):
+    options = _harness_profile_options({"training_options": {"solver_max_iterations": 240}})
+    model = tmp_path / "budget" / "models" / "model.yaml"
+    model.parent.mkdir(parents=True)
+    model.write_text("model_client_config: {}\n", encoding="utf-8")
+    paths = {role: str(model) for role in ("evaluation", "analysis", "member_optimization")}
+    profile = RsiTaskMaterializer(tmp_path).materialize_validation_profile("budget", paths, options=options)
+    payload = yaml.safe_load(Path(profile["path"]).read_text(encoding="utf-8"))
+    assert payload["evaluator"]["solver_max_iterations"] == 240
+
+
 @pytest.mark.parametrize("method", ["script-based", "exact_match", "llm_as_judge"])
 def test_evaluation_method_reaches_frozen_profile(tmp_path, method):
     options = _harness_profile_options({"training_options": {"evaluation_method": method}})

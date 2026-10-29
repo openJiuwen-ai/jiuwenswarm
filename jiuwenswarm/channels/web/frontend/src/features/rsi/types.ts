@@ -137,6 +137,14 @@ export interface RsiReportGetResult {
   status: RsiTaskStatus;
   best_score: number | null;
   baseline: number | null;
+  score_details?: {
+    score_mode: string;
+    policy_version?: string;
+    reference_score: number | null;
+    latest_score: number | null;
+    historical_peak_score: number | null;
+    min_improvement: number | null;
+  } | null;
   metrics: {
     eval_passed: number;
     eval_total: number;

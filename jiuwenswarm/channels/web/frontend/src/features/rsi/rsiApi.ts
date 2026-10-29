@@ -332,10 +332,21 @@ function normalizeReport(value: unknown): RsiReportGetResult | null {
   const raw = asRecord(value) ?? {};
   const metrics = asRecord(raw.metrics) ?? {};
   const bestArtifact = normalizeBestArtifact(raw.best_artifact);
+  const scoreDetails = asRecord(raw.score_details);
   return {
     status: normalizeRsiStatus(raw.status),
     best_score: asNullableNumber(raw.best_score),
     baseline: asNullableNumber(raw.baseline),
+    score_details: scoreDetails
+      ? {
+          score_mode: String(scoreDetails.score_mode ?? ''),
+          policy_version: String(scoreDetails.policy_version ?? ''),
+          reference_score: asNullableNumber(scoreDetails.reference_score),
+          latest_score: asNullableNumber(scoreDetails.latest_score),
+          historical_peak_score: asNullableNumber(scoreDetails.historical_peak_score),
+          min_improvement: asNullableNumber(scoreDetails.min_improvement),
+        }
+      : null,
     metrics: {
       eval_passed: asNumber(metrics.eval_passed),
       eval_total: asNumber(metrics.eval_total),

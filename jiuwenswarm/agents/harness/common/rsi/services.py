@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 from dataclasses import asdict, is_dataclass
 from collections.abc import Mapping
@@ -877,6 +878,15 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
             return params.get(name)
         return source.get(name, default)
 
+    margin = value("min_improvement", 0.05)
+    if (isinstance(margin, bool) or not isinstance(margin, (int, float))
+            or not math.isfinite(margin) or not 0 <= margin <= 1):
+        raise RsiBadRequest("min_improvement 必须是 0 到 1 之间的有限数值")
+    regression = value("non_target_max_regression", 0.05)
+    if (isinstance(regression, bool) or not isinstance(regression, (int, float))
+            or not math.isfinite(regression) or not 0 <= regression <= 1):
+        raise RsiBadRequest("non_target_max_regression 必须是 0 到 1 之间的有限数值")
+
     domain_raw = str(value("domain", "") or "").strip().lower()
     if domain_raw and domain_raw not in {"general", "office"}:
         raise RsiBadRequest("domain 只支持 general 或 office")
@@ -902,12 +912,45 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
             "single-harness optimization requires one candidate and no improver evolution policy"
         )
 
+    solver_max_iterations = value("solver_max_iterations")
+    if isinstance(solver_max_iterations, (bool, float)):
+        raise RsiBadRequest("solver_max_iterations 必须是正整数")
+    solver_iterations = _positive_int(solver_max_iterations, default=300, field="solver_max_iterations")
+    hard_limit_raw = value("solver_max_iterations_hard_limit")
+    if isinstance(hard_limit_raw, (bool, float)):
+        raise RsiBadRequest("solver_max_iterations_hard_limit 必须是正整数")
+    hard_limit = _positive_int(
+        hard_limit_raw, default=max(300, solver_iterations), field="solver_max_iterations_hard_limit"
+    )
+    if hard_limit < solver_iterations:
+        raise RsiBadRequest("solver_max_iterations_hard_limit 不能小于初始迭代预算")
+    on_max_iterations = str(value("solver_on_max_iterations", "error"))
+    if on_max_iterations not in {"error", "return_observations"}:
+        raise RsiBadRequest("solver_on_max_iterations 必须是 error 或 return_observations；不追加收尾模型调用")
+    for name in ("output_repair_max_attempts", "output_repair_max_stagnant_attempts", "action_planning_max_attempts"):
+        if isinstance(value(name), (bool, float)):
+            raise RsiBadRequest(f"{name} 必须是正整数")
+
     return {
         "domain": domain_raw,
+        "min_improvement": float(margin),
+        "non_target_max_regression": float(regression),
         "improver_policy_ref": improver_policy_ref,
         "execution_mode": execution_mode,
         "evaluation_method": evaluation_method,
         "max_epochs": _positive_int(value("max_epochs"), default=1, field="max_epochs"),
+        "solver_max_iterations": solver_iterations,
+        "solver_max_iterations_hard_limit": hard_limit,
+        "solver_on_max_iterations": on_max_iterations,
+        "output_repair_max_attempts": _positive_int(
+            value("output_repair_max_attempts"), default=3, field="output_repair_max_attempts"
+        ),
+        "action_planning_max_attempts": _positive_int(
+            value("action_planning_max_attempts"), default=10, field="action_planning_max_attempts"
+        ),
+        "output_repair_max_stagnant_attempts": _positive_int(
+            value("output_repair_max_stagnant_attempts"), default=2, field="output_repair_max_stagnant_attempts"
+        ),
         "batch_size": _positive_int(value("batch_size"), default=1, field="batch_size"),
         "max_issue_attempts": _non_negative_int(
             value("max_issue_attempts"), default=8, field="max_issue_attempts"

@@ -286,6 +286,23 @@ class HarnessProvider:
             usage=usage_snapshot(report.get("usage")) or usage_snapshot(state.get("usage")),
             artifact_index=self._artifact_index(task_id, state or report),
             summary=_report_summary(report or state),
+            best_score=_number(report.get("best_score", state.get("best_score"))),
+            baseline=self._baseline_score(task_id, state or report),
+            score_details=(
+                {
+                    "score_mode": "continuous",
+                    "policy_version": state.get("promotion_policy", {}).get("policy_version"),
+                    "reference_score": (
+                        (state.get("best_improvement_proof") or {}).get("baseline_score", state.get("baseline_score"))
+                        if state.get("promotion_policy", {}).get("policy_version") == "continuous_two_stage_v2"
+                        else state.get("best_reference_score")
+                    ),
+                    "latest_score": state.get("best_score"),
+                    "historical_peak_score": state.get("historical_peak_score"),
+                    "min_improvement": state.get("promotion_policy", {}).get("min_improvement"),
+                }
+                if state.get("promotion_policy", {}).get("policy_version") in {"continuous_margin_v1", "continuous_two_stage_v2"} else None
+            ),
         )
 
     def get_tree(self, task_id: str) -> TreeResponse:
@@ -792,6 +809,7 @@ def _report_summary(report: dict[str, Any]) -> str:
         f"candidate_count={len(_gates(report))} "
         f"best_score={report.get('best_score')} "
         f"baseline_score={report.get('baseline_score')}"
+        f" reference_score={report.get('best_reference_score')}"
     )
 
 
