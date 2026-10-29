@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Unit tests for sync_agents_configs catalog apply + env ns isolation."""
 
@@ -1013,7 +1013,7 @@ class TestOfficeclawGuard:
         assert TenantAgentPool.require_officeclaw_agent(req) is None
 
 @pytest.mark.asyncio
-async def test_sync_revision_change_keeps_schema_cache(mock_warmup, tmp_path):
+async def test_sync_revision_change_keeps_schema_cache(mock_warmup, tmp_path, monkeypatch):
     """Catalog revision churn must not wipe the OfficeClaw MCP schema cache.
 
     Regression for the belt-and-suspenders invalidation previously wired into
@@ -1024,6 +1024,10 @@ async def test_sync_revision_change_keeps_schema_cache(mock_warmup, tmp_path):
     embedded in the cache key.
     """
     from jiuwenswarm.common import mcp_config
+
+    # CR-3: 固定缓存开关,与 test_mcp_schema_cache.py 的 fixture 一致,
+    # 避免执行环境导出禁用值(0/false/no/off)时缓存旁路导致断言漂移
+    monkeypatch.setenv("JIUWENSWARM_MCP_SCHEMA_CACHE", "1")
 
     dist = tmp_path / "dist"
     dist.mkdir()
