@@ -443,6 +443,45 @@ def test_writer_repairs_truncated_multibyte_utf8_tail(
     ]
 
 
+def test_invalid_transcript_can_recover_after_delete_and_reopen(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    sessions_dir = tmp_path / "agent" / "sessions"
+    monkeypatch.setattr(
+        openclaw_runtime_history,
+        "get_agent_sessions_dir",
+        lambda: sessions_dir,
+    )
+    monkeypatch.setattr(openclaw_runtime_history, "OPENCLAW_HISTORY_ENABLED", True)
+
+    session_id = "failed-then-reopened"
+    path = openclaw_runtime_history.openclaw_history_path(session_id)
+    path.parent.mkdir(parents=True)
+    path.write_text('{"type":"not-a-session"}\n', encoding="utf-8")
+
+    openclaw_runtime_history.append_openclaw_message(
+        session_id,
+        {"role": "user", "content": [{"type": "text", "text": "discard"}]},
+    )
+    openclaw_runtime_history.flush_openclaw_history()
+    assert openclaw_runtime_history.delete_openclaw_history(session_id) is True
+
+    openclaw_runtime_history.mark_openclaw_session_active(session_id)
+    openclaw_runtime_history.append_openclaw_message(
+        session_id,
+        {"role": "user", "content": [{"type": "text", "text": "reopened"}]},
+    )
+    openclaw_runtime_history.release_openclaw_session(session_id)
+    openclaw_runtime_history.flush_openclaw_history()
+
+    records = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[0]["type"] == "session"
+    assert records[1]["message"]["content"] == [{"type": "text", "text": "reopened"}]
+
+
 def test_writer_skips_unserializable_record_without_disabling_session(
     tmp_path,
     monkeypatch,
@@ -498,6 +537,10 @@ def test_writer_masks_secrets_and_bounds_large_values(tmp_path, monkeypatch) -> 
                     "type": "toolCall",
                     "arguments": {
                         "api_key": secret,
+                        "accessToken": secret,
+                        "clientSecret": secret,
+                        "access_key_id": secret,
+                        "key": secret,
                         "query": "x"
                         * (openclaw_runtime_history.OPENCLAW_HISTORY_MAX_STRING_CHARS + 10),
                     },
@@ -512,6 +555,10 @@ def test_writer_masks_secrets_and_bounds_large_values(tmp_path, monkeypatch) -> 
     assert secret not in raw
     arguments = json.loads(raw.splitlines()[-1])["message"]["content"][0]["arguments"]
     assert arguments["api_key"] == "******"
+    assert arguments["accessToken"] == "******"
+    assert arguments["clientSecret"] == "******"
+    assert arguments["access_key_id"] == "******"
+    assert arguments["key"] == "******"
     original_chars = openclaw_runtime_history.OPENCLAW_HISTORY_MAX_STRING_CHARS + 10
     assert arguments["query"].endswith(
         f"[truncated, original_chars={original_chars}]"
@@ -614,6 +661,7 @@ async def test_runtime_rail_swallows_writer_failures(tmp_path, monkeypatch) -> N
     rail = rail_module.OpenClawHistoryRail()
     ctx = AgentCallbackContext(
         agent=object(),
+        session=object(),
         inputs=InvokeInputs(query="test", conversation_id="writer-failure"),
         extra={},
     )

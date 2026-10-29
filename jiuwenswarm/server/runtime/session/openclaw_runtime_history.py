@@ -46,6 +46,7 @@ _SECRET_TOKENS = frozenset(
         "apikey",
         "authorization",
         "authorisation",
+        "auth",
         "cookie",
     }
 )
@@ -128,12 +129,13 @@ def _sanitize_openclaw_value(value: Any, *, depth: int = 0) -> Any:
 
 def _looks_secret(key: str) -> bool:
     """Match secret-like key tokens without treating token counts as secrets."""
-    tokens = {part for part in re.split(r"[^a-z0-9]+", key.lower()) if part}
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+    tokens = {part for part in re.split(r"[^a-z0-9]+", spaced.lower()) if part}
     if not tokens or "tokens" in tokens:
         return False
-    if tokens & _SECRET_TOKENS:
+    if tokens & _SECRET_TOKENS or "key" in tokens:
         return True
-    return {"api", "key"} <= tokens
+    return False
 
 
 def mark_openclaw_session_active(session_id: str) -> None:
@@ -372,19 +374,22 @@ def _ensure_trailing_newline(path: Path) -> None:
 
 def _worker() -> None:
     leaf_ids: dict[str, str | None] = {}
-    failed_sessions: set[str] = set()
+    failed_sessions: dict[str, int] = {}
     while True:
         session_id, generation, message, timestamp_ms = _QUEUE.get()
         try:
             if generation != _current_generation(session_id):
-                failed_sessions.discard(session_id)
+                failed_sessions.pop(session_id, None)
                 leaf_ids.pop(session_id, None)
                 continue
-            if session_id in failed_sessions:
+            failure_generation = failed_sessions.get(session_id)
+            if failure_generation == generation:
                 continue
+            if failure_generation is not None:
+                failed_sessions.pop(session_id, None)
             with _SESSION_IO_LOCK:
                 if generation != _current_generation(session_id):
-                    failed_sessions.discard(session_id)
+                    failed_sessions.pop(session_id, None)
                     leaf_ids.pop(session_id, None)
                     continue
                 if _is_deleted_session(session_id):
@@ -431,7 +436,7 @@ def _worker() -> None:
                     handle.write("\n")
                 leaf_ids[session_id] = record["id"]
         except (TypeError, ValueError):
-            failed_sessions.add(session_id)
+            failed_sessions[session_id] = generation
             logger.warning(
                 "[OpenClawHistory] invalid transcript; disabling session append "
                 "session_id=%s",
