@@ -1,4 +1,4 @@
-import { MessageSquarePlus } from 'lucide-react';
+import { SquarePlus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import sleepingBee from '../../../assets/jiuwenmate/illustrations/sleeping-bee.png';
 import { GroupChatWorkspace } from '../../groupChat/GroupChatWorkspace';
@@ -36,12 +36,15 @@ export function ColleagueEmptyPage({ onCreate, groupChat }: ColleagueEmptyPagePr
           <h2>{t('jiuwenmate.workspace.tabs.conversations')}</h2>
         </header>
         {groupChat ? (
-          <div className="jiuwenmate-chat-sidebar-actions">
-            <button type="button" onClick={groupChat.directory.openCreate} data-testid="jiuwenmate-create-group-chat">
-              <MessageSquarePlus aria-hidden />
-              <span>{t('groupChat.create')}</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            className="jiuwenmate-records__create-group"
+            onClick={groupChat.directory.openCreate}
+            data-testid="jiuwenmate-create-group-chat"
+          >
+            <SquarePlus aria-hidden />
+            <span>{t('groupChat.create')}</span>
+          </button>
         ) : null}
         <div className="jiuwenmate-records__section" data-testid="jiuwenmate-conversation-record-list">
           {entries.pinned.length > 0 ? (

@@ -11,9 +11,9 @@ import {
   PinOff,
   PencilLine,
   Plus,
+  SquarePlus,
   Trash2,
   X,
-  MessageSquarePlus,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -1169,18 +1169,17 @@ export function ColleagueWorkspacePage({
           <header>
             <h2>{t('jiuwenmate.nav.messages')}</h2>
           </header>
-          <div className="jiuwenmate-chat-sidebar-actions">
-            {groupChat ? (
-              <button type="button" onClick={groupChat.directory.openCreate} data-testid="jiuwenmate-create-group-chat">
-                <MessageSquarePlus aria-hidden />
-                <span>{t('groupChat.create')}</span>
-              </button>
-            ) : null}
-            <button type="button" aria-pressed={board} onClick={() => { setBoard(true); leaveGroup(); }}>
-              <CalendarDays aria-hidden />
-              <span>{t('jiuwenmate.workspace.tabs.schedules')}</span>
+          {groupChat ? (
+            <button
+              type="button"
+              className="jiuwenmate-records__create-group"
+              onClick={groupChat.directory.openCreate}
+              data-testid="jiuwenmate-create-group-chat"
+            >
+              <SquarePlus aria-hidden />
+              <span>{t('groupChat.create')}</span>
             </button>
-          </div>
+          ) : null}
           {renderRecordList()}
         </aside>
       ) : null}

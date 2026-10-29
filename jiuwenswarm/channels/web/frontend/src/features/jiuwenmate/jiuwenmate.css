@@ -1626,8 +1626,12 @@
   color: var(--jm-text);
   background: transparent;
   font-size: 13px;
-  cursor: default;
+  cursor: pointer;
   text-align: left;
+}
+
+.jiuwenmate-records__create-group:hover {
+  background: var(--jm-muted);
 }
 
 .jiuwenmate-records__create-group svg {
