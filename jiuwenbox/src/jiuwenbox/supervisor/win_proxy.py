@@ -199,6 +199,38 @@ class EgressFilter:
         )
 
 
+class WindowsProxyController:
+    """Replace rules and drain every connection admitted under the old rules."""
+
+    def __init__(self, egress, ingress=None, disable_all=False):
+        self.filter = EgressFilter(egress, ingress, disable_all=disable_all)
+        self._clients: dict[asyncio.Task, asyncio.StreamWriter] = {}
+        self._update_lock = asyncio.Lock()
+        self.listening = False
+
+    async def handle_client(self, reader, writer):
+        task = asyncio.current_task()
+        self._clients[task] = writer
+        try:
+            await _handle_client(reader, writer, self.filter)
+        finally:
+            self._clients.pop(task, None)
+            writer.close()
+
+    async def replace_policy(self, egress, ingress=None, disable_all=False) -> int:
+        replacement = EgressFilter(egress, ingress, disable_all=disable_all)
+        async with self._update_lock:
+            # No await between publishing the new filter and cancelling old
+            # handshakes/tunnels. New accepts can only observe the replacement.
+            self.filter = replacement
+            clients = list(self._clients.items())
+            for task, writer in clients:
+                writer.transport.abort()
+                task.cancel()
+            await asyncio.gather(*(task for task, _ in clients), return_exceptions=True)
+            return len(clients)
+
+
 async def _pipe_streams(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -239,6 +271,7 @@ async def _relay(
         for t in (t1, t2):
             if not t.done():
                 t.cancel()
+        await asyncio.gather(t1, t2, return_exceptions=True)
         for w in (client_writer, target_writer):
             try:
                 w.close()
@@ -264,6 +297,7 @@ async def handle_http_connect(
 
     first_line 形如 ``b'CONNECT host:port HTTP/1.1'``.
     """
+    target_writer = None
     try:
         # 解析 CONNECT 目标.
         try:
@@ -321,6 +355,8 @@ async def handle_http_connect(
     except OSError as exc:  # asyncio.TimeoutError/ConnectionError 均为 OSError 子类, 简化
         logger.debug("HTTP CONNECT handler 异常: %s", exc)
     finally:
+        if target_writer is not None:
+            target_writer.close()
         try:
             client_writer.close()
         except Exception:  # noqa: BLE001
@@ -331,13 +367,16 @@ async def handle_socks5(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     egress_filter: EgressFilter,
+    first_byte: bytes = b"",
 ) -> None:
     """处理 SOCKS5 请求 (RFC 1928)."""
+    target_writer = None
     try:
         # 握手: 版本 + 方法数 + 方法列表.
         header = await asyncio.wait_for(
-            client_reader.readexactly(2), timeout=_HANDSHAKE_TIMEOUT,
+            client_reader.readexactly(2 - len(first_byte)), timeout=_HANDSHAKE_TIMEOUT,
         )
+        header = first_byte + header
         if header[0] != 0x05:  # SOCKS 版本
             return
         nmethods = header[1]
@@ -394,6 +433,8 @@ async def handle_socks5(
     except (asyncio.IncompleteReadError, OSError) as exc:
         logger.debug("SOCKS5 handler 异常: %s", exc)
     finally:
+        if target_writer is not None:
+            target_writer.close()
         try:
             client_writer.close()
         except Exception:  # noqa: BLE001
@@ -410,6 +451,7 @@ async def handle_http_forward(
 
     first_line 形如 ``b'GET http://host:port/path HTTP/1.1'``.
     """
+    target_writer = None
     try:
         try:
             line = first_line.decode("latin-1").strip()
@@ -483,6 +525,8 @@ async def handle_http_forward(
     except OSError as exc:
         logger.debug("HTTP FORWARD handler 异常: %s", exc)
     finally:
+        if target_writer is not None:
+            target_writer.close()
         try:
             client_writer.close()
         except Exception:  # noqa: BLE001
@@ -508,7 +552,7 @@ async def _handle_client(
                 client_reader, client_writer, first + rest, egress_filter,
             )
         elif first == b"\x05":  # SOCKS5 版本字节.
-            await handle_socks5(client_reader, client_writer, egress_filter)
+            await handle_socks5(client_reader, client_writer, egress_filter, first_byte=first)
         else:
             # 非 CONNECT / 非 SOCKS5: 可能是 HTTP 正向代理 (GET/POST/PUT/...).
             # 读取第一行剩余部分判断.
@@ -537,28 +581,28 @@ async def _handle_client(
 
 async def _serve_port(
     port: int,
-    egress_filter: EgressFilter,
+    controller: WindowsProxyController,
     stop_event: asyncio.Event,
 ) -> None:
     """在单个端口上监听, 直到 stop_event 触发."""
     server: asyncio.base_events.Server | None = None
     try:
-        async def _cb(r, w):
-            await _handle_client(r, w, egress_filter)
-
-        server = await asyncio.start_server(_cb, host="127.0.0.1", port=port)
+        server = await asyncio.start_server(controller.handle_client, host="127.0.0.1", port=port)
+        controller.listening = True
         logger.info("win_proxy 监听 127.0.0.1:%d", port)
         # 阻塞直到 stop_event.
         await stop_event.wait()
     except OSError as exc:
         logger.warning("win_proxy 端口 %d 启动失败: %s", port, exc)
     finally:
+        controller.listening = False
         if server is not None:
             server.close()
             try:
                 await server.wait_closed()
             except Exception:  # noqa: BLE001
                 pass
+        await controller.replace_policy(controller.filter.egress, disable_all=True)
 
 
 async def serve_windows_proxy(  # pylint: disable=huawei-too-many-arguments
@@ -568,6 +612,7 @@ async def serve_windows_proxy(  # pylint: disable=huawei-too-many-arguments
     port_range_end: int = const.DEFAULT_PROXY_PORT_RANGE_END,
     stop_event: asyncio.Event | None = None,
     disable_all: bool = False,
+    controller: WindowsProxyController | None = None,
 ) -> tuple[asyncio.Task, asyncio.Event]:
     """启动 Windows 出站代理, 监听端口范围.
 
@@ -579,13 +624,13 @@ async def serve_windows_proxy(  # pylint: disable=huawei-too-many-arguments
     """
     if stop_event is None:
         stop_event = asyncio.Event()
-    egress_filter = EgressFilter(egress, ingress, disable_all=disable_all)
+    controller = controller or WindowsProxyController(egress, ingress, disable_all)
     # 只绑 port_range_start (60080) 一个端口, 而不是整个范围.
     # HTTP_PROXY 始终指向 port_range_start, 其他端口绑了也没用.
     # 60081-60089 释放给沙箱内 render server 等本地服务用.
     tasks = [
         asyncio.create_task(
-            _serve_port(port_range_start, egress_filter, stop_event),
+            _serve_port(port_range_start, controller, stop_event),
             name=f"win-proxy-port-{port_range_start}",
         ),
     ]

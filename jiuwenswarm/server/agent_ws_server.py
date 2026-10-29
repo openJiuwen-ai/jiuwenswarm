@@ -5685,7 +5685,39 @@ class AgentWebSocketServer:
 
     async def apply_configured_sandboxes(self, params: dict) -> dict:
         """Automatic apply restores live owners; explicit restart retains its eager contract."""
+        if params == {"network_only": True}:
+            from jiuwenswarm.server.sandbox_config_rpc import try_apply_sandbox_network_policy
+            from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+                jiuwenbox_policy_update,
+            )
+
+            if (get_sandbox_endpoint().get("type") != "jiuwenbox"
+                    or not get_sandbox_runtime().get("enabled")):
+                raise ValueError("network hot update requires enabled jiuwenbox")
+            async with jiuwenbox_policy_update():
+                if (not self._has_pending_sandbox_rebuild()
+                        and await try_apply_sandbox_network_policy()):
+                    return {"restarted": 0, "scope": "all_active_sandboxes", "status": "applied",
+                            "network_status": "hot_applied"}
+            params = {}
         return await self._restart_configured_sandboxes(params, live_only=True)
+
+    def _has_pending_sandbox_rebuild(self) -> bool:
+        pending = [self._resolve_adapter(agent) for agents in self._agent_manager.agents.values()
+                   for agent in agents.values()]
+        visited = set()
+        while pending:
+            adapter = pending.pop()
+            if adapter is None or id(adapter) in visited:
+                continue
+            visited.add(id(adapter))
+            pending.extend(getattr(adapter, "_session_adapters", {}).values())
+            card = getattr(adapter, "_sys_operation_card", None)
+            launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+            extra = getattr(launcher, "extra_params", None) or {}
+            if extra.get("_policy_apply_pending") or extra.get("_policy_rebuild_pending"):
+                return True
+        return False
 
     async def _restart_configured_sandboxes(self, params: dict, *, live_only: bool = False) -> dict:
         """Apply saved network policy and recreate sandboxes with saved file rules."""

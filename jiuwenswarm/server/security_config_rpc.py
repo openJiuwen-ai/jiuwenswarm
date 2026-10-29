@@ -155,13 +155,22 @@ async def _update_native_sandbox_config(
     if not isinstance(value["startup_mode"], str) or value["startup_mode"] not in {"internal", "external"}:
         raise ValueError("startup_mode must be internal or external")
     state = _native_sandbox_state(service)
+    network_only = (
+        value["enabled"] and previous["enabled"]
+        and all(value[key] == previous[key] for key in ("filesystem", "limits", "startup_mode"))
+        and state is not None
+        and ((state["status"] == "applied" and network != previous["network"])
+             or (state.get("network_only") and state.get("config") == value))
+    )
     live = service._read_yaml(service.config_path)
     if (live.get("sandbox") or {}).get("type", "jiuwenbox") != "jiuwenbox":
         raise ValueError("native sandbox config supports jiuwenbox only")
     if value == previous and state is not None and state["status"] == "applied" and state.get("config") == value:
         return {"saved": True, "applied": True, "targets": {"sandbox": "not_required"}, "config": previous}
     initialize_native_sandbox_network(service.config_path, (live.get("sandbox") or {}).get("urls") or {})
-    _write_native_sandbox_state(service, {"status": "pending", "config": value, "target": "pending"})
+    _write_native_sandbox_state(service, {
+        "status": "pending", "config": value, "target": "pending", "network_only": network_only,
+    })
     if files != previous["filesystem"]:
         set_sandbox_files_axes(files)
         if get_sandbox_files_axes() != files:
@@ -197,7 +206,7 @@ async def _update_native_sandbox_config(
         else:
             if not previous["enabled"]:
                 await _apply_sandbox_change("enabled", strict=True)
-            restarted = await restart_sandboxes({})
+            restarted = await restart_sandboxes({"network_only": True} if network_only else {})
             needs_network_confirmation = network != previous["network"] or not previous["enabled"]
             status = (
                 "external_pending"
@@ -209,6 +218,7 @@ async def _update_native_sandbox_config(
     applied = status in {"applied", "not_required"}
     _write_native_sandbox_state(service, {
         "status": "applied" if applied else "failed", "config": value, "target": status,
+        "network_only": network_only,
     })
     return {
         "saved": True, "applied": applied,
@@ -396,7 +406,7 @@ async def dispatch_security_config_request(
                 # entries that the sandbox cannot express. Preserve the omitted
                 # entries in the apply receipt instead of failing the projection.
                 sandbox_network_skipped = net_result["skipped"]
-            restarted = await restart_sandboxes({})
+            restarted = await restart_sandboxes({"network_only": True} if not file_changed else {})
             if restarted.get("network_status") == "externally_managed" and net_changed:
                 targets["sandbox"] = "external_pending"
             else:
@@ -418,7 +428,7 @@ async def dispatch_security_config_request(
             except Exception as exc:
                 rollback_targets["rail"] = f"failed: {exc}"
             try:
-                await restart_sandboxes({})
+                await restart_sandboxes({"network_only": True} if not file_changed else {})
             except Exception as exc:
                 rollback_targets["sandbox"] = f"failed: {exc}"
             rollback_applied = all(value in {"applied", "not_required"} for value in rollback_targets.values())

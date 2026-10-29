@@ -147,6 +147,50 @@ def runtime(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 20])
+async def test_network_hot_apply_keeps_instances_and_skips_file_acl_rebuild(
+    runtime, monkeypatch, count,
+):
+    for number in range(count):
+        _, operation = runtime.owner(f"live-{number}")
+        await operation.fs().read_file("/probe")
+    previous_ids = set(runtime.active)
+    hot_update = AsyncMock(return_value=True)
+    monkeypatch.setattr(sandbox_config_rpc, "try_apply_sandbox_network_policy", hot_update)
+
+    result = await runtime.server.apply_configured_sandboxes({"network_only": True})
+
+    assert result["network_status"] == "hot_applied"
+    assert result["restarted"] == 0
+    assert runtime.active == previous_ids
+    assert len(runtime.created) == count and not runtime.deleted
+    assert (await operation.fs().read_file("/probe")).data.content == f"sandbox-{count}"
+    runtime.service_update.assert_not_awaited()
+    hot_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [False, True])
+async def test_network_fast_path_falls_back_for_old_service_or_pending_rebuild(
+    runtime, monkeypatch, pending,
+):
+    adapter, operation = runtime.owner("live")
+    await operation.fs().read_file("/probe")
+    if pending:
+        extra = adapter._sys_operation_card.gateway_config.launcher_config.extra_params
+        extra["_policy_apply_pending"] = True
+    hot_update = AsyncMock(return_value=False)
+    monkeypatch.setattr(sandbox_config_rpc, "try_apply_sandbox_network_policy", hot_update)
+
+    result = await runtime.server.apply_configured_sandboxes({"network_only": True})
+
+    assert result["restarted"] == 1
+    assert runtime.active == {"sandbox-2"}
+    assert hot_update.await_count == (0 if pending else 1)
+    runtime.service_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_apply_rebuilds_shared_live_scope_once_and_keeps_reaped_scopes_lazy(runtime):
     first, live = runtime.owner("live")
     runtime.owner("same-project-session", shared=first)

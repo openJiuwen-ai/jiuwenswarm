@@ -68,6 +68,14 @@ _proxy_only_mode: bool = False
 # 域名/IP 白名单过滤 (docs/window沙箱.md 6.6). None = 非 win32 或未启动.
 _win_proxy_task: asyncio.Task | None = None
 _win_proxy_stop: asyncio.Event | None = None
+_win_proxy_controller = None
+
+
+def get_windows_proxy_controller():
+    """Return the live Windows proxy, or None when hot update is unavailable."""
+    if _win_proxy_task is None or _win_proxy_task.done():
+        return None
+    return _win_proxy_controller
 
 # Every sandbox API call that talks to the in-sandbox daemon (exec, write_file,
 # read_file, list_dir) is dispatched via ``loop.run_in_executor(None, ...)``
@@ -259,7 +267,8 @@ def _chmod_uds_socket_if_any() -> None:
 @asynccontextmanager
 async def lifespan(_application: FastAPI):
     global _sandbox_manager, _proxy_manager, _proxy_only_mode
-    global _win_proxy_task, _win_proxy_stop
+    global _win_proxy_task, _win_proxy_stop, _win_proxy_controller
+    _win_proxy_controller = None
     validate_configured_listener()
     # After uvicorn installed its handlers: stdout/stderr are pipes to the parent.
     make_stream_logging_nonblocking()
@@ -369,6 +378,9 @@ async def lifespan(_application: FastAPI):
                 # 短路拒绝所有出站, 用户 allow/blocked_domains 原样保留 (关掉即恢复).
                 net_disable_all = bool(root_policy.windows.network.disable_all)
                 _win_proxy_stop = asyncio.Event()
+                _win_proxy_controller = win_proxy.WindowsProxyController(
+                    egress, ingress, net_disable_all,
+                )
                 _win_proxy_task, _win_proxy_stop = await win_proxy.serve_windows_proxy(
                     egress=egress,
                     ingress=ingress,
@@ -376,6 +388,7 @@ async def lifespan(_application: FastAPI):
                     port_range_end=root_policy.windows.proxy.port_range_end,
                     stop_event=_win_proxy_stop,
                     disable_all=net_disable_all,
+                    controller=_win_proxy_controller,
                 )
             except Exception:  # noqa: BLE001
                 logger.exception(
@@ -469,6 +482,7 @@ async def lifespan(_application: FastAPI):
             finally:
                 _win_proxy_task = None
                 _win_proxy_stop = None
+                _win_proxy_controller = None
 
         if sys.platform == "win32":
             try:
