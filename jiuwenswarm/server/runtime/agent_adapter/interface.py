@@ -3731,10 +3731,10 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
-        # probe 渠道白名单收口在 integration._A2UI_PROBE_CHANNEL_IDS（当前仅 web）。
-        # officeclaw (relay-claw) 不发 a2ui probe pending chunk：relay-claw 前端用
-        # parseA2UIContent 从文本提取 <a2ui-json> 块，probe 插入的 <a2ui-json>\n
-        # 会与 agent 原始块重复，污染累积 content 致前端提取失败。
+        # probe 渠道白名单收口在 integration._A2UI_PROBE_CHANNEL_IDS（web + officeclaw）。
+        # officeclaw (relay-claw) 启用 probe → suppress 自动激活（扣 a2ui delta + 原
+        # chat.final + 改写 is_complete）。relay-claw 前端已部署 chat.final a2ui
+        # replace_final 覆写，覆写掉 delta 累积的 <a2ui 前半 + probe 污染。
         a2ui_probe_enabled = is_a2ui_probe_channel(cid)
         _yielded_from_queue = 0
         logger.info(

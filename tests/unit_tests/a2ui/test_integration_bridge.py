@@ -445,9 +445,36 @@ async def test_finalize_officeclaw_runs_server_side_repair_and_resend(monkeypatc
     )
 
     # officeclaw 现在走 repair（不再跳过）
-    assert result is not None
+    # fake_finalize 原样返回入参，result 应等于 broken_a2ui
+    assert result == broken_a2ui
     assert config_calls == [1]
     assert len(finalize_calls) == 1
+    # repair_call / retry_without_a2ui_call 传给 finalize 守卫，未被直接调用（fake_finalize 短路）
+    # 但列表不应有遗漏的意外调用
+    assert repair_calls == []
+    assert retry_calls == []
+
+
+@pytest.mark.parametrize("channel,expected", [
+    ("web", True),
+    ("officeclaw", True),
+    ("feishu", False),
+    (None, False),
+])
+def test_a2ui_probe_channel_whitelist(channel, expected):
+    """白名单回归保护：officeclaw 启用 probe 后不可被误改回去。"""
+    assert integration.is_a2ui_probe_channel(channel) is expected
+
+
+@pytest.mark.parametrize("channel,expected", [
+    ("web", True),
+    ("officeclaw", True),
+    ("feishu", False),
+    (None, False),
+])
+def test_finalize_repair_whitelist(channel, expected):
+    """白名单回归保护：officeclaw 启用 repair 后不可被误改回去。"""
+    assert integration.should_finalize_repair(channel) is expected
 
 
 @pytest.mark.asyncio

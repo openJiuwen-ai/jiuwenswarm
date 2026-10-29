@@ -139,10 +139,11 @@ async def finalize_assistant_response_if_a2ui(
     if not is_a2ui_channel(channel):
         return content
 
-    # officeclaw (relay-claw) 完全跳过服务端 finalize（含校验）：不 repair、不校验、
-    # 不重发。破损 a2ui 内容原样透传，由前端做文本降级显示（本仓库 a2uiContent.ts
-    # extractTextFromMalformedA2UI :173-211 正则文本打捞 + invalidA2UIFallback :162
-    # 固定错误文案降级——是降级显示而非 JSON 修复）。
+    # officeclaw (relay-claw) 启用 suppress + repair（与 web 对齐）：
+    # suppress 扣住原 chat.final + 改写 is_complete，post-stream repair 后
+    # 发送 finalized（前端首次收到）。relay-claw 前端已部署 chat.final a2ui
+    # replace_final 覆写（patchMessage({content}=finalized)），覆写掉 delta
+    # 累积的 <a2ui 前半 + probe 污染。
     if not should_finalize_repair(channel):
         return content
 
