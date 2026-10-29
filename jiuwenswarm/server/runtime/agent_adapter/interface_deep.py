@@ -169,6 +169,7 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     ModelResponseGuardRail,
 )
 from jiuwenswarm.common.config import get_model_names
+from jiuwenswarm.common.xiaoyi_reference import resolve_append_reference_enabled
 from jiuwenswarm.agents.harness.common.rails.cspl import CsplConfig, CsplSentinelRail
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
@@ -7255,12 +7256,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     metadata=metadata_for_tool,
                 )
 
-        # xiaoyi_append_reference：未配置时仅 xiaoyi 默认开启（手机参考来源卡片）
-        append_reference_enabled = (
-            config_base.get("channels", {}).get(channel, {}).get("append_reference_allowed")
+        # xiaoyi_append_reference：desktop/xiaoyi 默认开启，其余渠道需显式配置。
+        append_reference_enabled = resolve_append_reference_enabled(
+            config_base, channel
         )
-        if append_reference_enabled is None:
-            append_reference_enabled = (channel == "xiaoyi")
         if append_reference_enabled and request_id and session_id:
             already_registered_ref = any(
                 getattr(existing, "name", "").startswith("xiaoyi_append_reference")

@@ -2,12 +2,15 @@
 
 """Xiaoyi append-reference toolkit.
 
-对齐 OpenClaw xiaoyi_append_reference：把联网搜索等引用来源打给手机端
-（A2A data.reference 卡片）。仅 xiaoyi 渠道注册。
+对齐 OpenClaw xiaoyi_append_reference：把联网搜索等引用来源作为独立
+``chat.reference`` 事件发给当前客户端。手机侧由 Gateway 转为 A2A
+data.reference；桌面侧由前端消费正式事件，旧前端仍可通过工具结果兜底。
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
 from typing import Any, List
@@ -23,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class XiaoyiAppendReferenceToolkit:
-    """Push citation cards to the Xiaoyi phone client."""
+    """Deliver citations through E2A for desktop and Xiaoyi clients."""
 
     def __init__(
         self,
@@ -54,8 +57,25 @@ class XiaoyiAppendReferenceToolkit:
     async def append_reference(self, references: Any = None, **_ignored: Any) -> str:
         items = coerce_references(references)
         if not items:
-            return "Failed to send references: references must be a non-empty array, and each item must contain title/url/source/name"
+            return json.dumps(
+                {
+                    "success": False,
+                    "count": 0,
+                    "message": (
+                        "Failed to send references: references must be a non-empty "
+                        "array, and each item must contain title/url/source/name"
+                    ),
+                    "reference_event_sent": False,
+                    "history_saved": False,
+                    "references": [],
+                },
+                ensure_ascii=False,
+            )
 
+        history_saved = False
+        event_sent = False
+        errors: list[str] = []
+        delivery = None
         try:
             from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
             from jiuwenswarm.server.runtime.session.session_history import (
@@ -63,45 +83,102 @@ class XiaoyiAppendReferenceToolkit:
             )
 
             delivery = resolve_toolkit_delivery(self)
-            append_history_record(
-                session_id=delivery.session_id,
-                request_id=delivery.turn_request_id,
-                channel_id=delivery.channel_id,
-                role="assistant",
-                event_type="chat.reference",
-                content="",
-                timestamp=time.time(),
-                extra={"references": items},
-            )
-
-            msg: dict[str, Any] = {
-                "request_id": delivery.turn_request_id,
-                "channel_id": delivery.channel_id,
-                "session_id": delivery.session_id,
-                "payload": {
-                    "event_type": "chat.reference",
-                    "references": items,
-                },
-                "is_complete": False,
-            }
-            if delivery.metadata:
-                msg["metadata"] = dict(delivery.metadata)
-
-            server = AgentWebSocketServer.get_instance()
-            await server.send_push(msg)
-            logger.info(
-                "[XiaoyiAppendReference] send_push ok session_id=%s count=%s",
-                self.session_id,
-                len(items),
-            )
-            return f"Sent {len(items)} references"
-        except Exception as e:
+        except Exception as exc:
+            errors.append(f"delivery setup failed: {exc}")
             logger.exception(
-                "[XiaoyiAppendReference] 失败 session_id=%s error=%s",
+                "[XiaoyiAppendReference] 投递上下文解析失败 session_id=%s error=%s",
                 self.session_id,
-                e,
+                exc,
             )
-            return f"Failed to submit references: {e}"
+
+        if delivery is not None:
+            try:
+                history_saved = bool(
+                    await asyncio.to_thread(
+                        append_history_record,
+                        session_id=delivery.session_id,
+                        request_id=delivery.turn_request_id,
+                        channel_id=delivery.channel_id,
+                        role="assistant",
+                        event_type="chat.reference",
+                        content="",
+                        timestamp=time.time(),
+                        extra={"references": items},
+                        wait=True,
+                    )
+                )
+                if not history_saved:
+                    errors.append("history write skipped")
+            except Exception as exc:
+                errors.append(f"history write failed: {exc}")
+                logger.exception(
+                    "[XiaoyiAppendReference] 历史保存失败 session_id=%s error=%s",
+                    self.session_id,
+                    exc,
+                )
+
+        if delivery is not None:
+            try:
+                msg: dict[str, Any] = {
+                    "request_id": delivery.turn_request_id,
+                    "channel_id": delivery.channel_id,
+                    "session_id": delivery.session_id,
+                    "payload": {
+                        "event_type": "chat.reference",
+                        "references": items,
+                    },
+                    "is_complete": False,
+                }
+                if delivery.metadata:
+                    msg["metadata"] = dict(delivery.metadata)
+
+                server = AgentWebSocketServer.get_instance()
+                await server.send_push(msg)
+                event_sent = True
+                logger.info(
+                    "[XiaoyiAppendReference] send_push ok session_id=%s channel=%s count=%s",
+                    self.session_id,
+                    delivery.channel_id,
+                    len(items),
+                )
+            except Exception as exc:
+                errors.append(f"live push failed: {exc}")
+                logger.exception(
+                    "[XiaoyiAppendReference] 实时推送失败 session_id=%s error=%s",
+                    self.session_id,
+                    exc,
+                )
+
+        # Legacy PC frontends do not consume chat.reference yet. Returning the
+        # page URLs in the tool result keeps them visible through the existing
+        # extractPanelData() heuristic. imageUrl is intentionally omitted so it
+        # is not mistaken for another cited page by that fallback.
+        fallback_items = [
+            {key: value for key, value in item.items() if key != "imageUrl"}
+            for item in items
+        ]
+        result: dict[str, Any] = {
+            # A persisted reference is usable through history/legacy fallback even
+            # when the live push fails. Keep the two delivery channels explicit so
+            # the model does not retry and create duplicate history records.
+            "success": history_saved or event_sent,
+            "count": len(items),
+            "message": (
+                f"Sent {len(items)} references"
+                if event_sent
+                else (
+                    f"Saved {len(items)} references; live delivery failed"
+                    if history_saved
+                    else "Failed to submit references"
+                )
+            ),
+            "reference_event_sent": event_sent,
+            "history_saved": history_saved,
+            "references": fallback_items,
+        }
+        if errors:
+            result["error"] = "; ".join(errors)
+        return json.dumps(result, ensure_ascii=False)
 
     def get_tools(self) -> List[Tool]:
         def make_tool(
@@ -122,8 +199,8 @@ class XiaoyiAppendReferenceToolkit:
                 name="xiaoyi_append_reference",
                 description=(
                     "[Reference sources] Return information sources found during the "
-                    "answer (e.g. web search) to the user as reference cards on the "
-                    "mobile client. When the conversation involves web search, or "
+                    "answer (e.g. web search) to the user as a reference section or "
+                    "cards on the current desktop or mobile client. When the conversation involves web search, or "
                     "depends on data from query skills such as weather / finance / "
                     "health / encyclopedia, you MUST call this tool exactly once when "
                     "composing the final merged answer; do not call it multiple times. "
