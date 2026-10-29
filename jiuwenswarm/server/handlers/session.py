@@ -1351,6 +1351,14 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
             )
         next_seq += 1
 
+    session_usage = None
+    if not subagent_id and isinstance(session_id, str) and session_id.strip():
+        from jiuwenswarm.server.control.history_service import load_history_session_usage
+
+        session_usage = await asyncio.to_thread(
+            load_history_session_usage, session_id.strip()
+        )
+
     done_chunk = AgentResponseChunk(
         request_id=request.request_id,
         channel_id=request.channel_id,
@@ -1369,6 +1377,9 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
         },
         is_complete=True,
     )
+    usage_revision = session_usage.get("revision") if isinstance(session_usage, dict) else None
+    if isinstance(usage_revision, int) and not isinstance(usage_revision, bool) and usage_revision > 0:
+        done_chunk.payload["session_usage"] = session_usage
     await _send_chunk(ctx, done_chunk, next_seq)
 
 async def handle_history_append_record(ctx: RequestContext) -> None:

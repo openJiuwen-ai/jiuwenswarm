@@ -219,6 +219,23 @@ test('resolveStepIds separates steps that are no longer available', () => {
   assert.equal(missing.length, 1);
 });
 
+test('a reward event fills the evaluation while the run is still going', () => {
+  const reward = {
+    schema_version: 'attribution.reward.v1',
+    overall: { comment: 'ok', total_score: 80 },
+    categories: [],
+    dimensions: [],
+  };
+  const outcome = applyProgressEvent(
+    record({ seq: 1 }),
+    progress(2, 'reward', { stage_id: 'diagnose', reward }),
+  );
+  assert.equal(outcome.refetch, false);
+  assert.equal(outcome.record.status, 'running');
+  assert.deepEqual(outcome.record.reward, reward);
+  assert.deepEqual(outcome.record.stages, []);
+});
+
 test('whole-table events replace the failure causes and evolution items', () => {
   const cause = id => ({ id, dimension: 'd', summary: id, evidence: [ref('1')], suggestion: [] });
   const judge = id => ({ id, category: 'skill', summary: id, evidence: [ref('2')], suggestion: ['x'], score: 0.5, target: 's' });

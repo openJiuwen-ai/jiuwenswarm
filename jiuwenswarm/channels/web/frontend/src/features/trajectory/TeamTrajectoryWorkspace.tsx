@@ -33,10 +33,19 @@ export interface TeamTrajectoryWorkspaceProps {
   externalViewState?: TrajectoryViewState;
   /** Full-width control under the toolbar, used by the diagnosis time axis. */
   toolbarTrailing?: ReactNode;
-  /** Per-agent inclusion checkboxes. Absent on the raw team trajectory. */
+  /**
+   * Diagnosis pick controls. Absent on the raw team trajectory.
+   *
+   * The include checkbox appears for a shared axis brush, or when this lane
+   * already owns a window — uncheck clears that pick. Hidden for a full-
+   * trajectory pick and when nothing is selected, so it is not mistaken for
+   * "select all". Whole-lane selection is the separate select-all control.
+   */
   agentSelection?: {
     isIncluded: (subjectId: string) => boolean;
     onToggle: (subjectId: string) => void;
+    /** When false, hide the include checkbox for this agent. */
+    showIncludeToggle: (subjectId: string) => boolean;
     /** Select or clear every timed node on this agent's lane. */
     onSelectAll: (subjectId: string) => void;
     /** Whether this agent currently has any timed nodes to select. */
@@ -54,6 +63,7 @@ function MemberToolbarControl({
   onClick,
   included,
   onToggleIncluded,
+  showIncludeToggle,
   onSelectAll,
   canSelectAll,
   selectAllActive,
@@ -63,6 +73,7 @@ function MemberToolbarControl({
   onClick: () => void;
   included?: boolean;
   onToggleIncluded?: () => void;
+  showIncludeToggle?: boolean;
   onSelectAll?: () => void;
   canSelectAll?: boolean;
   selectAllActive?: boolean;
@@ -88,23 +99,29 @@ function MemberToolbarControl({
       </span>
     </button>
   );
-  if (onToggleIncluded === undefined || onSelectAll === undefined) return button;
+  if (onSelectAll === undefined) return button;
   const selectAllEnabled = canSelectAll === true;
   const allSelected = selectAllActive === true;
   const selectAllLabel = allSelected
     ? t('trajectory.analysis.selection.clearSelectAllAgent', { name: lane.label })
     : t('trajectory.analysis.selection.selectAllAgent', { name: lane.label });
+  const includeLabel = t('trajectory.diagnosis.includeAgent', { name: lane.label });
+  const includeTitle = t('trajectory.diagnosis.includeAgentHint', { name: lane.label });
+  const showInclude = showIncludeToggle === true && onToggleIncluded !== undefined;
   return (
     <span className={css.memberCluster}>
-      <input
-        type="checkbox"
-        className={css.memberCheck}
-        checked={included === true}
-        aria-label={t('trajectory.diagnosis.includeAgent', { name: lane.label })}
-        data-testid="trajectory-analysis-agent-checkbox"
-        data-variant={lane.subjectId}
-        onChange={() => onToggleIncluded()}
-      />
+      {showInclude ? (
+        <input
+          type="checkbox"
+          className={css.memberCheck}
+          checked={included === true}
+          aria-label={includeLabel}
+          title={includeTitle}
+          data-testid="trajectory-analysis-agent-checkbox"
+          data-variant={lane.subjectId}
+          onChange={() => onToggleIncluded()}
+        />
+      ) : null}
       {button}
       <button
         type="button"
@@ -249,6 +266,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
                       : {
                         included: agentSelection.isIncluded(lane.subjectId),
                         onToggleIncluded: () => agentSelection.onToggle(lane.subjectId),
+                        showIncludeToggle: agentSelection.showIncludeToggle(lane.subjectId),
                         onSelectAll: () => agentSelection.onSelectAll(lane.subjectId),
                         canSelectAll: agentSelection.canSelectAll(lane.subjectId),
                         selectAllActive: agentSelection.isSelectAllActive(lane.subjectId),

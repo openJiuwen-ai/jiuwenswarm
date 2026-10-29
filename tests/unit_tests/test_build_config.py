@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.worker_build_identity import write_build_metadata as write_runtime_build_metadata
 from scripts.build_config import (
     BuildConfigError,
     find_drift,
@@ -24,24 +25,30 @@ from scripts.build_config import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_build_metadata_uses_reproducible_release_date(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("writer", [write_build_metadata, write_runtime_build_metadata])
+def test_build_metadata_uses_reproducible_release_date(
+    monkeypatch, tmp_path: Path, writer,
+) -> None:
     # 2026-10-25 17:00 UTC is already October 26 on the release calendar.
     from datetime import datetime, timezone
 
     epoch = int(datetime(2026, 10, 25, 17, tzinfo=timezone.utc).timestamp())
     monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
     path = tmp_path / "staging" / "build-metadata.json"
-    write_build_metadata(path, "0.2.8.dev20261026")
+    writer(path, "0.2.8.dev20261026")
 
     assert json.loads(path.read_text(encoding="utf-8")) == {
         "version": "0.2.8.dev20261026", "build_date": "2026-10-26",
     }
 
 
-def test_build_metadata_rejects_invalid_reproducible_timestamp(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("writer", [write_build_metadata, write_runtime_build_metadata])
+def test_build_metadata_rejects_invalid_reproducible_timestamp(
+    monkeypatch, tmp_path: Path, writer,
+) -> None:
     monkeypatch.setenv("SOURCE_DATE_EPOCH", "invalid")
     with pytest.raises(ValueError):
-        write_build_metadata(tmp_path / "build-metadata.json", "0.2.8")
+        writer(tmp_path / "build-metadata.json", "0.2.8")
 
 
 def _create_project_fixture(root: Path, version: str = "1.2.3.beta4") -> None:
@@ -151,11 +158,11 @@ def test_shell_and_batch_values_are_emitted_directly_from_pyproject(tmp_path: Pa
 
 def test_packaging_consumers_use_the_central_build_config() -> None:
     consumers = {
-        "scripts/build-macos.sh": 'build_config.py" --sync --emit-shell',
-        "scripts/build-exe.ps1": 'build_config.py" --sync --emit-json',
-        "scripts/build-exe.bat": "build_config.py --sync --emit-batch",
-        "scripts/build-electron-exe.sh": 'build_config.py" --sync --emit-shell',
-        "scripts/build-electron-exe.ps1": 'build_config.py" --sync --emit-json',
+        "scripts/build-macos.sh": 'build_config.py" --root "$PROJECT_ROOT" --sync --emit-shell',
+        "scripts/build-exe.ps1": 'build_config.py" --root "$ProjectRoot" --sync --emit-json',
+        "scripts/build-exe.bat": 'build_config.py" --root "%WORKSWARM_SOURCE_ROOT%" --sync --emit-batch',
+        "scripts/build-electron-exe.sh": 'build_config.py" --root "$PROJECT_ROOT" --sync --emit-shell',
+        "scripts/build-electron-exe.ps1": 'build_config.py" --root "$ProjectRoot" --sync --emit-json',
         "scripts/jiuwenswarm.spec": '"scripts", "build_config.py"',
     }
     for relative_path, expected in consumers.items():

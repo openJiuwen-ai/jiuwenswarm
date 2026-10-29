@@ -91,6 +91,10 @@ _ensure_req_method("SKILLDEV_DOWNLOAD", "skilldev.download")
 _ensure_req_method("SKILLDEV_CANCEL", "skilldev.cancel")
 _ensure_req_method("SKILLDEV_FILE_LIST", "skilldev.file.list")
 _ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
+# Removing a composer attachment chip should also drop the session-asset
+# registry entry it created (see session_assets.py). The pinned protocol
+# package does not define this member yet.
+_ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
 
 logger = logging.getLogger(__name__)
 

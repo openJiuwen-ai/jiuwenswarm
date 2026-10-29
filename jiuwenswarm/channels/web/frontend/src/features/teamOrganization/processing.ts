@@ -7,6 +7,8 @@ import { useTeamOrganizationUiEnabled } from './featureConfig';
 
 const activeRequests = new Map<string, Map<string, string>>();
 const stoppedOwners = new Set<string>();
+const pendingOwnerStops = new Set<string>();
+const ownerStateRevisions = new Map<string, number>();
 const listeners = new Set<() => void>();
 let revision = 0;
 
@@ -70,10 +72,19 @@ export function isOrganizationOwnerStopped(sessionId: string): boolean {
   return stoppedOwners.has(sessionId);
 }
 
-export function setOrganizationOwnerStopped(sessionId: string, stopped: boolean): void {
+export function organizationOwnerStateRevision(sessionId: string): number {
+  return ownerStateRevisions.get(sessionId) ?? 0;
+}
+
+export function setOrganizationOwnerStopped(sessionId: string, stopped: boolean, pending = false): void {
+  ownerStateRevisions.set(sessionId, organizationOwnerStateRevision(sessionId) + 1);
+  if (pending) pendingOwnerStops.add(sessionId);
+  else pendingOwnerStops.delete(sessionId);
   if (stopped) {
     stoppedOwners.add(sessionId);
-    activeRequests.delete(sessionId);
+    // Keep in-flight Owner rounds until acknowledgement so a rejected stop can restore them.
+    if (!pending) activeRequests.delete(sessionId);
+    useChatStore.getState().setProcessing(sessionId, false);
   } else {
     stoppedOwners.delete(sessionId);
   }
@@ -134,7 +145,10 @@ export function reconcileOrganizationRequests(
   ownerStopped?: boolean,
 ): void {
   if (revision !== expectedRevision) return;
-  if (ownerStopped !== undefined) {
+  if (ownerStopped !== undefined && !pendingOwnerStops.has(sessionId)) {
+    if (stoppedOwners.has(sessionId) !== ownerStopped) {
+      ownerStateRevisions.set(sessionId, organizationOwnerStateRevision(sessionId) + 1);
+    }
     if (ownerStopped) stoppedOwners.add(sessionId);
     else stoppedOwners.delete(sessionId);
   }
@@ -172,6 +186,8 @@ export function reconcileOrganizationRequests(
 }
 
 export function clearOrganizationRequests(sessionId: string): void {
+  ownerStateRevisions.set(sessionId, organizationOwnerStateRevision(sessionId) + 1);
+  pendingOwnerStops.delete(sessionId);
   stoppedOwners.delete(sessionId);
   reconcileOrganizationRequests(sessionId, undefined, [], revision, []);
 }

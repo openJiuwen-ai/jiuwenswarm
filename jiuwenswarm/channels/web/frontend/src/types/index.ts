@@ -10,6 +10,7 @@ export * from './todo';
 export * from './websocket';
 export * from './subagent';
 export * from './contextUsage';
+export * from './sessionTokenUsage';
 export * from '../features/workspace/projectTypes';
 
 // 会话类型
@@ -45,6 +46,7 @@ export interface Session {
   updated_at: string;
   is_active?: boolean;
   is_processing?: boolean;
+  organization_owner_stopped?: boolean;
   queued_session_messages?: Array<{
     message_id: string;
     target_session_id: string;

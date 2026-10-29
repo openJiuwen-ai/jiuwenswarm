@@ -15759,6 +15759,41 @@ class JiuWenSwarmDeepAdapter:
             continues_turn=self._continues_current_turn(params),
         )
 
+    async def _commit_round_state(self, session_id: str) -> None:
+        """Persist the loop Session once a request's round output has closed.
+
+        The only other commit is ``SessionTurnTracker.sync`` at dispatch,
+        before the round runs; the DeepAgent loop never commits at round end.
+        A rebuilt adapter (restart, idle eviction) would restore that earlier
+        state, for example an interrupt this round already answered, and take
+        the next message as the answer to it.
+
+        Only the request that held the round's output lease calls this; a
+        request accepted into another reader's round has no round to end.
+
+        Args:
+            session_id: Session the request ran in, for the log line.
+        """
+        session = self._active_loop_session()
+        if session is None:
+            return
+        try:
+            # A second cancel must not cut the commit short, nor skip the
+            # cleanup that follows this call in the caller's ``finally``.
+            await asyncio.shield(session.commit())
+        except asyncio.CancelledError:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] round state commit continues after cancel: "
+                "session_id=%s",
+                session_id,
+            )
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] round state commit failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
     def _active_loop_session(self) -> Any | None:
         """Return the session the DeepAgent loop is bound to, when there is one.
 
@@ -18083,6 +18118,8 @@ class JiuWenSwarmDeepAdapter:
                     )
                 except Exception:
                     logger.debug("[Goal] interaction stream close failed", exc_info=True)
+                if not _is_attach_only_subscription(request.params):
+                    await self._commit_round_state(session_id)
             close_agent_run_span(
                 _run_span,
                 session_id=session_id,
@@ -19949,6 +19986,8 @@ class JiuWenSwarmDeepAdapter:
                     )
                 except Exception:
                     logger.debug("[Goal] interaction stream close failed", exc_info=True)
+                if not attach_subscription:
+                    await self._commit_round_state(session_id)
             close_agent_run_span(
                 _run_span,
                 session_id=session_id,
@@ -20036,13 +20075,35 @@ class JiuWenSwarmDeepAdapter:
             except Exception:
                 logger.debug("[JiuWenSwarmDeepAdapter] context window fallback failed", exc_info=True)
 
-        if usage_accumulator["total_tokens"] > 0:
+        has_turn_usage = any(
+            usage_accumulator[key] > 0
+            for key in ("input_tokens", "output_tokens", "total_tokens")
+        )
+        session_usage = None
+        try:
+            from jiuwenswarm.server.runtime.session.session_token_usage import (
+                get_session_token_usage,
+            )
+
+            snapshot = await asyncio.to_thread(get_session_token_usage, session_id)
+            if snapshot["revision"] > 0:
+                session_usage = snapshot
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] cumulative session usage unavailable",
+                exc_info=True,
+            )
+
+        if has_turn_usage or session_usage is not None:
             payload: dict[str, Any] = {
                 "event_type": "chat.usage_summary",
                 "session_id": session_id,
-                "usage": summary,
                 "model": self._resolve_model_name(),
             }
+            if has_turn_usage:
+                payload["usage"] = summary
+            if session_usage is not None:
+                payload["session_usage"] = session_usage
             if context_usage_percent is not None:
                 payload["usage_percent"] = context_usage_percent
             if context_window_tokens is not None:
@@ -20259,6 +20320,15 @@ class JiuWenSwarmDeepAdapter:
         }
         if message:
             payload["message"] = message
+        if parent_session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.session_token_usage import get_session_token_usage
+
+                session_usage = get_session_token_usage(parent_session_id)
+                if session_usage.get("revision", 0) > 0:
+                    payload["session_usage"] = session_usage
+            except Exception:
+                logger.debug("[SessionTokenUsage] subagent snapshot unavailable", exc_info=True)
         return payload
 
     @staticmethod

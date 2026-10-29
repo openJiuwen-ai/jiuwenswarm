@@ -1,6 +1,7 @@
 /** Findings of a diagnosis: the deliverable failure causes, plus legacy root causes of older records. */
 
-import { useMemo } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
+import { ChevronRight, CircleCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type {
   DiagnosisRecord,
@@ -28,6 +29,56 @@ interface FindingListProps {
   onFocusFinding: (findingId: string | null) => void;
 }
 
+/** Section mark: a drawn circle-check, sized to the title line. */
+export function ItemMark() {
+  return <CircleCheck className={css.itemMark} size={16} strokeWidth={2} aria-hidden />;
+}
+
+/** One details section: the title stays, and the body folds from the chevron on the right. */
+export function FoldableItem({
+  title,
+  extra,
+  children,
+  className,
+  testId,
+  toggleTestId,
+}: {
+  title: string;
+  extra?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  testId?: string;
+  toggleTestId?: string;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(true);
+  return (
+    <div className={className === undefined ? css.block : `${css.block} ${className}`} data-testid={testId}>
+      <button
+        type="button"
+        className={`${css.itemHead} ${css.itemToggle}`}
+        aria-expanded={open}
+        onClick={() => setOpen(value => !value)}
+        data-testid={toggleTestId}
+      >
+        <ItemMark />
+        <h4 className={css.blockTitle}>{title}</h4>
+        {extra}
+        <ChevronRight
+          className={`${css.chevron} ${css.itemChevron} ${open ? css.chevronOpen : ''}`}
+          size={16}
+          strokeWidth={2}
+          aria-hidden
+        />
+        <span className={css.srOnly}>
+          {t(open ? 'trajectory.diagnosis.sectionCollapse' : 'trajectory.diagnosis.sectionExpand')}
+        </span>
+      </button>
+      {open ? children : null}
+    </div>
+  );
+}
+
 function HighlightButton({ id, focused, onFocusFinding }: {
   id: string;
   focused: boolean;
@@ -37,7 +88,7 @@ function HighlightButton({ id, focused, onFocusFinding }: {
   return (
     <button
       type="button"
-      className={css.button}
+      className={css.highlightButton}
       aria-pressed={focused}
       onClick={() => onFocusFinding(focused ? null : id)}
       data-testid="trajectory-diagnosis-highlight"
@@ -135,18 +186,22 @@ function CauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
         )}
         <HighlightButton id={cause.id} focused={focused} onFocusFinding={onFocusFinding} />
       </div>
-      {comment === '' ? null : (
-        <p className={css.findingLine} data-testid="trajectory-diagnosis-cause-problem">
-          <span className={css.lineLabel}>{t('trajectory.diagnosis.findingProblem')}</span>
-          <span className={css.findingLineBody}>{comment}</span>
-        </p>
-      )}
-      {cause.summary.trim() === '' ? null : (
-        <div className={css.findingLine} data-testid="trajectory-diagnosis-cause-reason">
-          <span className={css.lineLabel}>{t('trajectory.diagnosis.findingReason')}</span>
-          <div className={css.findingLineBody}>
-            <FoldedMarkdown text={cause.summary} />
-          </div>
+      {comment === '' && cause.summary.trim() === '' ? null : (
+        <div className={css.itemBody}>
+          {comment === '' ? null : (
+            <p className={css.findingLine} data-testid="trajectory-diagnosis-cause-problem">
+              <span className={css.lineLabel}>{t('trajectory.diagnosis.findingProblem')}</span>
+              <span className={css.findingLineBody}>{comment}</span>
+            </p>
+          )}
+          {cause.summary.trim() === '' ? null : (
+            <div className={css.findingLine} data-testid="trajectory-diagnosis-cause-reason">
+              <span className={css.lineLabel}>{t('trajectory.diagnosis.findingReason')}</span>
+              <div className={css.findingLineBody}>
+                <FoldedMarkdown text={cause.summary} />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -187,7 +242,11 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
         )}
         <HighlightButton id={judge.id} focused={focused} onFocusFinding={onFocusFinding} />
       </div>
-      <FoldedMarkdown text={judge.summary} />
+      {judge.summary.trim() === '' ? null : (
+        <div className={css.itemBody}>
+          <FoldedMarkdown text={judge.summary} />
+        </div>
+      )}
     </div>
   );
 }
@@ -218,14 +277,18 @@ function LegacyCauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
         <span className={css.spacer} />
         <HighlightButton id={cause.id} focused={focused} onFocusFinding={onFocusFinding} />
       </div>
-      <FoldedMarkdown text={cause.summary} />
-      {cause.evidence.trim() === '' ? null : (
-        <details className={css.evidence} data-testid="trajectory-diagnosis-evidence">
-          <summary>{t('trajectory.diagnosis.evidence')}</summary>
-          <div className={css.evidenceBody}>
-            <PlainText text={cause.evidence} />
-          </div>
-        </details>
+      {cause.summary.trim() === '' && cause.evidence.trim() === '' ? null : (
+        <div className={css.itemBody}>
+          {cause.summary.trim() === '' ? null : <FoldedMarkdown text={cause.summary} />}
+          {cause.evidence.trim() === '' ? null : (
+            <details className={css.evidence} data-testid="trajectory-diagnosis-evidence">
+              <summary>{t('trajectory.diagnosis.evidence')}</summary>
+              <div className={css.evidenceBody}>
+                <PlainText text={cause.evidence} />
+              </div>
+            </details>
+          )}
+        </div>
       )}
     </div>
   );
@@ -254,11 +317,12 @@ export function Findings({ record, subjectLabels, focusedFindingId, onFocusFindi
     ? t('trajectory.diagnosis.findingWithEvolution', { causes: causeText, evolution })
     : (causeText !== '' ? causeText : evolution);
   return (
-    <div className={css.block} data-testid="trajectory-diagnosis-root-causes">
-      <div className={css.row}>
-        <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rootCauses')}</h4>
-        <span className={css.hint} data-testid="trajectory-diagnosis-findings-count">{countsLabel}</span>
-      </div>
+    <FoldableItem
+      title={t('trajectory.diagnosis.rootCauses')}
+      extra={<span className={css.hint} data-testid="trajectory-diagnosis-findings-count">{countsLabel}</span>}
+      testId="trajectory-diagnosis-root-causes"
+      toggleTestId="trajectory-diagnosis-findings-toggle"
+    >
       <div className={css.findingList} data-testid="trajectory-diagnosis-finding-list">
         {items.map(item => (item.cause !== undefined ? (
           <CauseCard
@@ -287,6 +351,6 @@ export function Findings({ record, subjectLabels, focusedFindingId, onFocusFindi
           />
         ))}
       </div>
-    </div>
+    </FoldableItem>
   );
 }

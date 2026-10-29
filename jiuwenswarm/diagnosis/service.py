@@ -512,6 +512,9 @@ class DiagnosisService:
 
     async def _on_engine_event(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
         record = state.record
+        if event.kind == "reward":
+            await self._on_reward(session_id, state, event)
+            return
         if event.kind == "reward_failure_causes":
             await self._on_reward_failure_causes(session_id, state, event)
             return
@@ -564,6 +567,28 @@ class DiagnosisService:
                 await self._persist(session_id, record)
             except Exception:  # noqa: BLE001
                 logger.warning("[diagnosis] stage persist failed: session_id=%s", session_id, exc_info=True)
+
+    async def _on_reward(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
+        """Publish the artifact evaluation as soon as diagnosis has scored it."""
+        payload = event.reward
+        if not isinstance(payload, Mapping):
+            return
+        record = state.record
+        record.reward = dict(payload)
+        record.seq += 1
+        progress = DiagnosisProgressEvent(
+            session_id=session_id,
+            diagnosis_id=record.diagnosis_id,
+            seq=record.seq,
+            stage_id=event.stage_id,
+            kind="reward",
+            reward=record.reward,
+        )
+        await self._safe_push(session_id, PROGRESS_EVENT, progress.model_dump(mode="json", exclude_none=True))
+        try:
+            await self._persist(session_id, record)
+        except Exception:  # noqa: BLE001
+            logger.warning("[diagnosis] reward persist failed: session_id=%s", session_id, exc_info=True)
 
     async def _on_reward_failure_causes(
         self, session_id: str, state: _RunState, event: EngineEvent

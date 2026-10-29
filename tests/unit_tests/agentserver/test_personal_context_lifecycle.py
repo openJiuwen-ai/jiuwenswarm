@@ -12,7 +12,6 @@ import pytest
 
 from jiuwenswarm.server import agent_ws_server as server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-from jiuwenswarm.server.process_services import ProcessServices
 
 
 AGENT_WS_SERVER_PATH = (
@@ -69,7 +68,9 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> AgentWebSocketServer:
     monkeypatch.setattr(
         server_module, "PersonalContextHostAPI", _FakePersonalContextHost
     )
-    return AgentWebSocketServer(host="127.0.0.1", port=0)
+    server = AgentWebSocketServer(host="127.0.0.1", port=0)
+    monkeypatch.setattr(server, "_schedule_tokenizer_warmup", lambda *_args, **_kwargs: None)
+    return server
 
 
 def test_personal_context_cancellation_handlers_do_not_raise_inside_except() -> None:
@@ -141,7 +142,6 @@ async def test_start_opens_websocket_without_waiting_for_personal_context(
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
-    await ProcessServices(server).start()
     await server.start(bind_transport=True)
     task = server._personal_context_start_task  # pylint: disable=protected-access
     try:
@@ -158,7 +158,7 @@ async def test_start_opens_websocket_without_waiting_for_personal_context(
                 task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        ProcessServices.note_stopped()
+        await server.stop()
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,6 @@ async def test_start_restores_enabled_personal_context_state_to_agent_manager(
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
     try:
-        await ProcessServices(server).start()
         await server.start(bind_transport=True)
         task = server._personal_context_start_task  # pylint: disable=protected-access
         assert task is not None
@@ -196,7 +195,7 @@ async def test_start_restores_enabled_personal_context_state_to_agent_manager(
         assert events == ["ws-serve"]
         manager_update.assert_awaited_once_with(True)
     finally:
-        ProcessServices.note_stopped()
+        await server.stop()
 
 
 @pytest.mark.asyncio
@@ -232,7 +231,6 @@ async def test_personal_context_start_failure_does_not_fail_agentserver_start(
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
     try:
-        await ProcessServices(server).start()
         await server.start(bind_transport=True)
         assert server._personal_context_start_task is not None  # pylint: disable=protected-access
         await server._personal_context_start_task  # pylint: disable=protected-access
@@ -240,7 +238,7 @@ async def test_personal_context_start_failure_does_not_fail_agentserver_start(
         assert server._server is not None  # pylint: disable=protected-access
         assert events == ["ws-serve"]
     finally:
-        ProcessServices.note_stopped()
+        await server.stop()
 
 
 @pytest.mark.asyncio
