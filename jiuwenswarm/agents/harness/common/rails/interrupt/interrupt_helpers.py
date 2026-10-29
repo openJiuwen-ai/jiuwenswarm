@@ -601,6 +601,8 @@ _LEVEL_RANK = {"deny": 0, "ask": 1, "allow": 2}
 def _derive_user_overlay_delta(
     permissions: dict[str, Any],
     disk_bases: list[dict[str, Any]],
+    *,
+    approval_baseline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """从 rail 整段合并 cfg diff 出 user 层增量键。
 
@@ -608,6 +610,12 @@ def _derive_user_overlay_delta(
     preset），persist_user_overlay_from_effective 只认增量键且该键历史上
     无生产方（round-024 allow-always 假阳性落盘根因）。此处仅保留比磁盘
     生效值更放行的项（棘轮），避免整段复制全局层到 user 层。
+
+    ``approval_baseline``（磁盘四层的新鲜合成结果）用于 approval_overrides
+    增量：rail 在合成结果上追加本次批准条目后整表下发，基线外的条目才
+    是真增量；否则 compose 已并入的 session 层 override 会随整表写回
+    user 层，会话级放行被固化为永久（检视 2026-10-29）。为 None 时该节
+    原样透传（调用方自行决定降级语义）。
     """
     payload = dict(permissions)
 
@@ -721,6 +729,38 @@ def _derive_user_overlay_delta(
                 added_paths.append(entry)
         if added_paths:
             payload["_file_guard_paths_added"] = added_paths
+
+    # approval_overrides 增量：按身份键（tools/match_type/pattern）对齐
+    # 磁盘合成基线，仅基线外或更放行条目入增量；基线内（含 session 层
+    # 并入项）丢弃，防止会话级放行随整表提升为永久。
+    if approval_baseline is not None:
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+            _approval_override_key,
+        )
+
+        base_overrides = approval_baseline.get("approval_overrides")
+        base_map: dict[tuple[Any, ...], str] = {}
+        for entry in base_overrides if isinstance(base_overrides, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            key = _approval_override_key(entry)
+            action = str(entry.get("action") or "allow").lower()
+            if key not in base_map or _LEVEL_RANK.get(action, 0) > _LEVEL_RANK.get(
+                base_map[key], 0
+            ):
+                base_map[key] = action
+        cfg_overrides = permissions.get("approval_overrides")
+        kept_overrides = [
+            entry
+            for entry in (cfg_overrides if isinstance(cfg_overrides, list) else [])
+            if isinstance(entry, dict)
+            and _LEVEL_RANK.get(str(entry.get("action") or "allow").lower(), 0)
+            > _LEVEL_RANK.get(base_map.get(_approval_override_key(entry), "deny"), 0)
+        ]
+        if kept_overrides:
+            payload["approval_overrides"] = kept_overrides
+        else:
+            payload.pop("approval_overrides", None)
 
     return payload
 
@@ -877,17 +917,84 @@ def build_permission_rail(
                 )
                 return persist_user_overlay_from_effective(dict(permissions))
 
-            payload = _derive_user_overlay_delta(permissions, disk_bases)
+            sid = (TOOL_PERMISSION_SESSION_ID.get() or "").strip() or None
+            approval_baseline: dict[str, Any] | None = None
+            try:
+                from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                    compose_host_effective_permissions,
+                )
+
+                approval_baseline = compose_host_effective_permissions(session_id=sid)
+            except Exception:  # noqa: BLE001 — 基线合成失败时丢弃 overrides 增量
+                logger.warning(
+                    "[InterruptHelpers] persist_allow_rule approval baseline compose failed",
+                    exc_info=True,
+                )
+
+            payload = _derive_user_overlay_delta(
+                permissions, disk_bases, approval_baseline=approval_baseline
+            )
+            if approval_baseline is None:
+                # 基线不可用时无法区分 session 并入项，宁缺勿滥：
+                # 不落 overrides，避免会话级放行被整表固化为永久。
+                payload.pop("approval_overrides", None)
             return persist_user_overlay_from_effective(payload)
 
         def _persist_session_allow_rule(permissions: dict[str, Any]) -> bool:
-            """会话内记住：写入 session_permissions.yaml。"""
+            """会话内记住：按增量派生后写入 session_permissions.yaml。
+
+            与 _persist_allow_rule 同理：rail 传整段合并 cfg，persist
+            只认增量键（``_allow_tools_added`` / ``_file_guard_paths_added``），
+            整段直传时 tools / file_guard 放行语义静默落空、假成功（检视
+            2026-10-29）。基线取磁盘三层现值（global/template/session），
+            仅棘轮放大项入 session 层。
+            """
             sid = (
                 (TOOL_PERMISSION_SESSION_ID.get() or "").strip()
                 or str(permissions.get("_persist_session_id") or "").strip()
             )
+            try:
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                    get_shipped_template_permissions_config,
+                )
+                from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                    load_global_permissions,
+                    load_session_permissions,
+                )
+
+                disk_bases = [
+                    load_global_permissions(),
+                    get_shipped_template_permissions_config(),
+                    load_session_permissions(sid or ""),
+                ]
+            except Exception:  # noqa: BLE001 — 底座读取失败退回直传
+                logger.warning(
+                    "[InterruptHelpers] persist_session_allow_rule disk base read failed",
+                    exc_info=True,
+                )
+                return persist_session_overlay_from_effective(
+                    permissions,
+                    session_id=sid or None,
+                )
+            approval_baseline: dict[str, Any] | None = None
+            try:
+                from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                    compose_host_effective_permissions,
+                )
+
+                approval_baseline = compose_host_effective_permissions(
+                    session_id=sid or None
+                )
+            except Exception:  # noqa: BLE001 — session 层写入无越层风险，退回整表
+                logger.warning(
+                    "[InterruptHelpers] persist_session_allow_rule approval baseline compose failed",
+                    exc_info=True,
+                )
+            payload = _derive_user_overlay_delta(
+                permissions, disk_bases, approval_baseline=approval_baseline
+            )
             return persist_session_overlay_from_effective(
-                permissions,
+                payload,
                 session_id=sid or None,
             )
 
@@ -1116,11 +1223,14 @@ def build_permission_rail(
             try:
                 return compose_host_effective_permissions(session_id=sid)
             except Exception:
+                # compose 失败回 None（引擎沿用构建期 _static_config，限制
+                # 仍在）而非 {}——空快照会静默清空 deny/ask/rules（评审
+                # 2026-10-29 fail-open）。
                 logger.warning(
                     "[InterruptHelpers] permissions_snapshot_compose_failed",
                     exc_info=True,
                 )
-                return {}
+                return None
 
         host = ToolPermissionHost(
             **_filter_init_kwargs(
