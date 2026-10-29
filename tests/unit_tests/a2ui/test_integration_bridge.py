@@ -613,3 +613,49 @@ def test_foreign_source_predicate_semantics():
     assert _is_foreign_stream_source({"stream_source_id": "main"}) is False
     assert _is_foreign_stream_source({}) is False
     assert _is_foreign_stream_source(None) is False
+
+
+# ── CR 三连击回归（renquanjia 2026-10-29 #1/#2/#3）：foreign 判定必须前置到
+# probe/split 之前，子流 marker 不得进入父轮 probe 窗口；engage/durable/normal
+# 各路径的父轮 bookkeeping（final_answer_content/durable 缓冲）不得被子流帧改写。
+
+def test_probe_frame_gate_skips_foreign_frames():
+    """CR#2 回归：foreign 帧不得扩展父轮 probe、不得产出 split。
+
+    旧序：split+extend 先算、foreign 后判——子流 chat.delta 含 <a2ui-json> 时
+    marker 滞留父轮 probe（512B 窗口），下一条主链帧 combined=probe+content
+    命中 marker_start<=content_start → split=("",content) → 主链被误 suppress、
+    扣发文本、发 spurious 占位帧。
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.interface import _a2ui_probe_for_frame
+
+    split, probe = _a2ui_probe_for_frame(
+        probe="ok ", content="前文", event_type="chat.delta", enabled=True, foreign=True,
+    )
+    assert split is None
+    assert probe == "ok "  # 子流帧完全不接触父轮 probe
+
+    # foreign 的 marker 帧同样不进 probe
+    split, probe = _a2ui_probe_for_frame(
+        probe="", content="hello <a2ui-json>", event_type="chat.delta", enabled=True, foreign=True,
+    )
+    assert split is None
+    assert probe == ""
+
+    # 主链帧行为不变：marker 产出 split 且 probe 累积
+    split, probe = _a2ui_probe_for_frame(
+        probe="", content="hello <a2ui-json>", event_type="chat.delta", enabled=True, foreign=False,
+    )
+    assert split is not None
+    assert "<a2ui-json>" in probe
+
+
+def test_suppress_engage_gate_semantics_unchanged():
+    """gate 分工锚定：suppress 激活后 foreign 帧仍 withhold（True），
+    未激活时仅非 foreign 且有 split 才 engage。父轮 bookkeeping 守卫在调用点，
+    若未来把 withhold 与 bookkeeping 合并回 gate，本用例会以语义变化提醒。"""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import _a2ui_suppress_should_engage
+
+    assert _a2ui_suppress_should_engage(True, None, True) is True   # suppress 后 foreign 维持扣发
+    assert _a2ui_suppress_should_engage(False, ("", "x"), True) is False  # 未激活时 foreign 不 engage
+    assert _a2ui_suppress_should_engage(False, ("", "x"), False) is True

@@ -501,6 +501,35 @@ def _is_foreign_stream_source(payload: Any) -> bool:
     return isinstance(source_id, str) and bool(source_id) and source_id != "main"
 
 
+def _a2ui_probe_for_frame(
+        probe: str,
+        content: str,
+        *,
+        event_type: str,
+        enabled: bool,
+        foreign: bool,
+) -> tuple[tuple[str, str] | None, str]:
+    """Advance the parent's a2ui probe state machine with one stream frame.
+
+    Returns ``(split, next_probe)``. Mirror frames from nested streams must
+    never touch the probe buffer or yield a split: a child marker left in the
+    parent's 512-byte probe window makes the *next main-chain* frame split on
+    it (``marker_start <= content_start``) and spuriously engages suppression
+    — the parent's deltas get withheld and a bogus render probe is emitted
+    (PR9194 review CR#2). Gate the whole probe step on ``foreign`` instead of
+    only gating engage, so the state machine input stays clean.
+    """
+    if (
+            foreign
+            or not enabled
+            or event_type not in {"chat.delta", "chat.final"}
+            or not content
+    ):
+        return None, probe
+    split = _split_a2ui_stream_content(probe, content)
+    return split, _extend_a2ui_stream_probe(probe, content)
+
+
 def _a2ui_suppress_should_engage(
         suppress_active: bool,
         a2ui_split: tuple[str, str] | None,
@@ -3848,10 +3877,15 @@ class JiuWenSwarm:
                                 )
 
                             payload_content = str(data.payload.get("content", ""))
-                            a2ui_split = None
-                            if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
-                                a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
-                                a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
+                            # foreign 判定前置（CR#2）：子流镜像帧不得进入父轮 probe 状态机
+                            frame_is_foreign = _is_foreign_stream_source(data.payload)
+                            a2ui_split, a2ui_stream_probe = _a2ui_probe_for_frame(
+                                a2ui_stream_probe,
+                                payload_content,
+                                event_type=et,
+                                enabled=a2ui_probe_enabled,
+                                foreign=frame_is_foreign,
+                            )
                             if _should_defer_a2ui_processing_status(
                                     suppress_a2ui_stream=suppress_a2ui_stream,
                                     event_type=et,
@@ -3864,7 +3898,7 @@ class JiuWenSwarm:
                                 )
                                 continue
                             if et == "chat.delta":
-                                delta_is_foreign = _is_foreign_stream_source(data.payload)
+                                delta_is_foreign = frame_is_foreign
                                 if not delta_is_foreign:
                                     final_answer_chunks.append(payload_content)
                                 if _a2ui_suppress_should_engage(suppress_a2ui_stream, a2ui_split, delta_is_foreign):
@@ -3902,7 +3936,11 @@ class JiuWenSwarm:
                                     )
                                     should_record = False
                                     continue
-                                durable_pending_final_chunks.append(payload_content)
+                                # CR#3：与 final_answer_chunks / reasoning 缓冲同款守卫——
+                                # 子流 delta 不进 durable 缓冲（否则父 tool_call 持久化时
+                                # 把子流文本写成父历史、空 final rescue 又把合并当父正文）。
+                                if not delta_is_foreign:
+                                    durable_pending_final_chunks.append(payload_content)
                                 should_record = False
                             elif et == "chat.reasoning":
                                 # Reasoning mirrored from a nested stream stays
@@ -3924,7 +3962,7 @@ class JiuWenSwarm:
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
                                 if _a2ui_suppress_should_engage(
-                                    suppress_a2ui_stream, a2ui_split, _is_foreign_stream_source(data.payload)
+                                    suppress_a2ui_stream, a2ui_split, frame_is_foreign
                                 ):
                                     first_a2ui_suppression = not suppress_a2ui_stream
                                     if first_a2ui_suppression:
@@ -3937,8 +3975,12 @@ class JiuWenSwarm:
                                     if first_a2ui_suppression and not a2ui_pending_render_sent:
                                         yield _make_a2ui_pending_render_chunk(request_id=rid, channel_id=cid)
                                         a2ui_pending_render_sent = True
-                                    final_answer_content = payload_content
-                                    durable_pending_final_chunks = []
+                                    # CR#1：suppress 激活后 foreign final 也进本分支
+                                    # （维持 withhold 不变），但不得改写父轮被扣的终稿
+                                    # 与 durable 缓冲——bookkeeping 只认主链帧。
+                                    if not frame_is_foreign:
+                                        final_answer_content = payload_content
+                                        durable_pending_final_chunks = []
                                     continue
                                 # Facade-level rescue: reasoning-only models may emit an
                                 # empty chat.final after chat.reasoning. Fill a short
@@ -3951,16 +3993,20 @@ class JiuWenSwarm:
                                 # RelayClaw computeFinalTextDelta appends another copy
                                 # (esp. after post-tool \n\n round-break).
                                 merged_from_deltas = False
-                                if (
-                                    not str(payload_content or "").strip()
-                                    and durable_pending_final_chunks
-                                    and isinstance(data.payload, dict)
-                                ):
-                                    merged = "".join(durable_pending_final_chunks)
-                                    if merged.strip():
-                                        data.payload["content"] = merged
-                                        payload_content = merged
-                                        merged_from_deltas = True
+                                # CR#1/#3：rescue/fill 只在主链 final 上做。子流空 final
+                                # 若也进这里，会把父轮 durable 合并进子帧、或触发
+                                # reasoning-only fill，污染子流内容并掏空父缓冲。
+                                if not frame_is_foreign:
+                                    if (
+                                        not str(payload_content or "").strip()
+                                        and durable_pending_final_chunks
+                                        and isinstance(data.payload, dict)
+                                    ):
+                                        merged = "".join(durable_pending_final_chunks)
+                                        if merged.strip():
+                                            data.payload["content"] = merged
+                                            payload_content = merged
+                                            merged_from_deltas = True
                                 # Segment-local visibility only: durable_final_content
                                 # is prior-tool text and must not suppress post-tool
                                 # reasoning-only rescue.
@@ -3975,35 +4021,37 @@ class JiuWenSwarm:
                                         (data.payload or {}).get("reasoning_content") or ""
                                     ).strip()
                                 )
-                                if isinstance(data.payload, dict):
-                                    filled = fill_reasoning_only_empty_final_content(
-                                        content=payload_content,
-                                        has_visible_streamed_text=has_visible_streamed_text,
-                                        has_reasoning=has_reasoning,
-                                        lang=str(
-                                            get_config().get("preferred_language", "zh")
-                                        ),
-                                    )
-                                    if filled != payload_content:
-                                        data.payload["content"] = filled
-                                        payload_content = filled
-                                        logger.info(
-                                            "[JiuWenSwarm] filled reasoning-only empty "
-                                            "chat.final: request_id=%s "
-                                            "had_visible_streamed_text=%s",
-                                            rid,
-                                            has_visible_streamed_text,
+                                if not frame_is_foreign:
+                                    if isinstance(data.payload, dict):
+                                        filled = fill_reasoning_only_empty_final_content(
+                                            content=payload_content,
+                                            has_visible_streamed_text=has_visible_streamed_text,
+                                            has_reasoning=has_reasoning,
+                                            lang=str(
+                                                get_config().get("preferred_language", "zh")
+                                            ),
                                         )
-                                    elif not str(payload_content or "").strip():
-                                        logger.info(
-                                            "[JiuWenSwarm] skipped reasoning-only empty "
-                                            "chat.final fill: request_id=%s "
-                                            "has_reasoning=%s had_visible_streamed_text=%s",
-                                            rid,
-                                            has_reasoning,
-                                            has_visible_streamed_text,
-                                        )
-                                durable_pending_final_chunks = []
+                                        if filled != payload_content:
+                                            data.payload["content"] = filled
+                                            payload_content = filled
+                                            logger.info(
+                                                "[JiuWenSwarm] filled reasoning-only empty "
+                                                "chat.final: request_id=%s "
+                                                "had_visible_streamed_text=%s",
+                                                rid,
+                                                has_visible_streamed_text,
+                                            )
+                                        elif not str(payload_content or "").strip():
+                                            logger.info(
+                                                "[JiuWenSwarm] skipped reasoning-only empty "
+                                                "chat.final fill: request_id=%s "
+                                                "has_reasoning=%s had_visible_streamed_text=%s",
+                                                rid,
+                                                has_reasoning,
+                                                has_visible_streamed_text,
+                                            )
+                                    # 主链 final 才结算父轮 durable；子流 final 不得掏空
+                                    durable_pending_final_chunks = []
 
                             if should_record and not _is_foreign_stream_source(data.payload):
                                 payload_dict = dict(data.payload)
@@ -4036,7 +4084,9 @@ class JiuWenSwarm:
                                 )
                                 if et == "chat.final":
                                     durable_final_content = str(data.payload.get("content", ""))
-                            if et == "chat.final":
+                            if et == "chat.final" and not frame_is_foreign:
+                                # CR#1：普通（未 suppress）路径同样不认子流 final——
+                                # 晚到的 foreign chat.final 否则会把父轮答案顶掉。
                                 final_answer_content = str(data.payload.get("content", ""))
                                 # History kept the merged body; strip wire so hosts
                                 # that already rendered chat.delta do not append again.
@@ -4069,10 +4119,15 @@ class JiuWenSwarm:
                             )
 
                         payload_content = str(data.get("content", ""))
-                        a2ui_split = None
-                        if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
-                            a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
-                            a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
+                        # foreign 判定前置（CR#2，与 chunk 路同款）
+                        frame_is_foreign = _is_foreign_stream_source(data)
+                        a2ui_split, a2ui_stream_probe = _a2ui_probe_for_frame(
+                            a2ui_stream_probe,
+                            payload_content,
+                            event_type=et,
+                            enabled=a2ui_probe_enabled,
+                            foreign=frame_is_foreign,
+                        )
                         if _should_defer_a2ui_processing_status(
                                 suppress_a2ui_stream=suppress_a2ui_stream,
                                 event_type=et,
@@ -4087,7 +4142,7 @@ class JiuWenSwarm:
                         if et == "chat.final":
                             ensure_final_mode_inplace(data)
                         if et == "chat.delta":
-                            delta_is_foreign = _is_foreign_stream_source(data)
+                            delta_is_foreign = frame_is_foreign
                             if not delta_is_foreign:
                                 final_answer_chunks.append(payload_content)
                             if _a2ui_suppress_should_engage(suppress_a2ui_stream, a2ui_split, delta_is_foreign):
@@ -4123,7 +4178,9 @@ class JiuWenSwarm:
                                 )
                                 should_record = False
                                 continue
-                            durable_pending_final_chunks.append(payload_content)
+                            # CR#3：子流 delta 不进父 durable 缓冲（与 chunk 路同款）
+                            if not delta_is_foreign:
+                                durable_pending_final_chunks.append(payload_content)
                             should_record = False
                         elif et == "chat.reasoning":
                             if not _is_foreign_stream_source(data):
@@ -4135,7 +4192,7 @@ class JiuWenSwarm:
                                 final_answer_chunks = []
                         elif et == "chat.final":
                             if _a2ui_suppress_should_engage(
-                                suppress_a2ui_stream, a2ui_split, _is_foreign_stream_source(data)
+                                suppress_a2ui_stream, a2ui_split, frame_is_foreign
                             ):
                                 first_a2ui_suppression = not suppress_a2ui_stream
                                 if first_a2ui_suppression:
@@ -4148,8 +4205,11 @@ class JiuWenSwarm:
                                 if first_a2ui_suppression and not a2ui_pending_render_sent:
                                     yield _make_a2ui_pending_render_chunk(request_id=rid, channel_id=cid)
                                     a2ui_pending_render_sent = True
-                                final_answer_content = payload_content
-                                durable_pending_final_chunks = []
+                                # CR#1：foreign final 维持 withhold，但不得改写父轮
+                                # 被扣终稿与 durable 缓冲（与 chunk 路同款守卫）
+                                if not frame_is_foreign:
+                                    final_answer_content = payload_content
+                                    durable_pending_final_chunks = []
                                 continue
                             has_visible_streamed_text = bool(
                                 "".join(final_answer_chunks).strip()
@@ -4161,8 +4221,10 @@ class JiuWenSwarm:
                                 or str(data.get("reasoning_content") or "").strip()
                             )
                             merged_from_deltas = False
+                            # CR#3：子流空 final 不得合并/掏空父轮 durable
                             if (
-                                not str(payload_content or "").strip()
+                                not frame_is_foreign
+                                and not str(payload_content or "").strip()
                                 and durable_pending_final_chunks
                             ):
                                 merged = "".join(durable_pending_final_chunks)
@@ -4177,6 +4239,8 @@ class JiuWenSwarm:
                                 has_reasoning=has_reasoning,
                                 lang=str(get_config().get("preferred_language", "zh")),
                             )
+                            if frame_is_foreign:
+                                filled = payload_content  # 子流 final 不做 reasoning-only 补白
                             if filled != payload_content:
                                 data["content"] = filled
                                 payload_content = filled
@@ -4196,7 +4260,9 @@ class JiuWenSwarm:
                                     has_reasoning,
                                     has_visible_streamed_text,
                                 )
-                            durable_pending_final_chunks = []
+                            if not frame_is_foreign:
+                                # 主链 final 才结算父轮 durable
+                                durable_pending_final_chunks = []
 
                         if should_record and not _is_foreign_stream_source(data):
                             extra_fields = {
@@ -4231,7 +4297,8 @@ class JiuWenSwarm:
                             )
                             if et == "chat.final":
                                 durable_final_content = str(data.get("content", ""))
-                        if et == "chat.final":
+                        if et == "chat.final" and not frame_is_foreign:
+                            # CR#1：晚到的 foreign final 不得顶掉父轮答案
                             final_answer_content = str(data.get("content", ""))
                             if merged_from_deltas:
                                 data["content"] = ""
