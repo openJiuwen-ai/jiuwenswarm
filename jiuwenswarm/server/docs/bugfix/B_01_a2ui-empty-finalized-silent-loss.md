@@ -52,3 +52,23 @@ A2UI response finalization status: status=repaired               ← 且不会�
 ## 5. 后续可选项
 
 officeclaw pool 适配器在 finalize 时不持有模型（`_model is None`）导致 repair 在该通道结构性不可用；如需真正可用，需让 `repair_model_response` 懒解析 `_model_cache`/当前选择模型，或调整 cleanup 与 finalize 次序——独立评估，不在本缺陷修复范围。
+
+## 6. 检视跟进（2026-10-30，PR #9194 未解决意见）
+
+### 6.1 流级回归用例（检视 3.1）
+
+helper 级用例（`_a2ui_probe_for_frame` / `_a2ui_suppress_should_engage`）无法覆盖真实帧顺序，本轮补流级用例 `tests/unit_tests/a2ui/test_foreign_stream_bookkeeping.py`：
+
+- 复用 `tests/unit_tests/agentserver/` 既有 harness（`JiuWenSwarm` + fake adapter 逐帧驱动 `process_message_stream`），可 yield 任意 `event_type` / `stream_source_id` 帧；此前「仓库无流循环基建」的判断不成立。
+- 用例 1：父 delta → 子流 delta（带 `stream_source_id` + `<a2ui-json>`）→ 父 delta → 父 `chat.tool_call` → 父 final → 晚到子流 final。断言 `assistant_message` = 父终稿、tool_call 落库正文仅含主链 delta、历史无子流文本、无 probe 占位帧（同时锚定 CR#1/#2/#3）。
+- 用例 2：suppress 激活后父 final 先到、晚到子流 final 不得顶掉终稿；占位帧行为保持不变，历史无子流文本。
+
+### 6.2 依赖描述修正（检视 3.5）
+
+`relay-claw 前端已部署 replace_final` 的表述与事实不符：该能力在 relay-claw PR #5508 中实现，尚未合入 dev-stable/main、未部署。已修正 `runtime/a2ui/integration.py`（3 处）与 `runtime/agent_adapter/interface.py`（1 处）的注释，明确：
+
+- 依赖 relay-claw PR #5508 合入并部署后 `suppress` 才可安全启用；
+- 合入顺序须 relay-claw 先行，否则 officeclaw 累积 content 的 `<a2ui 前半 + probe 占位` 无法覆写清洗；
+- 若无法保证顺序，应把 officeclaw 的白名单翻转收敛到配置开关。
+
+行为未变（白名单仍为 web + officeclaw），本次仅修正注释事实与顺序声明。
