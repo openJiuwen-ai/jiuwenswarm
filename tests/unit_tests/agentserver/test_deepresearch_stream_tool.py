@@ -266,6 +266,32 @@ async def test_flash_todo_capture_failure_does_not_start_research():
     spawn.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("framework_error", [False, True])
+async def test_ordinary_todo_capture_failure_does_not_block_research(framework_error):
+    from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import build_error
+
+    proc, spawn = _Proc([]), AsyncMock()
+    spawn.return_value = proc
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    error = (build_error(StatusCode.TOOL_TODOS_LOAD_FAILED, reason="unsupported backend")
+             if framework_error else RuntimeError("unsupported backend"))
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "ordinary"}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=None), "ordinary")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                         AsyncMock(side_effect=error)))
+        stack.enter_context(patch.object(dt, "_consume_stream", consume))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "interrupted"
+    assert consume.await_args.kwargs["todo_context"] == (None, None)
+    spawn.assert_awaited_once()
+
+
 def test_config_frame_accepts_exact_limit_and_rejects_one_byte_over():
     base = _valid_config()
     fixed_size = len(dt._encode_deepresearch_config({**base, "padding": ""}))
@@ -1969,7 +1995,8 @@ def _race_route() -> dict[str, str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delivery", ["stream", "stop_race"])
-async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery):
+@pytest.mark.parametrize("capture_failure", [False, True])
+async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery, capture_failure):
     frame = {
         "__deepsearch_status__": "completed", "conversation_id": "C1",
         "final_result": {
@@ -1990,6 +2017,9 @@ async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery
         for item in _stream_patches(proc, route=_race_route()):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool", return_value=(None, None)))
+        if capture_failure:
+            stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                             AsyncMock(side_effect=RuntimeError("unsupported backend"))))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=path))
         stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
         stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))

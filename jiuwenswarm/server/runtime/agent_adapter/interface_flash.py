@@ -1029,6 +1029,12 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             todo_rail = None
         return todo_rail
 
+    def _get_todo_modify_tool(self, session_id: str):
+        """Reuse the Flash engine, including its session lifecycle guard."""
+        if self._instance is None or not isinstance(self._task_planning_rail, FlashTodoRail):
+            return None
+        return self._task_planning_rail.engines.get("modify")
+
     def _build_memory_rail(self, mode: str) -> FlashMemoryRail | None:
         """flash 用统一 memory rail 替换 MemoryRail（memory 5→1，mode 分发）.
 

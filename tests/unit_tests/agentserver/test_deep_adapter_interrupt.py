@@ -950,10 +950,15 @@ def test_deepresearch_tool_context_keeps_session_workspace_snapshot(
         _env_agent_id="agent-background-output",
         _workspace_dir=str(tmp_path / "agent-workspace"),
     )
+    selected = []
+    todo_tool = object()
+    adapter._get_todo_modify_tool = lambda session_id: selected.append(session_id) or todo_tool
 
     context = adapter._get_deepresearch_tool_context()
 
     assert Path(context["output_dir"]) == session_workspace.resolve()
+    assert context["todo_tool_provider"]() is todo_tool
+    assert selected == ["sess-background-output"]
 
 
 def test_artifact_output_uses_session_project_when_request_omits_workspace(

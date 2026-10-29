@@ -351,7 +351,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             return
 
         if not todos:
-            if getattr(todos, "snapshot", None) is not None:
+            if getattr(getattr(todos, "snapshot", None), "versioned", False):
                 await self._clear_task_plan(ctx)
             return
         execution_todos = [todo for todo in todos if not is_persistent_todo(todo)]

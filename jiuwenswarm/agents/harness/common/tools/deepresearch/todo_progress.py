@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,15 @@ class _TrustedParent:
     fd: int | None
     identity: tuple[int, int]
     ancestors: tuple[tuple[Path, tuple[int, int]], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchTodoTarget:
+    tool: Any
+    session_id: str
+    plan_id: str | None
+    owner: asyncio.Task | None
+    content_sha256: str | None = None
 
 
 def _validate_component(value: Any) -> str:
@@ -256,36 +266,48 @@ def _deepresearch_tasks(payload: dict[str, Any]) -> list[dict[str, str]] | None:
     return normalized
 
 
-async def capture_deepresearch_todo_target(todo_path: Path):
+async def capture_deepresearch_todo_target(todo_path: Path, *, tool=None, session_id=None):
     """Capture the owning plan/backend before the research stream starts."""
-    from openjiuwen.harness.tools.todo_store import bound_todo_tool, capture_plan
-    tool, session_id = bound_todo_tool()
+    from openjiuwen.harness.tools.todo_store import (
+        bound_todo_tool,
+        capture_plan,
+        read_snapshot,
+    )
+    bound_tool, bound_session_id = bound_todo_tool()
+    if bound_tool is not None:
+        tool, session_id = bound_tool, bound_session_id
     if tool is None or session_id is None:
         return None
     if Path(tool.get_file_path(session_id)).resolve() != todo_path.resolve():
         return None
     owner = asyncio.current_task() if getattr(tool, "snapshot_guard", None) is not None else None
-    return tool, session_id, await capture_plan(tool, session_id), owner
+    plan_id = await capture_plan(tool, session_id)
+    if owner is not None:
+        return ResearchTodoTarget(tool, session_id, plan_id, owner)
+    snapshot = await read_snapshot(tool.fs, os.path.abspath(tool.get_file_path(session_id)))
+    if snapshot.plan_id != plan_id:
+        raise ValueError("Todo plan changed while capturing research target")
+    return ResearchTodoTarget(tool, session_id, plan_id, None, snapshot.content_sha256)
 
 
 async def persist_deepresearch_task_update(
     payload: dict[str, Any], *, todo_path: Path, target=None,
 ) -> bool:
-    """Update existing research stages in the captured plan; preserve other rows."""
+    """Persist completed stages without overwriting newer work."""
     from openjiuwen.harness.tools.todo_store import current_transaction, transact
     tasks = _deepresearch_tasks(payload)
     if tasks is None or any(task["status"] != "completed" for task in tasks):
         return False
     if target is None:
         raise ValueError("DeepResearch Todo callback has no captured owner")
-    tool, session_id, plan_id, owner = target
+    tool, session_id, plan_id, owner = target.tool, target.session_id, target.plan_id, target.owner
 
     def check_active():
         if owner is not None and (owner.done() or owner.cancelling()):
             raise ValueError("DeepResearch Todo callback belongs to an inactive request")
 
     check_active()
-    if plan_id is None:
+    if owner is not None and plan_id is None:
         return False
     trusted = _open_trusted_parent(todo_path)
     try:
@@ -297,13 +319,25 @@ async def persist_deepresearch_task_update(
             tx = current_transaction(tool, session_id)
             if getattr(tool.fs, "mode", None) == "local":
                 tx.write_options["expected_parent_identity"] = trusted.identity
+            if owner is None:
+                # Ordinary research used to publish its own completed stage plan.
+                # Do so only if the captured file has not changed meanwhile.
+                if tx.snapshot.content_sha256 != target.content_sha256:
+                    logger.warning("[deepresearch_stream] skip Todo persistence: captured file changed")
+                    return False
+                created = {row["id"]: row.get("createdAt") for row in tx.snapshot.todos}
+                now = datetime.now(UTC).isoformat()
+                tx.new_plan = uuid.uuid4().hex
+                tx.pending = [{**row, "createdAt": created.get(row["id"]) or now, "updatedAt": now}
+                              for row in tasks]
+                return True
             updates = {item["id"]: item for item in tasks}
             # Only the workflow's canonical, already-present stages are eligible.
             if not all(any(row["id"] == ident and row.get("content") == change["content"]
                            for row in tx.snapshot.todos) for ident, change in updates.items()):
                 logger.warning("[deepresearch_stream] skip Todo persistence: canonical stages missing or changed")
                 return False
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             tx.pending = [{**row, "status": "completed", "updatedAt": now}
                           if row["id"] in updates else row for row in tx.snapshot.todos]
             return True

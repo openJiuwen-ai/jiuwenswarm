@@ -27,7 +27,9 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
     _open_windows_parent,
     _TrustedParent,
+    ResearchTodoTarget,
     _verify_named_parent,
+    capture_deepresearch_todo_target,
     deepresearch_todo_path,
     persist_deepresearch_task_update,
 )
@@ -60,8 +62,10 @@ async def _persist(payload, *, todo_path):
     from openjiuwen.harness.tools.todo import TodoModifyTool
     fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
     tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(todo_path.parent.parent))
-    return await persist_deepresearch_task_update(payload, todo_path=todo_path,
-        target=(tool, todo_path.parent.name, "P", asyncio.current_task()))
+    return await persist_deepresearch_task_update(
+        payload, todo_path=todo_path,
+        target=ResearchTodoTarget(tool, todo_path.parent.name, "P", asyncio.current_task()),
+    )
 
 
 @pytest.mark.asyncio
@@ -98,6 +102,68 @@ def _stage_snapshot(active_stage: int | None) -> dict:
             "status": status,
         })
     return {"event_type": "task.update", "tasks": tasks}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_ordinary_research_publishes_completed_plan_without_binding(tmp_path, existing):
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.tools import (
+        _capture_todo_target,
+        _get_route,
+        _todo_workspace_key,
+        push_deepresearch_route,
+        reset_deepresearch_route,
+    )
+
+    path = tmp_path / "todo" / "session-1" / "todo.json"
+    if existing:
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps([
+            {"id": "deepresearch_stage_1", "content": DEEPRESEARCH_STAGES[0], "createdAt": "before"},
+            {"id": "old", "content": "old plan"},
+        ]))
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(path.parent.parent))
+    token = push_deepresearch_route("r", "c", "session-1", workspace_key="tenant-1",
+                                    todo_tool_provider=lambda: tool)
+    try:
+        assert _todo_workspace_key(_get_route()) == "tenant-1"
+        target = await _capture_todo_target(path, "session-1")
+        assert target is not None
+        assert await persist_deepresearch_task_update(_stage_snapshot(None), todo_path=path, target=target)
+    finally:
+        reset_deepresearch_route(token)
+    document = json.loads(path.read_text())
+    assert document["plan_id"] and document["revision"] == 1
+    assert [item["id"] for item in document["todos"]] == [
+        f"deepresearch_stage_{index}" for index in range(1, len(DEEPRESEARCH_STAGES) + 1)
+    ]
+    assert all(item["status"] == "completed" for item in document["todos"])
+    if existing:
+        assert document["todos"][0]["createdAt"] == "before"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_research_does_not_replace_concurrent_updates(tmp_path):
+    from openjiuwen.core.session.agent import Session
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    path = tmp_path / "todo" / "session-1" / "todo.json"
+    _seed_plan(path)
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(path.parent.parent))
+    target = await capture_deepresearch_todo_target(path, tool=tool, session_id="session-1")
+    await tool.invoke({"action": "append", "todos": [{"id": "new", "content": "concurrent", "status": "pending"}]},
+                      session=Session("session-1"))
+    before = path.read_bytes()
+    assert not await persist_deepresearch_task_update(_stage_snapshot(None), todo_path=path, target=target)
+    assert path.read_bytes() == before
 
 
 def test_deepresearch_todo_path_uses_tenant_workspace(tmp_path, monkeypatch):

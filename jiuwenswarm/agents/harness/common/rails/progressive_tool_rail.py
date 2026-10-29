@@ -145,7 +145,7 @@ class ProgressiveToolRail(DeepAgentRail):
         agent_id: str | None = None,
         agent_card_id: str | None = None,
         enable_for_models: list[str] | None = None,
-        deepresearch_context_provider: Callable[[], dict[str, str]] | None = None,
+        deepresearch_context_provider: Callable[[], dict[str, Any]] | None = None,
         active_skill_provider: Callable[[], str | None] | None = None,
         disabled_tools: list[str] | None = None,
     ) -> None:
@@ -412,6 +412,7 @@ class ProgressiveToolRail(DeepAgentRail):
                 service_id=service_id,
                 agent_id=agent_id,
                 workspace_key=workspace_key,
+                todo_tool_provider=route.get("todo_tool_provider"),
                 output_dir=str(route.get("output_dir") or ""),
             )
             cleanup.callback(reset_deepresearch_route, route_token)
