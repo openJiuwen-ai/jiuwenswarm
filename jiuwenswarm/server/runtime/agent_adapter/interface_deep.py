@@ -161,7 +161,13 @@ from jiuwenswarm.agents.harness.common.rails import (
     SymphonyOrchestrationRail,
     XiaoyiDefaultToolVisibilityRail,
 )
+from jiuwenswarm.agents.harness.common.rails.openclaw_history_rail import (
+    OpenClawHistoryRail,
+)
 from jiuwenswarm.common.invocation_context.codec import attach_invocation_context
+from jiuwenswarm.server.runtime.session.openclaw_runtime_history import (
+    OPENCLAW_HISTORY_ENABLED,
+)
 from jiuwenswarm.server.invocation_context_builder import build_invocation_context
 from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
@@ -1274,6 +1280,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._filesystem_rail: SysOperationRail | None = None
         self._skill_rail: SkillUseRail | None = None
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
+        self._openclaw_history_rail: OpenClawHistoryRail | None = None
         # Rewind-rebuilt session objects handed to the next stream invoke so its
         # create_context loads the rebuilt history instead of the stale
         # checkpointer state left by the aborted prior invoke. Core Session.pre_run
@@ -5139,6 +5146,22 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         return stream_event_rail
 
     @staticmethod
+    def _build_openclaw_history_rail() -> OpenClawHistoryRail | None:
+        """Build the isolated model-runtime transcript observer."""
+        if not OPENCLAW_HISTORY_ENABLED:
+            return None
+        try:
+            rail = OpenClawHistoryRail()
+            logger.info("[JiuWenSwarmDeepAdapter] OpenClawHistoryRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] OpenClawHistoryRail create failed: %s",
+                exc,
+            )
+            return None
+
+    @staticmethod
     def _build_multimodal_image_rail(
         enable_image_multimodal: bool | None = None,
     ) -> MultimodalImageRail | None:
@@ -5800,6 +5823,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 },
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
+            *(
+                [_RailBuildInfo("_openclaw_history_rail", self._build_openclaw_history_rail)]
+                if OPENCLAW_HISTORY_ENABLED
+                else []
+            ),
             _RailBuildInfo("_task_planning_rail", self._build_task_planning_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),

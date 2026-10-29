@@ -3004,6 +3004,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 exc,
             )
         shutil.rmtree(session_dir)
+        try:
+            from jiuwenswarm.server.runtime.session.openclaw_runtime_history import (
+                delete_openclaw_history,
+            )
+
+            delete_openclaw_history(session_id_to_delete)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[session.delete] OpenClaw history cleanup failed: "
+                "session_id=%s error=%s",
+                session_id_to_delete,
+                exc,
+            )
         await channel.send_response(ws, req_id, ok=True, payload={"session_id": session_id_to_delete})
 
     async def _project_list(ws, req_id, params, session_id):
