@@ -3941,6 +3941,23 @@ def is_team_session_running(session_id: str) -> bool:
     )
 
 
+def team_session_has_active_work(session_id: str) -> bool:
+    """Whether a round, an admitted turn or an executing member still owns the Session.
+
+    Unlike :func:`is_team_session_running` this also counts the windows before
+    and between member execution, so a ``false`` here means no Team signal will
+    later settle the Session's processing state on its own.
+    """
+    manager = _team_manager
+    if manager is None:
+        return False
+    return (
+        manager.is_round_active(session_id)
+        or manager.has_inflight_request(session_id)
+        or is_team_session_running(session_id)
+    )
+
+
 def team_session_has_parked_request(session_id: str, request_ids) -> bool:
     """Whether every listed chat request is parked on a released Team round.
 

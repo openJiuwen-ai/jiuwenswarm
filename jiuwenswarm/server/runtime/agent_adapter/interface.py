@@ -109,6 +109,7 @@ from jiuwenswarm.common.utils import (
     get_agent_home_dir,
     get_agent_workspace_dir,
     get_env_file,
+    mask_sensitive,
     migrate_team_skill_views,
 )
 from jiuwenswarm.server.runtime.a2ui.integration import (
@@ -371,6 +372,52 @@ def _is_ask_user_answer_resume(params: Any) -> bool:
         return False
     answers = params.get("answers")
     return isinstance(answers, list) and bool(answers)
+
+
+async def _team_preflight_failure_chunks(
+    request_id: str,
+    channel_id: str | None,
+    session_id: str,
+    exc: Exception,
+) -> AsyncIterator[AgentResponseChunk]:
+    """Report a Team turn rejected before it reached the team runtime.
+
+    The persistent leader stream of an earlier round keeps the Gateway from
+    sending its fallback ``processing=false`` for this request, so when no Team
+    work remains to settle the Session the terminal status is sent here.
+    """
+    from jiuwenswarm.agents.harness.team.team_manager import team_session_has_active_work
+
+    logger.warning(
+        "[JiuWenSwarm] Team turn rejected before dispatch: session_id=%s request_id=%s error=%s",
+        session_id,
+        request_id,
+        exc,
+    )
+    yield AgentResponseChunk(
+        request_id=request_id,
+        channel_id=channel_id,
+        payload={"event_type": "chat.error", "error": mask_sensitive(str(exc))},
+        is_complete=False,
+    )
+    if not team_session_has_active_work(session_id):
+        yield AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload={
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+                "is_complete": True,
+            },
+            is_complete=False,
+        )
+    yield AgentResponseChunk(
+        request_id=request_id,
+        channel_id=channel_id,
+        payload=None,
+        is_complete=True,
+    )
 
 
 async def _persist_ask_user_answer_history(
@@ -3803,11 +3850,18 @@ class JiuWenSwarm:
         moa_access = getattr(adapter, "moa_access_kwargs", None)
         if callable(moa_access):
             reconcile_kwargs.update(moa_access(request))
-        await self.reconcile_session_mcp(
-            request.session_id,
-            compute_chat_send_mcp_needed(params),
-            **reconcile_kwargs,
-        )
+        try:
+            await self.reconcile_session_mcp(
+                request.session_id,
+                compute_chat_send_mcp_needed(params),
+                **reconcile_kwargs,
+            )
+        except RuntimeError as exc:
+            if not is_team_mode:
+                raise
+            async for chunk in _team_preflight_failure_chunks(rid, cid, session_id, exc):
+                yield chunk
+            return
         # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
         # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
         await _persist_ask_user_answer_history(request, session_id, params)
