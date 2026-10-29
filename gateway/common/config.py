@@ -40,6 +40,7 @@ CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
+EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
@@ -1489,6 +1490,61 @@ def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> N
         carried = catalogs.get(entry["cli_agent"])
         if carried:
             entry["builtin_models"] = carried
+
+
+def prune_external_cli_path_histories_in_config(cli_agent: str, remove_paths: list[str]) -> list[str]:
+    """Drop confirmed-missing paths from one kind's persisted history.
+
+    The prune is computed against the on-disk history right before writing,
+    so entries appended by a concurrent save (e.g. a just-replaced cli_path)
+    can never be rolled back by a stale frontend snapshot: only the
+    intersection of the stored history and ``remove_paths`` is removed.
+
+    Args:
+        cli_agent: History kind ("claude" / "codex" / custom agent name).
+        remove_paths: Paths confirmed missing by ``external_cli.validate_paths``.
+
+    Returns:
+        The surviving history for the kind after the prune.
+    """
+    name = str(cli_agent).strip()
+    remove_set = {
+        value
+        for value in (str(path or "").strip() for path in (remove_paths or []))
+        if value
+    }
+    surviving: list[str] = []
+    if not name or not remove_set:
+        return surviving
+
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    path_so_far: list[str] = []
+    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    key = EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]
+    histories = current.get(key)
+    if not isinstance(histories, dict) or not isinstance(histories.get(name), list):
+        return surviving
+    seen: set[str] = set()
+    for path in histories[name]:
+        value = str(path or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        if value not in remove_set:
+            surviving.append(value)
+    if surviving == [str(path or "").strip() for path in histories[name] if str(path or "").strip()]:
+        return surviving  # Nothing to drop: leave the file untouched.
+    if surviving:
+        histories[name] = surviving
+    else:
+        histories.pop(name, None)
+    if not histories:
+        current.pop(key, None)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    return surviving
 
 
 def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], publish_url: str | None = None) -> None:

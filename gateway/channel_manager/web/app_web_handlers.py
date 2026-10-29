@@ -2248,7 +2248,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # The prune runs server-side against the on-disk history, so only the
         # intersection is dropped and entries appended by a concurrent save
         # survive even when the caller acted on a stale snapshot.
-        from jiuwenswarm.common.config import prune_external_cli_path_histories_in_config
+        from gateway.common.config import prune_external_cli_path_histories_in_config
 
         surviving = prune_external_cli_path_histories_in_config(
             cli_agent,

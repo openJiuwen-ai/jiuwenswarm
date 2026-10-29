@@ -3177,7 +3177,7 @@ async def test_external_cli_validate_paths_reports_existence(tmp_path):
 
 @pytest.mark.asyncio
 async def test_external_cli_prune_path_histories_drops_only_confirmed_misses(monkeypatch):
-    """The handler forwards the request to the server-side intersection prune."""
+    """The handler runs the intersection prune against gateway-side config copy."""
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     pruned: list[tuple[str, list[str]]] = []
@@ -3186,8 +3186,10 @@ async def test_external_cli_prune_path_histories_drops_only_confirmed_misses(mon
         pruned.append((cli_agent, list(remove_paths)))
         return ["/kept/codex"]
 
+    # 该 prune 由 gateway 本地执行（读本进程 CONFIG_YAML_PATH），patch 必须落在
+    # gateway 副本上；母仓同名函数只在 ConfigAdapter 代理路径下才被执行。
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.prune_external_cli_path_histories_in_config",
+        "gateway.common.config.prune_external_cli_path_histories_in_config",
         fake_prune,
     )
 
