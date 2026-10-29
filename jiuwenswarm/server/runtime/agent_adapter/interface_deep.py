@@ -150,7 +150,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
-    discard_permission_continuation, validate_manual_resume,
+    discard_permission_continuation, has_live_pending_interrupt, validate_manual_resume,
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
     ROOT_PERMISSION_ANSWER_KEY as _ROOT_PERMISSION_ANSWER_KEY,
@@ -3486,6 +3486,53 @@ class JiuWenSwarmDeepAdapter:
         waiters = getattr(lock, "_waiters", None)
         return any(not waiter.cancelled() for waiter in list(waiters or ()))
 
+    @classmethod
+    def _is_managed_voice_task_input(cls, request: AgentRequest) -> bool:
+        """Return whether this is a new full-duplex managed task, not an answer.
+
+        Its prompt is Host-authored (``source``, ``log_as_user: false``), so it
+        is not an external user dispatch and must not cut over Permission.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        return (
+            request.channel_id == "video_tool"
+            and request.req_method == ReqMethod.CHAT_SEND
+            and bool(params.get("managed_task_binding"))
+            and not cls._is_interrupt_resume_dispatch(params)
+        )
+
+    def session_has_pending_interrupt(self, session_id: str) -> bool:
+        """Read-only: whether Core still waits for an answer in *session_id*."""
+        if not self._is_session_scoped_adapter:
+            child = self._session_adapters.get(self._session_adapter_key(session_id))
+            return bool(child is not None and child.session_has_pending_interrupt(session_id))
+        sid = self._resolve_interrupt_session_id(session_id)
+        return has_live_pending_interrupt(
+            self._instance, sid, self._deep_agent_loop_session_id()
+        )
+
+    async def _clear_stale_interrupt_before_managed_voice_task(
+        self, request: AgentRequest
+    ) -> None:
+        """Start a managed voice task as a new turn without answering a card (#5486).
+
+        Fed to a pending interrupt, Core reads the task prompt as the answer,
+        re-asks the old approval and replays its tool. Leftover state whose
+        tool results all exist, or that no longer matches the context, is
+        cleared. A question the user still has to
+        answer is neither answered nor cleared; the task is refused and the
+        full-duplex queue holds it until that question settles.
+        """
+        sid = self._resolve_interrupt_session_id(request.session_id)
+        loop_sid = self._deep_agent_loop_session_id()
+        if has_live_pending_interrupt(self._instance, sid, loop_sid):
+            raise RuntimeError("会话里有待回答的审批，语音任务需等待审批处理后再执行。")
+        await discard_pending_permission_interrupt_for_target(
+            self._instance, sid, loop_sid,
+            cancel_reason="managed_voice_task_drops_stale_interrupt", only_stale=True,
+            drop_unproven=True,
+        )
+
     @staticmethod
     def _is_host_permission_update_input(request: AgentRequest) -> bool:
         """Return whether this request may consume a pending Permission version."""
@@ -4380,6 +4427,9 @@ class JiuWenSwarmDeepAdapter:
                 return False
         if not stale_interactive_input:
             if self._should_inject_into_existing_interaction(request.params):
+                return False
+            if self._is_managed_voice_task_input(request):
+                await self._clear_stale_interrupt_before_managed_voice_task(request)
                 return False
             if not self._is_host_permission_update_input(request):
                 return False
@@ -15050,9 +15100,13 @@ class JiuWenSwarmDeepAdapter:
             request.params
         ):
             return
-        if self._should_inject_into_existing_interaction(
-            request.params
-        ) or not self._is_host_permission_update_input(request):
+        if self._should_inject_into_existing_interaction(request.params):
+            return
+        if self._is_managed_voice_task_input(request):
+            # No cutover or cancel_round: a voice task never supersedes a card.
+            await self._clear_stale_interrupt_before_managed_voice_task(request)
+            return
+        if not self._is_host_permission_update_input(request):
             return
         if not self._permission_dispatch.publish_cutover(handoff):
             # Queue empty but Core may still hold INTERRUPTION_KEY — clear it.
@@ -15731,6 +15785,43 @@ class JiuWenSwarmDeepAdapter:
         first so the GoalBar stops continuing after the round is aborted.
         """
         root_session_id = self._resolve_interrupt_session_id(request.session_id)
+        managed_task_request = str(
+            (request.params or {}).get("managed_task_request") or ""
+        ).strip() if request.channel_id == "video_tool" else ""
+        from .managed_subagent_control import (
+            active_cua_executions, cancel_cua_execution, has_active_cua,
+        )
+
+        cua_active = bool(managed_task_request) and has_active_cua(managed_task_request)
+        if request.channel_id == "video_tool" and intent == "cancel":
+            from jiuwenswarm.server.runtime.video_task.execution import managed_request_detached
+
+            managed = managed_task_request
+            detached = bool(managed and managed_request_detached(self._voice_agent_task_rail, request)
+                            and not cua_active)
+            if managed and (request.params or {}).get("managed_task_probe"):
+                # Probe only: report whether this Core still runs the request.
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={"event_type": "chat.interrupt_result", "intent": intent,
+                             "success": True, "managed_task_settled": detached,
+                             "managed_task_status": "unknown" if detached else "running"},
+                    metadata=request.metadata,
+                )
+            if detached:
+                # The managed execution is gone; cancelling the round would hit
+                # other work on this session. Report the settled fact instead.
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={"event_type": "chat.interrupt_result", "intent": intent,
+                             "success": True, "message": "任务已不在执行",
+                             "managed_task_settled": True},
+                    metadata=request.metadata,
+                )
         paused_goal_payload: dict[str, Any] | None = None
         if intent == "cancel":
             try:
@@ -15763,6 +15854,19 @@ class JiuWenSwarmDeepAdapter:
         # otherwise block behind that child work and never return an
         # interrupt_result to the TUI.  This does not cancel the registered
         # session stream producer -- cancel_round still owns that lifecycle.
+        cua_cancel_requested = False
+        if cua_active:
+            from jiuwenswarm.server.runtime.video_task.execution import capture_task_execution
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
+
+            executions = active_cua_executions(managed_task_request)
+            for execution in executions:
+                capture_task_execution(self._voice_agent_task_rail, request, execution.task)
+            cua_cancel_requested = cancel_cua_execution(managed_task_request)
+            trace_task("agent_cancel_target_resolved", request_id=managed_task_request,
+                       cancel_request_id=request.request_id, core_session_id=request.session_id,
+                       cua_active=True, execution_count=len(executions),
+                       cua_cancel_requested=cua_cancel_requested)
         self._cancel_scheduler_running_tasks()
         # Collect in-flight tools without cancelling the stream producer task —
         # interaction cancel must keep round ownership in cancel_round().
@@ -15816,6 +15920,8 @@ class JiuWenSwarmDeepAdapter:
             "success": continuation_discarded,
             "message": message,
         }
+        if cua_cancel_requested:
+            payload["cua_cancel_requested"] = True
         if not continuation_discarded:
             payload["error"] = "permission_continuation_discard_failed"
         if new_input:
@@ -15847,7 +15953,7 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
         )
 
-    def _cancel_scheduler_running_tasks(self) -> None:
+    def _cancel_scheduler_running_tasks(self, execution_task: asyncio.Task | None = None) -> None:
         """Cancel in-flight asyncio.Tasks in the Controller's TaskScheduler.
 
         Cooperative abort (rail.abort + instance.abort) only stops at checkpoints,
@@ -15856,17 +15962,16 @@ class JiuWenSwarmDeepAdapter:
         """
         try:
             controller = getattr(self._instance, '_loop_controller', None)
-            if controller is None:
-                return
             scheduler = getattr(controller, '_task_scheduler', None)
-            if scheduler is None:
-                return
-            running = getattr(scheduler, '_running_tasks', None)
-            if not running:
-                return
+            running = getattr(scheduler, '_running_tasks', None) or {}
+            executions = {entry[1] for entry in list(running.values()) if entry[1] is not None}
+            # Permission continuations can run task_tool directly, outside the
+            # scheduler map. Use the exact registered execution in that case.
+            if execution_task is not None:
+                executions.add(execution_task)
             cancelled_count = 0
-            for _task_id, (_executor, exec_task) in list(running.items()):
-                if exec_task is not None and not exec_task.done():
+            for exec_task in executions:
+                if exec_task is not asyncio.current_task() and not exec_task.done() and not exec_task.cancelling():
                     exec_task.cancel()
                     cancelled_count += 1
             if cancelled_count > 0:

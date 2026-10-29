@@ -14,8 +14,33 @@ const compiled = await build({
   bundle: true, platform: 'node', format: 'esm', write: false,
   alias: { react: require.resolve('react') },
 });
-const { describeDuplexError, setTaskFullDuplexRuntimeError, setTaskFullDuplexRuntimeState, toastStore } =
+const { describeDuplexError, duplexErrorDetail, screenCaptureFailure, setTaskFullDuplexRuntimeError, setTaskFullDuplexRuntimeState, toastStore } =
   await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+
+test('screen capture diagnostics preserve native errors without assuming user cancellation', () => {
+  const denied = screenCaptureFailure({ name: 'NotAllowedError', message: 'Permission denied by system' });
+  assert.equal(denied.reasonKey, 'permissionOrCancel');
+  assert.equal(denied.nativeMessage, 'Permission denied by system');
+  assert.equal(denied.errorType, 'NotAllowedError');
+  assert.equal(screenCaptureFailure(new DOMException('Capture aborted', 'AbortError')).reasonKey, 'aborted');
+  assert.equal(screenCaptureFailure({ name: 'NotReadableError', message: 'Could not start video source' }).reasonKey, 'unreadable');
+  assert.equal(screenCaptureFailure({ name: 'InvalidStateError', message: 'No user gesture' }).reasonKey, 'invalidState');
+  assert.equal(screenCaptureFailure('capture failed').nativeMessage, 'capture failed');
+  assert.equal(screenCaptureFailure(null).errorType, 'UnknownError');
+});
+
+test('duplex diagnostics retain protocol identifiers and describe partial failures', () => {
+  const detail = duplexErrorDetail({ message: 'Invalid voice', code: 'invalid_parameter', type: 'invalid_request_error' },
+    { stage: 'response.done', response_id: 'resp-42' });
+  assert.match(detail, /Invalid voice.*code=invalid_parameter/);
+  assert.match(detail, /type=invalid_request_error/);
+  assert.match(detail, /response_id=resp-42/);
+  assert.match(duplexErrorDetail(new TypeError('Invalid audio')), /Invalid audio.*type=TypeError/);
+  assert.match(describeDuplexError('TTS 请求失败 (HTTP 400); voice=anna'), /本次语音播报未完成/);
+  assert.doesNotMatch(describeDuplexError('TTS timeout'), /连接已中断/);
+  assert.match(describeDuplexError('ASR ReadTimeout'), /本次语音识别未完成/);
+  assert.match(describeDuplexError('工具调用失败：timeout', 'task'), /部分操作可能已经执行/);
+});
 
 test('duplex error uses the native persistent notice, survives idle and deduplicates repeats', () => {
   setTaskFullDuplexRuntimeError('quota exhausted');
@@ -35,6 +60,10 @@ test('duplex errors explain the actual cause, impact and next step', () => {
   assert.match(quota, /结果：本次语音交互可能未完成/);
   assert.match(quota, /解决方式：请检查服务额度和限流状态/);
 
+  const joyaiRateLimit = describeDuplexError('JoyAI 服务商限流 (429，每分钟 token 额度已用完): {"cause":"tokens limit for minute"}');
+  assert.match(joyaiRateLimit, /结果：模型供应商额度已耗尽，本次请求被拒/);
+  assert.match(joyaiRateLimit, /解决方式：JoyAI 服务商限流（429，每分钟 token 额度已用完），请稍后重试或提高供应商额度/);
+
   const missing = describeDuplexError('请配置 QWEN_OMNI_API_KEY');
   assert.match(missing, /结果：全双工会话无法正常启动或继续/);
   assert.match(missing, /解决方式：请在全双工设置中补全/);
@@ -43,4 +72,8 @@ test('duplex errors explain the actual cause, impact and next step', () => {
   assert.match(task, /结果：本次任务未完成，无法使用任务结果/);
   assert.match(task, /解决方式：请重试；若再次失败，查看 Jiuwen Core Agent 的任务日志/);
   assert.equal(describeDuplexError(task, 'task'), task);
+
+  const unsupported = describeDuplexError('Not supported');
+  assert.match(unsupported, /结果：当前运行环境不支持该功能/);
+  assert.doesNotMatch(unsupported, /服务日志/);
 });

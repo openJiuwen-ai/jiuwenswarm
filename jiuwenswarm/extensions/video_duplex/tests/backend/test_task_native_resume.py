@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import pytest
 from types import SimpleNamespace
 
 import pytest
@@ -85,6 +86,8 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
 
     class LocalAgentTransport:
         async def send_request(self, env):
+            if env.method == ReqMethod.SESSION_GET_METADATA.value:
+                return SimpleNamespace(ok=True, payload={"user_id": "user", "mode": "agent", "work_mode": "work"})
             return SimpleNamespace(ok=True, payload={"files": []})
 
         async def send_request_stream(self, env):

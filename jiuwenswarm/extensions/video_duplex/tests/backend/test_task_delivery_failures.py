@@ -264,7 +264,7 @@ async def test_retry_delivers_newest_snapshot_and_stays_bounded(tmp_path):
 
 async def test_file_query_waits_for_enqueued_history(routed_task, monkeypatch):
     from jiuwenswarm.common.schema.message import ReqMethod
-    from jiuwenswarm.server.runtime.session import session_history, session_metadata
+    from jiuwenswarm.server.runtime.session import lifecycle, session_history, session_metadata
 
     r = routed_task
     sid = r.task["core_session_id"]
@@ -286,6 +286,8 @@ async def test_file_query_waits_for_enqueued_history(routed_task, monkeypatch):
 
     monkeypatch.setattr(session_history, "_write_item", delayed_write)
     monkeypatch.setattr(session_history, "flush_pending_writes", observe_barrier)
+    # Keep lifecycle admission independent from the deliberately held writer lock.
+    monkeypatch.setattr(lifecycle, "guard", lambda *_: None)
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *a, **k: {"user_id": "alice"})
     request = SimpleNamespace(
         req_method=ReqMethod.VOICE_TASK_FILES, session_id=sid, user_id="alice",
@@ -419,5 +421,39 @@ async def test_partial_notification_failure_retries_without_reexecuting_task(tmp
         assert events[-1][0] == "video.search.queue"
         assert manager.service.store.read(task["id"]) == before
         manager.service.executor.run.assert_not_awaited()
+    finally:
+        await manager.close()
+
+
+async def test_5570_voice_reorder_pushes_queue_to_every_subscriber(tmp_path):
+    """#5570: a queue change made by voice must reach the task panel's connection."""
+    metadata = AsyncMock(return_value=SimpleNamespace(ok=True, payload={"user_id": "alice"}))
+    manager, done = subscribed_manager(tmp_path, metadata)
+    scope = done["session"]
+    # Keep both tasks queued; this test is only about queue delivery.
+    manager.service.concurrency = 0
+    first, second = (TaskService._new("alice", scope, text, {}) for text in ("first", "second"))
+    first.update(position=0)
+    second.update(position=1)
+    with manager.service.store.transaction() as db:
+        manager.service.store.put(db, first)
+        manager.service.store.put(db, second)
+    panel = object()
+    manager.subscribers[("alice", scope, id(panel))] = panel
+    try:
+        version = manager.snapshot("alice", scope)["queue_version"]
+        manager.channel.send_event.reset_mock()
+        call = SimpleNamespace(
+            name="jiuwen_task_reorder", call_id="voice-1",
+            arguments={"job_id": second["id"], "queue_version": version, "action": "next"},
+        )
+        await manager.operate("alice", scope, call)
+        await until(lambda: any(
+            c.args[0] is panel and c.args[1] == "video.search.queue"
+            for c in manager.channel.send_event.call_args_list
+        ))
+        queue = next(c.args[2] for c in manager.channel.send_event.call_args_list
+                     if c.args[0] is panel and c.args[1] == "video.search.queue")
+        assert next(j for j in queue["jobs"] if j["id"] == second["id"])["queue_position"] == 1
     finally:
         await manager.close()

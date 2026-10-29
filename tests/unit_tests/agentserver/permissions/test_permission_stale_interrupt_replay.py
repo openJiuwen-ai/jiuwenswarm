@@ -23,6 +23,7 @@ Cases:
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 
 import pytest
@@ -37,6 +38,8 @@ from openjiuwen.core.single_agent.interrupt.state import (
     ToolInterruptEntry,
 )
 
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from tests.unit_tests.agentserver.permissions.test_permission_answer_cutover import (
     _interrupt,
     _request,
@@ -218,3 +221,124 @@ async def test_no_pending_state_is_noop(answer_host):
     assert result.ok
     assert h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY) is None
     assert h.executions == []
+
+async def _managed_voice_delegation(h, monkeypatch, query):
+    """Send the CHAT_SEND a full-duplex managed task issues (#5486).
+
+    Mirrors ``video_search.execute_core_agent``: channel ``video_tool``,
+    ``source``/``log_as_user`` marking a Host-authored prompt, and a managed
+    task binding. The Gateway checkpoint binding is out of scope here.
+    """
+    from contextlib import asynccontextmanager
+
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+
+    @asynccontextmanager
+    async def no_binding(_request, _adapter, _inputs):
+        yield
+
+    monkeypatch.setattr(execution, "bind_task_execution", no_binding)
+    h.request_count += 1
+    request = AgentRequest(
+        request_id=f"task-{h.request_count}",
+        session_id=h.adapter._parent_session_id, channel_id="video_tool",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "mode": "agent", "project_dir": str(h.root), "query": query, "content": query,
+            "source": "video_tool", "log_as_user": False,
+            "managed_task_binding": {"endpoint": "gateway", "task_id": "voice-task"},
+        },
+    )
+    inputs, _, _ = h.facade.build_inputs(request)
+    return await asyncio.wait_for(h.adapter.process_message_impl(request, inputs), 10)
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_voice_delegation_after_typed_task_does_not_replay_it(
+    answer_host, monkeypatch, mode
+):
+    """#5486: typed task approved and done, then a voice task is delegated.
+
+    The voice task prompt must start a new turn. Before the fix it was fed to
+    the stale interrupt as its "answer": Core re-raised the old approval card,
+    replayed the old tool and reported its result as the voice task's result.
+    """
+    h = answer_host
+    pending = await _run_full_allow_flow(h, monkeypatch, mode=mode)
+    _restore_stale_state(h, allow_once_pending=pending)
+    executions_before = list(h.executions)
+    calls_before = len(h.script.calls)
+
+    h.script.responses = [AssistantMessage(content="WeChat opened")]
+    result = await _managed_voice_delegation(h, monkeypatch, "Open WeChat")
+
+    assert result.ok, result.payload
+    assert h.executions[len(executions_before):] == []
+    new_calls = h.script.calls[calls_before:]
+    assert len(new_calls) == 1, "the voice task must reach the model as a new turn"
+    assert "Open WeChat" in repr(new_calls[0])
+    after = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    assert (after is None) or (not after.interrupted_tools)
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_voice_task_drops_leftover_interrupt_that_no_longer_matches_context(
+    answer_host, monkeypatch, mode
+):
+    """Leftover state that cannot be matched to the context never holds a voice task.
+
+    No answer can resume it, so holding the task until it settles would hold it forever.
+    """
+    h = answer_host
+    pending = await _run_full_allow_flow(h, monkeypatch, mode=mode)
+    state = _restore_stale_state(h, allow_once_pending=pending)
+    state.ai_message = AssistantMessage(content="", tool_calls=[])
+    h.adapter._instance.loop_session.update_state({INTERRUPTION_KEY: state})
+    assert not h.adapter.session_has_pending_interrupt(h.adapter._parent_session_id)
+    executions_before = list(h.executions)
+
+    h.script.responses = [AssistantMessage(content="WeChat opened")]
+    result = await _managed_voice_delegation(h, monkeypatch, "Open WeChat")
+
+    assert result.ok, result.payload
+    assert h.executions[len(executions_before):] == []
+    assert "Open WeChat" in repr(h.script.calls[-1])
+    after = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    assert (after is None) or (not after.interrupted_tools)
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_voice_task_never_answers_or_clears_a_pending_card(answer_host, monkeypatch, mode):
+    """A card the user still has to answer stays valid while a voice task waits.
+
+    The voice task is refused (the full-duplex queue holds it), the card is
+    neither answered nor cleared, and after the card is approved the old tool
+    runs once and the voice task then starts as a new turn.
+    """
+    h = answer_host
+    answer = await _interrupt(h, monkeypatch, mode=mode, kind="permission")
+    sid = h.adapter._parent_session_id
+    before = repr(h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY))
+    assert h.adapter.session_has_pending_interrupt(sid)
+
+    try:
+        refused = await _managed_voice_delegation(h, monkeypatch, "Open WeChat")
+    except RuntimeError as exc:
+        assert "审批" in str(exc)
+    else:
+        assert not refused.ok and "审批" in repr(refused.payload)
+    assert h.executions == []
+    assert len(h.script.calls) == 1, "the voice prompt must not reach the model or the card"
+    assert repr(h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)) == before, "the card must stay intact"
+    assert h.adapter.session_has_pending_interrupt(sid)
+
+    result = await _request(h, **answer)
+    assert result.ok
+    assert h.executions == [{"value": "once"}]
+    assert not h.adapter.session_has_pending_interrupt(sid)
+
+    h.script.responses = [AssistantMessage(content="WeChat opened")]
+    result = await _managed_voice_delegation(h, monkeypatch, "Open WeChat")
+    assert result.ok, result.payload
+    assert h.executions == [{"value": "once"}]
+    assert "Open WeChat" in repr(h.script.calls[-1])

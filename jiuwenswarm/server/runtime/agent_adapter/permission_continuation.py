@@ -207,14 +207,126 @@ async def discard_permission_continuation(
     return True
 
 
+_UNPROVEN = object()
+
+
+def _split_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None):
+    """Split Core's pending interrupt into live and already-answered tool calls.
+
+    Returns ``None`` when *target_sid* has no pending interrupt, ``_UNPROVEN``
+    when the interrupt cannot be matched to the context, otherwise
+    ``(loop_session, state, context, context_engine, active_ids, stale_ids)``.
+    A tool call is stale when its result is already in the context tail.
+    """
+    loop_session = getattr(instance, "_loop_session", None)
+    if loop_session is None or loop_session_id != target_sid:
+        return None
+    state = loop_session.get_state(INTERRUPTION_KEY)
+    interrupted_tools = getattr(state, "interrupted_tools", None)
+    if not isinstance(interrupted_tools, Mapping) or not interrupted_tools:
+        return None
+
+    pending_tool_ids: list[str] = []
+    for outer_id, entry in interrupted_tools.items():
+        call = getattr(entry, "tool_call", None)
+        tool_call_id = str(getattr(call, "id", "") or "") if call is not None else ""
+        if not tool_call_id or tool_call_id != str(outer_id or ""):
+            continue
+        pending_tool_ids.append(tool_call_id)
+
+    ai_message = getattr(state, "ai_message", None)
+    state_calls = list(getattr(ai_message, "tool_calls", None) or [])
+    state_signature = [
+        (
+            str(getattr(call, "id", "") or ""),
+            str(getattr(call, "name", "") or ""),
+        )
+        for call in state_calls
+    ]
+    all_tool_ids = {tool_call_id for tool_call_id, _name in state_signature}
+    if (
+        not state_signature
+        or len(all_tool_ids) != len(state_signature)
+        or not set(pending_tool_ids).issubset(all_tool_ids)
+    ):
+        return _UNPROVEN
+
+    react_agent = getattr(instance, "react_agent", None)
+    context_engine = getattr(react_agent, "context_engine", None)
+    context = (
+        context_engine.get_context(session_id=target_sid)
+        if context_engine is not None
+        else None
+    )
+    messages = list(context.get_messages() or []) if context is not None else []
+    assistant_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if getattr(messages[index], "tool_calls", None)
+        ),
+        -1,
+    )
+    if assistant_index < 0:
+        return _UNPROVEN
+    context_signature: list[tuple[str, str]] = []
+    for call in list(
+        getattr(messages[assistant_index], "tool_calls", None) or []
+    ):
+        context_signature.append(
+            (
+                str(getattr(call, "id", "") or ""),
+                str(getattr(call, "name", "") or ""),
+            )
+        )
+    if context_signature != state_signature:
+        return _UNPROVEN
+    pending_id_set = set(pending_tool_ids)
+    tail_id_set: set[str] = set()
+    for message in messages[assistant_index + 1:]:
+        if getattr(message, "role", None) != "tool":
+            continue
+        tool_call_id = str(getattr(message, "tool_call_id", "") or "")
+        if tool_call_id in all_tool_ids:
+            tail_id_set.add(tool_call_id)
+    active_ids = [tid for tid in pending_tool_ids if tid not in tail_id_set]
+    stale_ids = [tid for tid in pending_tool_ids if tid in tail_id_set]
+    return loop_session, state, context, context_engine, active_ids, stale_ids
+
+
+def has_live_pending_interrupt(instance: Any, target_sid: str, loop_session_id: str | None) -> bool:
+    """Return whether *target_sid* holds an interrupt a user still has to answer.
+
+    Read-only. An interrupt that does not match the context counts as not
+    live: no answer can resume it, and holding a task behind it never ends.
+    A probe failure counts as live.
+    """
+    try:
+        split = _split_pending_interrupt(instance, target_sid, loop_session_id)
+    except Exception:
+        logger.debug("[PermissionContinuation] pending interrupt probe failed session=%s",
+                     target_sid, exc_info=True)
+        return True
+    if split is None:
+        return False
+    return split is not _UNPROVEN and bool(split[4])
+
+
 async def discard_pending_permission_interrupt_for_target(
     instance: Any,
     target_sid: str,
     loop_session_id: str | None,
     *,
     cancel_reason: str = "host_fresh_user_input_drops_pending_permission",
+    only_stale: bool = False,
+    drop_unproven: bool = False,
 ) -> bool:
     """Clear any pending Core permission interrupt for *target_sid*.
+
+    With ``only_stale`` it clears nothing while a tool call still waits for an
+    answer, and clears only leftover state whose tool results all exist.
+    With ``drop_unproven`` it also clears state that does not match the
+    context; no context messages are added for it.
 
     This is the manual-mode / Smart-queue-empty counterpart of
     ``discard_permission_continuation``. It does not require frozen_keys:
@@ -228,81 +340,24 @@ async def discard_pending_permission_interrupt_for_target(
     Returns True if state was cleared, False if nothing pending, mismatch,
     or session does not match.
     """
-    loop_session = getattr(instance, "_loop_session", None)
-    if loop_session is None or loop_session_id != target_sid:
-        return False
-
     try:
-        state = loop_session.get_state(INTERRUPTION_KEY)
-        interrupted_tools = getattr(state, "interrupted_tools", None)
-        if not isinstance(interrupted_tools, Mapping) or not interrupted_tools:
-            return False
-
-        pending_tool_ids: list[str] = []
-        for outer_id, entry in interrupted_tools.items():
-            call = getattr(entry, "tool_call", None)
-            tool_call_id = str(getattr(call, "id", "") or "") if call is not None else ""
-            if not tool_call_id or tool_call_id != str(outer_id or ""):
-                continue
-            pending_tool_ids.append(tool_call_id)
-
-        ai_message = getattr(state, "ai_message", None)
-        state_calls = list(getattr(ai_message, "tool_calls", None) or [])
-        state_signature = [
-            (
-                str(getattr(call, "id", "") or ""),
-                str(getattr(call, "name", "") or ""),
+        split = _split_pending_interrupt(instance, target_sid, loop_session_id)
+        if split is _UNPROVEN and drop_unproven:
+            loop_session = instance._loop_session
+            loop_session.update_state({INTERRUPTION_KEY: None})
+            context_engine = getattr(getattr(instance, "react_agent", None), "context_engine", None)
+            if context_engine is not None:
+                await context_engine.save_contexts(loop_session)
+            logger.warning(
+                "[PermissionContinuation] dropped unmatched pending interrupt session=%s reason=%s",
+                target_sid, cancel_reason,
             )
-            for call in state_calls
-        ]
-        all_tool_ids = {tool_call_id for tool_call_id, _name in state_signature}
-        if (
-            not state_signature
-            or len(all_tool_ids) != len(state_signature)
-            or not set(pending_tool_ids).issubset(all_tool_ids)
-        ):
+            return True
+        if split is None or split is _UNPROVEN:
             return False
-
-        react_agent = getattr(instance, "react_agent", None)
-        context_engine = getattr(react_agent, "context_engine", None)
-        context = (
-            context_engine.get_context(session_id=target_sid)
-            if context_engine is not None
-            else None
-        )
-        messages = list(context.get_messages() or []) if context is not None else []
-        assistant_index = next(
-            (
-                index
-                for index in range(len(messages) - 1, -1, -1)
-                if getattr(messages[index], "tool_calls", None)
-            ),
-            -1,
-        )
-        if assistant_index < 0:
+        loop_session, state, context, context_engine, active_ids, stale_ids = split
+        if only_stale and active_ids:
             return False
-        context_signature: list[tuple[str, str]] = []
-        for call in list(
-            getattr(messages[assistant_index], "tool_calls", None) or []
-        ):
-            context_signature.append(
-                (
-                    str(getattr(call, "id", "") or ""),
-                    str(getattr(call, "name", "") or ""),
-                )
-            )
-        if context_signature != state_signature:
-            return False
-        pending_id_set = set(pending_tool_ids)
-        tail_id_set: set[str] = set()
-        for message in messages[assistant_index + 1:]:
-            if getattr(message, "role", None) != "tool":
-                continue
-            tool_call_id = str(getattr(message, "tool_call_id", "") or "")
-            if tool_call_id in all_tool_ids:
-                tail_id_set.add(tool_call_id)
-        active_ids = [tid for tid in pending_tool_ids if tid not in tail_id_set]
-        stale_ids = [tid for tid in pending_tool_ids if tid in tail_id_set]
 
         added = 0
         try:

@@ -10,5 +10,8 @@
     <true/>
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
+    <!-- Hardened Runtime 下访问麦克风必须有此 entitlement（全双工语音）；不申请摄像头 -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>

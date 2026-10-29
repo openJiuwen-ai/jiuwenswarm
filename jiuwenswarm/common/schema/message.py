@@ -54,6 +54,9 @@ def _ensure_req_method(name: str, value: str) -> None:
 # 协议包当前 pin 尚未定义该成员。
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
 
+_ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
+_ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
+
 __all__ = [
     "PROMPT_SUGGESTION_READY_EVENT",
     "SESSION_REQUEST_COMPLETED_EVENT",

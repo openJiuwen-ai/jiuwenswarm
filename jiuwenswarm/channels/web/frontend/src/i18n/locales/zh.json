@@ -331,6 +331,16 @@
     }
   },
   "videoLive": {
+    "screenCapture": {
+      "failed": "屏幕共享失败：{{reason}} [{{errorType}}]；原始错误：{{nativeMessage}}；阶段：{{stage}}；耗时：{{elapsedMs}} ms；诊断编号：{{captureId}}",
+      "permissionOrCancel": "共享请求未获授权，可能是取消选择、浏览器拒绝或系统屏幕录制权限未授予，无法仅凭异常确定原因",
+      "aborted": "屏幕采集请求被中止，可能是选择器取消、已有请求未结束或系统采集异常",
+      "unreadable": "系统无法读取所选屏幕，可能与屏幕录制权限、采集设备或系统状态有关",
+      "invalidState": "当前页面状态不允许发起共享，请检查窗口焦点及是否由用户点击触发",
+      "security": "当前环境的安全策略禁止屏幕共享",
+      "unknown": "屏幕采集或画面初始化发生异常，请根据原始错误与诊断编号核对日志"
+    },
+    "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。",
     "modelFallback": "视频模型",
     "subtitle": "实时多屏音视频问答",
     "status": { "connecting": "正在连接 Full-duplex 模型并申请麦克风权限…", "speaking": "模型正在回答…" },
@@ -823,6 +833,7 @@
       "loadError": "无法读取全双工模型配置",
       "saveError": "无法保存全双工模型配置",
       "notConfigured": "尚未配置全双工模型",
+      "requiredFields": "带 * 的项目为必填项，填写完整后才能保存。已保存的 API 密钥无需重新输入。",
       "dialogTitle": "配置全双工模型",
       "providerLabel": "模型通道",
       "joyaiModelLabel": "JoyAI 模型",
@@ -1711,7 +1722,7 @@
     "videoGeneration": "视频生成",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
-    "recording": "正在录音...（再次点击麦克风结束）",
+    "recording": "正在录音...（点击停止按钮结束）",
     "transcribing": "正在转写语音...",
     "startRecording": "语音输入",
     "stopRecording": "结束录音并转写",

@@ -331,6 +331,16 @@
     }
   },
   "videoLive": {
+    "screenCapture": {
+      "failed": "Screen sharing failed: {{reason}} [{{errorType}}]; native error: {{nativeMessage}}; stage: {{stage}}; elapsed: {{elapsedMs}} ms; diagnostic ID: {{captureId}}",
+      "permissionOrCancel": "Sharing was not authorized: selection may have been cancelled, or browser/system screen-recording permission denied; the exception alone does not identify which",
+      "aborted": "Capture was aborted: the picker may have been cancelled, a previous request may still be pending, or system capture may have failed",
+      "unreadable": "The system could not read the selected screen; check screen-recording permission and capture/system state",
+      "invalidState": "The page state does not allow sharing; check window focus and whether the request followed a user click",
+      "security": "The current security policy blocks screen sharing",
+      "unknown": "Screen capture or frame initialization failed; check the native error and diagnostic ID in the logs"
+    },
+    "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
     "status": {
@@ -830,6 +840,7 @@
       "loadError": "Unable to load full-duplex model settings",
       "saveError": "Unable to save full-duplex model settings",
       "notConfigured": "Full-duplex model is not configured",
+      "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again.",
       "dialogTitle": "Configure full-duplex model",
       "providerLabel": "Model channel",
       "joyaiModelLabel": "JoyAI model",
@@ -1727,7 +1738,7 @@
     "videoGeneration": "Video generation",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
-    "recording": "Recording... (click the microphone again to finish)",
+    "recording": "Recording... (click the stop button to finish)",
     "transcribing": "Transcribing speech...",
     "startRecording": "Voice input",
     "stopRecording": "Stop recording and transcribe",
