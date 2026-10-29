@@ -469,7 +469,7 @@ class LocalDirExpertPackageSource:
             reason = str(exc)
         raw_tags = metadata.get("tags")
         return ExpertSummary(
-            id=str(card.get("id") or package_dir.name),
+            id=package_dir.name,
             name=str(card.get("name") or group.get("name") or package_dir.name),
             description=str(card.get("description") or group.get("description") or ""),
             source="local",
