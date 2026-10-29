@@ -322,9 +322,13 @@ class FlashTodoRail(DeepAgentRail):
     async def _close_open_task_segment(self, session: Any) -> None:
         if session is None or not self._open_todos:
             return
-        rows = await self._refusal_todo_rows(session)
+        open_todos = list(self._open_todos)
+        if not await self._persist_cancel_open_todos(session, open_todos):
+            return
+        self._open_todos = []
+        rows = await self._refusal_todo_rows(session, open_todos)
         await self._write_control(session, "todo.updated", {"todos": rows})
-        for todo_id, meta in self._open_todos:
+        for todo_id, meta in open_todos:
             await self._write_control(session, "task.complete", {
                 "task_id": f"todo:{todo_id}",
                 "task_content": str(meta.get("content") or ""),
@@ -333,8 +337,25 @@ class FlashTodoRail(DeepAgentRail):
                 "source": "todo",
             })
 
-    async def _refusal_todo_rows(self, session: Any) -> list[dict[str, str]]:
-        open_ids = {todo_id for todo_id, _ in self._open_todos}
+    async def _persist_cancel_open_todos(self, session: Any, open_todos: list) -> bool:
+        modify = self.engines.get("modify")
+        ids = [todo_id for todo_id, _ in open_todos]
+        if modify is None or not ids:
+            logger.warning("[FlashTodoRail] refusal cancel skipped: no modify engine")
+            return False
+        try:
+            result = await modify.invoke({"action": "cancel", "ids": ids}, session=session)
+        except Exception as exc:
+            logger.warning("[FlashTodoRail] refusal cancel failed: %s", exc)
+            return False
+        message = str(result.get("message") or "") if isinstance(result, dict) else ""
+        if not message.startswith("Successfully cancelled"):
+            logger.warning("[FlashTodoRail] refusal cancel rejected: %s", message)
+            return False
+        return True
+
+    async def _refusal_todo_rows(self, session: Any, open_todos: list) -> list[dict[str, str]]:
+        open_ids = {todo_id for todo_id, _ in open_todos}
         items = await self._load_todo_items(session)
         rows: list[dict[str, str]] = []
         seen: set[str] = set()
@@ -350,7 +371,7 @@ class FlashTodoRail(DeepAgentRail):
                 "activeForm": str(getattr(item, "activeForm", "") or ""),
             })
             seen.add(str(item.id))
-        for todo_id, meta in self._open_todos:
+        for todo_id, meta in open_todos:
             if todo_id in seen:
                 continue
             rows.append({

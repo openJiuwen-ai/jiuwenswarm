@@ -46,6 +46,25 @@ class _RecordingHandler(logging.Handler):
         self.records.append(record)
 
 
+class _FakeModify:
+    def __init__(self, engine: "_FakeListEngine", *, fail: bool = False, message: str | None = None) -> None:
+        self.engine = engine
+        self.fail = fail
+        self.message = message
+        self.calls: list[dict] = []
+
+    async def invoke(self, inputs: dict, session=None) -> dict:
+        assert session is not None
+        self.calls.append(inputs)
+        if self.fail:
+            raise RuntimeError("cancel failed")
+        if self.message is not None:
+            return {"message": self.message}
+        for todo_id in inputs["ids"]:
+            self.engine.statuses[todo_id] = TodoStatus.CANCELLED
+        return {"message": f"Successfully cancelled {len(inputs['ids'])} task(s)"}
+
+
 class _FakeListEngine:
     def __init__(self, statuses: dict[str, TodoStatus], *, error: Exception | None = None) -> None:
         self.statuses = statuses
@@ -164,7 +183,9 @@ def _canned_response(**kwargs) -> AssistantMessage:
 
 @pytest.mark.asyncio
 async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
-    rail, _ = _rail({"collect": TodoStatus.IN_PROGRESS})
+    rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS})
+    modify = _FakeModify(engine)
+    rail.engines["modify"] = modify
     session = _FakeSession()
     await rail.before_invoke(SimpleNamespace())
     await rail.after_tool_call(_todo_ctx(session, "create"))
@@ -174,6 +195,9 @@ async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
     assert ctx.inputs.response.tool_calls == []
     assert ctx.inputs.response.content == MODEL_REFUSAL_BODY
     assert ctx.finished == {"output": MODEL_REFUSAL_BODY, "result_type": "answer"}
+    assert modify.calls == [{"action": "cancel", "ids": ["collect"]}]
+    assert engine.statuses["collect"] == TodoStatus.CANCELLED
+    assert rail._open_todos == []
     assert session.events == [
         "todo_close_hold",
         "todo_close_drop",
@@ -181,6 +205,22 @@ async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
         "task.complete",
         "llm_output",
     ]
+
+
+@pytest.mark.asyncio
+async def test_refusal_does_not_announce_cancel_when_persist_fails() -> None:
+    rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS})
+    rail.engines["modify"] = _FakeModify(engine, fail=True)
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+
+    ctx = await _final_turn(rail, session, _CANNED_REFUSAL, usage_metadata=_refusal_usage())
+
+    assert ctx.finished["result_type"] == "answer"
+    assert engine.statuses["collect"] == TodoStatus.IN_PROGRESS
+    assert "todo.updated" not in session.events
+    assert "task.complete" not in session.events
 
 
 @pytest.mark.asyncio

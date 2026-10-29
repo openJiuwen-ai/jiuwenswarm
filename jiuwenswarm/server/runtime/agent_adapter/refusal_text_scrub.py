@@ -23,6 +23,12 @@ REFUSAL_SCRUB_RELEASE = "refusal_scrub_release"
 
 CANNED_REFUSAL_MARK = "作为一个人工智能语言模型，我还没学习如何回答这个问题"
 CANNED_REFUSAL_MAX_CHARS = 80
+# release 帧若晚于定案帧或写入失败，这些帧仍要把已挂起的前缀先发出去。
+_REFUSAL_SCRUB_COMMIT_CHUNK_TYPES = frozenset({
+    "tool_call",
+    "answer",
+    "task.complete",
+})
 
 
 def is_refusal_scrub_control(chunk_type: str) -> bool:
@@ -72,6 +78,9 @@ class RefusalTextScrub:
             return "skip"
         if control == "release":
             return "flush_skip"
+        if self.should_flush_for(chunk_type):
+            self.armed = False
+            return "flush_pass"
         if chunk_type != "llm_output" or foreign or not self.armed:
             return "pass"
         candidate = self._text + content
@@ -93,6 +102,12 @@ class RefusalTextScrub:
             self.armed = False
             return "release"
         return ""
+
+    def should_flush_for(self, chunk_type: str) -> bool:
+        """Commit frames flush held text when the release frame was missed."""
+        if chunk_type not in _REFUSAL_SCRUB_COMMIT_CHUNK_TYPES:
+            return False
+        return bool(self._payloads)
 
     def push(self, payload: dict[str, Any]) -> None:
         self._text += str(payload.get("content") or "")
