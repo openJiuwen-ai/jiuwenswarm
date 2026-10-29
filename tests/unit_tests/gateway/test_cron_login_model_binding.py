@@ -56,17 +56,17 @@ def _patch_model_sources(
             return entries.get(name)
 
         monkeypatch.setattr(
-            "jiuwenswarm.common.config.get_model_config", fake_get_model_config
+            "gateway.common.config.get_model_config", fake_get_model_config
         )
         monkeypatch.setattr(
-            "jiuwenswarm.common.config.get_model_names", lambda: list(config_models)
+            "gateway.common.config.get_model_names", lambda: list(config_models)
         )
     else:
         monkeypatch.setattr(
-            "jiuwenswarm.common.config.get_model_config",
+            "gateway.common.config.get_model_config",
             lambda name, index=None: None,
         )
-        monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+        monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
 
 
 def _patch_login_session(

@@ -10,8 +10,8 @@ import hashlib
 import json
 import os
 import re
-import signal
 import shutil
+import signal
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -23,8 +23,7 @@ from gateway.channel_manager.tui.harmonyos.harmonyos_project import (
     inspect_harmonyos_project,
     persist_harmonyos_project_context,
 )
-from jiuwenswarm.common.utils import get_agent_skills_dir
-
+from gateway.common.paths import get_agent_skills_dir
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 30.0
 INSTALL_TIMEOUT_SECONDS = 5 * 60.0
@@ -118,7 +117,7 @@ async def run_harmonyos_dev_init(params: dict[str, Any]) -> dict[str, Any]:
     }
     actions: dict[str, Any] = {
         "skillsPath": str(skills_dir),
-        "skillsPathSource": "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "skillsPathSource": "gateway.common.paths.get_agent_skills_dir",
         "installDevecocliAttempted": False,
         "updateDevecocliAttempted": False,
         "initSkillAttempted": False,

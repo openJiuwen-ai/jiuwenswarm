@@ -19,6 +19,7 @@ from openjiuwen_protocol.message import ReqMethod
 
 from gateway.channel_manager.base import ChannelType
 from gateway.channel_manager.channel_manager import ChannelManager
+from gateway.common.client.agent_client import AgentServerClient
 from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateFailed,
@@ -105,7 +106,6 @@ from gateway.routing.container_files import (
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
 )
-from jiuwenswarm.common.client.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 

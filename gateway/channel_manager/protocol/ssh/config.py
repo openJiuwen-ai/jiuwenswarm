@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_config_dir
+from gateway.common.paths import get_config_dir
 
 
 @dataclass

@@ -21,8 +21,8 @@ from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
-
 from openjiuwen_protocol.message import EventType, Message, ReqMethod
+
 from gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
@@ -37,12 +37,12 @@ from gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push import (
     PushConfig,
     XiaoYiPushService,
 )
-from gateway.routing.keys import XiaoyiDeliveryTarget
-from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.host_services import (
+from gateway.common.host_services import (
     install_runtime_xiaoyi_channel_provider,
     restore_runtime_xiaoyi_channel_provider,
 )
+from gateway.routing.keys import XiaoyiDeliveryTarget
+from gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
 
@@ -1443,8 +1443,10 @@ class XiaoyiChannel(BaseChannel):
                     media_files.append({"uri": uri, "mime_type": mime_type, "name": name})
 
                     # For text-based files, extract content inline
-                    from gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.media import \
-                        is_text_mime_type, extract_text_from_url
+                    from gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.media import (
+                        extract_text_from_url,
+                        is_text_mime_type,
+                    )
                     if is_text_mime_type(mime_type):
                         try:
                             text_content = await extract_text_from_url(uri, 5_000_000, 30_000)
@@ -1500,10 +1502,10 @@ class XiaoyiChannel(BaseChannel):
         if media_files:
             logger.info(f"XiaoYi: Downloading {len(media_files)} media file(s)...")
             from gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.media import (
-                MediaFile,
                 MediaDownloadOptions,
-                download_and_save_media_list,
+                MediaFile,
                 build_xiaoyi_media_payload,
+                download_and_save_media_list,
             )
             files_to_download = [
                 MediaFile(uri=f["uri"], mime_type=f["mime_type"], name=f["name"])
@@ -1517,7 +1519,7 @@ class XiaoyiChannel(BaseChannel):
 
         # 将最近一次可回发的小艺身份写入 config.yaml，供 cron 推送时使用
         try:
-            from jiuwenswarm.common.config import update_xiaoyi_runtime_in_config
+            from gateway.common.config import update_xiaoyi_runtime_in_config
 
             rpc_id = message.get("id")
             conf_update: dict[str, Any] = {

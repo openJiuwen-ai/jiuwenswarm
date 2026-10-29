@@ -22,13 +22,13 @@ from openjiuwen_protocol.e2a.wire_codec import (
 )
 from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
+from gateway.common.moa_config import redact_moa_credentials
 from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
 from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.common.moa_config import redact_moa_credentials
 
 logger = logging.getLogger(__name__)
 _STREAM_TRAILING_MESSAGE_GRACE_SECONDS = 0.7
@@ -104,9 +104,9 @@ def _build_ws_origin(uri: str) -> str | None:
     return f"{scheme}://{parsed.netloc}"
 
 
-# AgentServerClient 抽象契约已下沉 ``jiuwenswarm.common.client.agent_client``
-# （保留侧与 Gateway 仓共用契约）。此处 re-export 保持既有 import 路径兼容。
-from jiuwenswarm.common.client.agent_client import AgentServerClient  # noqa: F401
+# AgentServerClient 抽象契约以 gateway.common.client.agent_client 为唯一实现。
+# 此处 re-export 保持既有 import 路径兼容。
+from gateway.common.client.agent_client import AgentServerClient  # noqa: F401
 
 
 def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:

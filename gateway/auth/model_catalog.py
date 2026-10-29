@@ -254,7 +254,7 @@ def get_models(session_id: str | None = None, allow_refresh: bool = True) -> lis
 
 def login_model_settings(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if config is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         try:
             config = get_config()
@@ -267,7 +267,7 @@ def login_model_settings(config: Mapping[str, Any] | None = None) -> dict[str, A
 
 
 def _login_model_config_obj(model_name: str, settings: Mapping[str, Any]) -> dict[str, Any]:
-    from jiuwenswarm.common.context_window import parse_positive_int
+    from gateway.common.context_window import parse_positive_int
 
     config_obj: dict[str, Any] = {"temperature": 0.95}
     own = settings.get(model_name)

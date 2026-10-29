@@ -23,9 +23,21 @@ from openjiuwen_protocol.e2a.constants import (
     E2A_WIRE_INTERNAL_METADATA_KEYS,
 )
 from openjiuwen_protocol.hooks import GatewayChatHookContext, GatewayHookEvents
-from openjiuwen_protocol.message import TEAM_ATTACH_ONLY_PARAM
+from openjiuwen_protocol.message import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    SESSION_REQUEST_COMPLETED_EVENT,
+    TEAM_ATTACH_ONLY_PARAM,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+)
 
 from gateway.channel_manager.base import ChannelType
+from gateway.common.config import get_evolution_auto_save_enabled
+from gateway.common.hooks_config import load_hooks_config
+from gateway.common.host_services import (
+    install_runtime_wake_handler,
+    restore_runtime_wake_handler,
+)
 from gateway.common.mode_matrix import (
     DEPRECATION_MAP,
     MODE_ALIASES,
@@ -69,18 +81,6 @@ from gateway.routing.session_sharing import SessionSharingRegistry, SubRole
 from gateway.runtime.session_input import (
     resolve_session_input_mode,
     validate_session_input,
-)
-from jiuwenswarm.common.config import get_evolution_auto_save_enabled
-from jiuwenswarm.common.hooks_config import load_hooks_config
-from jiuwenswarm.common.host_services import (
-    install_runtime_wake_handler,
-    restore_runtime_wake_handler,
-)
-from jiuwenswarm.common.schema.message import (
-    PROMPT_SUGGESTION_READY_EVENT,
-    SESSION_REQUEST_COMPLETED_EVENT,
-    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
-    TOPIC_STARTERS_READY_EVENT,
 )
 
 logger = logging.getLogger(__name__)
@@ -428,7 +428,7 @@ class MessageHandler(ABC):
 
         # 初始化 Gateway hooks handler
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
             config_base = get_config()
             self._gateway_hooks_config = load_hooks_config(config_base)
             self._gateway_hook_handler = GatewayHookHandler(self._gateway_hooks_config)
@@ -462,7 +462,7 @@ class MessageHandler(ABC):
 
         # 直接使用 jiuwenswarm.config 的 get_config_raw/set_config/update_channel_in_config
         # 避免在此处重复实现 config 模块加载逻辑。
-        from jiuwenswarm.common.config import get_config_raw, update_channel_in_config
+        from gateway.common.config import get_config_raw, update_channel_in_config
 
         self._get_config_raw = get_config_raw
         self._update_channel_in_config = update_channel_in_config
@@ -1303,6 +1303,92 @@ class MessageHandler(ABC):
             )
 
         return len(candidates)
+
+    async def _cancel_streams_for_paused_session(
+        self, msg: "Message", session_mode: str = "",
+    ) -> None:
+        """Pause-side gateway stream governance (issue 5448, G2). Team sessions only.
+
+        A team pause parks the AgentServer round and cancels its event streams
+        without a wire-level terminal frame, so the gateway consumers would
+        hang on their receive queues forever — zombie registrations that
+        later veto the authoritative is_processing=false. Cancel them here;
+        each cancelled chat.send consumer finalizes itself with a local
+        is_processing=false (process_stream finally), and when nothing
+        emit-capable was cancelled (idle double-pause, attach-only
+        observers) broadcast the session-level false explicitly.
+
+        A single-agent (Deep adapter) pause is different: StreamEventRail
+        parks the round in place and the SAME stream keeps producing after
+        resume, so cancelling the gateway consumer would silently drop the
+        resumed round's output. Non-team sessions therefore keep the original
+        "pause does not touch stream tasks" contract.
+        """
+        session_id = msg.session_id
+        if not session_id:
+            return
+        victims: list[str] = []
+        for rid, task in list(self._stream_tasks.items()):
+            if self._stream_sessions.get(rid) != session_id:
+                continue
+            if not ChannelMode.is_team_mode(self._stream_modes.get(rid, "")):
+                continue  # single-agent pause is a recoverable park, not a kill
+            if task.done():
+                continue
+            if self._stream_team_ids.get(rid):
+                continue  # expert-routed stream: targeted interrupt owns it
+            victims.append(rid)
+        # Capture before cancelling: process_stream finally pops the tracking
+        # entries, so emit flags are unreadable after the gather.
+        emit_victims = [
+            rid for rid in victims
+            if self._stream_emits_processing_status.get(rid)
+        ]
+        if victims:
+            logger.info(
+                "[MessageHandler] pause 治理同 session 流式任务: session_id=%s "
+                "cancelled_rids=%s 当前并发=%d",
+                session_id, victims, len(self._stream_tasks),
+            )
+            for rid in victims:
+                self._stream_tasks[rid].cancel()
+            await asyncio.gather(
+                *(self._stream_tasks[rid] for rid in victims),
+                return_exceptions=True,
+            )
+            # 走集中化 pop+broadcast：与 _cancel_stream_tasks_for_channel 相同，
+            # 让跨窗口配置保存锁感知运行态变化。
+            await self._pop_stream_tracking_and_broadcast(victims)
+        if not emit_victims and ChannelMode.is_team_mode(session_mode):
+            # No cancelled stream can finalize itself (attach-only observers
+            # or an already-idle team session): broadcast the session-level
+            # false so a resume-synthesized true cannot strand the frontend.
+            await self._send_processing_status(
+                msg.id, session_id, msg.channel_id, is_processing=False,
+            )
+
+    async def _send_pause_and_govern_streams(
+        self,
+        env: "E2AEnvelope",
+        msg: "Message",
+        session_mode: str,
+    ) -> None:
+        """Forward a pause, then govern lingering stream consumers (issue 5448, G2).
+
+        Governance runs only after the AgentServer acknowledges the pause:
+        if the interrupt never took effect the round is still producing on
+        those streams, and cancelling its consumers would drop the output
+        mid-flight — the mirror image of issue 5448's split state.
+        """
+        resp = await self._send_interrupt_to_agent(env)
+        if resp is None or not resp.ok:
+            logger.warning(
+                "[MessageHandler] pause 治理跳过: AgentServer 未确认暂停, "
+                "session_id=%s ok=%s",
+                msg.session_id, getattr(resp, "ok", None),
+            )
+            return
+        await self._cancel_streams_for_paused_session(msg, session_mode)
 
     async def _cancel_agent_work_for_session(
         self,
@@ -4012,7 +4098,7 @@ class MessageHandler(ABC):
         )
 
         try:
-            from jiuwenswarm.common.external_providers import provider
+            from gateway.common.external_providers import provider
 
             metadata = await provider("session_metadata").get_session_metadata_async(
                 msg.session_id, enable_writeback=False, user_id=msg.user_id,
@@ -4377,8 +4463,8 @@ class MessageHandler(ABC):
         )
 
         try:
-            from jiuwenswarm.common.external_providers import provider
-            from jiuwenswarm.common.model_selection_store import (
+            from gateway.common.external_providers import provider
+            from gateway.common.model_selection_store import (
                 get_session_model_selection,
             )
 
@@ -4916,7 +5002,7 @@ class MessageHandler(ABC):
                         )
 
                     elif intent in ("pause", "resume"):
-                        # 暂停/恢复：不取消流式任务，转发给 AgentServer 处理 ReAct 循环
+                        # 暂停/恢复：转发给 AgentServer 处理 ReAct 循环
                         agent_msg = await self._prepare_agent_dispatch_message(msg)
                         # 确保 mode 信息存在，否则从 channel_states 注入
                         if isinstance(agent_msg.params, dict) and not agent_msg.params.get("mode"):
@@ -4930,7 +5016,28 @@ class MessageHandler(ABC):
                                     else str(pr_state.mode)
                                 )
                         env_interrupt = self.message_to_e2a(agent_msg)
-                        asyncio.create_task(self._send_interrupt_to_agent(env_interrupt))
+                        # G2 (issue 5448): a team pause parks the AgentServer
+                        # round and its event streams die without a wire
+                        # terminal — the gateway consumers must not outlive
+                        # them (zombie registrations that later veto the
+                        # authoritative is_processing=false). Governance runs
+                        # only after AgentServer acknowledges the pause and
+                        # only for team sessions; a single-agent pause is a
+                        # recoverable park whose stream keeps producing after
+                        # resume. resume needs no cleanup either way: the next
+                        # message starts a fresh round with a fresh stream.
+                        if intent == "pause":
+                            pause_mode = (
+                                agent_msg.params.get("mode", "")
+                                if isinstance(agent_msg.params, dict) else ""
+                            )
+                            asyncio.create_task(
+                                self._send_pause_and_govern_streams(
+                                    env_interrupt, msg, pause_mode,
+                                )
+                            )
+                        else:
+                            asyncio.create_task(self._send_interrupt_to_agent(env_interrupt))
                         # 检查当前 session 是否有活跃的流式任务
                         current_sid = msg.session_id
                         has_active_task = False
@@ -5242,9 +5349,42 @@ class MessageHandler(ABC):
                 )
                 ends_owner_stream = owns_status and not stream_route
                 if is_processing_false and ends_owner_stream:
-                    if self._session_has_streams_blocking_processing_false(session_id, exclude_rid=rid):
+                    # A team PERSISTENT stream outlives its round by design:
+                    # sibling live streams prove nothing about whether THIS
+                    # round is still running. Only round-authoritative
+                    # terminals carry is_complete=True (team.idle /
+                    # team.completed / pause broadcast), so those pass
+                    # regardless of sibling registrations — withholding them
+                    # froze the frontend spinner (issue 5448). A bare false
+                    # (e.g. one of several parallel owner works finishing)
+                    # is still the end of a single request and must keep
+                    # waiting for its siblings.
+                    owner_mode = self._stream_modes.get(rid, "")
+                    owner_round_terminal = (
+                        ChannelMode.is_team_mode(owner_mode)
+                        and isinstance(payload, dict)
+                        and payload.get("is_complete") is True
+                    )
+                    if not owner_round_terminal and (
+                        self._session_has_streams_blocking_processing_false(
+                            session_id, exclude_rid=rid
+                        )
+                    ):
                         # 这是单个请求的结束；同 session 仍有其他对话流时不能向前端
                         # 宣告整个会话空闲；保留自动收尾，让最后一个流退出时发送权威 false。
+                        logger.info(
+                            "[MessageHandler] withheld processing_status(false): "
+                            "session_id=%s owner_rid=%s blocked_by=%s",
+                            session_id, rid,
+                            [
+                                f"{active_rid}:emit="
+                                f"{self._stream_emits_processing_status.get(active_rid)}"
+                                f"/method={self._stream_methods.get(active_rid)}"
+                                f"/team_route={self._stream_team_ids.get(active_rid) or '-'}"
+                                for active_rid, sid in self._stream_sessions.items()
+                                if sid == session_id and active_rid != rid
+                            ],
+                        )
                         continue
                 published = await self.publish_stream_chunk(
                     chunk,
@@ -5536,9 +5676,12 @@ class MessageHandler(ABC):
         channel_id: str | None = None,
         session_id: str | None = None,
         metadata: dict | None = None,
-    ) -> None:
+    ) -> "AgentResponse | None":
         """Fire-and-forget: 发送中断到 AgentServer，不阻塞转发循环.
 
+        返回 AgentServer 的响应，调用方（如 pause 治理）可据此确认中断
+        是否被接受；请求失败时返回 ``None``。其余既有调用方忽略返回值，
+        行为不变。
         ``interrupt_result`` 已由调用方提前推送；此处仍要把响应里的
         ``cancelled_tools`` 转成 ``chat.tool_result``，否则前端 tool 卡片会一直转圈，
         直到刷新历史才看到 ``[Interrupted]``.
@@ -5554,8 +5697,10 @@ class MessageHandler(ABC):
             sid = (session_id or getattr(env, "session_id", None) or "").strip()
             if ch and sid and payload.get("cancelled_tools"):
                 await self._send_cancelled_tool_results(ch, sid, payload, metadata)
+            return resp
         except Exception as e:
             logger.warning("[MessageHandler] AgentServer 中断请求失败(忽略): %s", e)
+            return None
 
     async def _send_interrupt_result_notification(
         self,
