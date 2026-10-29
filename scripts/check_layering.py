@@ -63,7 +63,22 @@ _ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
 # R1 存量（含 a6b9ea2e0 于 2026-10-13 引入的 3 对）已由 B1'
 # （common 注入化 + 纯模块下沉）全部消除；!8016 合入的临时白名单
 # （14 对）随本 MR 缩减为空。
-KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
+# Enterprise 合入临时白名单：common 侧租户/路径/兼容 shim 仍引用 enterprise。
+# 燃尽方向：注入化或下沉到 enterprise 包，消除后再缩减本表。
+KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
+    "jiuwenswarm.common.e2a.agent_compat": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.file_download_token": {
+        "jiuwenswarm.enterprise",
+        "jiuwenswarm.enterprise.tenant.tenant_context",
+    },
+    "jiuwenswarm.common.local_env_config": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.projectless_workspace": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.utils": {
+        "jiuwenswarm.enterprise",
+        "jiuwenswarm.enterprise.tenant.tenant_context",
+        "jiuwenswarm.enterprise.tenant.tenant_paths",
+    },
+}
 
 # 允许的跨层目标：无状态纯组件以 gateway 为唯一真源，母仓反向引用不视为违规。
 # extensions 治理层（registry/manager/loader）同样以 gateway 为唯一实现：
@@ -81,11 +96,51 @@ ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
     "gateway.auth",
 )
 
-KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
+KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {
+    "jiuwenswarm.server.runtime.package_allowlist": {
+        "gateway.config.enterprise.expressions",
+    },
+}
 
-# gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）已消除。
-# browser_config 已下沉 jiuwenswarm.common.browser_config，不再占用本白名单。
+# Enterprise / manager-config 合入临时白名单（gateway → server/agents/runtime/channels）。
+# 燃尽方向：经 adapter / 回调替代直 import 后再缩减。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
+    "gateway.channel_manager.web.app_web_handlers": {
+        "jiuwenswarm.server.control.responses",
+        "jiuwenswarm.server.runtime.session.session_info",
+        "jiuwenswarm.server.runtime.session.session_metadata",
+        "jiuwenswarm.server.runtime.session.session_rename",
+    },
+    "gateway.channel_manager.web.enterprise_files": {
+        "jiuwenswarm.server.runtime.attachments.upload_storage",
+    },
+    "gateway.channel_manager.web.http_routes.share_jobs": {
+        "jiuwenswarm.channels.web.app_web",
+    },
+    "gateway.cron.db_schedule": {
+        "jiuwenswarm.runtime.cron.cron_expr",
+    },
+    "gateway.cron.db_store": {
+        "jiuwenswarm.runtime.cron.cron_job_mutations",
+    },
+    "gateway.enterprise.config.manager_config.core.application_config.memory_config": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
+    "gateway.enterprise.config.manager_config.core.application_config.package_allowlist": {
+        "jiuwenswarm.server.runtime.package_allowlist",
+    },
+    "gateway.enterprise.config.manager_config.core.application_config.task_memory_config": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
+    "gateway.enterprise.config.manager_config.routers.application_config_routers": {
+        "jiuwenswarm.server.runtime.equipment_hub_catalog",
+    },
+    "gateway.routing.agent_client": {
+        "jiuwenswarm.server.runtime.package_allowlist",
+    },
+    "gateway.storage_assembly.setup": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
 }
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
 BASELINE = {
@@ -138,7 +193,7 @@ def _git(*args: str) -> str:
     git_path = shutil.which("git") or "git"
     return subprocess.run(
         [git_path, "-C", str(REPO_ROOT), *args],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     ).stdout
 
 

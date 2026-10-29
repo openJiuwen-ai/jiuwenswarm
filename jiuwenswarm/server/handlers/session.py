@@ -784,6 +784,7 @@ async def handle_session_switch(ctx: RequestContext) -> None:
                     "session_id": result.session_id,
                     "mode": result.mode,
                     "switched": result.switched,
+                    "moa_enabled": result.moa_enabled,
                 },
                 metadata=request.metadata,
             )
