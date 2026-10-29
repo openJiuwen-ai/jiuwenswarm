@@ -1033,6 +1033,15 @@ def test_send_file_gating_defaults_by_channel() -> None:
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
 
 
+def test_append_reference_gating_defaults_by_channel() -> None:
+    """Reference delivery defaults on for both direct desktop and Xiaoyi A2A."""
+    assert runtime_tools._is_append_reference_enabled(None, "desktop")
+    assert runtime_tools._is_append_reference_enabled(None, "xiaoyi")
+    assert not runtime_tools._is_append_reference_enabled(None, "feishu")
+    disabled = {"channels": {"desktop": {"append_reference_allowed": False}}}
+    assert not runtime_tools._is_append_reference_enabled(disabled, "desktop")
+
+
 def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
     """The cron provider builds the member-scoped toolkit via CronRuntimeBridge."""
 

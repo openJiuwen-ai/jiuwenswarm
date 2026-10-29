@@ -18,6 +18,7 @@ Everything is pure: given an input dict and a byte budget, return a wire-safe
 dict. The only I/O is the caller's. Sized via ``_json_wire_size`` (UTF-8 bytes
 of the JSON encoding) — never character count.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,6 +34,8 @@ _HISTORY_WIRE_METADATA_STRING_LIMIT = 256
 _HISTORY_WIRE_LIST_LIMIT = 100
 _HISTORY_WIRE_DEPTH_LIMIT = 8
 _HISTORY_WIRE_RECORD_MAX_BYTES = 64 * 1024
+_HISTORY_REFERENCE_STRING_LIMIT = 2048
+_HISTORY_REFERENCE_FIELDS = ("title", "url", "source", "name", "imageUrl")
 _TEAM_HISTORY_DEFAULT_LIMIT = 500
 _TEAM_HISTORY_MAX_LIMIT = 1000
 _TEAM_HISTORY_DEFAULT_MAX_BYTES = 2 * 1024 * 1024
@@ -75,6 +78,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "session_id",
     "timestamp",
     "event_type",
+    "references",
     "mode",
     "member_name",
     "member_id",
@@ -117,6 +121,7 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
 # ---------------------------------------------------------------------------
 # Low-level sizing / truncation
 # ---------------------------------------------------------------------------
+
 
 def _json_wire_size(value: Any) -> int:
     """UTF-8 byte length of ``value``'s JSON wire encoding."""
@@ -186,6 +191,27 @@ def _sanitize_history_wire_value(value: Any, *, depth: int = 0) -> Any:
 # History record shaping
 # ---------------------------------------------------------------------------
 
+
+def _compact_history_references(value: Any) -> Any:
+    """Bound reference metadata without dropping normal-sized cards."""
+    if not isinstance(value, list):
+        return _sanitize_history_wire_value(value)
+    compacted: list[Any] = []
+    for item in value[:_HISTORY_WIRE_LIST_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        compacted.append(
+            {
+                key: _truncate_string_by_bytes(
+                    str(item[key]), _HISTORY_REFERENCE_STRING_LIMIT
+                )
+                for key in _HISTORY_REFERENCE_FIELDS
+                if item.get(key) is not None
+            }
+        )
+    return compacted
+
+
 def _collapse_oversized_history_record(record: dict[str, Any]) -> dict[str, Any]:
     """Collapse a too-large history record to a metadata stub + short content."""
     collapsed = {
@@ -193,6 +219,12 @@ def _collapse_oversized_history_record(record: dict[str, Any]) -> dict[str, Any]
         for key, value in record.items()
         if key in _HISTORY_COLLAPSE_KEEP_KEYS
     }
+    original_references = collapsed.get("references")
+    if isinstance(original_references, list):
+        compacted_references = _compact_history_references(original_references)
+        collapsed["references"] = compacted_references
+        if len(compacted_references) < len(original_references):
+            collapsed["references_truncated"] = True
     content = record.get("content")
     if isinstance(content, str) and content.strip():
         collapsed["content"] = _truncate_string_by_bytes(content, 512)
@@ -200,20 +232,44 @@ def _collapse_oversized_history_record(record: dict[str, Any]) -> dict[str, Any]
     if isinstance(event, dict):
         collapsed["event"] = {
             key: _sanitize_history_wire_value(event.get(key))
-            for key in ("type", "member_id", "task_id", "id", "status", "new_status", "team_id")
+            for key in (
+                "type",
+                "member_id",
+                "task_id",
+                "id",
+                "status",
+                "new_status",
+                "team_id",
+            )
             if key in event
         }
     collapsed["truncated"] = True
+    while (
+        _json_wire_size(collapsed) > _HISTORY_WIRE_RECORD_MAX_BYTES
+        and isinstance(collapsed.get("references"), list)
+        and collapsed["references"]
+    ):
+        collapsed["references"].pop()
+        collapsed["references_truncated"] = True
+    if _json_wire_size(collapsed) > _HISTORY_WIRE_RECORD_MAX_BYTES:
+        return _minimal_history_record_for_wire(collapsed)
     return collapsed
 
 
 def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
     """Smallest history record stub: metadata only, content replaced."""
-    minimal = {
-        key: _compact_wire_metadata_value(value)
-        for key, value in record.items()
-        if key in _HISTORY_COLLAPSE_KEEP_KEYS
-    }
+    minimal: dict[str, Any] = {}
+    for key, value in record.items():
+        if key not in _HISTORY_COLLAPSE_KEEP_KEYS:
+            continue
+        if key == "references" and isinstance(value, list):
+            # `references` is a protocol-level array. Do not let scalar
+            # metadata compaction turn it into a string on tiny wire budgets.
+            minimal[key] = []
+            if value:
+                minimal["references_truncated"] = True
+            continue
+        minimal[key] = _compact_wire_metadata_value(value)
     minimal["content"] = "[truncated]"
     minimal["truncated"] = True
     return minimal
@@ -281,7 +337,15 @@ def _select_history_record_page(
                 record = _minimal_history_record_for_wire(record)
                 record_size = _json_wire_size(record) + 1
                 if used + record_size > budget:
-                    record = {"id": _compact_wire_metadata_value(record.get("id")), "truncated": True}
+                    id_only_record = {
+                        "id": _compact_wire_metadata_value(record.get("id")),
+                        "truncated": True,
+                    }
+                    if isinstance(record.get("references"), list):
+                        id_only_record["references"] = []
+                    if record.get("references_truncated") is True:
+                        id_only_record["references_truncated"] = True
+                    record = id_only_record
                     record_size = _json_wire_size(record) + 1
         page.append(record)
         used += record_size
@@ -293,6 +357,7 @@ def _select_history_record_page(
 # ---------------------------------------------------------------------------
 # Workflow snapshot — HITL (waiting-for-human) helpers
 # ---------------------------------------------------------------------------
+
 
 def _is_waiting_human_agent(agent: dict[str, Any]) -> bool:
     return agent.get("status") == "waiting_for_human" and agent.get("kind") == "human"
@@ -322,7 +387,9 @@ def _extract_waiting_human_prompts(workflow: dict[str, Any]) -> dict[str, str]:
     return prompts
 
 
-def _restore_waiting_human_prompts(item: dict[str, Any], prompts: dict[str, str]) -> None:
+def _restore_waiting_human_prompts(
+    item: dict[str, Any], prompts: dict[str, str]
+) -> None:
     """Re-attach preserved human prompts onto a shrunk item's waiting nodes."""
     if not prompts:
         return
@@ -387,6 +454,7 @@ def _workflow_agent_for_collapse(agent: dict[str, Any]) -> dict[str, Any]:
 # Workflow snapshot — single-item shrink ladder
 # ---------------------------------------------------------------------------
 
+
 def _collapse_oversized_workflow_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
     """Collapse a too-large workflow item: keep structure, truncate large text."""
     collapsed = {
@@ -428,8 +496,7 @@ def _collapse_oversized_workflow_snapshot_item(item: dict[str, Any]) -> dict[str
     logs = item.get("logs")
     if isinstance(logs, list) and logs:
         collapsed["logs"] = [
-            _truncate_string_by_bytes(str(log), 512)
-            for log in logs[-10:]
+            _truncate_string_by_bytes(str(log), 512) for log in logs[-10:]
         ]
 
     collapsed["truncated"] = True
@@ -448,7 +515,9 @@ def _minimal_workflow_snapshot_item_for_wire(item: dict[str, Any]) -> dict[str, 
     return minimal
 
 
-def _minimal_workflow_detail_preserving_waiting_human(item: dict[str, Any]) -> dict[str, Any]:
+def _minimal_workflow_detail_preserving_waiting_human(
+    item: dict[str, Any],
+) -> dict[str, Any]:
     """Minimal item that still carries its waiting-human nodes (HITL carve-out)."""
     minimal = _minimal_workflow_snapshot_item_for_wire(item)
     phases = item.get("phases")
@@ -534,6 +603,7 @@ def _fit_workflow_detail_to_budget(
 # Workflow snapshot — list shaping
 # ---------------------------------------------------------------------------
 
+
 def _workflow_list_summary_phase(phase: dict[str, Any]) -> dict[str, Any]:
     """Phase skeleton for list — counts and status only, no agent bodies."""
     return {
@@ -556,9 +626,13 @@ def _workflow_list_summary_item(item: dict[str, Any]) -> dict[str, Any]:
     for key in ("summary", "error", "result"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
-            summary[key] = _truncate_string_by_bytes(value, _WORKFLOW_LIST_SUMMARY_STRING_LIMIT)
+            summary[key] = _truncate_string_by_bytes(
+                value, _WORKFLOW_LIST_SUMMARY_STRING_LIMIT
+            )
         elif value is not None and key not in summary:
-            summary[key] = _truncate_string_by_bytes(str(value), _WORKFLOW_LIST_SUMMARY_STRING_LIMIT)
+            summary[key] = _truncate_string_by_bytes(
+                str(value), _WORKFLOW_LIST_SUMMARY_STRING_LIMIT
+            )
 
     phases = item.get("phases")
     if isinstance(phases, list):
@@ -584,7 +658,9 @@ def _minimal_workflow_list_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fit_workflow_list_item_for_budget(item: dict[str, Any], budget: int) -> dict[str, Any]:
+def _fit_workflow_list_item_for_budget(
+    item: dict[str, Any], budget: int
+) -> dict[str, Any]:
     """Shrink a list row until it fits the remaining byte budget."""
     candidate = _workflow_list_summary_item(item)
     if _json_wire_size(candidate) + 1 <= budget:
@@ -611,9 +687,14 @@ def _fit_workflow_list_item_for_budget(item: dict[str, Any], budget: int) -> dic
 # Workflow snapshot — public payload builders
 # ---------------------------------------------------------------------------
 
+
 def _build_workflow_list_payload(workflows: Any, *, session_id: str) -> dict[str, Any]:
     """Return lightweight workflow summaries — every run listed, detail via ``action=get``."""
-    source = [item for item in (workflows if isinstance(workflows, list) else []) if isinstance(item, dict)]
+    source = [
+        item
+        for item in (workflows if isinstance(workflows, list) else [])
+        if isinstance(item, dict)
+    ]
     total = len(source)
     payload: dict[str, Any] = {
         "type": "workflow_run_snapshot",
@@ -650,7 +731,9 @@ def _build_workflow_list_payload(workflows: Any, *, session_id: str) -> dict[str
     return payload
 
 
-def _build_workflow_detail_payload(workflow: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+def _build_workflow_detail_payload(
+    workflow: dict[str, Any], *, session_id: str
+) -> dict[str, Any]:
     """Return one workflow with full detail (subject to single-record sanitize/collapse)."""
     preserved_prompts = _extract_waiting_human_prompts(workflow)
     sanitized = _sanitize_workflow_snapshot_item_for_wire(workflow)
@@ -757,7 +840,9 @@ def _build_workflow_human_prompt_payload(
     }
 
 
-def _build_workflow_snapshot_payload(workflows: Any, *, session_id: str) -> dict[str, Any]:
+def _build_workflow_snapshot_payload(
+    workflows: Any, *, session_id: str
+) -> dict[str, Any]:
     """Backward-compatible alias — defaults to lightweight list summaries."""
     return _build_workflow_list_payload(workflows, session_id=session_id)
 

@@ -18,8 +18,8 @@ Covered runtime tools:
   the presence of a request id / channel id.
 * ``send_html_card`` — H5 HTML card toolkit, gated by
   ``send_html_card_allowed`` (xiaoyi defaults to enabled, others disabled).
-* ``xiaoyi_append_reference`` — phone citation cards, gated by
-  ``append_reference_allowed`` (xiaoyi defaults to enabled, others disabled).
+* ``xiaoyi_append_reference`` — desktop/mobile citation sources, gated by
+  ``append_reference_allowed`` (desktop and xiaoyi default to enabled).
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_append_reference import (
     XiaoyiAppendReferenceToolkit,
 )
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.common.xiaoyi_reference import resolve_append_reference_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -314,17 +315,9 @@ def _is_append_reference_enabled(config: dict[str, Any] | None, channel_id: str)
     """Resolve whether citation cards are allowed for *channel_id*.
 
     Reads ``channels.<channel_id>.append_reference_allowed``; when unset, the
-    ``xiaoyi`` channel defaults to enabled and all other channels default to
-    disabled.
+    ``desktop`` and ``xiaoyi`` channels default to enabled.
     """
-    allowed = None
-    if isinstance(config, dict):
-        allowed = (
-            config.get("channels", {}).get(str(channel_id), {}).get("append_reference_allowed")
-        )
-    if allowed is None:
-        return channel_id == "xiaoyi"
-    return bool(allowed)
+    return resolve_append_reference_enabled(config, channel_id)
 
 
 class AppendReferenceInput(ConstructionInput):

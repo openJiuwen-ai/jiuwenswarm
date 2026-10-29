@@ -7,10 +7,11 @@ file_operation_history:
 
 # 渐进式工具曝光（progressive tool loading）：
 # true：模型仅直接可见下面两个名单的工具，其余工具经 search_tools/load_tools 延迟发现。
-# always_visible = 始终直接可见（todo 工具优先级最高）；
+# always_visible = 始终直接可见（reference 运行时工具 + todo 工具）；
 # default_visible = 初始直接可见的核心工作工具（可能被 load_tools 换入换出）。
 progressive_tool_enabled: true
 progressive_tool_always_visible_tools:
+  - xiaoyi_append_reference
   - todo_create
   - todo_list
   - todo_get
