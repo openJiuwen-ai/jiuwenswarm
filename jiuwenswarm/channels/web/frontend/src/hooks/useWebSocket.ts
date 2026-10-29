@@ -7,7 +7,7 @@
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
-import { readOutputOrder } from '../features/sessionOutput';
+import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
 import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
@@ -3189,6 +3189,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }),
       ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
+        const targetSessionId = getPayloadSessionId(payload);
+        const messages = targetSessionId ? useChatStore.getState().getRuntime(targetSessionId)?.messages : undefined;
+        if (isRestoredOutputReplay(messages ?? [], payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);

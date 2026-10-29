@@ -1,6 +1,6 @@
 import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
-import { readOutputOrder } from './sessionOutput';
+import { isRestoredOutputReplay, readOutputOrder } from './sessionOutput';
 import { extractHistoryMediaItems } from './historyRestore';
 import { steerImageMediaRecords } from './sessionInputMedia';
 import { describeChatError } from './free-models/chatError';
@@ -128,6 +128,7 @@ export function handleSessionOutputBoundary(event: string, payload: Record<strin
   if (typeof sessionId !== 'string') return;
   const store = useChatStore.getState();
   store.ensureRuntime(sessionId);
+  if (isRestoredOutputReplay(store.getRuntime(sessionId)!.messages, payload)) return;
   if (event === 'chat.output_phase') {
     if (typeof payload.output_phase_id !== 'string') return;
     store.setOutputPhase(sessionId, payload.output_phase_id);
@@ -171,6 +172,8 @@ export function shouldIgnoreSessionOutput(payload: Record<string, unknown>): boo
   const phase = payload.output_phase_id;
   const sessionId = payload.session_id;
   if (typeof phase !== 'string' || typeof sessionId !== 'string') return false;
-  const current = useChatStore.getState().getRuntime(sessionId)?.outputPhaseId;
+  const runtime = useChatStore.getState().getRuntime(sessionId);
+  if (isRestoredOutputReplay(runtime?.messages ?? [], payload)) return true;
+  const current = runtime?.outputPhaseId;
   return Boolean(current && current !== phase);
 }

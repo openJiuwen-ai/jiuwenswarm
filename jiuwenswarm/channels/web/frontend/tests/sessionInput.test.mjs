@@ -1977,3 +1977,156 @@ test('cross-session steering keeps its Agent source and the original task runnin
     await c.dispose();
   }
 });
+
+let restoredWorkerSequence = 0;
+
+function restoreCompletedSteerReply(c, { completed = true } = {}) {
+  const completedAt = Date.now() - 1_000 + 0.875;
+  const phase = 'restored-steer-phase';
+  const requestId = 'restored-original';
+  const content = '99 × 99 = 9801';
+  const workerInstance = `restored-worker-${++restoredWorkerSequence}`;
+  const rows = [
+    { id: 'restored-user', role: 'user', content: 'Write a story', timestamp: completedAt - 5_000 },
+    {
+      id: 'restored-steer', role: 'user', content: 'Answer 99 * 99 instead', timestamp: completedAt - 2_000,
+      request_id: 'restored-supplement', is_supplemental_input: true,
+      supplemental_input: { execution_id: 'restored-execution' },
+      output_order: { request_id: requestId, sequence: 2 },
+    },
+    {
+      id: 'restored-answer', role: 'assistant', event_type: 'chat.final', content,
+      timestamp: (completedAt - 500) / 1_000,
+      ...(completed ? { completed_at: completedAt / 1_000 } : {}),
+      request_id: requestId, output_phase_id: phase,
+      output_order: { request_id: requestId, sequence: 10 },
+    },
+  ];
+  act(() => {
+    c.store.removeRuntime(c.sid);
+    c.store.ensureRuntime(c.sid);
+    c.store.setActiveSessionId(c.sid);
+    c.store.replaceHistoryMessages(c.sid, parseHistoryJsonFileToPreviewMessages(rows, c.sid));
+  });
+  const frame = (sequence, extra = {}) => ({
+    request_id: requestId, execution_id: 'restored-execution', output_phase_id: phase,
+    output_order: { request_id: requestId, sequence },
+    runtime_event: { worker_instance: workerInstance, sequence, replayed: true },
+    timestamp: completedAt - 100, ...extra,
+  });
+  return { completedAt, phase, requestId, content, rows, frame };
+}
+
+for (const tailOnly of [false, true]) {
+  test(`history followed by ${tailOnly ? 'a truncated' : 'a complete'} output replay keeps one final answer`, async context => {
+    const c = await mount(context);
+    try {
+      const restored = restoreCompletedSteerReply(c);
+      c.receive('chat.output_phase', restored.frame(3));
+      c.receive('chat.reasoning', restored.frame(9, { content: 'Already completed reasoning' }));
+      c.receive('chat.delta', restored.frame(tailOnly ? 15 : 10, { content: tailOnly ? '801' : '9' }));
+      await c.tick(16);
+      c.receive('chat.final', restored.frame(20, { content: restored.content, timestamp: restored.completedAt }));
+      await c.flush();
+      const answers = c.runtime().messages.filter(message => message.role === 'assistant');
+      assert.deepEqual(answers.map(message => [message.id, message.content]), [['restored-answer', restored.content]]);
+      const bubbles = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')];
+      assert.equal(bubbles.filter(node => node.textContent.includes('9801')).length, 1);
+      assert.equal(c.runtime().currentStreamId, null);
+      assert.equal(c.runtime().isProcessing, false);
+      assert.equal(c.runtime().reasoningSegments.length, 0);
+      assert.equal(c.requests().length, 0);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('an old replay cannot reset the phase or close a newer running answer', async context => {
+  const c = await mount(context);
+  try {
+    const restored = restoreCompletedSteerReply(c);
+    const current = {
+      request_id: 'new-original', execution_id: 'new-execution', output_phase_id: 'new-phase',
+      timestamp: Date.now(), output_order: { request_id: 'new-original', sequence: 1 },
+    };
+    c.receive('chat.output_phase', current);
+    c.receive('chat.delta', { ...current, content: 'New task' });
+    await c.tick(16);
+    const streamId = c.runtime().currentStreamId;
+    c.receive('chat.output_phase', restored.frame(1, { output_phase_id: 'superseded-story-phase' }));
+    c.receive('chat.input_received', restored.frame(2, {
+      output_phase_id: 'superseded-story-phase', input_request_id: 'restored-supplement',
+      content: 'Answer 99 * 99 instead',
+    }));
+    c.receive('chat.output_phase', restored.frame(3));
+    c.receive('chat.delta', restored.frame(10, { content: '9' }));
+    c.receive('chat.final', restored.frame(20, { content: restored.content, timestamp: restored.completedAt }));
+    await c.flush();
+    assert.equal(c.runtime().outputPhaseId, current.output_phase_id);
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().activeExecutionId, current.execution_id);
+    c.receive('chat.delta', { ...current, content: ' continues', output_order: { ...current.output_order, sequence: 2 } });
+    await c.tick(16);
+    assert.equal(c.runtime().messages.find(message => message.id === streamId).content, 'New task continues');
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const difference of ['later-output', 'different-phase', 'different-request', 'live-output', 'no-timestamp']) {
+  test(`history reconciliation retains ${difference}`, async context => {
+    const c = await mount(context);
+    try {
+      const restored = restoreCompletedSteerReply(c);
+      const payload = restored.frame(21, { content: restored.content });
+      if (difference === 'later-output') payload.timestamp = restored.completedAt + 1;
+      if (difference === 'different-phase') payload.output_phase_id = 'unfinished-phase';
+      if (difference === 'different-request') {
+        payload.request_id = 'other-request';
+        payload.output_order = { request_id: 'other-request', sequence: 21 };
+      }
+      if (difference === 'live-output') payload.runtime_event.replayed = false;
+      if (difference === 'no-timestamp') delete payload.timestamp;
+      c.receive('chat.output_phase', {
+        ...payload, content: undefined,
+        runtime_event: { ...payload.runtime_event, sequence: 20 },
+        output_order: { ...payload.output_order, sequence: 20 },
+      });
+      c.receive('chat.delta', payload);
+      await c.tick(16);
+      const assistants = c.runtime().messages.filter(message => message.role === 'assistant');
+      assert.equal(assistants.length, 2);
+      assert.deepEqual(assistants.map(message => message.content), [restored.content, restored.content]);
+      assert.equal(c.runtime().isProcessing, true);
+      assert.equal(c.runtime().currentStreamId, assistants[1].id);
+      c.receive('chat.final', {
+        ...payload,
+        runtime_event: { ...payload.runtime_event, sequence: 22 },
+        output_order: { ...payload.output_order, sequence: 22 },
+      });
+      await c.flush();
+      assert.deepEqual(c.runtime().messages.filter(message => message.role === 'assistant').map(message => message.content),
+        [restored.content, restored.content]);
+      assert.equal(c.runtime().currentStreamId, null);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('history without an explicit completion boundary still restores unfinished output', async context => {
+  const c = await mount(context);
+  try {
+    const restored = restoreCompletedSteerReply(c, { completed: false });
+    c.receive('chat.output_phase', restored.frame(3));
+    c.receive('chat.delta', restored.frame(10, { content: 'Continuation' }));
+    await c.tick(16);
+    assert.equal(c.runtime().messages.at(-1).content, 'Continuation');
+    assert.ok(c.runtime().currentStreamId);
+    assert.equal(c.runtime().isProcessing, true);
+  } finally {
+    await c.dispose();
+  }
+});

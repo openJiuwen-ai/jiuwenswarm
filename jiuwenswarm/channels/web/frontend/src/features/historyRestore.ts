@@ -1285,13 +1285,11 @@ function parseSessionHistoryTimelineEntry(
         ? proactiveAssistantMessageId(histProactiveRecId)
         : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
-    const completedAt =
-      (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'
-        ? recordTimestampIso({ timestamp: record.completed_at })
-        : undefined) ||
-      (typeof payload.completed_at === 'number' || typeof payload.completed_at === 'string'
-        ? recordTimestampIso({ timestamp: payload.completed_at })
-        : undefined);
+    const recordCompletedAtMs = parseTimestampToMs(record.completed_at);
+    const completedAtMs = Number.isFinite(recordCompletedAtMs)
+      ? recordCompletedAtMs
+      : parseTimestampToMs(payload.completed_at);
+    const completedAt = timestampMsToIso(completedAtMs);
     return {
       kind: 'message',
       message: {
@@ -1310,7 +1308,7 @@ function parseSessionHistoryTimelineEntry(
         ...(record.channel_id === 'video_duplex' || payload.channel_id === 'video_duplex'
           ? { keepExpanded: true }
           : {}),
-        ...(completedAt ? { completedAt } : {}),
+        ...(completedAt ? { completedAt, outputReplayUntil: completedAtMs } : {}),
         ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
         ...(isProactiveRecommendation && histProactiveType
           ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
