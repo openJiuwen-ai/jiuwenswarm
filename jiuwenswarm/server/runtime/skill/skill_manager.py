@@ -1270,7 +1270,7 @@ class SkillManager:
         if "marketplace" in base_meta:
             meta["marketplace"] = base_meta.get("marketplace")
         # 列表扫描写入的安装账本字段（source_type/origin 等）需带回详情，
-        # 否则前端无法识别企业预置（prebuilt）而错误展示启停开关。
+        # 否则前端无法识别企业预置/内置身份（编辑卸载与启停展示依赖）。
         self._copy_skill_installation_identity(meta, base_meta)
         meta["has_evolutions"] = _has_effective_evolutions(
             skill_dir if version_requested is None else read_root
@@ -1484,38 +1484,38 @@ class SkillManager:
         页面缓存的列表数据。企业版在 workspace 锁里重载账本后再写，
         避免并发安装被旧内存覆盖。
         """
-        if self._prebuilt_toggle_blocked(params) is not None:
-            return self._prebuilt_toggle_blocked(params)
+        blocked = self._managed_skill_toggle_blocked(params)
+        if blocked is not None:
+            return blocked
         if is_enterprise():
             return await asyncio.to_thread(self._handle_enterprise_skills_toggle, params)
         return self._toggle_skill_body(params)
 
-    def _prebuilt_toggle_blocked(self, params: dict) -> dict | None:
-        """拦截不可启停的安装类型。
+    def _managed_skill_toggle_blocked(self, params: dict) -> dict | None:
+        """单机版仅拦截预置（prebuilt）启停；内置与用户技能可启停（与 develop 一致）。
 
-        - prebuilt：各版本均不可启停
-        - builtin：仅企业版可启停（单机版保持原拦截，避免行为变化）
+        企业版预置/内置均可启停（仍不可卸载），此处直接放行。
         """
         name = str(params.get("name") or "")
         origin = str(params.get("origin") or "").strip() or None
-        if not name or params.get("dry_run"):
+        if not name or params.get("dry_run") or is_enterprise():
             return None
         installation = self._find_skill_installation(name=name, origin=origin)
         if installation is None:
             return None
         source_type = str(installation.get("source_type") or "").strip()
-        if source_type == "prebuilt" or (source_type == "builtin" and not is_enterprise()):
+        if source_type == "prebuilt":
             return {
                 "success": False,
                 "error_code": "prebuilt_not_toggleable",
-                "error_message": "prebuilt skill is managed by administrator",
-                "detail": "企业预置技能由管理员统一管理，不允许启停。",
+                "error_message": "prebuilt skill toggle is not allowed in personal edition",
+                "detail": "预置技能在单机版不可启停。",
             }
         return None
 
     @_state_transactional
     def _handle_enterprise_skills_toggle(self, params: dict) -> dict:
-        # prebuilt 拦截已由 handle_skills_toggle → _prebuilt_toggle_blocked 完成。
+        # 单机版 prebuilt 拦截已由 handle_skills_toggle → _managed_skill_toggle_blocked 完成。
         name = str(params.get("name") or "")
         origin = str(params.get("origin") or "").strip() or None
         result = self._toggle_skill_body(params)

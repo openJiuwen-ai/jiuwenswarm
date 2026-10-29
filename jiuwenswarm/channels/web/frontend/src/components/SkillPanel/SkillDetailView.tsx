@@ -432,7 +432,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
               ? [t('skills.skillTypes.skillpack')]
               : undefined,
     },
-    /* 右侧操作按钮；企业预置/内置不展示编辑、卸载、发布；内置可启停 */
+    /* 右侧操作按钮；企业预置/内置不展示编辑、卸载、发布；企业版预置/内置可启停 */
     <div className="flex items-center flex-shrink-0">
       {!adminManaged ? (
         <div className="relative">

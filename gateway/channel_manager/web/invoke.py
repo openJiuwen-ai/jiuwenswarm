@@ -37,9 +37,15 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.list",
     "skills.get",
     "skills.toggle",
+    # 技能详情只读接口：文件预览 / 版本列表（与 skills.get 同属查看已安装 skill）。
+    "skills.files.list",
+    "skills.files.get",
+    "skills.versions.list",
     "skills.source.providers",
     "skills.source.search",
     "skills.source.install",
+    # 用户安装的 skill 卸载；SkillManager 会拦截 builtin/prebuilt。
+    "skills.uninstall",
     "skills.updates.check",
     "skills.update",
     # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
