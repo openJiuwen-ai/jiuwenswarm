@@ -134,7 +134,7 @@ def design_host(monkeypatch, tmp_path):
     design_execution._rounds.clear()
     install_bridge(monkeypatch)
     store = TaskStore(tmp_path / "tasks.sqlite")
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
+    from gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 
     endpoint = GatewayTaskEndpoint(store)
     task = TaskService._new("alice", "task-duplex:design-chat", "Update scene", {})

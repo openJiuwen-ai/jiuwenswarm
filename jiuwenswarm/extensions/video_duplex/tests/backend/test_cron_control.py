@@ -228,7 +228,7 @@ def test_cron_arguments_are_validated_strictly(name, arguments):
 
 @pytest.mark.asyncio
 async def test_unavailable_cron_returns_a_receipt_instead_of_raising(monkeypatch):
-    from jiuwenswarm.gateway.cron import controller as controller_module
+    from gateway.cron import controller as controller_module
 
     def unavailable(**kwargs):
         raise RuntimeError("CronController not initialized")

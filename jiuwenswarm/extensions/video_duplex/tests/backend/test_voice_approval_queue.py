@@ -223,7 +223,7 @@ async def test_joyai_may_answer_approval_cards_but_not_information_forms(system)
 
 
 def test_web_channel_reports_card_and_turn_pushes_to_listeners():
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     channel = WebChannel.__new__(WebChannel)
     channel._session_busy, channel._session_event_listeners = {}, []
@@ -242,7 +242,7 @@ def test_web_channel_reports_card_and_turn_pushes_to_listeners():
 
 async def test_web_channel_replays_request_through_its_own_dispatch():
     import json
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     channel = WebChannel.__new__(WebChannel)
     frames = []

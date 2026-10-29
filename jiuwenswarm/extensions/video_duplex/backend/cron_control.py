@@ -311,7 +311,7 @@ class CronControl:
 
     def _get_controller(self) -> Any:
         if self._controller is None:
-            from jiuwenswarm.gateway.cron.controller import CronController
+            from gateway.cron.controller import CronController
 
             self._controller = CronController.get_instance()
         return self._controller

@@ -150,7 +150,7 @@ async def test_waits_for_ready_core_then_queries_once_even_on_not_found(
 
 async def test_late_settlement_of_runtime_unknown_releases_queue(tmp_path, monkeypatch):
     from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
+    from gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 
     monkeypatch.setattr(module, "RECONCILE_INTERVAL", 0.01)
     store = TaskStore(tmp_path / "tasks.sqlite")

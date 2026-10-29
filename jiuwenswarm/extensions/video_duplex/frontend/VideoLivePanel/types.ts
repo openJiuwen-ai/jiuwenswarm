@@ -76,6 +76,7 @@ export interface SearchProgressEntry {
   tool_result?: unknown;
   tool_summary?: string;
   tool_success?: boolean;
+  subagent_event?: Record<string, unknown>;
 }
 
 export interface SearchProgressJob {

@@ -15,7 +15,7 @@ await build({
   outfile, bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic',
   loader: { '.css': 'empty' }, define: { 'import.meta.env.DEV': 'false' },
   plugins: [{ name: 'designer-duplex-ports', setup(builder) {
-    builder.onResolve({ filter: /(?:designerStore|designerUiStore|designerEntry|stores\/chatStore|stores\/sessionStore|ApplicationPluginOutlet|services\/webClient|taskFullDuplex\/featureFlag|components\/form|components\/ModelProviderIcon|components\/ChatPanel\/(?:MessageList|InlineQuestionCard)|components\/InteractionSlot)$/ }, ({ path }) => ({ path, namespace: 'ports' }));
+    builder.onResolve({ filter: /(?:designerStore|designerUiStore|designerEntry|stores\/chatStore|stores\/sessionStore|ApplicationPluginOutlet|services\/webClient|taskFullDuplex\/featureFlag|components\/form|components\/ModelProviderIcon|components\/ChatPanel\/ChatModelSelector|components\/ChatPanel\/(?:MessageList|InlineQuestionCard)|components\/InteractionSlot)$/ }, ({ path }) => ({ path, namespace: 'ports' }));
     builder.onResolve({ filter: /\.svg\?react$/ }, () => ({ path: 'svg', namespace: 'ports' }));
     builder.onLoad({ filter: /.*/, namespace: 'ports' }, ({ path }) => {
       let contents;
@@ -28,6 +28,7 @@ await build({
       else if (path.endsWith('services/webClient')) contents = 'export const webClient = {request: async () => ({})}; export const webRequest = async () => ({task_full_duplex_enabled: true});';
       else if (path.endsWith('featureFlag')) contents = 'export const useTaskFullDuplexEnabled = () => true; export const setTaskFullDuplexEnabled = () => {}; export const setTaskAsrEnabled = () => {};';
       else if (path.endsWith('components/form')) contents = 'export const FormDialog = () => null;';
+      else if (path.endsWith('ChatModelSelector')) contents = 'export default () => null;';
       else if (path.endsWith('ModelProviderIcon')) contents = 'export const ModelProviderIcon = () => null;';
       else if (path.endsWith('MessageList')) contents = 'export const MessageList = () => null;';
       else if (path.endsWith('InlineQuestionCard')) contents = 'export const InlineQuestionCard = () => null;';

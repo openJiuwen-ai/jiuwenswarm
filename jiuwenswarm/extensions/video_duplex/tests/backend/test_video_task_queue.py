@@ -552,7 +552,7 @@ async def test_native_file_history_is_bound_to_exact_execution(queue, monkeypatc
         ]
 
     monkeypatch.setattr(session_history, "load_history_records", history)
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
+    from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.server.runtime.session import session_metadata, lifecycle
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *a, **k: {"user_id": "alice"})
@@ -706,7 +706,7 @@ async def test_5597_voice_query_sees_scheduled_jobs_created_in_another_conversat
     """
     from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
     from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
-    from jiuwenswarm.gateway.cron.controller import CronController
+    from gateway.cron.controller import CronController
     from jiuwenswarm.runtime.cron.store import CronJobStore
 
     cron_store = CronJobStore(tmp_path / "cron_jobs.json")

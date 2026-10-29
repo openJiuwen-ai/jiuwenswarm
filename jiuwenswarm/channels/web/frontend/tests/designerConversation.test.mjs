@@ -32,7 +32,7 @@ function fixture() {
   const state = {
     workspace: { selectedProject: null, projects: [] },
     chat: { ensureRuntime: id => events.push(['ensure', id]), setActiveSessionId: id => events.push(['active', id]) },
-    session: { getRuntime: () => null, setMode: (...args) => events.push(['mode', ...args]) },
+    session: { ensureRuntime: () => {}, getRuntime: () => null, setMode: (...args) => events.push(['mode', ...args]) },
     applied: [], history: [], events,
     create: async params => {
       events.push(['create', params]);

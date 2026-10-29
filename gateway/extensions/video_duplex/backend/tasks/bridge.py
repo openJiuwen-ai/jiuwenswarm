@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 import weakref
-from .diagnostics import trace_task
+from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod

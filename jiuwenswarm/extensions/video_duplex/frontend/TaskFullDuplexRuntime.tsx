@@ -26,6 +26,7 @@ import {
 import { getFileIdentityKey } from "../../../channels/web/frontend/src/utils/fileDownloadDedup";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
 import { describeDuplexError } from "./duplexErrorMessage";
+import { applyDuplexSubagentEvent } from "./duplexSubagentEvents";
 import {
   registerTaskFullDuplexController,
   setTaskFullDuplexRuntimeError,
@@ -110,11 +111,36 @@ type PersistedTimelineEvent = Record<string, unknown> & {
   timestamp: number;
 };
 
-const historyQueues = new Map<string, Promise<void>>();
+type HistoryQueue = {
+  events: Record<string, unknown>[];
+  writing?: Promise<void>;
+};
+const historyQueues = new Map<string, HistoryQueue>();
+
+function writeHistory(sessionId: string, queue: HistoryQueue): Promise<void> {
+  if (queue.writing) return queue.writing;
+  const writing = (async () => {
+    // Retain the failed event and its ID so retries remain ordered and idempotent.
+    while (queue.events.length) {
+      await webRequest("video.conversation.append", queue.events[0]);
+      queue.events.shift();
+    }
+  })();
+  queue.writing = writing;
+  void writing.then(() => {
+    queue.writing = undefined;
+    if (queue.events.length) void writeHistory(sessionId, queue);
+    else if (historyQueues.get(sessionId) === queue) historyQueues.delete(sessionId);
+  }, (error) => {
+    queue.writing = undefined;
+    console.warn("Failed to persist Full-duplex timeline event:", error);
+  });
+  return writing;
+}
 
 export async function flushConversationHistory(sessionId: string): Promise<void> {
   while (historyQueues.has(sessionId)) {
-    await historyQueues.get(sessionId);
+    await writeHistory(sessionId, historyQueues.get(sessionId)!);
   }
 }
 
@@ -139,23 +165,10 @@ function persistTimelineEvent(
   event: PersistedTimelineEvent,
 ): void {
   if (!sessionId || sessionId === "new") return;
-  const previous = historyQueues.get(sessionId) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(async () => {
-      await webRequest("video.conversation.append", {
-        session_id: sessionId,
-        event_id: timelineEventId(),
-        ...event,
-      });
-    })
-    .catch((error) => {
-      console.warn("Failed to persist Full-duplex timeline event:", error);
-    });
-  historyQueues.set(sessionId, next);
-  void next.finally(() => {
-    if (historyQueues.get(sessionId) === next) historyQueues.delete(sessionId);
-  });
+  const queue = historyQueues.get(sessionId) ?? { events: [] };
+  queue.events.push({ ...event, session_id: sessionId, event_id: timelineEventId() });
+  historyQueues.set(sessionId, queue);
+  void writeHistory(sessionId, queue);
 }
 
 export function TaskFullDuplexRuntime({
@@ -365,6 +378,8 @@ export function TaskFullDuplexRuntime({
       if (runtimeSessionIdRef.current === targetSessionId)
         panelRef.current?.deliverTaskInteraction(payload);
       if (payload.replay) return;
+      if (payload.interaction && runtimeSessionIdRef.current === targetSessionId)
+        panelRef.current?.deliverQuestion(payload);
       const processed =
         processedCoreProgressRef.current.get(jobId) || new Set<number>();
       processedCoreProgressRef.current.set(jobId, processed);
@@ -404,6 +419,10 @@ export function TaskFullDuplexRuntime({
 
           if (entry.stage === "reasoning" && entry.content) {
             emitReasoning(targetSessionId, entry.content, atMs);
+            return;
+          }
+          if (entry.stage === "subagent") {
+            applyDuplexSubagentEvent(targetSessionId, entry.subagent_event);
             return;
           }
           if (entry.stage === "tool_call") {

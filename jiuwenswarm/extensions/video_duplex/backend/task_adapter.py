@@ -34,7 +34,7 @@ CHAT_ANSWER_CONFIRM_TIMEOUT = 10
 
 async def gateway_scheduled_jobs(owner):
     """Read the Gateway cron store with the same owner scope as the sidebar's ``cron.job.list``."""
-    from jiuwenswarm.gateway.cron.controller import CronController
+    from gateway.cron.controller import CronController
 
     # An empty owner is the anonymous single-user scope; the sidebar then lists every job too.
     return await CronController.get_instance().list_jobs(user_id=owner or None)
@@ -77,7 +77,7 @@ async def send_agent_request_with_timeout(
 
 def task_identity(ws, scope):
     """Use WebChannel's user scope; connection admission belongs to the gateway."""
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     if not isinstance(scope, str) or not scope:
         raise ValueError("Invalid task conversation")
@@ -121,7 +121,7 @@ async def task_agent_query(client, method, params, session, owner):
 class AgentTaskExecutor:
     def __init__(self, client, store, normalize_media):
         self.client, self.store, self.normalize_media = client, store, normalize_media
-        from .tasks.bridge import GatewayTaskEndpoint
+        from gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 
         self.endpoint = GatewayTaskEndpoint(store)
         self.reconciliation_outcomes = {}

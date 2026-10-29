@@ -10,8 +10,8 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import task_checkpoint
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.rail import task_checkpoint
 
 
 class TaskAdapter(SimpleNamespace):
@@ -308,7 +308,7 @@ async def test_real_core_model_call_observes_change_through_host_binding(
         ReActAgentConfig,
     )
     from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import VoiceAgentTaskRail
+    from jiuwenswarm.server.runtime.video_task.rail import VoiceAgentTaskRail
 
     service, executor = tasks
     task = submit(service, "core-call")
@@ -1149,7 +1149,7 @@ async def test_queue_revision_persists_and_increases_when_order_returns_to_previ
 
 
 async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import capture_task_execution
+    from jiuwenswarm.server.runtime.video_task.execution import capture_task_execution
 
     service, executor = tasks
     task = submit(service, "resumed-cua-stop")

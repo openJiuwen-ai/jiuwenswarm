@@ -15794,7 +15794,7 @@ class JiuWenSwarmDeepAdapter:
 
         cua_active = bool(managed_task_request) and has_active_cua(managed_task_request)
         if request.channel_id == "video_tool" and intent == "cancel":
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import managed_request_detached
+            from jiuwenswarm.server.runtime.video_task.execution import managed_request_detached
 
             managed = managed_task_request
             detached = bool(managed and managed_request_detached(self._voice_agent_task_rail, request)
@@ -15856,7 +15856,7 @@ class JiuWenSwarmDeepAdapter:
         # session stream producer -- cancel_round still owns that lifecycle.
         cua_cancel_requested = False
         if cua_active:
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import capture_task_execution
+            from jiuwenswarm.server.runtime.video_task.execution import capture_task_execution
             from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
 
             executions = active_cua_executions(managed_task_request)
