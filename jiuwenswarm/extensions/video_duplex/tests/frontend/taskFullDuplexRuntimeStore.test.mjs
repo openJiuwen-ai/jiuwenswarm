@@ -23,7 +23,8 @@ globalThis.window = { localStorage: { getItem: () => 'true', setItem: () => {} }
 
 const {
   registerTaskFullDuplexController, setTaskFullDuplexRuntimeState, startTaskFullDuplex,
-  stopTaskFullDuplex, useTaskFullDuplexRuntime,
+  stopTaskFullDuplex, useTaskFullDuplexRuntime, setTaskDuplexScreenSharing,
+  startTaskDuplexScreenSharing, stopTaskDuplexScreenSharing,
 } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 
 const snapshot = () => useTaskFullDuplexRuntime();
@@ -34,14 +35,15 @@ const buttonState = (sessionId) => {
 };
 
 function registerPanel() {
-  const panel = { stops: 0 };
+  const panel = { stops: 0, shares: 0 };
   registerTaskFullDuplexController({
     // The screen was picked; the model connects later, once the picture plays.
     startScreenDuplex: async () => true,
     stop: () => { panel.stops += 1; },
     setMicrophoneMuted: () => {},
     setSpeakerMuted: () => {},
-    stopScreenSharing: () => {},
+    stopScreenSharing: () => { setTaskDuplexScreenSharing(false); },
+    startScreenSharing: async () => { panel.shares += 1; setTaskDuplexScreenSharing(true); },
   }, async (sessionId) => `task-duplex:${sessionId}`, async () => {});
   return panel;
 }
@@ -85,4 +87,30 @@ test('the old run ending after a switch does not clear the new conversation', as
   stopTaskFullDuplex();
   setTaskFullDuplexRuntimeState('idle');
   assert.equal(snapshot().state, 'idle');
+});
+
+test('closing the shared screen keeps the run and it can be shared again', async () => {
+  const panel = registerPanel();
+  await startTaskFullDuplex('sess-share', 'screen');
+  setTaskFullDuplexRuntimeState('starting');
+  setTaskFullDuplexRuntimeState('active');
+  setTaskDuplexScreenSharing(true);
+
+  stopTaskDuplexScreenSharing();
+  assert.equal(snapshot().screenSharing, false);
+  assert.equal(buttonState('sess-share'), 'active');
+
+  startTaskDuplexScreenSharing();
+  await Promise.resolve();
+  assert.equal(panel.shares, 1);
+  assert.equal(snapshot().screenSharing, true);
+  assert.equal(panel.stops, 0);
+  assert.equal(buttonState('sess-share'), 'active');
+
+  // Already sharing, or no active run: nothing to start.
+  startTaskDuplexScreenSharing();
+  stopTaskFullDuplex();
+  setTaskFullDuplexRuntimeState('idle');
+  startTaskDuplexScreenSharing();
+  assert.equal(panel.shares, 1);
 });

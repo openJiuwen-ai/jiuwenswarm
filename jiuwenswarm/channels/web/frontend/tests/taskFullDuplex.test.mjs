@@ -94,3 +94,13 @@ test('task Full-duplex creates a real session before starting and persists its t
   assert.match(backend, /"video\.conversation\.append": _append_conversation/);
   assert.doesNotMatch(runtime, /chat\.send/);
 });
+
+test('task full-duplex can share the screen again without restarting the voice run', () => {
+  const panel = read('../../../extensions/video_duplex/frontend/VideoLivePanel/index.tsx');
+  const action = read('../../../extensions/video_duplex/frontend/TaskFullDuplexAction.tsx');
+  // With nothing shared, a reset would stop the voice transport and unbind the conversation.
+  assert.match(panel, /if \(source && source !== 'screen'\) \{\s*resetSource\(\);/);
+  assert.match(panel, /startScreenSharing: async \(\) => \{\s*await startScreen\(\);/);
+  assert.match(action, /onClick=\{startTaskDuplexScreenSharing\}/);
+  assert.match(action, /data-testid="chat-panel-duplex-start-sharing"/);
+});

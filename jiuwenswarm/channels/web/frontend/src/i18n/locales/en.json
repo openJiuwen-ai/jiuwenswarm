@@ -1566,6 +1566,7 @@
       "unmuteMic": "Unmute microphone",
       "muteSpeaker": "Mute model audio",
       "unmuteSpeaker": "Unmute model audio",
+      "startSharing": "Share screen",
       "stopSharing": "Stop screen sharing",
       "listening": "Listening",
       "connecting": "Connecting",

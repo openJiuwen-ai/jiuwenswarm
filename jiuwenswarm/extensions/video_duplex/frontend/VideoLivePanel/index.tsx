@@ -86,6 +86,7 @@ export interface VideoLivePanelHandle {
   setMicrophoneMuted: (muted: boolean) => void;
   setSpeakerMuted: (muted: boolean) => void;
   stopScreenSharing: () => void;
+  startScreenSharing: () => Promise<void>;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
   /** A typed-chat approval card in this conversation; it has no job, so job_id is "". */
@@ -841,7 +842,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         throw new Error('没有获得屏幕画面。');
       }
 
-      if (source !== 'screen') {
+      // Only a camera or file source is replaced. With nothing shared, a reset
+      // would also stop the running voice transport and its conversation.
+      if (source && source !== 'screen') {
         resetSource();
       }
 
@@ -1241,6 +1244,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       speakerMutedRef.current = muted;
       duplexRef.current?.setSpeakerMuted(muted);
       joyaiProviderRef.current?.setSpeakerMuted(muted);
+    },
+    startScreenSharing: async () => {
+      await startScreen();
     },
     stopScreenSharing: () => {
       [...screenStreamsRef.current.keys()].forEach(removeScreen);

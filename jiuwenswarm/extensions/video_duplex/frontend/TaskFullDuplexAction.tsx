@@ -4,6 +4,7 @@ import {
   LoaderCircle,
   Mic,
   MicOff,
+  Monitor,
   MonitorOff,
   Volume2,
   VolumeX,
@@ -25,6 +26,7 @@ import {
   useTaskFullDuplexRuntime,
   toggleTaskDuplexMicrophone,
   toggleTaskDuplexSpeaker,
+  startTaskDuplexScreenSharing,
   stopTaskDuplexScreenSharing,
   clearTaskFullDuplexError,
 } from './taskFullDuplexRuntimeStore';
@@ -317,7 +319,18 @@ export function TaskFullDuplexControls() {
                   >
                     <MonitorOff aria-hidden />
                   </button>
-                ) : null}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startTaskDuplexScreenSharing}
+                    disabled={state !== 'active'}
+                    aria-label={t('chat.duplexControls.startSharing')}
+                    title={t('chat.duplexControls.startSharing')}
+                    data-testid="chat-panel-duplex-start-sharing"
+                  >
+                    <Monitor aria-hidden />
+                  </button>
+                )}
               </div>
             </div>,
             document.body,

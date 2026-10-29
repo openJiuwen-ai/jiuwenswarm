@@ -1550,6 +1550,7 @@
       "unmuteMic": "开启麦克风",
       "muteSpeaker": "静音模型回应",
       "unmuteSpeaker": "开启模型声音",
+      "startSharing": "共享屏幕",
       "stopSharing": "停止屏幕共享",
       "listening": "正在聆听",
       "connecting": "正在连接",
