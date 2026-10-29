@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from os import _exit as exit_process
 import signal
 
 
@@ -88,11 +89,10 @@ def _run() -> None:
         pass
     try:
         loop.run_until_complete(task)
-    except WorkerForceExit:
-        logging.getLogger(__name__).exception(
-            "[Worker] fatal exit: Runtime dispatch did not stop"
-        )
-        raise SystemExit(1) from None
+    except WorkerForceExit as exc:
+        logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
+        # Interpreter shutdown can wait forever for blocked non-daemon threads.
+        exit_process(1)
     finally:
         loop.close()
 

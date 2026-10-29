@@ -861,22 +861,22 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
     """
     state = read_debug_state()
     if state is None:
-        logging.info("[debug] No debug service recorded; nothing to stop.")
-        logging.info(
-            "[debug] To stop a regular instance use "
-            "'jiuwenswarm-start --stop <name>'."
-        )
+        logging.info("[debug] No debug service recorded; checking its resident Worker.")
+        if not _stop_resident_worker(timeout=timeout):
+            logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
+            return 1
+        logging.info("[debug] No debug service or resident Worker left running.")
         return 0
 
     if not is_debug_service_alive(state):
         logging.info(
             f"[debug] Debug service (PID={state.pid}) is no longer running; "
-            "clearing state."
+            "checking its resident Worker before clearing state."
         )
-        clear_debug_state()
         if not _stop_resident_worker(timeout=timeout):
             logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
             return 1
+        clear_debug_state()
         return 0
 
     logging.info(f"[debug] Stopping debug service (PID={state.pid})...")
@@ -886,10 +886,10 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
         logging.info("[debug] Kill it manually, then rerun 'jiuwenswarm-stop'.")
         return 1
 
-    clear_debug_state()
     if not _stop_resident_worker(timeout=timeout):
         logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
         return 1
+    clear_debug_state()
     logging.info("[debug] Debug service stopped.")
     if state.log_file:
         logging.info(f"[debug] Log kept at: {state.log_file}")

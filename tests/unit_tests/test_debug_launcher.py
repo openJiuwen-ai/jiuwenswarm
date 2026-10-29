@@ -599,11 +599,11 @@ def test_run_debug_clears_stale_state(debug_root: Path):
 # --------------------------------------------------------------------------
 
 
-def test_stop_without_state_is_noop(debug_root: Path):
-    with patch.object(debug_launcher, "_stop_resident_worker") as worker_stopper:
+def test_stop_without_state_still_checks_detached_worker(debug_root: Path):
+    with patch.object(debug_launcher, "_stop_resident_worker", return_value=True) as worker_stopper:
         assert stop_debug_service() == 0
 
-    worker_stopper.assert_not_called()
+    worker_stopper.assert_called_once()
 
 
 def test_stop_terminates_recorded_process(debug_root: Path):

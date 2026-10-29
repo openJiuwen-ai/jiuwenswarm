@@ -395,4 +395,4 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 
 ### 0.2.8 分支兼容边界
 
-本分支保留 IPC protocol 1 与现有请求处理，不引入 develop 的事件回放、就绪状态和文件系统身份缓存。HELLO 补充构建与部署身份；源码启动按实际内容和依赖计算身份。protocol 1 不发送 shutdown.done，清理成功必须观察已验证 PID 的实际退出。旧 Python Worker 缺少部署归属时拒绝自动终止，冻结桌面仅允许处理能由系统进程信息证明属于自身安装的 Worker。
+本分支保留 IPC protocol 1 与现有请求处理，不引入 develop 的事件回放、就绪状态和文件系统身份缓存。HELLO 补充构建与部署身份；源码启动按实际内容和依赖计算身份。新版 Worker 在 HELLO 声明 `shutdown_result` 并返回 `shutdown.done`；失败或缺失结果不能因进程已退出而被认定为停止或升级成功。没有声明该能力的旧端保留基于退出观察的兼容行为；清理成功仍必须观察已验证 PID 的实际退出。旧 Python Worker 缺少部署归属时拒绝自动终止，冻结桌面仅允许处理能由系统进程信息证明属于自身安装的 Worker。
