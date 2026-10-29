@@ -707,7 +707,7 @@ def create_sandbox_sysop_card(
 
         if normalized_type == "yuanrong":
             extra_params = _build_yuanrong_extra_params()
-            isolation_custom_id = _sandbox_isolation_custom_id(project_dir)
+            isolation_custom_id = "default"
             gateway_config = SandboxGatewayConfig(
                 isolation=SandboxIsolationConfig(
                     container_scope=ContainerScope.CUSTOM,
