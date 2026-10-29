@@ -170,6 +170,28 @@ def _crosses_subjects(refs: list[StepRef]) -> bool:
     return len({ref.subject_id for ref in refs}) > 1
 
 
+def _dominant_subject_id(refs: list[StepRef]) -> str:
+    """Subject cited most often. Ties keep the subject that appears first."""
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for ref in refs:
+        subject_id = ref.subject_id
+        if subject_id == "":
+            continue
+        if subject_id not in counts:
+            counts[subject_id] = 0
+            order.append(subject_id)
+        counts[subject_id] += 1
+    chosen = ""
+    best = 0
+    for subject_id in order:
+        count = counts[subject_id]
+        if count > best:
+            best = count
+            chosen = subject_id
+    return chosen
+
+
 def filter_reward_failure_causes(
     causes: list[RewardFailureCause],
     *,
@@ -205,7 +227,13 @@ def filter_evolution_judge(
     index: ScopeIndex,
     profile: ModeProfile,
 ) -> list[EvolutionJudge]:
-    """Apply interface section 5.4 to one list of evolution items."""
+    """Apply interface section 5.4 to one list of evolution items.
+
+    Skill evidence may cite several subjects. Experience stays on one subject,
+    because TTSE replays a single subject's window. An item with no in-scope
+    reference is dropped. Reward failure causes keep the single-subject rule
+    separately.
+    """
     allowed = _ALLOWED_EVOLUTION_CATEGORIES[profile]
     kept: list[EvolutionJudge] = []
     experience_seen = False
@@ -213,7 +241,7 @@ def filter_evolution_judge(
         if judge.category not in allowed:
             continue
         refs = _scoped_refs(judge.evidence, index)
-        if not refs or _crosses_subjects(refs):
+        if not refs or (judge.category != "skill" and _crosses_subjects(refs)):
             continue
         suggestion = [item for item in judge.suggestion if item.strip()]
         if not suggestion and judge.category != "experience":
@@ -782,7 +810,7 @@ class DiagnosisService:
         results: dict[str, TtseTriggerResult] = {}
         payloads: list[dict[str, Any]] = []
         for judge in judges:
-            subject_id = judge.evidence[0].subject_id if judge.evidence else ""
+            subject_id = _dominant_subject_id(judge.evidence)
             window = await asyncio.to_thread(_diagnosed_window, snapshot, diagnosed, subject_id)
             task_query, messages = (
                 await asyncio.to_thread(build_ttse_conversation, snapshot, subject_id, window[0], window[1])
