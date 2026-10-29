@@ -41,6 +41,7 @@ DEEPRESEARCH_EXECUTION_STATE_KEY = "deepresearch_execution_states"
 DEEPRESEARCH_EXECUTION_ALIAS_KEY = "deepresearch_execution_aliases"
 DEEPRESEARCH_DELIVERY_INDEX_KEY = "deepresearch_delivery_index"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
+_SHORT_CIRCUIT_KEY_PREFIX = "_deepresearch_short_circuit:"
 _TOOL_NAME = "deepresearch_execute"
 _BRIEF_REFRESH_SECTION = "deepresearch_brief_refresh"
 _BRIEF_REFRESH_INSTRUCTION = (
@@ -488,9 +489,10 @@ class DeepResearchExecutionRail(DeepAgentRail):
             # ctx.extra["_skip_tool"]——该标记由 AbilityManager 按名 pop
             # （ability_manager.py:653），本调用根本不走到 pop，标记会残留并被同轮
             # 并行 tool call 误消费（工具静默返回空结果）。
-            # 短路标记挂在 per-tool-call 的 ctx 上（同 flash 选择器不用共享标记的
-            # 做法），供 after_tool_call early-return（openJiuwen-bot 审查 Issue 9）。
-            ctx._deepresearch_short_circuit = workflow_id
+            # 短路标记按 tool_call_id 命名空间写 extra：AbilityManager 的 _skip_tool
+            # 是按名 pop 的共享标记，会被同轮并行 tool call 误消费；带调用 id 的键
+            # 各调用独立，after_tool_call 按本调用 id 精确 pop（openJiuwen-bot 审查 Issue 9）。
+            ctx.extra[f"{_SHORT_CIRCUIT_KEY_PREFIX}{tool_call_id}"] = workflow_id
             return
 
         model = self._model_provider() if callable(self._model_provider) else None
@@ -545,14 +547,14 @@ class DeepResearchExecutionRail(DeepAgentRail):
         if _tool_name(ctx) != _TOOL_NAME:
             return
         try:
-            if getattr(ctx, "_deepresearch_short_circuit", None) is not None:
+            tool_call_id = _tool_call_id(ctx)
+            if ctx.extra.pop(f"{_SHORT_CIRCUIT_KEY_PREFIX}{tool_call_id}", None) is not None:
                 return
             payload = _result_payload(ctx.inputs.tool_result)
             if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:
                 return
             if payload.get("kind") == "in_progress":
                 return  # A concurrent caller must not overwrite or finish the active workflow.
-            tool_call_id = _tool_call_id(ctx)
             workflow_id = _workflow_id(ctx.session, tool_call_id)
             # tool_msg 必须挂历史原始 id（resume 时 ctx 携带的是 TIE
             # 克隆件的 interaction_id），否则被孤儿清理删除

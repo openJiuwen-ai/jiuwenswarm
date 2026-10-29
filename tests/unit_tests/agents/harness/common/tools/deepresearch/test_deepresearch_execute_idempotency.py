@@ -205,6 +205,7 @@ def test_short_circuit_skips_after_tool_call_side_effects():
     assert idx["wf_1"]["file_name"] == real_entry["file_name"]
     assert "_deepresearch_short_circuit" not in ctx.extra
     assert "_skip_tool" not in ctx.extra
+    assert not [k for k in ctx.extra if k.startswith(rail._SHORT_CIRCUIT_KEY_PREFIX)]
 
 
 def test_terminal_completed_updates_tool_msg_to_completion_content():
