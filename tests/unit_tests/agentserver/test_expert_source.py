@@ -128,6 +128,39 @@ async def test_list_ok() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_invalid_card_id_keeps_directory_id_in_list(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.expert.expert_service import ExpertService
+
+    local_root = tmp_path / "experts"
+    _make_package(local_root, "bad-cross-entry", card_id="wrong-id")
+    _make_package(local_root, "wrong-id")
+    local = es.LocalDirExpertPackageSource(experts_dir=local_root)
+    monkeypatch.setenv(es.LOCAL_DIRS_ENV, "1")
+    monkeypatch.setattr(es, "get_agent_experts_dir", lambda: local_root)
+    monkeypatch.setattr(
+        es, "get_expert_source", lambda: es.ChainExpertPackageSource([local])
+    )
+    service = ExpertService(agent_manager=object(), adapter_resolver=lambda agent: agent)
+
+    for source in (None, "local"):
+        result = await service.list_experts(source=source)
+        assert result.ok is True
+        experts = result.payload["experts"]
+        assert [expert["id"] for expert in experts] == ["bad-cross-entry", "wrong-id"]
+        assert experts[0]["available"] is False
+        assert "不一致" in experts[0]["unavailable_reason"]
+        assert experts[1]["available"] is True
+
+    loaded = await service.load_expert(
+        channel_id="desktop", session_id="s1", expert_id="bad-cross-entry"
+    )
+    assert loaded.ok is False
+    assert loaded.payload["code"] == "INVALID_PACKAGE"
+
+
+@pytest.mark.asyncio
 async def test_list_repo_down_raises_unavailable() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
