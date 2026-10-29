@@ -292,8 +292,8 @@ class RuntimePromptRail(DeepAgentRail):
             return []
 
     @staticmethod
-    def _agent_model_name(ctx: AgentCallbackContext) -> str:
-        """Read this callback's live model instead of the shared session model."""
+    def _agent_model(ctx: AgentCallbackContext) -> tuple[Any, Any]:
+        """Return this callback's live model and the agent config holding it."""
         agent = ctx.agent
         config = getattr(agent, "config", None)
         model = getattr(config, "model", None)
@@ -303,6 +303,12 @@ class RuntimePromptRail(DeepAgentRail):
                 model = get_llm()
             except Exception as exc:
                 logger.debug("Failed to read the current agent model: %s", exc)
+        return model, config
+
+    @staticmethod
+    def _agent_model_name(ctx: AgentCallbackContext) -> str:
+        """Read this callback's live model instead of the shared session model."""
+        model, config = RuntimePromptRail._agent_model(ctx)
         # Model calls run on the inner ReActAgent; before_invoke can run on
         # the outer DeepAgent, whose config holds the same Model directly.
         for request_config in (
@@ -314,6 +320,36 @@ class RuntimePromptRail(DeepAgentRail):
             if isinstance(name, str) and name.strip():
                 return name.strip()
         return ""
+
+    @staticmethod
+    def _agent_group_model_names(ctx: AgentCallbackContext) -> list[str]:
+        """Models this agent's model group can route to; empty outside a group.
+
+        Mirrors ``_selectable_route_tags`` in openjiuwen's Team allocator, so
+        the list matches the ``selectable_models`` that ``spawn_teammate``
+        accepts: deployment ``fallback_tag`` values, spellings that differ
+        only in case collapsed into the first one, sorted. A ``tag-filtered``
+        router (a pinned member or a tag-restricted group) only routes to its
+        own tag.
+        """
+        model, _ = RuntimePromptRail._agent_model(ctx)
+        client_config = getattr(model, "model_client_config", None)
+        router = getattr(client_config, "intelli_router", None)
+        deployments = getattr(router, "deployments", None)
+        if not deployments:
+            return []
+        spellings: dict[str, str] = {}
+        for deployment in deployments:
+            tag = str(getattr(deployment, "fallback_tag", None) or "").strip()
+            if tag:
+                spellings.setdefault(tag.casefold(), tag)
+        if getattr(router, "strategy", None) == "tag-filtered":
+            strategy_kwargs = getattr(router, "strategy_kwargs", None) or {}
+            group_tag = str(strategy_kwargs.get("fallback_tag") or "").strip()
+            if group_tag:
+                key = group_tag.casefold()
+                spellings = {k: tag for k, tag in spellings.items() if k == key}
+        return sorted(spellings.values())
 
     def _resolve_current_mode(
         self,
@@ -710,6 +746,11 @@ class RuntimePromptRail(DeepAgentRail):
             configured_models = self._configured_model_names()
         if not available_models:
             available_models = configured_models
+        # The session-wide list names every configured model, but a model-group
+        # agent can only route to its group's models.
+        group_models = self._agent_group_model_names(ctx)
+        if group_models:
+            available_models = group_models
         fallback_model = configured_models[0] if configured_models else ""
         model = str(
             self._agent_model_name(ctx)
