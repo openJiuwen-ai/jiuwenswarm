@@ -391,28 +391,10 @@ def record_organization_plan(
     )
     if existing is not None:
         return existing
-    owner = owner_member_from_teams(state.get("organization_teams"))
-    if not owner:
-        owner = next(
-            (
-                str(item.get("owner_member"))
-                for item in group_organization_plans(session_id)
-                if item.get("status") in {"pending", "running"}
-                and item.get("owner_member")
-            ),
-            names[0],
-        )
-    # The final report must return through the Owner proxy. If that proxy was
-    # not mentioned, this message stays on the ordinary per-proxy path.
-    if owner not in names:
-        logger.info(
-            "group organization plan skipped; owner proxy is not mentioned "
-            "session=%s owner=%s mentions=%s",
-            session_id,
-            owner,
-            names,
-        )
-        return None
+    # Each multi-@ message owns itself. The first mentioned expert team is
+    # that plan's Owner, including a follow-up that does not name the previous
+    # Owner. Overlapping instances wait in _blocking_earlier_plans.
+    owner = names[0]
     organization_id = resolve_organization_id(
         session_id,
         names,
