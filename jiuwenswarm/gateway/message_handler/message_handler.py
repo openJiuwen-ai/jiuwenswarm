@@ -1288,10 +1288,12 @@ class MessageHandler(ABC):
 
         return len(candidates)
 
-    async def _cancel_streams_for_paused_session(self, msg: "Message") -> None:
-        """Pause-side gateway stream governance (issue 5448, G2).
+    async def _cancel_streams_for_paused_session(
+        self, msg: "Message", session_mode: str = "",
+    ) -> None:
+        """Pause-side gateway stream governance (issue 5448, G2). Team sessions only.
 
-        Pausing parks the AgentServer round and cancels its event streams
+        A team pause parks the AgentServer round and cancels its event streams
         without a wire-level terminal frame, so the gateway consumers would
         hang on their receive queues forever — zombie registrations that
         later veto the authoritative is_processing=false. Cancel them here;
@@ -1299,6 +1301,12 @@ class MessageHandler(ABC):
         is_processing=false (process_stream finally), and when nothing
         emit-capable was cancelled (idle double-pause, attach-only
         observers) broadcast the session-level false explicitly.
+
+        A single-agent (Deep adapter) pause is different: StreamEventRail
+        parks the round in place and the SAME stream keeps producing after
+        resume, so cancelling the gateway consumer would silently drop the
+        resumed round's output. Non-team sessions therefore keep the original
+        "pause does not touch stream tasks" contract.
         """
         session_id = msg.session_id
         if not session_id:
@@ -1307,6 +1315,8 @@ class MessageHandler(ABC):
         for rid, task in list(self._stream_tasks.items()):
             if self._stream_sessions.get(rid) != session_id:
                 continue
+            if not ChannelMode.is_team_mode(self._stream_modes.get(rid, "")):
+                continue  # single-agent pause is a recoverable park, not a kill
             if task.done():
                 continue
             if self._stream_team_ids.get(rid):
@@ -1333,13 +1343,36 @@ class MessageHandler(ABC):
             # 走集中化 pop+broadcast：与 _cancel_stream_tasks_for_channel 相同，
             # 让跨窗口配置保存锁感知运行态变化。
             await self._pop_stream_tracking_and_broadcast(victims)
-        if not emit_victims:
+        if not emit_victims and ChannelMode.is_team_mode(session_mode):
             # No cancelled stream can finalize itself (attach-only observers
-            # or an already-idle session): broadcast the session-level false
-            # so a resume-synthesized true cannot strand the frontend.
+            # or an already-idle team session): broadcast the session-level
+            # false so a resume-synthesized true cannot strand the frontend.
             await self._send_processing_status(
                 msg.id, session_id, msg.channel_id, is_processing=False,
             )
+
+    async def _send_pause_and_govern_streams(
+        self,
+        env: "E2AEnvelope",
+        msg: "Message",
+        session_mode: str,
+    ) -> None:
+        """Forward a pause, then govern lingering stream consumers (issue 5448, G2).
+
+        Governance runs only after the AgentServer acknowledges the pause:
+        if the interrupt never took effect the round is still producing on
+        those streams, and cancelling its consumers would drop the output
+        mid-flight — the mirror image of issue 5448's split state.
+        """
+        resp = await self._send_interrupt_to_agent(env)
+        if resp is None or not resp.ok:
+            logger.warning(
+                "[MessageHandler] pause 治理跳过: AgentServer 未确认暂停, "
+                "session_id=%s ok=%s",
+                msg.session_id, getattr(resp, "ok", None),
+            )
+            return
+        await self._cancel_streams_for_paused_session(msg, session_mode)
 
     async def _cancel_agent_work_for_session(
         self,
@@ -4864,7 +4897,28 @@ class MessageHandler(ABC):
                                     else str(pr_state.mode)
                                 )
                         env_interrupt = self.message_to_e2a(agent_msg)
-                        asyncio.create_task(self._send_interrupt_to_agent(env_interrupt))
+                        # G2 (issue 5448): a team pause parks the AgentServer
+                        # round and its event streams die without a wire
+                        # terminal — the gateway consumers must not outlive
+                        # them (zombie registrations that later veto the
+                        # authoritative is_processing=false). Governance runs
+                        # only after AgentServer acknowledges the pause and
+                        # only for team sessions; a single-agent pause is a
+                        # recoverable park whose stream keeps producing after
+                        # resume. resume needs no cleanup either way: the next
+                        # message starts a fresh round with a fresh stream.
+                        if intent == "pause":
+                            pause_mode = (
+                                agent_msg.params.get("mode", "")
+                                if isinstance(agent_msg.params, dict) else ""
+                            )
+                            asyncio.create_task(
+                                self._send_pause_and_govern_streams(
+                                    env_interrupt, msg, pause_mode,
+                                )
+                            )
+                        else:
+                            asyncio.create_task(self._send_interrupt_to_agent(env_interrupt))
                         # 检查当前 session 是否有活跃的流式任务
                         current_sid = msg.session_id
                         has_active_task = False
@@ -4877,14 +4931,6 @@ class MessageHandler(ABC):
                             msg.id, msg.channel_id, msg.session_id, intent,
                             has_active_task=has_active_task,
                         )
-                        # G2 (issue 5448): pause parks the AgentServer round and
-                        # its event streams die without a wire terminal — the
-                        # gateway consumers must not outlive them (zombie
-                        # registrations that later veto the authoritative
-                        # is_processing=false). resume needs no cleanup: the
-                        # next message starts a fresh round with a fresh stream.
-                        if intent == "pause":
-                            await self._cancel_streams_for_paused_session(msg)
 
                     continue
 
@@ -5527,9 +5573,12 @@ class MessageHandler(ABC):
         channel_id: str | None = None,
         session_id: str | None = None,
         metadata: dict | None = None,
-    ) -> None:
+    ) -> "AgentResponse | None":
         """Fire-and-forget: 发送中断到 AgentServer，不阻塞转发循环.
 
+        返回 AgentServer 的响应，调用方（如 pause 治理）可据此确认中断
+        是否被接受；请求失败时返回 ``None``。其余既有调用方忽略返回值，
+        行为不变。
         ``interrupt_result`` 已由调用方提前推送；此处仍要把响应里的
         ``cancelled_tools`` 转成 ``chat.tool_result``，否则前端 tool 卡片会一直转圈，
         直到刷新历史才看到 ``[Interrupted]``.
@@ -5546,8 +5595,10 @@ class MessageHandler(ABC):
             sid = (session_id or getattr(env, "session_id", None) or "").strip()
             if ch and sid and payload.get("cancelled_tools"):
                 await self._send_cancelled_tool_results(ch, sid, payload, metadata)
+            return resp
         except Exception as e:
             logger.warning("[MessageHandler] AgentServer 中断请求失败(忽略): %s", e)
+            return None
 
     async def _send_interrupt_result_notification(
         self,

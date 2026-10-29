@@ -25,6 +25,7 @@ Fixed behaviour asserted here:
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -97,7 +98,7 @@ async def gateway(monkeypatch):
     await asyncio.gather(*handler._stream_tasks.values(), return_exceptions=True)
     await handler.stop_forwarding()
     if handler._fire_and_forget_tasks:
-        await asyncio.gather(*handler._fire_and_forget_tasks(), return_exceptions=True)
+        await asyncio.gather(*handler._fire_and_forget_tasks, return_exceptions=True)
 
 
 async def _start_stream(
@@ -235,7 +236,9 @@ async def test_team_second_round_false_passes_with_first_round_alive(gateway):
 @pytest.mark.asyncio
 async def test_pause_cancels_gateway_stream_consumers(gateway):
     handler, client = gateway
-    handler._send_interrupt_to_agent = AsyncMock()
+    handler._send_interrupt_to_agent = AsyncMock(
+        return_value=SimpleNamespace(ok=True, request_id="pause-req-1")
+    )
 
     # A running round plus a PERSISTENT survivor from an earlier round.
     await _start_stream(handler, "persistent-round1")
@@ -283,7 +286,9 @@ async def test_pause_on_idle_session_broadcasts_false(gateway):
     until the next terminal event.
     """
     handler, client = gateway
-    handler._send_interrupt_to_agent = AsyncMock()
+    handler._send_interrupt_to_agent = AsyncMock(
+        return_value=SimpleNamespace(ok=True, request_id="pause-req-2")
+    )
 
     pause_msg = Message(
         id="pause-req-2", type="req", channel_id="web", session_id=SESSION_ID,
@@ -295,3 +300,70 @@ async def test_pause_on_idle_session_broadcasts_false(gateway):
 
     frames = await _drain_frontend(handler, 0.5)
     assert _processing_false_frames(frames)
+
+
+@pytest.mark.asyncio
+async def test_pause_on_single_agent_session_keeps_streams(gateway):
+    """Single-agent pause is a recoverable park, not a kill (review P2).
+
+    The Deep adapter parks the round via StreamEventRail and the SAME stream
+    keeps producing after resume, so the gateway consumer must survive the
+    pause — cancelling it would drop the resumed round's output mid-flight.
+    """
+    handler, client = gateway
+    handler._send_interrupt_to_agent = AsyncMock(
+        return_value=SimpleNamespace(ok=True, request_id="pause-req-3")
+    )
+
+    await _start_stream(handler, "agent-round-1", mode=NON_TEAM_MODE)
+    assert await asyncio.wait_for(client.started.get(), 5) == "agent-round-1"
+
+    pause_msg = Message(
+        id="pause-req-3", type="req", channel_id="web", session_id=SESSION_ID,
+        req_method=ReqMethod.CHAT_CANCEL, is_stream=False, timestamp=0, ok=True,
+        params={"intent": "pause", "mode": NON_TEAM_MODE},
+        metadata={"ws_id": "ws-5448", "user_id": "u-5448"},
+    )
+    await handler.publish_user_messages(pause_msg)
+
+    # Let the fire-and-forget governance settle, then assert the consumer
+    # survived: the stream must keep its gateway consumer for the resume.
+    await asyncio.sleep(0.2)
+    task = handler._stream_tasks.get("agent-round-1")
+    assert task is not None and not task.done()
+
+    # No session-level false either: the round is parked, not finished.
+    frames = await _drain_frontend(handler, 0.3)
+    assert not _processing_false_frames(frames)
+
+
+@pytest.mark.asyncio
+async def test_pause_governance_skipped_when_interrupt_rejected(gateway):
+    """Governance must not cancel consumers before the pause is confirmed.
+
+    If the AgentServer rejects or fails the interrupt the round is still
+    producing on those streams; cancelling the gateway consumers would
+    silently drop its output (the mirror image of issue 5448).
+    """
+    handler, client = gateway
+    handler._send_interrupt_to_agent = AsyncMock(
+        return_value=SimpleNamespace(ok=False, request_id="pause-req-4")
+    )
+
+    await _start_stream(handler, "team-round-1")
+    assert await asyncio.wait_for(client.started.get(), 5) == "team-round-1"
+
+    pause_msg = Message(
+        id="pause-req-4", type="req", channel_id="web", session_id=SESSION_ID,
+        req_method=ReqMethod.CHAT_CANCEL, is_stream=False, timestamp=0, ok=True,
+        params={"intent": "pause", "mode": TEAM_MODE},
+        metadata={"ws_id": "ws-5448", "user_id": "u-5448"},
+    )
+    await handler.publish_user_messages(pause_msg)
+
+    await asyncio.sleep(0.2)
+    task = handler._stream_tasks.get("team-round-1")
+    assert task is not None and not task.done()
+
+    frames = await _drain_frontend(handler, 0.3)
+    assert not _processing_false_frames(frames)

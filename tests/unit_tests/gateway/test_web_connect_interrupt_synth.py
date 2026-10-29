@@ -103,3 +103,18 @@ async def test_cancel_still_synthesizes_false() -> None:
     synth = [c for c in calls if c.get("event") == "chat.processing_status"]
     assert len(synth) == 1
     assert synth[0]["payload"]["is_processing"] is False
+
+
+@pytest.mark.asyncio
+async def test_supplement_still_synthesizes_true() -> None:
+    """The exemption covers pause/resume only: a supplement replaces the
+    running task with a new one immediately, so the frontend must flip back
+    to processing (review P3 on !9184/!9185)."""
+    channel = _make_channel()
+    calls = await _capture_broadcast(channel)
+
+    await channel.send(_interrupt_result_msg("supplement"))
+
+    synth = [c for c in calls if c.get("event") == "chat.processing_status"]
+    assert len(synth) == 1
+    assert synth[0]["payload"]["is_processing"] is True
