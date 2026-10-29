@@ -10,7 +10,7 @@ import threading
 import time
 import types
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import requests
@@ -106,6 +106,74 @@ MSG_TYPE_MAP = {
     "sticker": "[sticker]",
 }
 
+# 审批卡片上下文有效期，与 PendingInteraction 的 24h 约定保持一致。
+_CARD_CONTEXT_TTL_SECONDS = 24 * 60 * 60
+_APPROVAL_SOURCE_ASK_USER = "ask_user_interrupt"
+_APPROVAL_SOURCE_PERMISSION = "permission_interrupt"
+_APPROVAL_PLAN_EXTRA_KEYS = ("plan_approval_kind", "plan_content", "plan_language")
+
+# 飞书交互卡片没有输入框，"Other" 只是自由输入的占位项：点它只会产出一个被
+# 服务端归一为空的答案（`interface.py` 把裸 "Other" 置空），中断恢复必然失败。
+_OTHER_OPTION_TEXT = "other"
+
+
+def _is_other_placeholder(option: dict[str, Any]) -> bool:
+    """判断选项是否为 "Other" 自由输入占位（卡片内无法作答）。"""
+    label = str(option.get("label") or "").strip()
+    value = str(option.get("value") or "").strip()
+    return (label or value).lower() == _OTHER_OPTION_TEXT
+
+
+@dataclass
+class _ApprovalCardContext:
+    """一张待作答审批卡片的上下文事实。
+
+    发卡时保存事件的来源、问题与会话身份，卡片回调按本对象构造回执，
+    不再把 ``source`` 写死成 ``ask_user_interrupt``。
+    """
+
+    request_id: str
+    source: str
+    questions: list[dict[str, Any]]
+    session_id: str = ""
+    chat_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    plan_extra: dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
+    answers: dict[int, str] = field(default_factory=dict)
+    answer_labels: dict[int, str] = field(default_factory=dict)
+    message_id: str = ""
+
+    def is_expired(self, now: float | None = None) -> bool:
+        """超过 TTL 的上下文不再接受作答。"""
+        current = time.time() if now is None else now
+        return current - float(self.created_at or 0) > _CARD_CONTEXT_TTL_SECONDS
+
+    def options_of(self, index: int) -> list[dict[str, Any]]:
+        """返回指定题目可按钮作答的选项。
+
+        丢弃非 dict 项，以及 "Other" 自由输入占位——卡片不提供输入框，渲染成
+        按钮后点出来的答案会被服务端判为空，进而让整轮中断恢复失败。
+        """
+        if not 0 <= index < len(self.questions):
+            return []
+        options = self.questions[index].get("options")
+        if not isinstance(options, list):
+            return []
+        return [
+            option
+            for option in options
+            if isinstance(option, dict) and not _is_other_placeholder(option)
+        ]
+
+    def answerable_indexes(self) -> list[int]:
+        """存在按钮选项、可在飞书卡片内完成的题号。"""
+        return [index for index in range(len(self.questions)) if self.options_of(index)]
+
+    def is_answered(self) -> bool:
+        """所有可按钮作答的题目都已选择。"""
+        indexes = self.answerable_indexes()
+        return bool(indexes) and all(index in self.answers for index in indexes)
 
 class _ThreadLocalLoopProxy:
     """Provide a thread-local event loop proxy for lark_oapi ws client."""
@@ -217,11 +285,8 @@ class FeishuChannel(BaseChannel):
         # 按 request_id 记录已通过 chat.file 发送的文件路径，用于兜底去重
         # key=request_id, value=set of absolute file paths
         self._sent_file_paths_by_req: dict[str, set[str]] = {}
-        # 自演进用户确认卡片, key=request_id, value=query card
-        self._user_question_card: dict[str, dict] = {}
-        # request_id -> 提问时的会话上下文（session_id / chat_id / 平台身份 metadata），
-        # 用于卡片回调时把答案路由回原会话。
-        self._user_question_context: dict[str, dict] = {}
+        # 审批卡片上下文：request_id -> _ApprovalCardContext（内存快路径）。
+        self._card_contexts: dict[str, _ApprovalCardContext] = {}
 
     @property
     def channel_id(self) -> str:
@@ -2536,109 +2601,209 @@ class FeishuChannel(BaseChannel):
         noisy_keys = {"content", "output", "result", "text", "event_type"}
         return not any(k in payload for k in noisy_keys)
 
+    # ---------- 审批卡片上下文 ----------
+
+    def _save_card_context(self, ctx: _ApprovalCardContext) -> None:
+        """保存上下文到内存（request_id 为键）。"""
+        self._card_contexts[ctx.request_id] = ctx
+
+    def _load_card_context(self, request_id: str) -> _ApprovalCardContext | None:
+        """读取上下文；过期则清理并返回 None。"""
+        ctx = self._card_contexts.get(request_id)
+        if ctx is None:
+            return None
+        if ctx.is_expired():
+            self._drop_card_context(request_id)
+            return None
+        return ctx
+
+    def _drop_card_context(self, request_id: str) -> None:
+        """删除上下文（提交、过期、会话结束共用）。"""
+        self._card_contexts.pop(request_id, None)
+
+    # ---------- 审批卡片渲染 ----------
+
+    def _approval_card_header(self, ctx: _ApprovalCardContext) -> dict[str, Any]:
+        """卡片标题取自首题 header；缺失时给出通用标题。"""
+        header_text = ""
+        if ctx.questions:
+            header_text = str(ctx.questions[0].get("header") or "").strip()
+        if not header_text:
+            header_text = "审批"
+        return {
+            "title": {"tag": "plain_text", "content": self._truncate_text(header_text, 120)},
+            "template": "blue",
+        }
+
+    def _tool_payload_preview(self, question: dict[str, Any]) -> str:
+        """权限题的工具参数预览：脱敏 + 截断，失败时不展示原始值。"""
+        payload = question.get("tool_payload")
+        if not isinstance(payload, dict) or not payload:
+            return ""
+        try:
+            from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
+                sanitize_permission_ui_payload,
+            )
+
+            sanitized = sanitize_permission_ui_payload(payload)
+        except Exception:  # noqa: BLE001 - 展示层失败关闭，不回落原始参数
+            sanitized = ""
+        if not sanitized:
+            return ""
+        if isinstance(sanitized, str):
+            return self._truncate_text(sanitized, 240)
+        try:
+            text = json.dumps(sanitized, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(sanitized)
+        return self._truncate_text(text, 240)
+
+    @staticmethod
+    def _approval_button(ctx: _ApprovalCardContext, index: int, option: dict[str, Any]) -> dict[str, Any]:
+        """按钮回传稳定取值（option.value），缺失时回退展示文案。"""
+        label = str(option.get("label") or option.get("value") or "").strip()
+        value = str(option.get("value") or label).strip()
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": label or value},
+            "type": "primary",
+            "value": {"ref": {"request_id": ctx.request_id, "index": index}, "value": value},
+        }
+
+    @staticmethod
+    def _option_label(ctx: _ApprovalCardContext, index: int, value: str) -> str:
+        """按取值反查选项文案，用于卡片回显。"""
+        for option in ctx.options_of(index):
+            option_value = str(option.get("value") or "").strip()
+            option_label = str(option.get("label") or "").strip()
+            if value and value in (option_value, option_label):
+                return option_label or value
+        return str(value or "").strip()
+
+    def _build_approval_card_elements(
+        self,
+        ctx: _ApprovalCardContext,
+        *,
+        clicked_index: int | None = None,
+        clicked_label: str = "",
+    ) -> list[dict[str, Any]]:
+        """按问题逐条渲染卡片；已答题回显选项，未答题保留按钮。"""
+        elements: list[dict[str, Any]] = []
+        total = len(ctx.questions)
+        for index, question in enumerate(ctx.questions):
+            text = str(question.get("question") or "").strip()
+            if total > 1:
+                title = f"**问题 {index + 1}/{total}**"
+                text = f"{title}\n{text}" if text else title
+            if text:
+                elements.extend(self._build_feishu_card_elements(text))
+            preview = self._tool_payload_preview(question)
+            if preview:
+                elements.append(self._create_div_element(f"参数：{preview}"))
+
+            label = ctx.answer_labels.get(index, "")
+            if not label and clicked_index == index:
+                label = clicked_label
+            if label:
+                elements.append(self._create_div_element(f"已选择：**{label}**"))
+            else:
+                options = ctx.options_of(index)
+                if options:
+                    elements.append({
+                        "tag": "action",
+                        "actions": [self._approval_button(ctx, index, option) for option in options],
+                    })
+                else:
+                    elements.append(self._create_div_element("该问题需要文字作答，请在网页端或终端完成。"))
+            if index < total - 1:
+                elements.append({"tag": "hr"})
+        return elements
+
     async def _send_ask_user_question_card(self, msg: Message) -> None:
         """
         发送用户询问卡片（带选项按钮的确认卡片）。
 
+        发卡时保存卡片上下文（来源 / 问题 / 会话 / 提问人），卡片回调据此
+        构造符合中断恢复契约的回执。
+
         Args:
             msg: 包含 ask_user_question payload 的消息对象
         """
+        request_id = ""
         try:
             payload = msg.payload if isinstance(msg.payload, dict) else {}
-            questions = payload.get("questions", [])
-            request_id = payload.get("request_id", "")
+            raw_questions = payload.get("questions", [])
+            questions = (
+                [question for question in raw_questions if isinstance(question, dict)]
+                if isinstance(raw_questions, list) else []
+            )
+            request_id = str(payload.get("request_id") or "").strip()
+            source = str(payload.get("source") or "").strip()
 
             if not questions:
                 logger.warning("发送用户询问卡片：没有问题数据")
                 return
+            if not request_id:
+                logger.warning("发送用户询问卡片：缺少 request_id，跳过发送")
+                return
+            if not source:
+                logger.warning(
+                    "[FeishuChannel] 审批卡片缺少来源，回执将按普通提问处理: request_id=%s",
+                    request_id,
+                )
 
-            # 构建 card 元素，每次只显示一个问题
-            elements = []
-
-            # 添加问题文本
-            question = questions[0]
-            question_text = question.get("question", "")
-            if question_text:
-                elements.extend(self._build_feishu_card_elements(question_text))
-
-            # 添加分隔线
-            elements.append({"tag": "hr"})
-
-            # 添加按钮
-            options = question.get("options", [])
-            if options:
-                actions = []
-                for option in options:
-                    label = option.get("label", "")
-                    # value = json.dumps({"label": label}, ensure_ascii=False)
-                    button_element = {
-                        "tag": "button",
-                        "text": {
-                            "tag": "plain_text",
-                            "content": label
-                        },
-                        "type": "primary",
-                        "value": {"label": label, "request_id": request_id}
-                    }
-                    actions.append(button_element)
-
-                elements.append({
-                    "tag": "action",
-                    "actions": actions
-                })
-
-            # 构建卡片
-            card = {
-                "config": {"wide_screen_mode": True},
-                "elements": elements,
-            }
-
-            # 添加 header 用于存储 request_id
-            header_text = question.get("header", "")
-            if header_text:
-                card["header"] = {
-                    "title": {
-                        "tag": "plain_text",
-                        "content": header_text
-                    },
-                    "template": request_id  # 使用 template 字段存储 request_id
-                }
-
-            self._user_question_card[request_id] = card
-            # 发送卡片
             receive_id, id_type = self._extract_receive_info(msg)
-            # 记录提问时的会话上下文，供卡片回调回填：
-            # gateway 用 (provider, chat_id, bot_id, user_id) 定位 SessionMap 中的已有会话，
-            # 回调若缺 chat_id 会被当作新会话，导致答案送不到正在等待的 ask_user 调用。
-            _out_meta = msg.metadata if isinstance(msg.metadata, dict) else {}
-            self._user_question_context[request_id] = {
-                "session_id": str(msg.session_id or ""),
-                "chat_id": str(
-                    _out_meta.get("feishu_chat_id")
+            out_meta = msg.metadata if isinstance(msg.metadata, dict) else {}
+            plan_extra = {
+                key: str(payload[key])
+                for key in _APPROVAL_PLAN_EXTRA_KEYS
+                if key in payload
+            }
+            ctx = _ApprovalCardContext(
+                request_id=request_id,
+                source=source or _APPROVAL_SOURCE_ASK_USER,
+                questions=questions,
+                session_id=str(msg.session_id or ""),
+                chat_id=str(
+                    out_meta.get("feishu_chat_id")
                     or msg.chat_id
                     or receive_id
                     or ""
                 ),
-                "metadata": {
-                    k: v for k, v in _out_meta.items()
-                    if k in ("feishu_chat_id", "feishu_open_id", "feishu_chat_type")
+                metadata={
+                    key: value for key, value in out_meta.items()
+                    if key in ("feishu_chat_id", "feishu_open_id", "feishu_chat_type")
                 },
-            }
-            card_json = json.dumps(card, ensure_ascii=False)
-
-            await self._create_and_send_message(
-                FeishuMessageSendRequest(
-                    receive_id=receive_id,
-                    id_type=id_type,
-                    msg_type="interactive",
-                    content=card_json,
-                    log_label=f"ask_user_question:{request_id}",
-                )
+                plan_extra=plan_extra,
             )
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": self._approval_card_header(ctx),
+                "elements": self._build_approval_card_elements(ctx),
+            }
+            # 同 request_id 再次发卡（服务端重新中断）时覆盖旧上下文。
+            self._save_card_context(ctx)
+
+            try:
+                await self._create_and_send_message(
+                    FeishuMessageSendRequest(
+                        receive_id=receive_id,
+                        id_type=id_type,
+                        msg_type="interactive",
+                        content=json.dumps(card, ensure_ascii=False),
+                        log_label=f"ask_user_question:{request_id}",
+                    )
+                )
+            except Exception:
+                # 卡片没发出去，用户无法作答，上下文不留残影。
+                self._drop_card_context(request_id)
+                raise
 
             logger.info(
-                "[FeishuChannel] 发送用户询问卡片: request_id=%s, chat_id=%s",
+                "[FeishuChannel] 发送用户询问卡片: request_id=%s, source=%s, questions=%d, chat_id=%s",
                 request_id,
+                source,
+                len(questions),
                 receive_id,
             )
 
@@ -2856,7 +3021,11 @@ class FeishuChannel(BaseChannel):
         """
         处理飞书卡片按钮点击事件的同步处理器（从WebSocket线程调用）。
 
-        根据飞书SDK规范，需要返回 P2CardActionTriggerResponse 对象。
+        新卡片按 ref 找到审批上下文并回显作答进度。升级前发出的旧版卡片没有
+        ref，按已过期处理并提示用户重新发起：旧版 ``chat.user_answer`` 兜底
+        只对 symphony / 技能演进类 ``request_id`` 生效，权限与普通提问类中断
+        走该通道不会恢复原回合；且旧卡只在重启后才可能是旧格式，此时提问
+        上下文已丢失，回执无处可投，回显"已选择"反而误导用户。
 
         Args:
             data: 飞书卡片回调事件数据 (P2CardActionTrigger)
@@ -2868,215 +3037,304 @@ class FeishuChannel(BaseChannel):
             event = data.event
             action = event.action
 
-            # 提取回调信息
             token = event.token or ""
-            action_value = action.value or ""
-
-            # 返回成功的响应：更新卡片去除按钮，显示已选择的内容
-            selected_label = action_value.get("label", "已选择")
-            request_id = action_value.get("request_id", "")
-            if not request_id or request_id not in self._user_question_card:
-                card_data = {
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "lark_md",
-                                    "content": f"您已选择：**{selected_label}**"
-                                }
-                            }
-                        ]
-                    }
-                header = {}
-            else:
-                stored_card = self._user_question_card[request_id]
-                # 复用原卡片除按钮外的所有元素（保留问题文本的 markdown 渲染），
-                # 去掉 action 按钮区与分隔线，再追加"您已选择"提示。
-                old_elements = stored_card.get("elements", []) if isinstance(stored_card, dict) else []
-                kept_elements = [
-                    el for el in old_elements
-                    if isinstance(el, dict) and el.get("tag") not in ("action",)
-                ]
-                # 去掉尾部 hr，避免与提示紧挨出现双分隔线
-                while kept_elements and isinstance(kept_elements[-1], dict) and kept_elements[-1].get("tag") == "hr":
-                    kept_elements.pop()
-                kept_elements.append({
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": f"您已选择：**{selected_label}**"}
-                })
-                header = stored_card.get("header", {}) if isinstance(stored_card, dict) else {}
-                card_data = {"elements": kept_elements}
-                self._user_question_card.pop(request_id)
-            # 获取用户和上下文信息
+            action_value = action.value if isinstance(action.value, dict) else {}
             operator_id = event.operator.open_id if event.operator and event.operator.open_id else ""
 
-            logger.info(
-                "[FeishuChannel] 收到卡片回调: token=%s, action=%s, user=%s",
-                token,
-                action_value,
-                operator_id,
+            ref = action_value.get("ref")
+            if not isinstance(ref, dict):
+                logger.info(
+                    "[FeishuChannel] 收到无 ref 的卡片回调（旧版卡片），按已过期处理: token=%s",
+                    token,
+                )
+                return self._card_action_response(None, "error", "审批已过期或已处理")
+
+            request_id = str(ref.get("request_id") or "").strip()
+            index = ref.get("index")
+            if not request_id or not isinstance(index, int):
+                logger.warning(
+                    "[FeishuChannel] 卡片回调引用无效: token=%s ref=%s",
+                    token,
+                    ref,
+                )
+                return self._card_action_response(None, "error", "卡片已失效，请重新发起")
+
+            ctx = self._load_card_context(request_id)
+            if ctx is None:
+                logger.info(
+                    "[FeishuChannel] 卡片回调缺少上下文（过期或已处理）: request_id=%s",
+                    request_id,
+                )
+                return self._card_action_response(None, "error", "审批已过期或已处理")
+
+            value = str(action_value.get("value") or "").strip()
+            if value.lower() == _OTHER_OPTION_TEXT:
+                # 渲染时已丢弃 "Other" 占位项，这里只做兜底：万一回调仍带回该值，
+                # 也不能当答案提交——卡片没有输入框，点它只会产出被服务端归一为
+                # 空的答案，白跑一轮中断恢复。
+                logger.info(
+                    "[FeishuChannel] 拒绝 Other 占位选项: token=%s, request_id=%s, index=%s",
+                    token,
+                    request_id,
+                    index,
+                )
+                return self._card_action_response(
+                    None,
+                    "error",
+                    "该题需要在网页端或终端填写答案",
+                )
+            label = self._option_label(ctx, index, value)
+            remaining = [
+                question_index
+                for question_index in ctx.answerable_indexes()
+                if question_index not in ctx.answers and question_index != index
+            ]
+            elements = self._build_approval_card_elements(
+                ctx,
+                clicked_index=index,
+                clicked_label=label,
             )
 
-            # 在主事件循环中调度异步处理
-            if self._main_loop and self._main_loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self._handle_card_callback_async(token, action_value, operator_id),
-                    self._main_loop
-                )
+            logger.info(
+                "[FeishuChannel] 收到卡片回调: token=%s, request_id=%s, index=%s, value=%s, user=%s",
+                token,
+                request_id,
+                index,
+                value,
+                operator_id,
+            )
+            self._schedule_card_callback(token, request_id, index, value, label, operator_id)
 
-            # 返回成功的响应：更新卡片去除按钮，提示已接受
-            response = {
-                "toast": {
-                    "type": "info",
-                    "content": "已收到您的选择"
-                },
-                "card": {
-                    "type": "raw",
-                    "data": {
-                         "schema": "2.0",
-                         "config": {
-                             "update_multi": True,
-                         },
-                         "body": card_data,
-                         "header": header
-                    }
-                }
-            }
-            return P2CardActionTriggerResponse(response)
+            return self._card_action_response(
+                {"header": self._approval_card_header(ctx), "elements": elements},
+                "info",
+                "已选择，请继续回答剩余问题" if remaining else "已提交，等待处理",
+            )
         except Exception as e:
             logger.error(f"处理飞书卡片回调时发生异常: {e}", exc_info=True)
-            # 返回错误响应
-            error_response = {
-                "toast": {
-                    "type": "error",
-                    "content": "处理失败"
-                }
+            return self._card_action_response(None, "error", "处理失败")
+
+    def _schedule_card_callback(
+        self,
+        token: str,
+        request_id: str,
+        index: int,
+        value: str,
+        label: str,
+        operator_id: str,
+    ) -> None:
+        """把审批回执处理调度到主事件循环。"""
+        if self._main_loop and self._main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._handle_card_callback_async(
+                    token, request_id, index, value, label, operator_id,
+                ),
+                self._main_loop,
+            )
+        else:
+            logger.error(
+                "[FeishuChannel] 主事件循环不可用，审批回执未调度: request_id=%s",
+                request_id,
+            )
+
+    @staticmethod
+    def _card_action_response(
+        card_parts: dict[str, Any] | None,
+        toast_type: str,
+        toast_content: str,
+    ) -> Any:
+        """构造卡片回调响应：toast 必带，卡片更新可选。"""
+        response: dict[str, Any] = {
+            "toast": {"type": toast_type, "content": toast_content},
+        }
+        if card_parts is not None:
+            # 与发卡保持 1.0 卡片结构：elements/header/config 放顶层。
+            # 若声明 schema "2.0" 但元素仍是 1.0 组件（action/div/hr），飞书会
+            # 判为非法并回 code=200673「出错了，请稍后重试」。
+            response["card"] = {
+                "type": "raw",
+                "data": {
+                    "config": {"update_multi": True},
+                    "elements": card_parts.get("elements", []),
+                    "header": card_parts.get("header", {}),
+                },
             }
-            if P2CardActionTriggerResponse:
-                return P2CardActionTriggerResponse(error_response)
-            return error_response
+        response_type = globals().get("P2CardActionTriggerResponse")
+        if response_type is None:
+            return response
+        return response_type(response)
 
     async def _handle_card_callback_async(
         self,
         token: str,
-        action_value: str,
+        request_id: str,
+        index: int,
+        value: str,
+        label: str,
         operator_id: str,
     ) -> None:
         """
-        异步处理卡片回调，将回调转换为用户答案事件。
+        按卡片上下文构造中断恢复回执并投递。
 
-        ask_user 提问卡片的答案按「中断恢复」语义投递：Web/CLI 对 ask_user
-        答案统一走 chat.send + source=ask_user_interrupt（流式），Runtime 据此把
-        InteractiveInput 注入正在等待该问题的会话（deliver_control_input）。
-        若走 chat.user_answer，handle_user_answer 只消费
-        symphony/evolution/permission 等审批类 request_id，ask_user 的
-        call_xxx 会直接返回空响应——原会话永远等不到答案，飞书侧一直显示
-        "正在回复"。
+        回执的 source 取自发卡时的事件来源：权限 / 计划 / 演进审批回传
+        结构化确认载荷，普通提问按问题原文回传答案。上下文在投递前置空，
+        保证同一次审批只提交一次。投递失败时不回滚：卡片已在同步响应里改写为
+        "已选择"且不再有按钮，重试无从触发，故按卡片失效提示重新发起审批。
 
         Args:
-            token: 卡片 token
-            action_value: 用户选择的值
-            operator_id: 操作者 ID
+            token: 卡片回调 token
+            request_id: 中断关联 ID
+            index: 题号
+            value: 选项稳定取值
+            label: 选项展示文案
+            operator_id: 操作者 open_id
         """
         try:
-            request_id = action_value.pop("request_id", "")
-            if not request_id:
-                raise ValueError("missing request_id")
-            # 构建用户响应（符合 evolution service 期望的格式）
-            answers = [{"selected_options": list(action_value.values())}] if action_value else []
+            ctx = self._load_card_context(request_id)
+            if ctx is None:
+                await self._notify_approval_operator(operator_id, "审批已过期或已处理，请重新发起。")
+                return
 
-            # 取回提问时的会话上下文，确保答案路由回原会话而不是新建会话
-            ctx = self._user_question_context.pop(request_id, None) or {}
-            ctx_session_id = str(ctx.get("session_id") or "").strip()
-            ctx_chat_id = str(ctx.get("chat_id") or "").strip()
-            ctx_meta = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
-            if not ctx_session_id:
-                logger.warning(
-                    "[FeishuChannel] 卡片回调未找到提问上下文，回退为 operator_id 路由: request_id=%s",
+            ctx.answers[int(index)] = str(value)
+            ctx.answer_labels[int(index)] = str(label or value)
+            if not ctx.is_answered():
+                self._save_card_context(ctx)
+                logger.info(
+                    "[FeishuChannel] 审批卡片部分作答: request_id=%s answered=%d/%d",
                     request_id,
+                    len(ctx.answers),
+                    len(ctx.answerable_indexes()),
                 )
-            # 与普通入站消息一致：session_id 用平台侧 chat_id，由 gateway 的
-            # SessionMap 按 (provider, chat_id, bot_id, user_id) 解析回内部会话；
-            # 拿不到 chat_id 时退回内部 session_id，再退化到 operator_id。
-            session_id = ctx_chat_id or ctx_session_id or operator_id
-            chat_id = ctx_chat_id or operator_id
+                return
 
-            logger.info(
-                "[FeishuChannel] 发送用户答案: token=%s, answer=%s, session_id=%s, chat_id=%s",
-                token,
-                action_value,
-                session_id,
-                chat_id,
-            )
-            metadata: dict[str, Any] = {
-                "request_id": token,
-                "answers": answers,
-            }
-            metadata.update(ctx_meta)
-            if operator_id and "feishu_open_id" not in metadata:
-                metadata["feishu_open_id"] = operator_id
-            if ctx_session_id and answers:
-                # ask_user 答案：chat.send + source=ask_user_interrupt（流式），
-                # 恢复被 ask_user 中断的回合。supports_user_interaction 让恢复后的
-                # 回合保留再次提问的能力。
-                resume_params: dict[str, Any] = {
-                    "content": "",
-                    "query": "",
-                    "request_id": request_id,
-                    "answers": answers,
-                    "source": "ask_user_interrupt",
-                    "supports_user_interaction": True,
-                }
-                msg = Message(
-                    id=token,
-                    type="req",
-                    channel_id=self.channel_id,
-                    session_id=session_id,
-                    params=resume_params,
-                    timestamp=time.time(),
-                    ok=True,
-                    req_method=ReqMethod.CHAT_SEND,
-                    provider=self.name,
-                    chat_id=chat_id,
-                    user_id=operator_id,
-                    bot_id=self.config.app_id,
-                    app_id=self.config.app_id,
-                    is_stream=True,
-                    event_type=None,
-                    metadata=metadata,
-                    enable_memory=self.config.enable_memory,
-                    enable_streaming=self.config.enable_streaming,
+            params = self._build_resume_params(ctx)
+            msg = self._build_approval_resume_message(token, ctx, params, operator_id)
+            # 一次性：先删除上下文再投递。宁可丢回执，不可重放授权。
+            # 失败分支不恢复上下文：卡片已改写为"已选择"，没有可点的按钮，
+            # 保留上下文也换不来可成功的重试，只会让提示语自相矛盾。
+            self._drop_card_context(request_id)
+            try:
+                if self._message_callback:
+                    self._message_callback(msg)
+                else:
+                    await self.bus.route_user_message(msg)
+            except Exception as exc:  # noqa: BLE001 - 投递失败要告知用户
+                logger.error(
+                    "[FeishuChannel] 审批回执投递失败: request_id=%s error=%s",
+                    request_id,
+                    exc,
+                    exc_info=True,
                 )
-            else:
-                # 无提问上下文（如服务重启后点击旧卡片）或空答案：保持旧的
-                # chat.user_answer 行为，至少给出 accepted 回执。
-                msg = Message(
-                        id=token,
-                        type="event",
-                        channel_id=self.channel_id,
-                        session_id=session_id,
-                        params={"answers": answers, "request_id": request_id},
-                        timestamp=time.time(),
-                        ok=True,
-                        req_method=ReqMethod.CHAT_ANSWER,
-                        provider=self.name,
-                        chat_id=chat_id,
-                        user_id=operator_id,
-                        bot_id=self.config.app_id,
-                        app_id=self.config.app_id,
-                        event_type=None,  # 不使用特定事件类型，通过 params 传递答案
-                        metadata=metadata,
-                    )
-            # 发送用户答案事件到 gateway
-            if self._message_callback:
-                # 构建 Message 对象
-                self._message_callback(msg)
-            else:
-                # 通过 bus 路由
-                await self.bus.publish_user_message(msg)
+                await self._notify_approval_operator(
+                    operator_id,
+                    "审批提交失败，该卡片已失效，请在网页端或终端重新发起审批。",
+                )
+                return
+            logger.info(
+                "[FeishuChannel] 审批回执已提交: request_id=%s source=%s session_id=%s",
+                request_id,
+                params.get("source"),
+                msg.session_id,
+            )
 
         except Exception as e:
             logger.error(f"异步处理卡片回调时发生异常: {e}", exc_info=True)
+
+    def _build_resume_params(self, ctx: _ApprovalCardContext) -> dict[str, Any]:
+        """按中断来源构造中断恢复回执参数。"""
+        answers: list[dict[str, Any]] = []
+        if ctx.source == _APPROVAL_SOURCE_ASK_USER:
+            for index, question in enumerate(ctx.questions):
+                value = ctx.answers.get(index)
+                if value is None:
+                    continue
+                answers.append({
+                    "question": str(question.get("question") or ""),
+                    "selected_options": [value],
+                })
+        elif ctx.answers:
+            first_index = sorted(ctx.answers)[0]
+            answer: dict[str, Any] = {"selected_options": [ctx.answers[first_index]]}
+            if ctx.source == _APPROVAL_SOURCE_PERMISSION:
+                card_id = ""
+                if first_index < len(ctx.questions):
+                    card_id = str(ctx.questions[first_index].get("card_id") or "").strip()
+                if card_id:
+                    answer["card_id"] = card_id
+            answers.append(answer)
+
+        params: dict[str, Any] = {
+            "content": "",
+            "query": "",
+            "request_id": ctx.request_id,
+            "answers": answers,
+            "source": ctx.source,
+            "supports_user_interaction": True,
+        }
+        if ctx.plan_extra:
+            params.update(ctx.plan_extra)
+        return params
+
+    def _build_approval_resume_message(
+        self,
+        token: str,
+        ctx: _ApprovalCardContext,
+        params: dict[str, Any],
+        operator_id: str,
+    ) -> Message:
+        """把回执参数包装成网关可消费的 chat.send 消息。"""
+        session_id = ctx.chat_id or ctx.session_id or operator_id
+        chat_id = ctx.chat_id or operator_id
+        metadata: dict[str, Any] = {
+            "request_id": ctx.request_id,
+            "answers": params.get("answers", []),
+        }
+        metadata.update(ctx.metadata)
+        if operator_id and "feishu_open_id" not in metadata:
+            metadata["feishu_open_id"] = operator_id
+        return Message(
+            id=token or ctx.request_id,
+            type="req",
+            channel_id=self.channel_id,
+            session_id=session_id,
+            params=params,
+            timestamp=time.time(),
+            ok=True,
+            req_method=ReqMethod.CHAT_SEND,
+            provider=self.name,
+            chat_id=chat_id,
+            user_id=operator_id,
+            bot_id=self.config.app_id,
+            app_id=self.config.app_id,
+            is_stream=True,
+            event_type=None,
+            metadata=metadata,
+            enable_memory=self.config.enable_memory,
+            enable_streaming=self.config.enable_streaming,
+        )
+
+    async def _notify_approval_operator(self, receive_id: str, text: str) -> None:
+        """回执失败时给操作者发一条文本提示（不抛异常）。"""
+        target = str(receive_id or "").strip()
+        if not target or not self._api_client:
+            return
+        try:
+            await self._create_and_send_message(
+                FeishuMessageSendRequest(
+                    receive_id=target,
+                    id_type="open_id",
+                    msg_type="text",
+                    content=json.dumps({"text": text}, ensure_ascii=False),
+                    log_label="approval_notice",
+                    max_retries=1,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - 提示失败不能影响主流程
+            logger.warning(
+                "[FeishuChannel] 审批提示发送失败: receive_id=%s error=%s",
+                target,
+                exc,
+            )
 
     def _is_duplicate_message(self, message_id: str) -> bool:
         """
