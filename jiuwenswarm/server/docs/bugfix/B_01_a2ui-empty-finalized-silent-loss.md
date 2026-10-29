@@ -47,7 +47,7 @@ A2UI response finalization status: status=repaired               ← 且不会�
 - live（2026-10-29 复验 case #26 提示词）：
   - 修复前签名：`attempt=1 valid=True → status=repaired`，落库 61 字符残片、表单全丢
   - 修复后签名：`attempt=1/2 returned empty → status=repair_failed → A2UI repair failed, retrying without A2UI → finalized changed=true`，重发激活、内容不再丢
-- 已知遗留（另案，方案见 document/a2ui-officeclaw-repair-resend-plan-20261029.md §9.1）：降级 final 不含 `<a2ui-json>` 时 relay replace 不触发，落库仍含 probe 残片文本（视觉脏但内容完整）；清理需重发帧携带覆写标记的跨仓契约小增。
+- §9.1 跨仓契约（发帧侧已实施，本提交）：`_make_a2ui_final_chunk` payload 增加 `a2ui_resend: True`——声明"suppress 链重发的权威终稿"。relay 消费侧（见 relay-claw PR5508 后续提交）见标记即整段覆写正文、不再按 `<a2ui-json>` 标签门控，降级无标签终稿同样覆写，probe 残片不再落库。发帧先合入安全：旧 relay 忽略未知 payload 字段，行为不变。
 
 ## 5. 后续可选项
 

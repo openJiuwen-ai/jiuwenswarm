@@ -466,6 +466,10 @@ def _make_a2ui_final_chunk(
             "event_type": "chat.final",
             "session_id": session_id,
             "content": content,
+            # §9.1 契约：suppress 链重发的权威终稿。relay 见标记即整段覆写正文
+            # （不再要求含 <a2ui-json> 标签），清掉流式期已上 wire 的半截
+            # `<a2ui` + probe 占位残片；降级无标签终稿同样被干净覆写。
+            "a2ui_resend": True,
         },
         is_complete=False,
     )

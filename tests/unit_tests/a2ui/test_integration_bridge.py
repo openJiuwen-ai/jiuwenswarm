@@ -240,7 +240,13 @@ def test_a2ui_pending_render_delta_stays_open():
 
 
 def test_a2ui_repaired_final_chunk_keeps_session_binding():
-    """The repaired final must replace the pending A2UI bubble in its session."""
+    """The repaired final must replace the pending A2UI bubble in its session.
+
+    §9.1 契约：重发帧带 a2ui_resend=True。suppress 期间 wire 上已流出
+    半截 `<a2ui` + probe 占位（relay 侧 delta 累积）；降级终稿可能不含
+    <a2ui-json> 标签，relay 的 replace_final 原本按标签门控不覆写，残片
+    会留在正文。带 a2ui_resend 标记即声明"这是权威终稿，无条件整段覆写"。
+    """
     from jiuwenswarm.server.runtime.agent_adapter.interface import _make_a2ui_final_chunk
 
     chunk = _make_a2ui_final_chunk(
@@ -254,6 +260,7 @@ def test_a2ui_repaired_final_chunk_keeps_session_binding():
         "event_type": "chat.final",
         "session_id": "sess-a2ui",
         "content": "<a2ui-json>[]</a2ui-json>",
+        "a2ui_resend": True,
     }
 
 
