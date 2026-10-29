@@ -393,15 +393,13 @@ async def test_finalize_assistant_response_if_a2ui_bypasses_non_web_channel(monk
 
 
 @pytest.mark.asyncio
-async def test_finalize_officeclaw_skips_server_side_repair_and_resend(monkeypatch):
-    """officeclaw (relay-claw) must NOT run server-side A2UI repair/retry/resend.
+async def test_finalize_officeclaw_runs_server_side_repair_and_resend(monkeypatch):
+    """officeclaw (relay-claw) now runs server-side A2UI repair/retry/resend.
 
-    officeclaw completely skips server-side finalize (including validation) — no
-    repair, no retry, no resend. Broken a2ui content is passed through as-is;
-    the frontend does text degradation display (extractTextFromMalformedA2UI
-    regex salvage + invalidA2UIFallback fixed error text — degradation, not
-    JSON repair). Skipping entirely eliminates the timing issue (resend
-    frame after terminal) and the duplicate-block concern.
+    officeclaw 启用 probe + suppress + repair（与 web 对齐）。suppress 扣住原 chat.final
+    + 改写 is_complete，relay-claw 不 break；relay-claw 前端已部署 chat.final a2ui
+    replace_final 覆写（patchMessage({content}=finalized)），覆写掉 delta 累积的
+    <a2ui 前半 + probe 污染。repair 修复破损 JSON，发送 finalized（前端首次收到）。
     """
     import types
 
@@ -446,11 +444,10 @@ async def test_finalize_officeclaw_skips_server_side_repair_and_resend(monkeypat
         retry_without_a2ui_call=retry_without_a2ui_call,
     )
 
-    assert result == broken_a2ui
-    assert config_calls == []
-    assert finalize_calls == []
-    assert repair_calls == []
-    assert retry_calls == []
+    # officeclaw 现在走 repair（不再跳过）
+    assert result is not None
+    assert config_calls == [1]
+    assert len(finalize_calls) == 1
 
 
 @pytest.mark.asyncio

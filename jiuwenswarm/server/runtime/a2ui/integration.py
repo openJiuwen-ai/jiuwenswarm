@@ -29,13 +29,13 @@ _A2UI_CHANNEL_ID = "web"
 # relay-claw 走 officeclaw channel，a2ui 对其原生生效（与 web 同等）。
 _A2UI_CHANNEL_IDS = frozenset({"web", "officeclaw"})
 
-# a2ui 流式 probe（pending render chunk）机制的适用渠道：目前仅 web 前端。
-# officeclaw (relay-claw) 用 parseA2UIContent（本仓库 channels/web/frontend
-# a2uiContent.ts，relay-claw 经 vendor 同步使用）从累积文本提取 <a2ui-json> 块，
-# probe 插入的 <a2ui-json>\n 会与 agent 原始块重复、污染 content 致前端提取失败。
-# 与 _A2UI_CHANNEL_IDS（能原生渲染 a2ui 的渠道）有意双轨：新增渠道时
-# 「能渲染」不自动等于「需要 probe」，两侧必须各自显式声明，防语义搭便车。
-_A2UI_PROBE_CHANNEL_IDS = frozenset({"web"})
+# a2ui 流式 probe（pending render chunk）机制的适用渠道。
+# officeclaw (relay-claw) 启用 probe → suppress 自动激活（扣 a2ui delta + 原 chat.final
+# + 改写 is_complete，relay-claw 不 break）。probe 的 <a2ui-json>\n 占位帧会与 delta 拆分
+# 的 <a2ui 前半在累积 content 里拼接产生 -json> 污染，但 relay-claw 前端已部署
+# chat.final a2ui replace_final 覆写（patchMessage({content}=finalized)），覆写掉累积
+# 的 <a2ui 前半 + probe 污染，content = finalized 完整块。
+_A2UI_PROBE_CHANNEL_IDS = frozenset({"web", "officeclaw"})
 
 
 def is_a2ui_channel(channel: str | None) -> bool:
@@ -48,15 +48,12 @@ def is_a2ui_probe_channel(channel: str | None) -> bool:
     return str(channel or "").strip().lower() in _A2UI_PROBE_CHANNEL_IDS
 
 
-# 仅这些渠道走服务端 A2UI repair/retry/重发（finalize_assistant_response_if_a2ui）。
-# officeclaw (relay-claw) 故意排除，完全跳过服务端 finalize（含校验）：
-# 1. 服务端 repair 后整段 chat.final 重发会与已累积 delta 产生重复块；
-# 2. 该重发帧落在 wire 终结块之后被 relay-claw 消费方 break 丢弃；
-# 3. 破损 a2ui 内容原样透传，由前端做文本降级显示（本仓库 a2uiContent.ts
-#    extractTextFromMalformedA2UI :173-211 正则文本打捞 + invalidA2UIFallback
-#    :162 固定错误文案降级——是降级显示而非 JSON 修复）。
-# 完全跳过 = 不 repair/不校验/不重发，从根上消除重发帧时序丢失与重复块。
-_A2UI_FINALIZE_REPAIR_CHANNEL_IDS = frozenset({"web"})
+# officeclaw (relay-claw) 启用服务端 A2UI repair/retry/finalize：
+# suppress 扣住原 chat.final（不上 wire）+ 改写 is_complete（relay-claw 不 break），
+# post-stream repair 后发送 finalized（前端首次收到，不是"重发"）。
+# relay-claw 前端已部署 chat.final a2ui replace_final 覆写，content = finalized
+# （覆写掉 delta 累积的 <a2ui 前半 + probe，不累积补齐，无重复块）。
+_A2UI_FINALIZE_REPAIR_CHANNEL_IDS = frozenset({"web", "officeclaw"})
 
 
 def should_finalize_repair(channel: str | None) -> bool:
