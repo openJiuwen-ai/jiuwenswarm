@@ -1310,7 +1310,6 @@ class SkillManager:
                 "installed_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        self._refresh_agent_data_indexes()
 
         return {"success": True}
 
@@ -1376,8 +1375,6 @@ class SkillManager:
             }
         )
 
-        # 刷新索引
-        self._refresh_agent_data_indexes()
 
         return {"success": True}
 
@@ -2014,7 +2011,6 @@ class SkillManager:
                             "installed_at": datetime.now(timezone.utc).isoformat(),
                         }
                     )
-                    self._refresh_agent_data_indexes()
                     _safe_rmtree(skill_dir)
                     return {
                         "success": True,
@@ -2135,7 +2131,6 @@ class SkillManager:
                 )
 
             skill_file.write_text(content, encoding="utf-8")
-            self._refresh_agent_data_indexes()
             return {"success": True, "path": str(target_dir)}
         except Exception as exc:
             logger.error("Team Skills Hub init 失败: %s", exc)
@@ -2525,7 +2520,6 @@ class SkillManager:
                 _safe_rmtree(staging)
         if backup.exists():
             _safe_rmtree(backup)
-        self._refresh_agent_data_indexes()
         logger.info(
             "[SkillManager] source_install commit name=%s total_ms=%.1f lock_wait_ms=%.1f",
             skill_name,
@@ -3189,7 +3183,6 @@ class SkillManager:
                         "installed_at": installed_at,
                     }
                 )
-                self._refresh_agent_data_indexes()
                 return {
                     "success": True,
                     "skill": {
@@ -3354,7 +3347,6 @@ class SkillManager:
                     "installed_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
-            self._refresh_agent_data_indexes()
         except Exception as exc:
             logger.error("SkillNet 写入状态失败: %s", exc)
             self._skillnet_install_jobs[install_id] = {
@@ -3718,7 +3710,6 @@ class SkillManager:
             "[SkillManager] uninstall stage=ledger name=%s cost_ms=%.1f",
             raw_name, (time.perf_counter() - _ledger_t0) * 1000.0,
         )
-        self._refresh_agent_data_indexes()
         return {"success": True}
 
     async def handle_skills_import_local(self, params: dict) -> dict:
@@ -3805,7 +3796,6 @@ class SkillManager:
             return {"success": False, "detail": f"不支持的路径类型: {origin}"}
 
         self._add_local_skill({"name": skill_name, "origin": origin, "source": "local"})
-        self._refresh_agent_data_indexes()
         logger.info(
             "[SkillManager] import_local_from_path done: skill_name=%s origin=%s dest=%s",
             skill_name,
@@ -4898,85 +4888,6 @@ class SkillManager:
         except Exception:
             return []
         return mirrors
-
-    @staticmethod
-    def _normalize_lang_suffix(name: str) -> str:
-        """将 xxxx_zh.MD / xxxx_en.MD 规范为 xxxx.MD（去除 _zh/_en 后缀）。"""
-        stem, suffix = name.rpartition(".")[0], name.rpartition(".")[2]
-        suffix_lower = suffix.lower()
-        if suffix_lower in ("md", "mdx"):
-            stem_lower = stem.lower()
-            if stem_lower.endswith("_zh"):
-                stem = stem[:-3]
-            elif stem_lower.endswith("_en"):
-                stem = stem[:-3]
-        return f"{stem}.{suffix}" if stem else name
-
-    @staticmethod
-    def _generate_agent_data_for_workspace(workspace_root: Path) -> None:
-        """Generate agent/jiuwenclaw_workspace/agent-data.json from agent tree."""
-        agent_root = workspace_root.resolve()
-        output_path = (agent_root / "agent-data.json").resolve()
-        root_folder_key = "__root__"
-
-        if not agent_root.exists() or not agent_root.is_dir():
-            return
-
-        folder_data: dict[str, list[dict[str, str | bool]]] = {}
-        seen_paths: dict[str, set[str]] = {}
-        for entry in sorted(agent_root.rglob("*")):
-            if not entry.is_file() or entry.name.startswith("."):
-                continue
-            # Skip files in hidden directories (e.g., .agent_history)
-            if any(part.startswith(".") for part in entry.relative_to(agent_root).parts):
-                continue
-            relative_folder_path = entry.parent.relative_to(agent_root.parent).as_posix()
-            folder_key = root_folder_key if relative_folder_path == "." else relative_folder_path
-
-            display_name = SkillManager._normalize_lang_suffix(entry.name)
-            display_path = (
-                f"agent/{relative_folder_path}/{display_name}".replace("/.", "/").replace("//", "/")
-                if relative_folder_path != "."
-                else f"agent/{display_name}"
-            )
-
-            seen = seen_paths.setdefault(folder_key, set())
-            if display_path in seen:
-                continue
-            seen.add(display_path)
-
-            folder_data.setdefault(folder_key, []).append(
-                {
-                    "name": display_name,
-                    "path": display_path,
-                    "isMarkdown": entry.suffix.lower() in {".md", ".mdx"},
-                }
-            )
-
-        sorted_folder_data = {
-            folder_key: sorted(files, key=lambda item: item["path"])
-            for folder_key, files in sorted(folder_data.items(), key=lambda item: item[0])
-        }
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(sorted_folder_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def _refresh_agent_data_indexes(self) -> None:
-        """Refresh agent-data.json for runtime and mirror workspaces."""
-        workspace_roots: set[Path] = {self._agent_root.resolve()}
-        for mirror_root in self._get_mirror_skills_dirs():
-            try:
-                # mirror_root = .../agent/skills → agent 根目录为其 parent
-                workspace_roots.add(mirror_root.parent.resolve())
-            except Exception:
-                continue
-        for workspace_root in workspace_roots:
-            try:
-                self._generate_agent_data_for_workspace(workspace_root)
-            except Exception as exc:
-                logger.warning("重建 agent-data.json 失败: agent_root=%s error=%s", workspace_root, exc)
 
     @staticmethod
     def _locate_skill_dir(path: Path) -> Path | None:
@@ -6707,7 +6618,6 @@ class SkillManager:
 
         builtin_dir = get_builtin_skills_dir()
         builtin_exists = builtin_dir.exists()
-        changed = False
 
         for child in self._skills_dir.iterdir():
             if not child.is_dir() or child.name.startswith("_"):
@@ -6743,10 +6653,6 @@ class SkillManager:
             )
             registered_origins.add(inferred_origin)
             registered_names.add(name)
-            changed = True
-
-        if changed:
-            self._refresh_agent_data_indexes()
 
     @staticmethod
     def _is_builtin_installation_record(record: dict[str, Any]) -> bool:
@@ -6881,7 +6787,6 @@ class SkillManager:
 
         self._drop_builtin_state_records(removed_record_ids, removed_names)
         self._save_state()
-        self._refresh_agent_data_indexes()
 
     def _apply_enabled_config(
         self,

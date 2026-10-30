@@ -39,8 +39,8 @@ def _unified_memory_description(language: str) -> str:
             "[mode=write] Write content to path; append=true to append instead of overwrite.\n"
             "[mode=edit] Replace old_text with new_text in path (old_text must be unique in the file).\n"
             "[mode=read] Read memory file with offset/limit pagination.\n"
-            "[mode=search] Semantic vector search by query. Requires embedding config; "
-            "returns disabled if not configured.\n\n"
+            "[mode=search] Search by query using keywords and, when embedding is configured, "
+            "semantic similarity.\n\n"
             "[Path security] Paths must start with memory/ (e.g. memory/USER.md, "
             "memory/daily_memory/2026-09-10.md). Paths outside this prefix are rejected.\n\n"
             "[Read-only mode] In cron/heartbeat/group-chat digital-avatar mode, "
@@ -50,13 +50,13 @@ def _unified_memory_description(language: str) -> str:
             "and prevents traversal, the general file tools do not."
         )
     return (
-        "统一记忆工具（跨会话持久化）。用 mode 选写、编辑、读取或语义检索。\n\n"
+        "统一记忆工具（跨会话持久化）。用 mode 选写、编辑、读取或检索。\n\n"
         "【存储】memory/USER.md（用户画像、稳定偏好）、memory/MEMORY.md（长期事实、重要决策）、"
         "memory/daily_memory/YYYY-MM-DD.md（每日记录、任务进展）。\n\n"
         "【mode=write】把 content 写入 path；append=true 追加而非覆盖。\n"
         "【mode=edit】在 path 文件中将 old_text 精确替换为 new_text（old_text 须在该文件中唯一出现）。\n"
         "【mode=read】分页读取记忆文件（offset/limit）。\n"
-        "【mode=search】按 query 语义检索记忆（向量相似度）。依赖 embedding 配置；未配置时返回 disabled。\n\n"
+        "【mode=search】按 query 检索记忆；支持关键词检索，配置 embedding 后还可进行语义检索。\n\n"
         "【路径安全】path 必须以 memory/ 开头（如 memory/USER.md、memory/daily_memory/2026-09-10.md）。"
         "越界路径会被拒绝。\n\n"
         "【只读态】定时任务/心跳/群聊数字分身模式下，write/edit 被拒（read/search 可用）。\n\n"
@@ -79,8 +79,8 @@ def _unified_memory_input_params(language: str) -> dict:
                 "type": "string",
                 "enum": ["write", "edit", "read", "search"],
                 "description": d(
-                    "操作模式：write=写入/追加；edit=精确替换；read=分页读取；search=语义检索",
-                    "write=write/append; edit=exact replace; read=paginated read; search=semantic search",
+                    "操作模式：write=写入/追加；edit=精确替换；read=分页读取；search=检索",
+                    "write=write/append; edit=exact replace; read=paginated read; search=search",
                 ),
             },
             "path": {
@@ -252,7 +252,7 @@ class FlashMemoryTool(Tool):
                         success=False,
                         error=str(
                             result.get("error")
-                            or "Semantic search is disabled (embedding not configured). "
+                            or "Memory search is unavailable. "
                             "Use memory(mode=read) or read_file/grep to find specific content."
                         ),
                     )
