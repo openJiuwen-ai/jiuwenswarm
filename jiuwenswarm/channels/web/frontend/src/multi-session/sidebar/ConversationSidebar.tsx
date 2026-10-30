@@ -11,6 +11,7 @@ import {
   useWorkspaceStore,
   useCronStore,
   filterJobsForProject,
+  shouldUseCronUnreadListFallback,
   type SidebarCronJob,
 } from '../../stores';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
@@ -830,6 +831,24 @@ export function ConversationSidebar({
   useEffect(() => {
     if (peek) return;
     void loadCronJobs();
+  }, [peek, loadCronJobs]);
+
+  // 企业 HTTP：没有常驻 WS 收 cron 终稿，侧边栏轻量轮询 list，靠 last_session_id
+  // 变化标未读蓝点。个人版 / websocket 不轮询，仍只靠推送。
+  useEffect(() => {
+    if (peek || !shouldUseCronUnreadListFallback()) return;
+    const reload = () => {
+      void loadCronJobs();
+    };
+    const intervalId = window.setInterval(reload, 15000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [peek, loadCronJobs]);
 
   // 监听 agent 工具调用结果：当 cron 相关工具执行后刷新侧边栏定时任务
