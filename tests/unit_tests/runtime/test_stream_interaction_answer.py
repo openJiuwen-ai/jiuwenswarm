@@ -921,7 +921,12 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
         finally:
             closed.append(get_current_runtime())
 
+    def assert_control_owner(event):
+        owner = _execution(harness.coordinator.snapshot_session(SESSION_ID), "question_1")
+        assert event.payload["execution_id"] == owner.execution_id
+
     async def accepted(event):
+        assert_control_owner(event)
         assert get_current_runtime() is harness.runtime
         acknowledgements.append(event)
 
@@ -930,9 +935,12 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
     async with aclosing(stream):
         async with asyncio.timeout(1):
             if not smart:
-                assert (await anext(stream)).event_type == "runtime.accepted"
+                acknowledgement = await anext(stream)
+                assert acknowledgement.event_type == "runtime.accepted"
+                assert_control_owner(acknowledgement)
             for index in range(300):
                 event = await anext(stream)
+                assert_control_owner(event)
                 assert event.event_type == ("chat.reasoning" if index % 2 == 0 else "chat.delta")
                 assert event.payload["content"] == str(index)
                 assert get_current_runtime() is None
@@ -941,7 +949,9 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
         assert len(acknowledgements) == int(smart)
         harness.admission.end_control.assert_not_awaited()
         finish.set()
-        assert [event.event_type async for event in stream] == ["chat.final"]
+        remaining = [event async for event in stream]
+        assert [event.event_type for event in remaining] == ["chat.final"]
+        assert_control_owner(remaining[0])
     assert closed == [harness.runtime]
     harness.admission.begin_control.assert_awaited_once_with(SESSION_ID)
     harness.admission.end_control.assert_awaited_once_with(SESSION_ID)
