@@ -633,6 +633,10 @@ class CronRunState:
     # 本轮计费 FINISH 响应携带的消耗点数（scheduler finally 收口时填入）；
     # 随最终推送下发，桌面渲染层据此展示「点数消耗」。FAILED/未取得为 None。
     consumed_points: float | None = None
+    # 定时任务产物文件：轮结束时从执行会话历史回收（chat.file 载荷），
+    # 由 _push_to_targets 随总结文本一并重投到绑定会话（__cron__ 临时会话
+    # 不可寻址、下载令牌也无法生成，轮内直投必然断裂）。
+    deliver_files: list[dict[str, Any]] = field(default_factory=list)
     # Delivery tracking (filled by _push_to_targets)
     delivered: bool = False
     delivery_status: str = "unknown"  # unknown|delivered|failed|not-requested
