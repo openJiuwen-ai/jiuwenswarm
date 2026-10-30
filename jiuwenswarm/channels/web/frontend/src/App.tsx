@@ -4378,10 +4378,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             onUsePrompt={handleUseAgentPrompt}
             onUseAgentGroup={handleUseAgentGroup}
             onUseGroupPrompt={handleUseGroupPrompt}
-            onCreateViaChat={() => requestSessionNavigation('new', {
-              initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
-              initialSelectedSkills: ['agent-creator'],
-            })}
+            onCreateViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-creator'],
+              });
+            }}
             onCreateGroupViaChat={() => requestSessionNavigation('new', {
               initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
               initialSelectedSkills: ['agent-group-creator'],

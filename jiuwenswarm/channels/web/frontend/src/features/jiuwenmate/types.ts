@@ -114,6 +114,8 @@ export interface JiuwenMateChannel {
   id: string;
   name: string;
   platform: string;
+  ownerAgentId?: string;
+  coverage?: string;
   artifacts: number;
   tokenUsage: number;
   lastResponseMinutes: number;
@@ -125,8 +127,16 @@ export interface JiuwenMateChannelMessage {
   fromColleague: boolean;
   mentionColleague: boolean;
   content: string;
+  receivedAt: string;
   status?: string;
-  attachment?: { title: string; kind: string };
+  attachments?: { title: string; kind: string }[];
+}
+
+export interface JiuwenMateChannelMessagePage {
+  messages: JiuwenMateChannelMessage[];
+  nextCursor: string | null;
+  status: string;
+  coverage: string;
 }
 
 export type JiuwenMateTraceRole = 'system' | 'context' | 'user' | 'assistant' | 'tool';
