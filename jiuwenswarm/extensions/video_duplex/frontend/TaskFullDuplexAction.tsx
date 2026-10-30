@@ -20,6 +20,7 @@ import {
 } from '../../../channels/web/frontend/src/features/taskFullDuplex/featureFlag';
 import { setTaskAsrEnabled } from '../../../channels/web/frontend/src/features/taskAsr/featureFlag';
 import { webRequest } from '../../../channels/web/frontend/src/services/webClient';
+import { resolveChatModelSelection, useSessionStore } from '../../../channels/web/frontend/src/stores/sessionStore';
 import {
   startTaskFullDuplex,
   exitTaskFullDuplex,
@@ -53,6 +54,21 @@ export function TaskFullDuplexAction({
   const enabled = useTaskFullDuplexEnabled();
   const { state: runtimeState, sessionId: runtimeSessionId, error } = useTaskFullDuplexRuntime();
   const state = runtimeSessionId === sessionId ? runtimeState : 'idle';
+  // Full duplex only runs on models the user configured; login free models hide the button.
+  const freeModel = useSessionStore((store) => {
+    const runtime = store.runtimes[sessionId ?? ''];
+    const selection = runtime?.selectedModelSelection;
+    if (selection?.type === 'model_group') return false;
+    const model = selection?.type === 'model'
+      ? store.chatAvailableModels.find((item) => item.model_id === selection.id)
+      : resolveChatModelSelection(store.chatAvailableModels, runtime?.selectedModelName ?? null, store.defaultModelName);
+    return model?.is_free === true;
+  });
+
+  // Switching to a free model mid-call hides the button, so hang up first.
+  useEffect(() => {
+    if (freeModel && state !== 'idle') exitTaskFullDuplex();
+  }, [freeModel, state]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,7 +112,7 @@ export function TaskFullDuplexAction({
     await beginSession();
   }, [beginSession, state]);
 
-  const showAction = enabled && eligible;
+  const showAction = enabled && eligible && !freeModel;
   const title = error || (state === 'starting' ? labels.starting : state === 'active' ? labels.stop : labels.start);
 
   return (
