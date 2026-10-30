@@ -26,7 +26,7 @@ flowchart LR
 
 组件 `validate` 在属性类型及必填校验通过后检查跨字段约束；`prepare` 在合法属性上补充默认值。
 两者与单项值校验职责分离，消费者需要按此顺序调用。
-目录同时保留 `allowAction`、`actionEvent` 及一致性检查，供 action 消费方使用。
+节点事件通过目录中的 `events` 规则校验，适配器通过 `emit(event, data)` 触发当前节点声明的动作。
 
 ## 模块职责
 
@@ -40,7 +40,7 @@ flowchart LR
 | `protocol/checkPropValue.ts` | 单项属性与事件数据的通用校验 |
 
 `checkPropValue` 中的 nodes 规则只检查数组规模，完整节点遍历、Tabs 内容组和事件绑定校验
-属于协议消费者的职责。根组件约束是目录数据，必须由消费者显式检查。
+属于协议管线的职责。协议管线同时检查槽位根组件约束，返回与输入隔离的只读规范化树。
 
 ## 验证入口
 
