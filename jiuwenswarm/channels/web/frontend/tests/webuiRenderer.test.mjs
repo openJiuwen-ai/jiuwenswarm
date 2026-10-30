@@ -13,7 +13,7 @@ import { createMockTransport } from '../node_modules/.cache/webui-renderer/trans
 import { createWebUIAppRuntime } from '../node_modules/.cache/webui-renderer/assembly/index.js';
 import { webUIInstanceKey } from '../node_modules/.cache/webui-renderer/contracts/index.js';
 import { DEMO_SLOT, DEMO_SLOT_SINGLE, demoCatalog } from '../node_modules/.cache/webui-renderer/testing/demoCatalog.js';
-import { demoRenderFrame } from '../node_modules/.cache/webui-renderer/testing/fixtures.js';
+import { demoClearFrame, demoRenderFrame } from '../node_modules/.cache/webui-renderer/testing/fixtures.js';
 
 function installDom() {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { virtualConsole: new VirtualConsole() });
@@ -431,6 +431,82 @@ test('StrictMode mount and cleanup do not leak scope ownership', async () => {
     await act(async () => root.unmount());
     assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT).mounted, false);
   } finally {
+    runtime.dispose();
+    restoreDom();
+  }
+});
+
+test('clear and rebuild with the same revision remounts the instance tree', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  const probe = createProbeAdapter();
+  const registry = createRendererRegistry({ demo: probe.Adapter });
+  const root = createRoot(document.getElementById('root'));
+  const tree = (title) => ({ component: 'demo', props: { title }, children: [] });
+  try {
+    await act(async () => {
+      renderHost(root, runtime, registry);
+    });
+    await act(async () => {
+      transport.injectRenderFrame(demoRenderFrame({ revision: 1, root: tree('first') }));
+    });
+    await act(async () => {
+      document
+        .querySelector('[data-testid="probe-local-button"]')
+        .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(document.querySelector('[data-testid="probe-local"]').textContent, '1');
+
+    await act(async () => {
+      transport.injectClearFrame(demoClearFrame({ revision: 2 }));
+      transport.injectRenderFrame(demoRenderFrame({ revision: 1, root: tree('rebuilt') }));
+    });
+    assert.equal(document.querySelector('[data-testid="probe-title"]').textContent, 'rebuilt');
+    assert.equal(
+      document.querySelector('[data-testid="probe-local"]').textContent,
+      '0',
+      'local state of the cleared tree must not leak into the rebuilt tree',
+    );
+    assert.equal(
+      runtime.getInstance(INSTANCE_KEY).displayedRevision,
+      1,
+      'rebuilt frame is confirmed even though its revision equals the cleared frame revision',
+    );
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    restoreDom();
+  }
+});
+
+test('clear and rebuild with the same revision drops the previous render failure', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  const probe = createProbeAdapter();
+  const registry = createRendererRegistry({ demo: probe.Adapter });
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => {
+      renderHost(root, runtime, registry);
+    });
+    await act(async () => {
+      transport.injectRenderFrame(
+        demoRenderFrame({ revision: 1, root: { component: 'demo', props: { title: 'crash' }, children: [] } }),
+      );
+    });
+    assert.notEqual(document.querySelector('[data-testid="webui-instance-error"]'), null);
+
+    await act(async () => {
+      transport.injectClearFrame(demoClearFrame({ revision: 2 }));
+      transport.injectRenderFrame(
+        demoRenderFrame({ revision: 1, root: { component: 'demo', props: { title: 'healthy' }, children: [] } }),
+      );
+    });
+    assert.equal(document.querySelector('[data-testid="webui-instance-error"]'), null, 'old failure must not survive the rebuild');
+    assert.equal(document.querySelector('[data-testid="probe-title"]').textContent, 'healthy');
+    assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 1);
+  } finally {
+    await act(async () => root.unmount());
     runtime.dispose();
     restoreDom();
   }
