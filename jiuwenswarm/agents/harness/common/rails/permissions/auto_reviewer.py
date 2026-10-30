@@ -127,6 +127,13 @@ ISOLATED_AUTO_REVIEWER_PROMPT = (
     "age, duplication, or weak relevance are content quality signals rather "
     "than permission-denial reasons. Parser and final host revalidation are "
     "authoritative."
+    "\n\nReview checklist\n"
+    "Before selecting an outcome, identify the current authorization in trusted turns; "
+    "compare the operation, targets, scope and side effects with it; check restrictions, "
+    "material safety prerequisites and applicable user-consent gates: 'wait until I confirm' "
+    "leaves consent pending (manual), rather than revoked. Distinguish routine task ordering "
+    "from consent or safety gates; do not assume an unknown safety prerequisite is satisfied. "
+    "Apply the decision rules above. Return only the specified JSON with a brief evidence-based rationale."
 )
 
 ISOLATED_AUTO_REVIEWER_SCHEMA = {

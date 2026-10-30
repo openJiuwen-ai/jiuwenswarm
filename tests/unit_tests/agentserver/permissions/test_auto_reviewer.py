@@ -706,6 +706,8 @@ async def test_isolated_model_receives_confirmation_and_output_contracts(
     assert "write-only restriction does not require manual review of every read" in prompt
     assert "natural-language confirmation does not create a reusable grant" in prompt
     assert "Return only outcome, reason_code, and rationale" in prompt
+    assert "leaves consent pending (manual), rather than revoked" in prompt
+    assert "Distinguish routine task ordering from consent or safety gates" in prompt
     payload = json.loads(messages[1]["content"])
     assert payload["request"]["review_evidence"]["user_intent"]["trusted_user_turns"] == [
         {"kind": "fresh", "text": turn.text},
