@@ -3744,7 +3744,8 @@ class MessageHandler(ABC):
 
         try:
             if action == "list":
-                # 个人版：无 user 时传 None，与 develop 一致可列全部；有 user 时按属主筛。
+                # 无 user 时传空串，只列空身份任务，不传 None（None 会跳过用户维，
+                # 把本机其他用户的任务也列出来）。有 user 时按属主筛。
                 # 企业版额外带 project/group/bot；控制器若忽略筛选，下面再兜一层归属。
                 data = await cc.list_jobs(
                     project_id=(
@@ -3752,7 +3753,7 @@ class MessageHandler(ABC):
                         if "project_id" in params
                         else None
                     ),
-                    user_id=owner_user_id or None,
+                    user_id=str(owner_user_id or ""),
                     group_id=str(params.get("group_id") or ""),
                     bot_id=str(params.get("bot_id") or ""),
                 )

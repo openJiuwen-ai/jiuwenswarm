@@ -133,9 +133,9 @@ async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
     )
     assert [job["id"] for job in personal_project] == ["job_a"]
 
-    # user_id=None：个人版不按用户筛，仍按空的群/机器人筛。
-    all_empty_route = await controller.list_jobs(user_id=None, group_id="", bot_id="")
-    assert [job["id"] for job in all_empty_route] == ["home", "job_a"]
+    # 显式空串与默认值一致：只命中空身份，不把 None 混进来。
+    empty_owner = await controller.list_jobs(user_id="", group_id="", bot_id="")
+    assert [job["id"] for job in empty_owner] == ["home"]
 
     enterprise = await controller.list_jobs(
         project_id="",
@@ -144,6 +144,38 @@ async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
         bot_id="b1",
     )
     assert [job["id"] for job in enterprise] == ["job_c"]
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_none_user_id_skips_user_filter() -> None:
+    """显式 user_id=None 才跳过用户维；默认值必须是 ""，不能是 None。
+
+    None 只留给确定需要全量列表的内部路径。对外入口应传空串，避免跨用户可见。
+    """
+    jobs = [
+        _listed_job("home", project_id="", user_id="", group_id="", bot_id=""),
+        _listed_job("job_a", project_id="proj_1", user_id="alice", group_id="", bot_id=""),
+        _listed_job("job_c", project_id="", user_id="alice", group_id="g1", bot_id="b1"),
+    ]
+
+    async def list_jobs():
+        return list(jobs)
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=_FakeScheduler(),
+    )
+
+    # 仅关键字参数：默认值在 __kwdefaults__。user_id 默认必须是 ""，不能是 None。
+    kwdefaults = controller.list_jobs.__kwdefaults__
+    assert kwdefaults is not None
+    assert kwdefaults["user_id"] == ""
+    assert kwdefaults["group_id"] == ""
+    assert kwdefaults["bot_id"] == ""
+    assert kwdefaults["project_id"] is None
+
+    listed = await controller.list_jobs(user_id=None, group_id="", bot_id="")
+    assert [job["id"] for job in listed] == ["home", "job_a"]
 
 
 @pytest.mark.asyncio
