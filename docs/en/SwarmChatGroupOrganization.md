@@ -179,7 +179,7 @@ The title is the parent task: the user text stored on the plan. After root `groo
 
 Leave `member_name` empty and store `owner_member`. Single-team lookup and `team.task` attachment use `member_name`. An organization card that used the Owner's name would collide with the Owner's single-team execution, and internal tasks would be written into its rows.
 
-Exceptions use the card's existing failed status. There is no new error-text area. A failed child row is `failed`. If Owner setup fails or the organization root fails, the card is `failed` and every unfinished row is `failed`, so the existing failure icon and status label show it. An exception does not add a group message.
+Exceptions use the card's existing failed status. There is no new error-text area. A failed child row is `failed`. If Owner setup fails, the organization root fails, or the Owner wait is cancelled, the card is `failed` and every unfinished row is `failed`, so the existing failure icon and status label show it. An exception does not add a group message.
 
 After the Owner posts, the card becomes `completed` and stores that message's `message_id`. View result stays the current in-page link. Besides matching the sender to `member_name`, also match a sender equal to `owner_member` when the message id equals the card's `message_id`.
 

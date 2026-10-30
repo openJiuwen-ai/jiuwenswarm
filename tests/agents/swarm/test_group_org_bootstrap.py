@@ -3080,7 +3080,12 @@ async def test_cancelled_owner_wait_marks_the_plan_failed(monkeypatch):
     async def _backend(*_args, **_kwargs):
         return SimpleNamespace(org_task_manager=object())
 
-    monkeypatch.setattr(bootstrap, "publish_organization_card", _noop)
+    cards: list[dict] = []
+
+    async def _card(**kwargs):
+        cards.append(kwargs)
+
+    monkeypatch.setattr(bootstrap, "publish_organization_card", _card)
     monkeypatch.setattr(bootstrap, "_round_state", _round)
     monkeypatch.setattr(bootstrap, "_wait_for_members", _empty)
     monkeypatch.setattr(bootstrap, "_owner_primes_root_task", _noop)
@@ -3105,6 +3110,8 @@ async def test_cancelled_owner_wait_marks_the_plan_failed(monkeypatch):
         await task
     assert plan["status"] == "failed"
     assert plan["error"] == "organization wait ended before the round finished"
+    assert cards[-1]["status"] == "failed"
+    assert cards[-1]["fail_unfinished"] is True
 
 
 @pytest.mark.asyncio
