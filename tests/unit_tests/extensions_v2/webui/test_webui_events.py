@@ -243,8 +243,8 @@ async def test_valid_handler_can_replace_and_reply_and_old_revision_is_rejected(
 
 
 def test_component_event_catalog_excludes_deferred_features():
-    assert len(COMPONENT_RULES) == 17
-    assert "FilePreview" not in COMPONENT_RULES
+    assert len(COMPONENT_RULES) == 18
+    assert {"FileTree", "FilePreview"} <= COMPONENT_RULES.keys()
     assert {name for rule in COMPONENT_RULES.values() for name in rule.get("events", {})} <= UPSTREAM_EVENTS
 
 
@@ -285,6 +285,20 @@ def test_file_tree_event_data_requires_known_nodes():
     assert not validate_event_data("FileTree", "ui.select", {"key": "src"}, props)
     assert validate_event_data("FileTree", "ui.change", {"key": "src", "expanded": True, "expandedKeys": ["src"]}, props)
     assert not validate_event_data("FileTree", "ui.change", {"key": "src", "expanded": False, "expandedKeys": ["src"]}, props)
+
+
+def test_file_preview_accepts_plugin_supplied_content_and_rejects_bad_paths():
+    good = RenderNode("FilePreview", {
+        "file": {
+            "name": "main.ts", "path": "src/main.ts", "mimeType": "text/plain",
+            "size": 3, "content": "abc",
+        },
+    })
+    assert validate_root(good).ok
+    assert validate_root(RenderNode("FilePreview", {"file": None})).ok
+    assert not validate_root(RenderNode("FilePreview", {
+        "file": {"name": "main.ts", "path": "../main.ts", "mimeType": "text/plain", "size": 3, "content": "abc"},
+    })).ok
 
 
 _CASES = json.loads((Path(__file__).resolve().parents[4] / "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiComponentCases.json").read_text(encoding="utf-8"))
