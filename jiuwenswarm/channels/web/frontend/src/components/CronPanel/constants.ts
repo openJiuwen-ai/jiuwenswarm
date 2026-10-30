@@ -24,6 +24,7 @@ export const SELECTABLE_TARGET_KEYS: readonly string[] = [
 // 沿用旧 CronPanel/index.tsx 的时区选项列表
 export const TIMEZONE_OPTIONS = [
   'Asia/Shanghai',
+  'UTC',
   'Asia/Bangkok',
   'Asia/Tokyo',
   'Asia/Seoul',

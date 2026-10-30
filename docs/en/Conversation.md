@@ -48,6 +48,8 @@ Totals use model-reported usage and persist across refreshes, rewinds, and traje
 
 ![Conversation operation flow](../assets/images/conversation/chat_operation_flow.png)
 
+Choosing **Try it** in My Skills keeps the text and skills in your unsent new-conversation draft and appends the chosen skill. Choosing the same skill again does not add a duplicate tag.
+
 **Tips for Better Prompts**
 
 For better execution quality, include the following elements when describing requirements:
