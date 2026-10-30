@@ -2354,7 +2354,9 @@ class TeamManager(metaclass=_TeamManagerMeta):
         else:
             leaders = []
             try:
-                manager = _runner_team_runtime_manager(Runner)
+                from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+                manager = _runner_team_runtime_manager(GLOBAL_RUNNER)
                 pool = getattr(manager, "pool", None)
                 if pool is not None:
                     leaders = [
