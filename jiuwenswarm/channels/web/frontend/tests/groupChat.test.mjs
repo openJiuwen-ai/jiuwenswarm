@@ -360,3 +360,16 @@ test('team and organization cards preserve subtask statistics and empty state', 
     assert.doesNotMatch(populated, /groupChat.noSubtasks/);
   }
 });
+
+
+test('pasted mentions resolve unique experts and teams without a picker selection', () => {
+  const expert = newMember('agent_template', 'expert', '市场调研专家');
+  const team = newMember('agent_group', 'team', '财务管理专家团');
+  const members = [expert, team];
+  assert.deepEqual(selectedMentions('请@市场调研专家 分析，@财务管理专家团。', [], members),
+    [expert.member_name, team.member_name]);
+  assert.deepEqual(selectedMentions('@市场调研专家2', [], members), []);
+  assert.deepEqual(selectedMentions('@市场调研专家 @市场调研专家', [], members), [expert.member_name]);
+  assert.deepEqual(selectedMentions('@已移除专家', [], members), []);
+  assert.deepEqual(selectedMentions('已删除提及', [expert.member_name], members), []);
+});
