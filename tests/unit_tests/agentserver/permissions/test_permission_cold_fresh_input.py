@@ -1,4 +1,4 @@
-"""Cold, fully unanswered Smart batches yield to a new user turn."""
+"""Cold, fully unanswered permission batches yield to a new user turn."""
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from openjiuwen.core.foundation.llm import AssistantMessage
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, InterruptAnswer
 
 from jiuwenswarm.agents.harness.common import session_ops_service
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -30,7 +30,7 @@ async def hosts(tmp_path, monkeypatch, sqlite_checkpoint):
     """Independent Host objects retain actual SDK construction and fixture cleanup."""
     generators = []
 
-    async def make(name, sid):
+    async def make(name, sid, mode="auto"):
         root = tmp_path / name / sid.removeprefix("cold-")
         root.mkdir(parents=True)
         generator = cold.__wrapped__(root, monkeypatch)
@@ -40,7 +40,7 @@ async def hosts(tmp_path, monkeypatch, sqlite_checkpoint):
         generator = answer_host.__wrapped__(h, monkeypatch)
         h = await anext(generator)
         generators.append(generator)
-        h.raw["permissions"]["mode"] = "auto"
+        h.raw["permissions"]["mode"] = mode
         monkeypatch.setattr(h.adapter, "persist_skill_retrieval_session_profile", Mock())
         return h
 
@@ -96,11 +96,12 @@ def wrap_batch(state, goal_key="call_goal"):
 @pytest.mark.parametrize("wrapper_goal", [None, "call_goal", "callGoal"])
 @pytest.mark.parametrize("count", [1, 2])
 @pytest.mark.parametrize("prewarmed", [False, True])
-async def test_cold_fresh_text_replaces_real_sqlite_smart_batch(
-    hosts, sqlite_checkpoint, monkeypatch, count, prewarmed, wrapper_goal,
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_cold_fresh_text_replaces_real_sqlite_permission_batch(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count, prewarmed, wrapper_goal,
 ):
-    old = await hosts("old", "cold-fresh")
-    await _interrupt(old, monkeypatch, mode="auto", kind="permission", count=count)
+    old = await hosts("old", "cold-fresh", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
     if wrapper_goal:
         session = old.adapter._instance.loop_session
         state = wrap_batch(deepcopy(session.get_state(INTERRUPTION_KEY)), wrapper_goal)
@@ -110,7 +111,7 @@ async def test_cold_fresh_text_replaces_real_sqlite_smart_batch(
     expected_ids = {f"{prefix}call_{i}" for i in range(count)}
     assert await _recovered_ids(old) == expected_ids
     await stopped_checkpoint(old, sqlite_checkpoint)
-    h = await hosts("new", "cold-fresh")
+    h = await hosts("new", "cold-fresh", mode=mode)
     assert h.adapter._root_permission_queue is not old.adapter._root_permission_queue
     parent = parent_for(h, monkeypatch)
     request = fresh(h)
@@ -139,13 +140,14 @@ async def test_cold_fresh_text_replaces_real_sqlite_smart_batch(
 
 
 @pytest.mark.parametrize("fault", ["save", "cancel"])
+@pytest.mark.parametrize("mode", ["manual", "auto"])
 async def test_restored_batch_rolls_back_context_and_session_on_base_exception(
-    hosts, sqlite_checkpoint, monkeypatch, fault,
+    hosts, sqlite_checkpoint, monkeypatch, mode, fault,
 ):
-    old = await hosts("old", "cold-rollback")
-    await _interrupt(old, monkeypatch, mode="auto", kind="permission")
+    old = await hosts("old", "cold-rollback", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission")
     await stopped_checkpoint(old, sqlite_checkpoint)
-    h = await hosts("new", "cold-rollback")
+    h = await hosts("new", "cold-rollback", mode=mode)
     await h.create()
     await h.adapter.start_interaction("cold-rollback")
     parent_for(h, monkeypatch)
@@ -176,13 +178,14 @@ async def test_restored_batch_rolls_back_context_and_session_on_base_exception(
     ("warmup", False), ("save", False), ("cancel", False),
     ("save", True), ("cancel", True),
 ])
+@pytest.mark.parametrize("mode", ["manual", "auto"])
 async def test_failed_cold_initialization_cannot_cache_bypass_on_second_request(
-    hosts, sqlite_checkpoint, monkeypatch, fault, prewarmed,
+    hosts, sqlite_checkpoint, monkeypatch, mode, fault, prewarmed,
 ):
-    old = await hosts("old", "cold-parent-failure")
-    await _interrupt(old, monkeypatch, mode="auto", kind="permission")
+    old = await hosts("old", "cold-parent-failure", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission")
     await stopped_checkpoint(old, sqlite_checkpoint)
-    h = await hosts("first", "cold-parent-failure")
+    h = await hosts("first", "cold-parent-failure", mode=mode)
     parent = parent_for(h, monkeypatch)
     warmup = session_ops_service.warmup_session_context
 
@@ -198,7 +201,7 @@ async def test_failed_cold_initialization_cannot_cache_bypass_on_second_request(
     monkeypatch.setattr(session_ops_service, "warmup_session_context", fail)
     for attempt in range(2):
         if attempt:
-            h = await hosts("second", "cold-parent-failure")
+            h = await hosts("second", "cold-parent-failure", mode=mode)
             monkeypatch.setattr(parent, "_new_session_scoped_adapter", lambda _sid: h.adapter)
             await sqlite_checkpoint()
         if prewarmed:
@@ -220,9 +223,12 @@ async def test_failed_cold_initialization_cannot_cache_bypass_on_second_request(
     (None, {"answers": []}), (None, {"card_id": "old"}), (None, {"request_id": "old"}),
     (None, {"input_mode": "steer"}), (None, {"attach_goal": True}), (None, {"source": "internal"}),
 ])
-async def test_ineligible_input_or_live_owner_excludes_cold_validation(hosts, monkeypatch, owner, params):
-    h = await hosts("old", "cold-ineligible")
-    await _interrupt(h, monkeypatch, mode="auto", kind="permission")
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_ineligible_input_or_live_owner_excludes_cold_validation(hosts, monkeypatch, owner, params, mode):
+    h = await hosts("old", "cold-ineligible", mode=mode)
+    await _interrupt(h, monkeypatch, mode=mode, kind="permission")
+    if owner == "permission" and mode == "manual":
+        monkeypatch.setattr(h.adapter, "_permission_work_pending", lambda *_args, **_kwargs: True)
     validator = Mock(side_effect=AssertionError("ineligible input must not enter cold validation"))
     monkeypatch.setattr(interface_deep, "unanswered_permission_batch", validator)
     if owner != "permission":
@@ -278,5 +284,53 @@ async def test_canonical_batch_validation_rejects_mismatch_without_mutation(
     else:
         with pytest.raises(continuation.RootPermissionQueueError, match="identity|state"):
             continuation.unanswered_permission_batch(instance, "cold-invalid", "cold-invalid")
+    assert instance.loop_session.get_state(INTERRUPTION_KEY) == before
+    assert h.executions == []
+
+
+@pytest.mark.parametrize("case", [
+    "id", "inner", "name", "arguments", "duplicate", "empty_id", "empty_inner", "requests",
+    "kind", "owner", "mixed", "partial", "carried", "subagent",
+])
+async def test_default_cold_batch_validates_identity_without_mutation(hosts, monkeypatch, case):
+    h = await hosts("old", "cold-default-invalid", mode="manual")
+    await _interrupt(h, monkeypatch, mode="manual", kind="permission", count=2)
+    instance = h.adapter._instance
+    state = deepcopy(instance.loop_session.get_state(INTERRUPTION_KEY))
+    entry = state.interrupted_tools["call_0"]
+    request = entry.interrupt_requests["call_0"]
+    if case in {"id", "name", "arguments"}:
+        value = '{"value":"foreign"}' if case == "arguments" else "foreign"
+        entry.tool_call = entry.tool_call.model_copy(update={case: value})
+    elif case == "requests":
+        entry.interrupt_requests["extra"] = request
+    elif case in {"inner", "empty_inner"}:
+        entry.interrupt_requests["foreign" if case == "inner" else ""] = entry.interrupt_requests.pop("call_0")
+    elif case in {"duplicate", "empty_id"}:
+        state.ai_message.tool_calls[1] = state.ai_message.tool_calls[1].model_copy(update={
+            "id": "call_0" if case == "duplicate" else "",
+        })
+    elif case in {"kind", "mixed"}:
+        request.interrupt_kind = "ask_user"
+        if case == "kind":
+            state.interrupted_tools["call_1"].interrupt_requests["call_1"].interrupt_kind = "ask_user"
+    elif case == "owner":
+        request.interrupt_owner = "foreign.permission.rail"
+    elif case == "partial":
+        state.interrupted_tools.pop("call_0")
+    elif case == "carried":
+        # Preserve an actual SDK answer, rather than inventing a state schema.
+        entry.carried_answers = {"call_0": {request.interrupt_owner: InterruptAnswer(
+            owner=request.interrupt_owner, kind="permission", value="allow_once", request=request, carried=True,
+        )}}
+    else:
+        entry.is_sub_agent = True
+    instance.loop_session.update_state({INTERRUPTION_KEY: state})
+    before = deepcopy(state)
+    if case in {"kind", "owner", "mixed", "partial", "carried", "subagent"}:
+        assert continuation.unanswered_permission_batch(instance, "cold-default-invalid", "cold-default-invalid") is None
+    else:
+        with pytest.raises(continuation.RootPermissionQueueError, match="identity|state"):
+            continuation.unanswered_permission_batch(instance, "cold-default-invalid", "cold-default-invalid")
     assert instance.loop_session.get_state(INTERRUPTION_KEY) == before
     assert h.executions == []

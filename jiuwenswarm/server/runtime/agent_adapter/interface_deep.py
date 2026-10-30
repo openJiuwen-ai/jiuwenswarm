@@ -3643,8 +3643,6 @@ class JiuWenSwarmDeepAdapter:
         sid = self._resolve_interrupt_session_id(request.session_id)
         if self._session_adapter_key(self._parent_session_id) != sid:
             return False
-        if not self._uses_smart_permission_lifecycle(get_config()):
-            return False
         if (self._permission_work_pending(sid, include_core_interrupt=False)
                 or self._goal_record_is_active()):
             return False
