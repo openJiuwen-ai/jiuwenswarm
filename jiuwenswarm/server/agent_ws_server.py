@@ -23,6 +23,7 @@ from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.workspace_files import SessionWorkspaceFiles
 
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
@@ -1170,6 +1171,11 @@ class AgentWebSocketServer:
             plan_controller=_SERVER_PLAN_CONTROLLER,
         )
         self._agent_manager = self._runtime.agent_manager
+        self.session_workspace_files = SessionWorkspaceFiles(
+            snapshot=lambda channel_id, session_id: self._agent_manager.get_session_workspace_paths(
+                channel_id, session_id,
+            ),
+        )
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False

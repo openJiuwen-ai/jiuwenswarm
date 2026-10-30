@@ -65,6 +65,7 @@ from jiuwenswarm.server.runtime.session_assets import get_session_asset_manager
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
@@ -5589,6 +5590,11 @@ class JiuWenSwarm:
         """Inspect existing Goal work without creating or attaching a session."""
         checker = getattr(self._adapter, "has_active_goal", None)
         return bool(callable(checker) and checker(session_id))
+
+    def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Inspect an already-bound session without initializing an adapter."""
+        getter = getattr(self._adapter, "get_session_workspace_paths", None)
+        return getter(session_id) if callable(getter) else None
 
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter

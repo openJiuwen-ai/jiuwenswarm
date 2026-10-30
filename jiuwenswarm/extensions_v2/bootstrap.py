@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
-from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_ops
+from jiuwenswarm.extensions_v2.handler_ops.session_ops import SessionFileService, register_session_ops
 
 if TYPE_CHECKING:
     from openjiuwen.core.events import ExtensionEventBus
@@ -22,8 +22,13 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
     register_context_usage_events(bus)
 
 
-def register_handlers(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
+def register_handlers(
+    bus: ExtensionEventBus,
+    webui: WebUIRuntime,
+    *,
+    file_service: SessionFileService | None = None,
+) -> None:
     """Register BUILTIN handlers for existing event types."""
 
     webui.register_handlers(bus)
-    register_session_ops(bus)
+    register_session_ops(bus, file_service=file_service)

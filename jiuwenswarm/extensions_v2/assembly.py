@@ -49,7 +49,11 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
                 assembly.bus,
                 host_version=_host_version(),
                 host_event_types=lambda bus: bootstrap.register_event_types(bus, assembly.webui),
-                host_handlers=lambda bus: bootstrap.register_handlers(bus, assembly.webui),
+                host_handlers=lambda bus: bootstrap.register_handlers(
+                    bus,
+                    assembly.webui,
+                    file_service=getattr(server, "session_workspace_files", None),
+                ),
             )
         except Exception:  # noqa: BLE001 - extensions must not block chat startup
             logger.exception("[ExtensionsV2] assembly failed; extension features are unavailable")

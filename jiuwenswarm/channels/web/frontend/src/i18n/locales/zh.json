@@ -5331,5 +5331,18 @@
     "loading": "页面加载中...",
     "error": "页面加载失败",
     "inactive": "页面已暂停"
+  },
+  "webuiFiles": {
+    "treeLabel": "工作区文件",
+    "treeTitle": "文件",
+    "emptyTree": "目录中没有文件",
+    "tree": {
+      "unavailable": "当前会话尚无可用工作目录",
+      "unsupported": "此会话模式暂不支持文件浏览",
+      "error": "目录操作失败，请重新展开目录或选择文件",
+      "limit": "已达到目录展开或请求大小限制，请先收起部分目录",
+      "readFailed": "部分目录未能读取，可以重新展开目录重试",
+      "truncated": "目录内容超过显示预算，当前仅显示部分文件"
+    }
   }
 }

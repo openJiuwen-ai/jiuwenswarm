@@ -5359,5 +5359,18 @@
     "loading": "Loading page...",
     "error": "Unable to load page",
     "inactive": "Page paused"
+  },
+  "webuiFiles": {
+    "treeLabel": "Workspace files",
+    "treeTitle": "Files",
+    "emptyTree": "This directory is empty",
+    "tree": {
+      "unavailable": "This session has no available working directory",
+      "unsupported": "File browsing is unavailable in this session mode",
+      "error": "Unable to complete the operation. Expand the directory or select the file again.",
+      "limit": "Directory expansion or request limit reached. Collapse some directories first.",
+      "readFailed": "Some directories could not be read. Expand them again to retry.",
+      "truncated": "Directory contents exceed the display budget. Showing partial results."
+    }
   }
 }
