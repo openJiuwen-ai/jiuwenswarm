@@ -36,7 +36,10 @@ Handler 从 `event.event_input.payload["data"]` 读取输入值，`args` 保持�
 RenderNode(
     "Input",
     {"value": "北京", "ariaLabel": "城市", "allowClear": True},
-    events={"ui.change": {"id": "city.edit"}},
+    events={
+        "ui.change": {"id": "city.edit"},
+        "ui.press_enter": {"id": "city.submit"},
+    },
 )
 ```
 
@@ -44,6 +47,10 @@ RenderNode(
 只处理完整文本时先检查该标志；清空按钮提交空字符串。
 `value` 和 `defaultValue` 用于初始化编辑值，合法 replace 会重新初始化草稿，
 下行帧校验失败则保留当前输入。disabled、readOnly 或断连时不发送 change。
+
+`ui.press_enter` Handler 收到 `{value}`，取按下 Enter 时的当前编辑值，允许空字符串。
+它与 change 独立绑定，可以只声明 Enter；组合输入期间用于确认候选词的 Enter 不触发提交。
+disabled、readOnly 或断连时不发送 Enter，每次有效提交独立发送，不等待上一次回执。
 
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，

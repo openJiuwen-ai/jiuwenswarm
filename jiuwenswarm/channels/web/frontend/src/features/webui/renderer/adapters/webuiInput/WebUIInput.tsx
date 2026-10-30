@@ -38,5 +38,11 @@ export function WebUIInput({ node, context, emit, appearance }: WebUIAdapterProp
       compositionCommit.current = null;
       if (!duplicateCommit) emitChange(next, isComposing);
     }}
+    onPressEnter={(event) => {
+      if (node.events['ui.press_enter'] && !disabled && !p.readOnly
+        && !composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+        void emit('ui.press_enter', { value: event.currentTarget.value });
+      }
+    }}
   />;
 }
