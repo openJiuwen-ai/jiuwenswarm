@@ -1778,6 +1778,11 @@ def _parse_bool(value: Any, *, default: bool = False) -> bool:
     return default
 
 
+def _env_truthy(name: str) -> bool:
+    """True when the environment variable is explicitly enabled."""
+    return _parse_bool(os.getenv(name), default=False)
+
+
 def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
     """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
 
@@ -10311,6 +10316,79 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
+    def _build_stalled_access_circuit_rail(self) -> Any | None:
+        """Stop strategy-level auth/credential retry loops."""
+        if _env_truthy("JIUWEN_DISABLE_STALLED_ACCESS_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by env"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.execution_guard.stalled_access_circuit_rail import (
+                StalledAccessCircuitRail,
+            )
+
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            stalled_cfg = guard_cfg.get("stalled_access") if isinstance(guard_cfg, dict) else {}
+            if not isinstance(stalled_cfg, dict):
+                stalled_cfg = {}
+            if stalled_cfg.get("enabled", True) is False:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by config"
+                )
+                return None
+            try:
+                auth_threshold = int(stalled_cfg.get("auth_threshold", 5))
+                probe_threshold = int(stalled_cfg.get("probe_threshold", 3))
+                window_seconds = float(stalled_cfg.get("window_seconds", 1800))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail invalid thresholds; "
+                    "using defaults"
+                )
+                auth_threshold, probe_threshold, window_seconds = 5, 3, 1800.0
+
+            rail = StalledAccessCircuitRail(
+                auth_threshold=auth_threshold,
+                probe_threshold=probe_threshold,
+                window_seconds=window_seconds,
+                language=self._resolve_runtime_language(),
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create failed: %s",
+                exc,
+            )
+            return None
+
+    def _build_last_iteration_finalize_rail(self) -> Any | None:
+        """Return a partial result when the ReAct budget is exhausted."""
+        if _env_truthy("JIUWEN_DISABLE_LAST_ITERATION_FINALIZE_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail disabled by env"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.last_iteration_finalize_rail import (
+                LastIterationFinalizeRail,
+            )
+
+            rail = LastIterationFinalizeRail(language=self._resolve_runtime_language())
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create failed: %s",
+                exc,
+            )
+            return None
+
     @staticmethod
     def _build_model_routing(config: dict[str, Any] | None = None) -> Any | None:
         """构建 ModelRoutingRail（模型路由）。
@@ -10878,6 +10956,20 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+
+        if not mode.startswith("team") and not mode.startswith("code"):
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_stalled_access_circuit_rail",
+                    self._build_stalled_access_circuit_rail,
+                )
+            )
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_last_iteration_finalize_rail",
+                    self._build_last_iteration_finalize_rail,
+                )
+            )
 
         # SkillEvolutionRail / TTSERail 不在冷启动时挂载，由 _update_rails_for_mode
         # 经 _reconcile_evolution_rails 按配置按需注册/注销
@@ -13656,6 +13748,10 @@ class JiuWenSwarmDeepAdapter:
         circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
         if circuit_breaker_rail is not None:
             circuit_breaker_rail.set_language(resolved_language)
+        for rail_name in ("_stalled_access_circuit_rail", "_last_iteration_finalize_rail"):
+            localized_rail = getattr(self, rail_name, None)
+            if localized_rail is not None:
+                localized_rail.set_language(resolved_language)
 
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
@@ -20867,6 +20963,7 @@ class JiuWenSwarmDeepAdapter:
         interaction_stream = None
         interaction_stream_abort = True
         perf_summary_status = "ok"
+        emitted_chat_error = False
         hitl_pending_stream = False
         try:
             self._runtime_cron_tool_context.remember_current_binding()
@@ -22047,6 +22144,8 @@ class JiuWenSwarmDeepAdapter:
                         lambda: reset_current_multimodal_image_files(image_files_token),
                     )
                 )
+            if emitted_chat_error and perf_summary_status != "cancelled":
+                perf_summary_status = "error"
             if perf_context_initialized:
                 cleanup_steps.extend(
                     (

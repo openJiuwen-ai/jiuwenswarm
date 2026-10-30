@@ -109,6 +109,8 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
 
     assert react["enable_task_loop"] is False
     lazy = react["tool_lazy_load"]
+    # Flash override is the source of truth for flash; config.yaml's
+    # react.tool_lazy_load.eager_tools covers the non-flash deep path.
     assert lazy["eager_tools"] == [
         "web_search",
         "fetch_webpage",
@@ -122,6 +124,7 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
         "skill_tool",
         "skill_complete",
         "todo",
+        "office_claw_list_wishes",
     ]
     assert lazy["enabled"] is True
     assert lazy["subagents"] == {"enabled": True}

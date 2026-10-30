@@ -659,6 +659,7 @@ react:
       - skill_tool
       - skill_complete
       - skill_acceleration_exec
+      - office_claw_list_wishes
       - todo_create
       - todo_list
       - todo_modify
@@ -1020,9 +1021,15 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # 策略级鉴权失败 / 凭证探测断路器（单 agent / flash）。
+  stalled_access:
+    enabled: true
+    auth_threshold: 5
+    probe_threshold: 3
+    window_seconds: 1800
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
-  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  # 不是 issue 级 OPEN/HALF_OPEN 恢复型熔断；
   # non_retryable_tool 检测器也在此开关下；默认部署使用 agent_ras，
   # 不消费 tool_result_contract，因此默认不会触发该检测器。
   circuit_breaker:

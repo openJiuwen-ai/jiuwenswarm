@@ -216,6 +216,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 "skill_tool",
                 "skill_complete",
                 "todo",
+                "office_claw_list_wishes",
             ],
         },
     }
@@ -256,6 +257,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_model_routing_rail",
         "_security_rail",
         "_heartbeat_rail",
+        "_request_summary_rail",
+        "_stalled_access_circuit_rail",
+        "_last_iteration_finalize_rail",
         "_subagent_rail",
         "_permission_rail",
         "_context_processor_rail",
