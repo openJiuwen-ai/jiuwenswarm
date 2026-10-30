@@ -53,6 +53,14 @@ def test_target_accepts_every_registered_slot():
         assert validate_target(replace(TARGET, slot_id=slot_id)).ok, slot_id
 
 
+@pytest.mark.asyncio
+async def test_event_for_static_node_is_rejected_without_raising():
+    root = RenderNode("Text", {"value": "static"})
+    registry = await _registered(root)
+    receipt = validate_upstream(_action(), registry)
+    assert receipt is not None and receipt.accepted is False
+
+
 @pytest.mark.parametrize("root", [
     RenderNode("Input", {"value": 1}), RenderNode("Input", {"maxLength": 1, "value": "😀"}),
     RenderNode("Input", {"maxLength": True}), RenderNode("Box", {"padding": "sm"}),
@@ -65,7 +73,7 @@ def test_target_accepts_every_registered_slot():
     RenderNode("Button", events={"ui.click": {"id": "bad", "args": {"bad": float("inf")}}}),
     RenderNode("Button", events={"ui.click": {"id": "bad", "extra": 1}}),
     RenderNode("Text", events={"ui.click": {"id": "bad"}}), RenderNode("Button", events={}),
-    RenderNode("Button", action={"id": "old"}, events={"ui.click": {"id": "new"}}),
+    RenderNode("Row", {"gap": "sm", "density": "compact"}),
     RenderNode("Box", children=(RenderNode("Panel", {"title": "bad"}, children=(RenderNode("Text"),)),)),
     RenderNode("Tabs", {"items": [{"key": "a", "label": "A", "children": [{"component": "Text"}]}]}),
     RenderNode("Divider", children=(RenderNode("Button"),)), RenderNode("Panel", {"title": "Empty"}),
@@ -203,17 +211,6 @@ async def test_component_event_data_gate(component, props, event, data, accepted
 
 
 @pytest.mark.asyncio
-async def test_legacy_actions_require_node_revision_and_component_data():
-    root = RenderNode("Slider", {"name": "amount", "min": 0, "max": 10, "step": 2}, action={"id": "refresh"})
-    assert validate_root(root).ok
-    registry = await _registered(root)
-    request = replace(_action(data={"name": "amount", "value": 4}), event_type="ui.select")
-    assert validate_upstream(request, registry) is None
-    assert validate_upstream(replace(request, payload={"action_id": "refresh"}), registry) is not None
-    assert validate_upstream(replace(request, event_type="ui.click"), registry) is not None
-
-
-@pytest.mark.asyncio
 async def test_valid_handler_can_replace_and_reply_and_old_revision_is_rejected():
     bus = ExtensionEventBus()
     transport = AsyncMock()
@@ -252,8 +249,8 @@ def test_component_event_catalog_excludes_deferred_features():
     RenderNode("Tabs", {"items": [{"key": "a", "label": "A"}]}, children=(RenderNode("Text"),)),
     RenderNode("Slider", {"name": "amount", "value": 50}),
 ])
-def test_existing_component_props_remain_valid(root):
-    assert validate_root(root).ok
+def test_legacy_component_props_are_rejected(root):
+    assert not validate_root(root).ok
 
 
 _CASES = json.loads((Path(__file__).resolve().parents[4] / "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiComponentCases.json").read_text(encoding="utf-8"))

@@ -108,7 +108,7 @@ async def test_oversized_frame_is_rejected_without_commit(tmp_path: Path) -> Non
     runtime, _manager = await _runtime(tmp_path, transport)
     target = RenderTarget("s1", SLOT, PACKAGE, INSTANCE)
     children = tuple(RenderNode("Text", {"value": "x" * 4096}) for _ in range(100))
-    root = RenderNode("Column", children=children)
+    root = RenderNode("Box", {"direction": "column"}, children=children)
 
     output = await runtime.render(UiRenderInput(target=target, root=root))
     assert output is not None and output.status is RenderStatus.REJECTED
