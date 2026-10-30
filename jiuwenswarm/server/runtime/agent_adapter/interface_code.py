@@ -381,6 +381,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     _FIXED_RAIL_NAMES = frozenset({
         "RuntimePromptRail", "ResponsePromptRail",
         "JiuSwarmStreamEventRail", "SecurityRail", "CsplSentinelRail",
+        "OpenClawHistoryRail",
         "ToolUsagePromptRail", "XiaoyiDefaultToolVisibilityRail",
         "LspRail", "ProjectMemoryRail", "PermissionInterruptRail",
         "ContextProcessorRail",
@@ -665,6 +666,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
+            _RailBuildInfo("_openclaw_history_rail", self._build_openclaw_history_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_tool_usage_prompt_rail", self._build_tool_usage_prompt_rail),
             _RailBuildInfo(
