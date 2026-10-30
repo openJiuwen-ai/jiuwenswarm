@@ -195,7 +195,7 @@ async def test_session_mismatch_is_rejected(tmp_path: Path, monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_press_on_inactive_instance_is_rejected(tmp_path: Path, monkeypatch) -> None:
+async def test_click_on_inactive_instance_is_rejected(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path)
     installed = await assembly.install_extensions(FakeServer())
@@ -211,7 +211,7 @@ async def test_press_on_inactive_instance_is_rejected(tmp_path: Path, monkeypatc
                 session_id="s1",
                 req_method=ReqMethod.WEBUI_DISPATCH,
                 params={
-                    "event": "ui.press",
+                    "event": "ui.click",
                     "session_id": "s1",
                     "target": {
                         "session_id": "s1",

@@ -73,16 +73,16 @@ flowchart LR
 组件属性与事件数据规则见
 [组件规约](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)，
 后端规则定义在 `webui/component_rules.py`。组件是否可显示取决于前端对应渲染器的注册。
-此外，后端保留以下组件与原有属性的校验：
+后端只接受目录内的组件与属性，旧 `Row`/`Column`/`TextField` 等不再保留：
 
 | 类别 | 组件 |
 | --- | --- |
-| 容器 | `Column`、`Row`、`Card`、`Tabs` |
-| 基础 | `Divider`、`Text`、`Icon`、`Badge`、`Progress` |
-| 交互 | `Button`、`TextField`、`CheckBox`、`MultipleChoice`、`Slider`、`List` |
+| 容器 | `Box`、`Card`、`Tabs`、`Panel` |
+| 基础 | `Text`、`Divider`、`Empty`、`Image`、`Tag`、`Iframe` |
+| 交互 | `Button`、`Input`、`Switch`、`Select`、`TreeSelect`、`Slider` |
 
 每个组件只允许声明的 props；未声明的 props 会让整棵树被拒绝，而不是忽略。
-原有组件的样式只接受 token，例如 `variant`、`tone`、`size`、`gap`、`padding`、`density`、`align`、`justify`、`weight`、`spacing`、`axis`；其他组件以各自规则为准。
+属性与事件规则统一由 `component_rules.py` 与前端目录维护，样式只接受组件规则内的 token。
 
 ### 3.4 规模限制
 

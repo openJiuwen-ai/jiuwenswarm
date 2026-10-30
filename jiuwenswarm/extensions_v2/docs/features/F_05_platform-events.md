@@ -50,7 +50,7 @@ flowchart LR
     T -->|"webui.render"| W["WebClient / 前端"]
 
     F["React 组件"] -->|"webui.dispatch"| A["WebUIDispatchAdapter"]
-    A -->|"ui.press / ui.input / ..."| B
+    A -->|"ui.click / ui.change / ..."| B
     B -->|"链尾 CORE"| AC["ui.* CORE Handler"]
     AC --> A
 ```
@@ -77,10 +77,8 @@ register_webui_events(
 | --- | --- | --- |
 | `ui.render` | `match_pattern_subset` | 校验、分配 revision、下发 |
 | `ui.ready` | 同上 | 接受挂载上报，不检查实例 |
-| `ui.press` | 同上 | 检查实例是否活跃 |
-| `ui.toggle` | 同上 | 同上 |
-| `ui.input` | 同上 | 同上 |
-| `ui.select` | 同上 | 同上 |
+| `ui.click` / `ui.change` / `ui.press_enter` | 同上 | 检查实例是否活跃 |
+| `ui.select` / `ui.search` / `ui.clear` | 同上 | 同上 |
 
 CORE Handler 由平台注册，插件不能通过 `register_event_handler` 登记 `core` 层级；扩展只能使用 `user` 或 `builtin`。
 
@@ -112,12 +110,15 @@ async def ui_render(ops_view: EventHandlerOps, request: UiRenderInput) -> object
 | --- | --- | --- | --- |
 | `ui.render` | 后端（插件或宿主） | 渲染或清除一个实例 | 校验请求与帧大小，分配 revision，经传输层下发 |
 | `ui.ready` | 前端（槽位挂载） | 槽位已就绪，允许插件创建实例 | 直接回执 `ready`，不要求实例已存在 |
-| `ui.press` | 前端（`Button`） | 按钮按压 | 实例活跃时回执 `handled`，否则回执 `inactive` |
-| `ui.toggle` | 前端（`CheckBox`） | 开关状态变化 | 同上 |
-| `ui.input` | 前端（`TextField`） | 输入提交 | 同上 |
-| `ui.select` | 前端（`MultipleChoice`、`Slider`） | 选项或数值变化 | 同上 |
+| `ui.click` | 前端（`Button`、`Input`、`Switch`） | 按钮按压、输入框点击、开关点击 | 实例活跃时回执 `handled`，否则回执 `inactive` |
+| `ui.change` | 前端（`Input`、`Switch`、`TreeSelect`、`Slider`、`Tabs`） | 编辑、开关、选择或页签变化 | 同上 |
+| `ui.press_enter` | 前端（`Input`） | Enter 提交 | 同上 |
+| `ui.select` | 前端（`Select`、`TreeSelect`） | 选中单个选项或节点 | 同上 |
+| `ui.search` | 前端（`Select`） | 搜索值变化 | 同上 |
+| `ui.clear` | 前端（`Select`、`TreeSelect`） | 清空选择 | 同上 |
 | `context.usage.updated` | 后端（`chat.usage_summary`） | 单轮 token 用量与上下文窗口信息 | 校验输入并返回回执；插件按需渲染 |
 
+旧事件名 `ui.press`、`ui.toggle`、`ui.input` 已随旧 action 组件移除，不再进入事件链。
 当前未实现设计稿中的 `ui.scroll`、`ui.focus`、`ui.close`、`ui.unmount`、`ui.host_info.changed` 和 `ui.message`。这些事件在架构中保留为后续能力，接入前不得在插件中依赖。
 
 ## 5. 处理流程
@@ -157,11 +158,11 @@ sequenceDiagram
     participant B as ExtensionEventBus
     participant P as 插件 Handler
 
-    FE->>WC: webui.dispatch(event=ui.press, target, payload)
+    FE->>WC: webui.dispatch(event=ui.click, target, payload)
     WC->>GW: 转发请求
     GW->>AS: 路由到 AgentServer
     AS->>AS: WebUIDispatchAdapter 校验会话、槽位与目录
-    AS->>B: trigger(ui.press, UiActionInput)
+    AS->>B: trigger(ui.click, UiActionInput)
     B->>P: 匹配的插件 Handler
     P->>P: 处理 action，必要时再次 ops.ui.render
     P-->>B: UiActionOutput
@@ -195,7 +196,7 @@ sequenceDiagram
 
 覆盖内容：
 
-- 事件注册后 `ui.ready`、`ui.press` 可到达示例包 Handler。
+- 事件注册后 `ui.ready`、`ui.click` 可到达示例包 Handler。
 - `ops.build` 完成后插件可调用 `ops.ui.render`，渲染链到达 CORE Handler 并返回 `delivered`。
 - 上行事件的目标匹配与实例检查由 F_07 的适配用例覆盖。
 

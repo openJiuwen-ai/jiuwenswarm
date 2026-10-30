@@ -41,12 +41,11 @@ class RenderTarget:
 
 @dataclass(frozen=True, slots=True)
 class RenderNode:
-    """Render tree node with component events or a legacy action declaration."""
+    """Render tree node: whitelisted component, props, children and optional events."""
 
     component: str
     props: Mapping[str, Any] = field(default_factory=_empty_props)
     children: tuple["RenderNode", ...] = ()
-    action: Mapping[str, Any] | None = None
     events: Mapping[str, Mapping[str, Any]] | None = None
 
 
@@ -84,7 +83,7 @@ class UiRenderOutput:
 
 @dataclass(frozen=True, slots=True)
 class UiActionInput:
-    """Upstream event input (ui.ready / ui.press / ui.toggle / ui.input / ui.select)."""
+    """Upstream event input (ui.ready / ui.click / ui.change / ui.press_enter / ui.select / ui.search / ui.clear)."""
 
     event_type: str
     target: RenderTarget
@@ -156,8 +155,6 @@ def node_to_payload(node: RenderNode | None) -> dict[str, Any] | None:
         "component": node.component,
         "props": _content_to_payload(node.props),
     }
-    if node.action is not None:
-        payload["action"] = _content_to_payload(node.action)
     if node.events is not None:
         payload["events"] = _content_to_payload(node.events)
     if node.children:
