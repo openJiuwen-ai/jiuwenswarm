@@ -8,9 +8,9 @@
 目录登记与页面渲染是独立职责；登记规则不等于已启用对应组件或槽位。
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
-Empty、Image、Divider、Card、Tag、Panel、FileTree、Iframe。字段、默认值、必填与事件数据的唯一实现定义在
+Empty、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe。字段、默认值、必填与事件数据的唯一实现定义在
 [`catalog/components/`](../../catalog/components/)，本文不复制完整属性表。
-目录不包含 FilePreview 和 application.entry。
+目录不包含 application.entry。
 
 ## 接口与不变量
 

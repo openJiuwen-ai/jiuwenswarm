@@ -211,6 +211,8 @@ class SessionFileService(Protocol):
 
     async def files(self, session_id: str, expanded_paths: list[str], channel_id: str) -> dict[str, Any]: ...
 
+    async def read_file(self, session_id: str, path: str, channel_id: str) -> dict[str, Any]: ...
+
 
 def register_session_ops(
     bus: ExtensionEventBus,
@@ -229,6 +231,16 @@ def register_session_ops(
             str(context.metadata.get("channel_id") or "web"),
         )
 
+    async def read_file(ops: EventHandlerOps, *, path: str) -> dict[str, Any]:
+        context = _require_session(ops, "session.read_file")
+        if file_service is None:
+            return {"status": "unavailable", "file": None}
+        return await file_service.read_file(
+            context.session_id,
+            path,
+            str(context.metadata.get("channel_id") or "web"),
+        )
+
     async def build(
         event: Event,
         ops: EventHandlerOps | None,
@@ -236,6 +248,7 @@ def register_session_ops(
     ) -> EventHandlerOpsBuilder:
         builder = await session_ops_build(event, ops, next_handler, bus=bus)
         builder.add_method("session", "files", files)
+        builder.add_method("session", "read_file", read_file)
         return builder
 
     bus.register_event_handler(

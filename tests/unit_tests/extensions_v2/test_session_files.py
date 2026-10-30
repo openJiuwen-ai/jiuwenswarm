@@ -102,3 +102,49 @@ async def test_files_reports_unavailable_without_a_workspace_binding(
 
     assert result["status"] == "unavailable"
     assert result["treeData"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_file_returns_small_utf8_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "project"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "main.py").write_bytes(b"print('hi')\n")
+    _bind_project(monkeypatch, root)
+
+    result = await SessionWorkspaceFiles().read_file("s1", "src/main.py")
+
+    assert result["status"] == "ready"
+    assert result["file"]["content"] == "print('hi')\n"
+    assert result["file"]["path"] == "src/main.py"
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_oversized_and_binary_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "big.txt").write_text("x" * (workspace_files.MAX_TEXT_BYTES + 1), encoding="utf-8")
+    (root / "blob.bin").write_bytes(b"\0\1\2")
+    (root / "pic.png").write_bytes(b"\x89PNG\r\n")
+    _bind_project(monkeypatch, root)
+    service = SessionWorkspaceFiles()
+
+    assert (await service.read_file("s1", "big.txt"))["status"] == "too_large"
+    assert (await service.read_file("s1", "blob.bin"))["status"] == "unsupported"
+    assert (await service.read_file("s1", "pic.png"))["status"] == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_read_file_reports_missing_and_forbidden_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _bind_project(monkeypatch, root)
+    service = SessionWorkspaceFiles()
+
+    assert (await service.read_file("s1", "gone.txt"))["status"] == "missing"
+    assert (await service.read_file("s1", "../outside.txt"))["status"] == "forbidden"

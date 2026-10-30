@@ -14,6 +14,7 @@ import { cardRule } from './components/card.ts';
 import { tagRule } from './components/tag.ts';
 import { panelRule } from './components/panel.ts';
 import { fileTreeRule } from './components/fileTree.ts';
+import { filePreviewRule } from './components/filePreview.ts';
 import { iframeRule } from './components/iframe.ts';
 
 /** Component contract; Box/Text/Button retain their existing props. */
@@ -21,7 +22,7 @@ export const componentCatalog = createCatalog({
   components: [
     ...basicComponentRules,
     inputRule, switchRule, selectRule, treeSelectRule,
-    sliderRule, tabsRule, emptyRule, imageRule, dividerRule, cardRule, tagRule, panelRule, fileTreeRule,
+    sliderRule, tabsRule, emptyRule, imageRule, dividerRule, cardRule, tagRule, panelRule, fileTreeRule, filePreviewRule,
     iframeRule,
   ],
   slots: webUISlots,

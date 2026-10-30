@@ -5371,6 +5371,17 @@
       "limit": "Directory expansion or request limit reached. Collapse some directories first.",
       "readFailed": "Some directories could not be read. Expand them again to retry.",
       "truncated": "Directory contents exceed the display budget. Showing partial results."
+    },
+    "previewTitle": "Preview",
+    "preview": {
+      "empty": "Select a file to preview",
+      "loading": "Reading file…",
+      "missing": "This file no longer exists",
+      "unsupported": "Preview is not supported for this file format",
+      "too_large": "File exceeds the preview limit (text: 1 MiB, images: 4 MiB)",
+      "forbidden": "Files outside this session directory cannot be accessed",
+      "unavailable": "File preview is unavailable for this session",
+      "error": "Unable to read this file. Select it again to retry."
     }
   }
 }
