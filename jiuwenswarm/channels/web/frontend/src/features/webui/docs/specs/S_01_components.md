@@ -57,6 +57,8 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
 - C-20：Input 仅在声明 ui.press_enter 时将 Enter 回调派发为 `{value}`，value 取当前编辑值，允许空字符串。
   组合输入中、原生事件标记 isComposing 或 keyCode 为 229 时不提交；disabled、readOnly 和断连时不提交。
   Enter 与 change 分别绑定，每次有效回调独立发送，不等待前一请求完成。
+- C-21：Switch 的 checked 优先于 defaultChecked，均未指定时初始化为 false；初始化和合法 replace 不派发事件。
+  本地切换仅为已绑定的 ui.change 发送布尔值 `{checked}`；未绑定时仍可切换，disabled、loading 和断连时禁用。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。

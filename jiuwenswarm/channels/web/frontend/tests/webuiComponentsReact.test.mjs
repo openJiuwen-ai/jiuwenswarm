@@ -160,6 +160,58 @@ test('disabled and unbound buttons never dispatch actions', async () => {
 });
 
 const inputEvents = { 'ui.change': { id: 'edit', args: { field: 'city' } } };
+
+const switchTree = (props = {}, bindings = { 'ui.change': { id: 'toggle', args: { field: 'enabled' } } }) => ({
+  component: 'Switch', props, events: bindings,
+});
+
+test('Switch change initializes without dispatch and sends boolean states with the declared action', async () => {
+  const app = await setup(switchTree({ defaultChecked: true, ariaLabel: 'Enabled',
+    checkedChildren: 'On', unCheckedChildren: 'Off', size: 'small' }));
+  try {
+    const control = app.container.querySelector('[data-testid="webui-switch"]');
+    assert.equal(control.getAttribute('aria-label'), 'Enabled');
+    assert.equal(control.getAttribute('aria-checked'), 'true');
+    assert.match(control.className, /ant-switch-small/);
+    assert.equal(app.business().length, 0);
+    await click(control);
+    assert.equal(control.getAttribute('aria-checked'), 'false');
+    assert.equal(app.business()[0].event, 'ui.change');
+    assert.deepEqual(app.business()[0].payload, {
+      node_key: '0', revision: 1, action_id: 'toggle', args: { field: 'enabled' }, data: { checked: false },
+    });
+    await click(control);
+    assert.deepEqual(app.business().map((request) => request.payload.data), [{ checked: false }, { checked: true }]);
+  } finally { await app.close(); }
+});
+
+test('Switch change respects replacement, unbound edits, disabled, loading and disconnection', async () => {
+  const app = await setup(switchTree({ checked: true, defaultChecked: false }));
+  try {
+    assert.equal(app.container.querySelector('[role="switch"]').getAttribute('aria-checked'), 'true');
+    await app.replace({ component: 'Switch', props: { checked: false } });
+    await click(app.container.querySelector('[role="switch"]'));
+    assert.equal(app.container.querySelector('[role="switch"]').getAttribute('aria-checked'), 'true');
+    assert.equal(app.business().length, 0);
+    await app.replace(switchTree({ checked: false, disabled: true }), 3);
+    assert.equal(app.container.querySelector('[role="switch"]').disabled, true);
+    await click(app.container.querySelector('[role="switch"]'));
+    await app.replace(switchTree({ loading: true }), 4);
+    assert.equal(app.container.querySelector('[role="switch"]').disabled, true);
+    await click(app.container.querySelector('[role="switch"]'));
+    await app.replace(switchTree({ checked: false }), 5);
+    assert.equal(app.container.querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(app.container.querySelector('[role="switch"]').disabled, true);
+    await click(app.container.querySelector('[role="switch"]'));
+    assert.equal(app.business().length, 0);
+    await act(async () => app.transport.setConnectionState('connected'));
+    await click(app.container.querySelector('[role="switch"]'));
+    assert.equal(app.business().at(-1).payload.revision, 5);
+    assert.deepEqual(app.business().at(-1).payload.data, { checked: true });
+  } finally { await app.close(); }
+});
+
 const inputTree = (props = {}, bindings = inputEvents) => ({ component: 'Input', props, events: bindings });
 const inputClickEvents = { 'ui.click': { id: 'inspect', args: { field: 'city' } } };
 
