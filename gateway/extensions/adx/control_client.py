@@ -133,7 +133,8 @@ class AdxControlClient:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
         image = rootfs.get('imageurl') or rootfs.get('image_url')
-        if name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest':
+        builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
+        if builtin:
             image = self.config.builtin_image
         if not image:
             raise ValueError('runtime_spec.rootfs.imageurl is required')
@@ -152,7 +153,9 @@ class AdxControlClient:
             process['user'] = rootfs['user']
         if spec.get('code_path'):
             process['cwd'] = spec['code_path']
-        if process:
+        # Some deployments own the builtin command and identity in the image
+        # binding. Only that explicit mode omits per-create process overrides.
+        if process and not (builtin and self.config.builtin_process_from_image):
             body['process'] = process
         for mount in [*rootfs.get('mounts', []), *(mounts or [])]:
             binding = {'type': 'bind', 'host_path': mount['source'], 'target': mount['target'],

@@ -23,6 +23,42 @@ def envelope(data):
     return {'code': 200, 'message': '', 'data': base64.b64encode(json.dumps(data).encode()).decode()}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('name', 'image', 'from_image'), [
+    ('alice+jiuwenswarm', 'jiuwenswarm-agent-runtime:latest', True),
+    ('alice+custom', 'jiuwenswarm-agent-runtime:latest', False),
+    ('alice+jiuwenswarm', 'custom-agent:1', False),
+])
+async def test_builtin_can_use_deployed_image_process(monkeypatch, name, image, from_image):
+    monkeypatch.setenv('TEST_ADX_KEY', 'platform-secret')
+    cfg = load_router_config({'gateway': {
+        'adx': {'ingress_url': 'https://adx.example', 'tenant': 'tenant',
+                'token_env': 'TEST_ADX_KEY', 'builtin_process_from_image': True},
+    }})
+    exists = False
+
+    def handle(request):
+        nonlocal exists
+        if request.method == 'GET':
+            return httpx.Response(200, json=[{'id': 'default-' + name,
+                'tenant_id': 'tenant', 'status': 'running'}]) if exists else httpx.Response(404)
+        body = json.loads(request.content)
+        assert body['inheritEntrypoint'] is True
+        if from_image:
+            assert 'process' not in body
+        else:
+            assert body['process'] == {'commands': [['/bin/app']], 'user': 'agentos'}
+        exists = True
+        return httpx.Response(200, json=envelope({'environmentId': 'default-' + name}))
+
+    client = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    try:
+        await client.create_sandbox(namespace='default', name=name, workspace='/mnt/alice',
+            runtime_spec={'rootfs': {'imageurl': image, 'user': 'agentos'}, 'cmds': [['/bin/app']]})
+    finally:
+        await client.close()
+
+
 async def test_environment_create_query_delete_uses_original_spec(monkeypatch, tmp_path):
     cfg = config(monkeypatch, tmp_path)
     calls = []

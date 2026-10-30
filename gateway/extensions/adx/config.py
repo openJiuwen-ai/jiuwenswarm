@@ -28,6 +28,7 @@ class AdxRouterConfig:
     ssh_known_hosts: str = ''
     restart_policy: dict[str, int] | None = None
     connect_timeout_seconds: float = 60.0
+    builtin_process_from_image: bool = False
 
 
 def adx_router_selected(config: dict) -> bool:
@@ -67,6 +68,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     if not isinstance(settings, dict) or settings.keys() - {
         'ingress_url', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
         'connect_timeout_seconds', 'ssh_user', 'ssh_known_hosts', 'restart_policy',
+        'builtin_process_from_image',
     }:
         raise ValueError('gateway.adx contains invalid settings')
     url = settings.get('ingress_url', '')
@@ -90,6 +92,9 @@ def load_router_config(config: dict) -> AdxRouterConfig:
         raise ValueError('gateway.adx.connect_timeout_seconds must be in (0, 86400]')
     tenant = _text_setting(settings, 'tenant')
     builtin_image = _text_setting(settings, 'builtin_image', 'jiuwenswarm-agent-runtime:latest')
+    builtin_process_from_image = settings.get('builtin_process_from_image', False)
+    if not isinstance(builtin_process_from_image, bool):
+        raise ValueError('gateway.adx.builtin_process_from_image must be a boolean')
     runtime_class = _text_setting(settings, 'runtime_class', 'runc')
     workspace_target = _text_setting(settings, 'workspace_target', '/home/agentos')
     if not workspace_target.startswith('/') or any(part in ('.', '..') for part in workspace_target.split('/')):
@@ -105,6 +110,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
         router=load_agentos_config(config, require_frontend_endpoint=False),
         builtin_image=builtin_image, runtime_class=runtime_class,
+        builtin_process_from_image=builtin_process_from_image,
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
         ssh_known_hosts=ssh_known_hosts, restart_policy=restart_policy,
     )
