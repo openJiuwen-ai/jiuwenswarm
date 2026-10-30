@@ -106,6 +106,16 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
     }
 
 
+def test_context_overflow_recovery_rail_is_in_flash_keep():
+    """Flash must keep the reactive context-overflow recovery rail.
+
+    Huawei MaaS returns ``ModelArts.81001 input token limit is ...`` when the
+    prompt exceeds the model window. Without this rail flash cannot force a
+    compaction and the raw error reaches the user.
+    """
+    assert "_context_overflow_recovery_rail" in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+
+
 def test_model_routing_rail_is_in_flash_keep():
     """Flash must retain ModelRoutingRail for auto-gear routing.
 
