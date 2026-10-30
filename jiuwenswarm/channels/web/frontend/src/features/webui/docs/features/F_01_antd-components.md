@@ -69,6 +69,10 @@ disabled、readOnly 和断连状态阻止编辑派发；合法 replace 重置草
 disabled、readOnly 和断连时也不提交；空值与回执尚未完成时的再次提交沿用普通派发规则。
 声明 `ui.click` 后，点击输入框发送当前编辑值 `{value}`；只读输入仍允许点击，disabled 或断连时不派发。
 
+Switch 使用 Ant Design Switch 管理本地开关状态，按 checked、defaultChecked、false 的顺序初始化。
+切换时为已绑定的 `ui.change` 发送 `{checked}`；未绑定事件时仍可本地切换。
+disabled、loading 或断连时禁用；合法 replace 重新初始化状态，不因初始化或更新主动派发 change。
+
 插件不能提供 style 或 className。宿主可通过 `WebUIStyleOverrides` 按组件注入外观，
 宿主样式优先；Box 与 Button 还可使用原生元素承接宿主布局和按钮样式。
 适配器保留库组件的属性和交互语义，不复制整套控件实现。
@@ -84,5 +88,5 @@ disabled、readOnly 和断连时也不提交；空值与回执尚未完成时的
 默认值准备以及目录登记范围。协议、运行时、传输、渲染器和存储分别由
 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`
 和 `test:webui-store` 验证。
-`test:webui-components` 使用真实适配器验证布局、文本、按钮派发、宿主外观、主题继承和 Iframe 生命周期。
+`test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change、宿主外观、主题继承和 Iframe 生命周期。
 `test:webui-input` 定向验证 Input 的 click、change 与 Enter 数据、组合输入保护、禁用、草稿更新和 WebClient 传输封装。
