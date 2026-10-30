@@ -27,6 +27,7 @@ import {
   Sparkles,
   Table2,
   X,
+  RefreshCw,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -48,7 +49,7 @@ import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
-import { WebUISlotHost } from '../../features/webui/WebUISlotHost';
+import { WebUIHost, type WebUIStyleOverrides } from '../../features/webui';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
@@ -94,6 +95,17 @@ import { flushApplicationConversationHistory } from '../../applicationPlugins/Ap
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
+
+const pluginHeaderActionStyles: WebUIStyleOverrides = {
+  Button: {
+    unstyled: true,
+    className: 'chat-header-icon-btn shrink-0',
+    icon: <RefreshCw size={16} strokeWidth={2} aria-hidden />,
+    iconClassName: 'flex items-center justify-center',
+    hideLabel: true,
+  },
+  Box: { unstyled: true, className: 'flex min-w-0 items-center gap-2' },
+};
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -1791,6 +1803,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <span>{sessionProjectName}</span>
               </div>
             )}
+            <WebUIHost slotId="conversation.header.title.after" sessionId={activeSessionId} layout="row" />
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
             {diagnosisEntryAvailable && onToggleDiagnosis && (
@@ -1806,6 +1819,13 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <ClipboardList size={16} strokeWidth={2} aria-hidden />
               </button>
             )}
+            <WebUIHost
+              slotId="conversation.header.actions"
+              sessionId={activeSessionId}
+              layout="row"
+              instanceClassName="flex min-w-0 items-center gap-2"
+              styles={pluginHeaderActionStyles}
+            />
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"
@@ -1941,8 +1961,9 @@ export const ChatPanel = React.memo(function ChatPanel({
                     teamGroupIdentityOverride={teamGroupIdentity}
                     onForkFromMessage={handleForkFromMessage}
                   />
-                  <WebUISlotHost
+                  <WebUIHost
                     slotId="conversation.input.above"
+                    sessionId={activeSessionId}
                     className="mt-2 w-full"
                   />
                   {shouldShowHumanShare && (
@@ -2135,7 +2156,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
-          <WebUISlotHost slotId="conversation.input.below" className="mt-1 px-1" />
+          <WebUIHost slotId="conversation.input.below" sessionId={activeSessionId} className="mt-1 px-1" />
         </div>
       )}
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">

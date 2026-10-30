@@ -82,6 +82,7 @@ export function ExpandedPanelTabs({
   isFullscreen,
   testIdPrefix = 'tool-panel',
   tabListLabel,
+  idPrefix,
 }: {
   tabs: PanelTabItem[];
   activeTab: string;
@@ -92,9 +93,11 @@ export function ExpandedPanelTabs({
   isFullscreen?: boolean;
   testIdPrefix?: string;
   tabListLabel?: string;
+  idPrefix?: string;
 }) {
   const { t } = useTranslation();
-  const tabPanelId = useId();
+  const generatedId = useId();
+  const tabPanelId = idPrefix ?? generatedId;
 
   return (
     <div data-testid={`${testIdPrefix}-expanded-header`} className="single-agent-tool-tabs">

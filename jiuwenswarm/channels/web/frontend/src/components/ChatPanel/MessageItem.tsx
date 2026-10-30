@@ -51,7 +51,7 @@ import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
-import { WebUIMessageSlotHost } from '../../features/webui/WebUISlotHost';
+import { WebUIHost } from '../../features/webui';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
@@ -958,6 +958,15 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
+        {!isUser && !isStreaming && message.outputOrder?.requestId ? (
+          <WebUIHost
+            slotId="conversation.turn.content.after"
+            sessionId={activeSessionId}
+            instanceKey={message.outputOrder.requestId}
+            className="mt-2"
+          />
+        ) : null}
+
         {!isStreaming && !hideMeta && (
           <div
             data-testid="chat-panel-message-meta"
@@ -1056,10 +1065,20 @@ export const MessageItem = memo(function MessageItem({
             )}
 
             {!isUser && message.outputOrder?.requestId ? (
-              <WebUIMessageSlotHost
-                slotId="message.assistant.meta"
-                instanceKey={message.outputOrder.requestId}
-              />
+              <>
+                <WebUIHost
+                  slotId="message.assistant.meta"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+                <WebUIHost
+                  slotId="conversation.turn.footer.actions"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+              </>
             ) : null}
           </div>
         )}

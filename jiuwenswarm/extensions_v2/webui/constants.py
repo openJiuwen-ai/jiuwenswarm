@@ -82,6 +82,15 @@ SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
         "conversation.input.above": _slot("list"),
         "conversation.input.below": _slot("single"),
         "conversation.panel.right": _slot("list"),
+        "application.menu": _slot("list"),
+        "application.menu.main": _slot("single"),
+        "task.function": _slot("list"),
+        "task.function.main": _slot("single"),
+        "application.settings": _slot("list"),
+        "conversation.turn.content.after": _slot("list"),
+        "conversation.turn.footer.actions": _slot("list"),
+        "conversation.header.title.after": _slot("list"),
+        "conversation.header.actions": _slot("list"),
         "message.assistant.meta": _slot("list"),
     }
 )

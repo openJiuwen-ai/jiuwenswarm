@@ -8,8 +8,15 @@ export type { WebUIAppRuntime, WebUIAppRuntimeOptions } from './assembly/index.t
 
 export { WebUIProvider, useWebUIRendererRegistry, useWebUIRuntime } from './react/WebUIProvider.tsx';
 export type { WebUIAppContextValue, WebUIProviderProps } from './react/WebUIProvider.tsx';
+export { WebUIAppRoot } from './react/WebUIAppRoot.tsx';
+export type { WebUIAppRootProps } from './react/WebUIAppRoot.tsx';
 export { WebUIHost } from './react/WebUIHost.tsx';
 export type { WebUIHostProps } from './react/WebUIHost.tsx';
+export { WebUISlotProvider } from './react/WebUISlotProvider.tsx';
+export { WebUINavigationHost, WebUIPageHost } from './react/WebUINavigation.tsx';
+export type { WebUIPageTarget } from './react/WebUISlotContext.ts';
+export { useWebUIPanels } from './react/useWebUIPanels.tsx';
+export type { WebUIPanelEntry } from './react/useWebUIPanels.tsx';
 
 export { createRendererRegistry } from './renderer/index.ts';
 export { createComponentRendererRegistry } from './renderer/adapters/componentRegistry.ts';

@@ -23,6 +23,13 @@ import { CollapsibleSection } from './CollapsibleSection';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberPlainName, type TabType, type TeamDetailTab } from '../teamArea/shared';
+import { useWebUIPanels, type WebUIStyleOverrides } from '../../features/webui';
+import PluginIcon from '../../assets/agent-management/extension.svg?react';
+
+const rightPanelStyles: WebUIStyleOverrides = {
+  Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto' },
+  Box: { style: { minWidth: 0, minHeight: 0 } },
+};
 import type { TeamMemberExecutionEvent, TeamTask, TeamTaskStatus } from '../../stores/sessionStore';
 import type { ProjectInfo, TodoItem, TodoStatus } from '../../types';
 import teamIcon from '../../assets/team.svg';
@@ -479,6 +486,43 @@ export function ToolPanel({
   ]);
 
   const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
+  const nativePanelTab = mode === 'team' ? teamAreaActiveTab : singleAgentPanelActiveTab;
+  const { panels, renderPanel } = useWebUIPanels({
+    slotId: 'conversation.panel.right',
+    sessionId: resolvedSessionId && resolvedSessionId !== 'new' ? resolvedSessionId : null,
+    styles: rightPanelStyles,
+  });
+  const [pluginSelection, setPluginSelection] = useState<{
+    key: string; sessionId: string; mode: string; nativeTab: string;
+  } | null>(null);
+  const pluginPanels = panels.map((panel) => ({
+    key: `webui:${panel.key}`,
+    label: panel.title,
+    icon: <PluginIcon className="h-4 w-4 shrink-0" aria-hidden />,
+    content: renderPanel(panel.key),
+  }));
+  const selectedPluginPanel = pluginSelection?.sessionId === resolvedSessionId
+    && pluginSelection.mode === mode && pluginSelection.nativeTab === nativePanelTab
+    ? pluginPanels.find((panel) => panel.key === pluginSelection.key) : undefined;
+  const selectedPluginKey = selectedPluginPanel?.key;
+
+  useEffect(() => {
+    if (pluginSelection && !selectedPluginKey) setPluginSelection(null);
+  }, [pluginSelection, selectedPluginKey]);
+
+  const handlePanelTabChange = (key: string) => {
+    if (pluginPanels.some((panel) => panel.key === key)) {
+      setPluginSelection({ key, sessionId: resolvedSessionId, mode, nativeTab: nativePanelTab });
+      return;
+    }
+    setPluginSelection(null);
+    if (mode === 'team') {
+      setTeamAreaActiveTab(key as TabType);
+      if (key === 'team') setTeamAreaSelectedMemberId('');
+    } else {
+      setSingleAgentPanelActiveTab(key as SingleAgentToolTab);
+    }
+  };
 
   if (panelExpanded && mode !== 'auto_harness') {
     const isTeam = mode === 'team';
@@ -488,15 +532,9 @@ export function ToolPanel({
       <div data-testid={testId} className="bg-panel h-full overflow-hidden flex-1 flex flex-col min-w-[512px]">
         <div className="h-full bg-panel flex flex-col overflow-hidden">
           <ExpandedPanel
-            activeTab={isTeam ? teamAreaActiveTab : singleAgentPanelActiveTab}
-            onTabChange={
-              isTeam
-                ? tab => {
-                    setTeamAreaActiveTab(tab as TabType);
-                    if (tab === 'team') setTeamAreaSelectedMemberId('');
-                  }
-                : tab => setSingleAgentPanelActiveTab(tab as SingleAgentToolTab)
-            }
+            activeTab={selectedPluginPanel?.key ?? nativePanelTab}
+            onTabChange={handlePanelTabChange}
+            additionalPanels={pluginPanels}
             onTabClose={handleTabClose}
             onCollapse={
               isTeam

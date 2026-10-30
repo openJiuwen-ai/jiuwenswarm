@@ -89,8 +89,17 @@ ui:
 | --- | --- | --- |
 | `conversation.input.above` | `list` | 输入区上方，可并列多个实例 |
 | `conversation.input.below` | `single` | 输入区下方，只展示最新实例 |
-| `conversation.panel.right` | `list` | 右侧工作区，可并列多个实例 |
+| `conversation.panel.right` | `list` | 右侧工作区，可并列多个实例；插件实例与原生页签并列 |
+| `conversation.header.title.after` | `list` | 会话标题之后，横向排列 |
+| `conversation.header.actions` | `list` | 会话头部操作区，横向排列 |
+| `conversation.turn.content.after` | `list` | 单轮回复内容之后，按 `instance_key=requestId` 归属 |
+| `conversation.turn.footer.actions` | `list` | 单轮回复 meta 行，横向排列 |
 | `message.assistant.meta` | `list` | 助手消息 meta 行，按 `instance_key=requestId` 对应单轮实例 |
+| `application.settings` | `list` | 设置页内容区 |
+| `application.menu` | `list` | 左侧导航栏，点击进入 `application.menu.main` |
+| `application.menu.main` | `single` | 应用菜单主页面 |
+| `task.function` | `list` | 会话侧栏任务功能区，点击进入 `task.function.main` |
+| `task.function.main` | `single` | 任务功能区页面，保留会话侧栏 |
 
 槽位是平台预定义位置，插件只能选择，不能新增。前端在没有实例时不渲染容器。
 平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围和展示模式；范围及目标字段见
@@ -113,6 +122,7 @@ SLOT_SPECS = MappingProxyType({
 并将宿主放到需要显示内容的位置；不需要按槽位名称新增后端分支。
 `list` / `single` 决定展示多个实例还是单个实例，`session` / `application` 决定实例属于会话还是连接，两者分别配置。
 扩展包仍使用第 3.2 节的 `web.slot.contribution` 声明，在 `slot` 中选择已登记的全局位置；manifest 不另行指定范围。
+`application.entry` 仍未开放。
 
 ## 4. 处理流程
 
