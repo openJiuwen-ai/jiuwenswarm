@@ -44,6 +44,7 @@ export interface WebUIComponentRule {
 export interface WebUISlotRule {
   id: string;
   display: 'list' | 'single';
+  scope?: 'session' | 'application';
   /** 该 slot 允许作为整棵渲染树根的组件名。 */
   rootComponents?: readonly string[];
 }

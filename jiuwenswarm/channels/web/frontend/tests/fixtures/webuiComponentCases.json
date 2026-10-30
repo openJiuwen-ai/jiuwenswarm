@@ -426,6 +426,30 @@
       {
         "src": "https://example.com"
       }
+    ],
+    [
+      "Avatar",
+      {}
+    ],
+    [
+      "Avatar",
+      {
+        "url": "javascript:alert(1)"
+      }
+    ],
+    [
+      "Avatar",
+      {
+        "url": "/logo.svg",
+        "shape": "triangle"
+      }
+    ],
+    [
+      "Avatar",
+      {
+        "url": "/logo.svg",
+        "size": 0
+      }
     ]
   ],
   "valid": [
@@ -552,6 +576,23 @@
       {
         "title": "Preview",
         "src": "/preview"
+      }
+    ],
+    [
+      "Avatar",
+      {
+        "url": "/logo.svg",
+        "alt": "Welcome",
+        "size": 64,
+        "shape": "circle"
+      }
+    ],
+    [
+      "Avatar",
+      {
+        "url": "https://example.com/avatar.png",
+        "size": "small",
+        "shape": "square"
       }
     ]
   ]

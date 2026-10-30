@@ -328,3 +328,80 @@ async def test_gateway_forwards_the_socket_id(monkeypatch) -> None:
     await channel.handler(socket, "req-1", {"event": "ui.ready", "target": {}}, None)
     assert captured["metadata"] == {"ws_id": "sock-1"}
     assert captured["session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_workbench_example_entry_renders_avatar_and_clears_on_close(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
+    monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
+    server = _Push()
+    installed = await assembly.install_extensions(server)
+    assert installed is not None
+    try:
+        example_dir = Path(assembly.__file__).resolve().parent / "examples" / "webui_workbench_v2"
+        reports = await installed.manager.install([example_dir])
+        assert reports[0].status == "SUCCESS"
+
+        ready_req = AgentRequest(
+            request_id="entry-ready",
+            channel_id="web",
+            req_method=ReqMethod.WEBUI_DISPATCH,
+            metadata={"ws_id": "sock-entry"},
+            params={
+                "event": "ui.ready",
+                "target": {
+                    "scope": "application",
+                    "slot_id": "application.entry",
+                    "package_id": "",
+                    "instance_key": "",
+                },
+                "payload": {"reason": "first_visit"},
+            },
+        )
+        ready_resp = await WebUIDispatchAdapter().handle(ready_req)
+        assert ready_resp.ok is True
+        assert ready_resp.payload["status"] == "rendered"
+        assert len(server.messages) == 1
+        frame = server.messages[0]["payload"]
+        assert frame["event_type"] == "webui.render"
+        assert frame["target"] == {
+            "scope": "application",
+            "slot_id": "application.entry",
+            "package_id": "webui.workbench-v2",
+            "instance_key": "workbench",
+        }
+        avatar_node = frame["root"]["children"][0]["children"][0]
+        assert avatar_node["component"] == "Avatar"
+        assert avatar_node["props"]["url"] == "/logo.svg"
+
+        close_req = AgentRequest(
+            request_id="entry-close",
+            channel_id="web",
+            req_method=ReqMethod.WEBUI_DISPATCH,
+            metadata={"ws_id": "sock-entry"},
+            params={
+                "event": "ui.click",
+                "target": {
+                    "scope": "application",
+                    "slot_id": "application.entry",
+                    "package_id": "webui.workbench-v2",
+                    "instance_key": "workbench",
+                },
+                "payload": {
+                    "revision": 1,
+                    "node_key": "0.0.2",
+                    "action_id": "workbench.entry.close",
+                    "args": {},
+                    "data": {},
+                },
+            },
+        )
+        close_resp = await WebUIDispatchAdapter().handle(close_req)
+        assert close_resp.ok is True
+        assert close_resp.payload["status"] == "cleared"
+        assert len(server.messages) == 2
+        clear_frame = server.messages[1]["payload"]
+        assert clear_frame["event_type"] == "webui.render.clear"
+        assert clear_frame["reason"] == "requested"
+    finally:
+        await assembly.shutdown_extensions()

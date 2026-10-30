@@ -56,7 +56,7 @@ test('registered adapters have matching component rules', () => {
     .sort();
   assert.deepEqual(catalogNames, componentRendererRegistry.list().slice().sort());
   assert.ok(catalogNames.includes('Box'));
-  for (const name of ['Box', 'Text', 'Button', 'Input', 'Switch', 'Select', 'TreeSelect', 'Slider', 'Tabs', 'Card', 'Divider', 'Empty', 'Image', 'Tag', 'Panel', 'FileTree', 'FilePreview', 'Iframe']) {
+  for (const name of ['Avatar', 'Box', 'Text', 'Button', 'Input', 'Switch', 'Select', 'TreeSelect', 'Slider', 'Tabs', 'Card', 'Divider', 'Empty', 'Image', 'Tag', 'Panel', 'FileTree', 'FilePreview', 'Iframe']) {
     assert.ok(componentRendererRegistry.has(name), `missing adapter: ${name}`);
   }
 });
@@ -94,11 +94,12 @@ test('display adapters render normalized props and preserve nested content', () 
       { component: 'Divider', props: { children: 'Section', variant: 'dashed', titlePlacement: 'start' } },
       { component: 'Empty', props: { image: 'simple', description: 'Nothing here' } },
       { component: 'Image', props: { src: '/image.png', alt: 'Preview', width: 120, preview: false } },
+      { component: 'Avatar', props: { url: '/logo.svg', alt: 'User avatar', size: 48, shape: 'circle' } },
       { component: 'Tag', props: { children: 'Link', color: 'success', href: 'https://example.com', target: '_blank' } },
     ],
   });
   const markup = renderMarkup(frame);
-  for (const name of ['card', 'divider', 'empty', 'image', 'tag']) {
+  for (const name of ['card', 'divider', 'empty', 'image', 'avatar', 'tag']) {
     assert.match(markup, new RegExp(`data-testid="webui-${name}"`));
   }
   for (const text of ['Summary', 'Details', 'Card body', 'Section', 'Nothing here', 'Preview', 'Link']) {

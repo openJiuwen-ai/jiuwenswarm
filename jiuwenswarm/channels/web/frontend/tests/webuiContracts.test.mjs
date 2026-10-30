@@ -24,10 +24,14 @@ function checkProps(name, input = {}) {
 
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Box', 'Button', 'Card', 'Divider', 'Empty', 'FilePreview', 'FileTree', 'Iframe', 'Image', 'Input',
+    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Empty', 'FilePreview', 'FileTree', 'Iframe', 'Image', 'Input',
     'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
-  assert.equal(componentCatalog.getSlot('application.entry'), undefined);
+  assert.deepEqual(componentCatalog.getSlot('application.entry'), {
+    id: 'application.entry',
+    display: 'single',
+    scope: 'application',
+  });
   assert.deepEqual(componentCatalog.getSlot('conversation.panel.right').rootComponents, ['Panel', 'Iframe']);
   assert.deepEqual(componentCatalog.getSlot('application.menu.main').rootComponents, ['Iframe']);
   assert.equal(WEBUI_COMPONENT_SCHEMA_VERSION, 1);

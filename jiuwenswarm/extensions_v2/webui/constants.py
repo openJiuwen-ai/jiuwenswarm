@@ -73,6 +73,7 @@ def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION) -> SlotSpec:
 # to the web socket that asked, and do not use a chat id.
 SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
     {
+        "application.entry": _slot("single", SlotScope.APPLICATION),
         "conversation.input.above": _slot("list"),
         "conversation.input.below": _slot("single"),
         "conversation.panel.right": _slot("list"),

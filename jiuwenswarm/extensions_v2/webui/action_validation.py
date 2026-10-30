@@ -34,7 +34,11 @@ def validate_upstream(request: UiActionInput, registry: ActiveRenderRegistry) ->
             or not isinstance(request.payload, Mapping)):
         return invalid
     if request.event_type == SLOT_READY_EVENT:
-        return None if not request.payload else invalid
+        if not request.payload:
+            return None
+        if request.target.slot_id == "application.entry" and dict(request.payload) == {"reason": "first_visit"}:
+            return None
+        return invalid
     if not request.target.package_id:
         return invalid
     instance = registry.get(request.target)
