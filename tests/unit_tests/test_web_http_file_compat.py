@@ -66,19 +66,17 @@ def test_list_and_read_markdown(file_client):
     assert r.text.startswith("# hi")
 
 
-def test_legacy_agent_data_path_returns_generated_content(file_client):
-    """Old pre-rename path ``agent/workspace/agent-data.json`` must serve generated data."""
+def test_agent_data_path_is_not_auto_generated(file_client):
+    """Legacy agent-data.json index is retired; missing path returns 404."""
     client, roots, _img, _bytes = file_client
-    assert not (roots.project_root / "agent" / "workspace").exists()
+    assert not (roots.workspace_root / "jiuwenclaw_workspace" / "agent-data.json").exists()
 
     r = client.get(
         "/file-api/file-content",
-        params={"path": "agent/workspace/agent-data.json", "encoding": "utf-8"},
+        params={"path": "agent/jiuwenclaw_workspace/agent-data.json", "encoding": "utf-8"},
     )
-    assert r.status_code == 200
-    # generated at the new path and served from there
-    assert (roots.workspace_root / "jiuwenclaw_workspace" / "agent-data.json").is_file()
-    assert "hello.md" in r.text
+    assert r.status_code == 404
+    assert not (roots.workspace_root / "jiuwenclaw_workspace" / "agent-data.json").exists()
 
 
 def test_raw_file(file_client):
