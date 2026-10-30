@@ -2454,6 +2454,9 @@ class SkillManager:
         source_type: str = "user",
     ) -> dict[str, Any]:
         """Atomically replace the entity, then commit the JSON installation record."""
+        _commit_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时，同卸载侧约定，避免跨线程读被覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
         normalized_source_type = str(source_type or "user").strip() or "user"
         if normalized_source_type not in {"user", "prebuilt"}:
             raise ValueError(f"invalid source_type for source install: {source_type}")
@@ -2523,6 +2526,12 @@ class SkillManager:
         if backup.exists():
             _safe_rmtree(backup)
         self._refresh_agent_data_indexes()
+        logger.info(
+            "[SkillManager] source_install commit name=%s total_ms=%.1f lock_wait_ms=%.1f",
+            skill_name,
+            (time.perf_counter() - _commit_t0) * 1000.0,
+            _lock_wait_ms,
+        )
         return self._skill_installation_dto(record)
 
     def lookup_skill_md_author(self, skill_name: str) -> str:
@@ -2683,6 +2692,11 @@ class SkillManager:
         source_id = str(params.get("source_id") or "").strip()
         skill_id = str(params.get("skill_id") or "").strip()
         version_id = str(params.get("version_id") or "").strip()
+        logger.info(
+            "[SkillManager] source_install recv source_id=%s skill_id=%s version_id=%s",
+            source_id, skill_id, version_id,
+        )
+        _t0 = time.perf_counter()
         if not source_id or not skill_id or not version_id:
             return self._source_error(
                 "missing_params", "source_id, skill_id and version_id are required"
@@ -2692,12 +2706,19 @@ class SkillManager:
         market_display_name = str(params.get("display_name") or "").strip()[:200]
         market_version = str(params.get("version") or "").strip()[:100]
         market_author = str(params.get("author") or "").strip()[:200]
+        _download_t0 = time.perf_counter()
         try:
             descriptor, body, verification = await self._fetch_verified_source_artifact(
                 source_id=source_id,
                 skill_id=skill_id,
                 version_id=version_id,
                 params=params,
+            )
+            logger.info(
+                "[SkillManager] source_install stage=download source_id=%s cost_ms=%.1f size_bytes=%d",
+                source_id,
+                (time.perf_counter() - _download_t0) * 1000.0,
+                len(body),
             )
             with tempfile.TemporaryDirectory(prefix="jiuwenswarm_source_install_") as tmpdir:
                 tmp_path = Path(tmpdir)
@@ -2764,6 +2785,12 @@ class SkillManager:
                 exc,
             )
             return self._source_error("source_install_failed", str(exc))
+        finally:
+            logger.info(
+                "[SkillManager] source_install done source_id=%s total_ms=%.1f",
+                source_id,
+                (time.perf_counter() - _t0) * 1000.0,
+            )
 
     async def handle_skills_update(self, params: dict) -> dict:
         """Update an installed SkillRef through the same verified install transaction."""
@@ -3864,6 +3891,9 @@ class SkillManager:
         source_url: str,
     ) -> dict[str, Any]:
         """Commit the user Skill entity and ledger record in one transaction."""
+        _commit_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时，同卸载侧约定，避免跨线程读被覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
         existing = self._find_skill_installation(name=skill_name)
         if existing is not None:
             existing_type = str(existing.get("source_type") or "").strip()
@@ -3931,6 +3961,12 @@ class SkillManager:
                 "error_code": "state_write_failed",
                 "error_message": str(exc)[:500],
             }
+        logger.info(
+            "[SkillManager] enterprise_install commit name=%s total_ms=%.1f lock_wait_ms=%.1f",
+            installed_name,
+            (time.perf_counter() - _commit_t0) * 1000.0,
+            _lock_wait_ms,
+        )
         return {
             "success": True,
             "skill": {"name": installed_name, "version": skill_version},
@@ -3944,6 +3980,8 @@ class SkillManager:
 
         url = str(params.get("url") or "").strip()
         signature = str(params.get("signature") or "").strip()
+        logger.info("[SkillManager] enterprise_install recv url=%s", url)
+        _t0 = time.perf_counter()
         if not url:
             return {
                 "success": False,
@@ -3960,6 +3998,7 @@ class SkillManager:
                 "error_message": "service_id and agent_id are required",
             }
 
+        _download_t0 = time.perf_counter()
         try:
             content = await asyncio.to_thread(self._download_web_skill_bytes, url)
         except Exception as exc:  # noqa: BLE001
@@ -3969,6 +4008,11 @@ class SkillManager:
                 "error_code": "download_failed",
                 "error_message": str(exc)[:500],
             }
+        logger.info(
+            "[SkillManager] enterprise_install stage=download cost_ms=%.1f size_bytes=%d",
+            (time.perf_counter() - _download_t0) * 1000.0,
+            len(content),
+        )
 
         # 签名可选：有则验 HMAC；无则跳过验签直接解压安装
         if signature and not verify_skill_download_hmac(content, signature):
@@ -4009,13 +4053,19 @@ class SkillManager:
                 }
             skill_version = str(meta.get("version") or "").strip() or None
 
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 self._commit_web_skill_install,
                 skill_dir,
                 skill_name=skill_name,
                 skill_version=skill_version,
                 source_url=url,
             )
+            logger.info(
+                "[SkillManager] enterprise_install done url=%s total_ms=%.1f",
+                url,
+                (time.perf_counter() - _t0) * 1000.0,
+            )
+            return result
 
     async def handle_skills_web_uninstall(self, params: dict) -> dict:
         """企业 Web 卸载兼容入口：允许删除 source_type 为 user 或未标记的安装。"""

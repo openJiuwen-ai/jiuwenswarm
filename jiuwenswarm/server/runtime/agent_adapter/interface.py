@@ -2456,9 +2456,10 @@ class JiuWenSwarm:
                 if is_enterprise():
                     _post_refresh_t0 = time.perf_counter()
                     await self.refresh_enabled_skills_from_db()
-                    if handler_name == "handle_skills_web_uninstall":
+                    if handler_name.startswith("handle_skills_web_"):
                         logger.info(
-                            "[SkillManager] uninstall post_refresh rail_refresh_ms=%.1f request_id=%s",
+                            "[SkillManager] %s post_refresh rail_refresh_ms=%.1f request_id=%s",
+                            handler_name.removeprefix("handle_skills_web_"),
                             (time.perf_counter() - _post_refresh_t0) * 1000.0,
                             request.request_id,
                         )
