@@ -48,7 +48,7 @@ legacy clients may still send these alias strings.
 
 ## New Three-Segment Canonical Modes
 
-The backend hub layer (`jiuwenswarm/common/mode_matrix.py`) introduces 8
+The backend hub layer (`gateway/common/mode_matrix.py`) introduces 8
 three-segment canonical mode strings as the unified external identifier. The
 three segments are `<category>.<work profile>.<plan?>`:
 

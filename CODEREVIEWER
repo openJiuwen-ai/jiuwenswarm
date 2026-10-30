@@ -323,7 +323,7 @@ jiuwenswarm/common/context_window.py liwenlin
 jiuwenswarm/common/model_catalog.py liwenlin
 jiuwenswarm/common/model_config_validation.py liwenlin
 jiuwenswarm/common/model_migration.py liwenlin
-jiuwenswarm/common/model_selection.py liwenlin
+gateway/common/model_selection.py liwenlin
 jiuwenswarm/common/model_vendor_registry.py liwenlin
 jiuwenswarm/common/openrouter_attribution.py liwenlin
 jiuwenswarm/common/reasoning_config.py liwenlin
@@ -347,8 +347,8 @@ jiuwenswarm/agents/harness/common/tools/todo_toolkits.py lizhiyuan
 jiuwenswarm/agents/harness/common/tools/user_todo_tool.py lizhiyuan
 jiuwenswarm/channels/web/frontend/src/components/TodoList/ lizhiyuan
 jiuwenswarm/common/todo_snapshot.py lizhiyuan
-jiuwenswarm/common/mode_matrix.py lizhiyuan
-jiuwenswarm/common/work_mode.py lizhiyuan
+gateway/common/mode_matrix.py lizhiyuan
+gateway/common/work_mode.py lizhiyuan
 jiuwenswarm/runtime/mode_catalog.py lizhiyuan
 jiuwenswarm/agents/harness/work/rails/ lizhiyuan
 jiuwenswarm/agents/harness/common/rails/execution_guard/ miaoyanming
