@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,26 @@ class TurnState:
 
 
 @dataclass(slots=True)
+class WorkspaceState:
+    """Platform directory and preview results for the owning conversation."""
+
+    tree_result: dict[str, Any] = field(default_factory=lambda: {"status": "ready", "treeData": []})
+    preview_result: dict[str, Any] = field(default_factory=lambda: {"status": "ready", "file": None})
+
+    def nodes(self) -> dict[str, dict[str, Any]]:
+        """Index only nodes supplied in the latest platform snapshot."""
+        result: dict[str, dict[str, Any]] = {}
+
+        def walk(items: list[dict[str, Any]]) -> None:
+            for item in items:
+                result[item["key"]] = item
+                walk(item.get("children", []))
+
+        walk(self.tree_result.get("treeData", []))
+        return result
+
+
+@dataclass(slots=True)
 class SessionState:
     """Filters and mounted targets for one real conversation."""
 
@@ -53,6 +74,7 @@ class SessionState:
     last_result: str = "准备就绪 / Ready"
     mounted: set[tuple[str, str]] = field(default_factory=set)
     turns: dict[str, TurnState] = field(default_factory=dict)
+    workspace: WorkspaceState = field(default_factory=WorkspaceState)
 
     def results(self) -> tuple[DemoItem, ...]:
         """Apply all filters without calling external services."""

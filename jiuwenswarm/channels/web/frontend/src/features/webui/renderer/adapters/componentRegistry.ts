@@ -15,6 +15,7 @@ import { WebUICard } from './webuiCard/WebUICard.tsx';
 import { WebUITag } from './webuiTag/WebUITag.tsx';
 import { WebUIPanel } from './webuiPanel/WebUIPanel.tsx';
 import { WebUIFileTree } from './webuiFileTree/WebUIFileTree.tsx';
+import { WebUIFilePreview } from './webuiFilePreview/WebUIFilePreview.tsx';
 import { WebUIIframe } from './webuiIframe/WebUIIframe.tsx';
 
 export function createComponentRendererRegistry() {
@@ -35,6 +36,7 @@ export function createComponentRendererRegistry() {
     Tag: WebUITag,
     Panel: WebUIPanel,
     FileTree: WebUIFileTree,
+    FilePreview: WebUIFilePreview,
     Iframe: WebUIIframe,
   });
 }

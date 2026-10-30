@@ -3,7 +3,7 @@ package:
   id: webui.workbench-v2
   version: 1.0.9
   displayName: Plugin Workbench / 插件交互工作台
-  description: A plugin demo with interactive filters, a login page shell and a webpage tab.
+  description: A plugin demo with a fullscreen welcome entry, a login page shell, workspace files and a webpage tab.
 extensions:
   - id: workbench-v2
     runtime: backend
@@ -18,6 +18,7 @@ ui:
     - {type: web.slot.contribution, id: workbench.settings, slot: application.settings, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.above, slot: conversation.input.above, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.below, slot: conversation.input.below, order: 40, renderer: {kind: webui-tree}}
+    - {type: web.slot.contribution, id: workbench.details, slot: conversation.panel.right, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.iframe, slot: conversation.panel.right, order: 41, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.turn, slot: conversation.turn.content.after, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.turn.actions, slot: conversation.turn.footer.actions, order: 40, renderer: {kind: webui-tree}}

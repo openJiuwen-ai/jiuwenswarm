@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import replace
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventNext
 
@@ -28,6 +29,7 @@ from .views import (
     TURN_SLOTS,
     build_view,
 )
+from .workspace import apply_file_action, load_workspace
 
 EVENTS = ("ui.click", "ui.change", "ui.press_enter", "ui.search", "ui.clear", "ui.select")
 
@@ -70,6 +72,8 @@ class WorkbenchHandlers:
                     return UiActionOutput(accepted=False, status="invalid_instance")
                 failed_status = None
                 for instance in instances:
+                    if target.slot_id == "conversation.panel.right" and instance == INSTANCE:
+                        await load_workspace(ops, state.workspace)
                     output = await self._render(ops, target.session_id, target.slot_id, instance, state)
                     if output is None or output.status != "delivered":
                         failed_status = output.status if output else "unavailable"
@@ -78,8 +82,18 @@ class WorkbenchHandlers:
                 if failed_status:
                     return UiActionOutput(accepted=False, status=failed_status)
                 return UiActionOutput(accepted=True, status="rendered")
-            if target.slot_id == "conversation.panel.right" and target.instance_key != IFRAME_INSTANCE:
+            if target.slot_id == "conversation.panel.right" and target.instance_key != INSTANCE:
                 return UiActionOutput(accepted=False, status="invalid_instance")
+            action = request.payload.get("action_id")
+            if isinstance(action, str) and action.startswith("workbench.files."):
+                data = request.payload.get("data", {})
+                if (target.slot_id != "conversation.panel.right" or target.instance_key != INSTANCE
+                        or not isinstance(data, Mapping)
+                        or not await apply_file_action(ops, state.workspace, action, request.event_type, data)):
+                    return UiActionOutput(accepted=False, status="invalid")
+                output = await self._render(ops, target.session_id, target.slot_id, INSTANCE, state)
+                delivered = output is not None and output.status == "delivered"
+                return UiActionOutput(accepted=delivered, status=output.status if output else "unavailable")
             result = self._apply(request, state)
             if result != "updated":
                 return UiActionOutput(accepted=result == "composing", status=result)
@@ -104,7 +118,7 @@ class WorkbenchHandlers:
         if target.slot_id in TURN_SLOTS:
             return (target.instance_key,) if target.instance_key else ()
         if target.slot_id == "conversation.panel.right":
-            members = (IFRAME_INSTANCE,)
+            members = (INSTANCE, IFRAME_INSTANCE)
             if not target.instance_key:
                 return members
             return (target.instance_key,) if target.instance_key in members else ()

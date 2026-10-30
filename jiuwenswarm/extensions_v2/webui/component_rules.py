@@ -130,6 +130,16 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "variant": token("filled", "solid", "outlined"), "disabled": BOOL,
         "href": TEXT, "target": token("_self", "_blank"),
     }},
+    "FilePreview": {
+        "props": {
+            "file": union(NIL, obj({
+                "name": TEXT, "path": TEXT, "mimeType": TEXT, "size": INTEGER, "content": TEXT,
+            }, "name", "path", "content")),
+            "emptyText": TEXT,
+            "status": token("ready", "missing", "unsupported", "too_large", "forbidden", "unavailable", "error"),
+        },
+        "required": ("file",),
+    },
     "FileTree": {
         "props": {
             "treeData": array(_FILE_NODE), "selectedKey": union(TEXT, NIL), "expandedKeys": array(TEXT),
@@ -142,6 +152,16 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
             "ui.select": obj({"key": TEXT}, "key"),
             "ui.change": obj({"key": TEXT, "expanded": BOOL, "expandedKeys": array(TEXT)}, "key", "expanded"),
         },
+    },
+    "FilePreview": {
+        "props": {
+            "file": union(NIL, obj({
+                "name": TEXT, "path": TEXT, "mimeType": TEXT, "size": INTEGER, "content": TEXT,
+            }, "name", "path", "content")),
+            "emptyText": TEXT,
+            "status": token("ready", "missing", "unsupported", "too_large", "forbidden", "unavailable", "error"),
+        },
+        "required": ("file",),
     },
     "Panel": {"props": {"title": {"kind": "string", "maxBytes": 200}}, "required": ("title",), "children": True},
     "Iframe": {"props": {"src": TEXT, "title": {"kind": "string", "maxBytes": 200}}, "required": ("src", "title")},
@@ -342,6 +362,10 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         enabled = [item["key"] for item in items if not item.get("disabled")]
         if any(key in props and props[key] not in enabled for key in ("activeKey", "defaultActiveKey")):
             return "invalid active tab"
+    if component == "FilePreview":
+        file = props["file"]
+        if file is not None and (not file["name"].strip() or not _workspace_path_ok(file["path"])):
+            return "invalid preview file"
     if component == "FileTree":
         try:
             nodes = _file_tree_nodes(props["treeData"])
@@ -353,6 +377,10 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         expanded = props.get("expandedKeys", [])
         if not _unique(expanded) or any(nodes.get(key, {}).get("kind") != "directory" for key in expanded):
             return "unknown expanded directory"
+    if component == "FilePreview":
+        file = props.get("file")
+        if file is not None and (not str(file.get("name", "")).strip() or not _workspace_path_ok(file["path"])):
+            return "invalid preview file"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"
     url_fields = {"Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}

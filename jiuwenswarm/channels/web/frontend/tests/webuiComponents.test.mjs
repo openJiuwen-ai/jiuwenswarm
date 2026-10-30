@@ -56,7 +56,7 @@ test('registered adapters have matching component rules', () => {
     .sort();
   assert.deepEqual(catalogNames, componentRendererRegistry.list().slice().sort());
   assert.ok(catalogNames.includes('Box'));
-  for (const name of ['Box', 'Text', 'Button', 'Input', 'Switch', 'Select', 'TreeSelect', 'Slider', 'Tabs', 'Card', 'Divider', 'Empty', 'Image', 'Tag', 'Panel', 'FileTree', 'Iframe']) {
+  for (const name of ['Box', 'Text', 'Button', 'Input', 'Switch', 'Select', 'TreeSelect', 'Slider', 'Tabs', 'Card', 'Divider', 'Empty', 'Image', 'Tag', 'Panel', 'FileTree', 'FilePreview', 'Iframe']) {
     assert.ok(componentRendererRegistry.has(name), `missing adapter: ${name}`);
   }
 });
@@ -67,6 +67,23 @@ test('FileTree rejects paths outside the workspace', () => {
     props: { treeData: [{ key: 'a', title: 'a', path: '../a', kind: 'file' }] },
   }));
   assert.equal(result.ok, false);
+});
+
+test('FilePreview renders plugin supplied text and rejects escaping paths', () => {
+  const ok = pipeline.processRenderFrame(renderFrame({
+    component: 'FilePreview',
+    props: { file: { name: 'notes.txt', path: 'notes.txt', mimeType: 'text/plain', size: 3, content: 'abc' } },
+  }));
+  assert.equal(ok.ok, true);
+  const markup = renderMarkup(ok.value);
+  assert.match(markup, /webui-file-preview/);
+  assert.match(markup, /abc/);
+
+  const bad = pipeline.processRenderFrame(renderFrame({
+    component: 'FilePreview',
+    props: { file: { name: 'x', path: '../x', mimeType: 'text/plain', size: 1, content: 'a' } },
+  }));
+  assert.equal(bad.ok, false);
 });
 
 test('display adapters render normalized props and preserve nested content', () => {
