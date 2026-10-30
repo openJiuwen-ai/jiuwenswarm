@@ -45,8 +45,10 @@ export function newMember(kind: GroupMember['kind'], id: string, displayName: st
 export function selectedMentions(content: string, selected: string[], members: GroupMember[]): string[] {
   const mentions: string[] = [];
   for (const member of members) {
-    if (!selected.includes(member.member_name)) continue;
-    const label = `@${member.display_name || member.member_name}`;
+    const name = member.display_name || member.member_name;
+    const sameName = members.filter((item) => (item.display_name || item.member_name) === name);
+    if (sameName.length > 1 && !selected.includes(member.member_name)) continue;
+    const label = `@${name}`;
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`${escaped}(?=$|[\\s，。！？、,:：;；!?])`);
     if (pattern.test(content)) mentions.push(member.member_name);
@@ -120,17 +122,25 @@ export function taskCounts(tasks: Record<string, string> = {}) {
   return counts;
 }
 
-/** Backend timestamps are seconds; tolerate millisecond values as well. */
-export function timestampMillis(value: number): number {
-  return value > 1e12 ? value : value * 1000;
+/** Compact size label for file rows, e.g. 512B, 226.12K, 3.4M. */
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  const units = ['K', 'M', 'G'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  return `${Number(value.toFixed(2))}${units[unit]}`;
 }
 
-/** Short sidebar label: HH:mm for today, M/D within the year, otherwise YYYY/M/D. */
-export function conversationTime(millis: number, now: Date = new Date()): string {
-  const date = new Date(millis);
-  if (date.toDateString() === now.toDateString()) {
-    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  }
-  const day = `${date.getMonth() + 1}/${date.getDate()}`;
-  return date.getFullYear() === now.getFullYear() ? day : `${date.getFullYear()}/${day}`;
+/** Apply a confirmed file rename or delete to attachments already loaded on the client. */
+export function updateAttachments<T extends { attachments?: Record<string, unknown>[] }>(
+  records: T[], path: string, name: string | null,
+): T[] {
+  return records.map((record) => {
+    if (!record.attachments?.some((file) => file.path === path)) return record;
+    const attachments = name === null
+      ? record.attachments.filter((file) => file.path !== path)
+      : record.attachments.map((file) => file.path === path ? { ...file, name } : file);
+    return { ...record, attachments };
+  });
 }

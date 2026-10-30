@@ -1,9 +1,8 @@
 import {
   ArrowLeft,
-  CalendarDays,
   ClipboardList,
   ChevronDown,
-  CirclePlus,
+  ChevronRight,
   Folder,
   FileText,
   PanelLeftOpen,
@@ -11,6 +10,7 @@ import {
   PinOff,
   PencilLine,
   Plus,
+  SquarePlus,
   Trash2,
   X,
 } from 'lucide-react';
@@ -19,11 +19,12 @@ import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer';
 import { FilePreview } from '../../../components/ArtifactsPanel/FilePreview';
 import documentIcon from '../../../assets/jiuwenmate/icons/document.svg';
-import featureChannel from '../../../assets/jiuwenmate/illustrations/feature-channel.png';
-import featureChat from '../../../assets/jiuwenmate/illustrations/feature-chat.png';
-import featureSchedule from '../../../assets/jiuwenmate/illustrations/feature-schedule.png';
 import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-empty.png';
 import { ActionMenu } from '../components/ActionMenu';
+import { GroupConversationRecord } from '../components/GroupConversationRecord';
+import { GroupChatWorkspace } from '../../groupChat/GroupChatWorkspace';
+import type { GroupDirectory } from '../../groupChat/useGroupDirectory';
+import { mergeChatEntries } from '../chatEntries';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { GroupSharingInbox } from '../components/GroupSharingInbox';
@@ -48,8 +49,10 @@ import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
 import type {
   JiuwenMateChannel,
   JiuwenMateChannelMessage,
+  JiuwenMateChannelMessagePage,
   JiuwenMateColleague,
   JiuwenMateConnection,
+  JiuwenMateActivity,
   JiuwenMateTraceRow,
 } from '../types';
 
@@ -90,6 +93,14 @@ import {
   type JiuwenMateWorkspaceState,
 } from '../workspaceState';
 import { ChannelTracePage } from './ChannelTracePage';
+import { useProgressiveText } from '../../../hooks/useProgressiveText';
+
+function LiveReply({ text, animate, streaming }: { text: string; animate: boolean; streaming: boolean }) {
+  const content = useProgressiveText(text, animate);
+  return <MarkdownRenderer content={content} isStreaming={streaming || content !== text}
+    className="chat-text chat-markdown jiuwenmate-chat-markdown" />;
+}
+
 
 export interface JiuwenMateWorkspaceIntent {
   recordTab: JiuwenMateRecordTab;
@@ -97,7 +108,15 @@ export interface JiuwenMateWorkspaceIntent {
   trace: boolean;
 }
 
+/** Group chats shown alongside colleague conversations in the chat sidebar. */
+export interface JiuwenMateGroupChat {
+  directory: GroupDirectory;
+  activeGroupId?: string;
+  onSelectGroup: (groupId?: string) => void;
+}
+
 interface ColleagueWorkspacePageProps {
+  groupChat?: JiuwenMateGroupChat;
   colleagues: readonly JiuwenMateColleague[];
   selectedColleagueId: string;
   intent?: JiuwenMateWorkspaceIntent | null;
@@ -107,6 +126,7 @@ interface ColleagueWorkspacePageProps {
   onSelectColleague: (id: string) => void;
   onCreateSchedule: (id: string) => void;
   schedules?: readonly JiuwenMateSchedule[];
+  activity?: JiuwenMateActivity | null;
   savingSchedule?: boolean;
   onSaveSchedule?: (agentId: string, draft: ScheduleDraft) => void | Promise<void>;
   onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
@@ -122,17 +142,15 @@ interface ColleagueWorkspacePageProps {
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
 type RightPanel = 'management' | 'artifacts' | null;
+const COMPACT_WORKSPACE_MEDIA = '(max-width: 760px)';
 
-const PROMPT_ICONS = [ClipboardList, CalendarDays, FileText];
-const FEATURES = [
-  { key: 'chat', image: featureChat },
-  { key: 'channel', image: featureChannel },
-  { key: 'schedule', image: featureSchedule },
-] as const;
+function compactWorkspace() {
+  return typeof window !== 'undefined' && window.matchMedia(COMPACT_WORKSPACE_MEDIA).matches;
+}
 
 export interface JiuwenMateChannelApi {
   listChannels(agentId: string): Promise<readonly JiuwenMateChannel[]>;
-  channelMessages(agentId: string, groupId: string): Promise<readonly JiuwenMateChannelMessage[]>;
+  channelMessages(agentId: string, groupId: string, cursor?: string): Promise<JiuwenMateChannelMessagePage>;
   channelTrace(agentId: string, groupId: string): Promise<{ startedAt: string; rows: readonly JiuwenMateTraceRow[] }>;
 }
 
@@ -140,6 +158,7 @@ function initialState(colleague: JiuwenMateColleague, intent?: JiuwenMateWorkspa
   let state = createWorkspaceState(colleague.id, intent?.channelId ?? null);
   if (intent) state = selectRecordTab(state, intent.recordTab);
   if (intent?.trace && intent.channelId) state = openChannelTrace(state);
+  if (compactWorkspace()) state = setRecordsCollapsed(state, true);
   return state;
 }
 
@@ -152,6 +171,7 @@ export function ColleagueWorkspacePage({
   onSelectColleague,
   onCreateSchedule,
   schedules = [],
+  activity = null,
   savingSchedule = false,
   onSaveSchedule,
   onUpdateSchedule,
@@ -163,8 +183,11 @@ export function ColleagueWorkspacePage({
   onRenameColleague,
   onSavePermissionProfile,
   savingPermissionProfile = false,
+  groupChat,
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
+  const activeGroupId = groupChat?.activeGroupId;
+  const leaveGroup = () => { if (activeGroupId) groupChat?.onSelectGroup(); };
   const platformLabel = (platform: string) => {
     if (platform === 'feishu') return t('jiuwenmate.im.feishu');
     if (platform === 'welink') return t('jiuwenmate.im.welink');
@@ -179,6 +202,9 @@ export function ColleagueWorkspacePage({
   const [webResult, setWebResult] = useState<{ agentId: string; conversationId: string } | null>(null);
   const connections = colleague?.connections ?? [];
   const workspace = connections.find((item) => item.agentId === workspaceAgentId) ?? connections[0] ?? null;
+  const channelSourceAgentKey = [...new Set([colleagueId, ...connections.map((item) => item.agentId)].filter(Boolean))]
+    .sort()
+    .join('\u0000');
   const [state, setState] = useState(() => initialState(colleague, intent));
   const channelId = state.managementChannelId ?? state.selectedChannelId;
   const [board, setBoard] = useState(false);
@@ -216,6 +242,7 @@ export function ColleagueWorkspacePage({
   const sharingConversation = webWorkspace && chatConversationId === SHARING_CONVERSATION_ID;
   const privateChat = usePrivateChat(chat, sharingConversation ? '' : chatAgentId, chatConversationId, connectionEpoch);
   const messageListRef = useRef<HTMLOListElement | null>(null);
+  const followReplies = useRef(true);
   const boardRef = useRef(board);
   const agentIdRef = useRef(agentId);
   const conversationIdRef = useRef(chatConversationId);
@@ -234,12 +261,16 @@ export function ColleagueWorkspacePage({
   reloadListRef.current = conversationList.reload;
   scheduleEditorRef.current = scheduleEditor;
   const [channels, setChannels] = useState<readonly JiuwenMateChannel[]>([]);
+  const selectedChannel = channels.find((item) => item.id === channelId) ?? null;
+  const channelAgentId = selectedChannel?.ownerAgentId ?? agentId;
   const [channelMessages, setChannelMessages] = useState<readonly JiuwenMateChannelMessage[]>([]);
+  const [channelNextCursor, setChannelNextCursor] = useState<string | null>(null);
+  const [loadingOlderChannelMessages, setLoadingOlderChannelMessages] = useState(false);
   const [traceRows, setTraceRows] = useState<readonly JiuwenMateTraceRow[]>([]);
   const [traceStartedAt, setTraceStartedAt] = useState('');
   const [channelNotice, setChannelNotice] = useState('');
   const [settledChannelKey, setSettledChannelKey] = useState<string | null>(null);
-  const channelKey = agentId && channelId ? `${agentId}:${channelId}` : null;
+  const channelKey = channelAgentId && channelId ? `${channelAgentId}:${channelId}` : null;
   const channelRecords = channelRecordView(channelKey, settledChannelKey, channelMessages.length);
 
   useEffect(() => {
@@ -345,31 +376,62 @@ export function ColleagueWorkspacePage({
   useEffect(() => {
     const list = messageListRef.current;
     if (!list || board) return;
-    list.scrollTop = list.scrollHeight;
-  }, [board, chatConversationId, privateChat.requests.length]);
+    followReplies.current = true;
+    const follow = () => {
+      if (followReplies.current) list.scrollTop = list.scrollHeight;
+    };
+    follow();
+    const observer = new ResizeObserver(follow);
+    for (const child of list.children) observer.observe(child);
+    const mutations = new MutationObserver(() => {
+      observer.disconnect();
+      for (const child of list.children) observer.observe(child);
+      follow();
+    });
+    mutations.observe(list, { childList: true });
+    return () => { observer.disconnect(); mutations.disconnect(); };
+  }, [board, chatConversationId]);
 
   useEffect(() => {
-    if (!channelApi || !agentId) return undefined;
+    if (!channelApi || !colleagueId) return undefined;
     let cancelled = false;
     setChannelNotice('');
-    channelApi.listChannels(agentId).then((items) => {
+    const sourceAgentIds = channelSourceAgentKey.split('\u0000').filter(Boolean);
+    Promise.allSettled(sourceAgentIds.map(async (sourceAgentId) => ({
+      sourceAgentId,
+      items: await channelApi.listChannels(sourceAgentId),
+    }))).then((results) => {
       if (cancelled) return;
+      const fulfilled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+      if (fulfilled.length === 0) {
+        const failure = results.find((result) => result.status === 'rejected');
+        setChannels([]);
+        setChannelNotice(failure?.status === 'rejected' ? errorMessage(failure.reason) || 'failed' : 'failed');
+        return;
+      }
+      const unique = new Map<string, JiuwenMateChannel>();
+      for (const { sourceAgentId, items } of fulfilled) {
+        for (const item of items) {
+          const key = `${item.platform}:${item.id}`;
+          if (!unique.has(key)) unique.set(key, { ...item, ownerAgentId: sourceAgentId });
+        }
+      }
+      const items = [...unique.values()];
       setChannels(items);
       setState((current) => {
         if (current.selectedChannelId && items.some((item) => item.id === current.selectedChannelId)) return current;
         return items[0] ? { ...current, selectedChannelId: items[0].id } : { ...current, selectedChannelId: null };
       });
-    }).catch((error: unknown) => {
-      if (!cancelled) setChannelNotice(errorMessage(error) || 'failed');
     });
     return () => {
       cancelled = true;
     };
-  }, [channelApi, agentId]);
+  }, [channelApi, colleagueId, channelSourceAgentKey]);
 
   useEffect(() => {
-    if (!channelApi || !agentId || !channelId) {
+    if (!channelApi || !channelAgentId || !channelId) {
       setChannelMessages([]);
+      setChannelNextCursor(null);
       setSettledChannelKey(null);
       setTraceRows([]);
       setTraceStartedAt('');
@@ -377,14 +439,16 @@ export function ColleagueWorkspacePage({
     }
     let cancelled = false;
     const groupId = channelId;
-    const requestKey = `${agentId}:${groupId}`;
+    const requestKey = `${channelAgentId}:${groupId}`;
     setChannelNotice('');
     setChannelMessages([]);
+    setChannelNextCursor(null);
     channelApi
-      .channelMessages(agentId, groupId)
-      .then((messages) => {
+      .channelMessages(channelAgentId, groupId)
+      .then((page) => {
         if (cancelled) return;
-        setChannelMessages(messages);
+        setChannelMessages(page.messages);
+        setChannelNextCursor(page.nextCursor);
         setSettledChannelKey(requestKey);
       })
       .catch((error: unknown) => {
@@ -394,7 +458,7 @@ export function ColleagueWorkspacePage({
         setChannelNotice(errorMessage(error) || 'failed');
       });
     channelApi
-      .channelTrace(agentId, groupId)
+      .channelTrace(channelAgentId, groupId)
       .then((trace) => {
         if (cancelled) return;
         setTraceRows(trace.rows);
@@ -408,12 +472,28 @@ export function ColleagueWorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [channelApi, agentId, channelId]);
+  }, [channelApi, channelAgentId, channelId]);
 
   if (!colleague) return null;
 
-  const selectedChannel = channels.find((item) => item.id === channelId) ?? null;
   const artifacts = latestSharedFiles(privateChat.requests);
+
+  const loadOlderChannelMessages = async () => {
+    if (!channelApi || !channelAgentId || !channelId || !channelNextCursor || loadingOlderChannelMessages) return;
+    setLoadingOlderChannelMessages(true);
+    try {
+      const page = await channelApi.channelMessages(channelAgentId, channelId, channelNextCursor);
+      setChannelMessages((current) => {
+        const known = new Set(current.map((item) => item.id));
+        return [...page.messages.filter((item) => !known.has(item.id)), ...current];
+      });
+      setChannelNextCursor(page.nextCursor);
+    } catch (error: unknown) {
+      setChannelNotice(errorMessage(error) || 'failed');
+    } finally {
+      setLoadingOlderChannelMessages(false);
+    }
+  };
   const visibleArtifact = selectedArtifact
     ? artifacts.find((file) => sharedFileKey(file) === sharedFileKey(selectedArtifact)) ?? null
     : null;
@@ -425,16 +505,12 @@ export function ColleagueWorkspacePage({
     setWorkspaceAgentId(conversationAgentId);
     setWebResult(null);
     setBoard(false);
-    setState((current) => clearManagementChannel(current));
+    leaveGroup();
+    setState((current) => {
+      const next = clearManagementChannel(current);
+      return compactWorkspace() ? setRecordsCollapsed(next, true) : next;
+    });
     setPicked({ agentId: conversationAgentId, conversationId });
-  };
-
-  const createSession = () => {
-    const id = newId();
-    setFreshId(id);
-    openConversation(agentId, id);
-    setDraft('');
-    setState((current) => selectRecordTab(current, 'conversations'));
   };
 
   const renameEmployee = (sessionAgentId: string, name: string) => {
@@ -491,6 +567,7 @@ export function ColleagueWorkspacePage({
   const sendDraft = async () => {
     const text = draft.trim();
     if (!text || privateChat.sending || !activeConversationId || sharingConversation) return;
+    followReplies.current = true;
     const conversation = await privateChat.send(text);
     if (!conversation) return;
     setDraft('');
@@ -626,10 +703,12 @@ export function ColleagueWorkspacePage({
             ) : null}
           </article>
         ) : null}
-        {request.replies.map((reply, index) => (
-          <article key={index} className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-reply">
+        {[...request.replies, ...(draft ? [draft] : [])].map((reply, index) => (
+          <article key={index} className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague"
+            data-testid={index < request.replies.length ? 'jiuwenmate-chat-reply' : 'jiuwenmate-chat-draft'}>
             <ColleagueAvatar colleague={colleague} size="small" />
-            <MarkdownRenderer content={reply} className="chat-text chat-markdown jiuwenmate-chat-markdown" />
+            <LiveReply text={reply} animate={isPending(request) || privateChat.liveRequestIds.has(request.requestId)}
+              streaming={index >= request.replies.length} />
           </article>
         ))}
         {request.files.map((file) => (
@@ -642,12 +721,6 @@ export function ColleagueWorkspacePage({
             {renderSharedFile(file)}
           </article>
         ))}
-        {draft ? (
-          <article className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-draft">
-            <ColleagueAvatar colleague={colleague} size="small" />
-            <MarkdownRenderer content={draft} isStreaming className="chat-text chat-markdown jiuwenmate-chat-markdown" />
-          </article>
-        ) : null}
         {note ? (
           <small className="jiuwenmate-chat-status" data-phase={phase}>
             {request.reason ? `${note}：${request.reason}` : note}
@@ -746,10 +819,16 @@ export function ColleagueWorkspacePage({
 
   const renderChatPanelButtons = () => (
     <div className="jiuwenmate-main-header__actions">
-      <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.artifacts')} aria-pressed={rightPanel === 'artifacts'} data-testid="jiuwenmate-open-artifacts-panel" onClick={() => setRightPanel((current) => current === 'artifacts' ? null : 'artifacts')}>
+      <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.artifacts')} aria-pressed={rightPanel === 'artifacts'} data-testid="jiuwenmate-open-artifacts-panel" onClick={() => {
+        setState((current) => clearManagementChannel(closeChannelTrace(current)));
+        setRightPanel((current) => current === 'artifacts' ? null : 'artifacts');
+      }}>
         <Folder aria-hidden />
       </button>
-      <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.management')} aria-pressed={rightPanel === 'management'} data-testid="jiuwenmate-open-management-panel" onClick={() => setRightPanel((current) => current === 'management' ? null : 'management')}>
+      <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.management')} aria-pressed={rightPanel === 'management'} data-testid="jiuwenmate-open-management-panel" onClick={() => {
+        if (rightPanel === 'management') setState((current) => clearManagementChannel(closeChannelTrace(current)));
+        setRightPanel((current) => current === 'management' ? null : 'management');
+      }}>
         <ClipboardList aria-hidden />
       </button>
     </div>
@@ -757,13 +836,13 @@ export function ColleagueWorkspacePage({
 
   const renderRecordList = () => {
     if (state.recordTab === 'conversations') {
-      const pinnedRecords = records.filter((record) => record.pinned);
-      const unpinnedRecords = records.filter((record) => !record.pinned);
+      const directory = groupChat?.directory;
+      const entries = mergeChatEntries(records, directory?.groups ?? [], directory?.pinnedIds ?? new Set<string>());
       const renderConversation = (record: (typeof records)[number]) => (
         <div
           key={`${record.agentId}:${record.id}`}
           className="jiuwenmate-records__item jiuwenmate-records__item--conversation"
-          aria-current={!board && record.agentId === agentId && record.id === activeConversationId ? 'true' : undefined}
+          aria-current={!board && !activeGroupId && record.agentId === agentId && record.id === activeConversationId ? 'true' : undefined}
           data-testid="jiuwenmate-conversation-record"
         >
           {renamingId === `${record.agentId}:${record.id}` ? (
@@ -820,27 +899,49 @@ export function ColleagueWorkspacePage({
           />
         </div>
       );
+      const renderEntry = (entry: (typeof entries.pinned)[number]) => {
+        if (entry.kind === 'colleague') return renderConversation(entry.record);
+        const { group } = entry;
+        return (
+          <GroupConversationRecord
+            key={entry.key}
+            group={group}
+            active={!board && group.group_id === activeGroupId}
+            pinned={entry.pinned}
+            pinDisabled={directory?.pinningId != null}
+            onOpen={() => {
+              setBoard(false);
+              groupChat?.onSelectGroup(group.group_id);
+              if (compactWorkspace()) setState((current) => setRecordsCollapsed(current, true));
+            }}
+            onRename={() => directory?.openEdit(group)}
+            onPin={() => directory?.pin(group, !entry.pinned)}
+            onDelete={() => directory?.openDelete(group)}
+          />
+        );
+      };
       return (
         <div className="jiuwenmate-records__section" data-testid="jiuwenmate-conversation-record-list">
-          {pinnedRecords.length > 0 ? (
+          {entries.pinned.length > 0 ? (
             <>
               <header>
                 <strong>{t('jiuwenmate.workspace.pinned')}</strong>
               </header>
-              {pinnedRecords.map(renderConversation)}
+              {entries.pinned.map(renderEntry)}
             </>
           ) : null}
           <header>
             <strong>{t('jiuwenmate.workspace.tabs.conversations')}</strong>
-            <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.newSession')} onClick={createSession}>
-              <CirclePlus aria-hidden />
-            </button>
           </header>
-          {records.length === 0 ? (
+          {entries.pinned.length + entries.others.length === 0 ? (
             <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSessions')}</p>
           ) : (
-            unpinnedRecords.map(renderConversation)
+            entries.others.map(renderEntry)
           )}
+          {directory?.hasMore ? (
+            <button type="button" className="jiuwenmate-records__more" disabled={directory.loadingMore}
+              onClick={directory.loadMore} data-testid="jiuwenmate-group-records-more">{t('groupChat.more')}</button>
+          ) : null}
         </div>
       );
     }
@@ -860,7 +961,10 @@ export function ColleagueWorkspacePage({
                   <div key={channel.id} className="jiuwenmate-records__item jiuwenmate-records__item--channel" aria-current={channel.id === selectedChannel?.id ? 'true' : undefined}>
                     <button
                       type="button"
-                      onClick={() => setState((current) => selectChannel(current, channel.id))}
+                      onClick={() => setState((current) => {
+                        const next = selectChannel(current, channel.id);
+                        return compactWorkspace() ? setRecordsCollapsed(next, true) : next;
+                      })}
                       data-testid="jiuwenmate-channel-record"
                       data-variant={channel.id}
                     >
@@ -896,7 +1000,10 @@ export function ColleagueWorkspacePage({
         ) : (
           colleaguePlans.map((plan) => (
             <div key={plan.id} className="jiuwenmate-records__item" aria-current={plan.id === activePlan?.id ? 'true' : undefined}>
-              <button type="button" onClick={() => setScheduleId(plan.id)}>{plan.name}</button>
+              <button type="button" onClick={() => {
+                setScheduleId(plan.id);
+                if (compactWorkspace()) setState((current) => setRecordsCollapsed(current, true));
+              }}>{plan.name}</button>
               <ActionMenu
                 label={t('jiuwenmate.workspace.more')}
                 items={[
@@ -919,40 +1026,30 @@ export function ColleagueWorkspacePage({
     return (
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
-          <strong>{colleague.name}</strong>
+          <strong>{t('jiuwenmate.workspace.newSession')}</strong>
           {renderConnectionSelect()}
           {renderChatPanelButtons()}
         </header>
-        {sharingInbox}
-        <div className="jiuwenmate-chat-welcome__center">
-          <ColleagueAvatar colleague={colleague} size="large" />
-          <h2>{colleague.name}</h2>
-          <p>{colleague.description}</p>
-        </div>
-        {composer}
-        <div className="jiuwenmate-chat-welcome__suggestions">
-          {prompts.map((prompt, index) => {
-            const Icon = PROMPT_ICONS[index % PROMPT_ICONS.length];
-            return (
+        <div className="jiuwenmate-chat-welcome__content">
+          {sharingInbox}
+          <div className="jiuwenmate-chat-welcome__center">
+            <ColleagueAvatar colleague={colleague} size="large" />
+            <h2>{colleague.name}</h2>
+            <p>{colleague.description}</p>
+          </div>
+          <div className="jiuwenmate-chat-welcome__suggestions">
+            {prompts.map((prompt, index) => (
               <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
-                <Icon aria-hidden />
-                {prompt}
+                <span>{prompt}</span>
+                <ChevronRight aria-hidden />
               </button>
-            );
-          })}
-        </div>
-        <div className="jiuwenmate-chat-welcome__features">
-          <h3>{t('jiuwenmate.workspace.featuresTitle')}</h3>
-          <div>
-            {FEATURES.map((feature) => (
-              <article key={feature.key}>
-                <img src={feature.image} alt="" aria-hidden />
-                <strong>{t(`jiuwenmate.workspace.features.${feature.key}.title`)}</strong>
-                <p>{t(`jiuwenmate.workspace.features.${feature.key}.description`)}</p>
-              </article>
             ))}
           </div>
         </div>
+        <footer>
+          {composer}
+          <small>{t('jiuwenmate.workspace.aiDisclaimer')}</small>
+        </footer>
       </section>
     );
   };
@@ -969,6 +1066,10 @@ export function ColleagueWorkspacePage({
       {!sharingConversation ? sharingInbox : null}
       <ol
         ref={messageListRef}
+        onScroll={(event) => {
+          const list = event.currentTarget;
+          followReplies.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+        }}
         className="jiuwenmate-session-view__body jiuwenmate-chat-messages"
         data-testid="jiuwenmate-chat-messages"
         aria-busy={!sharingConversation && privateChat.loading}
@@ -986,9 +1087,15 @@ export function ColleagueWorkspacePage({
     </section>
   );
 
-  const renderChannel = (channel: JiuwenMateChannel) => (
-    <section className="jiuwenmate-channel-view" data-testid="jiuwenmate-channel-view">
-      <header className="jiuwenmate-main-header">
+  const renderChannel = (channel: JiuwenMateChannel, inManagementPanel = false) => (
+    <section className="jiuwenmate-channel-view" data-testid={inManagementPanel ? 'jiuwenmate-management-channel-detail' : 'jiuwenmate-channel-view'}>
+      <header className={inManagementPanel ? 'jiuwenmate-channel-detail__header' : 'jiuwenmate-main-header'}>
+        {inManagementPanel ? (
+          <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.backToChannels')}
+            onClick={() => setState((current) => clearManagementChannel(closeChannelTrace(current)))} data-testid="jiuwenmate-back-to-channel-list">
+            <ArrowLeft aria-hidden />
+          </button>
+        ) : null}
         <strong>
           {channel.name}
           <ChevronDown aria-hidden />
@@ -997,7 +1104,7 @@ export function ColleagueWorkspacePage({
           <button
             type="button"
             className="jiuwenmate-link-button"
-            onClick={() => setState((current) => openChannelTrace(current))}
+            onClick={() => setState((current) => inManagementPanel ? { ...current, traceOpen: true } : openChannelTrace(current))}
             data-testid="jiuwenmate-view-trace-button"
           >
             <ClipboardList aria-hidden />
@@ -1021,6 +1128,24 @@ export function ColleagueWorkspacePage({
         />
       ) : (
         <div className="jiuwenmate-channel-view__messages" aria-busy={channelRecords === 'loading'}>
+          {channel.coverage === 'received_events_only' ? (
+            <p className="jiuwenmate-channel-history-notice" role="note" data-testid="jiuwenmate-dingtalk-history-notice">
+              {t('jiuwenmate.workspace.dingtalkHistoryCoverage')}
+            </p>
+          ) : null}
+          {channelNextCursor ? (
+            <button
+              type="button"
+              className="jiuwenmate-link-button jiuwenmate-channel-history-more"
+              disabled={loadingOlderChannelMessages}
+              onClick={() => void loadOlderChannelMessages()}
+              data-testid="jiuwenmate-channel-history-more"
+            >
+              {loadingOlderChannelMessages
+                ? t('jiuwenmate.workspace.loadingOlderChannelMessages')
+                : t('jiuwenmate.workspace.loadOlderChannelMessages')}
+            </button>
+          ) : null}
           {channelNotice ? <p className="jiuwenmate-records__empty">{channelNotice}</p> : null}
           {!channelNotice && channelRecords === 'loading' ? (
             <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-channel-messages-loading">
@@ -1042,25 +1167,26 @@ export function ColleagueWorkspacePage({
                   </span>
                 )}
                 <strong>{message.fromColleague ? colleague.name : message.sender}</strong>
+                {message.receivedAt ? (
+                  <time dateTime={message.receivedAt}>{new Date(message.receivedAt).toLocaleString()}</time>
+                ) : null}
               </header>
               <p>
                 {message.mentionColleague ? <span className="jiuwenmate-mention">@{colleague.name}</span> : null}
                 {message.mentionColleague ? ' ' : null}
                 {message.status === 'recalled' ? t('jiuwenmate.workspace.messageRecalled') : message.content}
               </p>
-              {message.attachment ? (
-                <div className="jiuwenmate-attachment-card">
+              {message.attachments?.map((attachment, index) => (
+                <div className="jiuwenmate-attachment-card" key={`${message.id}:attachment:${index}`}>
                   <img src={documentIcon} alt="" aria-hidden />
                   <span>
                     <strong>
-                      {message.attachment.kind === 'file'
-                        ? t('jiuwenmate.workspace.attachment', { count: message.attachment.title })
-                        : message.attachment.title}
+                      {attachment.title || t('jiuwenmate.workspace.attachment', { count: index + 1 })}
                     </strong>
-                    <small>{message.attachment.kind === 'file' ? t('jiuwenmate.workspace.attachmentKind') : message.attachment.kind}</small>
+                    <small>{attachment.kind === 'file' ? t('jiuwenmate.workspace.attachmentKind') : attachment.kind}</small>
                   </span>
                 </div>
-              ) : null}
+              ))}
             </article>
           ))
             : null}
@@ -1070,14 +1196,6 @@ export function ColleagueWorkspacePage({
   );
 
   const renderMain = () => {
-    if (state.managementChannelId) {
-      return selectedChannel ? renderChannel(selectedChannel) : (
-        <section className="jiuwenmate-main-empty" data-testid="jiuwenmate-channel-main-empty">
-          <img src={scheduleEmpty} alt="" aria-hidden />
-          <p>{channelNotice || t('jiuwenmate.workspace.noChannelsHint')}</p>
-        </section>
-      );
-    }
     if (state.recordTab === 'channels') {
       if (selectedChannel) return renderChannel(selectedChannel);
       return (
@@ -1120,7 +1238,7 @@ export function ColleagueWorkspacePage({
 
   return (
     <div
-      className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}${!board && rightPanel ? ' jiuwenmate-workspace--panel-open' : ''}`}
+      className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}${!board && !activeGroupId && rightPanel ? ' jiuwenmate-workspace--panel-open' : ''}${activeGroupId && !board ? ' jiuwenmate-workspace--group' : ''}`}
       data-testid="jiuwenmate-colleague-workspace"
     >
       {!state.recordsCollapsed ? (
@@ -1128,12 +1246,17 @@ export function ColleagueWorkspacePage({
           <header>
             <h2>{t('jiuwenmate.nav.messages')}</h2>
           </header>
-          <div className="jiuwenmate-chat-sidebar-actions">
-            <button type="button" aria-pressed={board} onClick={() => setBoard(true)}>
-              <CalendarDays aria-hidden />
-              <span>{t('jiuwenmate.workspace.tabs.schedules')}</span>
+          {groupChat ? (
+            <button
+              type="button"
+              className="jiuwenmate-records__create-group"
+              onClick={groupChat.directory.openCreate}
+              data-testid="jiuwenmate-create-group-chat"
+            >
+              <SquarePlus aria-hidden />
+              <span>{t('groupChat.create')}</span>
             </button>
-          </div>
+          ) : null}
           {renderRecordList()}
         </aside>
       ) : null}
@@ -1143,7 +1266,10 @@ export function ColleagueWorkspacePage({
             type="button"
             className="jiuwenmate-icon-button jiuwenmate-workspace__expand"
             aria-label={t('jiuwenmate.workspace.expandRecords')}
-            onClick={() => setState((current) => setRecordsCollapsed(current, false))}
+            onClick={() => {
+              if (compactWorkspace()) setRightPanel(null);
+              setState((current) => setRecordsCollapsed(current, false));
+            }}
           >
             <PanelLeftOpen aria-hidden />
           </button>
@@ -1152,6 +1278,7 @@ export function ColleagueWorkspacePage({
           <ScheduleBoard
             schedules={schedules}
             colleagues={colleagues}
+            activity={activity}
             saving={savingSchedule}
             onCreate={onSaveSchedule}
             onUpdate={onUpdateSchedule}
@@ -1159,6 +1286,9 @@ export function ColleagueWorkspacePage({
             onDelete={onDeleteSchedule}
             onLoadHistory={onLoadScheduleHistory}
           />
+        ) : activeGroupId && groupChat ? (
+          <GroupChatWorkspace key={activeGroupId} groupId={activeGroupId} directory={groupChat.directory}
+            onBack={() => groupChat.onSelectGroup()} />
         ) : renderMain()}
       </main>
       {scheduleEditor && onUpdateSchedule ? (
@@ -1172,8 +1302,12 @@ export function ColleagueWorkspacePage({
           onSubmit={(_executor, draft) => onUpdateSchedule(scheduleEditor.id, draft)}
         />
       ) : null}
-      {!board && rightPanel ? (
+      {!board && !activeGroupId && rightPanel ? (
         <aside className="jiuwenmate-side-panel" data-testid={`jiuwenmate-${rightPanel}-panel`}>
+          {rightPanel === 'management' && state.managementChannelId && selectedChannel ? (
+            renderChannel(selectedChannel, true)
+          ) : (
+          <>
           {rightPanel === 'artifacts' && visibleArtifact ? (
             <header className="jiuwenmate-side-panel__preview-header">
               <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.backToArtifacts')} onClick={() => setSelectedArtifact(null)}><ArrowLeft aria-hidden /></button>
@@ -1182,7 +1316,7 @@ export function ColleagueWorkspacePage({
           ) : (
             <header className="jiuwenmate-side-panel__header">
               <h2>{t(rightPanel === 'management' ? 'jiuwenmate.workspace.management' : 'jiuwenmate.workspace.artifacts')}</h2>
-              <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.closePanel')} onClick={() => { setRightPanel(null); setSelectedArtifact(null); }}>
+              <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.closePanel')} onClick={() => { setRightPanel(null); setSelectedArtifact(null); setState((current) => clearManagementChannel(closeChannelTrace(current))); }}>
                 <X aria-hidden />
               </button>
             </header>
@@ -1207,7 +1341,9 @@ export function ColleagueWorkspacePage({
                       <section key={group.platform} className="jiuwenmate-channel-group" data-platform={group.platform}>
                         <h3>{platformLabel(group.platform)}</h3>
                         {group.items.map((channel) => (
-                          <button key={channel.id} type="button" className="jiuwenmate-side-panel__item" aria-current={channel.id === selectedChannel?.id && (state.managementChannelId === channel.id || state.recordTab === 'channels') ? 'true' : undefined} onClick={() => setState((current) => selectManagementChannel(current, channel.id))}>
+                          <button key={channel.id} type="button" className="jiuwenmate-side-panel__item" aria-current={channel.id === selectedChannel?.id && (state.managementChannelId === channel.id || state.recordTab === 'channels') ? 'true' : undefined} data-testid="jiuwenmate-management-channel-item" data-variant={channel.id} onClick={() => {
+                            setState((current) => selectManagementChannel(current, channel.id));
+                          }}>
                             <span className="jiuwenmate-letter-avatar" data-variant={channel.id}>{channel.name.slice(0, 1)}</span>
                             <span>{channel.name}</span>
                             <em className="jiuwenmate-platform-badge">{platformLabel(channel.platform)}</em>
@@ -1218,14 +1354,30 @@ export function ColleagueWorkspacePage({
                   </>
                 ) : (
                   <>
-                    <button type="button" className="jiuwenmate-side-panel__add" onClick={() => onCreateSchedule(colleague.id)}><Plus aria-hidden />{t('jiuwenmate.schedule.createTitle')}</button>
                     <input className="jiuwenmate-side-panel__search" value={managementSearch} onChange={(event) => setManagementSearch(event.target.value)} placeholder={t('jiuwenmate.workspace.searchKeyword')} aria-label={t('jiuwenmate.workspace.searchKeyword')} />
+                    <div className="jiuwenmate-side-panel__schedule-heading">
+                      <strong>{t('jiuwenmate.workspace.tabs.schedules')}</strong>
+                      <button
+                        type="button"
+                        className="jiuwenmate-icon-button"
+                        aria-label={t('jiuwenmate.schedule.createTitle')}
+                        onClick={() => onCreateSchedule(colleague.id)}
+                      >
+                        <Plus aria-hidden />
+                      </button>
+                    </div>
                     {colleaguePlans.length === 0 ? <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSchedules')}</p> : null}
                     {colleaguePlans.filter((plan) => plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase())).map((plan) => (
-                      <button key={plan.id} type="button" className="jiuwenmate-side-panel__item" aria-current={plan.id === activePlan?.id && state.recordTab === 'schedules' ? 'true' : undefined} onClick={() => { setScheduleId(plan.id); setState((current) => selectRecordTab(current, 'schedules')); }}>
-                        <CalendarDays aria-hidden />
-                        <span>{plan.name}</span>
-                      </button>
+                      <div key={plan.id} className="jiuwenmate-side-panel__schedule-item">
+                        <span className="jiuwenmate-side-panel__schedule-name">{plan.name}</span>
+                        <ActionMenu
+                          label={t('jiuwenmate.workspace.more')}
+                          items={[
+                            { key: 'edit', label: t('jiuwenmate.schedule.editTask'), icon: PencilLine, onSelect: () => setScheduleEditor(plan) },
+                            { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDeleteSchedule?.(plan.id) },
+                          ]}
+                        />
+                      </div>
                     ))}
                   </>
                 )}
@@ -1244,6 +1396,8 @@ export function ColleagueWorkspacePage({
                 </button>
               ))}
             </div>
+          )}
+          </>
           )}
         </aside>
       ) : null}

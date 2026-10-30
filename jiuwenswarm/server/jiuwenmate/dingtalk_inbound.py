@@ -89,9 +89,13 @@ class DingTalkInboundEvent:
         )) if isinstance(mentions, (list, tuple)) else ()
         chatbot_user_id = data.get("chatbotUserId")
         mentions_everyone = any(item.casefold() in {"all", "@_all"} for item in mention_ids)
-        bot_mentioned = not mentions_everyone and (data.get("isInAtList") is True or (
-            isinstance(chatbot_user_id, str) and chatbot_user_id in mention_ids
-        ))
+        # DingTalk's Stream bot-message callback is only delivered for an @ to that bot in a group.
+        # Trust this app-scoped callback when its mention metadata is missing or inconsistent.
+        bot_mentioned = not mentions_everyone and (
+            conversation_type == "2"
+            or data.get("isInAtList") is True
+            or (isinstance(chatbot_user_id, str) and chatbot_user_id in mention_ids)
+        )
         return cls(
             receiving_app_id=app_id, expected_agent_id=agent_id,
             message_id=_text(data.get("msgId"), "msgId"),
@@ -170,7 +174,6 @@ class DingTalkInboundHandler:
         from jiuwenswarm.server.jiuwenmate.group_collaboration import (
             greeting_respondent,
             is_pure_greeting,
-            waits_for_named_colleague,
         )
         from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
         from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ
@@ -252,6 +255,13 @@ class DingTalkInboundHandler:
                     mention_ids=event.mention_ids,
                     status="normal",
                 )
+                # The bot callback is not a complete stream of ordinary group traffic.
+                # Keep this archive visibly partial even when this event is a duplicate.
+                await asyncio.to_thread(
+                    self._manager.group_archive.mark_gap,
+                    binding.namespace_id,
+                    group.group_chat_id,
+                )
                 try:
                     await asyncio.to_thread(
                         self._manager.group_archive.append,
@@ -281,12 +291,12 @@ class DingTalkInboundHandler:
                     )
                     if settings.group_reply_mode == "passive":
                         return InboundDisposition.HANDLED
-                    roster = await asyncio.to_thread(
-                        self._manager.group_participant_roster,
-                        binding.namespace_id,
-                        group.group_chat_id,
-                    )
                     if is_pure_greeting(event.text):
+                        roster = await asyncio.to_thread(
+                            self._manager.group_participant_roster,
+                            binding.namespace_id,
+                            group.group_chat_id,
+                        )
                         enriched = []
                         for member in roster:
                             member_view = await asyncio.to_thread(
@@ -302,8 +312,6 @@ class DingTalkInboundHandler:
                         respondent = greeting_respondent(enriched)
                         if respondent is not None and respondent != binding.agent_id:
                             return InboundDisposition.HANDLED
-                    elif waits_for_named_colleague(event.text, roster, binding.agent_id):
-                        return InboundDisposition.HANDLED
                 conversation = ConversationRef.group(group.group_chat_id)
                 request_input = RequestInput(
                     kind="group_message",

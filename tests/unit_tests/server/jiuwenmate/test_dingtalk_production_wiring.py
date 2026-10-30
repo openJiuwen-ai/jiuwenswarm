@@ -202,6 +202,28 @@ async def test_mentioned_group_message_runs_bound_agent_and_replies_to_that_grou
 
 
 @pytest.mark.asyncio
+async def test_group_bot_stream_callback_with_inconsistent_mention_metadata_still_runs(host):
+    callback = {
+        "conversationType": "2", "conversationId": "conversation-test", "conversationTitle": "Test group",
+        "msgtype": "text", "msgId": "group-metadata-mismatch", "senderStaffId": "staff-test",
+        "senderNick": "Test sender", "robotCode": "robot-test", "senderCorpId": "corp-test",
+        "chatbotCorpId": "corp-test", "isInAtList": False, "chatbotUserId": "different-bot",
+        "atUsers": [{"dingtalkId": "another-user"}], "text": {"content": "are you there?"},
+    }
+    event = DingTalkInboundEvent.from_callback(callback, app_id="app-dingtalk", agent_id="agent-dingtalk")
+
+    assert event.receiver_bot_mentioned is True
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+
+    rows = _group_requests(host)
+    assert len(rows) == 1
+    assert rows[0].record.request_input.source.mention_ids == ("another-user", "agent-dingtalk")
+    assert len(host.sent) == 1
+    assert host.sent[0]["openConversationId"] == "conversation-test"
+
+
+@pytest.mark.asyncio
 async def test_dingtalk_group_waiting_notice_uses_the_group_send_api(host):
     result = await host.gateway.deliver_thinking_notice({
         "channel": "dingtalk",

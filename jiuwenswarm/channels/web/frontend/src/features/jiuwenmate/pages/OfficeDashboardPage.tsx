@@ -7,7 +7,6 @@ import {
   ChevronRight,
   CirclePause,
   CirclePlay,
-  Crosshair,
   HardDrive,
   Monitor,
   Plus,
@@ -24,7 +23,8 @@ import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ColleagueCard } from '../components/ColleagueCard';
 import { SegmentedTabs } from '../components/SegmentedTabs';
 import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
-import { JIUWENMATE_TASKS } from '../mockData';
+import { ScheduleBoard } from '../schedules/ScheduleBoard';
+import type { Schedule, ScheduleDraft, ScheduleRun } from '../schedules/types';
 import {
   activeChannelCount,
   activitySummary,
@@ -46,7 +46,6 @@ import {
   setActivityRange,
   setActivityScope,
   setActivityYear,
-  taskColumns,
   usageChange,
   yearHeatmap,
   type JiuwenMateActivityRange,
@@ -55,7 +54,7 @@ import {
   type JiuwenMateOfficeTab,
   type JiuwenMateWorkPeriod,
 } from '../officeState';
-import type { JiuwenMateActivity, JiuwenMateActivityMember, JiuwenMateColleague, JiuwenMateTask } from '../types';
+import type { JiuwenMateActivity, JiuwenMateActivityMember, JiuwenMateColleague } from '../types';
 
 export interface OfficeDashboardHandlers {
   onCreate: () => void;
@@ -64,10 +63,17 @@ export interface OfficeDashboardHandlers {
   onToggleDisabled: (id: string) => void;
   onDelete: (id: string) => void;
   onOpenTrace: (colleagueId: string, channelId: string) => void;
+  onCreateSchedule: (agentId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onUpdateSchedule: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onSetScheduleEnabled: (planId: string, enabled: boolean) => void | Promise<void>;
+  onDeleteSchedule: (planId: string) => void | Promise<void>;
+  onLoadScheduleHistory: (planId: string) => Promise<{ plan: Schedule; runs: ScheduleRun[] }>;
 }
 
 interface OfficeDashboardPageProps extends OfficeDashboardHandlers {
   colleagues: readonly JiuwenMateColleague[];
+  schedules: readonly Schedule[];
+  savingSchedule: boolean;
   activity: JiuwenMateActivity | null;
   activityStatus: 'loading' | 'ready' | 'failed';
   activityError?: string;
@@ -81,6 +87,8 @@ const PERIOD_AXIS_HOURS = [0, 3, 6, 9, 12, 15, 18, 21];
 
 export function OfficeDashboardPage({
   colleagues,
+  schedules,
+  savingSchedule,
   activity,
   activityStatus,
   activityError = '',
@@ -94,6 +102,7 @@ export function OfficeDashboardPage({
   const tabs = [
     { value: 'members' as const, label: t('jiuwenmate.office.tabs.members') },
     { value: 'activity' as const, label: t('jiuwenmate.office.tabs.activity') },
+    { value: 'tasks' as const, label: t('jiuwenmate.office.tabs.tasks') },
   ];
 
   return (
@@ -161,7 +170,15 @@ export function OfficeDashboardPage({
           handlers={handlers}
         />
       ) : null}
-      {state.tab === 'tasks' ? <TasksTab colleagues={colleagues} /> : null}
+      {state.tab === 'tasks' ? (
+        <TasksTab
+          schedules={schedules}
+          colleagues={colleagues}
+          activity={activity}
+          saving={savingSchedule}
+          handlers={handlers}
+        />
+      ) : null}
     </section>
   );
 }
@@ -661,120 +678,32 @@ function ActivityIndividualTab({
   );
 }
 
-function Sparkline({ points, tone }: { points: readonly number[]; tone: 'blue' | 'green' }) {
-  const max = Math.max(...points);
-  const path = points.map((value, index) => `${(index / (points.length - 1)) * 100},${30 - (value / max) * 26}`).join(' ');
-  return (
-    <svg className="jiuwenmate-sparkline" data-tone={tone} viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden>
-      <polyline points={`0,32 ${path} 100,32`} className="jiuwenmate-sparkline__area" />
-      <polyline points={path} className="jiuwenmate-sparkline__line" />
-    </svg>
-  );
-}
-
-const SPARK_DURATION = [8, 10, 9, 14, 11, 18, 12, 16, 22, 13, 15, 12, 19, 10];
-const SPARK_FAILURE = [4, 5, 4, 7, 5, 9, 6, 8, 12, 7, 9, 6, 10, 8];
-
-function TasksTab({ colleagues }: { colleagues: readonly JiuwenMateColleague[] }) {
-  const { t } = useTranslation();
-  const [query, setQuery] = useState('');
-  const columns = taskColumns(JIUWENMATE_TASKS, query);
-  const running = JIUWENMATE_TASKS.filter((task) => task.status === 'running').length;
-
+function TasksTab({
+  schedules,
+  colleagues,
+  activity,
+  saving,
+  handlers,
+}: {
+  schedules: readonly Schedule[];
+  colleagues: readonly JiuwenMateColleague[];
+  activity: JiuwenMateActivity | null;
+  saving: boolean;
+  handlers: OfficeDashboardHandlers;
+}) {
   return (
     <div className="jiuwenmate-office__tasks" data-testid="jiuwenmate-office-tasks">
-      <div className="jiuwenmate-office__section-head">
-        <h2>{t('jiuwenmate.office.taskOverview')}</h2>
-        <div className="jiuwenmate-office__filters">
-          <SearchField value={query} onChange={setQuery} placeholder={t('jiuwenmate.workspace.searchKeyword')} />
-          {(['group', 'colleague', 'period'] as const).map((filter) => (
-            <button key={filter} type="button" className="jiuwenmate-select-button">
-              <small>{t(`jiuwenmate.office.taskFilters.${filter}`)}</small>
-              {filter === 'period' ? t('jiuwenmate.profile.periods.7d') : t('jiuwenmate.office.taskFilters.all')}
-              <ChevronDown aria-hidden />
-            </button>
-          ))}
-        </div>
-      </div>
-      <MetricBand
-        items={[
-          { key: 'total', value: '328/8', label: t('jiuwenmate.office.taskMetrics.total'), icon: CalendarDays },
-          {
-            key: 'running',
-            value: (
-              <>
-                {running}/<em className="jiuwenmate-danger-text">0</em>
-              </>
-            ),
-            label: t('jiuwenmate.office.taskMetrics.running'),
-            icon: Monitor,
-          },
-          {
-            key: 'duration',
-            value: '15min',
-            label: t('jiuwenmate.office.taskMetrics.duration'),
-            icon: ChartLine,
-            extra: <Sparkline points={SPARK_DURATION} tone="blue" />,
-          },
-          {
-            key: 'failure',
-            value: '0%',
-            label: t('jiuwenmate.office.taskMetrics.failure'),
-            icon: ChartNoAxesColumn,
-            extra: <Sparkline points={SPARK_FAILURE} tone="green" />,
-          },
-        ]}
+      <ScheduleBoard
+        schedules={schedules}
+        colleagues={colleagues}
+        activity={activity}
+        saving={saving}
+        onCreate={handlers.onCreateSchedule}
+        onUpdate={handlers.onUpdateSchedule}
+        onSetEnabled={handlers.onSetScheduleEnabled}
+        onDelete={handlers.onDeleteSchedule}
+        onLoadHistory={handlers.onLoadScheduleHistory}
       />
-      <h2 className="jiuwenmate-office__subtitle">{t('jiuwenmate.office.taskList')}</h2>
-      <div className="jiuwenmate-kanban" data-testid="jiuwenmate-task-kanban">
-        {columns.map((column) => (
-          <section key={column.status} className="jiuwenmate-kanban__column" data-status={column.status}>
-            <header>
-              <i aria-hidden />
-              <strong>{t(`jiuwenmate.office.taskStatus.${column.status}`)}</strong>
-              <em>{column.tasks.length}</em>
-            </header>
-            {column.tasks.length === 0 ? (
-              <p className="jiuwenmate-kanban__empty">{t(`jiuwenmate.office.taskEmpty.${column.status}`)}</p>
-            ) : (
-              column.tasks.map((task, index) => (
-                <TaskCard key={task.id} task={task} owner={colleagues[index % Math.max(colleagues.length, 1)]} />
-              ))
-            )}
-          </section>
-        ))}
-      </div>
     </div>
-  );
-}
-
-function TaskCard({ task, owner }: { task: JiuwenMateTask; owner?: JiuwenMateColleague }) {
-  const { t } = useTranslation();
-  return (
-    <article className="jiuwenmate-task-card" data-testid="jiuwenmate-task-card" data-status={task.status}>
-      <header>
-        <span className="jiuwenmate-letter-avatar">{task.group.slice(0, 1)}</span>
-        <span>{task.group}</span>
-        <em className="jiuwenmate-platform-badge">{t('jiuwenmate.im.feishu')}</em>
-      </header>
-      <strong>{task.title}</strong>
-      <div className="jiuwenmate-task-card__progress">
-        <span>{t('jiuwenmate.office.moduleProgress')}</span>
-        <b>{task.progress}%</b>
-      </div>
-      <span className="jiuwenmate-progress" aria-hidden>
-        <i style={{ width: `${task.progress}%` }} />
-      </span>
-      <small>
-        {t('jiuwenmate.office.taskUsage', { duration: task.duration, tokens: task.tokens })}
-      </small>
-      <footer>
-        {owner ? <ColleagueAvatar colleague={owner} size="small" /> : null}
-        <button type="button" className="jiuwenmate-task-card__locate">
-          <Crosshair aria-hidden />
-          {t('jiuwenmate.office.locate')}
-        </button>
-      </footer>
-    </article>
   );
 }

@@ -124,7 +124,14 @@ class GroupMessageTool(GroupSendMessageTool):
         )
         self.card.input_params["properties"].update({
             "execution_id": {"type": "string"},
-            "attachments": {"type": "array", "items": {"type": "object"}},
+            "attachments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "name": {"type": "string"}},
+                    "required": ["path", "name"],
+                },
+            },
         })
         self.card.input_params["required"] = ["content"]
 

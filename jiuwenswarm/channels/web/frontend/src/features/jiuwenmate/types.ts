@@ -114,6 +114,8 @@ export interface JiuwenMateChannel {
   id: string;
   name: string;
   platform: string;
+  ownerAgentId?: string;
+  coverage?: string;
   artifacts: number;
   tokenUsage: number;
   lastResponseMinutes: number;
@@ -125,8 +127,16 @@ export interface JiuwenMateChannelMessage {
   fromColleague: boolean;
   mentionColleague: boolean;
   content: string;
+  receivedAt: string;
   status?: string;
-  attachment?: { title: string; kind: string };
+  attachments?: { title: string; kind: string }[];
+}
+
+export interface JiuwenMateChannelMessagePage {
+  messages: JiuwenMateChannelMessage[];
+  nextCursor: string | null;
+  status: string;
+  coverage: string;
 }
 
 export type JiuwenMateTraceRole = 'system' | 'context' | 'user' | 'assistant' | 'tool';
@@ -154,6 +164,8 @@ export interface JiuwenMateDailyActivity {
 export interface JiuwenMateActivityDay {
   date: string;
   tasks: number;
+  finishedTasks?: number;
+  failures?: number;
   minutes: number;
   calls: number;
   tokens: number;
@@ -218,6 +230,7 @@ export interface JiuwenMateActivityMember {
   days: JiuwenMateActivityDay[];
   kinds: JiuwenMateActivityKindDay[];
   history: JiuwenMateActivityHistoryItem[];
+  runningTaskStartedAts?: string[];
   hours: JiuwenMateActivityHour[];
   channels: JiuwenMateActivityChannel[];
   groups: JiuwenMateActivityGroup[];

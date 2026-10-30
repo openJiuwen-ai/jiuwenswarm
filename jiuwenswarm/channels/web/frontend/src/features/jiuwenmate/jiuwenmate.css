@@ -1411,7 +1411,7 @@
 }
 
 .jiuwenmate-workspace--panel-open:not(.jiuwenmate-workspace--collapsed) {
-  grid-template-columns: minmax(320px, 368px) minmax(0, 1fr) minmax(320px, 368px);
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) clamp(320px, 31vw, 600px);
 }
 
 .jiuwenmate-workspace--collapsed,
@@ -1614,36 +1614,27 @@
   white-space: nowrap;
 }
 
-.jiuwenmate-chat-sidebar-actions {
-  display: grid;
-  gap: 4px;
-}
-
-.jiuwenmate-chat-sidebar-actions button {
+.jiuwenmate-records__create-group {
   display: flex;
-  min-height: 36px;
+  width: 100%;
+  min-height: 34px;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 0 8px;
   border: 0;
   border-radius: 8px;
   color: var(--jm-text);
   background: transparent;
   font-size: 13px;
-  text-align: left;
   cursor: pointer;
+  text-align: left;
 }
 
-.jiuwenmate-chat-sidebar-actions button:hover,
-.jiuwenmate-chat-sidebar-actions button[aria-pressed='true'] {
-  background: var(--jm-hover);
+.jiuwenmate-records__create-group:hover {
+  background: var(--jm-muted);
 }
 
-.jiuwenmate-chat-sidebar-actions button[aria-pressed='true'] {
-  font-weight: 600;
-}
-
-.jiuwenmate-chat-sidebar-actions button svg {
+.jiuwenmate-records__create-group svg {
   width: 16px;
   height: 16px;
 }
@@ -1862,6 +1853,12 @@
   opacity: 1;
 }
 
+/* Conversation rows: tuck the menu under the timestamp, inside the hover box. */
+.jiuwenmate-records__item--conversation > .jiuwenmate-menu {
+  top: 31px;
+  right: 32px;
+}
+
 /* Workspace main */
 .jiuwenmate-workspace__main {
   grid-column: 2;
@@ -1995,6 +1992,24 @@
   font-weight: 600;
 }
 
+.jiuwenmate-side-panel__schedule-heading {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.jiuwenmate-side-panel__schedule-heading strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.jiuwenmate-side-panel__schedule-heading .jiuwenmate-icon-button {
+  width: 28px;
+  height: 28px;
+}
+
 .jiuwenmate-side-panel__item,
 .jiuwenmate-side-panel__add {
   display: flex;
@@ -2025,6 +2040,47 @@
 
 .jiuwenmate-side-panel__item .jiuwenmate-platform-badge {
   margin-left: auto;
+}
+
+.jiuwenmate-side-panel__schedule-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  border-radius: 6px;
+  padding: 0 8px 0 12px;
+  cursor: default;
+}
+
+.jiuwenmate-side-panel__schedule-item:hover {
+  background: var(--jm-muted-2);
+}
+
+.jiuwenmate-side-panel__schedule-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--jm-text);
+  font-size: 12px;
+  padding-right: 38px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-side-panel__schedule-item > .jiuwenmate-menu {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.jiuwenmate-side-panel__schedule-item:hover > .jiuwenmate-menu,
+.jiuwenmate-side-panel__schedule-item:focus-within > .jiuwenmate-menu,
+.jiuwenmate-side-panel__schedule-item > .jiuwenmate-menu--open {
+  opacity: 1;
+  visibility: visible;
 }
 
 .jiuwenmate-side-panel__add {
@@ -2110,11 +2166,25 @@
 
 .jiuwenmate-chat-welcome {
   display: grid;
-  width: min(720px, calc(100% - 48px));
-  align-content: start;
+  grid-template-rows: minmax(0, 1fr) auto;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
   gap: 20px;
-  margin: 0 auto;
-  padding: 14vh 0 48px;
+  margin: 0;
+  padding: 0 24px 24px;
+}
+
+.jiuwenmate-chat-welcome__content {
+  display: grid;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  align-content: center;
+  justify-items: center;
+  gap: 24px;
+  padding-top: 80px;
 }
 
 .jiuwenmate-chat-welcome__center {
@@ -2130,84 +2200,56 @@
 }
 
 .jiuwenmate-chat-welcome__center p {
-  max-width: 100%;
-  overflow: hidden;
+  max-width: 600px;
   color: var(--jm-text-2);
   font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.6;
+  text-align: center;
 }
 
 .jiuwenmate-chat-welcome__suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
+  display: grid;
+  width: min(552px, 100%);
+  gap: 12px;
 }
 
 .jiuwenmate-chat-welcome__suggestions button {
-  display: inline-flex;
-  min-height: 30px;
+  display: flex;
+  min-height: 56px;
+  justify-content: space-between;
   align-items: center;
-  gap: 6px;
-  padding: 0 12px;
-  border: 1px solid var(--jm-border-strong);
-  border-radius: 8px;
-  background: #fff;
-  font-size: 12px;
+  gap: 16px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 12px;
+  color: var(--jm-text);
+  background: var(--jm-muted);
+  font-size: 14px;
+  text-align: left;
   cursor: pointer;
 }
 
 .jiuwenmate-chat-welcome__suggestions button:hover {
-  background: var(--jm-muted);
+  background: var(--jm-hover);
 }
 
 .jiuwenmate-chat-welcome__suggestions svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
-.jiuwenmate-chat-welcome__features {
+.jiuwenmate-chat-welcome footer {
   display: grid;
-  gap: 12px;
-  margin-top: 8vh;
+  width: min(816px, 100%);
+  justify-self: center;
+  gap: 8px;
 }
 
-.jiuwenmate-chat-welcome__features h3 {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.jiuwenmate-chat-welcome__features > div {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.jiuwenmate-chat-welcome__features article {
-  display: grid;
-  gap: 6px;
-  padding: 16px;
-  border: 1px solid var(--jm-border);
-  border-radius: 10px;
-}
-
-.jiuwenmate-chat-welcome__features img {
-  width: 40px;
-  height: 40px;
-  margin-bottom: 6px;
-  object-fit: contain;
-}
-
-.jiuwenmate-chat-welcome__features strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.jiuwenmate-chat-welcome__features p {
+.jiuwenmate-chat-welcome footer > small {
   color: var(--jm-text-2);
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 11px;
+  text-align: center;
 }
 
 .jiuwenmate-composer {
@@ -2552,7 +2594,7 @@
 .jiuwenmate-session-view footer {
   display: grid;
   flex-shrink: 0;
-  width: min(720px, calc(100% - 48px));
+  width: min(720px, 100%);
   gap: 6px;
   margin: 0 auto;
   padding-bottom: 12px;
@@ -2566,26 +2608,89 @@
 
 .jiuwenmate-channel-view {
   display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   min-height: 100%;
   flex-direction: column;
 }
 
+.jiuwenmate-side-panel .jiuwenmate-channel-view {
+  height: 100%;
+  min-height: 0;
+}
+
+.jiuwenmate-channel-detail__header {
+  display: flex;
+  min-height: 52px;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.jiuwenmate-channel-detail__header > strong {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-channel-detail__header > strong svg {
+  flex: none;
+}
+
+.jiuwenmate-channel-detail__header > .jiuwenmate-link-button {
+  flex: none;
+  margin-left: auto;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages {
+  overflow-y: auto;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] {
+  justify-items: stretch;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] > header {
+  flex-direction: row;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] > p,
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] > .jiuwenmate-attachment-card {
+  max-width: 100%;
+  justify-self: start;
+}
+
 .jiuwenmate-channel-view__messages {
   display: grid;
-  width: min(720px, calc(100% - 48px));
+  width: min(720px, 100%);
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 22px;
   margin: 0 auto;
-  padding: 8px 0 40px;
+  padding: 8px clamp(12px, 3vw, 24px) 40px;
 }
 
 .jiuwenmate-channel-view__messages article {
   display: grid;
+  min-width: 0;
   gap: 8px;
 }
 
 .jiuwenmate-channel-view__messages article > header {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 8px;
 }
@@ -2593,6 +2698,22 @@
 .jiuwenmate-channel-view__messages article > header strong {
   font-size: 13px;
   font-weight: 600;
+}
+
+.jiuwenmate-channel-view__messages article > header time {
+  color: var(--jm-text-3);
+  font-size: 11px;
+}
+
+.jiuwenmate-channel-history-notice {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--jm-muted-2);
+  color: var(--jm-text-2);
+}
+
+.jiuwenmate-channel-history-more {
+  justify-self: center;
 }
 
 .jiuwenmate-channel-view__messages article[data-own='true'] {
@@ -2626,8 +2747,10 @@
 }
 
 .jiuwenmate-channel-view__messages p {
+  max-width: 100%;
   font-size: 13px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .jiuwenmate-mention {
@@ -2637,6 +2760,8 @@
 .jiuwenmate-attachment-card {
   display: flex;
   width: 300px;
+  max-width: 100%;
+  box-sizing: border-box;
   align-items: center;
   gap: 10px;
   padding: 14px;
@@ -2791,15 +2916,29 @@
   width: min(560px, calc(100vw - 32px));
 }
 
-.jiuwenmate-schedule-board,
+.jiuwenmate-schedule-board {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  min-width: 0;
+}
+
 .jiuwenmate-schedule-history {
   flex: 1;
   min-width: 0;
   padding: 28px 32px 40px;
 }
 
+.jiuwenmate-schedule-board__header,
+.jiuwenmate-schedule-board__list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .jiuwenmate-schedule-board__header h2 {
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -2809,13 +2948,57 @@
   font-size: 12px;
 }
 
-.jiuwenmate-schedule-board .jiuwenmate-schedule-board__tools {
-  justify-content: space-between;
-  margin-top: 22px;
-  gap: 16px;
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics {
+  min-height: 90px;
+  padding: 0;
+  margin-bottom: 2px;
+  border-radius: 14px;
+  background: linear-gradient(105deg, #e2eeff 0%, #e9f2ff 48%, #f2fafa 100%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%);
 }
 
-.jiuwenmate-schedule-board__summary,
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics > div {
+  align-content: center;
+  gap: 9px;
+  padding: 0 24px;
+}
+
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics > div + div {
+  border-left: 0;
+}
+
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics > div + div::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 38px;
+  border-left: 1px dotted rgb(91 112 145 / 28%);
+  content: '';
+  transform: translateY(-50%);
+}
+
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics strong {
+  font-size: 21px;
+  line-height: 1.2;
+}
+
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__near-timeout {
+  color: var(--jm-danger);
+  font-weight: 600;
+}
+
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics span {
+  gap: 7px;
+  color: #777f8d;
+  font-size: 11px;
+}
+
+.jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics span svg {
+  width: 13px;
+  height: 13px;
+  color: #8b96a8;
+}
+
 .jiuwenmate-schedule-board__filters,
 .jiuwenmate-schedule-board__executor,
 .jiuwenmate-schedule-board__status,
@@ -2824,22 +3007,11 @@
   align-items: center;
 }
 
-.jiuwenmate-schedule-board__summary {
-  gap: 16px;
-  color: var(--jm-text);
+.jiuwenmate-schedule-board__list-head h3 {
   font-size: 13px;
+  font-weight: 600;
 }
 
-.jiuwenmate-schedule-board__summary em {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--jm-text-2);
-  font-size: 12px;
-  font-style: normal;
-}
-
-.jiuwenmate-schedule-board__summary i,
 .jiuwenmate-schedule-board__status i {
   width: 6px;
   height: 6px;
@@ -2847,18 +3019,15 @@
   background: #c8c8c8;
 }
 
-.jiuwenmate-schedule-board__summary em[data-tone='running'] i,
 .jiuwenmate-schedule-board__status[data-tone='running'] i {
   background: #12b5a6;
 }
 
-.jiuwenmate-schedule-board__summary em[data-tone='failed'] i,
 .jiuwenmate-schedule-board__status[data-tone='failed'] i,
 .jiuwenmate-schedule-history__status[data-tone='failed'] i {
   background: var(--jm-danger);
 }
 
-.jiuwenmate-schedule-board__summary em[data-tone='paused'] i,
 .jiuwenmate-schedule-board__status[data-tone='paused'] i,
 .jiuwenmate-schedule-history__status[data-tone='stopped'] i {
   background: transparent;
@@ -2870,22 +3039,25 @@
 }
 
 .jiuwenmate-schedule-board__filters {
+  flex-wrap: wrap;
   gap: 12px;
-  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .jiuwenmate-schedule-board__filters select {
   height: 32px;
-  padding: 0 22px 0 2px;
-  border: 0;
-  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23666' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right center;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--jm-border-strong);
+  border-radius: 8px;
+  background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23666' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 9px center;
   appearance: none;
   cursor: pointer;
 }
 
 .jiuwenmate-schedule-board__search {
   display: flex;
-  width: 280px;
+  width: 220px;
+  min-width: 180px;
   height: 32px;
   align-items: center;
   gap: 6px;
@@ -2910,8 +3082,8 @@
 }
 
 .jiuwenmate-schedule-board__table {
-  margin-top: 16px;
-  overflow: visible;
+  min-width: 0;
+  overflow-x: auto;
   border: 1px solid #f0f0f0;
   border-radius: 8px;
 }
@@ -2919,6 +3091,7 @@
 .jiuwenmate-schedule-board table,
 .jiuwenmate-schedule-history table {
   width: 100%;
+  min-width: 920px;
   border-collapse: collapse;
 }
 
@@ -2954,8 +3127,27 @@
   gap: 8px;
 }
 
+.jiuwenmate-schedule-board__planned {
+  display: grid;
+  gap: 4px;
+}
+
+.jiuwenmate-schedule-board__planned strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jiuwenmate-schedule-board__planned small {
+  color: var(--jm-text-3);
+  font-size: 11px;
+}
+
 .jiuwenmate-schedule-board__status {
   gap: 6px;
+}
+
+.jiuwenmate-schedule-board__status[data-tone='completed'] i {
+  background: var(--jm-success);
 }
 
 .jiuwenmate-schedule-board__actions {
@@ -2988,6 +3180,38 @@
 
 .jiuwenmate-schedule-board__more .jiuwenmate-menu__list {
   min-width: 96px;
+}
+
+.jiuwenmate-office__tasks .jiuwenmate-schedule-history {
+  padding: 0;
+}
+
+@media (max-width: 1000px) {
+  .jiuwenmate-schedule-board__header,
+  .jiuwenmate-schedule-board__list-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .jiuwenmate-schedule-board__filters {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 0;
+    padding: 18px 0;
+  }
+
+  .jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics > div:nth-child(3)::before {
+    content: none;
+  }
+
+  .jiuwenmate-office__tasks .jiuwenmate-schedule-board__metrics > div:nth-child(n + 3) {
+    padding-top: 12px;
+    border-top: 1px dotted rgb(91 112 145 / 24%);
+  }
 }
 
 .jiuwenmate-schedule-history__back {
@@ -4338,6 +4562,12 @@
   color: var(--jm-text);
 }
 
+.jiuwenmate-profile__quick-im-platforms {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
 .jiuwenmate-profile__im-row {
   display: flex;
   align-items: center;
@@ -4357,6 +4587,89 @@
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.jiuwenmate-profile__im-platform-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.jiuwenmate-profile__im-platform {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.jiuwenmate-profile__im-platform > header,
+.jiuwenmate-profile__im-platform-title {
+  display: flex;
+  align-items: center;
+}
+
+.jiuwenmate-profile__im-platform > header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.jiuwenmate-profile__im-platform-title {
+  min-width: 0;
+  gap: 8px;
+}
+
+.jiuwenmate-profile__im-platform-title img {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 4px;
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.jiuwenmate-profile__im-platform-title strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-profile__connections-hint {
+  color: var(--jm-text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.jiuwenmate-profile__im-platform-connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--jm-border);
+}
+
+.jiuwenmate-profile__im-platform-connection > small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--jm-text-2);
+  font-size: 12px;
+}
+
+.jiuwenmate-profile__im-platform-connection .jiuwenmate-profile__im-actions {
+  flex-wrap: wrap;
+}
+
+.jiuwenmate-profile__connections-hint {
+  margin-top: -4px;
 }
 
 .jiuwenmate-profile__connections-footer {
@@ -4471,6 +4784,7 @@
     grid-template-columns: minmax(0, 1fr);
     padding: 16px;
   }
+
 }
 
 .jiuwenmate-profile__save-button {
@@ -5534,8 +5848,7 @@
   }
 
   .jiuwenmate-intro__steps,
-  .jiuwenmate-kanban,
-  .jiuwenmate-chat-welcome__features > div {
+  .jiuwenmate-kanban {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -5558,5 +5871,132 @@
 
   .jiuwenmate-trace-body--detail {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Group chats inside the chat view */
+.jiuwenmate-group-avatar {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--jm-blue);
+  background: var(--jm-blue-soft);
+}
+
+.jiuwenmate-group-avatar svg {
+  width: 20px;
+  height: 20px;
+}
+
+.jiuwenmate-records__more {
+  padding: 6px 8px;
+  border: 0;
+  color: var(--jm-blue);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jiuwenmate-workspace__main > .group-chat-workspace {
+  flex: 1;
+  min-height: 0;
+}
+
+.jiuwenmate-group-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.jiuwenmate-group-title strong {
+  min-width: 0;
+}
+
+.jiuwenmate-group-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 3px;
+  color: var(--color-tag-team-text);
+  background: var(--color-tag-team-surface);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+@media (max-width: 760px) {
+  .jiuwenmate-shell {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .jiuwenmate-rail {
+    width: 56px;
+  }
+
+  .jiuwenmate-workspace,
+  .jiuwenmate-workspace--panel-open:not(.jiuwenmate-workspace--collapsed) {
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .jiuwenmate-workspace__main {
+    grid-column: 1;
+  }
+
+  .jiuwenmate-workspace:not(.jiuwenmate-workspace--collapsed) .jiuwenmate-workspace__main {
+    display: none;
+  }
+
+  .jiuwenmate-workspace--panel-open .jiuwenmate-side-panel {
+    position: absolute;
+    z-index: 5;
+    inset: 0;
+    grid-column: 1;
+  }
+
+  .jiuwenmate-chat-welcome {
+    height: auto;
+    padding: 0 12px 12px;
+  }
+
+  .jiuwenmate-chat-welcome__content {
+    gap: 16px;
+    padding-top: 68px;
+  }
+
+  .jiuwenmate-chat-welcome__suggestions {
+    gap: 8px;
+  }
+
+  .jiuwenmate-chat-welcome__suggestions button {
+    min-height: 44px;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .jiuwenmate-chat-welcome footer {
+    width: 100%;
+  }
+
+  .jiuwenmate-main-header {
+    padding-right: 12px;
+  }
+
+  .jiuwenmate-workspace--collapsed .jiuwenmate-main-header {
+    padding-left: 48px;
+  }
+
+  .jiuwenmate-session-view footer {
+    width: calc(100% - 24px);
+  }
+
+  .jiuwenmate-chat-messages {
+    padding: 8px 12px 24px;
   }
 }

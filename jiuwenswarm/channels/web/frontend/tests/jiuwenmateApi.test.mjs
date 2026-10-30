@@ -26,6 +26,10 @@ import {
   withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
+test('DingTalk CLI has no employee OAuth management RPCs', () => {
+  assert.equal(Object.keys(JIUWENMATE_METHODS).some((key) => key.toLowerCase().includes('dingtalkcli')), false);
+});
+
 const wireColleague = {
   agent_id: 'agent-1',
   name: '小九',
@@ -610,7 +614,7 @@ test('channel records map public messages and execution trace rows', async () =>
       return { channels: [{ id: 'grp_1', name: '产品群', platform: 'feishu', artifacts: 1, token_usage: 12, last_response_minutes: 3 }] };
     }
     if (method === 'jiuwenmate.channel.messages') {
-      return { messages: [{ id: 'm1', sender: 'Alice', sender_kind: 'human', text: '', status: 'recalled', attachments: 0 }] };
+      return { messages: [{ id: 'm1', sender: 'Alice', sender_kind: 'human', text: '', status: 'recalled', attachments: [], received_at: '2026-10-17T08:00:00+00:00' }], status: 'found', next_cursor: null };
     }
     return {
       started_at: '2026-10-17T08:00:00+00:00',
@@ -621,8 +625,8 @@ test('channel records map public messages and execution trace rows', async () =>
   assert.equal(channel.name, '产品群');
   assert.equal(channel.tokenUsage, 12);
   const messages = await api.channelMessages('mate_1', 'grp_1');
-  assert.equal(messages[0].status, 'recalled');
-  assert.equal(messages[0].fromColleague, false);
+  assert.equal(messages.messages[0].status, 'recalled');
+  assert.equal(messages.messages[0].fromColleague, false);
   assert.equal(toChannelMessage({ id: 'm2', sender: '小九', sender_kind: 'agent', own: true, text: '我来处理' }).fromColleague, true);
   assert.equal(toChannelMessage({ id: 'm3', sender: '小八', sender_kind: 'agent', own: false, text: '我是另一位' }).fromColleague, false);
   const trace = await api.channelTrace('mate_1', 'grp_1');

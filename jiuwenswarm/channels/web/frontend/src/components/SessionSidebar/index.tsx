@@ -4,7 +4,6 @@
  * Redesigned sidebar with logo and navigation.
  */
 
-import { UsersRound } from 'lucide-react';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
@@ -88,7 +87,6 @@ const personalContextNavIcon = (
 
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
-  { key: 'groupChat', labelKey: 'groupChat.open', icon: <UsersRound size={18} aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },

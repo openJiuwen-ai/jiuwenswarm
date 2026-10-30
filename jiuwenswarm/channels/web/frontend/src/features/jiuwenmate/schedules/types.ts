@@ -17,6 +17,7 @@ export interface ScheduleDraft {
 export interface Schedule extends ScheduleDraft {
   id: string;
   agentId: string;
+  createdAt: string;
   enabled: boolean;
   nextFireAt: string | null;
   conversationId: string;

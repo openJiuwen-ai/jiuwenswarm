@@ -14,6 +14,7 @@ import type {
   JiuwenMateCategory,
   JiuwenMateChannel,
   JiuwenMateChannelMessage,
+  JiuwenMateChannelMessagePage,
   JiuwenMateColleague,
   JiuwenMateColleagueDraft,
   JiuwenMateConnection,
@@ -775,7 +776,15 @@ function toActivityDay(value: unknown): JiuwenMateActivityDay | null {
   const row = record(value);
   const date = text(row.date);
   if (!date) return null;
-  return { date, tasks: count(row.tasks), minutes: count(row.minutes), calls: count(row.calls), tokens: count(row.tokens) };
+  return {
+    date,
+    tasks: count(row.tasks),
+    ...(row.finished_tasks !== undefined ? { finishedTasks: count(row.finished_tasks) } : {}),
+    ...(row.failures !== undefined ? { failures: count(row.failures) } : {}),
+    minutes: count(row.minutes),
+    calls: count(row.calls),
+    tokens: count(row.tokens),
+  };
 }
 
 function toActivityHour(value: unknown): JiuwenMateActivityHour | null {
@@ -839,6 +848,9 @@ function toActivityMember(value: unknown): JiuwenMateActivityMember | null {
       const entry = toActivityHistory(item);
       return entry ? [entry] : [];
     }),
+    ...(Array.isArray(row.running_task_started_ats)
+      ? { runningTaskStartedAts: row.running_task_started_ats.map(text).filter(Boolean) }
+      : {}),
     hours: (Array.isArray(row.hours) ? row.hours : []).flatMap((item) => {
       const hour = toActivityHour(item);
       return hour ? [hour] : [];
@@ -870,6 +882,7 @@ export function toSchedule(value: unknown): JiuwenMateSchedule {
   return {
     id: text(plan.plan_id),
     agentId: text(plan.agent_id),
+    createdAt: text(plan.created_at),
     name: text(plan.name),
     prompt: text(plan.prompt),
     cronExpr: text(plan.cron_expr),
@@ -912,6 +925,7 @@ export function toChannel(value: unknown): JiuwenMateChannel {
     id: text(wire.id),
     name: text(wire.name) || text(wire.id),
     platform,
+    coverage: text(wire.coverage),
     artifacts: Number(wire.artifacts) || 0,
     tokenUsage: Number(wire.token_usage) || 0,
     lastResponseMinutes: Number(wire.last_response_minutes) || 0,
@@ -920,15 +934,24 @@ export function toChannel(value: unknown): JiuwenMateChannel {
 
 export function toChannelMessage(value: unknown): JiuwenMateChannelMessage {
   const wire = record(value);
-  const attachments = Number(wire.attachments) || 0;
+  const attachments = Array.isArray(wire.attachments)
+    ? wire.attachments.flatMap((item) => {
+        const attachment = record(item);
+        return [{
+          title: text(attachment.name) || text(attachment.kind) || 'file',
+          kind: text(attachment.kind) || 'file',
+        }];
+      })
+    : Array.from({ length: Number(wire.attachments) || 0 }, () => ({ title: '', kind: 'file' }));
   return {
     id: text(wire.id),
     sender: text(wire.sender),
     fromColleague: wire.own === true,
     mentionColleague: false,
     content: text(wire.text),
+    receivedAt: text(wire.received_at),
     status: text(wire.status) || 'normal',
-    ...(attachments > 0 ? { attachment: { title: String(attachments), kind: 'file' } } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
   };
 }
 
@@ -1074,9 +1097,18 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
       const listed = record(await request(JIUWENMATE_METHODS.channelList, { agent_id: agentId }));
       return (Array.isArray(listed.channels) ? listed.channels : []).map(toChannel);
     },
-    async channelMessages(agentId: string, groupId: string): Promise<JiuwenMateChannelMessage[]> {
-      const listed = record(await request(JIUWENMATE_METHODS.channelMessages, { agent_id: agentId, group_id: groupId }));
-      return (Array.isArray(listed.messages) ? listed.messages : []).map(toChannelMessage);
+    async channelMessages(agentId: string, groupId: string, cursor?: string): Promise<JiuwenMateChannelMessagePage> {
+      const listed = record(await request(JIUWENMATE_METHODS.channelMessages, {
+        agent_id: agentId,
+        group_id: groupId,
+        ...(cursor ? { cursor } : {}),
+      }));
+      return {
+        messages: (Array.isArray(listed.messages) ? listed.messages : []).map(toChannelMessage),
+        nextCursor: text(listed.next_cursor) || null,
+        status: text(listed.status) || 'empty',
+        coverage: text(listed.coverage) || 'archive',
+      };
     },
     async channelTrace(agentId: string, groupId: string): Promise<{ startedAt: string; rows: JiuwenMateTraceRow[] }> {
       return toChannelTrace(await request(JIUWENMATE_METHODS.channelTrace, { agent_id: agentId, group_id: groupId }));
