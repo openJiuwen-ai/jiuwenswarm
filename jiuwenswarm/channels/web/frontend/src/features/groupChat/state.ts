@@ -45,8 +45,10 @@ export function newMember(kind: GroupMember['kind'], id: string, displayName: st
 export function selectedMentions(content: string, selected: string[], members: GroupMember[]): string[] {
   const mentions: string[] = [];
   for (const member of members) {
-    if (!selected.includes(member.member_name)) continue;
-    const label = `@${member.display_name || member.member_name}`;
+    const name = member.display_name || member.member_name;
+    const sameName = members.filter((item) => (item.display_name || item.member_name) === name);
+    if (sameName.length > 1 && !selected.includes(member.member_name)) continue;
+    const label = `@${name}`;
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`${escaped}(?=$|[\\s，。！？、,:：;；!?])`);
     if (pattern.test(content)) mentions.push(member.member_name);

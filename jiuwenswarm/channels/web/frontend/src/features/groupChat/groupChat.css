@@ -164,7 +164,8 @@ button.group-chat-member-row:hover:not(:disabled) { background: var(--color-surf
   background: var(--color-surface-elevated);
 }
 .group-chat-mention-menu button { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px 10px; border-radius: 8px; }
-.group-chat-mention-menu button:hover { background: var(--color-surface-muted); }
+.group-chat-mention-menu button:hover,
+.group-chat-mention-menu button[aria-selected="true"] { background: var(--color-surface-muted); }
 .group-chat-mention-menu .group-chat-assignee-avatar { width: 24px; height: 24px; }
 .group-chat-execution { border: 1px solid var(--color-border-default); border-radius: 12px; padding: 4px 16px 16px; margin: 0 0 36px; background: var(--color-surface-card); }
 .group-chat-execution > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
