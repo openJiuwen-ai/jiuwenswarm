@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -925,7 +926,8 @@ class PersistentGroupFanout:
         )
 
 
-_MEMBER_NAMES: dict[str, dict[str, str]] = {}
+_MEMBER_NAME_CACHE_TTL_SECONDS = 300
+_MEMBER_NAMES: dict[tuple[str, tuple[str, ...]], tuple[float, dict[str, str]]] = {}
 _MEMBER_CLIENTS: dict[str, Any] = {}
 
 
@@ -937,15 +939,20 @@ def feishu_member_names(platform_chat_id: str, app_ids: Sequence[str]) -> dict[s
     """
     if not isinstance(platform_chat_id, str) or not platform_chat_id.startswith("oc_"):
         return {}
-    cached = _MEMBER_NAMES.get(platform_chat_id)
-    if cached is not None:
-        return cached
+    requested_apps = tuple(sorted({app_id.strip() for app_id in app_ids if isinstance(app_id, str) and app_id.strip()}))
+    cache_key = (platform_chat_id, requested_apps)
+    cached = _MEMBER_NAMES.get(cache_key)
+    if cached is not None and cached[0] > time.monotonic():
+        return cached[1]
     names: dict[str, str] = {}
     try:
-        names = _query_feishu_members(platform_chat_id, app_ids)
+        names = _query_feishu_members(platform_chat_id, requested_apps)
     except Exception:
         logger.warning("[JiuwenMate] Feishu member name lookup failed")
-    _MEMBER_NAMES[platform_chat_id] = names
+    if names:
+        _MEMBER_NAMES[cache_key] = (time.monotonic() + _MEMBER_NAME_CACHE_TTL_SECONDS, names)
+    else:
+        _MEMBER_NAMES.pop(cache_key, None)
     return names
 
 

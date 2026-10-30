@@ -308,30 +308,33 @@ export const JIUWENMATE_CHANNELS: readonly JiuwenMateChannel[] = [
 ];
 
 export const JIUWENMATE_CHANNEL_MESSAGES: readonly JiuwenMateChannelMessage[] = [
-  { id: 'message-shen-1', sender: '沈女士', fromColleague: false, mentionColleague: true, content: '我的扫地机器人回充经常失败是什么情况？' },
+  { id: 'message-shen-1', sender: '沈女士', fromColleague: false, mentionColleague: true, content: '我的扫地机器人回充经常失败是什么情况？', receivedAt: '2026-10-30T09:00:00+08:00' },
   {
     id: 'message-bot-1',
     sender: '',
     fromColleague: true,
     mentionColleague: false,
     content: '您好，回充失败可以先检查充电座周边有没有杂物遮挡。如果依旧异常，可以发送【反馈问题】，我帮你记录提交人工。',
+    receivedAt: '2026-10-30T09:01:00+08:00',
   },
-  { id: 'message-zhou-1', sender: '周女士', fromColleague: false, mentionColleague: true, content: '扫地机能不能设置分区定时清扫？' },
+  { id: 'message-zhou-1', sender: '周女士', fromColleague: false, mentionColleague: true, content: '扫地机能不能设置分区定时清扫？', receivedAt: '2026-10-30T09:05:00+08:00' },
   {
     id: 'message-bot-2',
     sender: '',
     fromColleague: true,
     mentionColleague: false,
     content: '支持分区定时清扫，在设备 APP 清扫设置里可以配置对应房间与时间。有其他问题欢迎继续说明。',
+    receivedAt: '2026-10-30T09:06:00+08:00',
   },
-  { id: 'message-zhou-2', sender: '周女士', fromColleague: false, mentionColleague: true, content: '这个机器避障太差了，老是撞椅子腿，希望后续固件优化一下。' },
+  { id: 'message-zhou-2', sender: '周女士', fromColleague: false, mentionColleague: true, content: '这个机器避障太差了，老是撞椅子腿，希望后续固件优化一下。', receivedAt: '2026-10-30T09:10:00+08:00' },
   {
     id: 'message-bot-3',
     sender: '',
     fromColleague: true,
     mentionColleague: false,
     content: '收到你的使用建议，我帮你完整登记这条诉求。',
-    attachment: { title: 'Altrenddashboard', kind: '工单' },
+    receivedAt: '2026-10-30T09:11:00+08:00',
+    attachments: [{ title: 'Altrenddashboard', kind: '工单' }],
   },
 ];
 

@@ -2,10 +2,12 @@
 
 import json
 from datetime import datetime
+from urllib.parse import quote
 
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.execution_models import RequestRecord
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, shared_output_file_name
 from openjiuwen.harness.persistent_agent import GroupMessage
 
 
@@ -33,10 +35,15 @@ class ConversationResources:
         if group.platform_chat_id != route.target_id:
             raise ValueError("delivery target differs from the Session group")
         payload = json.loads(job["payload_json"])
+        attachment_refs = ()
+        if payload.get("share_mode") in FILE_SHARE_MODES:
+            name = shared_output_file_name(payload.get("file_path"), payload.get("file_ref"), payload.get("file_size"))
+            attachment_refs = (f"{route.channel}:outgoing-attachment:{quote(name, safe='')}",)
         message = GroupMessage(
             message_id=job["external_message_id"], sender_id=route.app_id, sender_name=request.agent_id,
             sender_kind="agent", received_at=datetime.fromisoformat(job["updated_at"]),
             text=payload["text"], reply_to=route.source_message_id,
+            attachment_refs=attachment_refs,
         )
         self._archive.append(request.namespace_id, group.group_chat_id, message,
                              source_ref=f"delivery:{job['delivery_id']}")

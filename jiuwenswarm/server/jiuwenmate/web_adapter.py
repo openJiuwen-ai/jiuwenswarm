@@ -182,6 +182,15 @@ def _text_param(params: Mapping[str, Any], name: str) -> str:
     return value
 
 
+def _optional_text_param(params: Mapping[str, Any], name: str) -> str | None:
+    value = params.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise PersistentAgentError(f"{name} must be text")
+    return value
+
+
 def _schedule_fields(params: Mapping[str, Any]) -> dict[str, Any]:
     interval = params.get("interval_seconds")
     return {
@@ -581,6 +590,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             records = _channel_records(manager)
             report = await asyncio.to_thread(
                 records.messages, WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "group_id"),
+                _optional_text_param(params, "cursor"),
             )
             return report
         if method == ReqMethod.JIUWENMATE_CHANNEL_TRACE.value:

@@ -256,6 +256,13 @@ class DingTalkInboundHandler:
                     mention_ids=event.mention_ids,
                     status="normal",
                 )
+                # The bot callback is not a complete stream of ordinary group traffic.
+                # Keep this archive visibly partial even when this event is a duplicate.
+                await asyncio.to_thread(
+                    self._manager.group_archive.mark_gap,
+                    binding.namespace_id,
+                    group.group_chat_id,
+                )
                 try:
                     await asyncio.to_thread(
                         self._manager.group_archive.append,
