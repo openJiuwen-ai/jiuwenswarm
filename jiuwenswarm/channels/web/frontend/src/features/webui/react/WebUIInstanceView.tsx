@@ -1,6 +1,8 @@
 /**
  * 内部实例视图：独立订阅自己的实例快照，持有错误边界、显示确认与绑定当前帧的交互接口。
  * 内容更新只通知本实例，不触发其他实例或同范围其他实例视图。
+ * React 重挂载、显示确认与失败反馈都按 localFrameId 区分每次有效渲染，
+ * 避免 clear 后以相同 revision 重建时继承旧页面状态或旧错误。
  */
 
 import { useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
@@ -25,8 +27,10 @@ export function WebUIInstanceView({ runtime, registry, instanceKey }: WebUIInsta
   const instance = runtime.getInstance(instanceKey);
   const frame = instance?.frame;
   const revision = frame?.revision ?? 0;
+  const generation = instance?.localFrameId ?? 0;
   const connected = instance?.connected ?? false;
-  const renderFailure = instance?.renderFailure?.revision === revision ? instance.renderFailure.message : null;
+  const renderFailure =
+    instance?.renderFailure?.localFrameId === generation ? instance.renderFailure.message : null;
 
   // 显示确认等快照更新不重建未变化的组件树，避免重复执行适配器。
   const renderedTree = useMemo(() => {
@@ -47,10 +51,10 @@ export function WebUIInstanceView({ runtime, registry, instanceKey }: WebUIInsta
         registry={registry}
         context={context}
         onIntent={onIntent}
-        renderGeneration={frame.revision}
+        renderGeneration={generation}
       />
     );
-  }, [runtime, registry, instanceKey, frame, connected]);
+  }, [runtime, registry, instanceKey, frame, connected, generation]);
 
   if (!instance) {
     return null;
@@ -69,8 +73,8 @@ export function WebUIInstanceView({ runtime, registry, instanceKey }: WebUIInsta
 
   return (
     <WebUIInstanceErrorBoundary
-      key={revision}
-      resetKey={revision}
+      key={generation}
+      resetKey={generation}
       fallback={
         renderFailure ? (
           <div
@@ -83,18 +87,21 @@ export function WebUIInstanceView({ runtime, registry, instanceKey }: WebUIInsta
           </div>
         ) : null
       }
-      onError={(error) => runtime.reportRenderFailure(instanceKey, revision, error.message)}
+      onError={(error) => runtime.reportRenderFailure(instanceKey, revision, error.message, generation)}
     >
       {renderedTree}
-      <WebUIRenderConfirmation revision={revision} onDisplayed={() => runtime.reportDisplayed(instanceKey, revision)} />
+      <WebUIRenderConfirmation
+        generation={generation}
+        onDisplayed={() => runtime.reportDisplayed(instanceKey, revision, generation)}
+      />
     </WebUIInstanceErrorBoundary>
   );
 }
 
 /** 在 React 提交后确认当前帧已显示；渲染失败时不会执行到这里。 */
-function WebUIRenderConfirmation({ revision, onDisplayed }: { revision: number; onDisplayed: () => void }): ReactNode {
+function WebUIRenderConfirmation({ generation, onDisplayed }: { generation: number; onDisplayed: () => void }): ReactNode {
   useEffect(() => {
     onDisplayed();
-  }, [revision]);
+  }, [generation]);
   return null;
 }
