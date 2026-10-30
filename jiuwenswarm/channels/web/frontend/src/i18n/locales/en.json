@@ -6064,11 +6064,6 @@
     "welcomeHint": "Invite experts and teams. Use @ to bring the right people into the conversation.",
     "start": "Welcome to your group",
     "startHint": "We are always online. Leave professional work to the professionals.",
-    "suggestions": {
-      "bugTeam": "Build a bug-fixing team for me",
-      "brainstormTeam": "Build a brainstorming team for me",
-      "customTeam": "Customize my own team"
-    },
     "humanCount": "{{count}} people",
     "agentCount": "{{count}} agents",
     "searchMembers": "Search members",

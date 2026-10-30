@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AtSign, Bot, ChevronLeft, ChevronRight, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
+  AtSign, Bot, ChevronLeft, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webClient, type WsEvent } from '../../services/webClient';
@@ -397,14 +397,6 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                 .map((member) => <TeamMemberAvatar key={member} member={member} className="group-chat-stack-avatar" alt="" />)}
             </span>
             <h2>{t('groupChat.start')}</h2><p>{t('groupChat.startHint')}</p>
-            <div className="group-chat-suggestions" data-testid="group-chat-suggestions">
-              {(['bugTeam', 'brainstormTeam', 'customTeam'] as const).map((key) => <button type="button" key={key}
-                className="group-chat-suggestion" disabled={Boolean(questions[0])} onClick={() => {
-                  setInput(t(`groupChat.suggestions.${key}`)); textarea.current?.focus();
-                }} data-testid="group-chat-suggestion" data-variant={key}>
-                <span>{t(`groupChat.suggestions.${key}`)}</span><ChevronRight size={16} aria-hidden />
-              </button>)}
-            </div>
           </div>}
           {timeline.map((item) => item.execution ? <ExecutionCard key={item.id} execution={item.execution}
             result={executionResult(item.execution, messages)} renderAvatar={memberAvatar} /> : item.message && (
