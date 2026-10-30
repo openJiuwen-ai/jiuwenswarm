@@ -60,6 +60,7 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
             return None
 
         await _activate_installed(assembly.manager)
+        _wire_team_extension_bus(assembly.bus)
         _ASSEMBLY = assembly
         logger.info("[ExtensionsV2] assembly ready")
         return assembly
@@ -88,6 +89,21 @@ async def shutdown_extensions() -> None:
         await assembly.manager.shutdown()
         await assembly.webui.shutdown()
         _ASSEMBLY = None
+
+
+def _wire_team_extension_bus(bus: ExtensionEventBus) -> None:
+    """Hand the bus to the team runtime manager so team builds go through it.
+
+    Soft-gated like the bootstrap registrations: an agent-core without the
+    team extension surface keeps the rest of the assembly alive.
+    """
+
+    try:
+        from openjiuwen.core.runner import Runner
+    except ImportError as exc:
+        logger.warning("[ExtensionsV2] team bus wiring unavailable (agent-core too old): %s", exc)
+        return
+    Runner.set_team_extension_bus(bus)
 
 
 def _build_assembly(server: Any) -> ExtensionAssembly:
