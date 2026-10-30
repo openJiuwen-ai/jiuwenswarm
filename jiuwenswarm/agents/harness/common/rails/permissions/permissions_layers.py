@@ -347,6 +347,53 @@ def _compose_effective_local(
         file_guard = source.get("file_guard")
         if isinstance(file_guard, dict) and isinstance(file_guard.get("paths"), list):
             _merge_file_guard_path_entries(out, file_guard["paths"])
+    # 显式 file_guard.defaults 与 legacy external_directory 取严合并
+    # （deny<ask<allow，评审 CR-015）：mode preset 主导缺省轴，但升级
+    # 前显式 deny 是安全基线，preset 只兜缺省、不得静默放宽（与 paths
+    # 棘轮同向：只放大不降档）。
+    explicit_axis: dict[str, str] = {}
+    for source in (global_migrated, user_migrated, session_migrated):
+        fg = source.get("file_guard")
+        explicit = fg.get("defaults") if isinstance(fg, dict) else None
+        if not isinstance(explicit, dict):
+            continue
+        for axis in ("read", "write", "exec"):
+            level = str(explicit.get(axis) or "").strip().lower()
+            if level not in _ACTION_RANK:
+                continue
+            kept = explicit_axis.get(axis)
+            if kept is None or _ACTION_RANK[level] < _ACTION_RANK[kept]:
+                explicit_axis[axis] = level
+    # legacy external_directory：'*'/字符串形态并入显式基线（preset
+    # defaults 恒非空，引擎的 ext→defaults 迁移不会触发）；具名键原样
+    # 透传（引擎编译进 paths 前缀规则，不覆盖已有 paths）。
+    for source in (global_cfg, user_cfg, session_cfg):
+        ext = source.get("external_directory") if isinstance(source, dict) else None
+        if not (isinstance(ext, dict) and ext) and not isinstance(ext, str):
+            continue
+        star = ext.get("*") if isinstance(ext, dict) else ext
+        star = str(star or "").strip().lower()
+        if star in _ACTION_RANK:
+            for axis in ("read", "write", "exec"):
+                kept = explicit_axis.get(axis)
+                if kept is None or _ACTION_RANK[star] < _ACTION_RANK[kept]:
+                    explicit_axis[axis] = star
+        named = {k: v for k, v in ext.items() if k != "*"} if isinstance(ext, dict) else None
+        if named:
+            out["external_directory"] = deepcopy(named)
+        break
+    if explicit_axis:
+        # 收口双落点：defaults 之外还须收 workspace 轴——workspace 轴是
+        # preset 注入的路径规则（前缀=workspace_root），不收口则其
+        # in-workspace allow 绕过显式 deny（CR-015 跨工作区放行机制）。
+        fg_out = out["file_guard"]
+        fg_defaults = fg_out.setdefault("defaults", {})
+        ws_axis = fg_out.setdefault("workspace", {})
+        for axis, level in explicit_axis.items():
+            for target in (fg_defaults, ws_axis):
+                kept = str(target.get(axis) or "").strip().lower()
+                if kept not in _ACTION_RANK or _ACTION_RANK[level] < _ACTION_RANK[kept]:
+                    target[axis] = level
     # Skill 动态授权开关段：上游 rail 以快照承载该键判定 overlay
     # 是否生效（is_skill_authorization_enabled），白名单重建必须
     # 往返，丢键即 overlay 静默失效（round-022 交互面回归）。
