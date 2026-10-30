@@ -54,6 +54,20 @@ Disabled, read-only and disconnected inputs do not submit. Each valid submission
 Bind `"ui.click": {"id": "city.inspect"}` to receive input clicks with the current draft as `{value}`.
 Read-only inputs allow clicks. Disabled or disconnected inputs do not send them; unbound clicks keep the default input behavior.
 
+Declare a switch as follows:
+
+```python
+RenderNode(
+    "Switch",
+    {"defaultChecked": True, "ariaLabel": "Enabled"},
+    events={"ui.change": {"id": "enabled.change"}},
+)
+```
+
+The handler reads the boolean checked value from data. checked takes precedence over defaultChecked.
+A valid replace reinitializes the state without sending change. Disabled, loading or disconnected switches are disabled;
+without a change binding, the switch can still update its local state.
+
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
 instead of appending it to declared args. A node cannot declare both action and events.
