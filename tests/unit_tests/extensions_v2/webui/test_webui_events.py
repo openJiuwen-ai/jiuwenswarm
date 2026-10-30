@@ -9,7 +9,7 @@ import pytest
 from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBus, HandlerLevel
 
 from jiuwenswarm.extensions_v2.webui.action_validation import validate_upstream
-from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, validate_props
+from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, validate_event_data, validate_props
 from jiuwenswarm.extensions_v2.webui.constants import SESSION_SLOTS, UPSTREAM_EVENTS
 from jiuwenswarm.extensions_v2.webui.models import (
     RenderFrame, RenderMode, RenderNode, RenderTarget, UiActionInput, UiRenderInput, node_to_payload,
@@ -74,6 +74,12 @@ async def test_event_for_static_node_is_rejected_without_raising():
     RenderNode("Button", events={"ui.click": {"id": "bad", "extra": 1}}),
     RenderNode("Text", events={"ui.click": {"id": "bad"}}), RenderNode("Button", events={}),
     RenderNode("Row", {"gap": "sm", "density": "compact"}),
+    RenderNode("FileTree", {"treeData": [
+        {"key": "a", "title": "a", "path": "../a", "kind": "file"},
+    ]}),
+    RenderNode("FileTree", {"treeData": [
+        {"key": "a", "title": "a", "path": "a", "kind": "file", "loaded": False},
+    ]}),
     RenderNode("Box", children=(RenderNode("Panel", {"title": "bad"}, children=(RenderNode("Text"),)),)),
     RenderNode("Tabs", {"items": [{"key": "a", "label": "A", "children": [{"component": "Text"}]}]}),
     RenderNode("Divider", children=(RenderNode("Button"),)), RenderNode("Panel", {"title": "Empty"}),
@@ -237,8 +243,8 @@ async def test_valid_handler_can_replace_and_reply_and_old_revision_is_rejected(
 
 
 def test_component_event_catalog_excludes_deferred_features():
-    assert len(COMPONENT_RULES) == 16
-    assert not {"FileTree", "FilePreview"} & COMPONENT_RULES.keys()
+    assert len(COMPONENT_RULES) == 17
+    assert "FilePreview" not in COMPONENT_RULES
     assert {name for rule in COMPONENT_RULES.values() for name in rule.get("events", {})} <= UPSTREAM_EVENTS
 
 
@@ -251,6 +257,34 @@ def test_component_event_catalog_excludes_deferred_features():
 ])
 def test_legacy_component_props_are_rejected(root):
     assert not validate_root(root).ok
+
+
+def test_file_tree_accepts_a_bounded_snapshot():
+    root = RenderNode("FileTree", {
+        "treeData": [{
+            "key": "src", "title": "src", "path": "src", "kind": "directory", "loaded": True,
+            "children": [{
+                "key": "src/main.ts", "title": "main.ts", "path": "src/main.ts", "kind": "file",
+            }],
+        }],
+        "expandedKeys": ["src"], "selectedKey": "src/main.ts", "status": "ready",
+    }, events={"ui.select": {"id": "open"}})
+
+    assert validate_root(root).ok
+
+
+def test_file_tree_event_data_requires_known_nodes():
+    props = {
+        "treeData": [
+            {"key": "src", "title": "src", "path": "src", "kind": "directory", "loaded": True,
+             "children": [{"key": "src/main.ts", "title": "main.ts", "path": "src/main.ts", "kind": "file"}]},
+        ],
+    }
+
+    assert validate_event_data("FileTree", "ui.select", {"key": "src/main.ts"}, props)
+    assert not validate_event_data("FileTree", "ui.select", {"key": "src"}, props)
+    assert validate_event_data("FileTree", "ui.change", {"key": "src", "expanded": True, "expandedKeys": ["src"]}, props)
+    assert not validate_event_data("FileTree", "ui.change", {"key": "src", "expanded": False, "expandedKeys": ["src"]}, props)
 
 
 _CASES = json.loads((Path(__file__).resolve().parents[4] / "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiComponentCases.json").read_text(encoding="utf-8"))

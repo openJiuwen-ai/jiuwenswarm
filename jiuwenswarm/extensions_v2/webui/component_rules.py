@@ -47,6 +47,12 @@ TREE_OPTION = obj({
     "selectable": BOOL, "checkable": BOOL, "children": array({"kind": "tree-option"}),
 }, "value", "title")
 
+_FILE_NODE: dict[str, Any] = obj({
+    "key": TEXT, "title": TEXT, "path": TEXT, "kind": token("file", "directory"),
+    "children": array({"kind": "lazy", "get": lambda: _FILE_NODE}),
+    "loaded": BOOL, "truncated": BOOL,
+}, "key", "title", "path", "kind")
+
 # The same rule vocabulary as catalog/types.ts, without UI adapters or callbacks.
 COMPONENT_RULES: dict[str, dict[str, Any]] = {
     "Box": {"props": {
@@ -124,6 +130,19 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "variant": token("filled", "solid", "outlined"), "disabled": BOOL,
         "href": TEXT, "target": token("_self", "_blank"),
     }},
+    "FileTree": {
+        "props": {
+            "treeData": array(_FILE_NODE), "selectedKey": union(TEXT, NIL), "expandedKeys": array(TEXT),
+            "disabled": BOOL, "ariaLabel": TEXT, "emptyText": TEXT, "message": TEXT,
+            "status": token("ready", "unavailable", "unsupported", "error"),
+            "truncated": BOOL, "readFailed": BOOL,
+        },
+        "required": ("treeData",),
+        "events": {
+            "ui.select": obj({"key": TEXT}, "key"),
+            "ui.change": obj({"key": TEXT, "expanded": BOOL, "expandedKeys": array(TEXT)}, "key", "expanded"),
+        },
+    },
     "Panel": {"props": {"title": {"kind": "string", "maxBytes": 200}}, "required": ("title",), "children": True},
     "Iframe": {"props": {"src": TEXT, "title": {"kind": "string", "maxBytes": 200}}, "required": ("src", "title")},
 }
@@ -140,6 +159,8 @@ def check_value(rule: Mapping[str, Any], value: Any, *, depth: int = 0) -> bool:
     kind = rule["kind"]
     if kind == "tree-option":
         return check_value(TREE_OPTION, value, depth=depth)
+    if kind == "lazy":
+        return check_value(rule["get"](), value, depth=depth)
     if kind == "string":
         return isinstance(value, str) and len(value.encode("utf-8")) <= rule.get("maxBytes", MAX_TEXT_BYTES)
     if kind == "boolean":
@@ -189,6 +210,42 @@ def _tree_options(items: list[Any] | tuple[Any, ...], *, depth: int = 1) -> list
         if len(result) > 512:
             raise ValueError("too many tree options")
     return result
+
+
+def _workspace_path_ok(value: str) -> bool:
+    return (
+        bool(value) and "\\" not in value and "\0" not in value
+        and not value.startswith("/") and ":" not in value
+        and all(part and part not in {".", ".."} for part in value.split("/"))
+    )
+
+
+def _file_tree_nodes(items: Any) -> dict[str, Mapping[str, Any]]:
+    nodes: dict[str, Mapping[str, Any]] = {}
+    paths: set[str] = set()
+
+    def walk(entries: Any, depth: int, parent: str | None) -> None:
+        if entries and depth > 8:
+            raise ValueError("file tree is too deep")
+        for item in entries:
+            key, path = item["key"], item["path"]
+            if (not key or key in nodes or not _workspace_path_ok(path) or path in paths
+                    or (parent is not None and not path.startswith(f"{parent}/"))):
+                raise ValueError("invalid file tree identities or paths")
+            nodes[key] = item
+            paths.add(path)
+            if len(nodes) > 512:
+                raise ValueError("file tree has too many nodes")
+            if item["kind"] == "file" and (
+                "children" in item or "loaded" in item or "truncated" in item
+            ):
+                raise ValueError("file nodes cannot declare directory fields")
+            if item.get("loaded") is False and "children" in item:
+                raise ValueError("unloaded directory has children")
+            walk(item.get("children", ()), depth + 1, path)
+
+    walk(items, 1, None)
+    return nodes
 
 
 def slider_value_allowed(props: Mapping[str, Any], value: Any) -> bool:
@@ -285,6 +342,17 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         enabled = [item["key"] for item in items if not item.get("disabled")]
         if any(key in props and props[key] not in enabled for key in ("activeKey", "defaultActiveKey")):
             return "invalid active tab"
+    if component == "FileTree":
+        try:
+            nodes = _file_tree_nodes(props["treeData"])
+        except ValueError as exc:
+            return str(exc)
+        selected = props.get("selectedKey")
+        if selected is not None and nodes.get(selected, {}).get("kind") != "file":
+            return "unknown selected file"
+        expanded = props.get("expandedKeys", [])
+        if not _unique(expanded) or any(nodes.get(key, {}).get("kind") != "directory" for key in expanded):
+            return "unknown expanded directory"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"
     url_fields = {"Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
@@ -344,4 +412,23 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
             return _selection_allowed(value, values, props.get("treeCheckable", False) or props.get("multiple", False))
         return any(type(value) is type(item) and value == item or finite_number(value) and finite_number(item) and value == item
                    for item in values)
+    if component == "FileTree":
+        if props.get("status") not in (None, "ready"):
+            return False
+        try:
+            nodes = _file_tree_nodes(props["treeData"])
+        except ValueError:
+            return False
+        item = nodes.get(data.get("key"))
+        if event == "ui.select":
+            return item is not None and item["kind"] == "file"
+        if event != "ui.change" or item is None or item["kind"] != "directory":
+            return False
+        if "expandedKeys" in data:
+            expanded = data["expandedKeys"]
+            if not _unique(expanded) or any(nodes.get(key, {}).get("kind") != "directory" for key in expanded):
+                return False
+            if (data["key"] in expanded) != data["expanded"]:
+                return False
+        return True
     return True

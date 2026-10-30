@@ -184,6 +184,13 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 
 错误码：`WEBUI_UNAVAILABLE`（运行时未装配）、`SCHEMA_ERROR`（事件或目标非法）、`SESSION_MISMATCH`（请求会话与目标不一致）、`NO_CONTRIBUTION`（槽位没有生效的界面项）、`TARGET_INACTIVE`（实例不存在）、`INTERNAL_ERROR`（事件链异常）。
 
+### 4.4 文件目录能力（第 1 块）
+
+`ops.session.files(expanded_paths=[])` 由宿主只读文件服务提供。插件在 `ui.ready` 或 `ui.change` 后查询目录，
+再用 `FileTree` 渲染；会话与渠道取自当前 Ops 上下文，根目录来自已绑定的会话工作区，不接受浏览器自报路径。
+返回 `status`、`treeData`、`truncated`、`readFailed`；目录最多 8 层、512 节点、每层 100 项、96 KiB 预算。
+`read_file` 与 `FilePreview` 不在本块范围，留待第 2 块。
+
 ## 5. 异常与边界
 
 - 事件名必须在 `UPSTREAM_EVENTS` 内；节点只能绑定自身组件声明的事件。
