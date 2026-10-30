@@ -1006,6 +1006,26 @@ export function SkillPanel({
         : [],
     [enterpriseEdition, mySkillsFiltered],
   );
+  /**
+   * 企业技能源面板安装态对照：只传带 origin 的已装技能 + 需名称回退的 builtin/prebuilt。
+   * 不能传 skills 全量，否则同名广场自装/本地技能会把未装企业源条目误判为已安装。
+   */
+  const enterpriseSourceLocalSkills = useMemo(
+    () =>
+      skills
+        .filter(
+          (s) =>
+            Boolean(String(s.origin || '').trim()) || isBuiltinSkill(s) || isPrebuiltSkill(s),
+        )
+        .map((s) => ({
+          name: s.name,
+          display_name: s.display_name,
+          origin: s.origin,
+          skill_type: s.skill_type,
+          source_type: s.source_type,
+        })),
+    [skills],
+  );
   const otherSkills = useMemo(
     () =>
       mySkillsFiltered.filter((s) => {
@@ -1820,8 +1840,7 @@ export function SkillPanel({
                       lockedSourceId={marketplaceSourceId}
                       installedSkillOrigins={installedSkillOrigins}
                       installedStateLoaded
-                      localSkills={skills}
-                      installedSkillNames={installedSkillNames}
+                      localSkills={enterpriseSourceLocalSkills}
                       externalSearchQuery={debouncedMarketplaceSearch}
                       onInstalled={() => fetchSkills()}
                       onGoToChat={handleGoToChat}

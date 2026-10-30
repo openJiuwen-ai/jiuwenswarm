@@ -51,18 +51,27 @@ export type LocalSkillOriginRef = {
   display_name?: string | null;
   origin?: string | null;
   skill_type?: string;
+  /** 企业版来源类型：builtin / prebuilt / user；名称回退仅对 builtin/prebuilt 生效 */
+  source_type?: string | null;
 };
+
+function isAdminManagedLocalSkill(skill: LocalSkillOriginRef): boolean {
+  const sourceType = String(skill.source_type || '').trim();
+  return sourceType === 'builtin' || sourceType === 'prebuilt';
+}
 
 /**
  * 解析企业广场条目对应的本地已装技能。
- * 对齐单机版 resolveMarketplaceInstalledLocalName：先按 origin（source_id:skill_id），再回退 name/display_name。
- * 内置技能（如 swarmskill-creator / 蜂群技能自动生成专家）通常没有企业源 origin，必须靠名称回退才能显示「去试试」。
+ * 1) 先按 origin（source_id:skill_id）精确匹配——企业源真实安装态
+ * 2) 再仅对 builtin/prebuilt 做 name/display_name 回退——内置技能通常没有企业源 origin，
+ *    但仍需在广场显示「去试试」（如 swarmskill-creator）
+ *
+ * 不对 user/广场自装/本地导入做名称回退，避免同名未装企业源条目被误判为已安装。
  */
 export function resolveSourceInstalledLocalSkill(
   item: { source_id?: string; skill_id?: string; name: string; display_name?: string },
   fallbackSourceId: string,
   localSkills: readonly LocalSkillOriginRef[],
-  installedNames?: ReadonlySet<string>,
 ): LocalSkillOriginRef | null {
   const identity = sourceSkillIdentity(item, fallbackSourceId);
   if (identity) {
@@ -79,14 +88,14 @@ export function resolveSourceInstalledLocalSkill(
   const candidates = [item.name, item.display_name]
     .map((value) => String(value || '').trim())
     .filter(Boolean);
+  const managed = localSkills.filter(isAdminManagedLocalSkill);
   for (const candidate of candidates) {
-    const byName = localSkills.find((skill) => skill.name === candidate);
+    const byName = managed.find((skill) => skill.name === candidate);
     if (byName) return byName;
-    const byDisplay = localSkills.find(
+    const byDisplay = managed.find(
       (skill) => String(skill.display_name || '').trim() === candidate,
     );
     if (byDisplay) return byDisplay;
-    if (installedNames?.has(candidate)) return { name: candidate };
   }
   return null;
 }
@@ -98,9 +107,8 @@ export function isEnterpriseSourceSkillInstalled(
   installedOrigins: ReadonlySet<string> | undefined,
   installedStateLoaded: boolean,
   hasUpdateStatus: boolean,
-  installedNames?: ReadonlySet<string>,
 ): boolean {
-  if (resolveSourceInstalledLocalSkill(item, fallbackSourceId, localSkills, installedNames)) {
+  if (resolveSourceInstalledLocalSkill(item, fallbackSourceId, localSkills)) {
     return true;
   }
   return isSourceSkillInstalled(

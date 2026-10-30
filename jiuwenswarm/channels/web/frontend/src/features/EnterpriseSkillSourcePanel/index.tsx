@@ -76,9 +76,11 @@ interface EnterpriseSkillSourcePanelProps {
    * 提供时隐藏面板内源下拉，仅展示该源的技能列表。
    */
   lockedSourceId?: string;
-  /** 本地已装技能（含 origin/display_name），用于「去试试」判定（对齐单机版 name 回退） */
+  /**
+   * 企业源安装态对照列表：带 origin 的已装技能 + builtin/prebuilt（名称回退用）。
+   * 勿传入「我的技能」全量（含广场自装同名）以免误判已安装。
+   */
   localSkills?: readonly LocalSkillOriginRef[];
-  installedSkillNames?: ReadonlySet<string>;
   onInstalled?: (skillName: string) => void | Promise<void>;
   onGoToChat?: (skillName: string, skillType?: string) => void;
 }
@@ -154,7 +156,6 @@ export function EnterpriseSkillSourcePanel({
   externalSearchQuery,
   lockedSourceId,
   localSkills = [],
-  installedSkillNames,
   onInstalled,
   onGoToChat,
 }: EnterpriseSkillSourcePanelProps) {
@@ -413,11 +414,56 @@ export function EnterpriseSkillSourcePanel({
     if (item) void handleInstall(item, true);
   }, [pendingConfirm, handleInstall]);
 
-  /** 列表操作：已安装只显示「去试试」，未安装显示「安装」；不进入详情 */
+  const handleUpdate = useCallback(
+    async (item: SkillCandidate, status: UpdateStatus) => {
+      if (installingId) return;
+      const targetVersionId = status.latest_version_id || item.version_id;
+      setInstallingId(itemKey(item, sourceId));
+      clearToast();
+      try {
+        const data = await webRequest<{
+          success: boolean;
+          error_message?: string;
+          skill?: { name?: string };
+        }>(
+          'skills.update',
+          withSession({
+            source_id: item.source_id || sourceId,
+            skill_id: item.skill_id,
+            target_version_id: targetVersionId,
+            expected_current_version_id: status.current_version_id,
+            ...buildSourcePresentationParams(item, status.latest_version || item.version),
+          }),
+        );
+        if (!data.success) throw new Error(data.error_message || t('skills.source.errors.updateFailed'));
+        setUpdateStatuses(previous => {
+          const next = new Map(previous);
+          next.set(sourceSkillIdentity(item, sourceId), {
+            ...status,
+            current_version_id: targetVersionId,
+            latest_version_id: targetVersionId,
+            has_update: false,
+          });
+          return next;
+        });
+        // 同步缓存，避免下次挂载读到更新前的旧状态
+        void loadUpdates(item.source_id || sourceId, true);
+        showToast('success', t('skills.source.messages.updated', { name: data.skill?.name || item.name }));
+        await onInstalled?.(data.skill?.name || item.name);
+      } catch (error) {
+        showToast('error', error instanceof Error ? error.message : t('skills.source.errors.updateFailed'));
+      } finally {
+        setInstallingId(null);
+      }
+    },
+    [clearToast, installingId, loadUpdates, onInstalled, showToast, sourceId, t, withSession],
+  );
+
+  /** 列表操作：有更新 →「更新」；已安装无更新 →「去试试」；未安装 →「安装」 */
   const renderAction = (item: SkillCandidate) => {
     const identity = sourceSkillIdentity(item, sourceId);
     const status = updateStatuses.get(identity);
-    const local = resolveSourceInstalledLocalSkill(item, sourceId, localSkills, installedSkillNames);
+    const local = resolveSourceInstalledLocalSkill(item, sourceId, localSkills);
     const isInstalled = isEnterpriseSourceSkillInstalled(
       item,
       sourceId,
@@ -425,12 +471,24 @@ export function EnterpriseSkillSourcePanel({
       installedSkillOrigins,
       installedStateLoaded,
       Boolean(status),
-      installedSkillNames,
     );
     const isInstalling = installingId === itemKey(item, sourceId);
     const btnClass =
       'min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm border whitespace-nowrap disabled:text-text-muted disabled:cursor-not-allowed';
 
+    if (isInstalled && status?.has_update) {
+      return (
+        <button
+          type="button"
+          onClick={() => void handleUpdate(item, status)}
+          disabled={isInstalling}
+          className={`${btnClass} text-text border-text hover:bg-secondary/50`}
+          data-testid="skill-panel-enterprise-update-btn"
+        >
+          {isInstalling ? t('common.loading') : t('common.update')}
+        </button>
+      );
+    }
     if (isInstalled) {
       return (
         <button
