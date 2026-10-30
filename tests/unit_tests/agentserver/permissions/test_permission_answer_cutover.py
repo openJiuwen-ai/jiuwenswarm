@@ -140,7 +140,7 @@ async def _interrupt(h, monkeypatch, *, mode, kind, count=1):
     answer = {"selected_options": ["allow_once"]}
     keys = h.adapter._root_permission_queue.snapshot_scope(root_session_id=h.adapter._parent_session_id)
     if mode == "auto":
-        assert len(keys) == 1
+        assert len(keys) == count
         answer["card_id"] = keys[0].invocation_id
     return {"source": "permission_interrupt", "request_id": request_id, "answers": [answer]}
 
