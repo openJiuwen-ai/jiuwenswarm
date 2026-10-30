@@ -59,6 +59,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const [input, setInput] = useState('');
   const [mentions, setMentions] = useState<string[]>([]);
   const [mentionMenu, setMentionMenu] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionOptions = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (mentionMenu) {
+      mentionOptions.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [mentionMenu, mentionIndex]);
   const [sending, setSending] = useState(false);
   const defaultModel = useSessionStore((state) => state.defaultModelName);
   const [modelName, setModelName] = useState<string | null>(null);
@@ -429,16 +436,39 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           {!questions[0] && <form className="group-chat-composer" data-testid="group-chat-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
             <textarea ref={textarea} value={input} maxLength={20000}
               aria-label={t('groupChat.message')} placeholder={t('groupChat.placeholder')} data-testid="group-chat-input"
-              onChange={(event) => { setInput(event.target.value); setMentionMenu(event.target.value.endsWith('@')); }}
+              aria-controls={mentionMenu ? 'group-chat-mention-list' : undefined}
+              aria-activedescendant={mentionMenu ? `group-chat-mention-${mentionIndex}` : undefined}
+              onChange={(event) => {
+                setInput(event.target.value);
+                setMentionIndex(0);
+                setMentionMenu(event.target.value.endsWith('@'));
+              }}
               onKeyDown={(event) => {
-                if (event.key === 'Escape') setMentionMenu(false);
+                if (event.nativeEvent.isComposing) return;
+                if (mentionMenu) {
+                  if (event.key === 'Escape') {
+                    event.preventDefault(); setMentionMenu(false); return;
+                  }
+                  if (group.members.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+                    event.preventDefault();
+                    const direction = event.key === 'ArrowDown' ? 1 : -1;
+                    setMentionIndex((index) => (index + direction + group.members.length) % group.members.length);
+                    return;
+                  }
+                  if (event.key === 'Enter' && !event.shiftKey && group.members[mentionIndex]) {
+                    event.preventDefault(); mention(group.members[mentionIndex].member_name); return;
+                  }
+                }
                 if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !mentionMenu) {
                   event.preventDefault(); void send();
                 }
               }} />
-            {mentionMenu && <div className="group-chat-mention-menu" data-testid="group-chat-mention-menu">
+            {mentionMenu && <div ref={mentionOptions} id="group-chat-mention-list" role="listbox"
+              aria-label={t('groupChat.mention')} className="group-chat-mention-menu" data-testid="group-chat-mention-menu">
               {!group.members.length && <p>{t('groupChat.noMembers')}</p>}
-              {group.members.map((member) => <button type="button" key={member.member_name}
+              {group.members.map((member, index) => <button type="button" key={member.member_name}
+                id={`group-chat-mention-${index}`} role="option" aria-selected={index === mentionIndex}
+                onMouseEnter={() => setMentionIndex(index)}
                 disabled={sending} onClick={() => mention(member.member_name)}
                 data-testid="group-chat-mention-option" data-variant={member.member_name}>
                 {memberAvatar(member.member_name)}<span>{member.display_name || member.member_name}</span>
@@ -446,7 +476,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
               </button>)}
             </div>}
             <footer>
-              <button type="button" className="group-chat-icon-button" disabled={sending} onClick={() => setMentionMenu(!mentionMenu)}
+              <button type="button" className="group-chat-icon-button" disabled={sending} onClick={() => {
+                setMentionIndex(0); setMentionMenu(!mentionMenu); textarea.current?.focus();
+              }}
                 aria-label={t('groupChat.mention')} title={t('groupChat.mention')} aria-expanded={mentionMenu}
                 data-testid="group-chat-mention"><AtSign size={17} /></button>
               <span className="group-chat-muted" data-testid="group-chat-send-hint">{t('groupChat.sendHint')}</span>
