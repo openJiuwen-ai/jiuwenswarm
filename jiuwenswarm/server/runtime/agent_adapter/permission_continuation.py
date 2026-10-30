@@ -3,6 +3,7 @@
 """OpenJiuwen permission-continuation operations, without a Host adapter owner."""
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Iterator, Mapping
 from typing import Any
@@ -22,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
     RootNonPermissionResume, RootPermissionWrapperResume, put_root_nonpermission_resume_in_inputs,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import ToolInvocationKeyV1
+from jiuwenswarm.common.tool_display import extract_call_goal
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +396,84 @@ async def discard_pending_permission_interrupt_for_target(
         len(stale_ids),
         cancel_reason,
     )
+    return True
+
+
+def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id: str | None) -> Any | None:
+    """Return the canonical, wholly unanswered Smart batch, if present."""
+    session = getattr(instance, "_loop_session", None)
+    if session is None or loop_session_id != target_sid:
+        return None
+    state = session.get_state(INTERRUPTION_KEY)
+    interrupted = getattr(state, "interrupted_tools", None)
+    message = getattr(state, "ai_message", None)
+    calls = list(getattr(message, "tool_calls", None) or [])
+    if not isinstance(interrupted, Mapping) or not interrupted or len(interrupted) != len(calls):
+        return None
+    requests = [request for entry in interrupted.values()
+                for request in (getattr(entry, "interrupt_requests", None) or {}).values()]
+    if not any(isinstance(getattr(request, "metadata", None), Mapping)
+               and "tool_invocation_key" in request.metadata for request in requests):
+        return None
+    expected = {getattr(call, "id", None): call for call in calls}
+    if None in expected or "" in expected:
+        raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+    if len(expected) != len(calls) or set(expected) != set(interrupted):
+        raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+    for call, key in _permission_entries(state):
+        original = expected[call.id]
+        if key.root_session_id != target_sid or key.execution_session_id != target_sid:
+            raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+        # The stream rail strips display-only metadata before nested dispatch.
+        _, arguments = extract_call_goal(call.arguments)
+        _, original_arguments = extract_call_goal(original.arguments)
+        if call.name != original.name or arguments != original_arguments:
+            raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+    return message
+
+
+async def discard_restored_permission_batch(
+    instance: Any, target_sid: str, loop_session_id: str | None,
+) -> bool:
+    """Balance a cold, unanswered batch before the Host admits a fresh user turn.
+
+    The caller owns the session lock and has excluded live work. History omits
+    calls paused before their tool event; only Core's exact batch can fill that
+    gap. This never restores an approval or guesses a completed tool result.
+    """
+    message = unanswered_permission_batch(instance, target_sid, loop_session_id)
+    if message is None:
+        raise RootPermissionQueueError("permission_continuation_state_missing")
+    session = instance.loop_session
+    engine = instance.react_agent.context_engine
+    context = engine.get_context(session_id=target_sid)
+    if context is None:
+        raise RootPermissionQueueError("permission_continuation_context_missing")
+    state = session.get_state(INTERRUPTION_KEY)
+    old_context = copy.deepcopy(context.save_state())
+    old_session_context = copy.deepcopy(session.get_state("context"))
+    ids = {call.id for call in message.tool_calls}
+    messages = list(context.get_messages() or [])
+    if any(getattr(item, "tool_call_id", None) in ids for item in messages):
+        raise RootPermissionQueueError("permission_continuation_context_mismatch")
+    existing = []
+    for item in messages:
+        calls = getattr(item, "tool_calls", None) or []
+        if any(getattr(call, "id", None) in ids for call in calls):
+            existing.append(item)
+    if existing and (len(existing) != 1 or existing[0].tool_calls != message.tool_calls):
+        raise RootPermissionQueueError("permission_continuation_context_mismatch")
+    try:
+        if not existing:
+            await context.add_messages(copy.deepcopy(message))
+        if not await discard_pending_permission_interrupt_for_target(instance, target_sid, loop_session_id):
+            raise RootPermissionQueueError("permission_continuation_discard_failed")
+    except BaseException:
+        context.load_state({context.context_id(): old_context})
+        # Session updates merge dictionaries and treat nested None as deletion.
+        session.update_state({"context": None})
+        session.update_state({INTERRUPTION_KEY: state, "context": old_session_context})
+        raise
     return True
 
 
