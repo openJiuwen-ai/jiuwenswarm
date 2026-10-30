@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import os
 import stat
 from collections.abc import Callable
@@ -25,6 +26,22 @@ MAX_DIRECTORY_ENTRIES = 100
 MAX_EXPANDED_DIRECTORIES = 100
 MAX_TREE_BYTES = 96 * 1024
 MAX_PATH_LENGTH = 1024
+MAX_TEXT_BYTES = 16 * 1024
+
+_IMAGE_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".ico": "image/x-icon", ".avif": "image/avif", ".svg": "image/svg+xml",
+}
+_TEXT_SUFFIXES = frozenset({
+    ".md", ".mdx", ".txt", ".log", ".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs",
+    ".ts", ".tsx", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".conf",
+    ".cfg", ".xml", ".html", ".htm", ".css", ".scss", ".less", ".sh", ".bash",
+    ".zsh", ".ps1", ".bat", ".cmd", ".c", ".h", ".cpp", ".hpp", ".cs", ".java",
+    ".kt", ".kts", ".go", ".rs", ".rb", ".php", ".swift", ".sql", ".r", ".lua",
+    ".vue", ".svelte", ".csv", ".tsv", ".env", ".gitignore", ".dockerignore",
+    ".editorconfig", ".properties", ".rst", ".tex", ".graphql", ".proto", ".ipynb",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +89,19 @@ def _confined(root: Path, relative: str) -> Path:
     if target != root and root not in target.parents:
         raise PermissionError("The path leaves this session's workspace")
     return target
+
+
+def _preview_type(path: Path) -> tuple[str, str]:
+    suffix = path.suffix.lower()
+    if suffix in _IMAGE_TYPES:
+        return "image", _IMAGE_TYPES[suffix]
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if (
+        not suffix or suffix in _TEXT_SUFFIXES or mime_type.startswith("text/")
+        or mime_type in {"application/json", "application/xml", "application/javascript"}
+    ):
+        return "text", "text/plain" if mime_type == "application/octet-stream" else mime_type
+    return "unsupported", mime_type
 
 
 class SessionWorkspaceFiles:
@@ -236,3 +266,64 @@ class SessionWorkspaceFiles:
             nodes.append(node)
         budget.truncated = budget.truncated or truncated
         return nodes, truncated
+
+    async def read_file(self, session_id: str, path: str, channel_id: str = "web") -> dict[str, Any]:
+        """Return small UTF-8 text as data for the plugin's render tree.
+
+        No reference, URL, render node or browser request is created. The
+        caller supplies the session from its trusted invocation context.
+        """
+        try:
+            relative = _relative_path(path)
+        except (TypeError, ValueError):
+            return {"status": "forbidden", "file": None}
+        workspace = await self.workspace(session_id, channel_id)
+        if workspace.status != "ready":
+            return {"status": workspace.status, "file": None}
+        try:
+            return await asyncio.to_thread(self._read_file, workspace.root, relative)
+        except FileNotFoundError:
+            return {"status": "missing", "file": None}
+        except PermissionError:
+            return {"status": "forbidden", "file": None}
+        except (OSError, RuntimeError, ValueError):
+            return {"status": "error", "file": None}
+
+    @staticmethod
+    def _read_file(root: Path, relative: str) -> dict[str, Any]:
+        target = _confined(root, relative)
+        kind, mime_type = _preview_type(target)
+        if kind != "text":
+            return {"status": "unsupported", "file": None}
+        initial = target.stat()
+        if not stat.S_ISREG(initial.st_mode):
+            return {"status": "unsupported", "file": None}
+        if initial.st_size > MAX_TEXT_BYTES:
+            return {"status": "too_large", "file": None}
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(target, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            current = os.fstat(stream.fileno())
+            if not stat.S_ISREG(current.st_mode):
+                return {"status": "unsupported", "file": None}
+            if _confined(root, relative) != target or not os.path.samestat(current, target.stat()):
+                raise PermissionError("The file changed while opening it")
+            if current.st_size > MAX_TEXT_BYTES:
+                return {"status": "too_large", "file": None}
+            data = stream.read(MAX_TEXT_BYTES + 1)
+        if len(data) > MAX_TEXT_BYTES:
+            return {"status": "too_large", "file": None}
+        if b"\0" in data:
+            return {"status": "unsupported", "file": None}
+        try:
+            content = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return {"status": "unsupported", "file": None}
+        return {
+            "status": "ready",
+            "file": {
+                "name": Path(relative).name, "path": relative, "mimeType": mime_type,
+                "size": len(data), "content": content,
+            },
+        }
