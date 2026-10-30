@@ -218,6 +218,69 @@ test('Select preserves local edits without bindings, resets on replace and block
   } finally { await app.close(); }
 });
 
+const treeSelectOptions = [
+  { value: 'alpha', title: 'Alpha', children: [{ value: 'alpha-one', title: 'Alpha One' }] },
+  { value: 'beta', title: 'Beta' },
+];
+const treeSelectEvents = {
+  'ui.select': { id: 'pick', args: { field: 'node' } },
+  'ui.change': { id: 'edit', args: { field: 'node' } },
+  'ui.clear': { id: 'clear' },
+};
+const treeSelectTree = (props = {}, bindings = treeSelectEvents) => ({
+  component: 'TreeSelect', props: { treeData: treeSelectOptions, showSearch: true, allowClear: true, ...props },
+  events: bindings,
+});
+
+test('TreeSelect sends the picked node, the whole selection and clearing through separate bindings', async () => {
+  const app = await setup(treeSelectTree({ ariaLabel: 'Node' }));
+  try {
+    const control = app.container.querySelector('[data-testid="webui-tree-select"]');
+    assert.equal(app.business().length, 0);
+    await changeInput(control.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.deepEqual(app.business().map((request) => request.event).sort(), ['ui.change', 'ui.select']);
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.select').payload, {
+      node_key: '0', revision: 1, action_id: 'pick', args: { field: 'node' }, data: { value: 'beta' },
+    });
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.change').payload.data, { value: 'beta' });
+    assert.match(control.textContent, /Beta/);
+    const clear = control.querySelector('.ant-select-clear');
+    assert.ok(clear);
+    await click(clear);
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.clear').payload.data, {});
+    assert.deepEqual(app.business().filter((request) => request.event === 'ui.change').at(-1).payload.data,
+      { value: null });
+  } finally { await app.close(); }
+});
+
+test('TreeSelect keeps local selection without bindings, resets on valid replace and disables on disconnect', async () => {
+  const app = await setup({ component: 'TreeSelect', props: { treeData: treeSelectOptions, showSearch: true } });
+  try {
+    await changeInput(app.container.querySelector('input'), 'Alpha');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    assert.match(app.container.textContent, /Alpha/);
+    assert.equal(app.business().length, 0);
+    await app.replace(treeSelectTree({ value: 'beta' }));
+    assert.match(app.container.textContent, /Beta/);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(app.container.querySelector('input').disabled, true);
+  } finally { await app.close(); }
+});
+
+test('TreeSelect sends the whole checked selection for change in treeCheckable mode', async () => {
+  const flatTree = [{ value: 'alpha', title: 'Alpha' }, { value: 'beta', title: 'Beta' }];
+  const app = await setup(treeSelectTree({ treeData: flatTree, value: ['alpha'], treeCheckable: true },
+    { 'ui.change': { id: 'edit', args: { field: 'node' } } }));
+  try {
+    await changeInput(app.container.querySelector('input'), 'Beta');
+    await click(document.querySelector('.ant-select-tree-node-content-wrapper'));
+    const change = app.business().find((request) => request.event === 'ui.change');
+    assert.deepEqual([...change.payload.data.value].sort(), ['alpha', 'beta']);
+    assert.equal(app.business().filter((request) => request.event === 'ui.select').length, 0);
+  } finally { await app.close(); }
+});
+
 const switchTree = (props = {}, bindings = { 'ui.change': { id: 'toggle', args: { field: 'enabled' } } }) => ({
   component: 'Switch', props, events: bindings,
 });

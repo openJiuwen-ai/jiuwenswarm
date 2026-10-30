@@ -79,6 +79,11 @@ Select 使用 Ant Design Select 管理本地选择值，value 优先于 defaultV
 搜索按 label 过滤，为已绑定的 `ui.search` 发送 `{searchValue}`；清空为已绑定的 `ui.clear` 发送 `{}`。
 选择值变化由组件本地更新，不额外派发 change；未绑定事件时保留默认操作，disabled 或断连时禁用。
 
+TreeSelect 使用 Ant Design TreeSelect 管理本地选择值，treeData 的 key 缺省取 value，搜索按 title 过滤。
+选中节点时为已绑定的 `ui.select` 发送该节点 `{value}`，为已绑定的 `ui.change` 发送整体选择值：
+单选为字符串，multiple 或 treeCheckable 为数组，清空后分别为 null 与空数组。
+清空动作另为已绑定的 `ui.clear` 发送 `{}`；三项分别绑定，未绑定事件时仍可本地选择，disabled 或断连时禁用。
+
 插件不能提供 style 或 className。宿主可通过 `WebUIStyleOverrides` 按组件注入外观，
 宿主样式优先；Box 与 Button 还可使用原生元素承接宿主布局和按钮样式。
 适配器保留库组件的属性和交互语义，不复制整套控件实现。
@@ -95,5 +100,5 @@ Select 使用 Ant Design Select 管理本地选择值，value 优先于 defaultV
 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`
 和 `test:webui-store` 验证。
 `test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change/click、
-Select 选择/搜索/清空、宿主外观、主题继承和 Iframe 生命周期。
+Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、宿主外观、主题继承和 Iframe 生命周期。
 `test:webui-input` 定向验证 Input 的 click、change 与 Enter 数据、组合输入保护、禁用、草稿更新和 WebClient 传输封装。
