@@ -33,6 +33,7 @@ from jiuwenswarm.agents.harness.flash.tools.flash_todo import (
     _UNIFIED_TODO_NAME,
     UnifiedTodoTool,
 )
+from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
     RefusalScrubGate,
@@ -327,8 +328,9 @@ class FlashTodoRail(DeepAgentRail):
         if not await self._persist_cancel_open_todos(session, open_todos):
             return
         self._open_todos = []
-        rows = await self._refusal_todo_rows(session, open_todos)
-        await self._write_control(session, "todo.updated", {"todos": rows})
+        rows = await self._refusal_todo_rows(session)
+        if rows is not None:
+            await self._write_control(session, "todo.updated", {"todos": rows})
         for todo_id, meta in open_todos:
             await self._write_control(session, "task.complete", {
                 "task_id": f"todo:{todo_id}",
@@ -355,43 +357,22 @@ class FlashTodoRail(DeepAgentRail):
             return False
         return True
 
-    async def _refusal_todo_rows(self, session: Any, open_todos: list) -> list[dict[str, str]]:
-        open_ids = {todo_id for todo_id, _ in open_todos}
+    async def _refusal_todo_rows(self, session: Any) -> list[dict[str, Any]] | None:
+        """Snapshot after cancel. Cancelled rows stay out, matching history replay."""
         items = await self._load_todo_items(session)
-        rows: list[dict[str, str]] = []
-        seen: set[str] = set()
-        for item in items:
-            status = getattr(item.status, "value", item.status)
-            status_text = str(status or "")
-            if item.id in open_ids or status_text == "in_progress":
-                status_text = "cancelled"
-            rows.append({
-                "id": str(item.id),
-                "content": str(getattr(item, "content", "") or ""),
-                "status": status_text,
-                "activeForm": str(getattr(item, "activeForm", "") or ""),
-            })
-            seen.add(str(item.id))
-        for todo_id, meta in open_todos:
-            if todo_id in seen:
-                continue
-            rows.append({
-                "id": todo_id,
-                "content": str(meta.get("content") or ""),
-                "status": "cancelled",
-                "activeForm": "",
-            })
-        return rows
+        if items is None:
+            return None
+        return format_todos_for_frontend(items)
 
-    async def _load_todo_items(self, session: Any) -> list[Any]:
+    async def _load_todo_items(self, session: Any) -> list[Any] | None:
         list_engine = self.engines.get("list")
         if list_engine is None:
-            return []
+            return None
         try:
             return await list_engine.load_todos(session.get_session_id())
         except Exception as exc:
             logger.debug("[FlashTodoRail] load todos for refusal close failed: %s", exc)
-            return []
+            return None
 
     @staticmethod
     async def _write_control(session: Any, stream_type: str, payload: dict[str, Any]) -> None:

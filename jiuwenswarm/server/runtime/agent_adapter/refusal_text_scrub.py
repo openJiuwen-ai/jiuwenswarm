@@ -91,6 +91,11 @@ class RefusalTextScrub:
 
     def on_control(self, chunk_type: str) -> str:
         if chunk_type == REFUSAL_SCRUB_HOLD:
+            if self._payloads:
+                logger.warning(
+                    "[RefusalTextScrub] replaced %d unreleased chat payload(s)",
+                    len(self._payloads),
+                )
             self._clear()
             self.armed = True
             return "arm"

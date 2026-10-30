@@ -1,5 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import logging
+
 from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
     RefusalTextScrub,
     could_still_be_canned_refusal,
@@ -58,6 +60,27 @@ def test_scrub_gate_retries_failed_drop_and_does_not_release() -> None:
         assert gate._hold_pending is False
 
     asyncio.run(_run())
+
+
+def test_second_hold_warns_before_dropping_unreleased_text() -> None:
+    scrub = RefusalTextScrub()
+    scrub.decide("refusal_scrub_hold")
+    scrub.push({"event_type": "chat.delta", "content": "作为一个"})
+    records: list[logging.LogRecord] = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Handler(logging.WARNING)
+    logger = logging.getLogger("jiuwenswarm.common.utils")
+    logger.addHandler(handler)
+    try:
+        assert scrub.decide("refusal_scrub_hold") == "skip"
+    finally:
+        logger.removeHandler(handler)
+    assert scrub.take() == []
+    assert any("replaced 1 unreleased" in record.getMessage() for record in records)
 
 
 def test_ordinary_text_is_released_immediately() -> None:

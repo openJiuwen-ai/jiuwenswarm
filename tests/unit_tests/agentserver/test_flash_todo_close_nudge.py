@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import (
 class _FakeSession:
     def __init__(self, *, fail_writes: int = 0) -> None:
         self.events: list[str] = []
+        self.payloads: list[object] = []
         self.fail_writes = fail_writes
 
     def get_session_id(self) -> str:
@@ -35,6 +36,7 @@ class _FakeSession:
             self.fail_writes -= 1
             raise RuntimeError("stream closed")
         self.events.append(str(getattr(schema, "type", "")))
+        self.payloads.append(getattr(schema, "payload", None))
 
 
 class _RecordingHandler(logging.Handler):
@@ -204,7 +206,10 @@ def _canned_response(**kwargs) -> AssistantMessage:
 
 @pytest.mark.asyncio
 async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
-    rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS})
+    rail, engine = _rail({
+        "collect": TodoStatus.IN_PROGRESS,
+        "script": TodoStatus.PENDING,
+    })
     modify = _FakeModify(engine)
     rail.engines["modify"] = modify
     session = _FakeSession()
@@ -218,7 +223,18 @@ async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
     assert ctx.finished == {"output": MODEL_REFUSAL_BODY, "result_type": "answer"}
     assert modify.calls == [{"action": "cancel", "ids": ["collect"]}]
     assert engine.statuses["collect"] == TodoStatus.CANCELLED
+    assert engine.statuses["script"] == TodoStatus.PENDING
     assert rail._open_todos == []
+    updated = next(
+        payload for event, payload in zip(session.events, session.payloads)
+        if event == "todo.updated"
+    )
+    assert updated["todos"] == [{
+        "id": "script",
+        "content": "任务 script",
+        "activeForm": "任务 script",
+        "status": "pending",
+    }]
     assert session.events == [
         "todo_close_hold",
         "todo_close_drop",
