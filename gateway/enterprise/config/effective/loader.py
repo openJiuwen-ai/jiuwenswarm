@@ -8,7 +8,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen_protocol.agent_models import AgentRequest
+from openjiuwen_protocol.e2a.agent_compat import AgentRequest
 
 from gateway.common.utils import logger
 from gateway.enterprise import is_enterprise
