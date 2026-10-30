@@ -3,7 +3,6 @@ import {
   ClipboardList,
   ChevronDown,
   ChevronRight,
-  CirclePlus,
   Folder,
   FileText,
   PanelLeftOpen,
@@ -448,14 +447,6 @@ export function ColleagueWorkspacePage({
     setPicked({ agentId: conversationAgentId, conversationId });
   };
 
-  const createSession = () => {
-    const id = newId();
-    setFreshId(id);
-    openConversation(agentId, id);
-    setDraft('');
-    setState((current) => selectRecordTab(current, 'conversations'));
-  };
-
   const renameEmployee = (sessionAgentId: string, name: string) => {
     const nextName = name.trim();
     setRenamingId(null);
@@ -872,9 +863,6 @@ export function ColleagueWorkspacePage({
           ) : null}
           <header>
             <strong>{t('jiuwenmate.workspace.tabs.conversations')}</strong>
-            <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.newSession')} onClick={createSession}>
-              <CirclePlus aria-hidden />
-            </button>
           </header>
           {entries.pinned.length + entries.others.length === 0 ? (
             <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSessions')}</p>
