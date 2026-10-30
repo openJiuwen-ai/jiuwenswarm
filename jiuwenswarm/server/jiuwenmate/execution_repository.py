@@ -6,21 +6,25 @@ Session because of joined or truncated strings. Requests are written before
 dispatch and survive restarts; a supplementary message is always a new Request.
 Events are stored once per ``event_id``; a candidate output keeps the ``output_id``
 of the event that first proposed it, and a file candidate is verified in the
-Agent's shared ``output/`` directory before the candidate is stored.
+originating Session's ``sessions/<session_id>/output/`` directory before it is stored.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from jiuwenswarm.server.jiuwenmate.execution_models import (
     ENDED_OUTCOMES,
     AccessSnapshot,
+    PermissionOrigin,
     ConversationRef,
     ExecutionRecord,
     PersistentContractError,
@@ -111,6 +115,27 @@ CREATE TABLE IF NOT EXISTS candidate_outputs (
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (namespace_id, output_id)
 );
+CREATE TABLE IF NOT EXISTS session_artifacts (
+    namespace_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    source_group_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    artifact_kind TEXT NOT NULL,
+    output_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    file_name TEXT,
+    file_path TEXT,
+    file_ref TEXT,
+    file_size INTEGER,
+    url TEXT,
+    snippet TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, artifact_id),
+    UNIQUE (namespace_id, session_id, output_id, artifact_kind, url)
+);
+CREATE INDEX IF NOT EXISTS session_artifacts_scope
+    ON session_artifacts (namespace_id, agent_id, source_group_id, created_at);
 CREATE TABLE IF NOT EXISTS result_deliveries (
     namespace_id TEXT NOT NULL,
     delivery_id TEXT NOT NULL,
@@ -148,6 +173,9 @@ CREATE TABLE IF NOT EXISTS execution_links (
 );
 """
 _TERMINAL_EVENTS = (EventType.EXECUTION_PAUSED.value, EventType.EXECUTION_FINAL.value)
+_DOCUMENT_HOSTS = ("feishu.cn", "larksuite.com", "dingtalk.com")
+_DOCUMENT_PATH_MARKERS = ("/docx/", "/wiki/", "/sheets/", "/bitable/", "/alidocs/", "/i/nodes/", "/drive/")
+_URL_PATTERN = re.compile(r"https?://[^\s<>\])}]+", re.IGNORECASE)
 
 
 def _deliverable(share_mode: str, payload: dict[str, object]) -> bool:
@@ -271,6 +299,41 @@ class ExecutionRepository(SQLiteStore):
             raise PersistentAgentError("session not found", code="NOT_FOUND")
         return self._session(row)
 
+    @staticmethod
+    def _handoff_permission_origin(conn, session, request_input, route) -> PermissionOrigin | None:
+        """Resolve a human only through a delivered host output naming this receiving Agent."""
+        if (request_input.kind != "group_message" or request_input.source.sender_kind != "agent"
+                or route is None or route.channel != "feishu"):
+            return None
+        rows = conn.execute(
+            "SELECT r.record_json, o.payload_json FROM result_deliveries d "
+            "JOIN requests r ON r.namespace_id=d.namespace_id AND r.request_id=d.request_id "
+            "JOIN candidate_outputs o ON o.namespace_id=d.namespace_id AND o.output_id=d.output_id "
+            "AND o.request_id=d.request_id AND o.execution_id=d.execution_id "
+            "WHERE d.namespace_id=? AND d.channel=? AND d.target_id=? AND d.external_message_id=? "
+            "AND d.status='delivered' AND d.notice_text IS NULL AND o.share_mode='message'",
+            (session.namespace_id, route.channel, route.target_id, request_input.source.message_id),
+        ).fetchall()
+        origins = []
+        for row in rows:
+            parent = RequestRecord.from_dict(json.loads(row["record_json"]))
+            parent_route = parent.route_snapshot
+            text = json.loads(row["payload_json"]).get("text")
+            if (parent.request_input.kind != "group_message" or parent_route is None
+                    or (parent_route.channel, parent_route.target_id) != (route.channel, route.target_id)
+                    or not isinstance(text, str) or f"[[agent:{session.agent_id}]]" not in text):
+                continue
+            origin = parent.permission_origin
+            if origin is None and parent.request_input.source.sender_kind == "human":
+                if not parent.access.principal_ref.startswith("feishu:user:"):
+                    continue
+                origin = PermissionOrigin(principal_ref=parent.access.principal_ref, agent_id=parent.agent_id,
+                                          request_id=parent.request_id, route=parent_route)
+            if (origin is not None and origin.principal_ref.startswith("feishu:user:")
+                    and (origin.route.channel, origin.route.target_id) == (route.channel, route.target_id)):
+                origins.append(origin)
+        return origins[0] if len(origins) == 1 else None
+
     def accept_request(
         self,
         session: SessionRecord,
@@ -322,6 +385,7 @@ class ExecutionRepository(SQLiteStore):
                 request_input=request_input,
                 received_at=received_at,
                 route_snapshot=route_snapshot,
+                permission_origin=self._handoff_permission_origin(conn, session, request_input, route_snapshot),
             )
             seq = seq_row["next_seq"]
             conn.execute(
@@ -582,6 +646,16 @@ class ExecutionRepository(SQLiteStore):
             raise PersistentAgentError("ending Request is missing", code="NOT_FOUND")
         record = RequestRecord.from_dict(json.loads(request["record_json"]))
         route = record.route_snapshot
+        session = conn.execute(
+            "SELECT kind, conversation_key FROM sessions WHERE namespace_id=? AND session_id=? AND agent_id=?",
+            (record.namespace_id, record.session_id, record.agent_id),
+        ).fetchone()
+        source_group_id = (
+            session["conversation_key"]
+            if event.event_type == EventType.EXECUTION_FINAL and _failure_of(event) is None
+            and session is not None and session["kind"] == "group"
+            else None
+        )
         if route is None:
             failure = _failure_of(event)
             if failure is not None:
@@ -596,8 +670,15 @@ class ExecutionRepository(SQLiteStore):
                 "WHERE namespace_id = ? AND request_id = ? AND output_id = ?",
                 (event.namespace_id, event.request_id, output_id),
             ).fetchone()
-            if output is None or not _deliverable(output["share_mode"], json.loads(output["payload_json"])):
+            if output is None:
                 continue
+            payload = json.loads(output["payload_json"])
+            if not _deliverable(output["share_mode"], payload):
+                continue
+            if source_group_id is not None:
+                ExecutionRepository._index_session_artifacts(
+                    conn, record, source_group_id, output_id, output["share_mode"], payload, now,
+                )
             status = "available" if route.channel == "web" else "pending"
             conn.execute(
                 "INSERT OR IGNORE INTO result_deliveries (namespace_id, delivery_id, request_id, execution_id, "
@@ -622,6 +703,71 @@ class ExecutionRepository(SQLiteStore):
         if failure is not None:
             ExecutionRepository._enqueue_failure_notice(
                 conn, record, event.execution_id, reason=failure[0], detail=failure[1], now=now,
+            )
+
+    @staticmethod
+    def _index_session_artifacts(
+        conn: sqlite3.Connection,
+        record: RequestRecord,
+        source_group_id: str,
+        output_id: str,
+        share_mode: str,
+        payload: dict[str, object],
+        now: datetime,
+    ) -> None:
+        """Index only final file outputs and Feishu/DingTalk document links from group Sessions."""
+        base = (record.namespace_id, record.agent_id, record.session_id, source_group_id)
+        if share_mode in FILE_SHARE_MODES:
+            file_path, file_ref, file_size = payload.get("file_path"), payload.get("file_ref"), payload.get("file_size")
+            if (not isinstance(file_path, str) or not isinstance(file_ref, str)
+                    or isinstance(file_size, bool) or not isinstance(file_size, int)):
+                return
+            file_name = file_path.rsplit("/", 1)[-1]
+            snippet = payload.get("text")
+            if not isinstance(snippet, str):
+                snippet = None
+            elif len(snippet) > 4096:
+                snippet = snippet[:4096]
+            artifact_id = "art_" + hashlib.sha256(
+                f"{record.namespace_id}\0{record.agent_id}\0{record.session_id}\0{output_id}\0file".encode()
+            ).hexdigest()[:40]
+            conn.execute(
+                "INSERT OR IGNORE INTO session_artifacts (namespace_id, agent_id, session_id, source_group_id, "
+                "artifact_id, artifact_kind, output_id, title, file_name, file_path, file_ref, file_size, "
+                "url, snippet, created_at) VALUES (?,?,?,?,?,'file',?,?,?,?,?,?,NULL,?,?)",
+                (*base, artifact_id, output_id, file_name, file_name, file_path, file_ref, file_size,
+                 snippet, now.isoformat()),
+            )
+            return
+
+        text = payload.get("text")
+        if share_mode != "message" or not isinstance(text, str):
+            return
+        for raw_url in _URL_PATTERN.findall(text):
+            url = raw_url.rstrip(".,;:!?\"'`)")
+            if len(url) > 4096:
+                continue
+            try:
+                parsed = urlsplit(url)
+                host = (parsed.hostname or "").lower().rstrip(".")
+                port = parsed.port
+            except ValueError:
+                continue
+            if (parsed.scheme.lower() != "https" or parsed.username is not None or parsed.password is not None
+                    or port is not None or not any(host == domain or host.endswith("." + domain)
+                                                             for domain in _DOCUMENT_HOSTS)
+                    or not any(marker in parsed.path.lower() for marker in _DOCUMENT_PATH_MARKERS)):
+                continue
+            artifact_id = "art_" + hashlib.sha256(
+                f"{record.namespace_id}\0{record.agent_id}\0{record.session_id}\0{output_id}\0{url}".encode()
+            ).hexdigest()[:40]
+            prefix = text.split(raw_url, 1)[0].strip()
+            title = (prefix.rsplit("\n", 1)[-1] or "在线文档")[:512]
+            conn.execute(
+                "INSERT OR IGNORE INTO session_artifacts (namespace_id, agent_id, session_id, source_group_id, "
+                "artifact_id, artifact_kind, output_id, title, file_name, file_path, file_ref, file_size, "
+                "url, snippet, created_at) VALUES (?,?,?,?,?,'online_doc',?,?,NULL,NULL,NULL,NULL,?,?,?)",
+                (*base, artifact_id, output_id, title, url, text[:4096], now.isoformat()),
             )
 
     @staticmethod
@@ -741,6 +887,36 @@ class ExecutionRepository(SQLiteStore):
             ).fetchone()
         return None if row is None else AgentEvent.model_validate_json(row["event_json"])
 
+    def search_session_artifacts(
+        self, namespace_id: str, agent_id: str, group_ids: Sequence[str], *, limit: int = 10_000,
+    ) -> tuple[dict[str, object], ...]:
+        """List only final artifacts indexed from group Sessions in the requested Agent scope."""
+        if not group_ids:
+            return ()
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10_000:
+            raise ValueError("artifact search limit is invalid")
+        for group_id in group_ids:
+            require_identifier("source_group_id", group_id)
+        placeholders = ",".join("?" for _ in group_ids)
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM session_artifacts WHERE namespace_id=? AND agent_id=? "
+                f"AND source_group_id IN ({placeholders}) ORDER BY created_at DESC, artifact_id LIMIT ?",
+                (namespace_id, agent_id, *group_ids, limit),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def session_artifact_candidates(self, namespace_id: str, agent_id: str) -> tuple[dict, ...]:
+        """Registered group files for host-only Session-aware tool preflight."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM session_artifacts WHERE namespace_id=? AND agent_id=? AND artifact_kind='file' "
+                "ORDER BY created_at, artifact_id LIMIT 10001", (namespace_id, agent_id),
+            ).fetchall()
+        if len(rows) > 10_000:
+            raise PersistentAgentError("artifact provenance index is too large", code="ARTIFACT_SEARCH_UNAVAILABLE")
+        return tuple(dict(row) for row in rows)
+
     def result_deliveries(self, namespace_id: str, request_id: str) -> list[dict[str, object]]:
         """Delivery states for one Request, oldest first; output bodies are not copied here."""
         with self._transaction() as conn:
@@ -763,7 +939,7 @@ class ExecutionRepository(SQLiteStore):
     ) -> list[dict[str, object]]:
         """Atomically claim IM deliveries and return their stored route and payload.
 
-        A file delivery also carries a logical key for the Agent's shared ``output/`` file
+        A file delivery also carries a logical key for the originating Session's ``output/`` file
         and the ``file_key`` of an earlier upload, so a retry sends the uploaded file again
         instead of uploading anew.
         """

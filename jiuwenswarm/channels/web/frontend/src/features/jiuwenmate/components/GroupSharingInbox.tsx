@@ -37,6 +37,8 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
   };
   const destination = (target: SharingTarget) =>
     [target.name || target.id, target.channel, target.app_id, target.kind, target.id].filter(Boolean).join(' · ');
+  const platformName = (platform?: string | null) => platform
+    ? t(`jiuwenmate.im.${platform}`, { defaultValue: platform }) : '';
   const querySummary = (query: SharingQuery) => {
     const seen = new Set<string>();
     const keywords = [query.query, ...(query.keywords ?? [])].filter((value): value is string => {
@@ -50,7 +52,11 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
       ? keywords.join(i18n.language.toLowerCase().startsWith('zh') ? ' 或 ' : ' OR ')
       : null;
     const criteria: [string, string | null][] = [
+      ['platforms', query.platforms?.length ? query.platforms.map(platformName).join(', ') : null],
       ['keyword', keywordSummary],
+      ['contentTypes', query.content_types?.length
+        ? query.content_types.map((kind) => t('jiuwenmate.sharing.contentType.' + kind)).join(', ')
+        : null],
       ['since', query.since],
       ['until', query.until],
       ['sender', query.sender_id],
@@ -139,7 +145,9 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                       <div>
                         <dt data-testid="jiuwenmate-sharing-source-label">{t('jiuwenmate.sharing.source')}</dt>
                         <dd data-testid="jiuwenmate-sharing-sources">
-                          {approval.source_groups.map((group) => `${group.name || group.group_id} (${group.group_id})`).join(', ')}
+                          {approval.source_groups.map((group) =>
+                            [platformName(group.platform), `${group.name || group.group_id} (${group.group_id})`]
+                              .filter(Boolean).join(' · ')).join(', ')}
                         </dd>
                       </div>
                       <div>
@@ -155,6 +163,11 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                       <div>
                         <dt data-testid="jiuwenmate-sharing-query-label">{t('jiuwenmate.sharing.query')}</dt>
                         <dd data-testid="jiuwenmate-sharing-query">{querySummary(approval.query)}</dd>
+                      </div>
+                      <div>
+                        <dt>{t('jiuwenmate.sharing.contentTypes')}</dt>
+                        <dd>{approval.content_types.map((kind) =>
+                          t('jiuwenmate.sharing.contentType.' + kind)).join(', ')}</dd>
                       </div>
                       <div>
                         <dt data-testid="jiuwenmate-sharing-summary-label">{t('jiuwenmate.sharing.summary')}</dt>
@@ -176,7 +189,8 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                             data-variant={`${message.group_id}:${message.message_id}`}
                           >
                             <strong data-testid="jiuwenmate-sharing-message-sender">
-                              {message.group_name || message.group_id} · {message.sender_name} · {message.message_id}
+                              {[platformName(message.platform), message.group_name || message.group_id,
+                                message.sender_name, message.message_id].filter(Boolean).join(' · ')}
                             </strong>
                             <pre data-testid="jiuwenmate-sharing-message-text">
                               {message.text ?? t('jiuwenmate.sharing.noMessageText')}
@@ -185,6 +199,39 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                         ))}
                       </ol>
                     </details>
+                    {approval.artifacts.length > 0 ? (
+                      <details data-testid="jiuwenmate-sharing-artifacts">
+                        <summary data-testid="jiuwenmate-sharing-artifacts-expand">
+                          {t('jiuwenmate.sharing.exactArtifacts', { count: approval.artifacts.length })}
+                        </summary>
+                        <ol className="jiuwenmate-sharing-message-list" data-testid="jiuwenmate-sharing-artifact-list">
+                          {approval.artifacts.map((artifact) => (
+                            <li
+                              key={artifact.group_id + ':' + artifact.artifact_id}
+                              data-testid="jiuwenmate-sharing-artifact"
+                              data-variant={artifact.group_id + ':' + artifact.artifact_id}
+                            >
+                              <strong>
+                                {[platformName(artifact.platform), artifact.group_name].filter(Boolean).join(' · ')} · {t('jiuwenmate.sharing.contentType.' +
+                                  (artifact.artifact_kind === 'file' ? 'files' : 'online_docs'))}
+                              </strong>
+                              <p>{artifact.file_name || artifact.title}</p>
+                              {artifact.file_size !== null ? (
+                                <small>{t('jiuwenmate.sharing.fileSize', { size: artifact.file_size })}</small>
+                              ) : null}
+                              {artifact.url ? (
+                                <p>
+                                  <a href={artifact.url} target="_blank" rel="noopener noreferrer">
+                                    {artifact.title || artifact.url}
+                                  </a>
+                                </p>
+                              ) : null}
+                              {artifact.snippet ? <pre>{artifact.snippet}</pre> : null}
+                            </li>
+                          ))}
+                        </ol>
+                      </details>
+                    ) : null}
                     <p data-testid="jiuwenmate-sharing-created">{t('jiuwenmate.sharing.created', { time: date(approval.created_at) })}</p>
                     <p data-testid="jiuwenmate-sharing-expires">{t('jiuwenmate.sharing.expires', { time: date(approval.expires_at) })}</p>
                     {approval.decided_at != null ? (

@@ -59,7 +59,7 @@ class _Runtime:
         self.bound = bound
 
     def is_available(self, scope):
-        assert scope == DingTalkCliScope("local", "employee-1")
+        assert (scope.namespace_id, scope.agent_id) == ("local", "employee-1")
         return self.bound
 
     async def execute(self, scope, argv):
@@ -135,6 +135,8 @@ async def test_group_request_exposes_only_trusted_dingtalk_group_context_to_the_
     tool = build_dingtalk_cli_tool({}, context)
     description = result.tools[0].type + "\n" + tool._card.description
 
+    assert context.extras["jiuwenmate.dingtalk_cli"][1].app_id == route.app_id
+
     assert "cid-current-group" in description
     assert "staff-42" in description
     assert "cid-from-input" not in description
@@ -199,7 +201,7 @@ async def test_calendar_event_creation_uses_trusted_sender_from_dingtalk_message
 
     assert result == {"created": True, "eventId": "event-91"}
     assert runtime.created == (
-        DingTalkCliScope("local", "employee-1"),
+        DingTalkCliScope("local", "employee-1", app_id="app-1"),
         {
             "sender_staff_id": "staff-42",
             "title": "项目评审",
@@ -248,7 +250,7 @@ async def test_calendar_event_can_include_members_of_only_the_trusted_current_gr
 
     assert result == {"created": True, "eventId": "event-91", "attendeeCount": 3}
     assert runtime.created == (
-        DingTalkCliScope("local", "employee-1"),
+        DingTalkCliScope("local", "employee-1", app_id="app-1"),
         {
             "sender_staff_id": "staff-42",
             "title": "全员会议",
@@ -465,7 +467,7 @@ async def test_group_document_creation_uses_only_trusted_group_context():
 
     assert result["created"] is True
     assert runtime.created == (
-        DingTalkCliScope("local", "employee-1"),
+        DingTalkCliScope("local", "employee-1", app_id="app-1"),
         {"conversation_id": "cid-trusted", "sender_staff_id": "staff-42", "title": "test", "content": "hello"},
     )
 
@@ -571,7 +573,7 @@ async def test_group_document_edit_uses_only_trusted_group_and_sender_context():
 
     assert result == {"updated": True, "dentryId": "dentry-7"}
     assert runtime.edited == (
-        DingTalkCliScope("local", "employee-1"),
+        DingTalkCliScope("local", "employee-1", app_id="app-1"),
         {
             "conversation_id": "cid-trusted", "sender_staff_id": "staff-42",
             "dentry_id": "dentry-7", "content": "hello",

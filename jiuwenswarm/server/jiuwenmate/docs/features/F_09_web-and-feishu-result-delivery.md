@@ -291,13 +291,13 @@ AgentServer 启动后扫描 `pending`、过期 `sending` 与 `unknown`：`pendin
 | 文件类 `share_mode` | 查询接口返回受控文件描述；下载由带认证的服务端路由解析 `file_ref`，不返回物理路径 | PA-08 resolver → Gateway 上传 → 可见文件消息（按 PA-08 share mode） | 上传与所需可见消息阶段分别成功并落库 |
 | 未知 / 尚未支持的模式 | 不把引用伪装成可下载链接 | 不发送原始 `file_ref` | 记录不支持 / blocked，等待 PA-08 契约，不降级为裸路径或文本猜测 |
 
-Persistent Agent 工作空间的最终文件源路径遵循 F_14/JM-14：Agent 应先把需要交付的文件复制或移动到共享目录 `output/<文件名>`，再通过现有 `share_file` 以工作空间相对路径引用它。工作空间 `output/` 是 `<data_dir>/workspaces/<namespace_id>/<agent_id>/output/`，Agent 可跨 Session 读取；例如默认数据目录下是 `~/.jiuwenswarm/jiuwenmate/workspaces/local/<agent_id>/output/`。
+Persistent Agent 工作空间的最终文件源路径遵循 F_14/JM-14：Agent 将需要交付的文件复制或移动到当前 Session 的 `sessions/<session_id>/output/<文件名>`，再通过 `share_file` 以工作空间相对路径引用。文件交付与下载定位均保留 Session ID，避免跨 Session 解析。
 
 二维码 PNG 等现有 `_is_image_file` 支持的图片通过既有 `image.create` 接口上传，并发送 `msg_type=image`，直接在聊天内展示；PPT、PDF 等继续上传和发送普通文件。复用 JM-09 现有 `file_key` 回执字段保存平台上传标识：图片保存原始 `image_key`，普通文件保存原始 `file_key`；重试时按 Feishu 图片标识的 `img_` 前缀还原图片消息类型，无需重新读取工作空间文件。升级前已按普通文件上传的 PNG 仍复用其旧文件 key 按文件发送，不把旧文件 key 当图片 key 使用。图片上传失败时返回既有上传失败结果，不自动另发文件；图文说明、稳定 UUID 和未知结果规则保持。此调整仅作用于 `send_persistent_result`，个人版图片、文件发送流程不变，不增加工具、配置或数据库字段。平台消息格式见[飞书图片消息说明](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json)。
 
-本方案最初设计由宿主将文件复制到内部 `outputs/`；该复制设计已由 **2026-10-21 JM-09 实施调整**替代。当前不再创建或读取宿主 `outputs/`：AgentServer 在接收文件候选和终态时核验来源文件的大小与 SHA-256；Web 生成文件视图及 Gateway 投递时，使用 `namespace_id/agent_id/output/<文件名>` 这一逻辑 key，在同一个 Agent 工作空间中重新解析并核验原文件。绝对本机路径不进入 Gateway 消息。Web 下载 URL 指向该原文件，不创建副本；Feishu 上传成功后保留平台 `file_key`，后续重试可直接复用，不要求重新读取源文件。已有 `outputs/` 目录和文件不会被本次代码删除，但新投递流程不再依赖它们。
+本方案最初设计由宿主将文件复制到内部 `outputs/`；该复制设计已由 **2026-10-21 JM-09 实施调整**替代。当前不再创建或读取宿主 `outputs/`：AgentServer 在接收文件候选和终态时核验来源文件的大小与 SHA-256；Web 文件视图及 Gateway 投递使用 `namespace_id/agent_id/sessions/<session_id>/output/<文件名>` 逻辑 key，在同一个 Agent 工作空间中重新解析并核验原文件。绝对本机路径不进入 Gateway 消息。Web 下载 URL 指向该 Session 原文件，不创建副本；Feishu 上传成功后保留平台 `file_key`，后续重试可直接复用，不要求重新读取源文件。Agent 根目录旧 `output/` 及历史 `outputs/` 不会被代码自动迁移或删除，新文件工具和投递解析不将其视为 Session 交付目录。
 
-直接使用共享源文件意味着它不是不可变归档：如果 Agent 后续覆盖或删除同名文件，重新生成 Web 文件视图或执行尚未上传的 Feishu 投递时会因摘要或大小不匹配而失败关闭；已经上传并记录的 Feishu `file_key` 仍可用于后续发送。已签发的 Web 下载 URL 当前携带的是受签名保护的文件路径，不携带内容摘要；如果文件在签发后被覆盖，旧 URL 可能读到新内容。需要保留历史文件时，应由 Agent 以不同文件名保存到 `output/`；Web URL 的下载时内容校验留作后续增强，不恢复 `outputs/` 副本。
+直接使用 Session 源文件意味着它不是不可变归档：如果 Agent 后续覆盖或删除同名文件，重新生成 Web 文件视图或执行尚未上传的 Feishu 投递时会因摘要或大小不匹配而失败关闭；已经上传并记录的 Feishu `file_key` 仍可用于后续发送。已签发的 Web 下载 URL 当前携带的是受签名保护的文件路径，不携带内容摘要；如果文件在签发后被覆盖，旧 URL 可能读到新内容。需要保留历史版本时，应使用不同文件名；Web URL 的下载时内容校验留作后续增强，不恢复 `outputs/` 副本。
 
 这个目录约定本身不等于 PA-08 `file_ref` 解析、Web 下载、飞书上传或文件消息投递已完成；这些仍按上表的授权解析和分阶段投递契约验收。
 
@@ -480,3 +480,7 @@ uv run pytest `
 - 2026-10-15：首次建立方案。基于 JM-04、JM-08、JM-10.02 现状与旧版 persistent-agent 参考，提出 Web 查询即成功、飞书持久 outbox + Gateway 回执、JM-08 来源路由快照、PA-08 文件和 PA-15 协作分门控。方案尚待评审，未实现、未验证。
 - 2026-10-15：JM-09 负责人改为闫祉君；实现文本投递与 JM-08 Request 路由快照 / E2A ACK 适配，补充 101 项聚焦测试和 207 项联合个人版回归证据。将 PA-15 的职责校正为副作用工具意图记账：不再把它描述成协作发送接口或终态文本投递硬依赖；真实 Agent / Feishu 联调、PA-08 文件及协作发送触发契约列为遗留。
 - 2026-10-15：复核投递恢复状态：改为逐条领取后立即发送，取消时未发送的记录不会被误转成 `unknown`；同一轮跳过已尝试的 pending 项；Gateway 明确目标 app 断连 / 无可用路由时回 `pending`，相同 pending ACK 可幂等落库。聚焦与个人版联合回归 249 项通过，Windows 权限位测试单独排除；更新 ACK 和状态机说明。
+
+### 2026-10-30 飞书附件发送参数兼容修复
+
+真实请求已完成本地文件生成、校验与 share_file 登记，正文 delivered，但附件为 unknown / FEISHU_SEND_ERROR。Gateway 将钉钉专用 share_mode、file_name 参数也传给飞书，导致真实发送方法在上传前抛 TypeError。现按渠道传参，只向钉钉传这两个字段，飞书复用原 file_path／file_key 上传与重试流程。新增测试通过真实 FeishuChannel 发送方法验证本地 Session 文件和已上传 file_key 两种情况，网络调用为替身；4 项通过，另钉钉群文件参数回归 1 项通过。旧 unknown 记录不自动重发，真实平台待用户重启服务后用新请求复测。

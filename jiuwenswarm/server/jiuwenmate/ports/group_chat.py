@@ -111,6 +111,8 @@ class HostGroupChatPort:
             query = GroupMessageQuery.model_validate(query)
         except (ValidationError, TypeError, ValueError):
             return self._search_result(execution, "failed", reason="The group history search request is invalid.")
+        if "messages" not in query.content_types:
+            return self._search_result(execution, "empty", query_complete=True)
         try:
             self._identity(execution)
             session = await asyncio.to_thread(self._sessions.get_session, execution.namespace_id,
@@ -131,10 +133,16 @@ class HostGroupChatPort:
     async def sharing_sources(self, execution: ExecutionContext, query: GroupMessageQuery) -> tuple[dict, ...]:
         """Resolve the authorized search scope for the host's owner-approval gate only."""
         self._identity(execution)
+        session = await asyncio.to_thread(self._sessions.get_session, execution.namespace_id, execution.session_id)
+        if (session.agent_id != execution.agent_id or
+                session.conversation.kind not in ("web_direct", "im_direct", "group")):
+            raise PersistentAgentError("this Session cannot search group history", code="FORBIDDEN")
         authorized = await self._authorized_groups(execution, query)
         targets, _ = self._resolve_targets(query, authorized)
         return tuple({"group_id": group_id, "name": authorized[group_id]["name"] or group_id,
                       "app_id": authorized[group_id]["access"].app_id,
+                      "platform": authorized[group_id]["group"].platform,
+                      "platform_chat_id": authorized[group_id]["group"].platform_chat_id,
                       "visible_from": authorized[group_id]["access"].visible_from.isoformat()}
                      for group_id in targets)
 
@@ -257,7 +265,10 @@ class HostGroupChatPort:
                     incomplete_reason = "Group history changed; run a new search."
 
         hits = tuple(sorted(
-            (hit for _, page in pages for hit in page.hits),
+            (hit.model_copy(update={
+                "platform": authorized[hit.group_id]["group"].platform,
+                "platform_chat_id": authorized[hit.group_id]["group"].platform_chat_id,
+            }) for _, page in pages for hit in page.hits),
             key=lambda hit: (-time_micros(hit.message.received_at), hit.group_id, hit.message.message_id),
         ))
         if changed_during_read:
@@ -306,6 +317,10 @@ class HostGroupChatPort:
         try:
             unresolved = await asyncio.to_thread(self._groups.unresolved_accesses, execution.namespace_id,
                                                  execution.agent_id)
+            if query.platforms:
+                unresolved = [access for access in unresolved if (
+                    await asyncio.to_thread(self._groups.get, execution.namespace_id, access.group_id)
+                ).platform in query.platforms]
             unresolved_ids = {access.group_id for access in unresolved}
             if ((not query.group_ids and not query.group_names and unresolved_ids) or
                     unresolved_ids.intersection(query.group_ids)):
@@ -327,6 +342,8 @@ class HostGroupChatPort:
             access = by_group[group_id][0]
             try:
                 group = await asyncio.to_thread(self._groups.get, execution.namespace_id, group_id)
+                if query.platforms and group.platform not in query.platforms:
+                    continue
                 state = await self._verify(access, group)
             except Exception as exc:
                 raise _SearchUnavailable("Current group membership could not be verified.") from exc
@@ -341,7 +358,21 @@ class HostGroupChatPort:
     @staticmethod
     def _resolve_targets(query: GroupMessageQuery,
                          authorized: dict[str, dict[str, object]]) -> tuple[tuple[str, ...], bool]:
+        if query.platforms:
+            authorized = {group_id: entry for group_id, entry in authorized.items()
+                          if entry["group"].platform in query.platforms}
         requested_ids = set(query.group_ids)
+        resolved_ids = set()
+        for requested_id in requested_ids:
+            if requested_id in authorized:
+                resolved_ids.add(requested_id)
+                continue
+            aliases = [group_id for group_id, item in authorized.items()
+                       if item["group"].platform_chat_id == requested_id]
+            if len(aliases) != 1:
+                raise _SearchUnavailable("Requested group ID is unavailable or ambiguous; use the host group ID.")
+            resolved_ids.add(aliases[0])
+        requested_ids = resolved_ids
         requested_names = set(query.group_names)
         scope_all = not requested_ids and not requested_names
         if scope_all:
@@ -364,9 +395,12 @@ class HostGroupChatPort:
                 if len(matching) != 1:
                     if requested_ids and not matching:
                         raise _SearchUnavailable("One or more requested group targets are unavailable.")
-                    ids = ", ".join(matching if requested_ids else sorted(
+                    candidate_ids = matching if requested_ids else sorted(
                         group_id for group_id, item in authorized.items() if item["name"] == requested_name
-                    ))
+                    )
+                    ids = ", ".join(
+                        f"{group_id} ({authorized[group_id]['group'].platform})" for group_id in candidate_ids
+                    )
                     raise _SearchUnavailable(f"This authorized group name is ambiguous; specify a group ID: {ids}"[:4096])
             matching_names.update(matching)
         targets = requested_ids & matching_names if requested_ids else matching_names
@@ -394,6 +428,8 @@ class HostGroupChatPort:
 
 def _query_digest(query: GroupMessageQuery) -> str:
     payload = query.model_dump(mode="json", exclude={"cursor"})
+    if not query.platforms:
+        payload.pop("platforms", None)
     payload["group_ids"] = sorted(set(payload["group_ids"]))
     payload["group_names"] = sorted(set(payload["group_names"]))
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

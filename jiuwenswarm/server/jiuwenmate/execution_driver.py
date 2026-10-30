@@ -89,15 +89,16 @@ def outcome_of(terminal: core.AgentEvent | None) -> str:
 
 
 def _session_workspace_guidance(session_id: str, session_workspace: Path, output_dir: Path) -> str:
-    """Describe the per-Session draft directory and shared final-output directory to this Invocation."""
+    """Describe this Session's draft and final-output directories to the Invocation."""
     return (
         "# 本次执行的文件目录\n\n"
         f"本次 Session 的中间产物目录是 `{session_workspace}`（工作空间相对路径 `sessions/{session_id}/`）。"
         "普通中间文件直接放在该目录根下；仅 Lark Slides 专用的计划、截图等放在该目录的 `.lark-slides/`。"
         "不要读取或修改其他 Session 的草稿。\n"
-        f"需要交付给用户的最终文件放入 Agent 共享目录 `{output_dir}`（工作空间相对路径 `output/`）。"
-        "最终文件从中间目录复制或移动到 `output/` 后，再用 `share_file` 登记相对路径 `output/<文件名>`。"
-        "不同会话可以读取同一 Agent 的 `output/` 文件。"
+        f"需要交付给用户的最终文件放入本 Session 的输出目录 `{output_dir}` "
+        f"（工作空间相对路径 `sessions/{session_id}/output/`）。"
+        f"最终文件从中间目录复制或移动到 `sessions/{session_id}/output/` 后，再用 `share_file` 登记该相对路径下的文件。"
+        "不要读取其他 Session 的输出文件；跨群消息搜索不会授权读取其他 Session 的文件。"
     )
 
 
@@ -184,7 +185,7 @@ class ExecutionDriver:
                 record.namespace_id, record.agent_id, record.session_id
             )
             office = self._workspaces.path(record.namespace_id, record.agent_id)
-            output_dir = office / "output"
+            output_dir = session_workspace / "output"
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
             )
@@ -195,6 +196,7 @@ class ExecutionDriver:
                 record.agent_id,
                 knowledge_root=snapshot.knowledge_root,
                 permission_profile=permission_profile,
+                enforce_session_boundary=record.request_input.kind == "group_message",
             )
             group_chat_port = None
             if (record.request_input.kind in ("direct_message", "group_message") and self._groups is not None and
@@ -270,11 +272,18 @@ class ExecutionDriver:
                 route_snapshot=record.route_snapshot,
             )
             dingtalk_commit_guard.bind_context(context)
+            group_cli = None
+            if group_chat_port is not None and self._group_sharing is not None:
+                from jiuwenswarm.server.jiuwenmate.cli_group_sharing import CliGroupSharing
+
+                group_cli = CliGroupSharing(sharing=self._group_sharing, group_port=group_chat_port,
+                                            cli=self._cli, session_workspace=session_workspace)
             bind_bash_runtime(
                 context,
                 office=office,
                 cli=self._cli,
                 permission_profile=getattr(spec, "permission_profile", permission_profile),
+                group_cli=group_cli,
             )
             await handle._attach(context)
             inputs = record.request_input

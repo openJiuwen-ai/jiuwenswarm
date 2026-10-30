@@ -27,6 +27,7 @@ async def test_resume_is_owned_by_the_original_channel_runtime(tmp_path, channel
     state, event = paused_request(channel="web" if channel == "web" else "feishu",
                                  app_id=None if channel == "web" else "app-1")
     state = replace(state, record=replace(state.record, route_snapshot=replace(state.record.route_snapshot, channel=channel)))
+    manager._sessions.get_request = Mock(return_value=state)
     approval = PermissionApprovalRepository(tmp_path / "approval.sqlite3").create(state, event, now=NOW)
     manager._schedule_permission_resume(approval)
     await asyncio.gather(*manager._permission_resume_tasks.values())

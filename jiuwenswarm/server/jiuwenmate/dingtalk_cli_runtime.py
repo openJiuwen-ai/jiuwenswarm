@@ -24,10 +24,13 @@ class DingTalkCliScope:
 
     namespace_id: str
     agent_id: str
+    app_id: str | None = None
 
     def __post_init__(self) -> None:
         if not _SCOPE_PART.fullmatch(self.namespace_id) or not _SCOPE_PART.fullmatch(self.agent_id):
             raise ValueError("invalid DingTalk CLI scope")
+        if self.app_id is not None and not _SCOPE_PART.fullmatch(self.app_id):
+            raise ValueError("invalid DingTalk CLI application")
 
 
 class DingTalkCliRuntimePort(Protocol):

@@ -30,6 +30,11 @@ def _part(value: str) -> str:
     return value
 
 
+def cli_preview_root(root: Path, namespace_id: str, agent_id: str) -> Path:
+    identity = _part(namespace_id) + "\0" + _part(agent_id)
+    return Path(root) / "cli_read_previews" / hashlib.sha256(identity.encode()).hexdigest()[:16]
+
+
 def _write_private_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -65,7 +70,7 @@ async def _lock(path: Path):
         lock.release()
 
 
-async def _run(argv: list[str], stdin: str, env: dict[str, str]) -> str:
+async def _run(argv: list[str], stdin: str, env: dict[str, str], *, cwd: str | None = None) -> str:
     """Resolve launchers using the child PATH, including Windows npm launchers."""
     executable = shutil.which(argv[0], path=env.get("PATH"))
     if not executable:
@@ -81,6 +86,8 @@ async def _run(argv: list[str], stdin: str, env: dict[str, str]) -> str:
         batch_command = f"chcp 65001>nul & call {quoted}"
     options = {"stdin": asyncio.subprocess.PIPE, "stdout": asyncio.subprocess.PIPE,
                "stderr": asyncio.subprocess.PIPE, "env": env}
+    if cwd is not None:
+        options["cwd"] = cwd
     if os.name == "nt":
         options["creationflags"] = subprocess.CREATE_NO_WINDOW
     else:
@@ -197,6 +204,39 @@ class FeishuCliRuntime:
 
     def _binary(self) -> Path:
         return self.root / "cli" / "bin" / ("lark-cli.cmd" if os.name == "nt" else "lark-cli")
+
+    async def run_group_read(self, namespace_id: str, agent_id: str, argv: list[str]) -> dict:
+        """Host-only readonly preview; no model shell text or caller-selected profile is executed."""
+        operations = {"+chat-messages-list", "+messages-search", "+messages-mget", "+threads-messages-list",
+                      "+messages-resources-download"}
+        raw_message = (len(argv) >= 3 and argv[:2] == ["api", "GET"]
+                       and re.fullmatch(r"/open-apis/im/v1/messages/om_[A-Za-z0-9_-]+", argv[2]) is not None)
+        if (not raw_message and (len(argv) < 2 or argv[0] != "im" or argv[1] not in operations)
+                or any(flag in argv for flag in ("--profile", "--config", "--download-resources"))):
+            raise ValueError("unsupported host CLI preview")
+        if self.status(namespace_id, agent_id).get("status") != "ready":
+            raise RuntimeError("Agent Feishu CLI is not ready")
+        root = cli_preview_root(self.root, namespace_id, agent_id)
+        directory = root
+        if argv[1] == "+messages-resources-download":
+            if "--output" not in argv:
+                raise ValueError("private download target is required")
+            target = Path(argv[argv.index("--output") + 1])
+            if not target.is_absolute() or not target.resolve().is_relative_to(root.resolve()):
+                raise ValueError("download target is outside the private preview root")
+            directory = target.parent
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        output = await self._run([str(self._binary()), *argv], "", self.shell_environment(namespace_id, agent_id),
+                                 cwd=str(directory))
+        if len(output.encode("utf-8")) > 2 * 1024 * 1024:
+            raise RuntimeError("CLI preview is too large")
+        try:
+            result = json.loads(output)
+        except ValueError:
+            raise RuntimeError("CLI did not return a structured preview") from None
+        if not isinstance(result, dict) or result.get("ok") is False:
+            raise RuntimeError("CLI preview failed")
+        return result
 
     def _binding(self, namespace_id: str, agent_id: str):
         if namespace_id != "local":
