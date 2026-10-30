@@ -12,6 +12,7 @@ from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
 
 from jiuwenswarm.server.runtime.group_service import GroupError, group_lock, group_path, read_group
 from jiuwenswarm.server.runtime.session import lifecycle
+from jiuwenswarm.server.runtime import group_files
 
 logger = logging.getLogger(__name__)
 TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted", "timed_out"})
@@ -451,6 +452,8 @@ def public_execution(record: dict) -> dict:
     for key, value in record.items():
         if key not in internal_fields:
             result[key] = value
+    if "attachments" in result:
+        result["attachments"] = group_files.apply_file_overrides(result["attachments"], {})
     return result
 
 
@@ -524,6 +527,9 @@ async def project_group_stream_event(session_id: str, event: dict) -> dict | Non
         message = conversation_message(row, session_id).model_dump(mode="json")
         from jiuwenswarm.server.runtime.group_reply import correlate_public_reply
 
+        message["attachments"] = group_files.apply_file_overrides(
+            message.get("attachments", []), group.get("file_overrides") or {},
+        )
         correlation = correlate_public_reply(session_id, message)
         return {
             "event_type": "group.message", "group_id": session_id,

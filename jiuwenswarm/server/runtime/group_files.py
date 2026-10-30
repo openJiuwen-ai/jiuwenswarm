@@ -33,12 +33,23 @@ def _deleted(path: str, override: dict) -> bool:
         return True
 
 
+def normalize_attachment(item: dict) -> dict:
+    """Adapt agent file fields to the public group attachment contract."""
+    result = dict(item)
+    for target, source in (("path", "file_path"), ("name", "file_name")):
+        if not result.get(target) and isinstance(result.get(source), str):
+            result[target] = result[source]
+    return result
+
+
 def apply_file_overrides(attachments: list, overrides: dict) -> list:
     """Return attachments with renamed display names and deleted files removed."""
-    if not overrides or not isinstance(attachments, list):
+    if not isinstance(attachments, list):
         return attachments
     result = []
     for item in attachments:
+        if isinstance(item, dict):
+            item = normalize_attachment(item)
         path = item.get("path") if isinstance(item, dict) else None
         override = overrides.get(path) if isinstance(path, str) else None
         if not override:
@@ -77,7 +88,7 @@ def validate_file_path(value) -> str:
 def group_attachment_paths(messages: list, executions: list) -> set[str]:
     paths = set()
     for record in [*messages, *executions]:
-        for item in record.get("attachments") or []:
+        for item in apply_file_overrides(record.get("attachments") or [], {}):
             if isinstance(item, dict) and isinstance(item.get("path"), str):
                 paths.add(item["path"])
     return paths
