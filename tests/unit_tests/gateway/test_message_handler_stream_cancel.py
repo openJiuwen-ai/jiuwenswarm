@@ -105,6 +105,89 @@ class _TestMessageHandler(MessageHandler):
         await getattr(self, "_cancel_agent_work_for_session")(msg, session_id)
 
 
+@pytest.mark.asyncio
+async def test_background_cron_cleanup_preserves_newer_stream_processing(monkeypatch):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    envelope = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, metadata={"app_id": "default"}, is_stream=True,
+    )
+    await handler.register_background_stream(envelope, "session")
+    newer = _seed_stream_task(handler, rid="next", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["next"] = True
+    try:
+        await handler.finish_background_stream(envelope, "session")
+        assert "cron-first" not in handler._stream_tasks
+        assert handler._stream_tasks["next"] is newer
+        assert not newer.done()
+        assert handler._send_processing_status.await_count == 1
+        assert handler._send_processing_status.call_args.kwargs["is_processing"] is True
+    finally:
+        newer.cancel()
+        await asyncio.gather(newer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_received", [False, True])
+async def test_background_cron_sends_only_one_processing_terminal(monkeypatch, terminal_received):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "_handle_evolution_chunk", AsyncMock(return_value=True))
+    monkeypatch.setattr(handler, "publish_robot_messages", AsyncMock())
+    envelope = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, metadata={"app_id": "default", "source": "cron", "cron": {"job_id": "job"}},
+        is_stream=True,
+    )
+    await handler.register_background_stream(envelope, "session")
+    if terminal_received:
+        assert await handler.publish_stream_chunk(AgentResponseChunk(
+            request_id="cron-first", channel_id="web", is_complete=False,
+            payload={"event_type": "chat.processing_status", "is_processing": False, "is_complete": True},
+        ), session_id="session", request_metadata={"cron_session_stream": True})
+        published = handler.publish_robot_messages.await_args.args[0]
+        assert published.metadata["source"] == "cron"
+        assert published.metadata["cron"] == {"job_id": "job"}
+    await handler.finish_background_stream(envelope, "session")
+    assert handler._send_processing_status.await_count == (1 if terminal_received else 2)
+    assert "cron-first" not in handler._stream_processing_finished
+    assert "cron-first" not in handler._stream_sessions
+
+
+@pytest.mark.asyncio
+async def test_new_chat_is_registered_before_processing_true_is_published(monkeypatch):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
+    monkeypatch.setattr(handler, "process_stream", AsyncMock())
+    first = e2a_from_agent_fields(
+        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, is_stream=True,
+    )
+    monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
+    await handler.register_background_stream(first, "session")
+    statuses = []
+
+    async def publish_status(rid, session_id, channel_id, *, is_processing, **kwargs):
+        statuses.append((rid, is_processing))
+        if rid == "next" and is_processing:
+            await handler.finish_background_stream(first, "session")
+
+    monkeypatch.setattr(handler, "_send_processing_status", publish_status)
+    msg = _chat_send_message(channel_id="web", session_id="session")
+    msg.id = "next"
+    envelope = e2a_from_agent_fields(
+        request_id="next", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent"}, is_stream=True,
+    )
+    await handler._start_stream_task(msg, envelope, "next")
+    await handler._stream_tasks["next"]
+    assert statuses == [("next", True)]
+    handler._pop_stream_tracking("next")
+
+
 def _chat_send_message(
     *,
     channel_id: str = "tui",

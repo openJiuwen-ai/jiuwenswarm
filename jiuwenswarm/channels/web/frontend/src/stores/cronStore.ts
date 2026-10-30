@@ -3,6 +3,7 @@ import { webRequest } from '../services/webClient';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
 import { jobBelongsToProject } from '../components/CronPanel/cronProjectDisplay';
 import type { Session } from '../types';
+import type { CronRunUpdate } from '../types/cron';
 
 export interface SidebarCronJob {
   id: string;
@@ -26,6 +27,9 @@ export function isWebChannelJob(targets?: string): boolean {
 }
 
 interface CronState {
+  runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
+  clearUnconfirmedRuns: () => void;
+  applyRunUpdate: (payload: Record<string, unknown>) => CronRunUpdate | null;
   jobs: SidebarCronJob[];
   isLoading: boolean;
   expandedCronGroups: Record<string, boolean>;
@@ -56,6 +60,40 @@ function persistCronUnread(state: Record<string, boolean>) {
 }
 
 export const useCronStore = create<CronState>((set, get) => ({
+  runUpdates: {},
+  clearUnconfirmedRuns: () => set((state) => ({
+    runUpdates: Object.fromEntries(Object.entries(state.runUpdates).filter(([, run]) =>
+      run.status === 'succeeded' || run.status === 'failed')),
+  })),
+  applyRunUpdate: (payload) => {
+    if (
+      typeof payload.run_id !== 'string' || !payload.run_id ||
+      typeof payload.job_id !== 'string' || !payload.job_id ||
+      typeof payload.event_id !== 'string' ||
+      typeof payload.revision !== 'number' || !Number.isSafeInteger(payload.revision) || payload.revision < 1 ||
+      typeof payload.timestamp !== 'number' || !Number.isFinite(payload.timestamp) ||
+      typeof payload.notify !== 'boolean' ||
+      (payload.session_id != null && typeof payload.session_id !== 'string') ||
+      typeof payload.project_id !== 'string' ||
+      typeof payload.mode !== 'string' ||
+      (payload.job_name != null && typeof payload.job_name !== 'string') ||
+      (payload.error != null && typeof payload.error !== 'string') ||
+      !['pending', 'running', 'succeeded', 'failed'].includes(String(payload.status)) ||
+      !['started', 'finished', 'reminder'].includes(String(payload.phase))
+    ) return null;
+    const previous = get().runUpdates[payload.run_id];
+    if (previous && (
+      previous.revision >= payload.revision ||
+      (['succeeded', 'failed'].includes(previous.status) && ['pending', 'running'].includes(String(payload.status)))
+    )) return null;
+    const update = payload as unknown as CronRunUpdate;
+    const runUpdate = { ...update, firstSeenAt: previous?.firstSeenAt ?? update.timestamp };
+    set((state) => {
+      const entries = Object.entries(state.runUpdates).filter(([key]) => key !== update.run_id).slice(-255);
+      return { runUpdates: { ...Object.fromEntries(entries), [update.run_id]: runUpdate } };
+    });
+    return update;
+  },
   jobs: [],
   isLoading: false,
   expandedCronGroups: {},

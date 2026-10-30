@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+    resolve_cron_execution_flag,
+)
 
 
 class FakeHooksConfig:
@@ -109,3 +114,41 @@ def test_update_permission_rail_does_not_create_rail_for_cron_session(monkeypatc
 
     assert adapter._permission_rail is None
     assert created == []
+
+
+@pytest.mark.parametrize(
+    ("channel_id", "is_session_scoped", "config", "expected"),
+    [
+        ("__cron__", False, None, True),
+        ("__cron__", True, None, True),
+        ("web", True, {"cron_execution": True}, True),
+        ("web", True, {"cron_execution": False}, False),
+        # The root Web adapter is only a router and must never become cron.
+        ("web", False, {"cron_execution": True}, False),
+        ("web", False, None, False),
+    ],
+)
+def test_resolve_cron_execution_flag(channel_id, is_session_scoped, config, expected):
+    assert resolve_cron_execution_flag(
+        channel_id=channel_id,
+        is_session_scoped=is_session_scoped,
+        config=config,
+    ) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("cron_execution", "expected"), [(True, True), (False, False)])
+async def test_code_adapter_scopes_cron_flag_to_web_session_child(monkeypatch, cron_execution, expected):
+    """Web cron in code mode must keep the unattended permission recipe."""
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter.mark_as_session_scoped("sess_web")
+    adapter._channel_id = "web"
+    monkeypatch.setattr(adapter, "set_checkpoint", AsyncMock())
+    monkeypatch.setattr(adapter, "_skip_own_instance_build", lambda: True)
+
+    await adapter._create_instance(
+        {"channel_id": "web", "cron_execution": cron_execution}, mode="code",
+    )
+
+    assert adapter._is_cron_execution is expected
+    assert adapter._skip_cron_permission_rail({}) is expected

@@ -1863,12 +1863,13 @@ async def _finish_cron_team_stream_after_delegation_grace(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Wait briefly after a solo harness final before ending the cron team stream."""
     await asyncio.sleep(_CRON_DELEGATION_GRACE_SECONDS)
     resolved_channel_id = _resolve_channel_id(channel_id)
     completion = get_team_manager(channel_id).get_cron_completion(session_id)
-    if completion is None:
+    if completion is None or (expected_completion is not None and completion is not expected_completion):
         return
     if completion.get("tasks_ever_created"):
         completion["finish_scheduled"] = False
@@ -1876,36 +1877,23 @@ async def _finish_cron_team_stream_after_delegation_grace(
     if not cron_team_round_should_end(completion):
         completion["finish_scheduled"] = False
         return
-    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id)
+    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id, completion)
 
 
 async def _finish_cron_team_stream_after_round(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Cancel the background team stream once cron SwarmFlow + leader report are done."""
     resolved_channel_id = _resolve_channel_id(channel_id)
     team_manager = get_team_manager(channel_id)
     try:
-        stream_task = team_manager.pop_stream_task(session_id)
-        if stream_task is not None and not stream_task.done():
-            stream_task.cancel()
-            try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-        await _broadcast_event(
-            channel_id,
-            session_id,
-            {
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "rid": round_id,
-                "is_processing": False,
-                "is_complete": True,
-            },
-        )
+        completion = expected_completion or team_manager.get_cron_completion(session_id)
+        if completion is None:
+            return
+        await team_manager.finish_cron_stream(session_id, completion, round_id)
         logger.info(
             "[TeamHelpers] cron team stream finished early: channel_id=%s session_id=%s",
             resolved_channel_id,
@@ -1918,7 +1906,15 @@ async def _finish_cron_team_stream_after_round(
             session_id,
             exc,
         )
-    finally:
+
+
+def _release_cron_waiter_completion(team_manager: Any, session_id: str, request_id: str) -> None:
+    """Leave a scheduled finisher's ownership fence intact after its waiter exits."""
+    completion = team_manager.get_cron_completion(session_id)
+    if (
+        completion is not None and completion.get("request_id") == request_id
+        and not completion.get("finish_scheduled")
+    ):
         team_manager.pop_cron_completion(session_id)
 
 
@@ -1930,13 +1926,16 @@ def _try_finish_cron_team_stream(
     """End persistent team streams for cron once workflow completes and leader reports."""
     team_manager = get_team_manager(channel_id)
     waiters = team_manager.get_waiters(session_id)
-    if not any(_is_cron_request_id(request_id) for request_id, _ in waiters):
+    cron_request_id = next((rid for rid, _ in waiters if _is_cron_request_id(rid)), None)
+    if cron_request_id is None:
         return
 
     completion = team_manager.setdefault_cron_completion(
         session_id,
         {
             **new_cron_team_round_state(),
+            **team_manager.cron_completion_owner(session_id, cron_request_id),
+            "channel_id": _resolve_channel_id(channel_id),
             "round_id": None,
             "finish_scheduled": False,
         },
@@ -1954,6 +1953,7 @@ def _try_finish_cron_team_stream(
                     channel_id,
                     session_id,
                     round_id,
+                    completion,
                 ),
                 name=f"cron-team-grace-{session_id}",
             )
@@ -1963,6 +1963,7 @@ def _try_finish_cron_team_stream(
                 channel_id,
                 session_id,
                 round_id,
+                completion,
             ),
             name=f"cron-team-finish-{session_id}",
         )
@@ -4223,7 +4224,7 @@ async def _process_team_message_stream(
                 generation=generation,
             )
             if _is_cron_request_id(rid):
-                team_manager.pop_cron_completion(session_id)
+                _release_cron_waiter_completion(team_manager, session_id, rid)
             if not team_manager.has_waiters(session_id):
                 logger.info(
                     "[TeamHelpers] cleared waiter set: session_id=%s",

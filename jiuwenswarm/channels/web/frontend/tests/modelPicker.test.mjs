@@ -270,6 +270,9 @@ test('限时免费模型：活动没在跑时，这一栏整个不出现', async
 
 test('selecting a scheduled-task model submits its ID and leaves the active chat unchanged', async () => {
   await withFixture(async ({ mount, click, byId }) => {
+    useSessionStore.setState({ modelGroups: [{
+      model_group_id: 'cron-hidden-group', display_name: 'Cron hidden group', enabled: true, routes: [],
+    }] });
     let submitted;
     await mount(
       createElement(ChatModelSelector),
@@ -280,6 +283,7 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
       }),
     );
     await click(byId('cron-model-picker-trigger'));
+    assert.equal(byId('cron-model-picker-menu').textContent.includes('Cron hidden group'), false);
     await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
     assert.equal(byId('cron-model-picker-menu'), null);
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
@@ -287,6 +291,7 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
     assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-a');
     await click(byId('cron-drawer-submit-btn'));
     assert.deepEqual(submitted, { ...initialForm, modelName: 'configured-b' });
+    assert.equal(Object.hasOwn(submitted, 'modelSelection'), false);
   });
 });
 
@@ -308,6 +313,41 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured A');
     await click(byId('cron-drawer-submit-btn'));
     assert.deepEqual(submitted, initialForm);
+  });
+});
+
+test('run now waits for navigation and reports a session restore failure', async (t) => {
+  const job = {
+    id: 'run-now-job', name: 'Run now', description: 'Run now', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [job] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.run_now') return { accepted: true, run_id: 'run', session_id: 'cron-session' };
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  let releaseNavigation;
+  const navigation = new Promise((resolve) => { releaseNavigation = resolve; });
+  await withFixture(async ({ mount, click, byId }) => {
+    await mount(createElement(CronPanel, {
+      sessionId, onCreateViaChat() {},
+      async onSelectSession(id) {
+        assert.equal(id, 'cron-session');
+        await navigation;
+        throw new Error('metadata missing');
+      },
+    }));
+    await click(byId('cron-job-run-now-btn'));
+    await click(byId('cron-confirm-submit-btn'));
+    assert.equal(byId('cron-confirm-submit-btn').disabled, true);
+    await act(async () => { releaseNavigation(); });
+    assert.equal(byId('cron-confirm-dialog'), null);
+    assert.match(byId('cron-error-toast').textContent, /task was triggered.*session list/);
+    assert.equal(byId('cron-success-toast'), null);
   });
 });
 

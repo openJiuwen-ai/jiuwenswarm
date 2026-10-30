@@ -663,6 +663,20 @@ function AppContent({
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
+  const pendingSessionEventReleasesRef = useRef(new Map<string, () => void>());
+  const releasePendingSessionEvents = useCallback((sid: string) => {
+    const release = pendingSessionEventReleasesRef.current.get(sid);
+    pendingSessionEventReleasesRef.current.delete(sid);
+    release?.();
+  }, []);
+  useEffect(() => () => {
+    for (const release of pendingSessionEventReleasesRef.current.values()) release();
+    pendingSessionEventReleasesRef.current.clear();
+  }, []);
+  useEffect(() => webClient.onStateChange((state) => {
+    if (state === 'ready') return;
+    for (const sid of pendingSessionEventReleasesRef.current.keys()) releasePendingSessionEvents(sid);
+  }), [releasePendingSessionEvents]);
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreRevisionRef = useRef(new Map<string, string>());
   const subagentToolReplayBySessionRef = useRef(new Map<string, HistoryToolReplayItem[]>());
@@ -1252,6 +1266,7 @@ function AppContent({
     drainTaskQueueIfIdle,
   } = useWebSocket({
     activeSessionId: sessionId,
+    isActiveSessionVisible: activeNav === 'chat',
     onConnect: () => {
       console.log('Connected');
       // 连接建立/断线重连后重拉侧边栏定时任务列表（useCronStore）：web 先行
@@ -2576,6 +2591,7 @@ function AppContent({
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
     if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+      releasePendingSessionEvents(sessionId);
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -2585,6 +2601,7 @@ function AppContent({
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().runtimes[sessionId]?.isNewSession ?? false;
     if (isNew && !forceRefresh) {
+      releasePendingSessionEvents(sessionId);
       useChatStore.getState().setNewSession(sessionId, false);
       setHistoryPagerMeta(sessionId, null);  // 新会话无历史，不显示分页栏
       setLoadingHistory(sessionId, false);
@@ -2602,6 +2619,7 @@ function AppContent({
       } else {
         setLoadingHistory(sessionId, false);
         startBackgroundHistoryPrefetch(sessionId);
+        releasePendingSessionEvents(sessionId);
         return;
       }
     }
@@ -2887,6 +2905,8 @@ function AppContent({
       },
     });
     historyRestoreHandlesRef.current.set(sessionId, restoreHandle);
+    // beginHistoryRestore now owns the gate until history has been merged.
+    releasePendingSessionEvents(sessionId);
 
     // 调用历史会话接口
     void (async () => {
@@ -2931,6 +2951,7 @@ function AppContent({
     settleHistoricalToolExecutions,
     clearMessages,
     disposeInFlightHistoryHandles,
+    releasePendingSessionEvents,
     setLoadingHistory,
     setHistoryPagerMeta,
     replaceHistoryMessages,
@@ -3777,7 +3798,26 @@ function AppContent({
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+    async (targetSessionId: string, targetMode?: string, targetSession?: Session) => {
+      for (const sid of pendingSessionEventReleasesRef.current.keys()) {
+        if (sid !== targetSessionId) releasePendingSessionEvents(sid);
+      }
+      const release = webClient.suspendSessionEvents(targetSessionId);
+      releasePendingSessionEvents(targetSessionId);
+      pendingSessionEventReleasesRef.current.set(targetSessionId, release);
+      if (!targetSession) {
+        try {
+          targetSession = await loadSessionMetadata(targetSessionId) ?? undefined;
+        } catch (error) {
+          releasePendingSessionEvents(targetSessionId);
+          throw error;
+        }
+        if (!targetSession) {
+          releasePendingSessionEvents(targetSessionId);
+          throw new Error(t('sessions.errors.restoreFailed', { sessionId: targetSessionId }));
+        }
+        targetMode = targetSession.mode;
+      }
       setChatWelcomeVariant(null);
       const previousSessionId = sessionIdRef.current;
       const previousMode =
@@ -3798,6 +3838,7 @@ function AppContent({
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
+            releasePendingSessionEvents(targetSessionId);
             console.error('Failed to switch team session:', error);
             window.alert(t('sessions.errors.switchSession'));
             return;
@@ -3817,13 +3858,7 @@ function AppContent({
         clearMessages(targetSessionId);
         clearTodos(targetSessionId);
         resetHarnessStore(targetSessionId);
-        historyRestoreFromPanelHintRef.current = true;
-      }
-      if (options?.skipHistoryLoad) {
-        // The session returned by cron.run_now can precede its first persisted
-        // message. The sessionId effect must skip its initial history request too.
-        useChatStore.getState().setNewSession(targetSessionId, true);
-        historyRestoreFromPanelHintRef.current = false;
+        historyRestoreFromPanelHintRef.current = !targetSession?.cron_id;
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
@@ -3855,9 +3890,7 @@ function AppContent({
       }
       setActiveNav('chat');
       navigate({ kind: 'chat-session', sessionId: targetSessionId });
-      if (!options?.skipHistoryLoad) {
-        setHistoryBootstrapKey((k) => k + 1);
-      }
+      setHistoryBootstrapKey((k) => k + 1);
       requestComposerFocus();
       // 始终拉一次 metadata——targetSession 从会话列表来（summary，无 swarmflow config），
       // 需要完整 metadata 才能恢复 session_swarmflow_config。
@@ -3870,6 +3903,7 @@ function AppContent({
       mode,
       navigate,
       loadSessionMetadata,
+      releasePendingSessionEvents,
       request,
       requestComposerFocus,
       resetHarnessStore,
@@ -3891,7 +3925,6 @@ function AppContent({
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean },
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -3902,7 +3935,6 @@ function AppContent({
           targetSessionId,
           targetMode,
           targetSession,
-          options,
         ));
       sessionRestoreQueueRef.current = queuedRestore.catch(() => undefined);
       return queuedRestore;
@@ -4815,24 +4847,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
                   onSelectSession={(session) => {
                   if (typeof session === 'string') {
-                    // 立即执行返回的 session_id 可能还未在后端创建（agent 刚开始执行），
-                    // 构造最小 Session 占位对象，让 upsertSessionMetadata 直接加入会话列表，
-                    // 避免 loadSessionMetadata 立即失败导致"对话不存在或已删除"。
-                    // 后续 cron 广播到达时会刷新会话列表补全完整元数据。
-                    // 跳过初始历史加载：session 是全新的，空响应的 replaceHistoryMessages
-                    // 会覆盖后续到达的广播消息。
-                    void handleRestoreSession(session, undefined, {
-                      session_id: session,
-                      title: '',
-                      project_id: '',
-                      project_dir: '',
-                      mode: 'agent',
-                      status: 'active',
-                      message_count: 0,
-                      created_at: new Date().toISOString(),
-                      updated_at: new Date().toISOString(),
-                    }, { skipHistoryLoad: true });
-                    return;
+                    return handleRestoreSession(session);
                   }
                   requestSessionNavigation(session);
                   }}

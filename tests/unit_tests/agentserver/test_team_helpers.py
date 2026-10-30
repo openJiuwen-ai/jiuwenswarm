@@ -854,6 +854,24 @@ class _CronFakeManager(_InactiveTeamRuntimeManagerMixin):
         return cls._completion.get(session_id)
 
     @classmethod
+    def cron_completion_owner(cls, session_id: str, request_id: str) -> dict:
+        return {"request_id": request_id, "stream_task": cls._stream_tasks.get(session_id)}
+
+    @classmethod
+    async def finish_cron_stream(cls, session_id: str, completion: dict, round_id) -> None:
+        task = cls.pop_stream_task(session_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await team_helpers._broadcast_event("tui", session_id, {
+            "event_type": "chat.processing_status", "is_processing": False, "rid": round_id,
+        })
+        cls.pop_cron_completion(session_id)
+
+    @classmethod
     def pop_stream_task(cls, session_id: str, *, generation: int | None = None) -> asyncio.Task | None:
         return cls._stream_tasks.pop(session_id, None)
 
