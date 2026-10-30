@@ -150,8 +150,8 @@ class _FakeCronTools:
         _ = (job_id, count)
         return []
 
-    async def run_now(self, job_id: str):
-        _ = job_id
+    async def run_now(self, job_id: str, *, context=None):
+        _ = (job_id, context)
         return {"run_id": "r-1"}
 
 
@@ -1427,3 +1427,45 @@ async def test_cron_backend_create_job_allowed_without_cron_metadata() -> None:
     )
 
     assert len(cron_tools.create_payloads) == 1
+
+
+def test_run_now_pushes_real_route_from_context() -> None:
+    """run_now must push a real route built from context (same path as create/update)."""
+    fake = _FakeCronTools()
+    backend = _CronToolsCronBackend(fake)
+    context = SimpleNamespace(
+        channel_id="web",
+        session_id="sess-route-check",
+        metadata={"request_id": "req-route-check"},
+        tool_scope="cron:route",
+    )
+
+    run_id = asyncio.run(backend.run_now("job-1", context=context))
+
+    assert run_id == "r-1"
+    pushed = fake.routes[-1]
+    assert pushed.channel_id == "web"
+    assert pushed.session_id == "sess-route-check"
+    assert pushed.request_id == "req-route-check"
+
+
+def test_cron_run_action_forwards_context_to_backend() -> None:
+    """Framework action=run must forward the build context to backend.run_now."""
+    received: dict = {}
+
+    class _Recording(_FakeCronTools):
+        async def run_now(self, job_id: str, *, context=None):
+            received["job_id"] = job_id
+            received["context"] = context
+            return "r-9"
+
+    ctx = SimpleNamespace(
+        channel_id="web", session_id="s-1", metadata={}, tool_scope="t"
+    )
+    tool = create_cron_tools(_Recording(), context=ctx)[0]
+
+    result = asyncio.run(tool._func(action="run", jobId="job-x"))
+
+    assert result == {"run_id": "r-9"}
+    assert received["job_id"] == "job-x"
+    assert received["context"] is ctx

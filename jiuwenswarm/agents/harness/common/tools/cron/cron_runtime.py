@@ -186,8 +186,13 @@ class _CronToolsCronBackend(CronToolBackend):
         rows = await self._cron_tools.preview_job(job_id, count)
         return list(rows or [])
 
-    async def run_now(self, job_id: str) -> str:
-        token = self._cron_tools.push_cron_route(CronToolRoute())
+    async def run_now(
+        self,
+        job_id: str,
+        *,
+        context: CronToolContext | None = None,
+    ) -> str:
+        token = self._cron_tools.push_cron_route(self._route_from_context(context))
         try:
             run_result = await self._cron_tools.run_now(job_id)
         finally:
