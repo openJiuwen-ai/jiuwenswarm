@@ -16,7 +16,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple, Optional
+from typing import Any, Callable, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
@@ -534,6 +534,9 @@ _STREAM_KEEPALIVE_INTERVAL_SECONDS = 10.0
 _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
 # send_push 无活跃 Gateway 连接告警的汇总窗口（秒）
 _PUSH_NO_GATEWAY_WARN_INTERVAL_S = 30.0
+_STREAM_IDLE_ABANDONED_MESSAGE = (
+    "这一轮长时间没有任何输出，已中止。请重试；若反复出现，请检查模型服务是否可用。"
+)
 
 
 def _consume_keepalive_task_result(
@@ -688,6 +691,7 @@ class StreamKeepalive:
         ws: Any,
         request: AgentRequest,
         send_lock: asyncio.Lock,
+        on_idle_timeout: Callable[[], None] | None = None,
     ) -> None:
         self._ws = ws
         self._request = request
@@ -696,6 +700,11 @@ class StreamKeepalive:
         self._stop_event = asyncio.Event()
         self._activity_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        # Called once when the stream has been idle past the configured ceiling.
+        # What to do about it is the caller's: this object counts the idle time
+        # because it is already awake for it, and knows nothing about host tasks.
+        self._on_idle_timeout = on_idle_timeout
+        self._idle_seconds = 0.0
 
     def start(self) -> None:
         """Start sending keepalives while the stream is idle."""
@@ -707,6 +716,7 @@ class StreamKeepalive:
     def notify_activity(self, *, terminal: bool = False) -> None:
         """Restart the idle timer and optionally prevent future keepalives."""
         self._activity_event.set()
+        self._idle_seconds = 0.0
         if terminal:
             self._stop_event.set()
 
@@ -728,6 +738,12 @@ class StreamKeepalive:
         )
 
     async def _run(self) -> None:
+        # Imported here rather than at module scope: the adapter imports this
+        # module, so a top-level import would close the cycle.
+        from jiuwenswarm.server.runtime.agent_adapter.interface import (
+            _stream_turn_ceiling,
+        )
+
         try:
             while not self._stop_event.is_set():
                 try:
@@ -736,11 +752,27 @@ class StreamKeepalive:
                         timeout=_STREAM_KEEPALIVE_INTERVAL_SECONDS,
                     )
                     self._activity_event.clear()
+                    self._idle_seconds = 0.0
                 except asyncio.TimeoutError:
                     if self._stop_event.is_set():
                         break
                     if self._activity_event.is_set():
                         continue
+                    # The keepalive is also the idle watchdog: it is the only thing
+                    # awake while a stream produces nothing, so it is where the cap
+                    # on producing nothing belongs.
+                    self._idle_seconds += _STREAM_KEEPALIVE_INTERVAL_SECONDS
+                    ceiling = _stream_turn_ceiling()
+                    if self._idle_seconds >= ceiling:
+                        logger.error(
+                            "[AgentWebSocketServer] 流式请求空闲超过上限 %.0fs，"
+                            "终止宿主任务: request_id=%s",
+                            ceiling,
+                            self._request.request_id,
+                        )
+                        if self._on_idle_timeout is not None:
+                            self._on_idle_timeout()
+                        return
                     keepalive_chunk = AgentResponseChunk(
                         request_id=self._request.request_id,
                         channel_id=self._channel_id,
@@ -4635,10 +4667,37 @@ class AgentWebSocketServer:
 
         chunk_count = 0
         outcome_tracker = _TurnOutcomeTracker()
+        idle_abandoned = False
+
+        def _abandon_idle_stream() -> None:
+            """Give up on a stream that has produced nothing for too long.
+
+            The adapter-side wall-clock ceiling only bounds a stream already
+            yielding chunks; one stuck *before* its first chunk never reaches that
+            loop, the ``async for`` below never exits, and the keepalive would carry
+            a dead request forever -- the longest measured instance kept a gateway
+            warning firing every ten seconds for nine hours. Cancelling the host
+            task runs the ``finally`` that a user cancel already exercises, so the
+            cleanup path is the ordinary one rather than a second implementation.
+
+            The policy lives here rather than in the keepalive because the task and
+            the stop event are the caller's; the keepalive only knows how long it
+            has been idle.
+
+            Unlike a user cancel, nobody else answers the request: the gateway is
+            still waiting for its terminal chunk, so the handler sends one.
+            """
+            nonlocal idle_abandoned
+            idle_abandoned = True
+            stream_stop_event.set()
+            if current_task is not None and not current_task.done():
+                current_task.cancel()
+
         keepalive = _StreamKeepalive(
             ws,
             request,
             send_lock,
+            on_idle_timeout=_abandon_idle_stream,
         )
         runtime_stream: Any | None = None
 
@@ -4722,6 +4781,16 @@ class AgentWebSocketServer:
                 if resume_outcome == "unknown"
                 else ""
             )
+        except asyncio.CancelledError:
+            if not idle_abandoned:
+                raise
+            # The watchdog's own cancel, consumed here so the request still ends
+            # with an answer; any other cancel propagates as before.
+            if current_task is not None:
+                current_task.uncancel()
+            resume_outcome = "failed"
+            resume_error = _STREAM_IDLE_ABANDONED_MESSAGE
+            await self._send_idle_abandoned_chunk(ws, request, send_lock, chunk_count)
         finally:
             try:
                 # 尽早阻止新的 keepalive；Runtime 清理仍先完成，以尽快释放其资源。
@@ -4768,6 +4837,29 @@ class AgentWebSocketServer:
             request.request_id,
             chunk_count,
         )
+
+    @staticmethod
+    async def _send_idle_abandoned_chunk(
+        ws: Any, request: AgentRequest, send_lock: asyncio.Lock, sequence: int
+    ) -> None:
+        """Close an abandoned stream with one terminal error, so its consumer stops."""
+        chunk = AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={"event_type": "chat.error", "error": _STREAM_IDLE_ABANDONED_MESSAGE},
+            is_complete=True,
+        )
+        wire = encode_agent_chunk_for_wire(
+            chunk, response_id=request.request_id, sequence=sequence
+        )
+        try:
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+        except WebSocketConnectionClosed:
+            logger.info(
+                "[AgentWebSocketServer] 空闲中止的终止帧未送达，WebSocket 已关闭: request_id=%s",
+                request.request_id,
+            )
 
     async def _persist_repeated_session_question(
         self,
