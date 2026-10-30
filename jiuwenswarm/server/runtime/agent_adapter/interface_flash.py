@@ -482,6 +482,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                     language=self._resolve_runtime_language(),
                     vision_model_config=self._vision_model_config,
                     agent_id=agent_id,
+                    operation=self._sys_operation,
                 ):
                     registered = self._register_agent_owned_tool(tool, agent_id)
                     tool_cards.append(registered.card)

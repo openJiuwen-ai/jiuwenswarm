@@ -671,7 +671,8 @@ async def test_model_request_excludes_full_catalog_before_and_after_search(harne
         assert "search_installed_skills(action='search', query, keywords)" in first_prompt
         assert 'Office 文档处理与交付' in first_prompt
         assert '不要仅因数据少、任务简单' in first_prompt
-        assert '无需为使用加速器先检索本地技能' in first_prompt
+        assert '无需先检索或通过 skill_tool 加载' in first_prompt
+        assert '包括 Word / Excel，不限于 PPT' in first_prompt
         assert '用户明确要求不使用技能时遵从' in first_prompt
         assert SYSTEM_GUIDANCE in first_prompt
         assert first_request['tools'][-1]['description'] == TOOL_GUIDANCE
@@ -781,6 +782,44 @@ async def test_explicit_choice_uses_native_loader_later(harness):
     assert '用户明确指定以下技能，无需先检索。请通过原生 skill_tool 加载' in prompt
     assert '执行前先用 read_file 阅读相关 SKILL.md。' not in prompt
     assert not ctx.extra[h.rail.REUSE].tickets and not ctx.extra.get(h.rail.FALLBACK)
+    await h.rail.after_model_call(ctx)
+
+
+@pytest.mark.parametrize('name', ['docx-craft', 'xlsx-craft', 'pptx-craft'])
+@pytest.mark.parametrize('source', ['text', 'frontend'])
+async def test_explicit_turbo_skill_preserves_acceleration_priority(harness, name, source):
+    h = harness
+    write_skill(h.root, name)
+    h.native.scan()
+    text = f'请使用 {name} 技能生成文件' if source == 'text' else '你收到一条消息：\n' + json.dumps({
+        'content': '生成文件', 'skills_to_use': [name], 'type': 'user input', 'source': 'web',
+        'preferred_response_language': 'zh',
+    })
+    ctx = context(text)
+    ctx.inputs.tools.append(SimpleNamespace(name='skill_acceleration_exec'))
+    await h.rail.before_model_call(ctx)
+    prompt = h.agent.system_prompt_builder.get_section(h.rail.SECTION).content['cn']
+    leading = prompt.split('\n\n')[0]
+    assert '优先调用 skill_acceleration_exec' in leading
+    assert '准确名称' in leading and '支持范围' in leading
+    assert name in leading
+    assert '请通过原生 skill_tool 加载指令后执行对应任务' not in leading
+    assert {'skill_tool', 'skill_acceleration_exec'} <= {tool.name for tool in ctx.inputs.tools}
+    await h.rail.after_model_call(ctx)
+
+
+@pytest.mark.parametrize('name', ['docx-craft', 'xlsx-craft'])
+async def test_explicit_office_skill_without_accelerator_uses_native_loader(harness, name):
+    h = harness
+    write_skill(h.root, name)
+    h.native.scan()
+    ctx = context(f'请使用 {name} 技能生成文件')
+    await h.rail.before_model_call(ctx)
+    prompt = h.agent.system_prompt_builder.get_section(h.rail.SECTION).content['cn']
+    leading = prompt.split('\n\n')[0]
+    assert '请通过原生 skill_tool 加载指令后执行对应任务' in leading
+    assert 'skill_acceleration_exec' not in leading
+    assert 'skill_tool' in {tool.name for tool in ctx.inputs.tools}
     await h.rail.after_model_call(ctx)
 
 

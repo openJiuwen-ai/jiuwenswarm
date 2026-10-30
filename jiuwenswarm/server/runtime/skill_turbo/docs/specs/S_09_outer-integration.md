@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / outer-integration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（外层接缝：`server/runtime/agent_adapter/interface_deep.py`、`agents/harness/common/rails/*`、`server/agent_ws_server.py`、`common/e2a/gateway_normalize.py`；双仓部署边界见附录） |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联 feature | [[F_02]]（outer_todo_pending 第 8 通道 / 附件注入链 / resume 入口统一 / 发卡去重收口）、[[F_03]]（指南多交付物清单编排与串行契约，4.3 规则要点 ⑦）；关联 bugfix [[B_04]]（outer_todo_completed_before 第 9 通道，fresh 守卫后续交付物放行） |
 
 ## 范围 / 边界
@@ -143,6 +143,8 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 - **清单动态化双同源**：`before_model_call` 每次模型调用前调 `refresh_skill_acceleration_description()`（`skill_turbo_tools.py:181-213`）——同一次扫描同时重建 ToolCard.description 与指南技能清单（N7）。
 - **缓存与兜底**：60s TTL `_entries_cache`（key=根目录集合）+ `_last_good_entries` 进程级兜底（N8）。
 - **注入方式**：`system_prompt_builder.add_section(PromptSection(name="skill_turbo_guide", priority=PromptPriority.SKILL_PROTOCOL))`；uninit / disabled / 空清单时 `remove_section`。
+
+**Flash 指南与技能检索协作**：`FlashTurboPromptRail` 复用同源发现结果，为所有当前支持的技能注入加速优先规则，包含 Docx / Xlsx。文字指定、前端选择与未指定技能的请求使用同一原则；`SkillSelectionRail` 不再只对 pptx-craft 提供加速例外，必须同时要求指定技能准确名称及任务范围匹配工具描述。加速工具缺席时保留原生加载，PPT 专属模板/选区规则不限制 Word / Excel；候选返回后的工具精简仍保留（[[S_02]] N19 / [[B_06]]）。
 
 **SkillTurboDeliverySummaryRail**（priority=90，`rails/delivery_summary_rail.py`）
 

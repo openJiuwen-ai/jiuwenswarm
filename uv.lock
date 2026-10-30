@@ -2422,7 +2422,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'harmony'", specifier = ">=0.30" },
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = "==0.22.1" },
-    { name = "websockets", specifier = ">=12.0" },
+    { name = "websockets", specifier = ">=12.0,<17" },
     { name = "wecom-aibot-sdk", specifier = ">=1.0.5" },
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
 ]
@@ -3510,7 +3510,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#12aa635059aa52cc851a6c0cc0ee56e71b164e70" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#8215f2c296e6ddba2584a44e97babc5981385ad4" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
