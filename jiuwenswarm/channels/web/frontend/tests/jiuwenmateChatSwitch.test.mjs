@@ -232,7 +232,11 @@ test('group WebSocket delivery triggers typing and follows resized replies until
     client: { getState: () => 'ready', on: (name, callback) => {
       listeners.set(name, callback); return () => listeners.delete(name);
     }, onStateChange: () => () => {} },
-    api: { get: async () => ({ name: 'Test group', members: [] }),
+    api: { get: async () => ({ name: 'Test group', members: [
+      { kind: 'agent_template', id: 'claude', member_name: 'claude', display_name: '11', cli_agent: 'claude' },
+      { kind: 'agent_template', id: 'codex', member_name: 'codex', display_name: '22', cli_agent: 'codex' },
+      { kind: 'agent_template', id: 'native', member_name: 'native', display_name: '普通专家' },
+    ] }),
       history: async (_groupId, page) => ({ total: 1, messages: history.slice(0, page.limit) }),
       executions: async () => ({ executions: [], total: 0 }) },
   };
@@ -249,6 +253,8 @@ test('group WebSocket delivery triggers typing and follows resized replies until
   });
   const list = document.querySelector('[data-testid="group-chat-messages"]');
   assert.ok(list.textContent.includes('已有消息'));
+  const providers = [...document.querySelectorAll('[data-testid="group-chat-member-provider"]')];
+  assert.deepEqual(providers.map((item) => item.textContent), ['Claude Code', 'Codex']);
   await act(async () => listeners.get('group.message')({ event: 'group.message', payload: {
     group_id: 'test-group', message: { message_id: 'new', sender: 'team', content: '新的群聊回复',
       timestamp: 2, attachments: [] },
@@ -272,5 +278,61 @@ test('group WebSocket delivery triggers typing and follows resized replies until
   assert.equal(list.scrollTop, 100);
   await act(async () => t.mock.timers.tick(1000));
   assert.ok(reply.textContent.endsWith('新的群聊回复'));
+  await act(async () => root.unmount());
+});
+
+const pickerBundle = 'node_modules/.cache/jiuwenmate-chat-switch/MemberPicker.mjs';
+const pickerMocks = {
+  '/agentManagement/client': `export const createAgentManagementClient = () => ({ listCatalog: async () => [{
+    id: 'external', runtimePackageName: 'external', installed: true, enabled: true,
+    displayName: 'Third-party expert', description: '', avatarUrl: null, runtime: { provider_name: 'codex' },
+  }] });`,
+  '/agentManagement/groupClient': `export const createAgentGroupManagementClient = () => ({ listGroups: async () => [] });`,
+  './client': `export const groupChatClient = globalThis.pickerTest.api;`,
+  '/Dialog/Dialog': `import React from 'react'; export const Dialog = ({ open, children }) =>
+    open ? React.createElement('div', { role: 'dialog' }, children) : null;`,
+  'react-i18next': `const t = (key, values) => values?.agents ? key + ': ' + values.agents : key;
+    export const useTranslation = () => ({ t });`,
+};
+await build({
+  entryPoints: ['src/features/groupChat/MemberPicker.tsx'], outfile: pickerBundle,
+  bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic',
+  external: ['react', 'react/jsx-runtime'],
+  plugins: [{ name: 'picker-boundaries', setup(plugin) {
+    plugin.onResolve({ filter: /.*/ }, (args) => {
+      const key = Object.keys(pickerMocks).find((name) => args.path.endsWith(name));
+      return key ? { path: key, namespace: 'picker-test' } : undefined;
+    });
+    plugin.onLoad({ filter: /.*/, namespace: 'picker-test' }, ({ path }) => ({ contents: pickerMocks[path] }));
+  } }],
+});
+
+test('member picker explains a disabled CLI and preserves the selection for retry', async () => {
+  const error = Object.assign(new Error('codex'), { code: 'EXTERNAL_CLI_DISABLED' });
+  let allowed = false;
+  let saved = false;
+  const group = { group_id: 'test', members: [] };
+  globalThis.pickerTest = { api: {
+    addMember: async () => { if (!allowed) throw error; },
+    get: async () => group,
+  } };
+  const { MemberPicker } = await import(`../${pickerBundle}`);
+  const root = createRoot(document.getElementById('root'));
+  await act(async () => root.render(React.createElement(MemberPicker, {
+    group, onClose: () => {}, onSaved: () => { saved = true; },
+  })));
+  await act(async () => document.querySelector('[data-testid="group-chat-candidate-select"]').click());
+  await act(async () => document.querySelector('[data-testid="group-chat-picker-save"]').click());
+  assert.equal(saved, false);
+  assert.equal(document.querySelector('[data-testid="group-chat-runtime-notice-title"]').textContent,
+    'chat.agentGroupRuntimeDisabledTitle');
+  assert.equal(document.querySelector('[data-testid="group-chat-runtime-notice-message"]').textContent,
+    'groupChat.externalRuntimeDisabled: Codex');
+  assert.equal(document.querySelector('[data-testid="group-chat-picker-error"]'), null);
+  await act(async () => document.querySelector('[data-testid="group-chat-runtime-notice-confirm"]').click());
+  assert.equal(document.querySelectorAll('[data-testid="group-chat-selected-member"]').length, 1);
+  allowed = true;
+  await act(async () => document.querySelector('[data-testid="group-chat-picker-save"]').click());
+  assert.equal(saved, true);
   await act(async () => root.unmount());
 });

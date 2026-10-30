@@ -23,6 +23,7 @@ export function MemberPicker({ group, onClose, onSaved }: {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null);
   const createAttempt = useRef<{ signature: string; token: string } | null>(null);
   const addTokens = useRef(new Map<string, string>());
   const [detail, setDetail] = useState<AgentGroupCatalogItem | null>(null);
@@ -85,10 +86,36 @@ export function MemberPicker({ group, onClose, onSaved }: {
         }));
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (reason instanceof Error && 'code' in reason && reason.code === 'EXTERNAL_CLI_DISABLED') {
+        const agents = reason.message === 'claude' ? 'Claude Code'
+          : reason.message === 'codex' ? 'Codex' : reason.message;
+        setRuntimeNotice(t('groupChat.externalRuntimeDisabled', { agents }));
+      } else {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  if (runtimeNotice !== null) {
+    return (
+      <Dialog open titleId={`${titleId}-runtime-notice`}
+        className="group-chat-small-dialog" onCancel={() => setRuntimeNotice(null)}>
+        <div data-testid="group-chat-runtime-notice">
+          <header className="group-chat-dialog-header">
+            <h2 id={`${titleId}-runtime-notice`} data-testid="group-chat-runtime-notice-title">
+              {t('chat.agentGroupRuntimeDisabledTitle')}
+            </h2>
+          </header>
+          <p data-testid="group-chat-runtime-notice-message">{runtimeNotice}</p>
+          <footer className="group-chat-dialog-footer">
+            <button type="button" className="btn primary" onClick={() => setRuntimeNotice(null)}
+              data-testid="group-chat-runtime-notice-confirm">{t('chat.agentGroupRuntimeDisabledConfirm')}</button>
+          </footer>
+        </div>
+      </Dialog>
+    );
   }
 
   return (
