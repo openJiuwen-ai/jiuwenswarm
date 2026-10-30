@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,14 +24,33 @@ from jiuwenswarm.server.wire_truncate import (
 )
 
 
+@contextmanager
 def _patch_agent_server(mock_server):
-    module = ModuleType("jiuwenswarm.server.agent_ws_server")
+    module_name = "jiuwenswarm.server.agent_ws_server"
+    previous = sys.modules.get(module_name)
+    had_previous = module_name in sys.modules
+    module = ModuleType(module_name)
     module.AgentWebSocketServer = MagicMock()
     module.AgentWebSocketServer.get_instance.return_value = mock_server
-    return patch.dict(
-        sys.modules,
-        {"jiuwenswarm.server.agent_ws_server": module},
-    )
+    sys.modules[module_name] = module
+    try:
+        yield mock_server
+    finally:
+        if had_previous:
+            sys.modules[module_name] = previous
+        else:
+            sys.modules.pop(module_name, None)
+
+
+def test_patch_agent_server_does_not_evict_new_modules():
+    module_name = "jiuwenswarm._test_patch_agent_server_keepalive"
+    sentinel = ModuleType(module_name)
+    try:
+        with _patch_agent_server(MagicMock()):
+            sys.modules[module_name] = sentinel
+        assert sys.modules[module_name] is sentinel
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 def test_coerce_references_accepts_list_and_json_string():
