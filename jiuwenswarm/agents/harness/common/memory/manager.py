@@ -4,17 +4,16 @@
 
 import logging
 import os
+import io
 import json
-import sqlite3
+import aiosqlite
 import struct
 import asyncio
 import datetime
 from typing import List, Optional, Dict, Any, Set
 from dataclasses import dataclass
 
-from .types import (
-    MemorySearchResult, MemoryFileEntry, MemoryChunk, MemorySource
-)
+from .types import MemoryChunk
 from .internal import (
     ensure_dir, list_memory_files, build_file_entry, chunk_markdown,
     hash_text, build_fts_query, bm25_rank_to_score, is_memory_path
@@ -53,6 +52,12 @@ def blob_to_vector(blob: bytes) -> List[float]:
     return list(struct.unpack(f'{count}f', blob))
 
 
+def _read_text_file(path: str) -> str:
+    """Read a text file synchronously; call through ``asyncio.to_thread``."""
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
 class MemoryIndexManager:
     """Manages memory indexing and search."""
 
@@ -66,8 +71,13 @@ class MemoryIndexManager:
         self.workspace_dir = workspace_dir
         self.settings = settings
 
-        self.db: Optional[sqlite3.Connection] = None
+        self.db: Optional[aiosqlite.Connection] = None
         self.db_path: str = ""
+
+        # aiosqlite serializes individual statements on one worker thread, but
+        # not multi-statement transactions. This lock keeps an index/delete
+        # transaction atomic when sync() runs concurrently.
+        self._write_lock = asyncio.Lock()
 
         self.provider: Optional[EmbeddingProvider] = None
         self.provider_key: str = ""
@@ -134,8 +144,8 @@ class MemoryIndexManager:
             self._event_loop = None
 
         self.db_path = self._resolve_db_path()
-        self.db = self._open_database(self.db_path)
-        self._ensure_schema()
+        self.db = await self._open_database(self.db_path)
+        await self._ensure_schema()
         await self._initialize_provider()
         await self._load_vector_extension()
 
@@ -169,23 +179,24 @@ class MemoryIndexManager:
 
         return os.path.join(self.workspace_dir, store_path)
 
-    def _open_database(self, db_path: str) -> sqlite3.Connection:
-        """Open SQLite database."""
+    async def _open_database(self, db_path: str) -> aiosqlite.Connection:
+        """Open SQLite database on an aiosqlite worker thread."""
         ensure_dir(os.path.dirname(db_path) or ".")
 
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        conn = await aiosqlite.connect(db_path, timeout=5.0)
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA foreign_keys=ON")
+        await conn.execute("PRAGMA busy_timeout=5000")
 
         return conn
 
-    def _ensure_schema(self) -> None:
+    async def _ensure_schema(self) -> None:
         """Ensure database schema exists."""
         if not self.db:
             raise RuntimeError("Database not initialized")
 
-        self.db.execute("""
+        await self.db.execute("""
                         CREATE TABLE IF NOT EXISTS meta
                         (
                             key
@@ -197,7 +208,7 @@ class MemoryIndexManager:
                         )
                         """)
 
-        self.db.execute("""
+        await self.db.execute("""
                         CREATE TABLE IF NOT EXISTS files
                         (
                             path
@@ -215,7 +226,7 @@ class MemoryIndexManager:
                         )
                         """)
 
-        self.db.execute("""
+        await self.db.execute("""
                         CREATE TABLE IF NOT EXISTS chunks
                         (
                             id
@@ -243,7 +254,7 @@ class MemoryIndexManager:
                         )
                         """)
 
-        self.db.execute(f"""
+        await self.db.execute(f"""
             CREATE TABLE IF NOT EXISTS {EMBEDDING_CACHE_TABLE} (
                 provider TEXT,
                 model TEXT,
@@ -257,7 +268,7 @@ class MemoryIndexManager:
 
         if self.fts_enabled:
             try:
-                self.db.execute(f"""
+                await self.db.execute(f"""
                     CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(
                         id UNINDEXED,
                         path UNINDEXED,
@@ -273,7 +284,7 @@ class MemoryIndexManager:
                 self.fts_error = str(e)
                 logger.warning(f"Failed to create FTS5 table: {e}")
 
-        self.db.commit()
+        await self.db.commit()
 
     async def _initialize_provider(self) -> None:
         """Initialize embedding provider."""
@@ -296,9 +307,9 @@ class MemoryIndexManager:
 
         try:
             import sqlite_vec
-            self.db.enable_load_extension(True)
-            sqlite_vec.load(self.db)
-            self.db.enable_load_extension(False)
+            await self.db.enable_load_extension(True)
+            await self.db.load_extension(sqlite_vec.loadable_path())
+            await self.db.enable_load_extension(False)
             self.vector_available = True
             logger.info("sqlite-vec extension loaded successfully")
         except Exception as e:
@@ -306,7 +317,7 @@ class MemoryIndexManager:
             self.vector_error = str(e)
             logger.warning(f"Failed to load sqlite-vec extension: {e}")
 
-    def _ensure_vector_table(self, dims: int) -> bool:
+    async def _ensure_vector_table(self, dims: int) -> bool:
         """Ensure vector virtual table exists with correct dimensions."""
         if not self.db or not self.vector_available:
             return False
@@ -317,11 +328,11 @@ class MemoryIndexManager:
 
             if self.vector_dims is not None and self.vector_dims != dims:
                 try:
-                    self.db.execute(f"DROP TABLE IF EXISTS {VECTOR_TABLE}")
+                    await self.db.execute(f"DROP TABLE IF EXISTS {VECTOR_TABLE}")
                 except Exception as e:
                     logger.warning(f"Failed to drop existing vector table {VECTOR_TABLE}: {e}")
 
-            self.db.execute(f"""
+            await self.db.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS {VECTOR_TABLE} USING vec0(
                     embedding float[{dims}]
                 )
@@ -495,11 +506,11 @@ class MemoryIndexManager:
     async def _should_full_reindex(self) -> bool:
         """Check if full reindex is needed."""
         try:
-            cursor = self.db.execute(
+            cursor = await self.db.execute(
                 "SELECT value FROM meta WHERE key = ?",
                 (META_KEY,)
             )
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
 
             if not row:
                 return True
@@ -540,7 +551,7 @@ class MemoryIndexManager:
         if self.vector_available and self.vector_dims:
             meta["vectorDims"] = self.vector_dims
 
-        self._write_meta(meta)
+        await self._write_meta(meta)
 
     def _is_recent_session_file(self, filename: str) -> bool:
         """Check if the file is today's or yesterday's session record.
@@ -611,21 +622,21 @@ class MemoryIndexManager:
             entry = await build_file_entry(filepath, self.workspace_dir)
             active_paths.add(entry["path"])
 
-            cursor = self.db.execute(
+            cursor = await self.db.execute(
                 "SELECT hash FROM files WHERE path = ? AND source = ?",
                 (entry["path"], "memory")
             )
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
 
             if row and row["hash"] == entry["hash"]:
                 continue
 
             await self._index_file(entry, "memory")
 
-        cursor = self.db.execute("SELECT path FROM files WHERE source = ?", ("memory",))
-        for row in cursor.fetchall():
+        cursor = await self.db.execute("SELECT path FROM files WHERE source = ?", ("memory",))
+        for row in await cursor.fetchall():
             if row["path"] not in active_paths:
-                self._remove_file_from_index(row["path"])
+                await self._remove_file_from_index(row["path"])
 
     async def _sync_session_files(self) -> None:
         """Sync session transcript files."""
@@ -646,64 +657,74 @@ class MemoryIndexManager:
             entry = await build_file_entry(session_file, self.workspace_dir)
             active_paths.add(entry["path"])
 
-            cursor = self.db.execute(
+            cursor = await self.db.execute(
                 "SELECT hash FROM files WHERE path = ? AND source = ?",
                 (entry["path"], "sessions")
             )
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
 
             if row and row["hash"] == entry["hash"]:
                 continue
 
             await self._index_file(entry, "sessions")
 
-        cursor = self.db.execute("SELECT path FROM files WHERE source = ?", ("sessions",))
-        for row in cursor.fetchall():
+        cursor = await self.db.execute("SELECT path FROM files WHERE source = ?", ("sessions",))
+        for row in await cursor.fetchall():
             if row["path"] not in active_paths:
-                self._remove_file_from_index(row["path"])
+                await self._remove_file_from_index(row["path"])
 
     async def _index_file(self, entry: Dict[str, Any], source: str) -> None:
-        """Index a single file."""
+        """Index a single file.
+
+        Embed every chunk text in one provider call, then write the file and its
+        chunks in a single transaction. The read runs on a worker thread so the
+        event loop stays free while large files are loaded.
+        """
         try:
-            with open(entry["absPath"], "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
+            content = await asyncio.to_thread(_read_text_file, entry["absPath"])
 
             chunks = chunk_markdown(content, self.settings.chunking)
+            embeddings = await self._embed_chunks([chunk.text for chunk in chunks])
 
-            self.db.execute("DELETE FROM chunks WHERE path = ?", (entry["path"],))
-            if self.fts_available:
+            async with self._write_lock:
                 try:
-                    self.db.execute(f"DELETE FROM {FTS_TABLE} WHERE path = ?", (entry["path"],))
-                except Exception as e:
-                    logger.warning(f"Failed to delete FTS rows for path {entry['path']}: {e}")
+                    await self.db.execute("DELETE FROM chunks WHERE path = ?", (entry["path"],))
+                    if self.fts_available:
+                        try:
+                            await self.db.execute(f"DELETE FROM {FTS_TABLE} WHERE path = ?", (entry["path"],))
+                        except Exception as e:
+                            logger.warning(f"Failed to delete FTS rows for path {entry['path']}: {e}")
 
-            for chunk in chunks:
-                await self._index_chunk(entry["path"], source, chunk)
+                    for chunk, embedding in zip(chunks, embeddings):
+                        await self._index_chunk(entry["path"], source, chunk, embedding)
 
-            self.db.execute("""
-                INSERT OR REPLACE INTO files (path, source, hash, mtime, size)
-                VALUES (?, ?, ?, ?, ?)
-            """, (entry["path"], source, entry["hash"], entry["mtimeMs"], entry["size"]))
+                    await self.db.execute("""
+                        INSERT OR REPLACE INTO files (path, source, hash, mtime, size)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (entry["path"], source, entry["hash"], entry["mtimeMs"], entry["size"]))
 
-            self.db.commit()
+                    await self.db.commit()
+                except Exception:
+                    # Roll back while still holding the lock so we never revert
+                    # a transaction another task started.
+                    await self.db.rollback()
+                    raise
 
         except Exception as e:
             logger.error(f"Failed to index file {entry['path']}: {e}")
-            self.db.rollback()
 
     async def _index_chunk(
             self,
             file_path: str,
             source: str,
-            chunk: MemoryChunk
+            chunk: MemoryChunk,
+            embedding: Optional[List[float]] = None
     ) -> None:
-        """Index a single chunk."""
+        """Index a single chunk using a precomputed embedding."""
         chunk_id = f"{file_path}:{chunk.startLine}:{chunk.endLine}"
         chunk_hash = hash_text(chunk.text)
 
-        embedding = await self._get_embedding(chunk.text)
-
-        cursor = self.db.execute("""
+        cursor = await self.db.execute("""
             INSERT OR REPLACE INTO chunks
             (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -714,12 +735,12 @@ class MemoryIndexManager:
             vector_to_blob(embedding) if embedding else None,
             int(asyncio.get_event_loop().time()) if self._event_loop else 0
         ))
-        row = cursor.fetchone()
+        row = await cursor.fetchone()
         chunk_rowid = row["rowid"] if row else None
 
         if self.fts_available and chunk_rowid:
             try:
-                self.db.execute(f"""
+                await self.db.execute(f"""
                     INSERT OR REPLACE INTO {FTS_TABLE} (rowid, id, path, source, text)
                     VALUES (?, ?, ?, ?, ?)
                 """, (chunk_rowid, chunk_id, file_path, source, chunk.text))
@@ -728,79 +749,114 @@ class MemoryIndexManager:
 
         if self.vector_available and embedding and chunk_rowid:
             try:
-                if self._ensure_vector_table(len(embedding)):
-                    self.db.execute(f"""
+                if await self._ensure_vector_table(len(embedding)):
+                    await self.db.execute(f"""
                         INSERT OR REPLACE INTO {VECTOR_TABLE} (rowid, embedding)
                         VALUES (?, vec_f32(?))
                     """, (chunk_rowid, vector_to_blob(embedding)))
             except Exception as e:
                 logger.debug("Failed to insert into vector table: %s", e)
 
-    def _remove_file_from_index(self, file_path: str) -> None:
+    async def _remove_file_from_index(self, file_path: str) -> None:
         """Remove file from index."""
         try:
-            if self.vector_available:
-                cursor = self.db.execute(
-                    "SELECT rowid FROM chunks WHERE path = ?", (file_path,)
-                )
-                for row in cursor.fetchall():
-                    try:
-                        self.db.execute(f"DELETE FROM {VECTOR_TABLE} WHERE rowid = ?", (row["rowid"],))
-                    except Exception as e:
-                        logger.warning(f"Failed to delete vector row {row['rowid']} for path {file_path}: {e}")
+            async with self._write_lock:
+                try:
+                    if self.vector_available:
+                        cursor = await self.db.execute(
+                            "SELECT rowid FROM chunks WHERE path = ?", (file_path,)
+                        )
+                        for row in await cursor.fetchall():
+                            try:
+                                await self.db.execute(f"DELETE FROM {VECTOR_TABLE} WHERE rowid = ?", (row["rowid"],))
+                            except Exception as e:
+                                logger.warning(f"Failed to delete vector row {row['rowid']} for path {file_path}: {e}")
 
-            if self.fts_available:
-                cursor = self.db.execute("SELECT rowid FROM chunks WHERE path = ?", (file_path,))
-                for row in cursor.fetchall():
-                    try:
-                        self.db.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (row["rowid"],))
-                    except Exception as e:
-                        logger.warning(f"Failed to delete FTS row {row['rowid']} for path {file_path}: {e}")
+                    if self.fts_available:
+                        cursor = await self.db.execute("SELECT rowid FROM chunks WHERE path = ?", (file_path,))
+                        for row in await cursor.fetchall():
+                            try:
+                                await self.db.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (row["rowid"],))
+                            except Exception as e:
+                                logger.warning(f"Failed to delete FTS row {row['rowid']} for path {file_path}: {e}")
 
-            self.db.execute("DELETE FROM chunks WHERE path = ?", (file_path,))
-            self.db.execute("DELETE FROM files WHERE path = ?", (file_path,))
-            self.db.commit()
+                    await self.db.execute("DELETE FROM chunks WHERE path = ?", (file_path,))
+                    await self.db.execute("DELETE FROM files WHERE path = ?", (file_path,))
+                    await self.db.commit()
+                except Exception:
+                    await self.db.rollback()
+                    raise
 
         except Exception as e:
             logger.error(f"Failed to remove file from index: {e}")
-            self.db.rollback()
 
     async def _get_embedding(self, text: str) -> Optional[List[float]]:
-        """Get embedding for text (with caching)."""
-        if not self.provider:
-            return None
+        """Get embedding for one text (cache-aware)."""
+        embeddings = await self._embed_chunks([text])
+        return embeddings[0] if embeddings else None
 
-        text_hash = hash_text(text)
+    async def _embed_chunks(self, texts: List[str]) -> List[Optional[List[float]]]:
+        """Embed a batch of texts in one provider call, honoring the cache.
+
+        ``embed_query`` is implemented as ``embed_documents([text])``, so batching
+        produces the same vectors as the previous per-chunk calls.
+        """
+        if not texts:
+            return []
+
+        results: List[Optional[List[float]]] = [None] * len(texts)
+        if not self.provider:
+            return results
+
+        hashes = [hash_text(text) for text in texts]
 
         if self.cache_enabled:
-            cursor = self.db.execute(f"""
-                SELECT embedding FROM {EMBEDDING_CACHE_TABLE}
-                WHERE provider = ? AND model = ? AND provider_key = ? AND hash = ?
-            """, (self.provider.id, self.provider.model, self.provider_key, text_hash))
-            row = cursor.fetchone()
-            if row:
-                return blob_to_vector(row["embedding"])
+            for index, text_hash in enumerate(hashes):
+                cursor = await self.db.execute(f"""
+                    SELECT embedding FROM {EMBEDDING_CACHE_TABLE}
+                    WHERE provider = ? AND model = ? AND provider_key = ? AND hash = ?
+                """, (self.provider.id, self.provider.model, self.provider_key, text_hash))
+                row = await cursor.fetchone()
+                if row:
+                    results[index] = blob_to_vector(row["embedding"])
 
-        try:
-            embedding = await self.provider.embed_query(text)
+        miss_indexes = [i for i, value in enumerate(results) if value is None]
+        if miss_indexes:
+            try:
+                embeddings = await self.provider.embed_documents([texts[i] for i in miss_indexes])
+            except Exception as e:
+                logger.error(f"Failed to get embeddings: {e}")
+                return results
 
+            now = int(self._event_loop.time()) if self._event_loop else 0
             if self.cache_enabled:
-                self.db.execute(f"""
-                    INSERT OR REPLACE INTO {EMBEDDING_CACHE_TABLE}
-                    (provider, model, provider_key, hash, embedding, dims, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    self.provider.id, self.provider.model, self.provider_key,
-                    text_hash, vector_to_blob(embedding), len(embedding),
-                    int(asyncio.get_event_loop().time()) if self._event_loop else 0
-                ))
-                self.db.commit()
+                async with self._write_lock:
+                    try:
+                        for position, index in enumerate(miss_indexes):
+                            if position >= len(embeddings):
+                                break
+                            embedding = embeddings[position]
+                            if not embedding:
+                                continue
+                            results[index] = embedding
+                            await self.db.execute(f"""
+                                INSERT OR REPLACE INTO {EMBEDDING_CACHE_TABLE}
+                                (provider, model, provider_key, hash, embedding, dims, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                self.provider.id, self.provider.model, self.provider_key,
+                                hashes[index], vector_to_blob(embedding), len(embedding), now
+                            ))
+                        await self.db.commit()
+                    except Exception as e:
+                        logger.warning("Failed to write embedding cache: %s", e)
+                        await self.db.rollback()
+            else:
+                for position, index in enumerate(miss_indexes):
+                    if position < len(embeddings) and embeddings[position]:
+                        results[index] = embeddings[position]
 
-            return embedding
-
-        except Exception as e:
-            logger.error(f"Failed to get embedding: {e}")
-            return None
+        return results
 
     async def search(
             self,
@@ -880,28 +936,26 @@ class MemoryIndexManager:
 
         if not self.vector_dims:
             sample = await self.provider.embed_query("sample")
-            self._ensure_vector_table(len(sample))
+            await self._ensure_vector_table(len(sample))
         else:
-            self._ensure_vector_table(self.vector_dims)
+            await self._ensure_vector_table(self.vector_dims)
 
         if not self.vector_available:
             return await self._search_vector_fallback(query_vec, limit)
 
         try:
-            import math
-
             query_blob = vector_to_blob(query_vec)
 
             source_filter = self._build_source_filter()
 
-            cursor = self.db.execute(f"""
+            cursor = await self.db.execute(f"""
                 SELECT rowid, id, path, source, start_line, end_line, text
                 FROM chunks
                 WHERE {source_filter}
             """)
 
             chunk_map = {}
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():
                 chunk_map[row["rowid"]] = {
                     "id": str(row["id"]),
                     "path": str(row["path"]),
@@ -914,7 +968,7 @@ class MemoryIndexManager:
             if not chunk_map:
                 return []
 
-            rows = self.db.execute(f"""
+            cursor = await self.db.execute(f"""
                 SELECT 
                     rowid,
                     vec_distance_cosine(embedding, vec_f32(?)) as distance
@@ -925,7 +979,7 @@ class MemoryIndexManager:
             """, (query_blob, *chunk_map.keys(), limit))
 
             results = []
-            for row in rows:
+            for row in await cursor.fetchall():
                 rowid = row["rowid"]
                 if rowid in chunk_map:
                     distance = row["distance"]
@@ -956,14 +1010,14 @@ class MemoryIndexManager:
 
         source_filter = self._build_source_filter()
 
-        cursor = self.db.execute(f"""
+        cursor = await self.db.execute(f"""
             SELECT id, path, source, start_line, end_line, text, embedding
             FROM chunks
             WHERE {source_filter} AND embedding IS NOT NULL
         """)
 
         results = []
-        for row in cursor.fetchall():
+        for row in await cursor.fetchall():
             if not row["embedding"]:
                 continue
 
@@ -1007,14 +1061,14 @@ class MemoryIndexManager:
 
             source_filter = self._build_source_filter()
 
-            cursor = self.db.execute(f"""
+            cursor = await self.db.execute(f"""
                 SELECT rowid, id, path, source, start_line, end_line, text
                 FROM chunks
                 WHERE {source_filter}
             """)
 
             chunk_map = {}
-            for row in cursor.fetchall():
+            for row in await cursor.fetchall():
                 chunk_map[row["rowid"]] = {
                     "id": str(row["id"]),
                     "path": str(row["path"]),
@@ -1027,7 +1081,7 @@ class MemoryIndexManager:
             if not chunk_map:
                 return []
 
-            rows = self.db.execute(f"""
+            cursor = await self.db.execute(f"""
                 SELECT 
                     rowid,
                     rank
@@ -1038,7 +1092,7 @@ class MemoryIndexManager:
             """, (fts_query, limit))
 
             results = []
-            for row in rows:
+            for row in await cursor.fetchall():
                 rowid = row["rowid"]
                 if rowid in chunk_map:
                     score = bm25_rank_to_score(float(row["rank"]))
@@ -1124,8 +1178,10 @@ class MemoryIndexManager:
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"File not found: {rel_path}")
 
-        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
+        text = await asyncio.to_thread(_read_text_file, full_path)
+        # StringIO.readlines() mirrors the universal-newline splitting of a
+        # text-mode file, so line numbering stays identical to before.
+        all_lines = io.StringIO(text).readlines()
 
         total_lines = len(all_lines)
 
@@ -1146,33 +1202,33 @@ class MemoryIndexManager:
             "toLine": (from_line or 1) + len(content_lines) - 1
         }
 
-    def _write_meta(self, meta: Dict[str, Any]) -> None:
+    async def _write_meta(self, meta: Dict[str, Any]) -> None:
         """Write metadata to database."""
-        self.db.execute(
+        await self.db.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
             (META_KEY, json.dumps(meta))
         )
-        self.db.commit()
+        await self.db.commit()
 
-    def status(self) -> Dict[str, Any]:
+    async def status(self) -> Dict[str, Any]:
         """Get memory system status."""
         if not self.db:
             return {"available": False}
 
-        cursor = self.db.execute("SELECT COUNT(*) as count FROM files")
-        file_count = cursor.fetchone()["count"]
+        cursor = await self.db.execute("SELECT COUNT(*) as count FROM files")
+        file_count = (await cursor.fetchone())["count"]
 
-        cursor = self.db.execute("SELECT COUNT(*) as count FROM chunks")
-        chunk_count = cursor.fetchone()["count"]
+        cursor = await self.db.execute("SELECT COUNT(*) as count FROM chunks")
+        chunk_count = (await cursor.fetchone())["count"]
 
-        cursor = self.db.execute("""
+        cursor = await self.db.execute("""
                                  SELECT source, COUNT(*) as files
                                  FROM files
                                  GROUP BY source
                                  """)
         source_counts = [
             {"source": str(row["source"]), "files": int(row["files"])}
-            for row in cursor.fetchall()
+            for row in await cursor.fetchall()
         ]
 
         return {
@@ -1196,15 +1252,15 @@ class MemoryIndexManager:
             },
             "cache": {
                 "enabled": self.cache_enabled,
-                "entries": int(self._get_cache_entry_count())
+                "entries": int(await self._get_cache_entry_count())
             }
         }
 
-    def _get_cache_entry_count(self) -> int:
+    async def _get_cache_entry_count(self) -> int:
         """Get number of cache entries."""
         try:
-            cursor = self.db.execute(f"SELECT COUNT(*) as count FROM {EMBEDDING_CACHE_TABLE}")
-            return cursor.fetchone()["count"]
+            cursor = await self.db.execute(f"SELECT COUNT(*) as count FROM {EMBEDDING_CACHE_TABLE}")
+            return (await cursor.fetchone())["count"]
         except Exception as e:
             logger.warning(f"Failed to get cache entry count: {e}")
             return 0
@@ -1231,7 +1287,7 @@ class MemoryIndexManager:
                 logger.warning(f"Failed to stop file observer cleanly: {e}")
 
         if self.db:
-            self.db.close()
+            await self.db.close()
 
         cache_key = f"{self.agent_id}:{self.workspace_dir}"
         if cache_key in INDEX_CACHE:
