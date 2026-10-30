@@ -4770,10 +4770,14 @@ class SkillManager:
             if raw_name
             else None
         )
-        if (
-            installation is not None
-            and str(installation.get("source_type") or "").strip() in {"builtin", "prebuilt"}
-        ):
+        # 预置：各版本均不可卸载。内置：仅企业版不可卸载（个人版与 develop 一致，
+        # 由下方 _uninstall_skill_body 按源码内置目录判定是否真正不可删）。
+        source_type = (
+            str(installation.get("source_type") or "").strip()
+            if installation is not None
+            else ""
+        )
+        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
@@ -11603,7 +11607,11 @@ class SkillManager:
             )
 
     async def handle_skills_web_uninstall(self, params: dict) -> dict:
-        """企业 Web 卸载兼容入口：允许删除 source_type 为 user 或未标记的安装。"""
+        """Web 卸载兼容入口。
+
+        与 ``handle_skills_uninstall`` 一致：预置各版本不可卸；内置仅企业版不可卸；
+        user / 未标记可卸。真正删除仍委托 ``handle_skills_uninstall``。
+        """
 
         name = str(params.get("name") or "").strip()
         if not name:
@@ -11645,8 +11653,9 @@ class SkillManager:
                 "error_code": "not_found",
                 "error_message": f"skill `{name}` is not installed",
             }
+        # 与 handle_skills_uninstall 同一分版策略，避免个人版 builtin 在此入口被误拒。
         source_type = str(installation.get("source_type") or "").strip()
-        if source_type not in {"", "user"}:
+        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
