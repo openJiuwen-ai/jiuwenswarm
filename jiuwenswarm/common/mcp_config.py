@@ -2516,6 +2516,47 @@ async def list_office_claw_mcp_tools(
     return copy.deepcopy(tools)
 
 
+_LIST_CONNECTORS_TOOL = "office_claw_list_connectors"
+_GET_CONNECTOR_TOOLS_TOOL = "office_claw_get_connector_tools"
+_CONNECTOR_CATALOG_TOOL_NAMES = frozenset({_LIST_CONNECTORS_TOOL, _GET_CONNECTOR_TOOLS_TOOL})
+CONNECTOR_DISCOVERY_FAILED = "工具发现失败（连接器进程未能启动或连接被关闭）"
+CONNECTOR_NO_TOOLS = "未提供任何可用工具（工具可能已全部停用）"
+
+
+def annotate_connector_catalog_result(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    text: str | None,
+    unavailable: Mapping[str, str],
+    *,
+    is_error: bool = False,
+) -> str | None:
+    if tool_name not in _CONNECTOR_CATALOG_TOOL_NAMES or not unavailable:
+        return text
+    queried = ""
+    if tool_name == _GET_CONNECTOR_TOOLS_TOOL:
+        queried = str(arguments.get("connectorName") or "").strip().casefold()
+    # 查询参数名由宿主 MCP 服务定义；取不到查询名时按列出连接器全量标注，避免参数名变化后静默失效
+    if queried:
+        hits = {name: reason for name, reason in unavailable.items() if name.casefold() == queried}
+    else:
+        hits = dict(unavailable)
+    if not hits:
+        return text
+    lines = "\n".join(f"- {name}：{reason}" for name, reason in sorted(hits.items()))
+    # 宿主返回的错误文本原样保留，但不能称作"目录记录"
+    preface = "以上为连接器目录记录，不代表本轮可调用。" if text and not is_error else ""
+    note = (
+        f"[本次请求的连接器实际加载结果] {preface}"
+        "以下连接器本次请求没有加载任何工具，目录中列出的它们的工具在本轮均不可调用：\n"
+        f"{lines}\n"
+        f"不要再重复调用 {_LIST_CONNECTORS_TOOL} / {_GET_CONNECTOR_TOOLS_TOOL} 重试；"
+        "请直接告知用户该连接器当前不可用（可稍后重试，或在连接器页面重新连接、检查网络与代理），"
+        "并继续完成不依赖它的部分。"
+    )
+    return f"{text}\n\n{note}" if text else note
+
+
 class RequestScopedOfficeClawMcpTool(Tool):
     """Invoke one OfficeClaw tool through a long-lived request-scoped process.
 
@@ -2546,11 +2587,15 @@ class RequestScopedOfficeClawMcpTool(Tool):
         self._request_id = str(request_id or "")
         self._server_name = str(server_name or "")
         self._use_global_pool = bool(use_global_pool)
+        self._unavailable_connectors: dict[str, str] = {}
 
     @property
     def server_name(self) -> str:
         """只读暴露工具所属来源，不改变请求级连接身份。"""
         return self._server_name
+
+    def set_unavailable_connectors(self, unavailable: Mapping[str, str]) -> None:
+        self._unavailable_connectors = dict(unavailable)
 
     async def _acquire_mcp_session(self, *, force_rebuild: bool = False):
         if self._use_global_pool:
@@ -2635,7 +2680,11 @@ class RequestScopedOfficeClawMcpTool(Tool):
                 # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
                 session = await self._acquire_mcp_session(force_rebuild=True)
                 result = await session.call_tool(self._card.name, arguments=arguments)
-            return {"result": _extract_mcp_result_text(result)}
+            text = annotate_connector_catalog_result(
+                self._card.name, arguments, _extract_mcp_result_text(result),
+                self._unavailable_connectors, is_error=getattr(result, "isError", False) is True,
+            )
+            return {"result": text}
         except Exception as exc:
             raise build_error(
                 StatusCode.TOOL_MCP_EXECUTION_ERROR,
@@ -2647,6 +2696,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
 
 
 __all__ = [
+    "CONNECTOR_DISCOVERY_FAILED",
+    "CONNECTOR_NO_TOOLS",
     "OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG",
     "OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX",
     "MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX",
@@ -2654,6 +2705,7 @@ __all__ = [
     "OfficeClawMcpRegistration",
     "RequestScopedOfficeClawMcpTool",
     "acquire_request_scoped_mcp_session",
+    "annotate_connector_catalog_result",
     "bind_active_office_claw_mcp_tools",
     "bind_office_claw_from_agent",
     "clear_agent_office_claw_tool_ids",

@@ -586,6 +586,8 @@ from jiuwenswarm.common.config import (
     resolve_string_or_list_config,
 )
 from jiuwenswarm.common.mcp_config import (
+    CONNECTOR_DISCOVERY_FAILED,
+    CONNECTOR_NO_TOOLS,
     MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     OfficeClawMcpRegistration,
     RequestScopedOfficeClawMcpTool,
@@ -2547,6 +2549,7 @@ class _RequestMcpToolBuffers:
     pending_tools: list[tuple[RequestScopedOfficeClawMcpTool, bool]] = field(default_factory=list)
     research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
     research_tool_names: dict[str, list[str]] = field(default_factory=dict)
+    unavailable_connectors: dict[str, str] = field(default_factory=dict)
 
 
 _SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
@@ -5165,7 +5168,15 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] request-scoped MCP connector discovery failed: "
                     "request_id=%s server=%s error=%s", request.request_id, server_name, exc,
                 )
+                if server_name != "office-claw":
+                    buffers.unavailable_connectors[server_name] = CONNECTOR_DISCOVERY_FAILED
                 continue
+            # Discovery reports failure as empty params; a legitimately empty
+            # connector (e.g. every tool filtered off) still returns params.
+            if server_name != "office-claw" and not tool_defs:
+                buffers.unavailable_connectors[server_name] = (
+                    CONNECTOR_NO_TOOLS if params else CONNECTOR_DISCOVERY_FAILED
+                )
             self._stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
             if tool_defs:
                 from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
@@ -5312,6 +5323,15 @@ class JiuWenSwarmDeepAdapter:
                 invocation_id = await self._append_identity_pinned_office_claw_tools(
                     request, office_claw_config, buffers, yield_to_existing=True,
                 )
+
+            if buffers.unavailable_connectors:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connectors unavailable this request: "
+                    "request_id=%s connectors=%s", request.request_id, buffers.unavailable_connectors,
+                )
+                for tool, _strict in buffers.pending_tools:
+                    if tool.server_name == "office-claw":
+                        tool.set_unavailable_connectors(buffers.unavailable_connectors)
 
             if not replace_request_scoped_mcp_registration(generation, generation):
                 logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
