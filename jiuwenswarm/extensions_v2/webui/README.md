@@ -55,6 +55,19 @@ disabled、readOnly 或断连时不发送 Enter，每次有效提交独立发送
 需要响应输入框点击时可绑定 `"ui.click": {"id": "city.inspect"}`，Handler 收到当前编辑值 `{value}`。
 只读输入仍允许点击；禁用或断连时不发送，未绑定 click 时只保留输入框的默认点击行为。
 
+开关可声明为：
+
+```python
+RenderNode(
+    "Switch",
+    {"defaultChecked": True, "ariaLabel": "启用"},
+    events={"ui.change": {"id": "enabled.change"}},
+)
+```
+
+Handler 从 data 读取布尔值 checked。checked 优先于 defaultChecked；合法 replace 重新初始化状态，
+初始化不触发 change。disabled、loading 或断连时开关禁用；未绑定 change 时仍可本地切换。
+
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，
 不能再向声明 args 追加 key。单个节点不允许同时声明 action 与 events。
