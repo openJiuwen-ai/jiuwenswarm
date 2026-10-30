@@ -52,6 +52,9 @@ RenderNode(
 它与 change 独立绑定，可以只声明 Enter；组合输入期间用于确认候选词的 Enter 不触发提交。
 disabled、readOnly 或断连时不发送 Enter，每次有效提交独立发送，不等待上一次回执。
 
+需要响应输入框点击时可绑定 `"ui.click": {"id": "city.inspect"}`，Handler 收到当前编辑值 `{value}`。
+只读输入仍允许点击；禁用或断连时不发送，未绑定 click 时只保留输入框的默认点击行为。
+
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，
 不能再向声明 args 追加 key。单个节点不允许同时声明 action 与 events。

@@ -29,6 +29,9 @@ export function WebUIInput({ node, context, emit, appearance }: WebUIAdapterProp
       compositionCommit.current = next;
       emitChange(next, false);
     }}
+    onClick={() => {
+      if (node.events['ui.click'] && !disabled) void emit('ui.click', { value });
+    }}
     onChange={(event) => {
       if (disabled || p.readOnly) return;
       const next = event.target.value;
