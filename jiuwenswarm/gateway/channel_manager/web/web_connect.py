@@ -794,8 +794,9 @@ class WebChannel(BaseWsChannel):
         # 按 session_id 路由会被丢弃。cron 推送（占位 + 结果）带 payload.cron 标记，普通对话
         # chat.final 不带，以此为识别条件广播给所有 web 客户端。前端 _push_to_targets 已对 web
         # 置空 session_id，shouldHandleSessionEvent 放行，消息进当前活跃会话流（含 placeholder 替换）。
+        # 定时任务产物文件（CHAT_FILE，payload 带 cron 标记）走同一豁免——文件与总结文本同源同目标。
         if (
-            msg.event_type == EventType.CHAT_FINAL
+            msg.event_type in (EventType.CHAT_FINAL, EventType.CHAT_FILE)
             and isinstance(msg.payload, dict)
             and isinstance(msg.payload.get("cron"), dict)
         ):
