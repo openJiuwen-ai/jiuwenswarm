@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-07 界面项声明、挂载与上行交互 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{contributions,adapter}.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[F_06 渲染服务](F_06_render-service.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-30 |
 | 方案状态 | 已实现 |
 
 ## 1. 问题与目标
@@ -44,7 +44,7 @@ flowchart LR
     A["生效包 ActivePackageRecord"] --> C["WebUICatalogService"]
     C -->|"读取 manifest.yaml ui 段"| V["load_package_ui 校验"]
     V --> D["UiCatalog"]
-    D -->|"allows_slot"| AD["WebUIDispatchAdapter"]
+    D -->|"allows_target"| AD["WebUIDispatchAdapter"]
     FE["React 槽位宿主"] -->|"webui.dispatch"| AD
     AD --> RT["WebUIRuntime.dispatch"]
     RT --> B["ExtensionEventBus"]
@@ -115,20 +115,31 @@ sequenceDiagram
     B-->>FE: {accepted: true, status: "ready"/"rendered"}
 ```
 
-会话级槽位的 `ui.ready` 目标只带会话和槽位，包与实例标识为空；实例由插件在 Handler 中创建，因此 CORE Handler 对 `ui.ready` 不检查实例是否存在。消息级槽位在本地缺少实例时，会携带 `instance_key=requestId` 上报，插件可据此恢复该轮已缓存的视图。
+`ui.ready` 只接受空 payload。会话级槽位的目标只带会话和槽位，包与实例标识为空；实例由插件在 Handler 中创建，因此 CORE Handler 对 `ui.ready` 不检查实例是否存在。消息级槽位在本地缺少实例时，会携带 `instance_key=requestId` 上报，插件可据此恢复该轮已缓存的视图。
 
 ### 4.2 上行交互
 
-前端把组件事件归一化为以下 payload：
+组件使用 `events` 声明事件及其动作。新组件事件的数据规则由
+[组件规约](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)维护；
+后端校验实现位于 `webui/component_rules.py`。以下旧 action 组件仍保留，表中的字段现在放在 `payload.data`：
 
 | 事件 | 来源组件 | payload |
 | --- | --- | --- |
-| `ui.press` | `Button` | `{action_id, args}` |
-| `ui.toggle` | `CheckBox` | `{action_id, name, checked, args}` |
-| `ui.input` | `TextField` | `{action_id, name, value, args}` |
-| `ui.select` | `MultipleChoice`、`Slider` | `{action_id, name, value, args}` |
+| `ui.press` | `Button` / `List` | `{}` / `{key}` |
+| `ui.toggle` | `CheckBox` | `{name, checked}` |
+| `ui.input` | `TextField` | `{name, value}` |
+| `ui.select` | `MultipleChoice`、`Slider` | `{name, value}` |
 
-`action_id` 来自渲染节点的 `action.id`，`args` 来自 `action.args`。插件按 `action_id` 区分同一实例内的多个动作。
+`action_id`、`args` 来自对应事件声明；旧节点仍从 `action` 读取。同一节点不允许同时声明两者。
+插件按 `action_id` 区分同一实例内的多个动作，读取交互值时使用 `payload.data`。
+
+请求处理顺序为：适配器校验字段类型和可信会话 → 目录校验包与槽位贡献 → runtime 校验当前实例、
+revision、节点路径、事件、action_id、args 与 data → 触发事件链。包、实例和会话标识不做字符串强制转换。
+args 必须与树中的声明完全相同，data 按组件事件规则校验。
+
+例如当前实例 revision 为 3，路径 `0.1` 声明 `ui.click → refresh` 且未指定 args，
+只有 revision=3、node_key="0.1"、action_id="refresh"、args={} 且 data={} 的请求才可进入 Handler。
+revision=2、伪造 args 或把点击改成输入事件都在进入事件链前被拒绝。
 
 ### 4.3 请求与回执
 
@@ -143,9 +154,12 @@ sequenceDiagram
     "package_id": "webui.token-weather",
     "instance_key": "req-123"
   },
-  "payload": {"action_id": "example.action", "args": {}}
+  "payload": {"revision": 3, "node_key": "0.1", "action_id": "example.action", "args": {}, "data": {}}
 }
 ```
+
+普通交互的 payload 只接受 `node_key`、`revision`、`action_id`、`args`、`data` 五个字段，
+其中 revision 为正整数。宿主从已显示的实例与节点获取定位字段和动作声明。
 
 回执字段：
 
@@ -153,16 +167,18 @@ sequenceDiagram
 | --- | --- |
 | `event` | 原样返回事件名 |
 | `accepted` | 是否被接受 |
-| `status` | `ready`、`handled`、`inactive`、`no_contribution`、`no_handler`，或插件自定义状态 |
+| `status` | `ready`、`handled`、`inactive`、`stale`、`invalid_action`、`no_contribution`、`no_handler`，或插件自定义状态 |
 | `code` | 拒绝时的稳定错误码 |
 
 错误码：`WEBUI_UNAVAILABLE`（运行时未装配）、`SCHEMA_ERROR`（事件或目标非法）、`SESSION_MISMATCH`（请求会话与目标不一致）、`NO_CONTRIBUTION`（槽位没有生效的界面项）、`TARGET_INACTIVE`（实例不存在）、`INTERNAL_ERROR`（事件链异常）。
 
 ## 5. 异常与边界
 
-- 事件名不在 `ui.ready`、`ui.press`、`ui.toggle`、`ui.input`、`ui.select` 内时直接拒绝。
+- 事件名必须在 `UPSTREAM_EVENTS` 内；节点只能绑定自身组件声明的事件。
 - 请求带 `session_id` 且与目标不一致时返回 `SESSION_MISMATCH`。
-- 目录校验当前只检查槽位是否有贡献，不校验目标包是否声明了该槽位；实例定位仍由四元组决定，未登记的实例在上行时返回 `inactive`。
+- 目录校验目标包是否声明了该槽位；广播 ready 的空包目标只检查槽位贡献。实例由四元组定位，未登记实例返回 `inactive`。
+- revision 与当前实例不符时返回 `stale/TARGET_INACTIVE`；动作或数据非法时返回 `invalid_action/SCHEMA_ERROR`。
+- 校验保证进入事件链时请求有效，不锁住 Handler 的整个执行期；Handler 等待期间视图可能被其他任务替换。
 - 语言资源只校验路径存在且不逃逸包根；文本解析与按语言选择尚未实现。
 - `panel` 目前只做结构校验并保留在目录中，前端尚未使用；标题本地化未实现。
 
@@ -173,6 +189,7 @@ sequenceDiagram
 - **单入口上行**：所有 `ui.*` 共用一个 `webui.dispatch`，便于统一鉴权、错误码和审计。
 - **`ui.ready` 不做实例检查**：挂载时实例尚不存在，由插件在事件链内创建，避免额外握手。
 - **槽位模式由前端决定**：服务端只声明槽位白名单，`list` / `single` 是展示策略。
+- **按下发快照校验交互**：registry 保存独立只读树，插件修改原字典不会改变当前 revision 的动作和参数。
 
 ## 7. 实施影响
 
@@ -187,19 +204,26 @@ sequenceDiagram
 
 - `tests/unit_tests/extensions_v2/webui/test_webui_adapter.py`
 - `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`
+- `tests/unit_tests/extensions_v2/webui/test_webui_events.py`
+- 前端 `npm run test:webui-dispatch`
 
 覆盖内容：
 
 - `ui.ready` 到达 Token Weather 示例包后，按会话或 `requestId` 恢复已缓存的展示。
 - 没有界面贡献的槽位返回 `no_contribution`。
 - 槽位、会话和目标字段校验。
+- 正常交互、非法事件数据、过期 revision、伪造动作与参数，以及拒绝请求不触发业务 Handler。
+- 包卸载、会话与实例隔离，以及 action 组件的属性和事件校验。
+
+组件属性测试共用前端测试目录下的 `webuiComponentCases.json`。Python 测试覆盖进程内的
+render → Handler → replace；前端测试使用 jsdom 验证页面点击产生的请求。
 
 当前执行结果：上述用例通过。
 
 ## 9. 风险与遗留
 
-- 目录只按槽位判断贡献，未校验“该包是否声明了该槽位”；后续可把校验收紧到 `(package_id, slot_id)`。
+- 目标包与槽位贡献校验不等于用户授权或业务权限校验。
 - 目录随生效记录刷新、包卸载后目录失效尚未单独验证；当前用例只覆盖实例清理。
 - 本地化资源已声明和校验，但尚未参与标题解析。
 - 界面项不支持运行时禁用、灰度或按用户过滤。
-- 槽位集合固定为三个会话级位置；新增槽位需要同时修改后端白名单和前端宿主。
+- 当前槽位为三个会话级位置及助手消息 meta 位置；新增槽位需要同时修改后端白名单和前端宿主。

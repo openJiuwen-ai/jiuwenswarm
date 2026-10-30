@@ -53,7 +53,7 @@ export function WebUISlotHost({ slotId, className }: WebUISlotHostProps) {
               {instance.error.code}
             </div>
           ) : null}
-          <RenderTree node={instance.root} target={instance.target} />
+          <RenderTree node={instance.root} target={instance.target} revision={instance.revision} />
         </div>
       ))}
     </div>
@@ -90,7 +90,7 @@ export function WebUIMessageSlotHost({ slotId, instanceKey }: { slotId: WebUISlo
           {instance.error.code}
         </div>
       ) : null}
-      <RenderTree node={instance.root} target={instance.target} />
+      <RenderTree node={instance.root} target={instance.target} revision={instance.revision} />
     </div>
   );
 }

@@ -41,6 +41,11 @@ class UiCatalog:
     def allows_slot(self, slot_id: str) -> bool:
         return any(item.type == "web.slot.contribution" and item.slot == slot_id for item in self.items)
 
+    def allows_target(self, slot_id: str, package_id: str) -> bool:
+        """Check the active package's slot contribution, or broadcast ready slot."""
+        return any(item.type == "web.slot.contribution" and item.slot == slot_id
+                   and (not package_id or item.package_id == package_id) for item in self.items)
+
     def slots(self) -> frozenset[str]:
         return frozenset(
             item.slot for item in self.items if item.type == "web.slot.contribution" and item.slot is not None
