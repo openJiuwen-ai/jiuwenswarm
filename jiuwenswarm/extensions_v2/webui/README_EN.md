@@ -108,6 +108,19 @@ an array in multiple or treeCheckable mode, and null or an empty array after cle
 The clear action additionally sends `{}`. Each binding is optional.
 treeData keys default to their values and search filters by title; disabled or disconnected tree selects cannot be used.
 
+A slider sends a numeric `{value}` to ui.change while dragging or using the keyboard:
+
+```python
+RenderNode(
+    "Slider",
+    {"value": 20, "min": 0, "max": 100, "step": 1, "ariaLabel": "Intensity"},
+    events={"ui.change": {"id": "level.change"}},
+)
+```
+
+Every valid change is sent independently without merging intermediate values; without a binding the slider still adjusts locally.
+The value must match min/max and the step; disabled or disconnected sliders cannot be used.
+
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
 instead of appending it to declared args. A node cannot declare both action and events.

@@ -67,6 +67,9 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
   单选为字符串，multiple 或 treeCheckable 为数组，清空后分别为 null 与空数组；ui.clear 发送 `{}`。
   三项分别绑定，未绑定事件时仍可本地选择。disabled 或断连时禁用；初始化与合法 replace 不派发事件。
   节点 key 缺省取 value，搜索按 title 过滤。
+- C-24：Slider 的 ui.change 发送数值 `{value}`，拖动与键盘调整的每次有效变化都独立派发，不合并、不等待回执。
+  仅在已绑定时派发；未绑定时仍可本地调整。初始化与合法 replace 不派发事件，disabled 或断连时禁用。
+  数值需满足 min/max 以及 step（或 dots/marks）允许的取值。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。
