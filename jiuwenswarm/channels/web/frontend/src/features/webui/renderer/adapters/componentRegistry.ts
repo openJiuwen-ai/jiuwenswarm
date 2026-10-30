@@ -2,6 +2,7 @@ import { createRendererRegistry } from '../types.ts';
 import { WebUIBox } from './webuiBox/WebUIBox.tsx';
 import { WebUIText } from './webuiText/WebUIText.tsx';
 import { WebUIButton } from './webuiButton/WebUIButton.tsx';
+import { WebUIInput } from './webuiInput/WebUIInput.tsx';
 import { WebUIEmpty } from './webuiEmpty/WebUIEmpty.tsx';
 import { WebUIImage } from './webuiImage/WebUIImage.tsx';
 import { WebUIDivider } from './webuiDivider/WebUIDivider.tsx';
@@ -15,6 +16,7 @@ export function createComponentRendererRegistry() {
     Box: WebUIBox,
     Text: WebUIText,
     Button: WebUIButton,
+    Input: WebUIInput,
     Empty: WebUIEmpty,
     Image: WebUIImage,
     Divider: WebUIDivider,

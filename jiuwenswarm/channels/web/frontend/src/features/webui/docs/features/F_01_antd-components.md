@@ -59,6 +59,12 @@ Text 使用 Typography.Text，映射 monospace、max_lines 与语义 tone；Butt
 Card、Divider、Empty、Image 和 Tag 使用对应 Ant Design 组件；Panel 只渲染内容，标题由宿主负责。
 Iframe 保留 sandbox 与 referrerPolicy 限制，隐藏或断连时释放浏览上下文，重新激活后重新加载。
 
+Input 使用 Ant Design Input 管理本地编辑值，优先从 value、defaultValue 初始化。
+已声明的 `ui.change` 发送 `{value, isComposing}`；未绑定事件时仍可编辑。
+组合输入结束时发送一次 `isComposing=false` 的提交值，随后浏览器重复的同值提交不再派发。
+disabled、readOnly 和断连状态阻止编辑派发；合法 replace 重置草稿，非法更新保留当前输入。
+清空按钮通过同一个 change 事件发送空字符串，不额外产生 clear 事件。
+
 插件不能提供 style 或 className。宿主可通过 `WebUIStyleOverrides` 按组件注入外观，
 宿主样式优先；Box 与 Button 还可使用原生元素承接宿主布局和按钮样式。
 适配器保留库组件的属性和交互语义，不复制整套控件实现。
@@ -75,3 +81,4 @@ Iframe 保留 sandbox 与 referrerPolicy 限制，隐藏或断连时释放浏览
 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`
 和 `test:webui-store` 验证。
 `test:webui-components` 使用真实适配器验证布局、文本、按钮派发、宿主外观、主题继承和 Iframe 生命周期。
+`test:webui-input` 定向验证 Input 的 change 数据、组合输入、禁用、草稿更新和 WebClient 传输封装。

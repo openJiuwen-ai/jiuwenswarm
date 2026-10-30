@@ -26,6 +26,7 @@ class ResizeObserver { observe() {} unobserve() {} disconnect() {} }
 for (const [name, value] of Object.entries({
   window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
   Element: dom.window.Element, HTMLElement: dom.window.HTMLElement, SVGElement: dom.window.SVGElement,
+  HTMLInputElement: dom.window.HTMLInputElement,
   ShadowRoot: dom.window.ShadowRoot, Node: dom.window.Node, MutationObserver: dom.window.MutationObserver,
   getComputedStyle: dom.window.getComputedStyle.bind(dom.window), ResizeObserver,
   requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
@@ -49,7 +50,7 @@ const { createRoot } = await import('react-dom/client');
 const { theme } = await import('antd');
 const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer,
-  createWebUIRuntime, createMockTransport, WebUIHost, WebUIProvider, WebUIThemeProvider,
+  createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIProvider, WebUIThemeProvider,
   WebUIContentActivity, resolveWebUITheme, i18n,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
@@ -64,8 +65,14 @@ async function click(element) {
   assert.ok(element, 'click target must exist');
   await act(async () => element.dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
 }
-async function setup(tree, scope = target) {
-  const transport = createMockTransport();
+async function changeInput(input, value, isComposing = false) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new window.InputEvent('input', { bubbles: true, inputType: 'insertText', isComposing }));
+  });
+}
+async function setup(tree, scope = target, transportOptions = {}) {
+  const transport = createMockTransport(transportOptions);
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
   runtime.start();
   const container = document.createElement('div'); document.body.append(container);
@@ -143,6 +150,153 @@ test('disabled and unbound buttons never dispatch actions', async () => {
     await click(button);
     assert.equal(app.business().length, 0);
   } finally { await app.close(); }
+});
+
+const inputEvents = { 'ui.change': { id: 'edit', args: { field: 'city' } } };
+const inputTree = (props = {}, bindings = inputEvents) => ({ component: 'Input', props, events: bindings });
+
+test('Input sends exact change data and clear values without dispatching on mount, click, Enter or blur', async () => {
+  const app = await setup(inputTree({ value: '北京', ariaLabel: 'City', allowClear: true, showCount: true, maxLength: 20 }));
+  try {
+    const input = app.container.querySelector('[data-testid="webui-input"]');
+    assert.equal(input.value, '北京');
+    assert.equal(input.getAttribute('aria-label'), 'City');
+    assert.equal(input.maxLength, 20);
+    assert.equal(app.business().length, 0);
+    await click(input);
+    await act(async () => {
+      input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+      input.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true }));
+    });
+    assert.equal(app.business().length, 0);
+    await changeInput(input, '上海');
+    assert.equal(input.value, '上海');
+    assert.deepEqual(app.business()[0].payload, {
+      node_key: '0', revision: 1, action_id: 'edit', args: { field: 'city' },
+      data: { value: '上海', isComposing: false },
+    });
+    await click(app.container.querySelector('.ant-input-clear-icon'));
+    assert.equal(input.value, '');
+    assert.deepEqual(app.business().map((request) => [request.event, request.payload.data]), [
+      ['ui.change', { value: '上海', isComposing: false }],
+      ['ui.change', { value: '', isComposing: false }],
+    ]);
+  } finally { await app.close(); }
+});
+
+test('Input sends composition drafts and one committed value, then accepts later edits', async () => {
+  const app = await setup(inputTree());
+  try {
+    const input = app.container.querySelector('input');
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })));
+    await changeInput(input, '北', true);
+    await changeInput(input, '北京', true);
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })));
+    await changeInput(input, '北京');
+    assert.deepEqual(app.business().map((request) => request.payload.data), [
+      { value: '北', isComposing: true }, { value: '北京', isComposing: true },
+      { value: '北京', isComposing: false },
+    ]);
+    await changeInput(input, '北京市');
+    await changeInput(input, '北京');
+    assert.equal(app.business().length, 5);
+    assert.deepEqual(app.business().at(-1).payload.data, { value: '北京', isComposing: false });
+  } finally { await app.close(); }
+});
+
+test('Input remains editable without a change binding and resets only for valid replacements', async () => {
+  const app = await setup({ component: 'Input', props: { defaultValue: 'Initial' } });
+  try {
+    const input = app.container.querySelector('input');
+    await changeInput(input, 'Draft');
+    assert.equal(input.value, 'Draft');
+    assert.equal(app.business().length, 0);
+    await app.replace(inputTree({ value: 123 }));
+    assert.ok(app.container.querySelector('input') === input);
+    assert.equal(input.value, 'Draft');
+    await app.replace(inputTree({ value: 'Server' }), 3);
+    assert.ok(app.container.querySelector('input') !== input);
+    assert.equal(app.container.querySelector('input').value, 'Server');
+    assert.equal(app.business().length, 0);
+  } finally { await app.close(); }
+});
+
+test('Input blocks disabled, read-only and disconnected edits, then restores live changes on reconnect', async () => {
+  const app = await setup(inputTree({ value: 'Initial', disabled: true }));
+  try {
+    await changeInput(app.container.querySelector('input'), 'Disabled');
+    assert.equal(app.business().length, 0);
+    await app.replace(inputTree({ value: 'Read only', readOnly: true }));
+    const input = app.container.querySelector('input');
+    assert.equal(input.readOnly, true);
+    await changeInput(input, 'Blocked');
+    assert.equal(input.value, 'Read only');
+    assert.equal(app.business().length, 0);
+    await app.replace(inputTree({ value: 'Live' }), 3);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(app.container.querySelector('input').disabled, true);
+    await changeInput(app.container.querySelector('input'), 'Offline');
+    assert.equal(app.business().length, 0);
+    await act(async () => app.transport.setConnectionState('connected'));
+    await changeInput(app.container.querySelector('input'), 'Online');
+    assert.deepEqual(app.business().at(-1).payload.data, { value: 'Online', isComposing: false });
+    assert.equal(app.business().at(-1).payload.revision, 3);
+  } finally { await app.close(); }
+});
+
+test('Input sends continuous edits while earlier change receipts are pending', async () => {
+  const app = await setup(inputTree(), target, { autoAccept: false });
+  try {
+    const input = app.container.querySelector('input');
+    for (const value of ['a', 'ab', 'a', 'ab']) await changeInput(input, value);
+    assert.deepEqual(app.business().map((request) => request.payload.data.value), ['a', 'ab', 'a', 'ab']);
+    assert.equal(input.value, 'ab');
+    await act(async () => {
+      while (app.transport.pendingDispatchCount) {
+        app.transport.resolveNextDispatch({ accepted: true, status: 'handled' });
+      }
+    });
+    assert.equal(app.business().length, 4);
+  } finally { await app.close(); }
+});
+
+test('Input changes use the WebClient transport envelope and apply returned render frames', async () => {
+  const subscriptions = new Map();
+  const requests = [];
+  const client = {
+    on(name, handler) { subscriptions.set(name, handler); return () => subscriptions.delete(name); },
+    onStateChange() { return () => {}; },
+    getState: () => 'ready',
+    async request(method, params) {
+      requests.push([method, params]);
+      if (params.event === 'ui.change') {
+        subscriptions.get('webui.render')({ payload: frame(inputTree({ value: 'Confirmed' }), 2) });
+      }
+      return { accepted: true, status: 'handled' };
+    },
+  };
+  const app = createWebUIAppRuntime({ client, catalog: componentCatalog, registry: componentRendererRegistry });
+  app.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(WebUIProvider, { runtime: app.runtime, registry: app.registry },
+      createElement(WebUIHost, { sessionId: target.session_id, slotId: target.slot_id }))));
+    await act(async () => subscriptions.get('webui.render')({ payload: frame(inputTree({ value: 'Initial' })) }));
+    await changeInput(container.querySelector('input'), 'Edited');
+    const [method, params] = requests.find(([, request]) => request.event === 'ui.change');
+    assert.equal(method, 'webui.dispatch');
+    assert.deepEqual(params, {
+      event: 'ui.change', session_id: 'sess-1',
+      target: { slot_id: target.slot_id, package_id: target.package_id, instance_key: target.instance_key },
+      payload: { node_key: '0', revision: 1, action_id: 'edit', args: { field: 'city' },
+        data: { value: 'Edited', isComposing: false } },
+    });
+    assert.equal(container.querySelector('input').value, 'Confirmed');
+  } finally {
+    await act(async () => root.unmount()); app.dispose(); container.remove();
+    assert.equal(subscriptions.size, 0);
+  }
 });
 
 test('host appearance supplies native layout, selection, icons and accessible icon-only buttons', async () => {
