@@ -36,27 +36,34 @@ class WebUIDispatchAdapter(GatewayAdapter):
             return build_error_response(request, "WebUI extension is not installed", code=CODE_WEBUI_DISABLED)
 
         params = request.params if isinstance(request.params, dict) else {}
-        event_name = str(params.get("event") or "").strip()
-        if event_name not in UPSTREAM_EVENTS:
+        event_name = params.get("event")
+        if not isinstance(event_name, str) or event_name not in UPSTREAM_EVENTS:
             return build_error_response(request, f"unsupported webui event: {event_name}", code=CODE_SCHEMA_ERROR)
 
-        session_id = str(params.get("session_id") or request.session_id or "").strip()
-        if request.session_id and session_id != request.session_id:
+        raw_target = params.get("target")
+        payload = params.get("payload", {})
+        if not isinstance(raw_target, dict) or not isinstance(payload, dict):
+            return build_error_response(request, "target and payload must be objects", code=CODE_SCHEMA_ERROR)
+        session_id = params.get("session_id", request.session_id or "")
+        if not isinstance(session_id, str) or any(not isinstance(value, str) for value in raw_target.values()):
+            return build_error_response(request, "target fields must be strings", code=CODE_SCHEMA_ERROR)
+        if set(raw_target) - {"session_id", "slot_id", "package_id", "instance_key"}:
+            return build_error_response(request, "unknown target fields", code=CODE_SCHEMA_ERROR)
+        if ((request.session_id and session_id != request.session_id)
+                or ("session_id" in raw_target and raw_target["session_id"] != session_id)):
             return build_error_response(request, "session_id mismatch", code=CODE_SESSION_MISMATCH)
 
-        raw_target = params.get("target")
-        target_fields = raw_target if isinstance(raw_target, dict) else {}
         target = RenderTarget(
             session_id=session_id,
-            slot_id=str(target_fields.get("slot_id") or ""),
-            package_id=str(target_fields.get("package_id") or ""),
-            instance_key=str(target_fields.get("instance_key") or ""),
+            slot_id=raw_target.get("slot_id", ""),
+            package_id=raw_target.get("package_id", ""),
+            instance_key=raw_target.get("instance_key", ""),
         )
         report = validate_target(target)
         if not report.ok:
             return build_error_response(request, report.message, code=report.code or CODE_SCHEMA_ERROR)
 
-        if not runtime.catalog().current().allows_slot(target.slot_id):
+        if not runtime.catalog().current().allows_target(target.slot_id, target.package_id):
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -70,11 +77,10 @@ class WebUIDispatchAdapter(GatewayAdapter):
                 metadata=request.metadata,
             )
 
-        payload = params.get("payload")
         action = UiActionInput(
             event_type=event_name,
             target=target,
-            payload=payload if isinstance(payload, dict) else {},
+            payload=payload,
         )
         try:
             output = await runtime.dispatch(

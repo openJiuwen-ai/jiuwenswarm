@@ -8,7 +8,9 @@ export type WebUISlotId =
   | 'conversation.panel.right'
   | 'message.assistant.meta';
 
-export type WebUIActionEvent = 'ui.ready' | 'ui.press' | 'ui.toggle' | 'ui.input' | 'ui.select';
+export type WebUIActionEvent =
+  | 'ui.ready' | 'ui.press' | 'ui.toggle' | 'ui.input' | 'ui.select'
+  | 'ui.click' | 'ui.change' | 'ui.press_enter' | 'ui.search' | 'ui.clear';
 
 export type WebUIRenderMode = 'replace' | 'clear';
 
@@ -29,6 +31,7 @@ export interface WebUIRenderNode {
   props?: Record<string, unknown>;
   children?: WebUIRenderNode[];
   action?: WebUIRenderAction;
+  events?: Partial<Record<WebUIActionEvent, WebUIRenderAction>>;
 }
 
 export interface WebUIRenderFrame {
