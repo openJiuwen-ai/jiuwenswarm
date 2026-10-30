@@ -92,6 +92,14 @@ import {
   type JiuwenMateWorkspaceState,
 } from '../workspaceState';
 import { ChannelTracePage } from './ChannelTracePage';
+import { useProgressiveText } from '../../../hooks/useProgressiveText';
+
+function LiveReply({ text, animate, streaming }: { text: string; animate: boolean; streaming: boolean }) {
+  const content = useProgressiveText(text, animate);
+  return <MarkdownRenderer content={content} isStreaming={streaming || content !== text}
+    className="chat-text chat-markdown jiuwenmate-chat-markdown" />;
+}
+
 
 export interface JiuwenMateWorkspaceIntent {
   recordTab: JiuwenMateRecordTab;
@@ -230,6 +238,7 @@ export function ColleagueWorkspacePage({
   const sharingConversation = webWorkspace && chatConversationId === SHARING_CONVERSATION_ID;
   const privateChat = usePrivateChat(chat, sharingConversation ? '' : chatAgentId, chatConversationId, connectionEpoch);
   const messageListRef = useRef<HTMLOListElement | null>(null);
+  const followReplies = useRef(true);
   const boardRef = useRef(board);
   const agentIdRef = useRef(agentId);
   const conversationIdRef = useRef(chatConversationId);
@@ -359,8 +368,21 @@ export function ColleagueWorkspacePage({
   useEffect(() => {
     const list = messageListRef.current;
     if (!list || board) return;
-    list.scrollTop = list.scrollHeight;
-  }, [board, chatConversationId, privateChat.requests.length]);
+    followReplies.current = true;
+    const follow = () => {
+      if (followReplies.current) list.scrollTop = list.scrollHeight;
+    };
+    follow();
+    const observer = new ResizeObserver(follow);
+    for (const child of list.children) observer.observe(child);
+    const mutations = new MutationObserver(() => {
+      observer.disconnect();
+      for (const child of list.children) observer.observe(child);
+      follow();
+    });
+    mutations.observe(list, { childList: true });
+    return () => { observer.disconnect(); mutations.disconnect(); };
+  }, [board, chatConversationId]);
 
   useEffect(() => {
     if (!channelApi || !agentId) return undefined;
@@ -501,6 +523,7 @@ export function ColleagueWorkspacePage({
   const sendDraft = async () => {
     const text = draft.trim();
     if (!text || privateChat.sending || !activeConversationId || sharingConversation) return;
+    followReplies.current = true;
     const conversation = await privateChat.send(text);
     if (!conversation) return;
     setDraft('');
@@ -636,10 +659,12 @@ export function ColleagueWorkspacePage({
             ) : null}
           </article>
         ) : null}
-        {request.replies.map((reply, index) => (
-          <article key={index} className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-reply">
+        {[...request.replies, ...(draft ? [draft] : [])].map((reply, index) => (
+          <article key={index} className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague"
+            data-testid={index < request.replies.length ? 'jiuwenmate-chat-reply' : 'jiuwenmate-chat-draft'}>
             <ColleagueAvatar colleague={colleague} size="small" />
-            <MarkdownRenderer content={reply} className="chat-text chat-markdown jiuwenmate-chat-markdown" />
+            <LiveReply text={reply} animate={isPending(request) || privateChat.liveRequestIds.has(request.requestId)}
+              streaming={index >= request.replies.length} />
           </article>
         ))}
         {request.files.map((file) => (
@@ -652,12 +677,6 @@ export function ColleagueWorkspacePage({
             {renderSharedFile(file)}
           </article>
         ))}
-        {draft ? (
-          <article className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-draft">
-            <ColleagueAvatar colleague={colleague} size="small" />
-            <MarkdownRenderer content={draft} isStreaming className="chat-text chat-markdown jiuwenmate-chat-markdown" />
-          </article>
-        ) : null}
         {note ? (
           <small className="jiuwenmate-chat-status" data-phase={phase}>
             {request.reason ? `${note}：${request.reason}` : note}
@@ -997,6 +1016,10 @@ export function ColleagueWorkspacePage({
       {!sharingConversation ? sharingInbox : null}
       <ol
         ref={messageListRef}
+        onScroll={(event) => {
+          const list = event.currentTarget;
+          followReplies.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+        }}
         className="jiuwenmate-session-view__body jiuwenmate-chat-messages"
         data-testid="jiuwenmate-chat-messages"
         aria-busy={!sharingConversation && privateChat.loading}

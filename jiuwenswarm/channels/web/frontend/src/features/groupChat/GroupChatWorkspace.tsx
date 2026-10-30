@@ -10,7 +10,7 @@ import { TeamMemberAvatar } from '../../components/TeamMemberAvatar';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import type { ModelSelection, UserAnswer } from '../../types';
-import { MarkdownRenderer } from '../../components/MarkdownRenderer';
+import { GroupMessageContent } from './GroupMessageContent';
 import { Dialog } from '../../components/ui/Dialog/Dialog';
 import type { GroupDirectory } from './useGroupDirectory';
 import { FileDownloadList } from '../../components/ChatPanel/MessageItem';
@@ -21,7 +21,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { executionResult, groupMessageContent, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { executionResult, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -86,6 +86,16 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const knownMessages = useRef(new Set<string>());
+  const animatedMessages = useRef(new Set<string>());
+  const trackMessages = useCallback((incoming: GroupMessage[], animate: boolean) => {
+    for (const message of incoming) {
+      if (animate && !knownMessages.current.has(message.message_id) && message.sender !== 'user') {
+        animatedMessages.current.add(message.message_id);
+      }
+      knownMessages.current.add(message.message_id);
+    }
+  }, []);
   const answeredQuestions = useRef(new Set<string>());
 
   const report = useCallback((reason: unknown) => {
@@ -116,6 +126,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         if (!page.executions.length || executionOffset >= page.total) break;
       }
       if (!alive.current) return;
+      trackMessages(history, historyTotal.current !== null);
       historyTotal.current = head.total;
       setRefreshError('');
       setGroup(info);
@@ -135,7 +146,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       refreshing.current = false;
       if (alive.current) setLoading(false);
     }
-  }, [groupId, report]);
+  }, [groupId, report, trackMessages]);
 
   useEffect(() => {
     alive.current = true;
@@ -166,15 +177,21 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       }
       if (type === 'team.group_message.accepted') {
         const message = payload.message as GroupMessage | undefined;
-        if (message?.message_id) setMessages((current) => mergeMessages(current, [message]));
+        if (message?.message_id) {
+          trackMessages([message], true);
+          setMessages((current) => mergeMessages(current, [message]));
+        }
         return;
       }
       if (payload.event_type === 'group.message' || event.event === 'group.message') {
         const message = payload.message as GroupMessage | undefined;
-        if (message?.message_id) setMessages((current) => mergeMessages(current, [{
-          ...message,
-          execution_id: typeof payload.execution_id === 'string' ? payload.execution_id : null,
-        }]));
+        if (message?.message_id) {
+          trackMessages([message], true);
+          setMessages((current) => mergeMessages(current, [{
+            ...message,
+            execution_id: typeof payload.execution_id === 'string' ? payload.execution_id : null,
+          }]));
+        }
       } else if (String(payload.event_type ?? event.event).startsWith('group.execution.')) {
         if (typeof payload.execution_id === 'string' && typeof payload.revision === 'number') {
           setExecutions((current) => mergeExecutions(current, [payload as unknown as GroupExecution]));
@@ -200,14 +217,22 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       stopState();
       window.clearInterval(timer);
     };
-  }, [groupId, refresh, report, t]);
+  }, [groupId, refresh, report, t, trackMessages]);
 
   useEffect(() => {
     if (directory.lastUpdated?.group_id === groupId) setGroup(directory.lastUpdated);
   }, [directory.lastUpdated, groupId]);
 
   useEffect(() => {
-    if (atBottom.current) scroll.current?.scrollTo({ top: scroll.current.scrollHeight });
+    const list = scroll.current;
+    if (!list) return;
+    const follow = () => {
+      if (atBottom.current) list.scrollTop = list.scrollHeight;
+    };
+    follow();
+    const observer = new ResizeObserver(follow);
+    for (const child of list.children) observer.observe(child);
+    return () => observer.disconnect();
   }, [messages, executions, loading]);
 
   async function answerQuestion(requestId: string, answers: UserAnswer[]) {
@@ -407,7 +432,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                 <strong>{item.message.sender_name || item.message.sender}</strong>
                 <time dateTime={new Date(item.at).toISOString()}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
               </header>}
-              <MarkdownRenderer content={groupMessageContent(item.message)} />
+              <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} />
               {item.message.pending && <small className="group-chat-muted" data-testid="group-chat-message-pending">
                 {t('groupChat.sending')}
               </small>}
