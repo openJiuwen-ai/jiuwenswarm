@@ -254,6 +254,80 @@ def _merge_approval_overrides(
     return [by_id[key] for key in order] + anon
 
 
+def _shipped_template_file_guard_baseline() -> dict[str, Any]:
+    """随包模板权限段的 preset 域参考值（评审 CR-016）。
+
+    模板以 YAML 携带 file_guard.defaults/workspace 与
+    external_directory['*'] 作语义文档（"下列 YAML 轴不生效"），
+    prepare_workspace 会原样拷入用户 config.yaml。这些值属 preset
+    域：与模板同值不视作用户/组织显式增量，不参与取严合并——
+    否则 Auto 合成被模板 ask 抬成 Strict。模板不可读时返回空
+    基线（fail-open 向严：同值按显式基线参与合成，只可能更
+    保守，不会放宽）。
+    """
+    baseline: dict[str, Any] = {"defaults": {}, "workspace": {}, "ext_star": None}
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            get_shipped_template_permissions_config,
+        )
+
+        tpl = get_shipped_template_permissions_config()
+    except Exception:  # noqa: BLE001 - 模板不可读时不剥离（向严 fail-open）
+        return baseline
+    if not isinstance(tpl, dict):
+        return baseline
+    fg = tpl.get("file_guard")
+    if isinstance(fg, dict):
+        for sub_key in ("defaults", "workspace"):
+            node = fg.get(sub_key)
+            if isinstance(node, dict):
+                baseline[sub_key] = {
+                    axis: str(node.get(axis) or "").strip().lower()
+                    for axis in ("read", "write", "exec")
+                }
+    ext = tpl.get("external_directory")
+    if isinstance(ext, dict):
+        baseline["ext_star"] = str(ext.get("*") or "").strip().lower() or None
+    return baseline
+
+
+def _strip_template_baseline_axes(section: dict[str, Any]) -> None:
+    """就地剥离与随包模板同值的 preset 域轴（评审 CR-016）。
+
+    迁移写回 config.yaml 前调用：模板轴经 prepare_workspace 已
+    拷入用户文件，不剥离则每次合成都要靠运行期过滤，且模板值
+    将来调整后会与存量拷贝不一致。逐轴剥离同值项，用户改写值
+    与具名 external_directory 键保留。
+    """
+    baseline = _shipped_template_file_guard_baseline()
+    fg = section.get("file_guard")
+    if isinstance(fg, dict):
+        for sub_key in ("defaults", "workspace"):
+            ref = baseline[sub_key]
+            node = fg.get(sub_key)
+            if not isinstance(node, dict) or not ref:
+                continue
+            for axis in ("read", "write", "exec"):
+                value = str(node.get(axis) or "").strip().lower()
+                if value and value == ref.get(axis):
+                    node.pop(axis, None)
+            if not node:
+                fg.pop(sub_key, None)
+    ext = section.get("external_directory")
+    if isinstance(ext, dict) and baseline["ext_star"]:
+        star = str(ext.get("*") or "").strip().lower()
+        if star == baseline["ext_star"]:
+            ext.pop("*", None)
+        if not ext:
+            section.pop("external_directory", None)
+    elif (
+        isinstance(ext, str)
+        and baseline["ext_star"]
+        and ext.strip().lower() == baseline["ext_star"]
+    ):
+        section.pop("external_directory", None)
+
+
 def _compose_effective_local(
     global_cfg: dict[str, Any] | None,
     user_cfg: dict[str, Any] | None = None,
@@ -352,6 +426,7 @@ def _compose_effective_local(
     # 前显式 deny 是安全基线，preset 只兜缺省、不得静默放宽（与 paths
     # 棘轮同向：只放大不降档）。
     explicit_axis: dict[str, str] = {}
+    tpl_baseline = _shipped_template_file_guard_baseline()
     for source in (global_migrated, user_migrated, session_migrated):
         fg = source.get("file_guard")
         explicit = fg.get("defaults") if isinstance(fg, dict) else None
@@ -361,27 +436,46 @@ def _compose_effective_local(
             level = str(explicit.get(axis) or "").strip().lower()
             if level not in _ACTION_RANK:
                 continue
+            if level and level == tpl_baseline["defaults"].get(axis):
+                # 与随包模板同值 = preset 域参考值（模板注释"下列
+                # YAML 轴不生效"），非用户显式增量，不参与取严
+                # 合并（CR-016：否则 Auto 合成被模板 ask 抬成
+                # Strict，Strict workspace read 被模板 ask 抬离
+                # allow）。
+                continue
             kept = explicit_axis.get(axis)
             if kept is None or _ACTION_RANK[level] < _ACTION_RANK[kept]:
                 explicit_axis[axis] = level
     # legacy external_directory：'*'/字符串形态并入显式基线（preset
-    # defaults 恒非空，引擎的 ext→defaults 迁移不会触发）；具名键原样
-    # 透传（引擎编译进 paths 前缀规则，不覆盖已有 paths）。
+    # defaults 恒非空，引擎的 ext→defaults 迁移不会触发）；具名键
+    # 三层遍历按 key 取严合并（CR-017：不得只读 Global 即 break——
+    # 模板 Global 恒有该段，会遮蔽 user/session 层显式 deny）。
+    # 模板同值 '*' 属 preset 域参考，不参与。
+    named_ext: dict[str, str] = {}
     for source in (global_cfg, user_cfg, session_cfg):
         ext = source.get("external_directory") if isinstance(source, dict) else None
         if not (isinstance(ext, dict) and ext) and not isinstance(ext, str):
             continue
         star = ext.get("*") if isinstance(ext, dict) else ext
         star = str(star or "").strip().lower()
-        if star in _ACTION_RANK:
+        if star in _ACTION_RANK and star != tpl_baseline["ext_star"]:
             for axis in ("read", "write", "exec"):
                 kept = explicit_axis.get(axis)
                 if kept is None or _ACTION_RANK[star] < _ACTION_RANK[kept]:
                     explicit_axis[axis] = star
-        named = {k: v for k, v in ext.items() if k != "*"} if isinstance(ext, dict) else None
-        if named:
-            out["external_directory"] = deepcopy(named)
-        break
+        if isinstance(ext, dict):
+            for key, action in ext.items():
+                if not isinstance(key, str) or key == "*":
+                    continue
+                action = str(action or "").strip().lower()
+                if action not in _ACTION_RANK:
+                    continue
+                kept = named_ext.get(key)
+                if kept is None or _ACTION_RANK[action] < _ACTION_RANK[kept]:
+                    named_ext[key] = action
+    if named_ext:
+        # 引擎把具名键编译进 paths 前缀规则，不覆盖已有 paths。
+        out["external_directory"] = named_ext
     if explicit_axis:
         # 收口双落点：defaults 之外还须收 workspace 轴——workspace 轴是
         # preset 注入的路径规则（前缀=workspace_root），不收口则其
@@ -707,6 +801,11 @@ def migrate_and_write_global_permissions() -> dict[str, Any]:
     # 产品 Global 不写顶层 defaults / tools allow 名单
     migrated.pop("defaults", None)
     migrated.pop("tools", None)
+    # 模板基线轴持久化剥离（评审 CR-016）：模板轴经
+    # prepare_workspace 已拷入用户 config.yaml，与模板同值即
+    # preset 域参考而非显式增量，写回前剥除，使运行期取严合并
+    # 不再依赖其缺位（模板值将来调整也不受存量拷贝干扰）。
+    _strip_template_baseline_axes(migrated)
     migrated["enabled"] = True
     if "mode" not in migrated:
         migrated["mode"] = "auto"
