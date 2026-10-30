@@ -819,3 +819,19 @@ async def test_clear_history_hides_earlier_messages_and_finished_cards(service, 
         await service.execution_get(group["group_id"], {"execution_id": "done"}, user_id="owner", channel_id="web")
     with pytest.raises(gs.GroupError):
         await service.clear_history(group["group_id"], user_id="intruder", channel_id="web")
+
+
+def test_agent_attachment_aliases_support_preview_and_file_operations():
+    from jiuwenswarm.server.runtime.group_execution import public_execution
+
+    attachment = {"file_path": "/team/report.md", "file_name": "report.md", "content_type": "text/markdown"}
+    expected = {**attachment, "path": "/team/report.md", "name": "report.md"}
+    assert gs.group_files.apply_file_overrides([attachment], {}) == [expected]
+    assert "path" not in attachment
+    assert public_execution({"attachments": [attachment]})["attachments"] == [expected]
+    assert gs._with_file_overrides({"attachments": [attachment]}, {})["attachments"] == [expected]
+    assert gs.group_files.group_attachment_paths([{"attachments": [attachment]}], []) == {"/team/report.md"}
+    renamed = gs.group_files.apply_file_overrides([attachment], {"/team/report.md": {"name": "new.md"}})
+    assert renamed[0]["name"] == "new.md"
+    canonical = {**attachment, "path": "/team/other.md", "name": "other.md"}
+    assert gs.group_files.apply_file_overrides([canonical], {}) == [canonical]
