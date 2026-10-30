@@ -404,6 +404,9 @@ from jiuwenswarm.agents.harness.common.rails import (
     StructuredAskUserRail,
     SymphonyOrchestrationRail,
 )
+from jiuwenswarm.agents.harness.common.rails.cron_execution_guard_rail import (
+    CronExecutionGuardRail,
+)
 from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
     SubagentToolActivityRail,
 )
@@ -10360,6 +10363,11 @@ class JiuWenSwarmDeepAdapter:
         return rail
 
     @staticmethod
+    def _build_cron_execution_guard_rail() -> CronExecutionGuardRail:
+        """Reject cron-store mutations from a cron run via generic tools."""
+        return CronExecutionGuardRail()
+
+    @staticmethod
     def _build_eternal_conversation_rail() -> EternalConversationRail | None:
         """Mount an inert Rail; a Session request flag activates it later."""
         try:
@@ -10778,6 +10786,10 @@ class JiuWenSwarmDeepAdapter:
 
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
+            _RailBuildInfo(
+                "_cron_execution_guard_rail",
+                self._build_cron_execution_guard_rail,
+            ),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo(
                 "_multimodal_image_rail",

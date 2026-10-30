@@ -36,6 +36,9 @@ from openjiuwen.harness.rails import ModelAnomalyDetectionRail
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
 
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
+from jiuwenswarm.agents.harness.common.rails.cron_execution_guard_rail import (
+    CronExecutionGuardRail,
+)
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
 )
@@ -114,6 +117,22 @@ SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
 HEARTBEAT = "swarm.heartbeat"
 SESSION_MESSAGING_ROUTE = "swarm.session_messaging_route"
+CRON_EXECUTION_GUARD = "swarm.cron_execution_guard"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=CRON_EXECUTION_GUARD,
+    description="Reject cron job-store mutations attempted through generic "
+    "file/shell tools during a cron execution session.",
+)
+def _build_cron_execution_guard_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> CronExecutionGuardRail:
+    """Mount the cron-store guard on every member; it self-gates on session id."""
+    _ = (params, context)
+    return CronExecutionGuardRail()
 
 
 @harness_element(
@@ -687,6 +706,7 @@ __all__ = [
     "SYMPHONY_ORCHESTRATION_PROMPT",
     "HEARTBEAT",
     "SESSION_MESSAGING_ROUTE",
+    "CRON_EXECUTION_GUARD",
     "TEAM_PERMISSION",
     "TEAM_PERMISSION_POLICY",
 ]

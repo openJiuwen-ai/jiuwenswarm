@@ -100,6 +100,10 @@ def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.USER_HOOKS,
     registry.RUNTIME_PROMPT,
+    # Cron runs keep the generic file/shell surface (the job's own work), so
+    # the removed cron tools are not the only path to the job store. This rail
+    # rejects store mutations attempted through those tools inside a cron run.
+    registry.CRON_EXECUTION_GUARD,
     registry.TEAM_SKILL_STORAGE_POLICY,
     # Reloads the member's Skill view after a write into the single library.
     # Replaces the former link-refresh rail: there is no per-team link view.
@@ -152,6 +156,7 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
 # to the Skill rail it complements.
 _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
+    registry.CRON_EXECUTION_GUARD,
     registry.RESPONSE_PROMPT,
     registry.STREAM_EVENT,
     registry.MULTIMODAL_IMAGE,

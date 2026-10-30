@@ -32,6 +32,9 @@ from openjiuwen.extensions.observability.demand import (
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
+from jiuwenswarm.agents.harness.common.rails.cron_execution_guard_rail import (
+    CronExecutionGuardRail,
+)
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
@@ -199,6 +202,12 @@ def build_member_rails(
         logger.info("[TeamRuntime] RuntimePromptRail created: channel=%s", channel)
     except Exception as exc:
         logger.warning("[TeamRuntime] RuntimePromptRail failed: %s", exc)
+
+    try:
+        rails_list.append(CronExecutionGuardRail())
+        logger.info("[TeamRuntime] CronExecutionGuardRail created")
+    except Exception as exc:
+        logger.warning("[TeamRuntime] CronExecutionGuardRail failed: %s", exc)
 
     try:
         rail = ResponsePromptRail()
