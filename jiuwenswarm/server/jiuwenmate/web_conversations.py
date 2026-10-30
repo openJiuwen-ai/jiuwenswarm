@@ -51,6 +51,7 @@ class WebConversation:
     created_at: datetime
     updated_at: datetime
     pinned: bool = False
+    unread: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +61,7 @@ class WebConversation:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "pinned": self.pinned,
+            "unread": self.unread,
         }
 
 
@@ -72,6 +74,10 @@ class WebConversationStore(SQLiteStore):
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(web_conversations)")}
             if "pinned" not in columns:
                 conn.execute("ALTER TABLE web_conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            if "unread" not in columns:
+                conn.execute("ALTER TABLE web_conversations ADD COLUMN unread INTEGER NOT NULL DEFAULT 0")
+            if "notification_key" not in columns:
+                conn.execute("ALTER TABLE web_conversations ADD COLUMN notification_key TEXT")
 
     @staticmethod
     def _conversation(row) -> WebConversation:
@@ -82,6 +88,7 @@ class WebConversationStore(SQLiteStore):
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             pinned=bool(row["pinned"]),
+            unread=bool(row["unread"]),
         )
 
     def _row(self, conn, namespace_id: str, agent_id: str, conversation_id: str):
@@ -112,6 +119,30 @@ class WebConversationStore(SQLiteStore):
             )
             row = self._row(conn, namespace_id, agent_id, conversation_id)
         return self._conversation(row)
+
+    def notify(self, namespace_id: str, agent_id: str, conversation_id: str, *,
+               text: str, now: datetime, notification_key: str) -> None:
+        """Mark a new owner notification unread; retries do not reset a read marker."""
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT INTO web_conversations "
+                "(namespace_id,agent_id,conversation_id,title,created_at,updated_at,unread,notification_key) "
+                "VALUES (?,?,?,?,?,?,1,?) ON CONFLICT(namespace_id,agent_id,conversation_id) "
+                "DO UPDATE SET updated_at=excluded.updated_at, unread=1, deleted_at=NULL, "
+                "notification_key=excluded.notification_key "
+                "WHERE web_conversations.notification_key IS NOT excluded.notification_key",
+                (namespace_id, agent_id, conversation_id, default_title(text), now.isoformat(),
+                 now.isoformat(), notification_key),
+            )
+
+    def mark_read(self, namespace_id: str, agent_id: str, conversation_id: str, *, through: datetime) -> None:
+        """Do not clear a notification created after the owner started reading."""
+        with self._transaction() as conn:
+            conn.execute(
+                "UPDATE web_conversations SET unread=0 WHERE namespace_id=? AND agent_id=? "
+                "AND conversation_id=? AND updated_at<=?",
+                (namespace_id, agent_id, conversation_id, through.isoformat()),
+            )
 
     def adopt(
         self,

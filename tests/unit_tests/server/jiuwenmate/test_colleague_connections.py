@@ -1518,7 +1518,7 @@ async def test_purging_legacy_welink_colleague_preserves_shared_reader_credentia
 
 
 @pytest.mark.asyncio
-async def test_welink_qr_completion_saves_optional_member_account(colleague_gateway, monkeypatch):
+async def test_welink_qr_completion_ignores_a_client_supplied_member_account(colleague_gateway, monkeypatch):
     from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_assistant_login
 
     gateway = colleague_gateway
@@ -1532,4 +1532,5 @@ async def test_welink_qr_completion_saves_optional_member_account(colleague_gate
     })
     assert result['ok'] is True
     stored = gateway.config_module.load_yaml_round_trip(gateway.path)['channels']['welink']
-    assert stored['bindings'][0]['assistant_account'] == 'dig-reader-assistant'
+    assert stored['bindings'][0]['assistant_credential_id'] == 'qr-ak'
+    assert not stored['bindings'][0].get('assistant_account')

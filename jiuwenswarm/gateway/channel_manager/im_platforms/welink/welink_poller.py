@@ -136,7 +136,16 @@ class WelinkPoller:
         membership_recheck_seconds: float = 60,
         membership_ttl_seconds: float = MEMBERSHIP_TTL_SECONDS,
         membership: MembershipStore | None = None,
+        registered_groups=None,
+        revoke_group=None,
+        needs_catchup=None,
     ) -> None:
+        self._registered_groups = registered_groups
+        self._revoke_group = revoke_group
+        self._needs_catchup = needs_catchup
+        self._group_holds: dict[str, float] = {}
+        self._last_group = ""
+        self.last_page = None
         self._runner = runner
         self._account = account
         self._cursors = cursors
@@ -161,6 +170,25 @@ class WelinkPoller:
 
     def poll(self) -> list[WelinkHistoryMessage]:
         now = time.monotonic()
+        if self._registered_groups is not None:
+            self.last_page = None
+            self._snapshot = tuple(self._registered_groups())
+            groups = list(self._snapshot)
+            if self._last_group in groups:
+                index = groups.index(self._last_group) + 1
+                groups = groups[index:] + groups[:index]
+            for group in groups:
+                if self._group_holds.get(group, 0) <= now:
+                    self._last_group = group
+                    if self._needs_catchup is not None and self._needs_catchup(group):
+                        self._latest_catchup.add(group)
+                    try:
+                        return self._read_history(group, now)
+                    except Exception:
+                        self._group_holds[group] = time.monotonic() + self._rate_limit_backoff_seconds
+                        logger.warning("[Welink] subscribed history unavailable group_id=%s", group)
+                        return []
+            return []
         group_ids = self._load_recent(now)
         if not group_ids:
             return []
@@ -353,6 +381,17 @@ class WelinkPoller:
         if catch_up:
             logger.info("[Welink] catch up latest history group_id=%s", group_id)
         history = self._runner.query_history(group_id, None if catch_up else cursor)
+        payload = parse_cli_json(getattr(history, "stdout", "") or "")
+        if self._registered_groups is not None:
+            code = payload.get("resultCode") if isinstance(payload, dict) else None
+            returncode = getattr(history, "returncode", 0)
+            if str(code) == "403":
+                if self._revoke_group is not None:
+                    self._revoke_group(group_id)
+                return []
+            if returncode not in (0, None) or code not in (None, 0, "0") or not isinstance(payload, (dict, list)):
+                self._group_holds[group_id] = time.monotonic() + self._rate_limit_backoff_seconds
+                return []
         detail = redact_cli_failure(getattr(history, "stderr", "") or getattr(history, "stdout", ""))
         if getattr(history, "returncode", 0) not in (0, None):
             logger.warning("[Welink] query-history-message failed: group_id=%s %s", group_id, detail)
@@ -362,6 +401,11 @@ class WelinkPoller:
             return []
         self._latest_catchup.discard(group_id)
         messages = parse_history_messages(parse_cli_json(getattr(history, "stdout", "") or ""), group_id=group_id)
+        if self._registered_groups is not None:
+            # Without member discovery, skip digital-assistant echoes by their
+            # platform account shape. Human reader messages remain inbound.
+            assistants.update(item.sender_id for item in messages if item.sender_id.startswith("dig_"))
+            self.last_page = (group_id, [item for item in messages if item.sender_id not in assistants])
         newer, advanced = select_new_messages(
             messages,
             cursor,

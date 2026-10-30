@@ -164,11 +164,7 @@ class BaseChannel(ABC):
           msg            — 消息内容
           routing_target — RoutingTarget（自包含：intent + routing_keys + at_user_ids + delivery）
         """
-        logger.warning(
-            "[%s] send() not implemented, message dropped: id=%s",
-            getattr(self, "channel_id", "unknown"),
-            getattr(msg, "id", ""),
-        )
+        raise NotImplementedError(f"{self.channel_id} does not implement send()")
 
     def is_allowed(self, sender_id: str) -> bool:
         """

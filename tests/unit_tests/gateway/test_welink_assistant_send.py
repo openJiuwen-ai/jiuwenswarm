@@ -169,9 +169,50 @@ def _mention_frame() -> dict[str, object]:
             "text": "@小九 再给我写首绝句",
             "sendUserAccount": "h00557917",
             "imGroupId": "1023",
-            "extParameters": {"businessExtParam": json.dumps({"businessMessageId": "m-9", "senderName": "黄宏运"})},
+            "extParameters": {"businessExtParam": json.dumps({
+                "businessMessageId": "m-9",
+                "senderName": "黄宏运",
+                "atAccountList": ["h001"],
+            })},
         },
     }
+
+
+def _private_frame() -> dict[str, object]:
+    return {
+        "type": "invoke",
+        "action": "chat",
+        "traceId": "trace-direct",
+        "payload": {
+            "toolSessionId": "ses_direct",
+            "text": "介绍一下你自己",
+            "sendUserAccount": "h00557917",
+            "extParameters": {
+                "businessExtParam": json.dumps({
+                    "businessMessageId": "m-direct",
+                    "senderId": "h00557917",
+                    "senderName": "黄宏运",
+                }),
+                "platformExtParam": json.dumps({
+                    "businessSessionType": "p2p",
+                    "businessSessionId": "h00557917",
+                }),
+            },
+        },
+    }
+
+
+def test_private_chat_frame_is_a_direct_mention() -> None:
+    mention = parse_mention(_private_frame())
+    assert mention is not None
+    assert mention.direct is True
+    assert mention.group_id == "p2p:h00557917"
+    assert mention.message_id == "m-direct"
+    assert mention.text == "介绍一下你自己"
+    group = parse_mention(_mention_frame())
+    assert group is not None
+    assert group.direct is False
+    assert group.group_id == "1023"
 
 
 def test_mention_frame_keeps_the_group_sender_and_message_id() -> None:
@@ -181,6 +222,7 @@ def test_mention_frame_keeps_the_group_sender_and_message_id() -> None:
     assert mention.sender_id == "h00557917"
     assert mention.sender_name == "黄宏运"
     assert mention.message_id == "m-9"
+    assert mention.mention_accounts == ("h001",)
     assert mention.tool_session_id == "ses_mention"
     assert control_reply({"type": "status_query", "traceId": "t-1"}) == [
         {"type": "status_response", "traceId": "t-1", "opencodeOnline": True}
@@ -237,4 +279,52 @@ def test_one_connection_answers_a_mention_and_a_later_polled_message() -> None:
     assert any(item.get("type") == "tool_event" and item.get("event", {}).get("properties", {}).get("content") == "绝句在此" for item in qa)
     assert active
     assert active[0]["businessId"] == "1023"
+    assert "send-to-group" not in json.dumps(socket.sent)
+
+
+def test_private_reply_finishes_the_open_task() -> None:
+    socket = _QueuedSocket()
+    socket.push({"type": "register_ok"})
+
+    def connect(url: str, *, subprotocols: list[str], timeout: float) -> _QueuedSocket:
+        return socket
+
+    async def run() -> None:
+        link = AssistantLink("ak-1", "secret-value", connect=connect, heartbeat_seconds=30, slot_ttl_seconds=5)
+        seen: list[bool] = []
+
+        async def on_mention(mention) -> bool:
+            seen.append(mention.direct)
+            return True
+
+        link.start(asyncio.get_running_loop(), on_mention)
+        try:
+            for _ in range(40):
+                if any(item.get("type") == "register" for item in socket.sent):
+                    break
+                await asyncio.sleep(0.05)
+            socket.push(_private_frame())
+            for _ in range(40):
+                if seen:
+                    break
+                await asyncio.sleep(0.05)
+            assert seen == [True]
+            reply_id = link.send_text("p2p:h00557917", "我是英语表达教练", "m-direct")
+            assert reply_id.startswith("msg_notify_")
+            try:
+                link.send_text("p2p:h00557917", "再回一次", "m-direct")
+            except AssistantSendError as exc:
+                assert exc.code == "direct_session_closed"
+            else:
+                raise AssertionError("closed private session must not push as a group")
+        finally:
+            link.stop()
+
+    asyncio.run(run())
+    qa = [item for item in socket.sent if item.get("businessPushType") == "q_a"]
+    assert any(
+        item.get("type") == "tool_event" and item.get("event", {}).get("properties", {}).get("content") == "我是英语表达教练"
+        for item in qa
+    )
+    assert not any(item.get("businessPushType") == "active_push" for item in socket.sent)
     assert "send-to-group" not in json.dumps(socket.sent)

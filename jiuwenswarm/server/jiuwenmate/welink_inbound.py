@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Accept one WeLink group message into the persistent colleague Request path."""
+"""Accept one WeLink group or private message into the persistent colleague Request path."""
 
 from __future__ import annotations
 
@@ -177,6 +177,18 @@ def configured_welink_binding(config: Mapping[str, Any] | None = None) -> Welink
     return bindings[0] if len(bindings) == 1 else None
 
 
+def welink_group_membership_status(access: Any, config: Mapping[str, Any] | None = None) -> str:
+    """A bound colleague stays active in a group it is already receiving."""
+    if getattr(access, "status", "") != "active":
+        return "unknown"
+    for item in configured_welink_bindings(config):
+        if (item.namespace_id == getattr(access, "namespace_id", "")
+                and item.agent_id == getattr(access, "agent_id", "")
+                and item.account == getattr(access, "app_id", "")):
+            return "active"
+    return "unknown"
+
+
 def welink_connection_key(account: str, agent_id: str = "") -> str:
     """The account as a connection key; login treats spellings that differ only in case as one account."""
     key = account.strip().casefold()
@@ -194,11 +206,73 @@ def configured_welink_agent_ids(config: Mapping[str, Any] | None = None) -> list
     return [binding.agent_id for binding in configured_welink_bindings(config)]
 
 
+async def _accept_direct_message(fanout: Any, event: WelinkInboundEvent, binding: WelinkBinding, snapshot: Any) -> InboundDisposition:
+    """Open one private colleague session. A private chat is not a group and always replies."""
+    if event.sender_kind == "agent":
+        return InboundDisposition.HANDLED
+    try:
+        import asyncio
+
+        from openjiuwen.harness.persistent_agent import DirectMessageSource, RequestInput
+
+        from jiuwenswarm.server.jiuwenmate.execution_models import (
+            AccessSnapshot,
+            ConversationRef,
+            RequestRouteSnapshot,
+        )
+        from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_KNOWLEDGE_READ, WORKSPACE_READ
+
+        now = fanout._clock()
+        received_at = event.received_at.astimezone(timezone.utc)
+        text = await asyncio.to_thread(_text_with_workspace_media, fanout, binding, event)
+        scope = frozenset({"chat", WORKSPACE_READ, WORKSPACE_KNOWLEDGE_READ})
+        session = await asyncio.to_thread(
+            fanout._sessions.resolve_session,
+            binding.namespace_id,
+            binding.agent_id,
+            ConversationRef.im_direct("welink", event.chat_id),
+            now=now,
+        )
+        await fanout._agent_manager.scheduler.accept(
+            session,
+            snapshot=snapshot,
+            source_ref=f"welink:message:{event.message_id}",
+            access=AccessSnapshot(
+                principal_ref=f"welink:human:{event.sender_id}",
+                startup_scope=scope,
+                source_scope=scope,
+                policy_revision="welink-direct-v1",
+            ),
+            request_input=RequestInput(
+                kind="direct_message",
+                text=text,
+                source=DirectMessageSource(
+                    message_id=event.message_id,
+                    sender_id=event.sender_id,
+                    sender_name=event.sender_name,
+                    received_at=received_at,
+                ),
+                reply_target=event.chat_id,
+            ),
+            received_at=received_at,
+            route_snapshot=RequestRouteSnapshot(
+                channel="welink",
+                app_id=binding.assistant_credential_id,
+                target_id=event.chat_id,
+                source_message_id=event.message_id,
+            ),
+        )
+    except Exception as exc:
+        logger.warning("[JiuwenMate] WeLink private event rejected: error_type=%s", type(exc).__name__)
+        return InboundDisposition.RETRYABLE
+    return InboundDisposition.HANDLED
+
+
 async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> InboundDisposition:
     """Archive once and independently accept each bound colleague's request."""
     if (
         not isinstance(event, WelinkInboundEvent)
-        or event.chat_type != "group"
+        or event.chat_type not in {"group", "p2p"}
         or not _present(event.account)
         or not _present(event.expected_agent_id)
         or not _present(event.message_id)
@@ -241,6 +315,9 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
         snapshot = await asyncio.to_thread(fanout._service.current_snapshot, binding.namespace_id, binding.agent_id)
         if snapshot.agent_id != binding.agent_id:
             return InboundDisposition.REJECTED
+
+        if event.chat_type == "p2p":
+            return await _accept_direct_message(fanout, event, binding, snapshot)
 
         now = fanout._clock()
         received_at = event.received_at.astimezone(timezone.utc)

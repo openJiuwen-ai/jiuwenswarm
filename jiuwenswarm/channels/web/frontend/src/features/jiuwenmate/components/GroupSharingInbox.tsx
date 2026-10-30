@@ -27,7 +27,7 @@ interface GroupSharingInboxProps {
 
 export function GroupSharingInbox({ api, configId, colleague, conversationId, connectionEpoch, onOpen }: GroupSharingInboxProps) {
   const { t, i18n } = useTranslation();
-  const inbox = useGroupSharing(api, configId, connectionEpoch);
+  const inbox = useGroupSharing(api, configId, connectionEpoch, conversationId === SHARING_CONVERSATION_ID);
   const approvals = inbox.data?.approvals ?? [];
   const count = approvals.filter((item) => sharingStatus(item, inbox.now) === 'pending').length;
   const blocked = inbox.loading || inbox.loadError || Boolean(inbox.busy);
