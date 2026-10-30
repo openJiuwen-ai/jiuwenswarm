@@ -63,10 +63,15 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
 - C-22：Select 的 ui.select 发送本次选择的单个选项值 `{value}`，ui.search 发送 `{searchValue}`，ui.clear 发送 `{}`。
   三项分别绑定，不额外派发 ui.change；未绑定事件时仍可本地操作。disabled 或断连时禁用。
   初始化与合法 replace 不派发事件，合法 replace 重新初始化选择，非法更新保留当前选择。
+- C-23：TreeSelect 的 ui.select 发送本次选中节点的单个 `{value}`；ui.change 发送整体选择值，
+  单选为字符串，multiple 或 treeCheckable 为数组，清空后分别为 null 与空数组；ui.clear 发送 `{}`。
+  三项分别绑定，未绑定事件时仍可本地选择。disabled 或断连时禁用；初始化与合法 replace 不派发事件。
+  节点 key 缺省取 value，搜索按 title 过滤。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。
 Select 只声明 ui.select、ui.search、ui.clear，不额外增加 ui.change。
+TreeSelect 另外声明 ui.change，用于承载整体选择值。
 
 ## 限制与验证入口
 

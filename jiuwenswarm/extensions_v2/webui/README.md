@@ -88,6 +88,25 @@ RenderNode(
 多选时 select 仍发送本次选中的单个选项值，选择值在组件内更新，不发送 change。
 value 优先于 defaultValue；合法 replace 重新初始化选择。禁用或断连时不可操作。
 
+树选择可以分别绑定选中、整体值变化和清空：
+
+```python
+RenderNode(
+    "TreeSelect",
+    {"treeData": [{"value": "root", "title": "全部", "children": [{"value": "bj", "title": "北京"}]}],
+     "allowClear": True},
+    events={
+        "ui.select": {"id": "node.choose"},
+        "ui.change": {"id": "node.change"},
+        "ui.clear": {"id": "node.clear"},
+    },
+)
+```
+
+选中节点发送该节点 `{value}`；change 发送整体选择值，单选为字符串，multiple 或 treeCheckable 为数组，
+清空后分别为 null 和空数组；清空动作另外发送 `{}`。三项可按需省略绑定。
+treeData 的 key 缺省取 value，搜索按 title 过滤；禁用或断连时不可操作。
+
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，
 不能再向声明 args 追加 key。单个节点不允许同时声明 action 与 events。
