@@ -6027,6 +6027,7 @@
     "waiting": "Processing..."
   },
   "groupChat": {
+    "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",
     "teamMembers": "Team members ({{count}})",
     "questionFrom": "{{name}} needs your input",
