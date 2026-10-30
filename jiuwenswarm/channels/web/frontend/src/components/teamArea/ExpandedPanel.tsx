@@ -2,11 +2,15 @@ import { useCallback, useEffect, useId, type ReactNode } from 'react';
 import { useFullscreenPanel } from '../../hooks';
 import { useSessionArtifactsCount } from '../ArtifactsPanel';
 import { ArtifactExpandedPanel } from '../ArtifactsPanel';
-import { ExpandedPanelTabs, useExpandedPanelTabs } from './ExpandedPanelTabs';
+import { ExpandedPanelTabs, useExpandedPanelTabs, type PanelTabItem } from './ExpandedPanelTabs';
 import { OrgInfoPanel } from './OrgInfoPanel';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 import { useSessionStore, useChatStore } from '../../stores';
 import { useTranslation } from 'react-i18next';
+
+export interface ExpandedPanelContribution extends PanelTabItem {
+  content: ReactNode;
+}
 
 export interface ExpandedPanelProps {
   activeTab: string;
@@ -24,6 +28,7 @@ export interface ExpandedPanelProps {
   renderMiddleTabContent: () => ReactNode;
   renderPlanningContent: () => ReactNode;
   renderBrowserContent?: () => ReactNode;
+  additionalPanels?: ExpandedPanelContribution[];
   testIdPrefix?: string;
 }
 
@@ -43,6 +48,7 @@ export function ExpandedPanel({
   renderMiddleTabContent,
   renderPlanningContent,
   renderBrowserContent,
+  additionalPanels = [],
   testIdPrefix = 'tool-panel',
 }: ExpandedPanelProps) {
   const { t } = useTranslation();
@@ -76,11 +82,13 @@ export function ExpandedPanel({
     }
   }, [shouldFullscreen, onCollapse, toggleFullscreen]);
 
-  const resolvedTab = activeTab === 'organization' && showOrganization ? 'organization' :
-    resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel);
+  const selectedPanel = additionalPanels.find((panel) => panel.key === activeTab);
+  const resolvedTab = selectedPanel?.key ?? (activeTab === 'organization' && showOrganization ? 'organization' :
+    resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel));
 
   const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel, showBrowserTab });
   if (showOrganization) tabs.push({ key: 'organization', label: t('team.org.tab') });
+  tabs.push(...additionalPanels);
 
   return (
     <div
@@ -97,6 +105,7 @@ export function ExpandedPanel({
         onToggleFullscreen={handleToggleFullscreen}
         isFullscreen={isFullscreen}
         testIdPrefix={testIdPrefix}
+        idPrefix={tabPanelId}
       />
 
       <div
@@ -106,7 +115,7 @@ export function ExpandedPanel({
         role="tabpanel"
         aria-labelledby={`${tabPanelId}-${resolvedTab}`}
       >
-        {resolvedTab === 'organization' && showOrganization ? <OrgInfoPanel /> : resolvedTab === middleTab.key ? (
+        {selectedPanel ? selectedPanel.content : resolvedTab === 'organization' && showOrganization ? <OrgInfoPanel /> : resolvedTab === middleTab.key ? (
           renderMiddleTabContent()
         ) : resolvedTab === 'artifacts' ? (
           <ArtifactExpandedPanel

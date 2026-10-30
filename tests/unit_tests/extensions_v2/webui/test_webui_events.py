@@ -10,7 +10,7 @@ from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBu
 
 from jiuwenswarm.extensions_v2.webui.action_validation import validate_upstream
 from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, validate_props
-from jiuwenswarm.extensions_v2.webui.constants import UPSTREAM_EVENTS
+from jiuwenswarm.extensions_v2.webui.constants import SESSION_SLOTS, UPSTREAM_EVENTS
 from jiuwenswarm.extensions_v2.webui.models import (
     RenderFrame, RenderMode, RenderNode, RenderTarget, UiActionInput, UiRenderInput, node_to_payload,
 )
@@ -46,6 +46,11 @@ async def _registered(root):
 ])
 def test_target_rejects_invalid_identity(field, value):
     assert not validate_target(replace(TARGET, **{field: value})).ok
+
+
+def test_target_accepts_every_registered_slot():
+    for slot_id in SESSION_SLOTS:
+        assert validate_target(replace(TARGET, slot_id=slot_id)).ok, slot_id
 
 
 @pytest.mark.parametrize("root", [

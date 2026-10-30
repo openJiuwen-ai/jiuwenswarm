@@ -4,6 +4,7 @@ import { A2UIProvider } from '@a2ui/react';
 import type { A2UIClientEventMessage } from '@a2ui/react';
 import { injectStyles } from '@a2ui/react/styles';
 import App from './App.tsx'
+import { WebUIAppRoot } from './features/webui'
 import { ShareImageExportRunner } from './features/shareImageExport'
 import { openSourceSettingsPageDefinition } from './features/settings/registry/openSourceDefinition'
 import type { SettingsRequest } from './features/settings/services/settingsContract'
@@ -64,10 +65,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         client={browserRunner}
       />
     ) : (
-      <App
-        settingsPageDefinition={openSourceSettingsPageDefinition}
-        resolveSettingsRequest={resolveOpenSourceSettingsRequest}
-      />
+      <WebUIAppRoot>
+        <App
+          settingsPageDefinition={openSourceSettingsPageDefinition}
+          resolveSettingsRequest={resolveOpenSourceSettingsRequest}
+        />
+      </WebUIAppRoot>
     )}
   </A2UIProvider>,
 )

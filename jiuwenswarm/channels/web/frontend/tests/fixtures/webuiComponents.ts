@@ -20,5 +20,6 @@ export { createWebUIAppRuntime } from '../../src/features/webui/assembly/index.t
 export { createMockTransport } from '../../src/features/webui/transport/index.ts';
 export { WebUIHost } from '../../src/features/webui/react/WebUIHost.tsx';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
+export { WebUISlotProvider } from '../../src/features/webui/react/WebUISlotProvider.tsx';
 export { WebUIThemeProvider, resolveWebUITheme } from '../../src/features/webui/react/WebUIThemeProvider.tsx';
 export { default as i18n } from '../../src/i18n/index.ts';
