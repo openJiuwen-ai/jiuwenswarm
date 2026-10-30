@@ -48,7 +48,7 @@
 - [平台事件](docs/features/F_05_platform-events.md)：`ui.render`、上行 `ui.*`、`ops.build` 与 `ops.ui.render`。
 - [渲染服务](docs/features/F_06_render-service.md)：校验、revision、实例登记、容量淘汰与下行帧。
 - [界面项与交互](docs/features/F_07_ui-contributions.md)：`manifest.yaml ui` 段、槽位目录与 `webui.dispatch`。
-- [前端渲染](docs/features/F_08_frontend-render.md)：槽位宿主、组件映射、store 与交互回传。
+- [前端渲染](docs/features/F_08_frontend-render.md)：前端运行时（协议校验、实例管理、挂载所有权）、槽位宿主、渲染注册表、上行交互与验证记录。
 - [门面规约](docs/specs/S_01_extension-management-facade.md)：当前对外契约、不变量、错误码与验证索引。
 - [后端管理入口](docs/features/F_09_backend-management-requests.md)：V2 包管理请求、Web `/extension` 命令及实际安装目录返回。
 - [失败核对](docs/features/F_10_management-failure-recovery.md)：Core 回滚与没有 Report 时的状态查询。

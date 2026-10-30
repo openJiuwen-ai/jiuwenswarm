@@ -175,19 +175,138 @@ test('transport exceptions become a failed interaction result', async () => {
 test('display feedback and render failures are frame-scoped', () => {
   const { transport, runtime } = setup();
   transport.injectRenderFrame(demoRenderFrame({ revision: 2 }));
+  const frameId = runtime.getInstance(INSTANCE_KEY).localFrameId;
 
-  runtime.reportDisplayed(INSTANCE_KEY, 2);
+  runtime.reportDisplayed(INSTANCE_KEY, 2, frameId);
   assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 2);
-  runtime.reportDisplayed(INSTANCE_KEY, 1);
+  runtime.reportDisplayed(INSTANCE_KEY, 1, frameId);
   assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 2, 'stale confirmation ignored');
+  runtime.reportDisplayed(INSTANCE_KEY, 2, frameId - 1);
+  assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 2, 'confirmation from another generation ignored');
 
-  runtime.reportRenderFailure(INSTANCE_KEY, 2, 'adapter crash');
-  assert.deepEqual(runtime.getInstance(INSTANCE_KEY).renderFailure, { revision: 2, message: 'adapter crash' });
-  runtime.reportRenderFailure(INSTANCE_KEY, 1, 'old failure');
+  runtime.reportRenderFailure(INSTANCE_KEY, 2, 'adapter crash', frameId);
+  assert.deepEqual(runtime.getInstance(INSTANCE_KEY).renderFailure, {
+    revision: 2,
+    localFrameId: frameId,
+    message: 'adapter crash',
+  });
+  runtime.reportRenderFailure(INSTANCE_KEY, 1, 'old failure', frameId);
+  assert.equal(runtime.getInstance(INSTANCE_KEY).renderFailure.message, 'adapter crash');
+  runtime.reportRenderFailure(INSTANCE_KEY, 2, 'old generation failure', frameId - 1);
   assert.equal(runtime.getInstance(INSTANCE_KEY).renderFailure.message, 'adapter crash');
 
   transport.injectRenderFrame(demoRenderFrame({ revision: 3 }));
   assert.equal(runtime.getInstance(INSTANCE_KEY).renderFailure, null, 'new frame clears old failure');
+});
+
+test('clear and rebuild with the same revision starts a new render generation', () => {
+  const { transport, runtime } = setup();
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+  const first = runtime.getInstance(INSTANCE_KEY);
+  runtime.reportDisplayed(INSTANCE_KEY, 1, first.localFrameId);
+  runtime.reportRenderFailure(INSTANCE_KEY, 1, 'old failure', first.localFrameId);
+
+  transport.injectClearFrame(demoClearFrame({ revision: 2 }));
+  assert.equal(runtime.getInstance(INSTANCE_KEY), undefined);
+
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+  const rebuilt = runtime.getInstance(INSTANCE_KEY);
+  assert.notEqual(rebuilt.localFrameId, first.localFrameId, 'a rebuilt frame gets a new local generation');
+  assert.equal(rebuilt.displayedRevision, 0);
+  assert.equal(rebuilt.renderFailure, null);
+
+  runtime.reportDisplayed(INSTANCE_KEY, 1, first.localFrameId);
+  assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 0, 'old generation confirmation is ignored');
+  runtime.reportRenderFailure(INSTANCE_KEY, 1, 'stale failure', first.localFrameId);
+  assert.equal(runtime.getInstance(INSTANCE_KEY).renderFailure, null, 'old generation failure is ignored');
+
+  runtime.reportDisplayed(INSTANCE_KEY, 1, rebuilt.localFrameId);
+  assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 1);
+});
+
+test('dedupe distinguishes submitted payload and current frame', async () => {
+  const { transport, runtime } = setup({ autoAccept: false });
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+  const request = (revision, payload) => ({
+    instanceKey: INSTANCE_KEY,
+    nodeKey: '0.0',
+    actionId: 'demo.refresh',
+    frameRevision: revision,
+    payload,
+  });
+
+  const first = runtime.dispatchIntent(request(1, { value: 'a' }));
+  const second = runtime.dispatchIntent(request(1, { value: 'ab' }));
+  assert.equal(transport.pendingDispatchCount, 2, 'different submitted payload starts a new request');
+  transport.resolveNextDispatch({ accepted: true, status: 'handled' });
+  transport.resolveNextDispatch({ accepted: true, status: 'handled' });
+  assert.equal((await first).status, 'sent');
+  assert.equal((await second).status, 'sent');
+
+  transport.injectRenderFrame(demoRenderFrame({ revision: 2 }));
+  const nextFrame = runtime.dispatchIntent(request(2, { value: 'a' }));
+  assert.equal(transport.pendingDispatchCount, 1, 'same interaction on a new frame starts a new request');
+  transport.resolveNextDispatch({ accepted: true, status: 'handled' });
+  assert.equal((await nextFrame).status, 'sent');
+});
+
+test('releasing an instance consumer drops only instances it no longer covers', async () => {
+  const { transport, runtime } = setup();
+  const otherKey = 'sess-1|conversation.panel.right|pkg.demo|other';
+  const main = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'main' });
+  const other = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'other' });
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1, target: { instance_key: 'other' } }));
+
+  main.release();
+  assert.equal(runtime.getInstance(INSTANCE_KEY), undefined, 'uncovered instance is dropped');
+  assert.notEqual(runtime.getInstance(otherKey), undefined, 'instance still covered by another consumer stays');
+  assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT).mounted, true);
+  assert.deepEqual(
+    await runtime.dispatchIntent({
+      instanceKey: INSTANCE_KEY,
+      nodeKey: '0.0',
+      actionId: 'demo.refresh',
+      frameRevision: 1,
+    }),
+    { status: 'inactive' },
+  );
+
+  other.release();
+  assert.equal(runtime.getInstance(otherKey), undefined);
+  assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT).mounted, false);
+});
+
+test('releasing a slot-wide consumer keeps instances covered by instance consumers', () => {
+  const { transport, runtime } = setup();
+  const otherKey = 'sess-1|conversation.panel.right|pkg.demo|other';
+  const slotWide = runtime.mountSlot('sess-1', DEMO_SLOT);
+  const other = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'other' });
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1, target: { instance_key: 'other' } }));
+
+  slotWide.release();
+  assert.equal(runtime.getInstance(INSTANCE_KEY), undefined);
+  assert.notEqual(runtime.getInstance(otherKey), undefined);
+  assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT).mounted, true);
+  other.release();
+});
+
+test('reconnect keeps consumer instance identity after content clear', async () => {
+  const { transport, runtime } = setup();
+  const handle = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'main' });
+  await handle.notifyReady();
+  assert.equal(transport.dispatches.at(-1).target.instanceKey, 'main');
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+  transport.injectClearFrame(demoClearFrame({ revision: 2 }));
+
+  transport.setConnectionState('disconnected');
+  transport.setConnectionState('connected');
+  await flush();
+  const ready = transport.dispatches.filter((request) => request.event === 'ui.ready');
+  assert.equal(ready.length, 2);
+  assert.equal(ready.at(-1).target.instanceKey, 'main', 'ready identity is kept until the consumer releases');
+  handle.release();
 });
 
 test('error frames attach to active instances and create error-only instances', () => {
