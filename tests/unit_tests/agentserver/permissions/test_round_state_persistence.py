@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock
 import pytest
 from openjiuwen.core.foundation.store.kv.in_memory_kv_store import InMemoryKVStore
 from openjiuwen.core.session.agent import create_agent_session
-from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerFactory
-from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointer
+from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig, CheckpointerFactory
+from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointer, PersistenceCheckpointerProvider
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 
 from jiuwenswarm.agents.harness import agent_observability
@@ -162,3 +162,42 @@ async def test_a_cancel_during_the_round_commit_still_releases_the_session(
         assert not +h.adapter._active_session_ids
     finally:
         release.set()
+
+
+@pytest.fixture
+async def sqlite_checkpoint(tmp_path, monkeypatch):
+    """Close and reopen the actual SDK SQLite store, without a cached reader."""
+    PersistenceCheckpointerProvider()
+    config = CheckpointerConfig(
+        type="persistence",
+        conf={"db_type": "sqlite", "db_path": str(tmp_path / "round-state")},
+    )
+    current = None
+
+    async def reopen():
+        nonlocal current
+        if current is not None:
+            await current._kv_store.engine.dispose()
+        current = await CheckpointerFactory.create(config)
+        monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", current)
+        return current
+
+    try:
+        await reopen()
+        yield reopen
+    finally:
+        if current is not None:
+            await current._kv_store.engine.dispose()
+
+
+async def _recovered_ids(h, *, session_id=None):
+    restored = create_agent_session(
+        session_id=session_id or h.adapter._parent_session_id,
+        card=h.adapter._instance.card,
+    )
+    await restored.pre_run(inputs={})
+    try:
+        state = restored.get_state(INTERRUPTION_KEY)
+        return set(state.interrupted_tools) if state and state.interrupted_tools else set()
+    finally:
+        await restored.close_stream()

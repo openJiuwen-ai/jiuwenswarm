@@ -153,6 +153,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, validate_manual_resume,
+    discard_restored_permission_batch, unanswered_permission_batch,
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
     ROOT_PERMISSION_ANSWER_KEY as _ROOT_PERMISSION_ANSWER_KEY,
@@ -3627,6 +3628,27 @@ class JiuWenSwarmDeepAdapter:
             return {"moa_can_access": lambda kind, resource_id: bool(checker(request, kind, resource_id))}
         return {}
 
+    def _restored_permission_fresh_input(self, request: AgentRequest | None) -> bool:
+        """Select only a cold, unowned full batch replaced by actual user text."""
+        if request is None or not self._is_host_permission_update_input(request):
+            return False
+        params = request.params if isinstance(request.params, dict) else {}
+        text = params.get("query") or params.get("content")
+        if (not isinstance(text, str) or not text.strip()
+                or any(key in params for key in ("answers", "card_id", "request_id"))
+                or self._is_interrupt_resume_dispatch(params) or self._wants_attach_goal(params)
+                or self._resolve_input_dispatch_mode(params) is not None):
+            return False
+        sid = self._resolve_interrupt_session_id(request.session_id)
+        if self._session_adapter_key(self._parent_session_id) != sid:
+            return False
+        if not self._uses_smart_permission_lifecycle(get_config()):
+            return False
+        if (self._permission_work_pending(sid, include_core_interrupt=False)
+                or self._goal_record_is_active()):
+            return False
+        return unanswered_permission_batch(self._instance, sid, self._deep_agent_loop_session_id()) is not None
+
     async def _get_session_adapter_for_request(
         self,
         request: AgentRequest,
@@ -4013,6 +4035,17 @@ class JiuWenSwarmDeepAdapter:
                     existing = None
 
             if existing is not None:
+                if execution_request is not None:
+                    try:
+                        # Page status commands can prewarm a restored child before text arrives.
+                        if existing._restored_permission_fresh_input(execution_request):
+                            await discard_restored_permission_batch(
+                                existing._instance, sid, existing._deep_agent_loop_session_id(),
+                            )
+                    except BaseException:
+                        await existing._isolate_permission_instance()
+                        await self._evict_failed_permission_session_adapter(sid, existing)
+                        raise
                 if requested_mcp_scan_names is not None:
                     # Claim the immutable first-chat snapshot while the parent
                     # session lock is still held. Concurrent sends may reconcile
@@ -4103,6 +4136,7 @@ class JiuWenSwarmDeepAdapter:
                     ),
                     name=f"session-history-prepare:{sid}",
                 )
+            restoring_permission = False
             try:
                 await adapter.create_instance(
                     config,
@@ -4118,7 +4152,12 @@ class JiuWenSwarmDeepAdapter:
                 await adapter.start_interaction(session_id=sid)
                 interaction_ready_at = time.monotonic()
 
-                self._session_adapters[sid] = adapter
+                # Keep this child unpublished until cold permission settlement succeeds.
+                restoring_permission = execution_request is not None
+                if restoring_permission:
+                    restoring_permission = adapter._restored_permission_fresh_input(execution_request)
+                if not restoring_permission:
+                    self._session_adapters[sid] = adapter
                 if metadata.get("moa_enabled") is not effective_moa:
                     update_session_metadata(
                         session_id=sid, moa_enabled=effective_moa,
@@ -4126,12 +4165,13 @@ class JiuWenSwarmDeepAdapter:
                     )
                 # A brand-new child uses the template config. Apply any pending
                 # global reload before restoring context or accepting input.
-                await self._reload_session_adapter_if_stale(
-                    sid,
-                    adapter,
-                    host_external_input=host_external_input,
-                    freshly_built=True,
-                )
+                if not restoring_permission:
+                    await self._reload_session_adapter_if_stale(
+                        sid,
+                        adapter,
+                        host_external_input=host_external_input,
+                        freshly_built=True,
+                    )
                 history_snapshot = None
                 if history_preparation is not None:
                     try:
@@ -4147,7 +4187,7 @@ class JiuWenSwarmDeepAdapter:
                         warmup_session_context,
                     )
 
-                    await warmup_session_context(
+                    restored = await warmup_session_context(
                         deep_agent=getattr(adapter, "_instance", None),
                         session_id=sid,
                         history_before_request_id=history_before_request_id,
@@ -4157,13 +4197,32 @@ class JiuWenSwarmDeepAdapter:
                             else {}
                         ),
                     )
+                    if restoring_permission and not restored:
+                        raise RootPermissionQueueError("permission_continuation_context_missing")
                 except Exception as exc:
+                    if restoring_permission:
+                        raise
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] session context warmup failed: "
                         "session_id=%s error=%s",
                         sid,
                         exc,
                     )
+                if restoring_permission:
+                    await discard_restored_permission_batch(
+                        adapter._instance, sid, adapter._deep_agent_loop_session_id(),
+                    )
+                    await self._reload_session_adapter_if_stale(
+                        sid, adapter, host_external_input=host_external_input, freshly_built=True,
+                    )
+                    self._session_adapters[sid] = adapter
+            except BaseException:
+                if restoring_permission:
+                    await adapter._isolate_permission_instance()
+                    # Publish only an isolated owner, then use the existing cleanup gate.
+                    self._session_adapters[sid] = adapter
+                    await self._evict_failed_permission_session_adapter(sid, adapter)
+                raise
             finally:
                 await self._drain_history_preparation(history_preparation)
             if requested_mcp_scan_names is not None or restored_profile is not None:
@@ -11787,7 +11846,7 @@ class JiuWenSwarmDeepAdapter:
         })
         return epoch, layers[0], effective
 
-    def _permission_work_pending(self, session_id: str) -> bool:
+    def _permission_work_pending(self, session_id: str, *, include_core_interrupt: bool = True) -> bool:
         """Keep callbacks, interrupted turns and background children on E."""
         if self._has_live_root_permission_owner(session_id):
             return True
@@ -11805,7 +11864,7 @@ class JiuWenSwarmDeepAdapter:
         if instance.is_invoke_active or instance.active_round is not None:
             return True
         loop_session = getattr(instance, "loop_session", None)
-        if loop_session is not None:
+        if include_core_interrupt and loop_session is not None:
             state = loop_session.get_state(INTERRUPTION_KEY)
             if getattr(state, "interrupted_tools", None):
                 return True
