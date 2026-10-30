@@ -1,0 +1,84 @@
+# B_01 — A2UI repair 空输出被误判合法，suppress 扣发的 chat.final 静默丢失
+
+- 日期：2026-10-29
+- 分支：dev-stable
+- 症状（触发率测试 case #26，双表单同回复场景）：relay-claw 落库内容只剩 `散文 + <a2ui<a2ui-json>` probe 残片（61 字符），模型实际产出的 9K~18K A2UI 整块静默丢失；UI 显示「组件不可用」，无任何报错，刷新后依旧。
+
+## 1. 根因链
+
+```
+模型 A2UI 输出校验失败（validator: valid=False）
+  → finalizer repair 循环调 repair_call
+    → JiuWenSwarmDeepAdapter.repair_model_response：self._model is None（officeclaw tenant pool 适配器在
+      finalize 时不持有模型实例——repair 在 producer finally cleanup 之后执行）→ 返回 None
+  → _coerce_model_message_content(None) → ""
+  → spec.validate_response("")：无 tagged block、无 a2ui part → vacuously valid=True
+  → 误报 status="repaired"、finalized=""（changed=true）
+  → interface.py 流式收尾 `if finalized_assistant_message and (...)`："" falsy
+    → suppress 扣住的原 chat.final 的重发整体跳过 → 整块内容永不送达 relay
+  → relay 收到空 final，不触发 replace_final → 持久化 delta 累积的 probe 残片
+```
+
+sidecar 关键日志签名（修复前）：
+
+```
+A2UI finalizer validation complete: valid=False
+A2UI finalizer repair attempt started: attempt=1
+[JiuWenSwarmDeepAdapter] repair skipped: no model instance available
+A2UI finalizer repair attempt complete: attempt=1 valid=True     ← 空内容伪装成修复成功
+A2UI response finalization status: status=repaired               ← 且不会走 repair_failed 的 retry 降级
+```
+
+## 2. 修复（三层守卫，本提交）
+
+| 层 | 文件 | 改动 | 激活条件（全部为原异常态，健康路径零触达） |
+|---|---|---|---|
+| 校验洞 | `runtime/a2ui/runtime/finalizer.py` | repair 输出 strip 为空 → 记 `last_error="repair returned empty content"` 并 `continue`（跑满 attempt 后落 `repair_failed`，触发既有 retry_without_a2ui 降级，返回可读非空文本） | 仅 a2ui 校验失败后 repair 返回 None/空 |
+| 流式兜底 | `agent_adapter/interface.py` L~4250 | `suppress_a2ui_stream` 且 finalized 为空且原始内容非空 → 回退重发被扣的原始内容（relay 前端 replace_final + jsonrepair 仍有渲染机会） | 仅 suppress 激活 + finalized 空 |
+| unary 兜底 | `agent_adapter/interface.py` L~3128 | finalize 返回空 → 恢复 finalize 前快照，防正文被清空 | 仅 a2ui finalize 返回空 |
+
+## 3. 影响范围
+
+仅 a2ui 链（通道白名单 web/officeclaw、a2ui 开关开启、含 A2UI 标记的响应）；非 a2ui 流量逐字节不变。`validate_a2ui_response("")==valid` 的公共语义（普通文本合法）不改，守卫放在 finalizer repair 循环内。
+
+## 4. 验证
+
+- 单测：`tests/unit_tests/a2ui/test_finalizer.py` 新增 2 例（空/None repair 输出 → repair_failed + 非空降级）、`test_response_finalization.py` 新增 1 例（入口恒非空且不含破损标签）；全套 106 passed。
+- live（2026-10-29 复验 case #26 提示词）：
+  - 修复前签名：`attempt=1 valid=True → status=repaired`，落库 61 字符残片、表单全丢
+  - 修复后签名：`attempt=1/2 returned empty → status=repair_failed → A2UI repair failed, retrying without A2UI → finalized changed=true`，重发激活、内容不再丢
+- §9.1 跨仓契约（发帧侧已实施，本提交）：`_make_a2ui_final_chunk` payload 增加 `a2ui_resend: True`——声明"suppress 链重发的权威终稿"。relay 消费侧（见 relay-claw PR5508 后续提交）见标记即整段覆写正文、不再按 `<a2ui-json>` 标签门控，降级无标签终稿同样覆写，probe 残片不再落库。发帧先合入安全：旧 relay 忽略未知 payload 字段，行为不变。
+
+## 5. 后续可选项
+
+officeclaw pool 适配器在 finalize 时不持有模型（`_model is None`）导致 repair 在该通道结构性不可用；如需真正可用，需让 `repair_model_response` 懒解析 `_model_cache`/当前选择模型，或调整 cleanup 与 finalize 次序——独立评估，不在本缺陷修复范围。
+
+## 6. 检视跟进（2026-10-30，PR #9194 未解决意见）
+
+### 6.1 流级回归用例（检视 3.1）
+
+helper 级用例（`_a2ui_probe_for_frame` / `_a2ui_suppress_should_engage`）无法覆盖真实帧顺序，本轮补流级用例 `tests/unit_tests/a2ui/test_foreign_stream_bookkeeping.py`：
+
+- 复用 `tests/unit_tests/agentserver/` 既有 harness（`JiuWenSwarm` + fake adapter 逐帧驱动 `process_message_stream`），可 yield 任意 `event_type` / `stream_source_id` 帧；此前「仓库无流循环基建」的判断不成立。
+- 用例 1：父 delta → 子流 delta（带 `stream_source_id` + `<a2ui-json>`）→ 父 delta → 父 `chat.tool_call` → 父 final → 晚到子流 final。断言 `assistant_message` = 父终稿、tool_call 落库正文仅含主链 delta、历史无子流文本、无 probe 占位帧（同时锚定 CR#1/#2/#3）。
+- 用例 2：suppress 激活后父 final 先到、晚到子流 final 不得顶掉终稿；占位帧行为保持不变，历史无子流文本。
+
+### 6.2 依赖描述修正（检视 3.5）
+
+`relay-claw 前端已部署 replace_final` 的表述与事实不符：该能力在 relay-claw PR #5508 中实现，尚未合入 dev-stable/main、未部署。已修正 `runtime/a2ui/integration.py`（3 处）与 `runtime/agent_adapter/interface.py`（1 处）的注释，明确：
+
+- 依赖 relay-claw PR #5508 合入并部署后 `suppress` 才可安全启用；
+- 合入顺序须 relay-claw 先行，否则 officeclaw 累积 content 的 `<a2ui 前半 + probe 占位` 无法覆写清洗；
+- 若无法保证顺序，应把 officeclaw 的白名单翻转收敛到配置开关。
+
+行为未变（白名单仍为 web + officeclaw），本次仅修正注释事实与顺序声明。
+
+### 6.3 finalize adapter 解析的渠道门控与 docstring 修正
+
+`_resolve_turn_adapter_for_finalize` 原先的 docstring 写「finalize 时刻这里是幂等缓存命中」，与实现不符：解析走 `_get_or_create_session_adapter`，缓存条目在 finalize 前被清掉（`cleanup_session_adapter`、空闲 TTL 驱逐（默认 2h）、企业身份切换）或不在同一缓存域时会 miss，miss 分支会冷建新实例（`_new_session_scoped_adapter` → `create_instance` → `start_interaction` → `warmup_session_context`）。
+
+本次修正：
+
+- docstring 如实描述两条分支：常态命中；miss 时冷建是「让 repair 拿到可用 `_model`」付出的秒级代价，不再声称一定命中。
+- 解析前增加渠道门控：`is_a2ui_channel(channel)` 与 `should_finalize_repair(channel)` 任一不成立时直接返回 root。这两类渠道的 `finalize_assistant_response_if_a2ui` 本就早退，此前每轮仍多做一次解析，且 miss 时会无谓冷建。a2ui 且启用 repair 的渠道行为不变。
+- 单测：`tests/unit_tests/a2ui/test_finalize_adapter_wiring.py` 新增 2 例（非 a2ui 渠道、未启用 repair 渠道均不解析、不调用 getter）；a2ui 域 119 passed / 1 skipped。
