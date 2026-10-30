@@ -20,7 +20,7 @@ if TYPE_CHECKING:
         ApplicationPluginExtension,
     )
     from gateway.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.extensions.sdk.skill_source import SkillSourceExtension
+    from gateway.extensions.sdk.skill_source import SkillSourceExtension
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.

@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from jiuwenswarm.common.security.link_mtls import (
+from gateway.common.security.link_mtls import (
     LinkMTLSConfig,
     LinkMTLSError,
 )

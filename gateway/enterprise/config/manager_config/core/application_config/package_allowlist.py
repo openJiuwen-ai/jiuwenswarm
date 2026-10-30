@@ -10,7 +10,7 @@ from typing import Any
 from gateway.config.enterprise.tables.application_config_models import (
     PACKAGE_ALLOWLIST_TABLE_DEF,
 )
-from jiuwenswarm.server.runtime.package_allowlist import (
+from gateway.common.server_compat.package_allowlist import (
     ensure_packages_fit,
     normalize_packages,
 )

@@ -1977,7 +1977,7 @@ async def _run(
     from gateway.enterprise import is_enterprise
 
     if is_enterprise():
-        from jiuwenswarm.extensions.redis import init_gateway_redis_from_config
+        from gateway.extensions.redis import init_gateway_redis_from_config
         from gateway.storage_assembly.setup import start_gateway_storage
 
         try:

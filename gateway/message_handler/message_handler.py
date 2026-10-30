@@ -3798,7 +3798,7 @@ class MessageHandler(ABC):
                 # 对话里的 cron 工具通常不带 group/bot；Agent 侧空值还会被
                 # normalize 成 "default"。这里用原始 chat 请求的 routing 盖回去，
                 # 企业库才能按真实 bot_id 查对话模型，而不是查到空名单或占位名。
-                from jiuwenswarm.common.request_identity import (
+                from gateway.common.request_identity import (
                     merge_routing_into_params,
                     web_routing_identity,
                 )

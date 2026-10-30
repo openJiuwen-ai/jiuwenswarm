@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.utils import apply_logging_config_payload
+from gateway.common.utils import apply_logging_config_payload
 
 from ...infrastructure.repository_access import require_logging_repository
 

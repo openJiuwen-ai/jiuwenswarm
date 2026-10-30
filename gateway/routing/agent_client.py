@@ -123,7 +123,7 @@ async def _stamp_package_allowlist(envelope: E2AEnvelope) -> None:
     from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
         read_package_allowlist_packages,
     )
-    from jiuwenswarm.server.runtime.package_allowlist import apply_allowlist_to_envelope
+    from gateway.common.server_compat.package_allowlist import apply_allowlist_to_envelope
 
     apply_allowlist_to_envelope(envelope, await read_package_allowlist_packages())
 

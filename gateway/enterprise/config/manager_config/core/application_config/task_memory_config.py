@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _apply_task_memory(row: dict[str, Any] | None, *, op: str) -> None:
-    from jiuwenswarm.agents.harness.common.memory.config import (
+    from gateway.common.server_compat.memory_config import (
         apply_task_memory_config_payload,
     )
 

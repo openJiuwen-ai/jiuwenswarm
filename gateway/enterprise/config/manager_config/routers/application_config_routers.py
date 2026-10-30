@@ -147,7 +147,7 @@ async def delete_package_allowlist(
 @application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
 async def list_package_allowlist_catalog():
     """本集群 Hub 目录。不做允许名单过滤，失败时 data 里带空 items 和 error。"""
-    from jiuwenswarm.server.runtime.equipment_hub_catalog import list_hub_equipment_catalog
+    from gateway.common.server_compat.equipment_hub_catalog import list_hub_equipment_catalog
 
     payload = await list_hub_equipment_catalog()
     return ResponseModel(code=200, message="success", data=payload)

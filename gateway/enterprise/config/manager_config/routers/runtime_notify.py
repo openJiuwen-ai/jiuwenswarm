@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+from gateway.common.security.link_mtls import LinkMTLSConfig
 
 
 def _read_env(name: str, default: str = "") -> str:

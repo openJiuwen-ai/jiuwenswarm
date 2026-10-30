@@ -105,6 +105,19 @@ KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {
 # Enterprise / manager-config 合入临时白名单（gateway → server/agents/runtime/channels）。
 # 燃尽方向：经 adapter / 回调替代直 import 后再缩减。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
+    # 企业版 session 元数据直引（0722806d2 引入）：get_all_sessions_metadata /
+    # set_session_pinned 操作共享文件，后续改走 E2A（SESSION_LIST/SESSION_PIN）
+    "gateway.channel_manager.web.app_web_handlers": {
+        "jiuwenswarm.server.runtime.session.session_metadata",
+    },
+    # package_allowlist 引 extension_package_manager（4703 行，暂不拆）
+    "gateway.common.server_compat.package_allowlist": {
+        "jiuwenswarm.server.runtime.extension_package_manager",
+    },
+    # session_rename 的元数据写回（真源 session_metadata，2514 行暂不拆）
+    "gateway.common.server_compat.session_rename": {
+        "jiuwenswarm.server.runtime.session.session_metadata",
+    },
     "gateway.channel_manager.web.app_web_handlers": {
         "jiuwenswarm.server.control.responses",
         "jiuwenswarm.server.runtime.session.session_info",

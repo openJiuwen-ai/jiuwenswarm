@@ -22,7 +22,7 @@ def _document_to_dict(document) -> dict[str, Any]:
 
 
 def _apply_memory(body: dict[str, Any] | None, *, op: str) -> None:
-    from jiuwenswarm.agents.harness.common.memory.config import (
+    from gateway.common.server_compat.memory_config import (
         apply_memory_config_payload,
     )
 
