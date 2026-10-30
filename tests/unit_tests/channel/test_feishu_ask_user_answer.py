@@ -41,7 +41,8 @@ async def test_card_answer_echoes_the_interrupt_id_of_the_question(interrupt_id)
         payload["interrupt_id"] = interrupt_id
 
     await channel._send_ask_user_question_card(_question(payload))
-    await channel._handle_card_callback_async("token-1", {"label": "A", "request_id": "call-1"}, "ou_user")
+    # 新卡片回执按 (request_id, 题号, 取值) 定位上下文；选项无 value 时以 label 为取值。
+    await channel._handle_card_callback_async("token-1", "call-1", 0, "A", "A", "ou_user")
 
     params = sent[-1].params
     assert params["source"] == "ask_user_interrupt"
