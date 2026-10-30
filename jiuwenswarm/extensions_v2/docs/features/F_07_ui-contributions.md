@@ -141,9 +141,11 @@ args 必须与树中的声明完全相同，data 按组件事件规则校验。
 只有 revision=3、node_key="0.1"、action_id="refresh"、args={} 且 data={} 的请求才可进入 Handler。
 revision=2、伪造 args 或把点击改成输入事件都在进入事件链前被拒绝。
 
-Input 的 `ui.change` 使用同一个入口和 CORE Handler，不单独创建网络方法或 Ops。
-业务 Handler 从 data 读取 value 与 isComposing；需要完整文本时可跳过组合输入草稿，
+Input 的 `ui.change` 与 `ui.press_enter` 使用同一个入口和 CORE Handler，不单独创建网络方法或 Ops。
+change 业务 Handler 从 data 读取 value 与 isComposing；需要完整文本时可跳过组合输入草稿，
 在 isComposing=false 时处理提交值，并通过 `ops.ui.render` 返回新视图。
+Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的当前编辑值，可以为空字符串；
+该事件不携带 isComposing，组合输入期间的 Enter 由前端拦截。
 服务端仍按下发节点检查 disabled、readOnly、maxLength 和数据预算，
 不能因为前端已禁用控件就省略校验。
 

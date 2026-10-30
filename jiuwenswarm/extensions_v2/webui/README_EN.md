@@ -35,7 +35,10 @@ Declare a text input as follows:
 RenderNode(
     "Input",
     {"value": "Beijing", "ariaLabel": "City", "allowClear": True},
-    events={"ui.change": {"id": "city.edit"}},
+    events={
+        "ui.change": {"id": "city.edit"},
+        "ui.press_enter": {"id": "city.submit"},
+    },
 )
 ```
 
@@ -43,6 +46,10 @@ The `ui.change` handler receives composition drafts and a committed value with `
 Check that flag when processing complete text only. The clear button submits an empty string.
 The value and defaultValue props initialize the local draft. A valid replace reinitializes it;
 a rejected frame preserves the current input. Disabled, read-only and disconnected inputs do not send changes.
+
+The `ui.press_enter` handler receives `{value}` with the current draft when Enter is pressed, including an empty string.
+Bind it independently of change; an input can declare Enter alone. Enter used to confirm composition does not submit.
+Disabled, read-only and disconnected inputs do not submit. Each valid submission is sent without waiting for prior receipts.
 
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,

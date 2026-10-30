@@ -71,6 +71,13 @@ async function changeInput(input, value, isComposing = false) {
     input.dispatchEvent(new window.InputEvent('input', { bubbles: true, inputType: 'insertText', isComposing }));
   });
 }
+async function pressEnter(input, options = {}) {
+  await act(async () => {
+    const init = { key: 'Enter', keyCode: 13, bubbles: true, ...options };
+    input.dispatchEvent(new window.KeyboardEvent('keydown', init));
+    input.dispatchEvent(new window.KeyboardEvent('keyup', init));
+  });
+}
 async function setup(tree, scope = target, transportOptions = {}) {
   const transport = createMockTransport(transportOptions);
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
@@ -260,7 +267,76 @@ test('Input sends continuous edits while earlier change receipts are pending', a
   } finally { await app.close(); }
 });
 
-test('Input changes use the WebClient transport envelope and apply returned render frames', async () => {
+const inputSubmitEvents = { 'ui.press_enter': { id: 'submit', args: { field: 'city' } } };
+
+test('Input submits the current draft, including empty and repeated values, while receipts are pending', async () => {
+  const app = await setup(inputTree({ value: 'Initial' }, inputSubmitEvents), target, { autoAccept: false });
+  try {
+    const input = app.container.querySelector('input');
+    await changeInput(input, 'Edited');
+    await click(input);
+    assert.equal(app.business().length, 0);
+    await pressEnter(input);
+    await pressEnter(input);
+    await changeInput(input, '');
+    await pressEnter(input);
+    assert.deepEqual(app.business().map((request) => [request.event, request.payload]), [
+      ['ui.press_enter', { node_key: '0', revision: 1, action_id: 'submit', args: { field: 'city' },
+        data: { value: 'Edited' } }],
+      ['ui.press_enter', { node_key: '0', revision: 1, action_id: 'submit', args: { field: 'city' },
+        data: { value: 'Edited' } }],
+      ['ui.press_enter', { node_key: '0', revision: 1, action_id: 'submit', args: { field: 'city' },
+        data: { value: '' } }],
+    ]);
+  } finally {
+    await act(async () => {
+      while (app.transport.pendingDispatchCount) {
+        app.transport.resolveNextDispatch({ accepted: true, status: 'handled' });
+      }
+    });
+    await app.close();
+  }
+});
+
+test('Input ignores Enter during composition and keyCode 229, then submits after composition ends', async () => {
+  const app = await setup(inputTree({}, { ...inputEvents, ...inputSubmitEvents }));
+  try {
+    const input = app.container.querySelector('input');
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })));
+    await changeInput(input, '北京', true);
+    await pressEnter(input);
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })));
+    await pressEnter(input, { isComposing: true });
+    await pressEnter(input, { keyCode: 229 });
+    assert.deepEqual(app.business().map((request) => request.event), ['ui.change', 'ui.change']);
+    await pressEnter(input);
+    assert.deepEqual(app.business().map((request) => [request.event, request.payload.data]), [
+      ['ui.change', { value: '北京', isComposing: true }],
+      ['ui.change', { value: '北京', isComposing: false }],
+      ['ui.press_enter', { value: '北京' }],
+    ]);
+  } finally { await app.close(); }
+});
+
+test('Input blocks Enter when disabled, read-only or disconnected and uses the replacement value after reconnect', async () => {
+  const app = await setup(inputTree({ value: 'Disabled', disabled: true }, inputSubmitEvents));
+  try {
+    await pressEnter(app.container.querySelector('input'));
+    await app.replace(inputTree({ value: 'Read only', readOnly: true }, inputSubmitEvents));
+    await pressEnter(app.container.querySelector('input'));
+    await app.replace(inputTree({ value: 'Server' }, inputSubmitEvents), 3);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    await pressEnter(app.container.querySelector('input'));
+    assert.equal(app.business().length, 0);
+    await act(async () => app.transport.setConnectionState('connected'));
+    await pressEnter(app.container.querySelector('input'));
+    assert.equal(app.business().at(-1).payload.revision, 3);
+    assert.deepEqual(app.business().at(-1).payload.data, { value: 'Server' });
+  } finally { await app.close(); }
+});
+
+async function verifyInputTransport(eventName) {
+  const bindings = eventName === 'ui.change' ? inputEvents : inputSubmitEvents;
   const subscriptions = new Map();
   const requests = [];
   const client = {
@@ -269,8 +345,8 @@ test('Input changes use the WebClient transport envelope and apply returned rend
     getState: () => 'ready',
     async request(method, params) {
       requests.push([method, params]);
-      if (params.event === 'ui.change') {
-        subscriptions.get('webui.render')({ payload: frame(inputTree({ value: 'Confirmed' }), 2) });
+      if (params.event === eventName) {
+        subscriptions.get('webui.render')({ payload: frame(inputTree({ value: 'Confirmed' }, bindings), 2) });
       }
       return { accepted: true, status: 'handled' };
     },
@@ -282,22 +358,27 @@ test('Input changes use the WebClient transport envelope and apply returned rend
   try {
     await act(async () => root.render(createElement(WebUIProvider, { runtime: app.runtime, registry: app.registry },
       createElement(WebUIHost, { sessionId: target.session_id, slotId: target.slot_id }))));
-    await act(async () => subscriptions.get('webui.render')({ payload: frame(inputTree({ value: 'Initial' })) }));
+    await act(async () => subscriptions.get('webui.render')({ payload: frame(inputTree({ value: 'Initial' }, bindings)) }));
     await changeInput(container.querySelector('input'), 'Edited');
-    const [method, params] = requests.find(([, request]) => request.event === 'ui.change');
+    if (eventName === 'ui.press_enter') await pressEnter(container.querySelector('input'));
+    const [method, params] = requests.find(([, request]) => request.event === eventName);
     assert.equal(method, 'webui.dispatch');
     assert.deepEqual(params, {
-      event: 'ui.change', session_id: 'sess-1',
+      event: eventName, session_id: 'sess-1',
       target: { slot_id: target.slot_id, package_id: target.package_id, instance_key: target.instance_key },
-      payload: { node_key: '0', revision: 1, action_id: 'edit', args: { field: 'city' },
-        data: { value: 'Edited', isComposing: false } },
+      payload: { node_key: '0', revision: 1, action_id: bindings[eventName].id, args: { field: 'city' },
+        data: eventName === 'ui.change' ? { value: 'Edited', isComposing: false } : { value: 'Edited' } },
     });
     assert.equal(container.querySelector('input').value, 'Confirmed');
   } finally {
     await act(async () => root.unmount()); app.dispose(); container.remove();
     assert.equal(subscriptions.size, 0);
   }
-});
+}
+for (const eventName of ['ui.change', 'ui.press_enter']) {
+  test(`Input ${eventName} uses the WebClient transport envelope and applies returned render frames`,
+    () => verifyInputTransport(eventName));
+}
 
 test('host appearance supplies native layout, selection, icons and accessible icon-only buttons', async () => {
   const result = createProtocolPipeline(componentCatalog).processRenderFrame(frame({
