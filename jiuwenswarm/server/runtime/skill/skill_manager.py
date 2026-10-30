@@ -361,7 +361,6 @@ def _safe_rmtree(path: Path) -> bool:
     if not path.exists():
         return True
 
-    import time
     import stat
 
     max_retries = 3
@@ -529,6 +528,8 @@ class SkillManager:
         self._persist_skills_state = bool(persist_skills_state)
         self._service_id = str(service_id or "").strip() or None
         self._agent_id = str(agent_id or "").strip() or None
+        # 最近一次最外层状态事务的锁等待耗时（state_transaction 写入，装卸埋点读取）
+        self._last_state_lock_wait_ms: float = 0.0
         self._state: dict[str, Any] = self._load_state()
         self._source_registry = SourceRegistry()
         self._register_builtin_skill_sources()
@@ -3568,7 +3569,7 @@ class SkillManager:
         _txn_t0 = time.perf_counter()
         # 在事务体内（同线程、持锁中）读取锁等待耗时：此刻同实例其它事务被本锁
         # 串行化，该属性不可能被并发覆盖；跨线程在事务外读会被后续事务取值覆盖。
-        _lock_wait_ms = getattr(self, "_last_state_lock_wait_ms", 0.0)
+        _lock_wait_ms = self._last_state_lock_wait_ms
         try:
             return self._handle_skills_uninstall_txn_body(params)
         finally:
