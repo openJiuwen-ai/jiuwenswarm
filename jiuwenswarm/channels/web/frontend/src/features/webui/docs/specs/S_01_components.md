@@ -54,6 +54,9 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
 - C-19：Input 只为已绑定的 ui.change 派发 `{value, isComposing}`；组合输入结束发送一次提交值，
   其后浏览器重复的同值提交不再派发。未绑定 change 时允许本地编辑；disabled、readOnly 和断连时不派发。
   合法 replace 重新初始化输入值，拒绝的更新保留当前草稿；清空发送空字符串。
+- C-20：Input 仅在声明 ui.press_enter 时将 Enter 回调派发为 `{value}`，value 取当前编辑值，允许空字符串。
+  组合输入中、原生事件标记 isComposing 或 keyCode 为 229 时不提交；disabled、readOnly 和断连时不提交。
+  Enter 与 change 分别绑定，每次有效回调独立发送，不等待前一请求完成。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。
