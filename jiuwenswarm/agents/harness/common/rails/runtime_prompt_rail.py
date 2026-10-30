@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sys
+import weakref
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,87 @@ from jiuwenswarm.common.utils import (
 
 
 A4P_PROMPT_VERSION = "2026-10-19.1"
+# The model name a Team model-group pool gives every member; the router picks
+# the real model per call (openjiuwen ``INTELLI_ROUTER_UNIFIED_MODEL``).
+_MODEL_GROUP_LOGICAL_MODEL = "*"
+# id(session) -> (weakref to that session, model the model-group router last
+# routed its call to), fed by the core LLM_ROUTE event (fired inside the call,
+# with the calling agent's session bound). The weakref guards against a dead
+# session's id being reused by another agent's session. Bounded: oldest first.
+_ROUTED_MODELS: dict[int, tuple[weakref.ref, str]] = {}
+_ROUTED_MODELS_LIMIT = 4096
+_route_listener_framework_id: int | None = None
+
+
+async def _record_routed_model(route_metadata: dict | None = None, session: Any = None, **_kwargs: Any) -> None:
+    """Remember the model a model-group call was routed to, per calling session."""
+    if session is None or not isinstance(route_metadata, dict) or route_metadata.get("status") != "selected":
+        return
+    model_name = str(route_metadata.get("model_name") or "").strip()
+    if not model_name:
+        return
+    try:
+        session_ref = weakref.ref(session)
+    except TypeError:
+        return
+    _ROUTED_MODELS.pop(id(session), None)
+    if len(_ROUTED_MODELS) >= _ROUTED_MODELS_LIMIT:
+        _ROUTED_MODELS.pop(next(iter(_ROUTED_MODELS)))
+    _ROUTED_MODELS[id(session)] = (session_ref, model_name)
+
+
+def _routed_model(session: Any) -> str:
+    """Return the model the model group last routed ``session``'s call to."""
+    if session is None:
+        return ""
+    entry = _ROUTED_MODELS.get(id(session))
+    if entry is None or entry[0]() is not session:
+        return ""
+    return entry[1]
+
+
+def _ordered_first_model(router: Any) -> str:
+    """Model an ordered routing strategy will pick first, before any call.
+
+    ``ordered-failover`` always takes the first available deployment in group
+    order; ``tag-filtered`` (a pinned member) does the same among deployments
+    carrying its exact tag. Any other strategy picks per request, so its
+    choice is not knowable in advance and this returns empty.
+    """
+    deployments = list(getattr(router, "deployments", None) or [])
+    strategy = str(getattr(router, "strategy", "") or "")
+    kwargs = dict(getattr(router, "strategy_kwargs", None) or {})
+    if strategy == "tag-filtered" and set(kwargs) <= {"fallback_tag"}:
+        tag = kwargs.get("fallback_tag")
+        if tag:
+            deployments = [item for item in deployments if getattr(item, "fallback_tag", None) == tag]
+    elif strategy != "ordered-failover":
+        return ""
+    for deployment in deployments:
+        name = str(getattr(deployment, "model_name", "") or "").strip()
+        if name:
+            return name
+    return ""
+
+
+def _ensure_route_listener() -> None:
+    """Subscribe ``_record_routed_model`` to LLM_ROUTE once per callback framework."""
+    global _route_listener_framework_id
+    try:
+        from openjiuwen.core.runner import Runner
+        from openjiuwen.core.runner.callback.events import LLMCallEvents
+
+        framework = Runner.callback_framework
+        if _route_listener_framework_id == id(framework):
+            return
+        framework.register_sync(
+            LLMCallEvents.LLM_ROUTE,
+            _record_routed_model,
+            namespace="jiuwenswarm_runtime_prompt_routed_model",
+        )
+        _route_listener_framework_id = id(framework)
+    except Exception as exc:
+        logger.debug("Failed to subscribe to model-group route events: %s", exc)
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -77,6 +159,13 @@ class RuntimePromptRail(DeepAgentRail):
             default=-1,
         )
         self._model_name: str = ""
+        # Model group id -> display name, looked up once per group.
+        self._model_group_names: dict[str, str] = {}
+        # Model group this rail's agent was last seen running on.
+        self._model_group_id: str = ""
+        # Model that group's ordered strategy picks first; empty when the
+        # strategy's choice is not knowable before the call.
+        self._ordered_first_model: str = ""
         self._mode: str = ""
         self._session_id: str | None = None
         self._force_english: bool = False
@@ -343,6 +432,42 @@ class RuntimePromptRail(DeepAgentRail):
         except Exception as exc:
             logger.debug("Failed to read model group route tags: %s", exc)
             return []
+
+    def _model_group_model_label(self, ctx: AgentCallbackContext) -> str:
+        """Name this agent's model group; empty when it never ran on one.
+
+        The group is remembered once seen: a callback whose agent exposes no
+        live model (e.g. an outer agent) still belongs to the same group.
+        """
+        model, _ = RuntimePromptRail._agent_model(ctx)
+        client_config = getattr(model, "model_client_config", None)
+        router = getattr(client_config, "intelli_router", None)
+        group_id = str(getattr(router, "model_group_id", "") or "").strip()
+        if group_id:
+            self._model_group_id = group_id
+            self._ordered_first_model = _ordered_first_model(router)
+            _ensure_route_listener()
+        group_id = self._model_group_id
+        if not group_id:
+            return ""
+        if group_id not in self._model_group_names:
+            self._model_group_names[group_id] = self._lookup_model_group_name(group_id)
+        name = self._model_group_names[group_id]
+        if not self._force_english and self._language == "cn":
+            return f"模型组 {name}"
+        return f"model group {name}"
+
+    @staticmethod
+    def _lookup_model_group_name(group_id: str) -> str:
+        """Return a model group's display name, falling back to its id."""
+        try:
+            from jiuwenswarm.common.model_catalog import ModelCatalog
+
+            group = ModelCatalog().get_group(group_id)
+        except Exception as exc:
+            logger.debug("Failed to read model group %s: %s", group_id, exc)
+            return group_id
+        return str(group.get("display_name") or "").strip() or group_id
 
     def _resolve_current_mode(
         self,
@@ -745,8 +870,22 @@ class RuntimePromptRail(DeepAgentRail):
         if group_models:
             available_models = group_models
         fallback_model = configured_models[0] if configured_models else ""
+        agent_model = self._agent_model_name(ctx)
+        group_label = self._model_group_model_label(ctx)
+        if agent_model == _MODEL_GROUP_LOGICAL_MODEL or (not agent_model and group_label):
+            # A model-group agent runs on the logical "*" model and the router
+            # picks the real one inside each call. Name, in order: the model
+            # its last call was routed to; the model an ordered strategy is
+            # bound to pick first; the group. Never fall back to the session
+            # model, which this agent does not run on.
+            agent_model = (
+                _routed_model(ctx.session)
+                or self._ordered_first_model
+                or group_label
+                or agent_model
+            )
         model = str(
-            self._agent_model_name(ctx)
+            agent_model
             or runtime_state.get("model")
             or self._model_name
             or fallback_model

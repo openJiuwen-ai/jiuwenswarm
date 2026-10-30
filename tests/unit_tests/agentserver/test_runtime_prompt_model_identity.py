@@ -210,3 +210,139 @@ async def test_non_group_agent_keeps_session_model_list(runtime_state, agent_kin
         agent = SimpleNamespace(get_llm=unavailable_model)
 
     assert "可用模型：GLM-5.3, deepseek-flash\n" in await _render(rail, manager, agent)
+
+
+class _Catalog:
+    """ModelCatalog stand-in serving one named group."""
+
+    def get_group(self, group_id):
+        if group_id != "mgp_1":
+            raise KeyError(group_id)
+        return {"model_group_id": "mgp_1", "display_name": "test"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language, expected", [("cn", "当前模型：模型组 test"), ("en", "Current model: model group test")])
+async def test_model_group_member_names_its_group_as_current_model(runtime_state, monkeypatch, language, expected):
+    """Before the router picks a model, the group is named instead of '*'."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail(language)
+
+    rendered = await _render(rail, manager, _group_agent(_group_router(model_group_id="mgp_1", strategy="simple-shuffle")))
+
+    assert expected in rendered
+    assert "*" not in rendered.split("\n- ", 2)[1]
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_group_falls_back_to_its_id(runtime_state, monkeypatch):
+    """A group missing from the catalog is named by its id."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail()
+
+    rendered = await _render(rail, manager, _group_agent(_group_router(model_group_id="mgp_other", strategy="simple-shuffle")))
+
+    assert "当前模型：模型组 mgp_other" in rendered
+
+
+async def _render_in(rail, manager, agent, session):
+    await rail.before_model_call(AgentCallbackContext(agent=agent, session=session))
+    items = await manager.collect_for_session("shared-session")
+    return manager.render(items)
+
+
+class _Session:
+    """Weak-referenceable session, like the core Session."""
+
+    @staticmethod
+    def get_session_id():
+        return "shared-session"
+
+
+def _session():
+    return _Session()
+
+
+@pytest.mark.asyncio
+async def test_model_group_member_names_the_model_its_last_call_used(runtime_state, monkeypatch):
+    """Once a call was routed, the next call states that model, per session."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail()
+    agent = _group_agent(_group_router(model_group_id="mgp_1", strategy="simple-shuffle"))
+    session, other_session = _session(), _session()
+
+    assert "当前模型：模型组 test" in await _render_in(rail, manager, agent, session)
+    await runtime_module._record_routed_model(
+        route_metadata={"status": "selected", "model_name": "GLM-5.3"}, session=session,
+    )
+
+    assert "当前模型：GLM-5.3" in await _render_in(rail, manager, agent, session)
+    other_rail, other_manager = _rail()
+    assert "当前模型：模型组 test" in await _render_in(other_rail, other_manager, agent, other_session)
+
+
+@pytest.mark.asyncio
+async def test_failed_route_does_not_name_a_model(runtime_state, monkeypatch):
+    """Only a selected route names the model."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail()
+    session = _session()
+    await runtime_module._record_routed_model(
+        route_metadata={"status": "failed", "model_name": "GLM-5.3"}, session=session,
+    )
+
+    rendered = await _render_in(rail, manager, _group_agent(_group_router(model_group_id="mgp_1", strategy="simple-shuffle")), session)
+
+    assert "当前模型：模型组 test" in rendered
+
+
+@pytest.mark.asyncio
+async def test_model_group_agent_never_claims_the_session_model(runtime_state, monkeypatch):
+    """A callback with no visible model still names the group, not the session model."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail()
+    session = _session()
+    await _render_in(rail, manager, _group_agent(_group_router(model_group_id="mgp_1", strategy="simple-shuffle")), session)
+
+    rendered = await _render_in(rail, manager, SimpleNamespace(), session)
+
+    assert "当前模型：模型组 test" in rendered
+    assert "当前模型：GLM-5.3" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_ordered_failover_group_names_its_first_model_before_any_call(runtime_state, monkeypatch):
+    """Ordered failover always starts at the first route, so the first call can name it."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail()
+
+    rendered = await _render_in(rail, manager, _group_agent(_group_router(model_group_id="mgp_1")), _session())
+
+    assert "当前模型：GLM-5.3-Flash\n" in rendered
+
+
+@pytest.mark.asyncio
+async def test_pinned_member_names_its_tagged_model_before_any_call(runtime_state, monkeypatch):
+    """A tag-filtered member starts at the first route carrying its tag."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail()
+    router = _group_router(
+        model_group_id="mgp_1", strategy="tag-filtered", strategy_kwargs={"fallback_tag": "GLM-5.3"},
+    )
+
+    assert "当前模型：GLM-5.3\n" in await _render_in(rail, manager, _group_agent(router), _session())
+
+
+@pytest.mark.asyncio
+async def test_routed_model_overrides_the_ordered_prediction(runtime_state, monkeypatch):
+    """After a failover the model that actually ran is named, not the first route."""
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+    rail, manager = _rail()
+    session = _session()
+    await runtime_module._record_routed_model(
+        route_metadata={"status": "selected", "model_name": "GLM-5.3"}, session=session,
+    )
+
+    rendered = await _render_in(rail, manager, _group_agent(_group_router(model_group_id="mgp_1")), session)
+
+    assert "当前模型：GLM-5.3\n" in rendered
