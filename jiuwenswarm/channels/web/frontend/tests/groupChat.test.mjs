@@ -337,7 +337,7 @@ test('single expert cards show execution status without subtask statistics', () 
     }));
     assert.match(markup, /Research expert/);
     assert.match(markup, new RegExp(`data-testid="group-chat-execution-status" data-variant="${status}"`));
-    assert.match(markup, /data-testid="group-chat-execution-title">对大学城咖啡消费市场…/);
+    assert.match(markup, /data-testid="group-chat-execution-title"[^>]*>对大学城咖啡消费市场…/);
     assert.match(markup, /data-testid="group-chat-execution-task"[^>]*>对大学城咖啡消费市场进行完整调研并提出市场定位建议</);
     assert.match(markup, /title="对大学城咖啡消费市场进行完整调研并提出市场定位建议。后续详细任务说明"/);
     assert.match(markup, /data-testid="group-chat-execution-summary"/);
@@ -372,4 +372,33 @@ test('pasted mentions resolve unique experts and teams without a picker selectio
   assert.deepEqual(selectedMentions('@市场调研专家 @市场调研专家', [], members), [expert.member_name]);
   assert.deepEqual(selectedMentions('@已移除专家', [], members), []);
   assert.deepEqual(selectedMentions('已删除提及', [expert.member_name], members), []);
+});
+
+
+test('new team cards show task generation and expose the full parent task name on hover', () => {
+  const title = '按照已冻结的需求开发完整的房屋搭建装修小游戏';
+  const render = (status, tasks = {}) => renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: { ...execution('new-team', 1, status), execution_kind: 'team', title, tasks },
+  }));
+  const initial = render('running');
+  assert.match(initial, /groupChat.generatingTasks/);
+  assert.ok(initial.includes(`data-testid="group-chat-execution-title" title="${title}"`));
+  assert.doesNotMatch(render('completed'), /groupChat.generatingTasks/);
+  assert.doesNotMatch(render('failed'), /groupChat.generatingTasks/);
+  assert.doesNotMatch(render('running', { child: 'in_progress' }), /groupChat.generatingTasks/);
+});
+
+
+test('subtasks keep the team name while the assigned teammate arrives and changes', () => {
+  const render = (status, member_id) => renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: {
+      ...execution('team-assignees', 1), execution_kind: 'team',
+      member_name: 'team-owner', display_name: '商业策划顾问团', tasks: { plan: status },
+      task_details: { plan: { title: '制定方案', member_id } },
+    },
+  }));
+  assert.match(render('pending'), /商业策划顾问团<\/small>/);
+  assert.match(render('pending', 'team-owner'), /商业策划顾问团<\/small>/);
+  assert.match(render('in_progress', 'strategy-planner'), /商业策划顾问团｜strategy-planner<\/small>/);
+  assert.match(render('completed', 'bp-editor'), /商业策划顾问团｜bp-editor<\/small>/);
 });
