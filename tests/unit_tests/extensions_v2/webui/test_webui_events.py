@@ -164,6 +164,8 @@ async def test_registry_keeps_delivered_event_declarations_after_plugin_mutation
     ("Input", {}, "ui.change", {"value": "x"}, False),
     ("Input", {"maxLength": 1}, "ui.press_enter", {"value": "😀"}, False),
     ("Input", {"readOnly": True}, "ui.change", {"value": "x", "isComposing": False}, False),
+    ("Input", {"readOnly": True}, "ui.click", {"value": "x"}, True),
+    ("Input", {"disabled": True}, "ui.click", {"value": "x"}, False),
     ("Switch", {}, "ui.change", {"checked": False}, True),
     ("Switch", {}, "ui.change", {"checked": 0}, False),
     ("Switch", {"loading": True}, "ui.change", {"checked": True}, False),
