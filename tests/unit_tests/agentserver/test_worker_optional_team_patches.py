@@ -14,7 +14,7 @@ from jiuwenswarm.server.worker import runtime_backend
 def test_optional_team_patch_failure_preserves_remaining_runtime_patches(
     monkeypatch, caplog, failed_stage, error_type,
 ):
-    from jiuwenswarm import llm_sse_patch
+    from jiuwenswarm import llm_sse_patch, openjiuwen_fs_rwlock_patch
     from jiuwenswarm.agents.harness.common.tools import bash_tool_safety
     from jiuwenswarm.common import config, llm_provider_compat_patch, native_tokenizer_cache
     from jiuwenswarm.common import team_workspace_read_guard
@@ -35,6 +35,8 @@ def test_optional_team_patch_failure_preserves_remaining_runtime_patches(
 
     monkeypatch.setattr(native_tokenizer_cache, "install_native_tokenizer_cache", lambda: None)
     monkeypatch.setattr(bash_tool_safety, "install_shell_tool_safety_hooks", lambda: None)
+    monkeypatch.setattr(openjiuwen_fs_rwlock_patch, "install_fs_rwlock_task_affinity_patch",
+                        lambda: apply("fs_rwlock"))
     monkeypatch.setattr(llm_provider_compat_patch, "apply_provider_compat_patches", lambda: None)
     monkeypatch.setattr(team_workspace_read_guard, "install_team_workspace_read_guard", lambda: apply("guard"))
     monkeypatch.setattr(team_workspace_read_guard, "preload_bundled_team_descriptions",
@@ -45,7 +47,7 @@ def test_optional_team_patch_failure_preserves_remaining_runtime_patches(
 
     runtime_backend._apply_runtime_entry_patches()
 
-    assert calls == ["guard", "descriptions", "login", "sse"]
+    assert calls == ["fs_rwlock", "guard", "descriptions", "login", "sse"]
     warnings = [record for record in caplog.records if "TeamWorkspace" in record.message]
     assert len(warnings) == 1
     warning.assert_called_once()
