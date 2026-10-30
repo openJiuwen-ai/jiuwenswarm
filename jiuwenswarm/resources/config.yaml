@@ -795,6 +795,13 @@ react:
       reasoning_preview_max_chars: 512     # 摘要里 reasoning 预览的最大字符数
       bailout_threshold: 3                 # reasoning 规则压缩次数达此值后中止
       tool_args_bailout_threshold: 2       # 工具入参规则压缩次数达此值后终止
+      # 豁免异步轮询作为断墙：image_get_run 直调与 invoke_tool 包装调用（按名豁免，脱离本段循环网，靠会话超时等兜底）
+      ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
+        - tool_name: invoke_tool
+          argument_equals:
+            tool_name: image_get_run
   # Skills 在线自演进配置
   evolution:
     enabled: true             # true = 启用在线 Skills 自演进（挂载后被动扫描始终开启）
@@ -1045,6 +1052,8 @@ agent_ras:
       # Match the outer tool and selected top-level arguments exactly.
       # Add rules for other polling functions without exempting the whole tool.
       ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
         - tool_name: invoke_tool
           argument_equals:
             tool_name: image_get_run
