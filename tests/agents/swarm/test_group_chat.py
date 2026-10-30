@@ -412,3 +412,28 @@ def test_private_completion_tool_exposes_new_name():
     tool = gc.CompleteTeamRun("tool-name-test")
     assert tool.card.name == "complete_team_run"
     assert gc.COMPLETE_RUN == "swarm.group_complete_team_run"
+
+
+def test_new_run_ticket_and_workspace_use_short_hashes(tmp_path):
+    from jiuwenswarm.agents.swarm.group_chat import (
+        RUN_PATH_HASH_LENGTH,
+        run_ticket_path,
+        run_workspace_path,
+    )
+
+    key = "a" * 64
+    runs = tmp_path / "team-runs"
+    assert run_ticket_path(runs, key) == runs / f"{key[:RUN_PATH_HASH_LENGTH]}.json"
+    assert run_workspace_path(runs, key) == runs / key[:RUN_PATH_HASH_LENGTH] / "workspace"
+
+
+def test_legacy_full_hash_run_ticket_and_workspace_stay_in_place(tmp_path):
+    from jiuwenswarm.agents.swarm.group_chat import run_ticket_path, run_workspace_path
+
+    key = "b" * 64
+    runs = tmp_path / "team-runs"
+    (runs / key / "workspace").mkdir(parents=True)
+    (runs / f"{key}.json").write_text("{}", encoding="utf-8")
+    assert run_ticket_path(runs, key) == runs / f"{key}.json"
+    # A recovered private team still points at the workspace saved in its first spec.
+    assert run_workspace_path(runs, key) == runs / key / "workspace"
