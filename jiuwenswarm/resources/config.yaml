@@ -1016,12 +1016,15 @@ execution_guard:
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
   # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  # non_retryable_tool 检测器也在此开关下；默认部署使用 agent_ras，
+  # 不消费 tool_result_contract，因此默认不会触发该检测器。
   circuit_breaker:
     enabled: false
     warning_threshold: 10
     critical_threshold: 20
     global_breaker_threshold: 30
     unknown_tool_threshold: 10
+    non_retryable_threshold: 3
 
 # Agent RAS 整体配置
 agent_ras:

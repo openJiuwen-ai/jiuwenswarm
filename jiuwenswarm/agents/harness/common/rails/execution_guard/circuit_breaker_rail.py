@@ -7,6 +7,12 @@
   - unknown_tool_repeat: 错误工具连续调用 (CRITICAL≥10)
   - global_breaker:      工具无进展兜底中断 (CRITICAL≥30)
   - ping_pong:           两工具交替循环，尾部无进展轮次 (WARNING≥10, CRITICAL≥20)
+  - non_retryable_tool:  同一工具+参数连续返回非重试契约 (CRITICAL≥3)
+
+部署边界:
+  本 rail 仅在 ``execution_guard.circuit_breaker.enabled: true`` 时挂载；
+  默认部署使用 agent_ras 的 repeat_tool 检测链，不消费
+  ``tool_result_contract``，因此默认不会触发 non_retryable_tool。
 """
 
 from __future__ import annotations
@@ -23,6 +29,9 @@ from typing import Any
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.tools.tool_result_contract import (
+    is_non_retryable_tool_result,
+)
 from jiuwenswarm.common.utils import logger
 
 
@@ -32,6 +41,7 @@ class CircuitBreakerConfig:
     critical_threshold: int = 20
     global_breaker_threshold: int = 30
     unknown_tool_threshold: int = 10
+    non_retryable_threshold: int = 3
 
     @property
     def history_size(self) -> int:
@@ -39,6 +49,7 @@ class CircuitBreakerConfig:
             4 * self.critical_threshold,
             2 * self.global_breaker_threshold,
             2 * self.unknown_tool_threshold,
+            2 * self.non_retryable_threshold,
         )
 
 _invoke_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -55,6 +66,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "ping_pong_critical": "Ping-Pong 循环: {count} 轮交替无进展，阻断",
         "ping_pong_warning": "Ping-Pong 警告: {count} 轮交替无进展",
         "generic_repeat": "工具 {tool_name} 已重复调用 {count} 次，请检查是否有效",
+        "non_retryable_tool": "工具 {tool_name} 的前置条件不满足且已被要求停止重试，现已终止本轮",
     },
     "en": {
         "global_circuit_breaker": (
@@ -69,6 +81,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "ping_pong_warning": "Ping-pong warning: {count} alternating calls with no progress",
         "generic_repeat": (
             "Tool {tool_name} has been repeated {count} times, please verify it is effective"
+        ),
+        "non_retryable_tool": (
+            "Tool {tool_name} reported a non-retryable precondition failure {count} times; "
+            "the current turn is being stopped"
         ),
     },
 }
@@ -281,6 +297,7 @@ class ToolCallRecord:
     result_hash: str | None
     timestamp: float
     has_error: bool = False
+    non_retryable: bool = False
 
 
 @dataclass
@@ -410,6 +427,7 @@ class CircuitBreakerRail(DeepAgentRail):
         has_error = ToolResultErrorDetector.infer_record_has_error(
             tool_result, ctx,
         )
+        non_retryable = self._is_non_retryable_result(tool_result)
 
         async with self._get_lock(sid):
             history = self._get_history(sid)
@@ -419,6 +437,7 @@ class CircuitBreakerRail(DeepAgentRail):
                 result_hash=result_hash,
                 timestamp=time.time(),
                 has_error=has_error,
+                non_retryable=non_retryable,
             ))
             if len(history) > self._config.history_size:
                 self._histories[sid] = history[-self._config.history_size:]
@@ -437,7 +456,7 @@ class CircuitBreakerRail(DeepAgentRail):
                 logger.warning("[CircuitBreaker] %s", self._format_message(result))
 
     # ------------------------------------------------------------------
-    # _detect: 四种检测器按优先级依次检查
+    # _detect: 五种检测器按优先级依次检查
     # ------------------------------------------------------------------
 
     def _detect(
@@ -459,6 +478,14 @@ class CircuitBreakerRail(DeepAgentRail):
             return DetectionResult(stuck=True, level="critical",
                 detector="unknown_tool_repeat", count=unknown_streak,
                 msg_key="unknown_tool_repeat", tool_name=tool_name)
+
+        non_retryable_streak = self._get_non_retryable_streak(
+            history, tool_name, args_hash,
+        )
+        if non_retryable_streak >= cfg.non_retryable_threshold:
+            return DetectionResult(stuck=True, level="critical",
+                detector="non_retryable_tool", count=non_retryable_streak,
+                msg_key="non_retryable_tool", tool_name=tool_name)
 
         ping_pong = self._get_ping_pong_streak(history, args_hash)
         if (
@@ -521,6 +548,11 @@ class CircuitBreakerRail(DeepAgentRail):
                 "status": str(result.get("status", "")),
             }
         return {"raw": str(result)}
+
+    @staticmethod
+    def _is_non_retryable_result(result: Any) -> bool:
+        """Detect a structured tool result that explicitly asks not to be retried."""
+        return is_non_retryable_tool_result(result)
 
     # ------------------------------------------------------------------
     # 计数方法
@@ -649,6 +681,23 @@ class CircuitBreakerRail(DeepAgentRail):
             if record.tool_name != tool_name:
                 break
             if not record.has_error:
+                break
+            streak += 1
+        return streak
+
+    def _get_non_retryable_streak(
+        self,
+        history: list[ToolCallRecord],
+        tool_name: str,
+        args_hash: str,
+    ) -> int:
+        streak = 0
+        for record in reversed(history):
+            if record.tool_name != tool_name:
+                break
+            if record.args_hash != args_hash:
+                break
+            if not record.non_retryable:
                 break
             streak += 1
         return streak

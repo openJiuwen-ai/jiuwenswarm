@@ -944,6 +944,16 @@ def _bounded_diagnostic(
     return bounded or fallback
 
 
+_ABS_PATH_SEGMENT_RE = re.compile(
+    r"(?:(?:[A-Za-z]:\\|/)[^:\n\r]*[\\/])([^\\/\s'\"<>|]+)"
+)
+
+
+def _basename_paths(text: str) -> str:
+    """Keep only the final path segment so host directories are not exposed."""
+    return _ABS_PATH_SEGMENT_RE.sub(r"\1", text)
+
+
 def _redact_json_value(value: Any, secrets: tuple[str, ...]) -> Any:
     """Iteratively copy and redact a bounded JSON key/value tree."""
     if isinstance(value, str):
@@ -4172,6 +4182,12 @@ async def _consume_stream(
                     "conversation_id": chunk.get("conversation_id", outcome_cid),
                     "error_code": "report_file_write_failed",
                     "error": type(exc).__name__,
+                    "detail": _bounded_diagnostic(
+                        _basename_paths(str(exc)),
+                        secrets=(),
+                        limit=500,
+                        fallback=type(exc).__name__,
+                    ),
                 }, chunk)
             artifact_mime_types = {
                 "md": "text/markdown",
@@ -5100,9 +5116,16 @@ async def _write_report_artifacts_stream(
         fallback_markdown = report_path_md.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         fallback_markdown = None
-    generated_html = await _generate_report_html(
-        final_result, report_path_md, fallback_markdown
-    )
+    try:
+        generated_html = await _generate_report_html(
+            final_result, report_path_md, fallback_markdown
+        )
+    except Exception as exc:  # noqa: BLE001 - markdown remains the deliverable
+        logger.warning(
+            "[deepresearch_stream] html generation failed; delivering markdown only: %r",
+            exc,
+        )
+        generated_html = None
     html_style_status = None
     html_style_phase = None
     html_style_reason_code = None
