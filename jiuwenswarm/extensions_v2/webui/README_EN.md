@@ -121,6 +121,22 @@ RenderNode(
 Every valid change is sent independently without merging intermediate values; without a binding the slider still adjusts locally.
 The value must match min/max and the step; disabled or disconnected sliders cannot be used.
 
+A tab container sends the active key to ui.change when switching:
+
+```python
+RenderNode(
+    "Tabs",
+    {"items": [
+        {"key": "one", "label": "Overview", "children": [{"component": "Text", "props": {"value": "First page"}}]},
+        {"key": "two", "label": "Details", "children": [{"component": "Text", "props": {"value": "Second page"}}]},
+    ]},
+    events={"ui.change": {"id": "tab.change"}},
+)
+```
+
+Hidden pages do not dispatch events and keep their local state by default; with destroyOnHidden they reinitialize after switching back.
+Disabled tabs and disconnected sessions cannot switch, and tab content also counts toward the depth and node budgets.
+
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
 instead of appending it to declared args. A node cannot declare both action and events.

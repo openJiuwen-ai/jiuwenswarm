@@ -323,6 +323,61 @@ test('Slider keeps its local value without bindings and resets on valid replace'
   } finally { await app.close(); }
 });
 
+const tabsTree = (props = {}) => ({
+  component: 'Tabs',
+  events: { 'ui.change': { id: 'switch', args: { field: 'tab' } } },
+  props: {
+    items: [
+      { key: 'one', label: 'One', children: [
+        { component: 'Input', props: { defaultValue: 'draft' },
+          events: { 'ui.change': { id: 'edit', args: { field: 'text' } } } },
+      ] },
+      { key: 'two', label: 'Two', children: [{ component: 'Text', props: { value: 'Second' } }] },
+    ],
+    ...props,
+  },
+});
+const tabLabel = (app, key) => app.container.querySelector(`[data-testid="webui-tab-label"][data-variant="${key}"]`);
+
+test('Tabs sends the active key through the existing change binding', async () => {
+  const app = await setup(tabsTree());
+  try {
+    assert.deepEqual([...app.container.querySelectorAll('[data-testid="webui-tab-label"]')]
+      .map((label) => label.getAttribute('data-variant')), ['one', 'two']);
+    assert.equal(app.business().length, 0);
+    await click(tabLabel(app, 'two'));
+    assert.deepEqual(app.business().at(-1).payload, {
+      node_key: '0', revision: 1, action_id: 'switch', args: { field: 'tab' }, data: { activeKey: 'two' },
+    });
+  } finally { await app.close(); }
+});
+
+test('Tabs keeps mounted content state across switching and only sends its own change', async () => {
+  const app = await setup(tabsTree());
+  try {
+    const input = () => app.container.querySelector('input');
+    await changeInput(input(), 'kept');
+    const dispatched = app.business().length;
+    await click(tabLabel(app, 'two'));
+    assert.equal(app.business().length, dispatched + 1);
+    assert.deepEqual(app.business().at(-1).payload.data, { activeKey: 'two' });
+    await click(tabLabel(app, 'one'));
+    assert.equal(input().value, 'kept');
+    assert.deepEqual(app.business().at(-1).payload.data, { activeKey: 'one' });
+  } finally { await app.close(); }
+});
+
+test('Tabs reinitializes hidden content when destroyOnHidden is set', async () => {
+  const app = await setup(tabsTree({ destroyOnHidden: true }));
+  try {
+    const input = () => app.container.querySelector('input');
+    await changeInput(input(), 'discard');
+    await click(tabLabel(app, 'two'));
+    await click(tabLabel(app, 'one'));
+    assert.equal(input().value, 'draft');
+  } finally { await app.close(); }
+});
+
 const switchTree = (props = {}, bindings = { 'ui.change': { id: 'toggle', args: { field: 'enabled' } } }) => ({
   component: 'Switch', props, events: bindings,
 });
