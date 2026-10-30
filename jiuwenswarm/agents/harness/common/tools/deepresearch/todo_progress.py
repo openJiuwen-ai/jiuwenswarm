@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
-import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -327,27 +326,30 @@ async def persist_deepresearch_task_update(
             if trusted is not None:
                 _verify_named_parent(todo_path, trusted)
                 tx.write_options["expected_parent_identity"] = trusted.identity
+            updates = {item["id"]: item for item in tasks}
             if owner is None:
-                # Ordinary research used to publish its own completed stage plan.
-                # Do so only if the captured file has not changed meanwhile.
                 if tx.snapshot.content_sha256 != target.content_sha256:
                     logger.warning("[deepresearch_stream] skip Todo persistence: captured file changed")
                     return False
-                created = {row["id"]: row.get("createdAt") for row in tx.snapshot.todos}
-                now = datetime.now(UTC).isoformat()
-                tx.new_plan = uuid.uuid4().hex
-                tx.pending = [{**row, "createdAt": created.get(row["id"]) or now, "updatedAt": now}
-                              for row in tasks]
-                return True
-            updates = {item["id"]: item for item in tasks}
-            # Only the workflow's canonical, already-present stages are eligible.
-            if not all(any(row["id"] == ident and row.get("content") == change["content"]
-                           for row in tx.snapshot.todos) for ident, change in updates.items()):
-                logger.warning("[deepresearch_stream] skip Todo persistence: canonical stages missing or changed")
-                return False
+                if not tx.snapshot.todos:
+                    now = datetime.now(UTC).isoformat()
+                    tx.pending = [{**row, "createdAt": now, "updatedAt": now} for row in tasks]
+                    return True
+                eligible = {row["id"] for row in tx.snapshot.todos
+                            if row["id"] in updates and row.get("content") == updates[row["id"]]["content"]}
+                if not eligible:
+                    logger.warning("[deepresearch_stream] skip Todo persistence: no matching stages")
+                    return False
+            else:
+                # Flash only updates the canonical stages already in its captured plan.
+                if not all(any(row["id"] == ident and row.get("content") == change["content"]
+                               for row in tx.snapshot.todos) for ident, change in updates.items()):
+                    logger.warning("[deepresearch_stream] skip Todo persistence: canonical stages missing or changed")
+                    return False
+                eligible = updates.keys()
             now = datetime.now(UTC).isoformat()
             tx.pending = [{**row, "status": "completed", "updatedAt": now}
-                          if row["id"] in updates else row for row in tx.snapshot.todos]
+                          if row["id"] in eligible else row for row in tx.snapshot.todos]
             return True
         return await transact(tool, session_id, update, expected_plan=plan_id, check_active=check_active)
     finally:

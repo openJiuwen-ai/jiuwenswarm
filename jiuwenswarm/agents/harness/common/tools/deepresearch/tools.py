@@ -374,34 +374,34 @@ def _todo_workspace_key(route: dict[str, object]) -> str:
     return str(route.get("workspace_key") or context.get("workspace_key") or "default")
 
 
-def _research_todo_path(route: dict[str, object], tool=None) -> Path:
+def _research_todo_path(route: dict[str, object], todo_tool=None) -> Path:
     """Resolve the Todo path from its owning tool when available."""
     session_id = str(route.get("session_id") or "")
-    if tool is None:
+    if todo_tool is None:
         from openjiuwen.harness.tools.todo_store import bound_todo_tool
 
         bound_tool, bound_session = bound_todo_tool()
         if bound_session == session_id:
-            tool = bound_tool
-        if tool is None:
+            todo_tool = bound_tool
+        if todo_tool is None:
             provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
-            tool = provider() if callable(provider) else None
+            todo_tool = provider() if callable(provider) else None
     return deepresearch_todo_path(
-        session_id=session_id, workspace_key=_todo_workspace_key(route), tool=tool,
+        session_id=session_id, workspace_key=_todo_workspace_key(route), tool=todo_tool,
     )
 
 
-async def _capture_todo_target(todo_path: Path, session_id: str, *, tool=None):
+async def _capture_todo_target(todo_path: Path, session_id: str, *, todo_tool=None):
     """Prefer the tool-call binding; otherwise ask the owning adapter lazily."""
     target = await capture_deepresearch_todo_target(todo_path)
     if target is not None:
         return target
-    if tool is None:
+    if todo_tool is None:
         provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
-        tool = provider() if callable(provider) else None
-    if tool is None:
+        todo_tool = provider() if callable(provider) else None
+    if todo_tool is None:
         return None
-    return await capture_deepresearch_todo_target(todo_path, tool=tool, session_id=session_id)
+    return await capture_deepresearch_todo_target(todo_path, tool=todo_tool, session_id=session_id)
 
 
 async def _try_capture_todo_target(todo_path: Path, session_id: str):
@@ -3157,7 +3157,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
 
     # Capture the existing Todo owner before starting the research process.
     # Flash must have a valid target; other modes keep research available if
-    # Todo persistence cannot be established.
+    # the persistence target cannot be established.
     from openjiuwen.harness.tools.todo_store import bound_todo_tool
 
     bound_tool, _ = bound_todo_tool()
@@ -3171,7 +3171,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             if selected_tool is not None:
                 todo_path = _research_todo_path(route, selected_tool)
                 todo_target = await _capture_todo_target(
-                    todo_path, str(route.get("session_id") or ""), tool=selected_tool,
+                    todo_path, str(route.get("session_id") or ""), todo_tool=selected_tool,
                 )
                 if todo_target is None and getattr(selected_tool, "snapshot_guard", None) is not None:
                     raise ValueError("Flash Todo owner is unavailable")

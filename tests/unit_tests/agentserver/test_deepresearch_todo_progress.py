@@ -139,7 +139,7 @@ def _stage_snapshot(active_stage: int | None) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("existing", [False, True])
-async def test_ordinary_research_publishes_completed_plan_without_binding(tmp_path, existing):
+async def test_ordinary_research_preserves_existing_tasks_without_binding(tmp_path, existing):
     from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
     from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
     from openjiuwen.harness.tools.todo import TodoModifyTool
@@ -156,8 +156,8 @@ async def test_ordinary_research_publishes_completed_plan_without_binding(tmp_pa
     if existing:
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps([
-            {"id": "deepresearch_stage_1", "content": DEEPRESEARCH_STAGES[0], "createdAt": "before"},
-            {"id": "old", "content": "old plan"},
+            {"id": "deepresearch_stage_1", "content": DEEPRESEARCH_STAGES[0], "status": "pending", "createdAt": "before"},
+            {"id": "old", "content": "old plan", "status": "in_progress", "extra": "preserve"},
         ]))
     fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
     tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(path.parent.parent))
@@ -172,12 +172,82 @@ async def test_ordinary_research_publishes_completed_plan_without_binding(tmp_pa
         reset_deepresearch_route(token)
     document = json.loads(path.read_text())
     assert document["plan_id"] and document["revision"] == 1
-    assert [item["id"] for item in document["todos"]] == [
-        f"deepresearch_stage_{index}" for index in range(1, len(DEEPRESEARCH_STAGES) + 1)
-    ]
-    assert all(item["status"] == "completed" for item in document["todos"])
     if existing:
+        assert document["plan_id"] == "legacy"
+        assert [item["id"] for item in document["todos"]] == ["deepresearch_stage_1", "old"]
         assert document["todos"][0]["createdAt"] == "before"
+        assert document["todos"][0]["status"] == "completed"
+        assert document["todos"][1] == {"id": "old", "content": "old plan", "status": "in_progress", "extra": "preserve"}
+    else:
+        assert [item["id"] for item in document["todos"]] == [
+            f"deepresearch_stage_{index}" for index in range(1, len(DEEPRESEARCH_STAGES) + 1)
+        ]
+        assert all(item["status"] == "completed" for item in document["todos"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatched_stage", [False, True])
+async def test_ordinary_research_does_not_change_unrelated_plan(tmp_path, mismatched_stage):
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    path = tmp_path / "todo" / "session-1" / "todo.json"
+    path.parent.mkdir(parents=True)
+    row = {"id": "deepresearch_stage_1" if mismatched_stage else "A", "content": "user task", "status": "pending"}
+    path.write_text(json.dumps({"plan_id": "P", "revision": 3, "todos": [row]}))
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(path.parent.parent))
+    target = await capture_deepresearch_todo_target(path, tool=tool, session_id="session-1")
+    before = path.read_bytes()
+    assert not await persist_deepresearch_task_update(_stage_snapshot(None), todo_path=path, target=target)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_tasks", [False, True])
+async def test_ordinary_research_preserves_versioned_plan_id(tmp_path, existing_tasks):
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    path = tmp_path / "todo" / "session-1" / "todo.json"
+    path.parent.mkdir(parents=True)
+    rows = [
+        {"id": "A", "content": "user task", "status": "in_progress"},
+        {"id": "deepresearch_stage_1", "content": DEEPRESEARCH_STAGES[0], "status": "pending"},
+    ] if existing_tasks else []
+    path.write_text(json.dumps({"plan_id": "P", "revision": 3, "todos": rows}))
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(path.parent.parent))
+    target = await capture_deepresearch_todo_target(path, tool=tool, session_id="session-1")
+    assert await persist_deepresearch_task_update(_stage_snapshot(None), todo_path=path, target=target)
+    document = json.loads(path.read_text())
+    assert (document["plan_id"], document["revision"]) == ("P", 4)
+    if existing_tasks:
+        assert document["todos"][0] == rows[0]
+        assert [item["id"] for item in document["todos"]] == ["A", "deepresearch_stage_1"]
+        assert document["todos"][1]["status"] == "completed"
+    else:
+        assert len(document["todos"]) == len(DEEPRESEARCH_STAGES)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_research_rejects_changed_plan(tmp_path):
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    path = tmp_path / "todo" / "session-1" / "todo.json"
+    _seed_plan(path)
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(path.parent.parent))
+    target = await capture_deepresearch_todo_target(path, tool=tool, session_id="session-1")
+    path.write_text(json.dumps({"plan_id": "new-plan", "revision": 2, "todos": []}))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="plan changed"):
+        await persist_deepresearch_task_update(_stage_snapshot(None), todo_path=path, target=target)
+    assert path.read_bytes() == before
 
 
 @pytest.mark.asyncio

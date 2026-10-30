@@ -167,6 +167,35 @@ async def test_normal_plan_refresh_preserves_legacy_empty_behavior(env, versione
 
 
 @pytest.mark.asyncio
+async def test_flash_creation_policy_differs_from_default_creator(env):
+    from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+
+    creator, _, session, path = env
+    await creator.invoke({"tasks": [{"id": "A", "content": "First"}]}, session=session)
+    creator.reset_invoke_marker(session.get_session_id())
+    await creator.invoke({"tasks": [{"id": "B", "content": "Default replacement"}]}, session=session)
+    assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["B"]
+
+    registered = {}
+    rail = FlashTodoRail()
+    rail.set_workspace(SimpleNamespace(get_node_path=lambda _node: creator.workspace))
+    rail.set_sys_operation(SimpleNamespace(fs=lambda: creator.fs))
+    agent = SimpleNamespace(
+        card=SimpleNamespace(id="flash-policy"),
+        system_prompt_builder=SimpleNamespace(language="cn"),
+        ability_manager=SimpleNamespace(add_ability=lambda card, tool: registered.setdefault(card.name, tool)),
+    )
+    rail.init(agent)
+    await rail.before_invoke(SimpleNamespace(extra={}, session=session))
+    before = path.read_bytes()
+    with pytest.raises(Exception, match="active plan"):
+        await registered["todo"].invoke(
+            {"action": "create", "tasks": [{"id": "C", "content": "Flash replacement"}]}, session=session
+        )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("has_marker", [False, True])
 async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env, has_marker):
     from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
