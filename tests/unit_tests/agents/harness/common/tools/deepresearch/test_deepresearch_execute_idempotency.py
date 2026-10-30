@@ -6,10 +6,12 @@ Covers GitCode issue #5131（深度研究报告已交付后再次对话重复执
 守卫契约：
 - 首轮报告交付后，rail.after_tool_call 在 states.pop 前调 _record_delivery 记录
   delivery_index[workflow_id] = {query(归一化), file_name, conversation_id,
-  html_style_status, delivered_at}。
+  html_style_status, requested_report_type, content, delivered_at}，索引按
+  delivered_at 只保留最近 N 条（CR-5）。
 - 下一轮同主题（query 归一化后相等）同 file_name 的 before_tool_call 调用，
   在 bind_deepresearch_execution_context 之前命中 _lookup_delivery 即短路：
-  tool_result 置为 kind=completed、force_finish，不进入 SDK 重跑路径。
+  tool_result 置为 kind=completed、force_finish，不进入 SDK 重跑路径；短路
+  复用首次交付文案（CR-4），显式换报告类型时不命中（CR-3）。
 - 不同主题（query 归一化后不等）或不同 file_name 不命中，正常 bind 走原流程。
 """
 
@@ -81,12 +83,12 @@ def test_second_turn_same_topic_returns_already_delivered_without_rerun(monkeypa
     assert payload["kind"] == "completed"
     # 完成文案含真实 file_name（Issue 1/6），不回落默认「研究报告」
     assert "ai_chip_report" in payload["content"]
-    # 跳过真实执行依赖 before_tool_call 的 force_finish：@rail wrapper 在
-    # before 钩子后检查 has_force_finish_request 并 return None，工具方法体
-    # 不会执行（openjiuwen/core/single_agent/rail/base.py:613-615）。
+    # 跳过真实执行依赖 before_tool_call 的 force_finish：@rail wrapper 在 before
+    # 钩子后检查 has_force_finish_request，命中即返回 force_finish 的 result，
+    # 工具方法体不会执行。
     assert ctx.force_finish_requests
-    # 不得写共享 ctx.extra["_skip_tool"]：该标记由 AbilityManager 按名 pop
-    # （ability_manager.py:653），短路调用自身不会走到 pop（方法体被跳过），
+    # 不得写共享 ctx.extra["_skip_tool"]：AbilityManager 在
+    # _railed_execute_single_tool_call 方法体入口按名 pop，短路调用走不到 pop，
     # 标记会残留在共享 extra 里被同轮并行 tool call 误消费。
     assert "_skip_tool" not in ctx.extra
     # Issue 3：tool_msg 必须设为精简完成文案，含真实 file_name 且不含内部 state/conversation_id
@@ -176,6 +178,128 @@ def test_different_topic_not_blocked():
     assert ctx.inputs.tool_result is None or not isinstance(ctx.inputs.tool_result, dict)
 
 
+def test_report_type_change_not_short_circuited():
+    """CR-3：同主题同 file_name 显式换报告类型（brief→professional）不得被短路吞掉。
+
+    交付条目记录首次交付的 requested_report_type；本次调用显式请求不同类型时视为
+    新任务真实执行，否则用户要求的专业版会被旧精简报告的「已完成」话术吞掉。
+    """
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "requested_report_type": "brief", "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_retype", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+        "report_type": "professional"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert ctx.force_finish_requests == []
+    assert ctx.inputs.tool_result is None
+
+
+def test_same_report_type_repeat_still_short_circuited():
+    """CR-3 反向契约：显式 requested_report_type 与交付条目一致时仍短路。"""
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "requested_report_type": "professional", "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_repeat", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+        "report_type": "professional"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert len(ctx.force_finish_requests) == 1
+    assert ctx.inputs.tool_result["kind"] == "completed"
+
+
+def test_structured_report_type_change_not_short_circuited(monkeypatch):
+    """CR-3：结构化通道（params.report_type）换类型同样不得被短路吞掉。
+
+    该通道下模型可能省略 args.report_type，类型由请求上下文传入并最终写入新
+    workflow 的 requested_report_type；匹配键必须把它当作显式类型。
+    """
+    monkeypatch.setattr(
+        rail, "get_request_context",
+        lambda **_kwargs: {"requested_report_type": "professional"},
+    )
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "requested_report_type": "brief", "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_params", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert ctx.force_finish_requests == []
+    assert ctx.inputs.tool_result is None
+
+
+def test_short_circuit_reuses_first_delivery_content():
+    """CR-4：短路复用首次交付文案，避免同一事件两种呈现（章节/升级提示不丢）。"""
+    first_content = (
+        "✅ **深度研究已完成！**\n\nai_chip_report已成功生成并交付。\n\n"
+        "**报告概览**：\n- **报告结构**：按您确认的大纲，包含 1 个核心章节\n  1. 行业格局"
+    )
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "requested_report_type": "brief", "content": first_content,
+                 "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_again", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert ctx.inputs.tool_result["content"] == first_content
+    assert ctx.inputs.tool_msg.content == first_content
+
+
+def test_short_circuit_uses_latest_delivery_content():
+    """CR-4：同键多条（强制重跑追加）时短路复用最近一次交付文案，不返回旧文案。"""
+    sess = _fake_session(delivery_index={
+        "wf_old": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                   "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                   "requested_report_type": "brief", "content": "旧文案",
+                   "delivered_at": 1.0},
+        "wf_new": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                   "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                   "requested_report_type": "brief", "content": "新文案",
+                   "delivered_at": 2.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_again2", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert ctx.inputs.tool_result["content"] == "新文案"
+
+
+def test_delivery_index_keeps_only_latest_entries():
+    """CR-5：交付索引按 delivered_at 只保留最近 N 条，避免 state 通道单调增长。"""
+    limit = rail._MAX_DELIVERY_INDEX_ENTRIES
+    sess = _fake_session(delivery_index={
+        f"wf_{i}": {
+            "query": f"主题{i}",
+            "file_name": f"报告{i}",
+            "conversation_id": f"cid-{i}",
+            "delivered_at": float(i),
+        }
+        for i in range(limit)
+    })
+    rail._record_delivery(
+        sess,
+        "wf_new",
+        query="新主题",
+        file_name="新报告",
+        conversation_id="cid-new",
+        html_style_status=None,
+        requested_report_type="brief",
+        content="已完成",
+    )
+    idx = sess.get_state(rail.DEEPRESEARCH_DELIVERY_INDEX_KEY)
+    assert len(idx) == limit
+    assert "wf_0" not in idx
+    assert idx["wf_new"]["requested_report_type"] == "brief"
+    assert idx["wf_new"]["content"] == "已完成"
+
+
 def test_short_circuit_skips_after_tool_call_side_effects():
     """短路标记跳过 after_tool_call 副作用：避免双重 force_finish 与交付索引污染。
 
@@ -203,9 +327,28 @@ def test_short_circuit_skips_after_tool_call_side_effects():
     assert "wf_1" in idx
     assert idx["wf_1"]["query"] == real_entry["query"]
     assert idx["wf_1"]["file_name"] == real_entry["file_name"]
-    assert "_deepresearch_short_circuit" not in ctx.extra
-    assert "_skip_tool" not in ctx.extra
-    assert not [k for k in ctx.extra if k.startswith(rail._SHORT_CIRCUIT_KEY_PREFIX)]
+    # 短路标识只放本次 tool_result payload，不落共享 extra：取消路径跳过 after
+    # 回调时不存在需要清理的残留键（renquanjia 审查 Issue 6）。
+    assert ctx.extra == {}
+    assert ctx.inputs.tool_result["idempotent_short_circuit"] is True
+
+
+def test_short_circuit_writes_no_shared_marker():
+    """Issue 6：取消路径不触发 after_tool_call 时，共享 extra 不得残留短路键。
+
+    core 的 @rail wrapper 在 CancelledError 时跳过 after 回调；短路标识若挂在
+    ctx.extra，就依赖 after 必然执行才能清理。标识放在本次 tool_result 里，
+    before_tool_call 结束后 extra 必须保持为空。
+    """
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_cancelled", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert ctx.extra == {}
 
 
 def test_terminal_completed_updates_tool_msg_to_completion_content():

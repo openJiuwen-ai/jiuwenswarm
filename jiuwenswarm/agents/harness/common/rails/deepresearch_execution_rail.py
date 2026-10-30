@@ -41,7 +41,8 @@ DEEPRESEARCH_EXECUTION_STATE_KEY = "deepresearch_execution_states"
 DEEPRESEARCH_EXECUTION_ALIAS_KEY = "deepresearch_execution_aliases"
 DEEPRESEARCH_DELIVERY_INDEX_KEY = "deepresearch_delivery_index"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
-_SHORT_CIRCUIT_KEY_PREFIX = "_deepresearch_short_circuit:"
+_SHORT_CIRCUIT_FIELD = "idempotent_short_circuit"
+_MAX_DELIVERY_INDEX_ENTRIES = 20
 _TOOL_NAME = "deepresearch_execute"
 _BRIEF_REFRESH_SECTION = "deepresearch_brief_refresh"
 _BRIEF_REFRESH_INSTRUCTION = (
@@ -149,6 +150,8 @@ def _record_delivery(
     file_name: str,
     conversation_id: str,
     html_style_status: str | None,
+    requested_report_type: str = "brief",
+    content: str = "",
 ) -> None:
     idx = _load_delivery_index(session)
     normalized_query = _normalize_topic(query)
@@ -161,8 +164,19 @@ def _record_delivery(
         "file_name": fname,
         "conversation_id": str(conversation_id or ""),
         "html_style_status": html_style_status,
+        "requested_report_type": str(requested_report_type or "brief"),
+        # 首次交付文案：短路时原样复用，避免同一事件两种呈现（CR-4）。
+        "content": str(content or ""),
         "delivered_at": time.time(),
     }
+    # 索引随研究次数单调增长，而 state 通道每轮都携带全量索引；按交付时间
+    # 只保留最近 N 条（CR-5）。
+    if len(idx) > _MAX_DELIVERY_INDEX_ENTRIES:
+        stale = sorted(
+            idx, key=lambda key: idx[key].get("delivered_at") or 0.0
+        )[: len(idx) - _MAX_DELIVERY_INDEX_ENTRIES]
+        for key in stale:
+            del idx[key]
     _save_delivery_index(session, idx)
     logger.info(
         "[deepresearch_execution_rail] recorded delivery workflow_id=%s "
@@ -173,23 +187,37 @@ def _record_delivery(
 
 
 def _lookup_delivery(
-    session: Any, *, query: str, file_name: str
+    session: Any,
+    *,
+    query: str,
+    file_name: str,
+    requested_report_type: str = "",
 ) -> dict[str, Any] | None:
     """同会话×同主题×同 file_name 已交付则返回交付条目，否则 None。
 
     主题按 _normalize_topic 归一化后比较（两侧均归一化），消除大小写/空白差异。
     空 query 或空 file_name 不参与匹配——空键不应拦截合法研究（issue #5131 审查）。
+    requested_report_type 为本次调用的显式报告类型：与交付条目不同则不命中，
+    否则同主题同 file_name 换类型（如 brief→professional）会被短路吞掉（CR-3）；
+    未显式给出类型时沿用原幂等守卫。同键多条时取最近一次交付（强制重跑会追加
+    新 workflow_id 条目）。
     """
     topic = _normalize_topic(query)
     fname = str(file_name or "").strip()
     if not topic or not fname:
         return None
-    for entry in _load_delivery_index(session).values():
+    requested_type = str(requested_report_type or "").strip()
+    for entry in reversed(list(_load_delivery_index(session).values())):
         if (
-            _normalize_topic(str(entry.get("query") or "")) == topic
-            and str(entry.get("file_name") or "").strip() == fname
+            _normalize_topic(str(entry.get("query") or "")) != topic
+            or str(entry.get("file_name") or "").strip() != fname
         ):
-            return dict(entry)
+            continue
+        if requested_type and requested_type != str(
+            entry.get("requested_report_type") or "brief"
+        ):
+            continue
+        return dict(entry)
     return None
 
 
@@ -441,10 +469,16 @@ class DeepResearchExecutionRail(DeepAgentRail):
         # 与残留 state（atomgit-bot 审查 Issue 2）。
         # not is_upgrade：升级/追问会用 original_query 覆盖本次 query，与已交付 brief
         # 条目同键，命中短路会把「升级专业版」当成已完成吞掉（renquanjia 审查 CR-005）。
+        requested_type = str(
+            args.get("report_type")
+            or (request_context or {}).get("requested_report_type")
+            or ""
+        ).strip()
         hit = _lookup_delivery(
             ctx.session,
             query=str(args.get("query") or ""),
             file_name=str(args.get("file_name") or ""),
+            requested_report_type=requested_type,
         )
         if hit is not None and not is_upgrade and workflow_id not in states:
             from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
@@ -453,22 +487,27 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 _result,
             )
 
-            completion_text = _completion_content(
-                {"file_name": str(hit.get("file_name") or "")},
-                hit.get("html_style_status"),
-            )
+            completion_text = str(hit.get("content") or "").strip()
+            if not completion_text:
+                completion_text = _completion_content(
+                    {"file_name": str(hit.get("file_name") or "")},
+                    hit.get("html_style_status"),
+                )
             short_state = _persist_delivered_state(
                 ctx,
                 workflow_id=workflow_id,
                 conversation_id=str(hit.get("conversation_id") or ""),
                 query=str(args.get("query") or ""),
                 file_name=str(hit.get("file_name") or ""),
-                requested_report_type=str(args.get("report_type") or "brief"),
+                requested_report_type=str(
+                    requested_type or hit.get("requested_report_type") or "brief"
+                ),
             )
             ctx.inputs.tool_result = _result(
                 "completed",
                 short_state,
                 content=completion_text,
+                **{_SHORT_CIRCUIT_FIELD: True},
             )
             ctx.inputs.tool_msg = ToolMessage(
                 content=completion_text,
@@ -484,15 +523,14 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 str(hit.get("conversation_id") or ""),
             )
             # 跳过工具方法体靠上面的 request_force_finish：@rail wrapper 在 before
-            # 钩子之后检查 has_force_finish_request 并直接 return None
-            # （openjiuwen/core/single_agent/rail/base.py:613-615）。因此不能写共享
-            # ctx.extra["_skip_tool"]——该标记由 AbilityManager 按名 pop
-            # （ability_manager.py:653），本调用根本不走到 pop，标记会残留并被同轮
-            # 并行 tool call 误消费（工具静默返回空结果）。
-            # 短路标记按 tool_call_id 命名空间写 extra：AbilityManager 的 _skip_tool
-            # 是按名 pop 的共享标记，会被同轮并行 tool call 误消费；带调用 id 的键
-            # 各调用独立，after_tool_call 按本调用 id 精确 pop（openJiuwen-bot 审查 Issue 9）。
-            ctx.extra[f"{_SHORT_CIRCUIT_KEY_PREFIX}{tool_call_id}"] = workflow_id
+            # 钩子之后检查 has_force_finish_request，命中则消费请求并直接返回
+            # force_finish 的 result（无请求时才是 None），方法体不执行。
+            # 不能写共享 ctx.extra["_skip_tool"]——该标记由 AbilityManager 在
+            # _railed_execute_single_tool_call 方法体入口按名 pop，本调用走不到
+            # pop，标记会残留并被同轮并行 tool call 误消费（工具静默返回空结果）。
+            # 短路标识只放本次 tool_result（_SHORT_CIRCUIT_FIELD），after_tool_call
+            # 读 payload 后 early-return：取消路径会跳过 after 回调，不落共享 extra
+            # 也就不存在残留键（renquanjia 审查 Issue 6）。
             return
 
         model = self._model_provider() if callable(self._model_provider) else None
@@ -547,14 +585,16 @@ class DeepResearchExecutionRail(DeepAgentRail):
         if _tool_name(ctx) != _TOOL_NAME:
             return
         try:
-            tool_call_id = _tool_call_id(ctx)
-            if ctx.extra.pop(f"{_SHORT_CIRCUIT_KEY_PREFIX}{tool_call_id}", None) is not None:
-                return
             payload = _result_payload(ctx.inputs.tool_result)
-            if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:
+            if payload is None:
+                return
+            if payload.get(_SHORT_CIRCUIT_FIELD) is True:
+                return
+            if payload.get("schema_version") != EXECUTION_SCHEMA:
                 return
             if payload.get("kind") == "in_progress":
                 return  # A concurrent caller must not overwrite or finish the active workflow.
+            tool_call_id = _tool_call_id(ctx)
             workflow_id = _workflow_id(ctx.session, tool_call_id)
             # tool_msg 必须挂历史原始 id（resume 时 ctx 携带的是 TIE
             # 克隆件的 interaction_id），否则被孤儿清理删除
@@ -641,6 +681,14 @@ class DeepResearchExecutionRail(DeepAgentRail):
                     file_name=str(state.get("file_name") or ""),
                     conversation_id=str(state.get("conversation_id") or ""),
                     html_style_status=payload.get("html_style_status"),
+                    requested_report_type=str(
+                        state.get("requested_report_type") or "brief"
+                    ),
+                    content=(
+                        payload.get("content")
+                        if isinstance(payload.get("content"), str)
+                        else ""
+                    ),
                 )
             fallback = payload.get("fallback")
             model_handoff = (
