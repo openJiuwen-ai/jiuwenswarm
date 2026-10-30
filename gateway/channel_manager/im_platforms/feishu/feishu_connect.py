@@ -2719,26 +2719,19 @@ class FeishuChannel(BaseChannel):
         }
 
     def _tool_payload_preview(self, question: dict[str, Any]) -> str:
-        """权限题的工具参数预览：脱敏 + 截断，失败时不展示原始值。"""
+        """权限题的工具参数预览：上游已脱敏，这里只做序列化与截断。
+
+        ``tool_payload`` 由 agents 侧构造问题时统一经
+        ``sanitize_permission_ui_payload`` 脱敏并限长，网关是纯展示方，
+        不重复脱敏（避免 gateway → agents 跨层依赖）。
+        """
         payload = question.get("tool_payload")
         if not isinstance(payload, dict) or not payload:
             return ""
         try:
-            from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
-                sanitize_permission_ui_payload,
-            )
-
-            sanitized = sanitize_permission_ui_payload(payload)
-        except Exception:  # noqa: BLE001 - 展示层失败关闭，不回落原始参数
-            sanitized = ""
-        if not sanitized:
-            return ""
-        if isinstance(sanitized, str):
-            return self._truncate_text(sanitized, 240)
-        try:
-            text = json.dumps(sanitized, ensure_ascii=False)
+            text = json.dumps(payload, ensure_ascii=False)
         except (TypeError, ValueError):
-            text = str(sanitized)
+            return ""
         return self._truncate_text(text, 240)
 
     @staticmethod

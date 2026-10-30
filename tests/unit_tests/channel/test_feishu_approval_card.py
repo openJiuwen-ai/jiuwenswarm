@@ -353,14 +353,15 @@ def test_other_placeholder_click_is_rejected(channel):
 
 
 @pytest.mark.asyncio
-async def test_permission_card_shows_redacted_tool_preview(channel):
+async def test_permission_card_shows_tool_preview(channel):
+    """权限题展示参数预览；脱敏由 agents 侧保证，网关只做序列化与截断。"""
     channel._create_and_send_message = AsyncMock()
     questions = [
         _question(
             "执行 bash",
             [ALLOW_ONCE, REJECT],
             card_id="card-1",
-            tool_payload={"command": "rm -rf /tmp/x", "api_key": "super-secret"},
+            tool_payload={"command": "rm -rf /tmp/x", "api_key": "[REDACTED]"},
         )
     ]
 
@@ -371,7 +372,7 @@ async def test_permission_card_shows_redacted_tool_preview(channel):
     card = json.loads(channel._create_and_send_message.await_args.args[0].content)
     rendered = json.dumps(card, ensure_ascii=False)
     assert "参数：" in rendered
-    assert "super-secret" not in rendered
+    assert "rm -rf /tmp/x" in rendered
 
 
 @pytest.mark.asyncio
