@@ -17,6 +17,7 @@ from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
 from openjiuwen.agent_teams.rails.team_context import get_team_backend
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.team import (
+    ExternalCliAgentSpec,
     ExternalCliMemberSpec,
     TeamMemberSpec,
     TeamRole,
@@ -33,6 +34,10 @@ logger = logging.getLogger(__name__)
 RUN_TEAM = "swarm.group_run_team"
 COMPLETE_RUN = "swarm.group_complete_team_run"
 GROUP_MEMBER_TEMPLATE = "swarm.group_member_template"
+# CLI kinds an expert template can name (runtime.provider_name codex / claudecode).
+GROUP_CLI_KINDS = ("claude", "codex")
+# Per-template fields that a kind-level launch config cannot carry.
+CLI_MEMBER_ONLY_FIELDS = frozenset({"skills", "skill_conflict"})
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _results: dict[str, asyncio.Future] = {}
 _private_runs: dict[str, dict] = {}
@@ -183,6 +188,41 @@ def assemble_group_members(spec, members: list[dict]) -> None:
         spec.predefined_members = [*spec.predefined_members, member]
     spec.metadata = {**spec.metadata, "group_members": members}
     spec.team_mode = "hybrid"
+    declare_group_cli_kinds(spec)
+
+
+def enabled_group_cli_kinds() -> set[str]:
+    """Read the same live switches used by the external-agent settings panel."""
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.common.config_panel.config_set_handlers import flatten_external_cli_agents_for_config_panel
+
+    switches = flatten_external_cli_agents_for_config_panel(get_config())
+    return {kind for kind in GROUP_CLI_KINDS if switches.get(f"external_cli_agent_{kind}_enabled") == "true"}
+
+
+def declare_group_cli_kinds(spec) -> None:
+    """Declare enabled, installed CLI kinds so experts of those kinds can join a running group.
+
+    core fixes its CLI launch configs when the runtime starts. Predefined CLI
+    members use their own config; a member added later can only use the kind
+    config declared here. Configs the host already declares are kept.
+    """
+    from openjiuwen.agent_teams.external.cli_agent.backends import missing_sdk_requirement
+
+    enabled = enabled_group_cli_kinds()
+    declared = {config.cli_agent for config in spec.external_cli_agents}
+    additions = [
+        ExternalCliAgentSpec(cli_agent=kind, skill_conflict="append")
+        for kind in GROUP_CLI_KINDS
+        if kind in enabled and kind not in declared and missing_sdk_requirement(kind) is None
+    ]
+    if additions:
+        spec.external_cli_agents = [*spec.external_cli_agents, *additions]
+
+
+def cli_launch_config(config) -> dict:
+    """Return the launch fields that a kind-level config shares with its members."""
+    return config.model_dump(mode="json", exclude=set(CLI_MEMBER_ONLY_FIELDS))
 
 
 class _GroupTool(Tool):

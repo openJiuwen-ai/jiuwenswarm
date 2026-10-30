@@ -5999,6 +5999,7 @@
     "waiting": "处理中..."
   },
   "groupChat": {
+    "externalRuntimeDisabled": "{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新添加成员。",
     "useTeam": "使用该专家团",
     "teamMembers": "团队成员（{{count}}人）",
     "questionFrom": "{{name}} 请求确认",
