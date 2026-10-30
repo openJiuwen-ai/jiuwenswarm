@@ -7,6 +7,7 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { assertCatalogMatchesRegistry } from '../renderer/validate.ts';
 import type { WebUIRendererRegistry } from '../renderer/types.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
+import { WebUIThemeProvider } from './WebUIThemeProvider.tsx';
 
 export interface WebUIAppContextValue {
   runtime: WebUIRuntime;
@@ -25,7 +26,11 @@ export function WebUIProvider({ runtime, registry, children }: WebUIProviderProp
   // 在子树挂载前校验目录与注册表精确对应；错配直接失败，不做部分展示。
   useMemo(() => assertCatalogMatchesRegistry(runtime.getCatalog(), registry), [runtime, registry]);
   const value = useMemo<WebUIAppContextValue>(() => ({ runtime, registry }), [runtime, registry]);
-  return <WebUIAppContext.Provider value={value}>{children}</WebUIAppContext.Provider>;
+  return (
+    <WebUIAppContext.Provider value={value}>
+      <WebUIThemeProvider>{children}</WebUIThemeProvider>
+    </WebUIAppContext.Provider>
+  );
 }
 
 export function useOptionalWebUIAppContext(): WebUIAppContextValue | null {

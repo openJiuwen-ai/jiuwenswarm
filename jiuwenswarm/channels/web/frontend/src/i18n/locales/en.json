@@ -5354,5 +5354,10 @@
     "reject": "Reject",
     "approve": "Authorize",
     "waiting": "Processing..."
+  },
+  "webuiIframe": {
+    "loading": "Loading page...",
+    "error": "Unable to load page",
+    "inactive": "Page paused"
   }
 }

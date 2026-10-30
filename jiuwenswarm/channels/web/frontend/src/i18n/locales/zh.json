@@ -5326,5 +5326,10 @@
     "reject": "拒绝",
     "approve": "授权",
     "waiting": "处理中..."
+  },
+  "webuiIframe": {
+    "loading": "页面加载中...",
+    "error": "页面加载失败",
+    "inactive": "页面已暂停"
   }
 }
