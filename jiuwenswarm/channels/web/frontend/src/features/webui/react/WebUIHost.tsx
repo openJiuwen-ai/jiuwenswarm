@@ -3,9 +3,9 @@
  * 实例增删通过范围订阅处理，内容更新由实例视图自己订阅；更新 A 不执行 B 的适配器。
  */
 
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { WebUIRendererRegistry } from '../renderer/types.ts';
-import type { WebUIRuntime } from '../runtime/types.ts';
+import type { WebUIMountHandle, WebUIRuntime } from '../runtime/types.ts';
 import { WebUIInstanceView } from './WebUIInstanceView.tsx';
 import { useOptionalWebUIAppContext } from './WebUIProvider.tsx';
 
@@ -17,6 +17,7 @@ export interface WebUIHostProps {
   sessionId: string | null;
   /** 消息级槽位使用：只消费该 instanceKey 的实例，并以其身份上报 ready。 */
   instanceKey?: string;
+  packageId?: string;
   className?: string;
   /** 测试或特殊宿主的注入点；生产环境由 WebUIProvider 提供。 */
   runtime?: WebUIRuntime;
@@ -32,6 +33,7 @@ export function WebUIHost({
   slotId,
   sessionId,
   instanceKey,
+  packageId,
   className,
   runtime: runtimeOverride,
   registry: registryOverride,
@@ -39,6 +41,7 @@ export function WebUIHost({
   const context = useOptionalWebUIAppContext();
   const runtime = runtimeOverride ?? context?.runtime;
   const registry = registryOverride ?? context?.registry;
+  const [mountHandle, setMountHandle] = useState<WebUIMountHandle | null>(null);
 
   const scopeStore = useMemo<WebUIHostScopeStore | null>(() => {
     if (!runtime || !sessionId) {
@@ -60,10 +63,11 @@ export function WebUIHost({
     if (!runtime || !sessionId) {
       return undefined;
     }
-    const handle = runtime.mountSlot(sessionId, slotId, instanceKey === undefined ? undefined : { instanceKey });
+    const handle = runtime.mountSlot(sessionId, slotId, { instanceKey, packageId });
+    setMountHandle(handle);
     void handle.notifyReady();
     return () => handle.release();
-  }, [runtime, sessionId, slotId, instanceKey]);
+  }, [runtime, sessionId, slotId, instanceKey, packageId]);
 
   const scope = useMemo(
     () => (runtime && sessionId ? runtime.getScopeSnapshot(sessionId, slotId) : null),
@@ -74,10 +78,11 @@ export function WebUIHost({
     return null;
   }
 
-  let instanceKeys =
-    instanceKey === undefined
-      ? scope.instanceKeys
-      : scope.instanceKeys.filter((key) => instanceKeyOf(key) === instanceKey);
+  let instanceKeys = scope.instanceKeys.filter((key) => {
+    const target = runtime.getInstance(key)?.target;
+    return target && (instanceKey === undefined || target.instanceKey === instanceKey)
+      && (packageId === undefined || target.packageId === packageId);
+  });
   if (runtime.getCatalog().getSlot(slotId)?.display === 'single') {
     instanceKeys = [...instanceKeys].sort((left, right) =>
       (runtime.getInstance(right)?.localFrameId ?? 0) - (runtime.getInstance(left)?.localFrameId ?? 0),
@@ -111,14 +116,15 @@ export function WebUIHost({
           data-testid="webui-host-instance"
           data-variant={key}
         >
-          <WebUIInstanceView runtime={runtime} registry={registry} instanceKey={key} />
+          <WebUIInstanceView
+            key={mountHandle?.mountLeaseId}
+            runtime={runtime}
+            registry={registry}
+            instanceKey={key}
+            mountLeaseId={mountHandle?.mountLeaseId}
+          />
         </div>
       ))}
     </div>
   );
-}
-
-/** 实例键格式：sessionId|slotId|packageId|instanceKey。 */
-function instanceKeyOf(key: string): string {
-  return key.split('|')[3] ?? '';
 }

@@ -1,5 +1,5 @@
 /**
- * 树校验与规范化：遍历 wire 节点，校验组件、props、children、action 与规模，
+ * 树校验与规范化：遍历 wire 节点，校验组件、props、children、events 与规模，
  * 补充目录声明的默认值并生成路径 key。返回新对象，不修改输入。
  */
 
@@ -7,7 +7,18 @@ import type { WebUICatalog, WebUIComponentRule, WebUIPropRule } from '../catalog
 import type { WebUINormalizedAction, WebUINormalizedNode } from '../contracts/normalized.ts';
 import { protocolOk, protocolReject, type WebUIProtocolResult } from '../contracts/results.ts';
 import type { WebUILimits } from './limits.ts';
+import { checkPropValue } from './checkPropValue.ts';
 import { isRecord, jsonByteLength, readNonEmptyString, utf8ByteLength } from './utils.ts';
+
+const actionArgRule: WebUIPropRule = {
+  kind: 'lazy',
+  get: () => ({
+    kind: 'union', choices: [
+      { kind: 'null' }, { kind: 'boolean' }, { kind: 'number' }, { kind: 'string' },
+      { kind: 'array', item: actionArgRule }, { kind: 'record', value: actionArgRule },
+    ],
+  }),
+};
 
 export interface NormalizedTreeResult {
   tree: WebUINormalizedNode;
@@ -50,6 +61,9 @@ function normalizeNode(
   if (!isRecord(raw)) {
     return protocolReject('SCHEMA_ERROR', 'node must be an object');
   }
+  if (Object.keys(raw).some((name) => !['component', 'props', 'children', 'events'].includes(name))) {
+    return protocolReject('SCHEMA_ERROR', 'unknown node field; use events to declare actions');
+  }
 
   const component = readNonEmptyString(raw.component);
   if (!component) {
@@ -59,18 +73,64 @@ function normalizeNode(
   if (!rule) {
     return protocolReject('UNKNOWN_COMPONENT', `component not registered: ${component}`);
   }
+  if ((component === 'Panel' || component === 'Iframe') && depth !== 1) {
+    return protocolReject('SCHEMA_ERROR', `${component} is only allowed at the tree root`);
+  }
 
   const props = normalizeProps(raw.props, rule, limits);
   if (!props.ok) {
     return props;
   }
-  const action = normalizeAction(raw.action, rule, limits);
-  if (!action.ok) {
-    return action;
-  }
   const children = normalizeChildren(raw.children, rule, key, depth, context);
   if (!children.ok) {
     return children;
+  }
+  if (component === 'Panel' && children.value.length === 0) {
+    return protocolReject('SCHEMA_ERROR', 'Panel children are required');
+  }
+  if (rule.childComponents && children.value.some((child) => !rule.childComponents?.includes(child.component))) {
+    return protocolReject('SCHEMA_ERROR', 'unsupported child component');
+  }
+  if (rule.name === 'Divider') {
+    if (raw.children !== undefined && Object.prototype.hasOwnProperty.call(props.value, 'children')) {
+      return protocolReject('SCHEMA_ERROR', 'Divider title sources are mutually exclusive');
+    }
+    if (props.value.orientation === 'vertical' && children.value.length > 0) {
+      return protocolReject('SCHEMA_ERROR', 'vertical Divider cannot have a title');
+    }
+  }
+
+  const events: Record<string, WebUINormalizedAction> = {};
+  const contentGroups: Record<string, readonly WebUINormalizedNode[]> = {};
+  if (raw.events !== undefined && (!isRecord(raw.events) || Object.keys(raw.events).length === 0)) {
+    return protocolReject('SCHEMA_ERROR', 'events must be a non-empty object');
+  }
+  for (const [event, declaration] of Object.entries(raw.events ?? {})) {
+    if (!Object.prototype.hasOwnProperty.call(rule.events ?? {}, event)) return protocolReject('SCHEMA_ERROR', `event not allowed: ${event}`);
+    if (!isRecord(declaration) || Object.keys(declaration).some((name) => !['id', 'args'].includes(name))) {
+      return protocolReject('SCHEMA_ERROR', 'invalid event action');
+    }
+    if (declaration.args !== undefined && !isRecord(declaration.args)) return protocolReject('SCHEMA_ERROR', 'args must be an object');
+    const binding = normalizeEventAction(declaration, limits);
+    if (!binding.ok) return binding;
+    events[event] = binding.value;
+  }
+  if (rule.content) {
+    const { prop, children: field } = rule.content;
+    const items = props.value[prop] as Record<string, unknown>[];
+    const metadata: Record<string, unknown>[] = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const { [field]: nodes = [], ...item } = items[index];
+      const group: WebUINormalizedNode[] = [];
+      for (const [childIndex, child] of (nodes as unknown[]).entries()) {
+        const result = normalizeNode(child, `${key}.${prop}.${index}.${field}.${childIndex}`, depth + 1, context);
+        if (!result.ok) return result;
+        group.push(result.value);
+      }
+      contentGroups[String(index)] = group;
+      metadata.push(item);
+    }
+    props.value[prop] = metadata;
   }
 
   return protocolOk({
@@ -78,7 +138,8 @@ function normalizeNode(
     component,
     props: props.value,
     children: children.value,
-    action: action.value,
+    events,
+    contentGroups,
   });
 }
 
@@ -87,9 +148,7 @@ function normalizeProps(
   rule: WebUIComponentRule,
   limits: WebUILimits,
 ): WebUIProtocolResult<Record<string, unknown>> {
-  if (raw === undefined || raw === null) {
-    return protocolOk({ ...(rule.defaults ?? {}) });
-  }
+  if (raw === undefined) raw = {};
   if (!isRecord(raw)) {
     return protocolReject('SCHEMA_ERROR', 'node.props must be an object');
   }
@@ -99,7 +158,7 @@ function normalizeProps(
     if (value === undefined) {
       continue;
     }
-    const propRule = rule.props[name];
+    const propRule = Object.prototype.hasOwnProperty.call(rule.props, name) ? rule.props[name] : undefined;
     if (!propRule) {
       return protocolReject('SCHEMA_ERROR', `props not allowed for ${rule.name}: ${name}`);
     }
@@ -109,64 +168,12 @@ function normalizeProps(
     }
     normalized[name] = value;
   }
-  return protocolOk(normalized);
-}
-
-function checkPropValue(propRule: WebUIPropRule, value: unknown, limits: WebUILimits): string | null {
-  switch (propRule.kind) {
-    case 'token':
-      if (typeof value !== 'string' || !propRule.values.includes(value)) {
-        return `expected one of ${propRule.values.join('/')}`;
-      }
-      return null;
-    case 'string':
-      if (typeof value !== 'string') {
-        return 'expected a string';
-      }
-      if (utf8ByteLength(value) > (propRule.maxBytes ?? limits.maxTextBytes)) {
-        return 'string is too long';
-      }
-      return null;
-    case 'number':
-      if (typeof value !== 'number' || !Number.isFinite(value)) {
-        return 'expected a finite number';
-      }
-      if (propRule.integer === true && !Number.isInteger(value)) {
-        return 'expected an integer';
-      }
-      if (propRule.min !== undefined && value < propRule.min) {
-        return `expected >= ${propRule.min}`;
-      }
-      if (propRule.max !== undefined && value > propRule.max) {
-        return `expected <= ${propRule.max}`;
-      }
-      return null;
-    case 'boolean':
-      return typeof value === 'boolean' ? null : 'expected a boolean';
-    case 'string-list':
-      if (!Array.isArray(value)) {
-        return 'expected a string array';
-      }
-      if (value.length > (propRule.maxItems ?? limits.maxListItems)) {
-        return 'array has too many items';
-      }
-      return value.every((item) => typeof item === 'string') ? null : 'expected a string array';
-    case 'record-list':
-      if (!Array.isArray(value)) {
-        return 'expected an array of objects';
-      }
-      if (value.length > (propRule.maxItems ?? limits.maxListItems)) {
-        return 'array has too many items';
-      }
-      for (const item of value) {
-        if (!isRecord(item) || !Object.values(item).every(isScalar)) {
-          return 'expected an array of flat objects';
-        }
-      }
-      return null;
-    default:
-      return 'unsupported prop rule';
+  for (const name of rule.required ?? []) {
+    if (!Object.prototype.hasOwnProperty.call(normalized, name)) return protocolReject('SCHEMA_ERROR', `missing required prop: ${name}`);
   }
+  const error = rule.validate?.(normalized);
+  if (error) return protocolReject('SCHEMA_ERROR', error);
+  return protocolOk(rule.prepare ? rule.prepare(normalized) : normalized);
 }
 
 function normalizeChildren(
@@ -182,11 +189,11 @@ function normalizeChildren(
   if (!Array.isArray(raw)) {
     return protocolReject('SCHEMA_ERROR', 'node.children must be an array');
   }
-  if (raw.length === 0) {
-    return protocolOk([]);
-  }
   if (!rule.allowChildren) {
     return protocolReject('SCHEMA_ERROR', `component ${rule.name} does not accept children`);
+  }
+  if (raw.length > context.limits.maxListItems) {
+    return protocolReject('SCHEMA_ERROR', 'too many children');
   }
 
   const children: WebUINormalizedNode[] = [];
@@ -200,23 +207,16 @@ function normalizeChildren(
   return protocolOk(children);
 }
 
-function normalizeAction(
+function normalizeEventAction(
   raw: unknown,
-  rule: WebUIComponentRule,
   limits: WebUILimits,
-): WebUIProtocolResult<WebUINormalizedAction | null> {
-  if (raw === undefined || raw === null) {
-    return protocolOk(null);
-  }
+): WebUIProtocolResult<WebUINormalizedAction> {
   if (!isRecord(raw)) {
-    return protocolReject('SCHEMA_ERROR', 'node.action must be an object');
-  }
-  if (!rule.allowAction) {
-    return protocolReject('SCHEMA_ERROR', `component ${rule.name} does not accept an action`);
+    return protocolReject('SCHEMA_ERROR', 'event action must be an object');
   }
 
   const id = readNonEmptyString(raw.id);
-  if (!id) {
+  if (!id || !id.trim()) {
     return protocolReject('SCHEMA_ERROR', 'action.id is required');
   }
   if (utf8ByteLength(id) > limits.maxTargetStringBytes) {
@@ -228,12 +228,8 @@ function normalizeAction(
     if (!isRecord(raw.args)) {
       return protocolReject('SCHEMA_ERROR', 'action.args must be an object');
     }
-    // 与后端 _validate_action 保持一致：允许标量或数组，拒绝其它结构。
-    for (const [name, value] of Object.entries(raw.args)) {
-      if (!isScalar(value) && !Array.isArray(value)) {
-        return protocolReject('SCHEMA_ERROR', `action.args field not supported: ${name}`);
-      }
-    }
+    const error = checkPropValue({ kind: 'record', value: actionArgRule }, raw.args, limits);
+    if (error) return protocolReject('SCHEMA_ERROR', `invalid action.args: ${error}`);
     if (jsonByteLength(raw.args) > limits.maxActionArgsBytes) {
       return protocolReject('SCHEMA_ERROR', 'action.args is too large');
     }
@@ -241,8 +237,4 @@ function normalizeAction(
   }
 
   return protocolOk({ id, args });
-}
-
-function isScalar(value: unknown): boolean {
-  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }

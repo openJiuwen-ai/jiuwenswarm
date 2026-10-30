@@ -23,3 +23,22 @@ export function jsonByteLength(value: unknown): number {
 export function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
+
+/** Reject values that JSON.stringify would silently omit or reinterpret. */
+export function isJSONData(value: unknown, depth = 0): boolean {
+  if (depth > 64) return false;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((item) => isJSONData(item, depth + 1));
+  if (!isRecord(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
+  return Object.entries(value).every(([key, item]) => !['__proto__', 'constructor', 'prototype'].includes(key)
+    && isJSONData(item, depth + 1));
+}
+
+export function freezeJSON<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeJSON(child);
+    Object.freeze(value);
+  }
+  return value;
+}

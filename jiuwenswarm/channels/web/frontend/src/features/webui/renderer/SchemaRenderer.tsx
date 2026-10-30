@@ -1,60 +1,69 @@
 /**
  * 全局渲染器：接收一棵已规范化的 schema 树，按节点 component 查注册表并递归渲染。
  * 缺失适配器时抛错，由实例视图的错误边界把整棵实例树降级为失败态，不做部分展示。
- * 每次合法 replace 通过 renderGeneration 整树重建，丢弃上一代的节点局部状态。
+ * 每次合法 replace 通过 renderGeneration 整树重建；组件可显式借助实例状态端口保留自己的交互值。
  */
 
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { WebUIInteractionResult } from '../contracts/interaction.ts';
 import type { WebUINormalizedNode } from '../contracts/normalized.ts';
-import type { WebUIAdapterContext, WebUIIntentHandler, WebUIRendererRegistry } from './types.ts';
+import type { WebUIAdapterContext, WebUIRendererRegistry, WebUINodeBinder } from './types.ts';
+import type { WebUINodeBinding } from '../runtime/types.ts';
+import { useContentActivity } from './ContentActivity.tsx';
 
 export interface WebUISchemaRendererProps {
   tree: WebUINormalizedNode;
   registry: WebUIRendererRegistry;
   context: WebUIAdapterContext;
-  onIntent: WebUIIntentHandler;
   /** 合法 replace 的代次；变化时整棵实例子树重新挂载。 */
   renderGeneration: number | string;
+  bindNode?: WebUINodeBinder;
 }
 
 export function WebUISchemaRenderer({
   tree,
   registry,
   context,
-  onIntent,
   renderGeneration,
+  bindNode,
 }: WebUISchemaRendererProps) {
-  return <Fragment key={renderGeneration}>{renderNode(tree, registry, context, onIntent)}</Fragment>;
+  return <Fragment key={renderGeneration}><RenderNode node={tree} registry={registry} context={context} bindNode={bindNode} /></Fragment>;
 }
 
-function renderNode(
-  node: WebUINormalizedNode,
-  registry: WebUIRendererRegistry,
-  context: WebUIAdapterContext,
-  onIntent: WebUIIntentHandler,
-): ReactNode {
+function RenderNode({ node, registry, context, bindNode }: {
+  node: WebUINormalizedNode;
+  registry: WebUIRendererRegistry;
+  context: WebUIAdapterContext;
+  bindNode?: WebUINodeBinder;
+}): ReactNode {
+  const active = useContentActivity();
+  const binding = useMemo<{ current: WebUINodeBinding | null }>(() => ({ current: null }),
+    [node, active, context.connected]);
+  const binder = useRef(bindNode);
+  binder.current = bindNode;
+  useLayoutEffect(() => {
+    if (!active || !context.connected) return;
+    const current = binder.current?.(node.key) ?? null;
+    binding.current = current;
+    return () => { current?.release(); binding.current = null; };
+  }, [node, active, context.connected, binding]);
   const Adapter = registry.get(node.component);
   if (!Adapter) {
     // 整棵实例树失败，而不是继续渲染可交互子节点。
     throw new Error(`WebUI renderer adapter is missing for component: ${node.component}`);
   }
 
-  const children = node.children.map((child) => renderNode(child, registry, context, onIntent));
-  const action = node.action;
-  const dispatch = async (payload?: Record<string, unknown>): Promise<WebUIInteractionResult> => {
-    if (!action) {
-      return { status: 'failed', error: 'node has no action' };
-    }
-    try {
-      return await onIntent({ nodeKey: node.key, actionId: action.id, args: action.args, payload });
-    } catch (error) {
-      return { status: 'failed', error: errorMessage(error) };
-    }
+  const renderChild = (child: WebUINormalizedNode) => <RenderNode key={child.key} node={child} registry={registry} context={context} bindNode={bindNode} />;
+  const children = node.children.map(renderChild);
+  const contentGroups = Object.fromEntries(Object.entries(node.contentGroups ?? {}).map(([key, group]) => [key, group.map(renderChild)]));
+  const emit = async (event: string, data: Record<string, unknown>): Promise<WebUIInteractionResult> => {
+    if (!binding.current) return { status: 'inactive' };
+    try { return await binding.current.emit(event, data); }
+    catch (error) { return { status: 'failed', error: errorMessage(error) }; }
   };
 
   return (
-    <Adapter key={node.key} node={node} context={context} dispatch={dispatch}>
+    <Adapter key={node.key} node={node} context={context} appearance={context.styles?.[node.component]} emit={emit} contentGroups={contentGroups}>
       {children}
     </Adapter>
   );

@@ -4,6 +4,7 @@
  */
 
 import type { WebUICatalog } from '../catalog/types.ts';
+import { WEBUI_COMPONENT_SCHEMA_VERSION } from '../contracts/wire.ts';
 import type {
   WebUINormalizedClearFrame,
   WebUINormalizedErrorFrame,
@@ -18,7 +19,10 @@ import {
 } from '../contracts/results.ts';
 import { DEFAULT_WEBUI_LIMITS, type WebUILimits } from './limits.ts';
 import { normalizeTree } from './normalizeTree.ts';
-import { isRecord, jsonByteLength, readNonEmptyString, utf8ByteLength } from './utils.ts';
+import { freezeJSON, isJSONData, isRecord, jsonByteLength, readNonEmptyString, utf8ByteLength } from './utils.ts';
+
+/** 只能作为整棵渲染树根、不能嵌套的组件。 */
+const ROOT_COMPONENTS: readonly string[] = ['Panel', 'Iframe'];
 
 export interface WebUIProtocol {
   readonly catalog: WebUICatalog;
@@ -66,7 +70,7 @@ export function processRenderFrame(
   if (typeof input.schema_version !== 'number') {
     return protocolReject('SCHEMA_ERROR', 'schema_version is required');
   }
-  if (input.schema_version !== limits.supportedSchemaVersion) {
+  if (input.schema_version !== WEBUI_COMPONENT_SCHEMA_VERSION) {
     return protocolUnsupported(
       'UNSUPPORTED_SCHEMA_VERSION',
       `unsupported schema_version: ${input.schema_version}`,
@@ -76,13 +80,27 @@ export function processRenderFrame(
   if (input.mode !== 'replace') {
     return protocolUnsupported('UNSUPPORTED_MODE', `unsupported mode: ${String(input.mode)}`);
   }
+  if (!isJSONData(input)) return protocolReject('SCHEMA_ERROR', 'frame must contain only plain JSON data');
 
   if (input.root === null || input.root === undefined) {
     return protocolReject('SCHEMA_ERROR', 'render tree is required');
   }
-  const tree = normalizeTree(input.root, catalog, limits);
+  const root: unknown = JSON.parse(JSON.stringify(input.root));
+  const tree = normalizeTree(root, catalog, limits);
   if (!tree.ok) {
     return tree;
+  }
+  const rootComponent = tree.value.tree.component;
+  const slotRootComponents: readonly string[] = catalog.getSlot(target.value.slotId)?.rootComponents ?? [];
+  if (target.value.slotId === 'conversation.panel.right') {
+    if (!slotRootComponents.includes(rootComponent)) {
+      return protocolReject('SCHEMA_ERROR', `right panel requires one of: ${slotRootComponents.join(', ')}`);
+    }
+  } else if (ROOT_COMPONENTS.includes(rootComponent) && !slotRootComponents.includes(rootComponent)) {
+    return protocolReject(
+      'SCHEMA_ERROR',
+      `${rootComponent} is only allowed in slots that accept it as the render root`,
+    );
   }
 
   return protocolOk({
@@ -90,7 +108,7 @@ export function processRenderFrame(
     target: target.value,
     revision: revision.value,
     schemaVersion: input.schema_version,
-    tree: tree.value.tree,
+    tree: freezeJSON(tree.value.tree),
     nodeCount: tree.value.nodeCount,
   });
 }
@@ -186,14 +204,17 @@ function readTarget(
   if (!isRecord(raw)) {
     return protocolReject('SCHEMA_ERROR', 'target is required');
   }
-  if (typeof raw.session_id !== 'string' || raw.session_id.trim().length === 0) {
-    return protocolReject('SCHEMA_ERROR', 'target.session_id is required');
-  }
   if (typeof raw.slot_id !== 'string') {
     return protocolReject('SCHEMA_ERROR', 'target.slot_id is required');
   }
   if (!catalog.getSlot(raw.slot_id)) {
     return protocolReject('SCHEMA_ERROR', `slot is not allowed: ${raw.slot_id}`);
+  }
+  if (raw.application_id !== undefined) {
+    return protocolReject('SCHEMA_ERROR', 'application targets are not supported');
+  }
+  if (typeof raw.session_id !== 'string' || raw.session_id.trim().length === 0) {
+    return protocolReject('SCHEMA_ERROR', 'target.session_id is required');
   }
   if (typeof raw.package_id !== 'string' || typeof raw.instance_key !== 'string') {
     return protocolReject('SCHEMA_ERROR', 'target.package_id and target.instance_key are required');

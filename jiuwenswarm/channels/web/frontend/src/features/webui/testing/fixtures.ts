@@ -1,6 +1,7 @@
 /** 测试夹具：构造与后端 wire 对齐的帧，供协议层/挂载层测试使用。 */
 
 import { DEMO_COMPONENT, DEMO_SLOT } from './demoCatalog.ts';
+import { WEBUI_COMPONENT_SCHEMA_VERSION } from '../contracts/wire.ts';
 
 export const DEMO_TARGET: Record<string, string> = {
   session_id: 'sess-1',
@@ -23,7 +24,7 @@ export function demoRenderFrame(options: DemoRenderFrameOptions = {}): Record<st
     revision: options.revision ?? 1,
     mode: options.mode ?? 'replace',
     root: options.root === undefined ? demoTree() : options.root,
-    schema_version: options.schemaVersion ?? 1,
+    schema_version: options.schemaVersion ?? WEBUI_COMPONENT_SCHEMA_VERSION,
   };
 }
 
@@ -35,7 +36,7 @@ export function demoTree(): Record<string, unknown> {
       {
         component: DEMO_COMPONENT,
         props: { title: 'child', tone: 'info' },
-        action: { id: 'demo.refresh', args: { page: 1 } },
+        events: { 'ui.click': { id: 'demo.refresh', args: { page: 1 } } },
       },
     ],
   };

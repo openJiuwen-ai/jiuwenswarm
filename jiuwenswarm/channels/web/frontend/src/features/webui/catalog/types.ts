@@ -3,7 +3,6 @@
  * 生产组件与测试组件使用同一事件契约登记；槽位、token 和限制与后端同步。
  */
 
-import type { WebUIUpstreamEvent } from '../contracts/wire.ts';
 import { WEBUI_COMPONENT_EVENTS } from '../contracts/wire.ts';
 
 export type WebUIPropRule =
@@ -27,9 +26,6 @@ export interface WebUIComponentRule {
   /** 协议允许的默认值；缺省时渲染层使用自己的兜底，不允许协议层静默丢字段。 */
   defaults?: Readonly<Record<string, unknown>>;
   allowChildren: boolean;
-  allowAction?: boolean;
-  /** 交互组件对应的上行事件；allowAction 为 true 时必填。 */
-  actionEvent?: WebUIUpstreamEvent;
   required?: readonly string[];
   events?: Readonly<Record<string, WebUIPropRule>>;
   /** Only the Tabs catalog declares this restricted content location. */
@@ -65,7 +61,7 @@ export interface WebUICatalogConfig {
 }
 
 /**
- * 组装目录并在初始化时做一致性检查：重复项、交互组件缺少事件、非法事件、默认值未声明。
+ * 组装目录并在初始化时做一致性检查：重复项、非法事件、默认值未声明。
  * 规则不完整时直接抛错，避免“可校验但不可渲染”或相反的情况静默存在。
  */
 export function createCatalog(config: WebUICatalogConfig): WebUICatalog {
@@ -73,12 +69,6 @@ export function createCatalog(config: WebUICatalogConfig): WebUICatalog {
   for (const rule of config.components) {
     if (components.has(rule.name)) {
       throw new Error(`duplicate webui component rule: ${rule.name}`);
-    }
-    if (rule.allowAction && !rule.actionEvent) {
-      throw new Error(`component ${rule.name} allows action but has no actionEvent`);
-    }
-    if (!rule.allowAction && rule.actionEvent) {
-      throw new Error(`component ${rule.name} declares actionEvent but does not allow action`);
     }
     for (const event of Object.keys(rule.events ?? {})) {
       if (!(WEBUI_COMPONENT_EVENTS as readonly string[]).includes(event)) {

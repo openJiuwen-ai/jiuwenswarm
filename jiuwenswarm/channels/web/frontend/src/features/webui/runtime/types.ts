@@ -17,8 +17,6 @@ export interface WebUIInstanceError {
 
 export interface WebUIRenderFailure {
   revision: number;
-  /** 产生失败反馈的本地渲染代次；与当前代次不一致时忽略。 */
-  localFrameId: number;
   message: string;
 }
 
@@ -31,15 +29,15 @@ export interface WebUIInstanceSnapshot {
   frame: WebUINormalizedRenderFrame | null;
   error: WebUIInstanceError | null;
   connected: boolean;
-  /** 最近一次在 React 提交后确认显示的 revision；0 表示尚未确认。 */
+  /** 最近一次在 React 提交后确认显示的 revision，初值为 0。 */
   displayedRevision: number;
   /** 当前 revision 的渲染失败反馈；旧帧反馈不会写入新帧。 */
   renderFailure: WebUIRenderFailure | null;
-  /**
-   * 单调递增的本地渲染代次；clear 后按相同 revision 重建也会分配新值。
-   * React 用它作为重挂载键，显示确认与失败反馈也按它校验。
-   */
+  /** Monotonic local identity, including after clear and same-revision recreation. */
   localFrameId: number;
+  /** Stable across replace; changes when an instance is cleared and recreated. */
+  lifetimeId: number;
+  displayedLocalFrameId: number | null;
 }
 
 export interface WebUIScopeSnapshot {
@@ -53,9 +51,12 @@ export interface WebUIScopeSnapshot {
 export interface WebUIMountOptions {
   /** 指定实例级消费者；不传表示覆盖整个挂载区。 */
   instanceKey?: string;
+  /** Limit this consumer to instances from one package. */
+  packageId?: string;
 }
 
 export interface WebUIMountHandle {
+  readonly mountLeaseId: number;
   readonly sessionId: string;
   readonly slotId: string;
   readonly instanceKey?: string;
@@ -69,6 +70,12 @@ export interface WebUIInstanceDispatch extends WebUIInteractionIntent {
   instanceKey: string;
   /** 交互绑定到的帧 revision；与当前帧不一致时拒绝发送。 */
   frameRevision: number;
+  localFrameId: number;
+}
+
+export interface WebUINodeBinding {
+  emit(event: string, data: Record<string, unknown>): Promise<WebUIInteractionResult>;
+  release(): void;
 }
 
 export interface WebUIRuntimeOptions {
@@ -95,6 +102,7 @@ export interface WebUIRuntime {
   getScopeSnapshot(sessionId: string, slotId: string): WebUIScopeSnapshot;
   mountSlot(sessionId: string, slotId: string, options?: WebUIMountOptions): WebUIMountHandle;
   dispatchIntent(request: WebUIInstanceDispatch): Promise<WebUIInteractionResult>;
+  bindNode(instanceKey: string, localFrameId: number, nodeKey: string, mountLeaseId?: number): WebUINodeBinding;
   /** React 提交后确认显示；revision 与 localFrameId 都必须匹配当前实例。 */
   reportDisplayed(instanceKey: string, revision: number, localFrameId: number): void;
   /** 渲染失败反馈；revision 与 localFrameId 都必须匹配当前实例。 */

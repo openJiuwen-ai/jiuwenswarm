@@ -4,7 +4,7 @@
  */
 
 import type { WebUINormalizedTarget } from '../contracts/normalized.ts';
-import type { WebUIUpstreamEvent } from '../contracts/wire.ts';
+import type { WebUIComponentEvent } from '../contracts/wire.ts';
 
 export type WebUIConnectionState = 'idle' | 'connected' | 'disconnected';
 
@@ -16,7 +16,7 @@ export interface WebUITransportHandlers {
 }
 
 export interface WebUIDispatchRequest {
-  event: WebUIUpstreamEvent;
+  event: 'ui.ready' | WebUIComponentEvent;
   target: WebUINormalizedTarget;
   payload: Record<string, unknown>;
 }
