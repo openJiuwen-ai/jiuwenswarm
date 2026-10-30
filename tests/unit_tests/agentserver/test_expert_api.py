@@ -82,7 +82,8 @@ def local_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def metadata_store(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """内存版 session metadata。"""
+    """内存版 session metadata（全字段写入——只记 expert_id 会让
+    "expert_type 未被改写"类断言恒真，回归拦截失效）。"""
     store: dict[str, dict] = {}
     writes: list[dict] = []
     monkeypatch.setattr(
@@ -91,11 +92,12 @@ def metadata_store(monkeypatch: pytest.MonkeyPatch) -> dict:
         lambda session_id, cache_bust=False, **_: dict(store.get(session_id, {})),
     )
 
-    def _update(*, session_id: str, expert_id=None, **kwargs):
-        writes.append({"session_id": session_id, "expert_id": expert_id})
+    def _update(*, session_id: str, **kwargs):
+        writes.append({"session_id": session_id, **kwargs})
         store.setdefault(session_id, {"session_id": session_id})
-        if expert_id is not None:
-            store[session_id]["expert_id"] = expert_id
+        for key, value in kwargs.items():
+            if value is not None:
+                store[session_id][key] = value
 
     monkeypatch.setattr(sm, "update_session_metadata", _update)
     store["__writes__"] = writes
@@ -317,6 +319,151 @@ async def test_load_session_not_found(
         asyncio.Lock(),
     )
     assert ws.sent[0]["payload"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_load_single_expert_rejected_when_team_bound(
+        server, local_source: Path, metadata_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """团会话内换单专家 → TEAM_BOUND 拒绝，零状态变更（规格：装团后只能退团）。
+
+    拒绝闸在 pending/applied 分岔之前，两种路径都够不到写入；此处带活实例验证
+    apply_expert 也不被触及。
+    """
+    _make_package(local_source, "expert-a")
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "some-group",
+        "expert_type": "team",
+        "team_name": "expert-group-some-group-s1",
+        "mode": "team",
+    }
+    child = SimpleNamespace(has_live_instance=lambda: True, apply_expert=AsyncMock())
+    root = SimpleNamespace(
+        is_session_scoped=False,
+        get_cached_child_adapter=lambda sid: child,
+        expert_switch_blocked=lambda sid: False,
+    )
+    _install_fake_adapters(monkeypatch, server, root)
+
+    ws = FakeWebSocket()
+    await server._handle_expert_load(
+        ws,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": "expert-a"}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "TEAM_BOUND"
+    assert metadata_store["__writes__"] == [], "拒绝不得写 metadata"
+    assert metadata_store["s1"]["expert_id"] == "some-group"
+    assert metadata_store["s1"]["expert_type"] == "team"
+    child.apply_expert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_load_single_expert_rejected_on_team_name_residue(
+        server, local_source: Path, metadata_store: dict
+) -> None:
+    """双因子兜底：expert_type 已是 agent 但 team_name 残留（半截清理脏会话）
+    → 同样拒绝，防漏进单专家分支继续污染。"""
+    _make_package(local_source, "expert-a")
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "some-group",
+        "expert_type": "agent",
+        "team_name": "expert-group-some-group-s1",
+    }
+    ws = FakeWebSocket()
+    await server._handle_expert_load(
+        ws,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": "expert-a"}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "TEAM_BOUND"
+    assert metadata_store["__writes__"] == []
+
+
+@pytest.mark.asyncio
+async def test_load_team_bound_rejected_before_fetch(
+        server, local_source: Path, metadata_store: dict
+) -> None:
+    """拒绝闸在 fetch 之前：团会话请求不存在的专家 → TEAM_BOUND（而非 NOT_FOUND），
+    被拒请求不解析/不下载包。"""
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "some-group",
+        "expert_type": "team",
+        "team_name": "expert-group-some-group-s1",
+    }
+    ws = FakeWebSocket()
+    await server._handle_expert_load(
+        ws,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": "no-such-expert"}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "TEAM_BOUND"
+
+
+@pytest.mark.asyncio
+async def test_load_single_rejected_when_team_binds_during_fetch(
+        server, local_source: Path, metadata_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fetch 后兜底：入口闸读取时未绑定，fetch 期间另一请求绑团（并发交错）
+    → fetch 后重读复核 TEAM_BOUND，不放行污染。"""
+    _make_package(local_source, "expert-a")
+    clean = {"session_id": "s1", "expert_id": "", "expert_type": "agent"}
+    bound = {
+        "session_id": "s1",
+        "expert_id": "some-group",
+        "expert_type": "team",
+        "team_name": "expert-group-some-group-s1",
+        "mode": "team",
+    }
+    reads = iter([clean, bound])
+    monkeypatch.setattr(
+        sm,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, **_: dict(next(reads, bound)),
+    )
+    ws = FakeWebSocket()
+    await server._handle_expert_load(
+        ws,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": "expert-a"}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "TEAM_BOUND"
+
+
+@pytest.mark.asyncio
+async def test_load_rejected_on_team_canonical_mode(
+        server, local_source: Path, metadata_store: dict
+) -> None:
+    """mode 族因子：expert_type/team_name 均空但 mode 是 team canonical（code.team，
+    chat 成功回写先于 team_name 落盘的半截形态）→ 视为团队资产会话，拒绝。"""
+    _make_package(local_source, "expert-a")
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "",
+        "expert_type": "agent",
+        "mode": "code.team",
+    }
+    ws = FakeWebSocket()
+    await server._handle_expert_load(
+        ws,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": "expert-a"}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "TEAM_BOUND"
+    assert metadata_store["__writes__"] == []
 
 
 # ─── expert.unload ────────────────────────────────────
