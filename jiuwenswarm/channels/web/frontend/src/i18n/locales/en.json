@@ -6029,6 +6029,7 @@
     "taskTitle": "Task",
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
+    "generatingTasks": "Generating tasks",
     "counts": {"total": "Total", "running": "In progress", "completed": "Completed", "stopped": "Stopped", "failed": "Failed"},
 
     "pinned": "Pinned",

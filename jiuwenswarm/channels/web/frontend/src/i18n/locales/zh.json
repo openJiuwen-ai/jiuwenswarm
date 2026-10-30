@@ -6001,6 +6001,7 @@
     "taskTitle": "任务",
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
+    "generatingTasks": "任务生成中",
     "counts": {"total": "总任务数", "running": "进行中", "completed": "已完成", "stopped": "已停止", "failed": "异常失败"},
 
     "pinned": "置顶",
