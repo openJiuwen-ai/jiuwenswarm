@@ -14,10 +14,11 @@ tool_context = actions.tool_context
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("symlink", [False, True])
 @pytest.mark.parametrize("batch", [False, True])
 async def test_mixed_batch_no_read_before_all_resources_approved(
-    permission_adapter, tmp_path, monkeypatch, symlink, batch
+    permission_adapter, tmp_path, monkeypatch, legacy, symlink, batch
 ):
     allowed = tmp_path / "allowed"
     denied = tmp_path / "denied"
@@ -30,19 +31,22 @@ async def test_mixed_batch_no_read_before_all_resources_approved(
     if symlink:
         target = allowed / "link.txt"
         target.symlink_to(b)
-    # mode 契约（develop !4679）下 preset 主导 defaults/external_directory
-    # 轴：显式 defaults.read=deny 与 external_directory.*=deny 不再参与
-    # file_guard 判定（评审 CR-014 判定为用例契约变更，随链适配）。
-    # 逐路径 deny 走 paths 轴，合成后存活（longest-prefix + deny 优先）。
-    config = {
-        "file_guard": {
-            "enabled": True,
-            "paths": [
-                {"path": str(allowed), "read": "allow"},
-                {"path": str(tmp_path), "read": "deny"},
-            ],
+    # mode 契约（评审 CR-015 修复）下 preset 主导缺省轴，但显式 deny
+    # 取严合并存活：legacy 分支经 external_directory '*'→defaults 映射，
+    # native 分支走 paths 逐路径 deny（longest-prefix + deny 优先）。
+    config = (
+        {"external_directory": {"*": "deny"}}
+        if legacy
+        else {
+            "file_guard": {
+                "enabled": True,
+                "paths": [
+                    {"path": str(allowed), "read": "allow"},
+                    {"path": str(tmp_path), "read": "deny"},
+                ],
+            }
         }
-    }
+    )
     _, rail = permission_adapter({"read_file": "allow"}, **config)
     rail._engine._workspace_root = allowed
     rail.update_config(rail._static_config)
