@@ -10,6 +10,9 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any
 
 from jiuwenswarm.extensions_v2.webui.constants import MAX_INSTANCES_PER_SESSION
 from jiuwenswarm.extensions_v2.webui.models import (
@@ -80,7 +83,7 @@ class ActiveRenderRegistry:
 
         instance.revision += 1
         instance.mode = request.mode
-        instance.root = request.root if request.mode is RenderMode.REPLACE else None
+        instance.root = _snapshot_content(request.root) if request.mode is RenderMode.REPLACE else None
         instance.updated_at = time.monotonic()
         return RenderFrame(
             target=instance.target,
@@ -176,3 +179,20 @@ def log_eviction(instance: RenderInstance) -> None:
     """Record a capacity eviction after the new frame has been delivered."""
 
     logger.warning("[WebUI] 淘汰最久未更新实例: %s", instance.target.key)
+
+
+def _snapshot_content(value: Any) -> Any:
+    """Retain the delivered declarations independently of mutable plugin inputs."""
+    if isinstance(value, RenderNode):
+        return RenderNode(
+            component=value.component,
+            props=_snapshot_content(value.props),
+            children=tuple(_snapshot_content(child) for child in value.children),
+            action=_snapshot_content(value.action),
+            events=_snapshot_content(value.events),
+        )
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _snapshot_content(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_snapshot_content(item) for item in value)
+    return value

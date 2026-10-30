@@ -41,12 +41,13 @@ class RenderTarget:
 
 @dataclass(frozen=True, slots=True)
 class RenderNode:
-    """Render tree node: whitelisted component, props, children and optional action."""
+    """Render tree node with component events or a legacy action declaration."""
 
     component: str
     props: Mapping[str, Any] = field(default_factory=_empty_props)
     children: tuple["RenderNode", ...] = ()
     action: Mapping[str, Any] | None = None
+    events: Mapping[str, Mapping[str, Any]] | None = None
 
 
 class RenderMode(StrEnum):
@@ -153,10 +154,22 @@ def node_to_payload(node: RenderNode | None) -> dict[str, Any] | None:
         return None
     payload: dict[str, Any] = {
         "component": node.component,
-        "props": dict(node.props),
+        "props": _content_to_payload(node.props),
     }
     if node.action is not None:
-        payload["action"] = dict(node.action)
+        payload["action"] = _content_to_payload(node.action)
+    if node.events is not None:
+        payload["events"] = _content_to_payload(node.events)
     if node.children:
         payload["children"] = [node_to_payload(child) for child in node.children]
     return payload
+
+
+def _content_to_payload(value: Any) -> Any:
+    if isinstance(value, RenderNode):
+        return node_to_payload(value)
+    if isinstance(value, Mapping):
+        return {key: _content_to_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_content_to_payload(item) for item in value]
+    return value

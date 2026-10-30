@@ -16,6 +16,7 @@ from openjiuwen.core.events import (
 
 from jiuwenswarm.extensions_v2.event_types.webui import register_webui_events
 from jiuwenswarm.extensions_v2.handler_ops.ui import build_webui_ops_build_handler
+from jiuwenswarm.extensions_v2.webui.action_validation import validate_upstream
 from jiuwenswarm.extensions_v2.webui.constants import WebUIEvent
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.core_handlers.action_core import build_action_core_handler
@@ -102,6 +103,9 @@ class WebUIRuntime:
     ) -> UiActionOutput | None:
         """Upstream entry: turn a browser event into an event-chain call."""
 
+        rejection = validate_upstream(request, self.registry)
+        if rejection is not None:
+            return rejection
         context = SessionContext(
             session_id=request.target.session_id,
             metadata={"user_id": user_id, "channel_id": channel_id},
