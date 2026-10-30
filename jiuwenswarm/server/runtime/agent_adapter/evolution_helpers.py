@@ -14,7 +14,6 @@ from typing import Any, Callable
 
 import yaml
 
-from jiuwenswarm.common.utils import get_builtin_skill_names, is_builtin_skill
 from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 
 logger = logging.getLogger(__name__)
@@ -220,68 +219,68 @@ def read_skill_kind(store: Any, skill_name: str) -> str | None:
     return None
 
 
-def merge_evolution_disabled_skills(
+def _normalize_evolution_disabled_skills(
     disabled_skills: list[str] | set[str] | tuple[str, ...] | str | None = None,
-) -> list[str]:
-    """Union execution-disabled skills with package builtin skills for evolution rails."""
-    merged: set[str] = set()
+) -> set[str]:
+    """Normalize execution-disabled skill names for evolution rails."""
+    normalized: set[str] = set()
     if isinstance(disabled_skills, str):
         name = disabled_skills.strip()
         if name:
-            merged.add(name)
+            normalized.add(name)
     elif disabled_skills:
-        merged.update(str(name).strip() for name in disabled_skills if str(name).strip())
-    builtin_names = get_builtin_skill_names()
-    if builtin_names:
-        sorted_builtins = sorted(builtin_names)
-        logger.info(
-            "[EvolutionHelpers] exclude %d builtin skill(s) from self-evolution "
-            "(disabled_skills): %s",
-            len(sorted_builtins),
-            ", ".join(sorted_builtins),
+        normalized.update(str(name).strip() for name in disabled_skills if str(name).strip())
+    return normalized
+
+
+def _safe_package_builtin_skill_names() -> set[str]:
+    """Package-resource builtin names; empty on import/IO failure."""
+    try:
+        from jiuwenswarm.common.utils import get_builtin_skill_names
+
+        return set(get_builtin_skill_names())
+    except Exception:
+        logger.debug(
+            "[evolution_helpers] get_builtin_skill_names failed; skip package deny",
+            exc_info=True,
         )
-        merged.update(builtin_names)
-    return sorted(merged)
+        return set()
 
 
-def filter_evolution_eligible_skill_names(skill_names: list[str]) -> list[str]:
-    """Drop package builtin skills that must not participate in self-evolution."""
-    eligible: list[str] = []
-    excluded: list[str] = []
-    for name in skill_names:
-        if is_builtin_skill(name):
-            excluded.append(name)
-        else:
-            eligible.append(name)
-    if excluded:
-        logger.info(
-            "[EvolutionHelpers] exclude builtin skill(s) from self-evolution "
-            "(eligible filter): %s",
-            ", ".join(excluded),
-        )
-    return eligible
+def evolution_disabled_skill_names(
+    execution_disabled: list[str] | set[str] | tuple[str, ...] | str | None = None,
+) -> set[str]:
+    """Evolution-only deny list: execution-disabled ∪ package builtin names.
+
+    Package builtins are denied even when ``capabilities.json`` is missing so
+    standalone deploys keep official skills non-evolvable. Do **not** pass this
+    set to ``SkillUseRail`` — builtins must remain executable.
+    """
+    return _normalize_evolution_disabled_skills(execution_disabled) | _safe_package_builtin_skill_names()
 
 
-def guard_builtin_evolution_skill(skill_name: str) -> str | None:
-    """Return an error message when *skill_name* is a package builtin skill."""
-    if not is_builtin_skill(skill_name):
-        return None
-    logger.info(
-        "[EvolutionHelpers] skip skill self-evolution for builtin skill=%s",
-        skill_name,
-    )
-    return f"Skill '{skill_name}' 为内置官方技能，不参与 Skill 自演进。"
+def is_package_builtin_skill(skill_name: str) -> bool:
+    """Return True when *skill_name* is a package-resource builtin skill."""
+    name = str(skill_name or "").strip()
+    if not name:
+        return False
+    return name in _safe_package_builtin_skill_names()
 
 
 def sync_evolution_disabled_skills(
     rail: Any,
     disabled_skills: list[str] | set[str] | tuple[str, ...] | str | None,
 ) -> None:
-    """Keep a rail's mutable ``disabled_skills`` set aligned with the deny-list."""
+    """Keep a rail's mutable ``disabled_skills`` set aligned with evolution deny.
+
+    Always unions package builtin names so refresh/configure cannot drop the
+    standalone-deploy fallback. ``SkillEvolutionRail.disabled_skills`` is a
+    read-only property exposing the underlying set; update in place.
+    """
     current = getattr(rail, "disabled_skills", None)
     if not isinstance(current, set):
         return
-    desired = set(merge_evolution_disabled_skills(disabled_skills))
+    desired = evolution_disabled_skill_names(disabled_skills)
     if current != desired:
         current.clear()
         current.update(desired)
@@ -289,11 +288,13 @@ def sync_evolution_disabled_skills(
 
 def _available_skill_names(store: Any) -> str:
     try:
-        names = filter_evolution_eligible_skill_names(
-            filter_visible_skill_names(store.list_skill_names())
-        )
+        names = filter_visible_skill_names(store.list_skill_names())
     except Exception:
         names = []
+    # Manual /evolve hints must not list package builtins (they are non-evolvable).
+    builtins = _safe_package_builtin_skill_names()
+    if builtins:
+        names = [name for name in names if name not in builtins]
     return "、".join(names) or "（无可用 Skill）"
 
 
@@ -326,23 +327,27 @@ def validate_evolution_skill(
     skill_name: str,
     require_skill_md: bool,
 ) -> str | None:
-    """Validate that an evolution command can target ``skill_name``."""
-    builtin_error = guard_builtin_evolution_skill(skill_name)
-    if builtin_error is not None:
-        return builtin_error
+    """Validate that an evolution command can target ``skill_name``.
 
-    if not _skill_exists(store, skill_name):
-        return f"未找到 Skill '{skill_name}'。当前可用：{_available_skill_names(store)}"
+    Package builtins are rejected to match ``evolution_disabled_skill_names``
+    (manual ``/evolve`` must not bypass the standalone-deploy deny fallback).
+    """
+    name = str(skill_name or "").strip()
+    if is_package_builtin_skill(name):
+        return f"内置技能 '{name}' 不支持自演进。"
+
+    if not _skill_exists(store, name):
+        return f"未找到 Skill '{name}'。当前可用：{_available_skill_names(store)}"
 
     if require_skill_md:
-        if not _skill_definition_exists(store, skill_name):
-            return f"Skill '{skill_name}' 缺少 SKILL.md，无法执行演进生成。"
+        if not _skill_definition_exists(store, name):
+            return f"Skill '{name}' 缺少 SKILL.md，无法执行演进生成。"
 
-        skill_dir = _resolve_skill_dir(store, skill_name)
+        skill_dir = _resolve_skill_dir(store, name)
         if skill_dir is not None:
             skill_md = skill_dir / "SKILL.md"
             if skill_md.exists() and not os.access(skill_md, os.W_OK):
-                return f"Skill '{skill_name}' 的 SKILL.md 不可写，无法执行演进。"
+                return f"Skill '{name}' 的 SKILL.md 不可写，无法执行演进。"
 
     return None
 

@@ -52,7 +52,7 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
-    merge_evolution_disabled_skills,
+    evolution_disabled_skill_names,
 )
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
@@ -306,7 +306,7 @@ def build_member_rails(
                 auto_save=evolution_auto_save,
                 review_trigger=evolution_review_trigger,
                 team_id=team_id,
-                disabled_skills=merge_evolution_disabled_skills(
+                disabled_skills=evolution_disabled_skill_names(
                     load_execution_disabled_skills()
                 ),
             )
@@ -580,7 +580,7 @@ def build_skill_evolution_rail(
             signal_trigger=evolution_triggers["signal_trigger"],
             review_trigger=evolution_triggers["review_trigger"],
             trajectory_span_processor=get_trajectory_span_processor(),
-            disabled_skills=merge_evolution_disabled_skills(
+            disabled_skills=evolution_disabled_skill_names(
                 load_execution_disabled_skills()
             ),
         )

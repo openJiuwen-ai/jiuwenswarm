@@ -444,7 +444,6 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     evolution_slash_result,
     is_evolution_approval_event,
     is_evolution_outcome_event,
-    merge_evolution_disabled_skills,
     push_evolution_event,
     push_evolution_generated,
     push_evolution_progress,
@@ -454,6 +453,8 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     reject_evolution_records,
     resolve_evolution_event_timeout_sec,
     snapshot_auto_evolution_metric_items,
+    evolution_disabled_skill_names,
+    is_package_builtin_skill,
     sync_evolution_disabled_skills,
     team_evolution_terminal_progress,
     terminal_stage,
@@ -9242,8 +9243,10 @@ class JiuWenSwarmDeepAdapter:
                 review_trigger=evolution_triggers["review_trigger"],
                 signal_trigger=evolution_triggers["signal_trigger"],
                 auto_save=True,
-                disabled_skills=merge_evolution_disabled_skills(
+                disabled_skills=evolution_disabled_skill_names(
                     self._skill_manager.list_execution_disabled_skills()
+                    if self._skill_manager is not None
+                    else []
                 ),
                 trajectory_span_processor=get_trajectory_span_processor(),
             )
@@ -9520,7 +9523,7 @@ class JiuWenSwarmDeepAdapter:
         ):
             await self._unconfigure_active_evolution_rails()
 
-        disabled_skills = merge_evolution_disabled_skills(
+        disabled_skills = evolution_disabled_skill_names(
             self._skill_manager.list_execution_disabled_skills()
             if self._skill_manager is not None
             else []
@@ -10721,6 +10724,7 @@ class JiuWenSwarmDeepAdapter:
         uninstall 后调用：SkillUseRail.reload_skills() 重新扫描 skills_dir，
         增量移除已删除 skill 的缓存；同步更新 disabled_skills。
         """
+        # SkillUseRail: execution-disabled only (package builtins stay usable).
         new_disabled = set(self._skill_manager.list_execution_disabled_skills())
         if self._skill_rail is not None:
             if self._skill_rail.disabled_skills != new_disabled:
@@ -10730,6 +10734,7 @@ class JiuWenSwarmDeepAdapter:
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] skill rail reload failed: %s", exc)
         if self._skill_evolution_rail is not None:
+            # Evolution rail: sync unions package builtins as standalone fallback.
             sync_evolution_disabled_skills(self._skill_evolution_rail, new_disabled)
 
     def _build_symphony_orchestration_rail(
@@ -17322,9 +17327,12 @@ class JiuWenSwarmDeepAdapter:
         """Return True when per-skill selfEvolution resolves to ``auto``.
 
         Unlisted skills use ``default_auto_save=False`` → ``suggest`` (no auto merge).
+        Package builtins never auto-merge (standalone deploy without capabilities).
         """
         name = str(skill_name or "").strip()
         if not name:
+            return False
+        if is_package_builtin_skill(name):
             return False
         action = resolve_skill_evolution_action(
             name,

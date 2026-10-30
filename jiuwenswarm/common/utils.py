@@ -803,25 +803,23 @@ def prompt_preferred_language() -> Optional[Literal["zh", "en"]]:
     return None
 
 
-def _get_builtin_skill_names() -> set[str]:
-    """Get the set of built-in skill names from package resources."""
-    return get_builtin_skill_names()
-
-
 def get_builtin_skill_names() -> set[str]:
-    """Return official package builtin skill directory names."""
+    """Get the set of built-in skill names from package resources.
+
+    Used as a swarm-side evolution deny fallback when ``capabilities.json`` is
+    absent (standalone deploy): package builtins stay non-evolvable even though
+    agent-core only maps ``source: builtin`` entries from capabilities to
+    ``off``.
+    """
     builtin_skills_dir = get_builtin_skills_dir()
     if not builtin_skills_dir.exists():
         return set()
     return {item.name for item in builtin_skills_dir.iterdir() if item.is_dir()}
 
 
-def is_builtin_skill(skill_name: str) -> bool:
-    """Whether *skill_name* is an official package builtin skill."""
-    normalized = (skill_name or "").strip().lower()
-    if not normalized:
-        return False
-    return normalized in {name.lower() for name in get_builtin_skill_names()}
+def _get_builtin_skill_names() -> set[str]:
+    """Backward-compatible alias for :func:`get_builtin_skill_names`."""
+    return get_builtin_skill_names()
 
 
 def _update_skills_state_for_builtin(
