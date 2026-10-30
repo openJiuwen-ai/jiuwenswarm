@@ -248,7 +248,7 @@ async def test_sse_discovery_connect_failure_returns_empty(
     assert tool_defs == []
     assert params == {}
     client = _FakeRemoteClient.instances[0]
-    client.disconnect.assert_not_awaited()  # connect returned False → no disconnect
+    client.disconnect.assert_awaited_once()  # 未报告已关闭，仍须清理半连接资源
 
 
 @pytest.mark.asyncio
@@ -306,7 +306,7 @@ async def test_remote_call_result_adapts_to_stdio_invoke_contract(
     ''str' object has no attribute 'content' must stay fixed."""
     from jiuwenswarm.common.mcp_config import _RemoteMcpCallAdapter
 
-    inner = MagicMock()
+    inner = MagicMock(_owner_task=None)
     inner.call_tool = AsyncMock(return_value="bare-string-from-remote")
     adapter = _RemoteMcpCallAdapter(inner)
 
@@ -325,7 +325,7 @@ async def test_remote_call_result_none_adapts_to_empty_content(
     stdio's empty CallToolResult — invoke's `if result.content:` then yields None."""
     from jiuwenswarm.common.mcp_config import _RemoteMcpCallAdapter
 
-    inner = MagicMock()
+    inner = MagicMock(_owner_task=None)
     inner.call_tool = AsyncMock(return_value=None)
     adapter = _RemoteMcpCallAdapter(inner)
 
@@ -345,7 +345,7 @@ async def test_remote_call_result_dict_serialized_as_json() -> None:
     from jiuwenswarm.common.mcp_config import _RemoteMcpCallAdapter
 
     payload = {"key": "值", "nested": {"n": 1}}
-    inner = MagicMock()
+    inner = MagicMock(_owner_task=None)
     inner.call_tool = AsyncMock(return_value=payload)
     adapter = _RemoteMcpCallAdapter(inner)
 
@@ -376,7 +376,7 @@ async def test_remote_call_tool_honors_connector_timeout_s(
     async def _hang(*a, **kw):
         await asyncio.sleep(10)
 
-    inner = MagicMock()
+    inner = MagicMock(_owner_task=None)
     inner.call_tool = AsyncMock(side_effect=_hang)
     inner.connect = AsyncMock(return_value=True)
     inner.disconnect = AsyncMock(return_value=True)
@@ -449,7 +449,7 @@ async def test_remote_call_tool_timeout_breaks_worker_and_drains(
     async def _hang(*a, **kw):
         await asyncio.sleep(60)  # far beyond the shrunken timeout
 
-    inner = MagicMock()
+    inner = MagicMock(_owner_task=None)
     inner.call_tool = AsyncMock(side_effect=_hang)
     inner.connect = AsyncMock(return_value=True)
     inner.disconnect = AsyncMock(return_value=True)

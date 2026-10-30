@@ -1,77 +1,12 @@
 # coding: utf-8
-"""Inject a per-call timeout + dead-session recovery into openjiuwen MCP HTTP clients.
+"""Jiuwenswarm 的远程 MCP 超时、生命周期与死会话恢复补丁。
 
-Why this exists: ``MCPTool.invoke`` calls ``call_tool`` without a ``timeout``,
-and the stock ``StreamableHttpClient.call_tool`` / ``list_tools`` await
-``self._session.call_tool(...)`` / ``self._session.list_tools()`` with no
-deadline. When a remote tool is slow or the server dies mid-session, the call
-hangs on the MCP SDK's ``sse_read_timeout`` (default 300s).
-
-Additionally, ToolMgr keeps one long-lived MCP client per server for the whole
-AgentServer process. Chat sessions A/B share that client. So after a tool
-timeout in chat A, a brand-new chat B still uses the same half-dead client and
-fails with empty ``execute invoke failed, error=''`` (field sds-037840350c2c)
-until we invalidate + reconnect. When the remote Streamable HTTP service
-restarts, the protocol session id is stale and calls fail with
-``Session terminated`` / HTTP 404 — again including brand-new chat sessions —
-until AS rebuilds the MCP connection.
-
-SSE / Streamable HTTP timeout teardown often raises ``asyncio.CancelledError``
-(cancel-scope cross-task noise) *after* the real timeout. ``CancelledError`` is
-not an ``Exception`` subclass, so ``MCPTool.invoke`` cannot turn it into a tool
-error — the agent loop treats it as “user cancel”, skips ``chat.tool_result``,
-and replies “工具调用被用户取消”. This patch converts non-outer
-``CancelledError`` into ``TimeoutError`` / transport ``RuntimeError``.
-
-This patch is applied once at process startup (from
-``JiuWenSwarmDeepAdapter.__init__``):
-
-  A. Wrap ``call_tool`` / ``list_tools`` on the HTTP transports with
-     ``asyncio.wait_for``. On timeout we tear down the dead session and
-     **force-invalidate** local state even if ``disconnect()`` raises
-     (e.g. ``Attempted to exit cancel scope in a different task`` or
-     ``CancelledError``). The next call auto-reconnects on a fresh
-     ``AsyncExitStack`` so the same chat session can keep using other tools
-     (TC_MCP_CALL_014).
-
-     On retryable dead-session errors (``Session terminated``, connection
-     closed, cancel-scope teardown noise, …) we invalidate, reconnect once,
-     and retry the same call so both the original chat and a newly created
-     chat recover after MCP service restart (without requiring AS restart).
-
-     同 MCP client 的调用经 ``_client_io_lock`` **串行**是刻意取舍（多会话
-     共享进程级客户端时避免并发踩坏半死连接）；重试语义是
-     **at-least-once**（超时/死会话后可能已在对端执行过一次）。
-
-     NB: remote（sse / streamable-http）**必须**用 ``asyncio.wait_for``，
-     **不能**用 ``anyio.fail_after``。transport 自带后台 task + anyio
-     cancel scope；外层再套 ``fail_after`` 会在跨 task 退出时抛
-     ``Attempted to exit a cancel scope...``。现场表现：超时后重连成功、
-     MCP 侧 ``call completed``，但第 3 轮结果仍被该异常盖成失败
-     （TC_MCP_CALL_014）。与 ``mcp_config._run_mcp_worker`` 对 remote
-     的超时策略一致。
-
-     同时把解析后的超时以 ``timeout + 5`` 写入 client 方法的 ``timeout``
-     kwarg（内层天花板），外层 ``wait_for`` 仍用精确超时，避免 SseClient
-     默认 60s 提前掐断，并保证 pooled worker 的外层截止先触发。
-  B. Monkeypatch ``ToolMgr._create_client`` so ``config.params["timeout_s"]``
-     (i.e. ``/mcp add ... --timeout_s N``) is stamped onto the client instance
-     as ``_jws_call_timeout`` and honored by (A). Falls back to
-     ``DEFAULT_CALL_TIMEOUT`` when unset.
-  C. Wrap the MCP SDK factory functions (``mcp.client.sse.sse_client`` /
-     ``mcp.client.streamable_http.streamablehttp_client``) so connections
-     created for a client with a stamped ``_jws_call_timeout`` get an
-     ``sse_read_timeout`` of at least that value, instead of the SDK's 300s
-     default — long tool calls (SSE result stream / held streamable-http
-     response) would otherwise be dropped mid-call after 300 idle seconds.
-  D. AbilityManager 外层 ``anyio.fail_after`` → 无 cancel scope 的截止时间
-     + ``tool.invoke`` 用 ``asyncio.wait_for``（不改 agent-core 源码，等价于
-     把 AM 超时从 fail_after 换成 wait_for，修复 TC_MCP_CALL_014 第 3 轮）。
-  E. ``disconnect`` / ``_do_disconnect`` 在 finally 中强制清会话，避免 aclose
-     失败留下半死连接。
-
-Both transforms are idempotent: a module-level ``_PATCHED`` guard makes the
-whole function a no-op on repeat calls.
+调用保留精确 wait_for 截止和 SDK timeout+5/read timeout 传递；连接、断开及
+重连必须在同一个 owner 上执行。池化 client 使用现有 worker，ToolMgr HTTP
+client 使用专用任务，SSE 使用 SDK owner。超时先 await 清理再重置，禁止把旧
+AsyncExitStack 移到后台任务关闭。断开失败保留不可复用标记并报错，外部取消原样传播。
+死会话最多重连重试一次（at-least-once）。ToolMgr timeout 印章、AbilityManager
+模块内截止桥和工具 invoke 包装仍在唯一启动入口幂等安装。
 """
 from __future__ import annotations
 
@@ -84,9 +19,7 @@ from typing import Any, Optional
 from openjiuwen.core.common.logging import logger
 
 _PATCHED = False
-# (cls, name) pairs already wrapped — idempotency guard independent of
-# _PATCHED, so we don't stamp attributes onto function objects (which would
-# need a mypy ``[attr-defined]`` type-ignore).
+# 注册集合用于记录安装状态；幂等性以实际函数上的标记为准，集合重置不能叠加包装。
 _wrapped_methods: set[tuple[type, str]] = set()
 # (module, name) SDK factory functions already wrapped, and (cls, name)
 # client connect methods already wrapped — same idempotency purpose.
@@ -104,6 +37,9 @@ _pending_sdk_read_timeout: contextvars.ContextVar[float | None] = contextvars.Co
 #: connector discovery/startup may legitimately take longer than this
 #: process-level fail-fast fallback.
 DEFAULT_CALL_TIMEOUT = 30.0
+# 清理等待与取消收尾分别有界，避免失活 owner 无回执时无限屏蔽调用方取消。
+_MCP_CLEANUP_TIMEOUT_S = 10.0
+_MCP_CANCEL_DRAIN_TIMEOUT_S = 1.0
 
 # AbilityManager 外层曾用 anyio.fail_after 包 tool.invoke；MCP 重连若落在该
 # cancel scope 内，退出时会抛 cancel scope（TC_MCP_CALL_014 第 3 轮）。
@@ -141,98 +77,343 @@ __all__ = [
 ]
 
 
-def _fire_and_forget_aclose_exit_stack(stack: Any) -> None:
-    """宿主 task 结束后再 best-effort ``aclose`` 旧 AsyncExitStack。
-
-    stack 里的 anyio cancel scope 是在当前 task 上 enter 的。立刻丢到另一个
-    task 里 ``aclose()`` 会取消这些 scope，宿主 task 收到
-    ``Cancelled via cancel scope ... by Task-N``，整次聊天被当成用户取消
-    （0 chunk、无 ``chat.error``），Relay 空等看门狗后变成 OA.05000090。
-
-    因此不在宿主还活着时 aclose。等它结束后再清理：此时 cancel 已是空操作，
-    连接泄漏只覆盖这一次请求。无 running loop 时放弃 aclose。
-    """
-    if not isinstance(stack, AsyncExitStack):
-        return
-
-    async def _aclose() -> None:
-        try:
-            await stack.aclose()
-        except BaseException as exc:
-            # 含 CancelledError / 跨 task 退出 scope：清理失败不得再抛
-            logger.debug(
-                "[mcp-timeout] background aclose of old AsyncExitStack failed: %r",
-                exc,
-            )
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        logger.debug(
-            "[mcp-timeout] no running loop; skip background aclose of old AsyncExitStack"
-        )
-        return
-
-    def _drain_task_result(done: asyncio.Task) -> None:
-        try:
-            done.result()
-        except BaseException:
-            pass
-
-    def _schedule_aclose(_done: asyncio.Task | None = None) -> None:
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.debug(
-                "[mcp-timeout] loop already closed; skip background aclose of old AsyncExitStack"
-            )
-            return
-        cleanup = running.create_task(_aclose())
-        cleanup.add_done_callback(_drain_task_result)
-
-    host = asyncio.current_task(loop)
-    if host is None or host.done():
-        _schedule_aclose()
-        return
-    host.add_done_callback(_schedule_aclose)
+class _McpInternalCancellationError(RuntimeError):
+    """单次 I/O 内部取消且清理成功，可走既有的一次重连重试。"""
 
 
 def force_invalidate_mcp_client(client: Any) -> None:
-    """丢弃半死会话状态，换上新的 AsyncExitStack，供后续 ``connect()`` 重连。
+    """只标记连接不可复用；同步函数不能安全关闭或丢弃仍有资源的上下文。"""
+    setattr(client, "_jws_needs_reconnect", True)
 
-    SDK ``StreamableHttpClient.disconnect`` 在 aclose 失败时往往不清 ``_session``，
-    且成功 aclose 后旧 stack 也不能再 enter。超时 / Session terminated 路径必须
-    无条件调用本函数。
 
-    替换 ``_exit_stack`` 前会取出旧 stack。aclose 推迟到当前 task 结束之后
-    （scope 是在这个 task 上 enter 的，活着时跨 task aclose 会取消整次聊天）。
-    无 running loop 时放弃 aclose。本函数保持同步，不改成 async。
+def _reset_closed_client(client: Any) -> None:
+    """仅在所属任务完成 disconnect 后重置，不再安排后台 aclose。
 
-    同时打上 ``_jws_needs_reconnect``：即便残留对象仍像「已连接」，下次调用也强制
-    重连。聊天会话 A/B 共用同一客户端，否则新建会话也会继承半死连接。
+    SSE 自行退出 session/transport，旧 stack 的回调不能再执行一次。
     """
-    for attr in ("_session", "_client", "_read", "_write"):
+    for attr in ("_session", "_client", "_read", "_write", "_auth_provider"):
         if hasattr(client, attr):
             setattr(client, attr, None)
     if hasattr(client, "_is_disconnected"):
         setattr(client, "_is_disconnected", True)
-    old_stack = None
     if hasattr(client, "_exit_stack"):
-        old_stack = getattr(client, "_exit_stack", None)
         setattr(client, "_exit_stack", AsyncExitStack())
-    if hasattr(client, "_auth_provider"):
-        setattr(client, "_auth_provider", None)
+    force_invalidate_mcp_client(client)
+
+
+async def disconnect_remote_mcp_client(
+    client: Any, exc_type: Any = None, exc: BaseException | None = None, tb: Any = None,
+) -> None:
+    """在 owner 上有界清理；可用作 AsyncExitStack 的 exit，保留外部取消。"""
+    if (getattr(client, "_is_disconnected", False)
+            and getattr(client, "_session", None) is None
+            and getattr(client, "_client", None) is None):
+        # SSE connect 失败虽已清理资源，public disconnect 仍需停止它的 owner。
+        owner = getattr(client, "_owner_task", None)
+        if owner is None or owner.done():
+            return
     try:
-        setattr(client, "_jws_needs_reconnect", True)
-    except Exception as exc:
-        # __slots__/代理对象可能拒绝动态属性；标记失败不阻断作废流程
-        logger.debug(
-            "[mcp-timeout] failed to set _jws_needs_reconnect on %s: %r",
-            type(client).__name__,
-            exc,
+        owner = getattr(client, "_owner_task", None)
+        if owner is not None and owner.done() and (
+            getattr(client, "_session", None) is not None
+            or getattr(client, "_client", None) is not None
+        ):
+            raise RuntimeError("SSE previous owner cleanup incomplete; replace client")
+        async with asyncio.timeout(10.0):
+            clean = await client.disconnect(timeout=10.0)
+        if clean is False:
+            raise RuntimeError("remote MCP disconnect returned false; cleanup incomplete")
+    except BaseException as cleanup_error:
+        force_invalidate_mcp_client(client)
+        logger.warning("[mcp-timeout] remote MCP cleanup failed", exc_info=True)
+        if isinstance(exc, asyncio.CancelledError) and isinstance(cleanup_error, Exception):
+            return  # 已报告清理失败；不能用普通异常替代调用方的取消
+        raise
+
+
+async def _finish_mcp_task_after_cancel(
+    task: asyncio.Task, *, deadline: float | None = None,
+) -> Any:
+    """在预算内保护 owner 清理，超时后取消并有界收尾；调用处继续传播原取消。
+
+    asyncio.wait 不把等待者的取消转发给目标；AnyIO shield 避免外层已取消
+    scope 反复唤醒。预算耗尽后才主动取消目标，不跨任务关闭任何资源。
+    """
+    import anyio
+
+    loop = asyncio.get_running_loop()
+    if deadline is None:
+        deadline = loop.time() + _MCP_CLEANUP_TIMEOUT_S
+
+    async def wait_until(end: float) -> None:
+        while not task.done():
+            remaining = end - loop.time()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.wait({task}, timeout=remaining)
+            except asyncio.CancelledError:
+                continue  # 后续取消只影响等待者，不能重置清理截止时间。
+
+    def consume_result(finished: asyncio.Task) -> None:
+        # 超时已报告；仍不响应取消的任务结束时取走异常，资源仍归原 owner。
+        with contextlib.suppress(BaseException):
+            finished.result()
+
+    with anyio.CancelScope(shield=True):
+        await wait_until(deadline)
+        if task.done():
+            return task.result()
+        task.cancel()
+        await wait_until(loop.time() + _MCP_CANCEL_DRAIN_TIMEOUT_S)
+        if task.done():
+            consume_result(task)
+        else:
+            task.add_done_callback(consume_result)
+        raise TimeoutError("MCP cleanup deadline exceeded; cleanup incomplete")
+
+
+def manage_sse_owner_cleanup(client: Any) -> None:
+    """沿用 SDK 的 SSE owner，在建连被取消时让它自己清理再退出。
+
+    SDK 的 connect 等待队列 future，取消等待者不会自动中断正在 initialize 的
+    owner。只停止等待会把 disconnect 排到长时间挂起的 initialize 后面。
+    """
+    if getattr(client, "_jws_sse_cleanup_managed", False):
+        return
+    owner_loop = getattr(client, "_owner_loop", None)
+    do_disconnect = getattr(client, "_do_disconnect", None)
+    if not callable(owner_loop) or not callable(do_disconnect):
+        return
+    connect = client.connect
+    disconnect = client.disconnect
+
+    if isinstance(getattr(client, "_exit_stack", None), AsyncExitStack):
+        async def do_disconnect(*, timeout: float = -1):
+            # 锁文件中的 SDK 用 wait_for 退出上下文，在 Python 3.11 会换任务。
+            # 沿用 SDK 的 owner 与 exit stack，只替换退出入口，不能跨任务补关。
+            if getattr(client, "_jws_sse_cleanup_failed", False):
+                return False
+            try:
+                async with asyncio.timeout(timeout if timeout > 0 else 10.0):
+                    await client._exit_stack.aclose()
+            except BaseException as exc:
+                setattr(client, "_jws_sse_cleanup_failed", True)
+                force_invalidate_mcp_client(client)
+                if isinstance(exc, Exception):
+                    # SDK public disconnect 收到 False 后仍会停止 owner；外层将 False 报错。
+                    logger.warning("[mcp-timeout] SSE owner cleanup failed", exc_info=True)
+                    return False
+                raise
+            _reset_closed_client(client)
+            return True
+
+        setattr(client, "_do_disconnect", do_disconnect)
+
+    async def owner_with_cleanup():
+        try:
+            await owner_loop()
+        finally:
+            if getattr(client, "_session", None) is not None or getattr(client, "_client", None) is not None:
+                async with asyncio.timeout(10.0):
+                    clean = await do_disconnect(timeout=10.0)
+                if clean is False:
+                    force_invalidate_mcp_client(client)
+                    raise RuntimeError("SSE owner disconnect returned false; cleanup incomplete")
+                _reset_closed_client(client)
+
+    async def connect_with_cleanup(*args, **kwargs):
+        if getattr(client, "_jws_sse_cleanup_failed", False):
+            raise RuntimeError("SSE previous cleanup incomplete; replace client")
+        owner = getattr(client, "_owner_task", None)
+        if owner is not None and owner.done() and (
+            getattr(client, "_session", None) is not None
+            or getattr(client, "_client", None) is not None
+        ):
+            raise RuntimeError("SSE previous owner cleanup incomplete; replace client")
+        try:
+            return await connect(*args, **kwargs)
+        except asyncio.CancelledError:
+            owner = getattr(client, "_owner_task", None)
+            if owner is not None and not owner.done():
+                # SDK 清理可能消费这次 cancel；退出标记仍须让其命令循环结束。
+                setattr(client, "_stopping", True)
+                if not owner.cancelling():
+                    owner.cancel()
+                try:
+                    await _finish_mcp_task_after_cancel(owner)
+                except asyncio.CancelledError:
+                    pass  # owner 取消已被等待；调用方取消仍在下方传播
+                except Exception:
+                    force_invalidate_mcp_client(client)
+                    logger.warning("[mcp-timeout] SSE owner cleanup failed", exc_info=True)
+            raise
+
+    async def disconnect_with_cleanup(*args, **kwargs):
+        # public API 只向 SDK owner 投命令；实际 __aexit__ 始终留在原 owner。
+        # 保住整个 public disconnect，才能执行命令完成后的停止 owner / 释放锁步骤。
+        deadline = asyncio.get_running_loop().time() + _MCP_CLEANUP_TIMEOUT_S
+        closing = asyncio.create_task(
+            disconnect(*args, **kwargs), name="mcp-sse-disconnect"
         )
-    if old_stack is not None:
-        _fire_and_forget_aclose_exit_stack(old_stack)
+        try:
+            return await asyncio.shield(closing)
+        except asyncio.CancelledError as exc:
+            current = asyncio.current_task()
+            if current is None or not current.cancelling():
+                # shield 的内部任务取消也会抛 CancelledError，不能伪装成用户取消。
+                force_invalidate_mcp_client(client)
+                raise RuntimeError("SSE disconnect cancelled internally; cleanup incomplete") from exc
+            try:
+                await _finish_mcp_task_after_cancel(closing, deadline=deadline)
+            except asyncio.CancelledError:
+                force_invalidate_mcp_client(client)
+            except Exception:
+                force_invalidate_mcp_client(client)
+                logger.warning("[mcp-timeout] SSE disconnect cleanup failed", exc_info=True)
+            raise
+
+    setattr(client, "_owner_loop", owner_with_cleanup)
+    setattr(client, "connect", connect_with_cleanup)
+    setattr(client, "disconnect", disconnect_with_cleanup)
+    setattr(client, "_jws_sse_cleanup_managed", True)
+
+
+class _StreamableHttpOwner:
+    """仅供没有池化 worker 的 ToolMgr HTTP client 使用的生命周期任务。
+
+    池化连接已有 _run_mcp_worker，SSE 已有 SDK owner，均不叠加此任务。
+    """
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.task: asyncio.Task | None = None
+        self.active: asyncio.Future | None = None
+
+    async def submit(self, method: Any, name: str, args: tuple, kwargs: dict) -> Any:
+        if asyncio.current_task() is self.task:
+            return await method(*args, **kwargs)
+        if self.task is not None and self.task.done() and (
+            getattr(self.client, "_session", None) is not None
+            or getattr(self.client, "_client", None) is not None
+        ):
+            raise RuntimeError("MCP HTTP previous owner cleanup incomplete; replace client")
+        # 已断开的 client 不必创建 owner。
+        if name == "disconnect" and (self.task is None or self.task.done()):
+            if getattr(self.client, "_is_disconnected", False):
+                return True
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self.run(), name="mcp-streamable-http-owner")
+        task = self.task
+        future = asyncio.get_running_loop().create_future()
+        self.queue.put_nowait((method, name, args, kwargs, future))
+        try:
+            result = await future
+            if name == "disconnect" or (name == "connect" and not result):
+                await task
+            return result
+        except asyncio.CancelledError:
+            # 排队者取消不能中断另一个聊天正在执行的命令。
+            if self.active is not None and self.active is not future:
+                raise
+            if not task.cancelling():
+                task.cancel()
+            try:
+                await _finish_mcp_task_after_cancel(task)
+            except asyncio.CancelledError:
+                pass  # owner 的取消已取出；调用方取消在下方继续传播
+            except Exception:
+                force_invalidate_mcp_client(self.client)
+                logger.warning("[mcp-timeout] HTTP owner cleanup failed", exc_info=True)
+            raise
+        except Exception:
+            if name in ("connect", "disconnect"):
+                deadline = asyncio.get_running_loop().time() + _MCP_CLEANUP_TIMEOUT_S
+                try:
+                    # 操作已失败，owner 正在 finally 清理；等待者取消不能再打断它。
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    caller_cancelled = current is not None and current.cancelling() > 0
+                    try:
+                        await _finish_mcp_task_after_cancel(task, deadline=deadline)
+                    except asyncio.CancelledError:
+                        force_invalidate_mcp_client(self.client)
+                        logger.warning("[mcp-timeout] HTTP owner cancelled during cleanup")
+                    except Exception:
+                        force_invalidate_mcp_client(self.client)
+                        logger.warning("[mcp-timeout] HTTP owner cleanup failed", exc_info=True)
+                    if caller_cancelled:
+                        raise
+                except Exception:
+                    force_invalidate_mcp_client(self.client)
+                    logger.warning("[mcp-timeout] HTTP owner cleanup failed", exc_info=True)
+            raise
+
+    async def run(self) -> None:
+        failure: BaseException = RuntimeError("MCP HTTP owner stopped")
+        disconnect_attempted = False
+        try:
+            while True:
+                method, name, args, kwargs, future = await self.queue.get()
+                if future.cancelled():
+                    continue
+                self.active = future
+                disconnect_attempted = name == "disconnect"
+                try:
+                    if name in ("connect", "disconnect"):
+                        timeout = kwargs.get("timeout", -1)
+                        default = 60.0 if name == "connect" else 10.0
+                        async with asyncio.timeout(timeout if timeout > 0 else default):
+                            result = await method(*args, **kwargs)
+                    else:
+                        result = await method(*args, **kwargs)
+                except BaseException as exc:
+                    failure = exc
+                    if not future.done():
+                        future.set_exception(exc)
+                    if not isinstance(exc, Exception) or name in ("connect", "disconnect"):
+                        raise
+                else:
+                    if not future.done():
+                        future.set_result(result)
+                    if name == "disconnect" or (name == "connect" and not result):
+                        break
+                finally:
+                    self.active = None
+        except Exception as exc:
+            failure = exc
+            logger.warning("[mcp-timeout] HTTP owner stopped: %s", exc)
+        finally:
+            try:
+                if not disconnect_attempted:
+                    await disconnect_remote_mcp_client(self.client)
+            finally:
+                while not self.queue.empty():
+                    *_, pending = self.queue.get_nowait()
+                    if not pending.done():
+                        # 一个调用者取消不应伪装成其它调用者的用户取消。
+                        pending.set_exception(
+                            failure if isinstance(failure, Exception)
+                            else RuntimeError("MCP HTTP owner stopped during another call")
+                        )
+
+
+def _install_streamable_http_owner(client: Any) -> None:
+    owner = _StreamableHttpOwner(client)
+    # 包括资源 API：它们也必须和重连/断开串行，不能观察半关闭 session。
+    for name in ("connect", "disconnect", "call_tool", "list_tools", "get_tool_info",
+                 "list_resources", "read_resource"):
+        method = getattr(client, name, None)
+        if not callable(method):
+            continue
+
+        async def routed(*args, _method=method, _name=name, **kwargs):
+            return await owner.submit(_method, _name, args, kwargs)
+
+        setattr(client, name, routed)
+    setattr(client, "_jws_http_owner", owner)
 
 
 def is_retryable_mcp_dead_session_error(error: BaseException) -> bool:
@@ -250,15 +431,6 @@ def is_retryable_mcp_dead_session_error(error: BaseException) -> bool:
     ):
         return True
     return any(marker in name or marker in text for marker in _RETRYABLE_DEAD_SESSION_MARKERS)
-
-
-def _is_outer_cancellation() -> bool:
-    """True only for real interrupt / WS-drop cancels (not transport noise).
-
-    不 import ``mcp_config``：该模块副作用重，超时热路径只需要 ``Task.cancelling()``。
-    """
-    current = asyncio.current_task()
-    return bool(current is not None and current.cancelling())
 
 
 def _client_io_lock(client: Any) -> asyncio.Lock:
@@ -284,39 +456,29 @@ def _client_io_lock(client: Any) -> asyncio.Lock:
 
 
 async def _abandon_session(client: Any, *, context: str) -> None:
-    """超时后直接作废本地会话，不在当前 task 上调用 disconnect()/aclose。
-
-    wait_for 超时在子 task 取消调用；原 AsyncExitStack 里的 anyio cancel scope
-    若在父 task 上 aclose，会抛 cancel scope 并污染当前 task 的 scope 栈，
-    导致下一轮重连后的成功结果在 AbilityManager 外层退出时仍被盖掉
-    （TC_MCP_CALL_014 第 3 轮）。
-
-    ``force_invalidate_mcp_client`` 会把旧 stack 留到宿主 task 结束后再
-    ``aclose()``，本协程本身不 await 清理。
-    """
-    force_invalidate_mcp_client(client)
-    logger.warning(
-        "[mcp-timeout] abandoned MCP session without aclose (%s): %s",
-        context,
-        getattr(client, "_server_path", "?"),
-    )
+    """由生命周期 owner 完成清理后才允许重连。"""
+    await disconnect_remote_mcp_client(client)
+    logger.debug("[mcp-timeout] closed MCP session (%s)", context)
 
 
 def _wrap_disconnect_always_invalidate(cls: type, method_name: str) -> None:
-    """disconnect / _do_disconnect：aclose 失败也清掉半死会话（对齐 agent-core 修复）。"""
-    if (cls, method_name) in _wrapped_methods:
-        return
+    """清理失败只标记不可复用，成功才清状态，避免丢失待清理资源。"""
     if not hasattr(cls, method_name):
         return
     _wrapped_methods.add((cls, method_name))
     orig = getattr(cls, method_name)
+    if getattr(orig, "_jws_mcp_wrapper", None) == "disconnect":
+        return
 
     async def wrapped(self, *args, **kwargs):
-        try:
-            return await orig(self, *args, **kwargs)
-        finally:
-            force_invalidate_mcp_client(self)
+        force_invalidate_mcp_client(self)
+        result = await orig(self, *args, **kwargs)
+        if result is False:
+            raise RuntimeError("remote MCP disconnect returned false; cleanup incomplete")
+        _reset_closed_client(self)
+        return result
 
+    setattr(wrapped, "_jws_mcp_wrapper", "disconnect")
     setattr(cls, method_name, wrapped)
 
 
@@ -503,10 +665,10 @@ def _patch_sdk_read_timeouts() -> None:
         (mcp_sse_module, "sse_client"),
         (mcp_streamable_http_module, "streamablehttp_client"),
     ):
-        if (module, factory_name) in _wrapped_factories:
-            continue
         _wrapped_factories.add((module, factory_name))
         orig_factory = getattr(module, factory_name)
+        if getattr(orig_factory, "_jws_mcp_wrapper", None) == "transport-read-timeout":
+            continue
 
         def factory_with_read_timeout(*args: Any, orig=orig_factory, name=factory_name, **kwargs: Any):
             hint = _pending_sdk_read_timeout.get()
@@ -521,6 +683,7 @@ def _patch_sdk_read_timeouts() -> None:
                     )
             return orig(*args, **kwargs)
 
+        setattr(factory_with_read_timeout, "_jws_mcp_wrapper", "transport-read-timeout")
         setattr(module, factory_name, factory_with_read_timeout)
 
     connect_targets: list[tuple[type, str]] = [
@@ -535,8 +698,6 @@ def _patch_sdk_read_timeouts() -> None:
         logger.debug("[mcp-timeout] SseClient has neither _do_connect nor connect; skip stamp")
 
     for cls, method_name in connect_targets:
-        if (cls, method_name) in _wrapped_connects:
-            continue
         if not hasattr(cls, method_name):
             logger.debug(
                 "[mcp-timeout] skip wrapping %s.%s (attribute missing)",
@@ -546,60 +707,31 @@ def _patch_sdk_read_timeouts() -> None:
             continue
         _wrapped_connects.add((cls, method_name))
         orig_method = getattr(cls, method_name)
+        if getattr(orig_method, "_jws_mcp_wrapper", None) == "connect-read-timeout":
+            continue
 
         async def method_with_read_timeout(self, *args: Any, orig=orig_method, **kwargs: Any):
             hint = getattr(self, "_jws_call_timeout", None)
             token = (
                 _pending_sdk_read_timeout.set(float(hint)) if _stamp_is_valid(hint) else None
             )
+            current = asyncio.current_task()
+            cancelling = current.cancelling() if current is not None else 0
             try:
-                return await orig(self, *args, **kwargs)
+                connected = await orig(self, *args, **kwargs)
+                # 锁文件中的旧 SDK 会捕获 BaseException 并返回 False，不能让它
+                # 吞掉本次建连收到的取消（含 asyncio.timeout 发出的取消）。
+                if current is not None and current.cancelling() > cancelling:
+                    raise asyncio.CancelledError
+                if connected:
+                    setattr(self, "_jws_needs_reconnect", False)
+                return connected
             finally:
                 if token is not None:
                     _pending_sdk_read_timeout.reset(token)
 
+        setattr(method_with_read_timeout, "_jws_mcp_wrapper", "connect-read-timeout")
         setattr(cls, method_name, method_with_read_timeout)
-
-
-def _patch_sse_disconnect_guard() -> None:
-    """Keep ``SseClient.disconnect`` best-effort cleanup.
-
-    openjiuwen's ``_do_disconnect`` wraps the session/transport ``__aexit__``
-    calls in ``asyncio.wait_for``, which executes them in a new asyncio Task.
-    The contexts were entered on the SSE owner task, so exiting them from
-    wait_for's task trips anyio's cancel-scope invariant; the broken teardown
-    then surfaces as a ``CancelledError`` raised from ``_submit``'s future —
-    a BaseException that sails past the ``except Exception`` handlers around
-    discovery cleanup (``_list_remote_mcp_connector_tools``) and the pooled
-    worker's exit-stack callback, aborting SSE connector registration outright.
-    Disconnect is cleanup: swallow the future-cancel flavor, log it, and
-    report failure. A genuine cancellation of the running task (``cancelling``
-    count > 0) still propagates.
-    """
-    import asyncio as _asyncio
-
-    from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
-
-    if (SseClient, "disconnect-guard") in _wrapped_connects:
-        return
-    _wrapped_connects.add((SseClient, "disconnect-guard"))
-    orig_disconnect = getattr(SseClient, "disconnect")
-
-    async def disconnect_guarded(self, *args: Any, orig=orig_disconnect, **kwargs: Any):
-        try:
-            return await orig(self, *args, **kwargs)
-        except _asyncio.CancelledError:
-            task = _asyncio.current_task()
-            cancelling = getattr(task, "cancelling", None)
-            if callable(cancelling) and cancelling() > 0:
-                raise
-            logger.warning(
-                "[mcp-timeout] SseClient.disconnect aborted by transport teardown "
-                "(pre-existing anyio cancel-scope conflict); treated as failed cleanup",
-            )
-            return False
-
-    setattr(SseClient, "disconnect", disconnect_guarded)
 
 
 def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) -> None:
@@ -628,13 +760,22 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
 
     async def _connect_fresh(client: Any, *, reason: str) -> None:
         """作废旧协议会话后重新 connect（进程级客户端，跨聊天会话共享）。"""
-        # 超时后勿 aclose：跨 task cancel scope 会污染当前 task（见 _abandon_session）。
+        # 调用和重连均由生命周期 owner 执行，先关旧连接再建新连接。
         await _abandon_session(client, context=f"before reconnect ({reason})")
         connect = getattr(client, "connect", None)
         if not callable(connect):
             raise RuntimeError("MCP client has no connect() for session recovery")
-        ok = await connect()
+        try:
+            async with asyncio.timeout(60.0):
+                ok = await connect()
+        except BaseException:
+            try:
+                await disconnect_remote_mcp_client(client)
+            except Exception:
+                logger.warning("[mcp-timeout] reconnect cleanup failed", exc_info=True)
+            raise
         if not ok:
+            await disconnect_remote_mcp_client(client)
             raise RuntimeError(
                 f"MCP client reconnect failed ({reason}): "
                 f"{getattr(client, '_server_path', '?')}"
@@ -670,7 +811,7 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     async def _teardown_after_timeout(
         client: Any, *, cls_name: str, method: str, timeout: float
     ) -> None:
-        # 跳过 disconnect/aclose，直接作废（TC_MCP_CALL_014）。
+        # 不丢弃仍活着的 AsyncExitStack，由 owner 同步完成清理。
         await _abandon_session(
             client,
             context=f"{cls_name}.{method} after {timeout:g}s timeout",
@@ -690,17 +831,11 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             f"MCP {cls_name}.{method} timed out after {timeout:g}s"
         )
 
-    def _transport_cancel_error(cls_name: str, method: str) -> RuntimeError:
-        return RuntimeError(
-            f"MCP {cls_name}.{method} interrupted by transport/timeout "
-            "(not user cancel)"
-        )
-
     def _wrap_with_timeout(cls: type, name: str) -> None:
-        if (cls, name) in _wrapped_methods:
-            return
         _wrapped_methods.add((cls, name))
         orig = getattr(cls, name)
+        if getattr(orig, "_jws_mcp_wrapper", None) == "call-timeout":
+            return
 
         async def wrapped(self, *args, **kwargs):
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
@@ -710,11 +845,7 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             kwargs.setdefault("timeout", timeout + 5.0)
 
             async def _invoke_once():
-                # remote HTTP transport：用 asyncio.wait_for，不用 anyio.fail_after。
-                # fail_after 会在本 task 套 cancel scope，与 streamable-http/SSE
-                # transport 后台 task 的 scope 冲突，表现为超时后重连成功、MCP
-                # 已 call completed，但返回时仍抛 Attempted to exit a cancel scope
-                # （TC_MCP_CALL_014 第 3 轮）。与 mcp_config remote worker 一致。
+                # 这里只执行单次 I/O；会持有上下文的重连/清理在外层 owner 执行。
                 return await asyncio.wait_for(
                     orig(self, *args, **kwargs),
                     timeout=timeout,
@@ -732,136 +863,71 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                     self, cls_name=cls.__name__, method=name, timeout=timeout
                 )
 
-            async def _handle_spurious_cancel(*, phase: str) -> None:
-                """Transport / cancel-scope CancelledError → 可捕获的工具错误。"""
-                logger.warning(
-                    "[mcp-timeout] %s.%s got CancelledError without outer cancel "
-                    "(%s); treating as transport/timeout error: %s",
-                    cls.__name__,
-                    name,
-                    phase,
-                    getattr(self, "_server_path", "?"),
-                )
-                await _teardown_after_timeout(
-                    self, cls_name=cls.__name__, method=name, timeout=timeout
-                )
-
-            async def _reconnect_and_invoke_once(*, reason: str):
-                """作废重连后立刻再 invoke 一次（spurious-cancel / dead-session 共用）。"""
-                await _connect_fresh(self, reason=reason)
-                return await _invoke_once()
-
-            # 进程级共享 client：串行化重连与调用，避免多聊天会话并发踩坏会话。
-            async with _client_io_lock(self):
-                # 同会话续聊：上一轮超时后自动恢复连接，避免永久 execute invoke failed。
-                await _ensure_connected(self)
+            async def _invoke_with_cleanup():
                 try:
                     return await _invoke_once()
                 except TimeoutError:
                     try:
                         await _handle_timeout()
-                    except asyncio.CancelledError:
-                        # teardown 内偶发 CancelledError 不应冒泡成「用户取消」
-                        if _is_outer_cancellation():
-                            raise
-                        force_invalidate_mcp_client(self)
-                        logger.warning(
-                            "[mcp-timeout] %s.%s teardown raised CancelledError "
-                            "without outer cancel; still reporting timeout: %s",
-                            cls.__name__,
-                            name,
-                            getattr(self, "_server_path", "?"),
-                        )
+                    except Exception as cleanup_error:
+                        raise _timeout_error(cls.__name__, name, timeout) from cleanup_error
                     raise _timeout_error(cls.__name__, name, timeout) from None
-                except asyncio.CancelledError:
-                    # wait_for / SSE disconnect 可能直接冒出 CancelledError；
-                    # MCPTool.invoke 捕不到 → 误判用户取消且无 tool_result。
-                    if _is_outer_cancellation():
-                        raise
-                    logger.warning(
-                        "[mcp-timeout] %s.%s got CancelledError without outer cancel "
-                        "(invoke); reconnecting once: %s",
-                        cls.__name__,
-                        name,
-                        getattr(self, "_server_path", "?"),
-                    )
-                    # 连接中断类：作废后重连并重试一次（对齐 SSE mock 重启场景）
+                except asyncio.CancelledError as exc:
+                    # I/O 自身取消不等于调用者取消；清理仍留在生命周期 owner。
+                    current = asyncio.current_task()
+                    outer_cancel = current is not None and current.cancelling() > 0
                     try:
-                        return await _reconnect_and_invoke_once(reason="spurious-cancel")
-                    except TimeoutError:
-                        try:
-                            await _handle_timeout()
-                        except asyncio.CancelledError:
-                            if _is_outer_cancellation():
-                                raise
-                            force_invalidate_mcp_client(self)
-                        raise _timeout_error(cls.__name__, name, timeout) from None
-                    except asyncio.CancelledError:
-                        if _is_outer_cancellation():
+                        await _abandon_session(self, context="call cancelled")
+                    except asyncio.CancelledError as cleanup_error:
+                        if outer_cancel or (current is not None and current.cancelling()):
                             raise
-                        force_invalidate_mcp_client(self)
-                        raise _transport_cancel_error(cls.__name__, name) from None
-                    except Exception as retry_exc:
-                        force_invalidate_mcp_client(self)
-                        logger.warning(
-                            "[mcp-timeout] %s.%s retry after spurious cancel failed: %r",
-                            cls.__name__,
-                            name,
-                            retry_exc,
-                        )
-                        raise _transport_cancel_error(cls.__name__, name) from retry_exc
-                except Exception as exc:
-                    # MCP 服务重启后协议会话失效：进程级客户端仍持有旧 session id，
-                    # 新旧聊天会话都会 Session terminated / 404。作废后重连并重试一次。
-                    # 亦覆盖 cancel-scope 清理噪声（超时后首轮偶发）。
-                    if not is_retryable_mcp_dead_session_error(exc):
-                        raise
-                    logger.warning(
-                        "[mcp-timeout] %s.%s hit dead session (%s), reconnecting once: %s",
-                        cls.__name__,
-                        name,
-                        exc,
-                        getattr(self, "_server_path", "?"),
-                    )
-                    try:
-                        await _connect_fresh(self, reason="dead-session")
-                    except asyncio.CancelledError:
-                        if _is_outer_cancellation():
-                            raise
-                        await _handle_spurious_cancel(phase="reconnect")
-                        raise _transport_cancel_error(cls.__name__, name) from None
-                    except Exception as reconnect_exc:
-                        logger.warning(
-                            "[mcp-timeout] %s.%s reconnect after dead session failed: %r",
-                            cls.__name__,
-                            name,
-                            reconnect_exc,
-                        )
-                        raise exc from reconnect_exc
-                    try:
-                        return await _invoke_once()
-                    except TimeoutError:
-                        await _handle_timeout()
-                        raise _timeout_error(cls.__name__, name, timeout) from None
-                    except asyncio.CancelledError:
-                        if _is_outer_cancellation():
-                            raise
-                        await _handle_spurious_cancel(phase="retry")
-                        raise _transport_cancel_error(cls.__name__, name) from None
+                        raise RuntimeError(
+                            "MCP internal cancellation cleanup failed"
+                        ) from cleanup_error
+                    except Exception as cleanup_error:
+                        if not outer_cancel and not (current is not None and current.cancelling()):
+                            # 清理失败不能进入重试，否则会在未关闭的上下文上重连。
+                            raise RuntimeError(
+                                "MCP internal cancellation cleanup failed"
+                            ) from cleanup_error
+                        logger.warning("[mcp-timeout] cleanup after cancellation failed", exc_info=True)
+                    if not outer_cancel and not (current is not None and current.cancelling()):
+                        raise _McpInternalCancellationError(
+                            f"MCP {cls.__name__}.{name} cancelled internally"
+                        ) from exc
+                    raise
 
+            async with _client_io_lock(self):
+                await _ensure_connected(self)
+                try:
+                    return await _invoke_with_cleanup()
+                except (TimeoutError, asyncio.CancelledError):
+                    raise
+                except Exception as exc:
+                    if not (
+                        isinstance(exc, _McpInternalCancellationError)
+                        or is_retryable_mcp_dead_session_error(exc)
+                    ):
+                        raise
+                    # 保留死会话的一次 at-least-once 重试；清理失败不能当成已断开。
+                    await _connect_fresh(self, reason="dead-session")
+                    try:
+                        return await _invoke_with_cleanup()
+                    except Exception:
+                        force_invalidate_mcp_client(self)
+                        raise
+
+        setattr(wrapped, "_jws_mcp_wrapper", "call-timeout")
         setattr(cls, name, wrapped)
 
     # (A) HTTP long-poll transports — same failure mode when the server dies.
     for cls in (StreamableHttpClient, SseClient):
         _wrap_with_timeout(cls, "call_tool")
         _wrap_with_timeout(cls, "list_tools")
-        # aclose 失败也必须清会话（原 SDK 只在 success 路径清理）
+        # 只有成功关闭才能重置状态，失败保留不可复用标记。
         _wrap_disconnect_always_invalidate(cls, "disconnect")
-    # SseClient 真正清连接在 owner-task 的 _do_disconnect
-    _wrap_disconnect_always_invalidate(SseClient, "_do_disconnect")
 
     _patch_sdk_read_timeouts()
-    _patch_sse_disconnect_guard()
 
     # (B) Thread config.params["timeout_s"] (--timeout_s) onto each client so
     # (A) can pick it up. Browser-move 仅劫持自身 MCP server，不再全局替换
@@ -870,6 +936,10 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
 
     def _create_client_with_timeout(config):
         client = _orig_create_client(config)
+        if isinstance(client, StreamableHttpClient):
+            _install_streamable_http_owner(client)
+        elif isinstance(client, SseClient):
+            manage_sse_owner_cleanup(client)
         timeout_s = (getattr(config, "params", None) or {}).get("timeout_s")
         if isinstance(timeout_s, (int, float)) and timeout_s > 0:
             try:
@@ -894,7 +964,9 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     # setattr (not direct assignment): rebinding a staticmethod on the class is
     # an mypy [assignment] error; setattr keeps the monkeypatch lint-clean
     # (no type: ignore needed).
-    setattr(ToolMgr, "_create_client", staticmethod(_create_client_with_timeout))
+    if getattr(_orig_create_client, "_jws_mcp_wrapper", None) != "toolmgr-factory":
+        setattr(_create_client_with_timeout, "_jws_mcp_wrapper", "toolmgr-factory")
+        setattr(ToolMgr, "_create_client", staticmethod(_create_client_with_timeout))
 
     # (C) AbilityManager 外层 fail_after → wait_for 桥（不改 agent-core）
     try:

@@ -1032,7 +1032,7 @@ async def _run_mcp_worker(
     - stdio（默认/缺省）：起 ``stdio_client`` + ``ClientSession`` 进程。
       仅供 OfficeClaw Relay 身份 pin 后的 worker 使用；用户可配连接器入口已切断。
     - sse / streamable-http：复用 openjiuwen 的 ``SseClient`` / ``StreamableHttpClient``，
-      connect 后长连接复用（自带 owner-task/cancel-scope/超时/重连 + auth 注入）。
+      connect 后长连接复用；HTTP 上下文由本 worker 持有，SSE 由 SDK owner 持有。
 
     全程在本 task 内执行，使 stdio 的 anyio task group / cancel scope 不逃逸到
     外来 task。task 被 cancel（清理）或队列收到 ``None`` 哨兵时退出（关闭 stdio 进程 / 远端连接）。
@@ -1048,12 +1048,17 @@ async def _run_mcp_worker(
     worker.call_timeout_s = call_timeout_s
 
     async with AsyncExitStack() as stack:
+        # queue.get 被取消或清理期间新入队，也必须解除等待者；此回调最后执行。
+        stack.push_async_callback(
+            _drain_queue_with_error, worker,
+            McpWorkerStoppedError(f"MCP worker stopped: server={worker.server_name}"),
+        )
         try:
             if client_type in ("sse", "streamable-http"):
                 session = await _enter_remote_mcp_session(stack, params, client_type)
             else:
                 session = await _enter_stdio_mcp_session(stack, params)
-        except Exception as exc:
+        except BaseException as exc:
             # 初始化失败：失败已排队的 caller，退出以便下次 invoke 时 acquire 重建。
             logger.warning(
                 "request-scoped MCP worker init failed: server=%s transport=%s error=%s",
@@ -1061,30 +1066,26 @@ async def _run_mcp_worker(
                 client_type,
                 exc,
             )
-            await _drain_queue_with_error(worker, exc)
+            # worker 自身仍传播取消，但排队 caller 应收到工具失败而非用户取消。
+            mapped = exc if isinstance(exc, Exception) else McpWorkerStoppedError(
+                f"MCP worker initialization interrupted: server={worker.server_name}"
+            )
+            await _drain_queue_with_error(worker, mapped)
+            if not isinstance(exc, Exception):
+                raise
             return
         while True:
             req = await worker.queue.get()
             if req is None:
                 break
             try:
-                # 超时分派：
-                # - stdio：必须用 anyio.fail_after（cancel scope）。MCP stdio transport 的
-                #   anyio task group / cancel scope 要求进入与退出在同一 task；asyncio.wait_for
-                #   把协程放到新 Task 跑，会破坏该不变量。
-                # - remote（sse/streamable-http）：相反，必须用 asyncio.wait_for。remote
-                #   transport（尤其 streamable-http）内部自带后台 task + anyio cancel scope；
-                #   若用 anyio.fail_after 在本 task 套一层 scope，外层 scope 与 transport 后台
-                #   task 的 scope 跨 task 退出会抛 "Attempted to exit a cancel scope that isn't
-                #   the current tasks's current cancel scope"（企查查 streamable-http 实测故障）。
-                #   asyncio.wait_for 在新 Task 里跑协程，scope 隔离，与 SseClient 自身超时
-                #   机制（同样 asyncio.wait_for）一致，已由百度网盘 SSE 实证可行。
+                # remote 的 patch 可能在调用中重连，因此整个调用也留在 owner。
                 try:
                     if client_type in ("sse", "streamable-http"):
-                        result = await asyncio.wait_for(
-                            session.call_tool(req.tool_name, arguments=req.arguments),
-                            timeout=call_timeout_s,
-                        )
+                        async with asyncio.timeout(call_timeout_s):
+                            result = await session.call_tool(
+                                req.tool_name, arguments=req.arguments
+                            )
                     else:
                         with anyio.fail_after(call_timeout_s):
                             result = await session.call_tool(
@@ -1101,13 +1102,7 @@ async def _run_mcp_worker(
                         req.tool_name,
                         call_timeout_s,
                     )
-                    # remote transport（sse/streamable-http）：SseClient/StreamableHttpClient
-                    # 的 _submit 把调用转发到其内部 owner_task 串行执行；外层 cancel 只取消
-                    # 等待方的 future，不会取消 owner_task 上正在跑的命令。若 continue 复用
-                    # worker，下次 invoke 投的新命令会排在未完成的旧命令后面，最长阻塞 60s
-                    # （SseClient 内部 asyncio.wait_for 上限）。故超时即退出 worker：AsyncExitStack
-                    # 关闭触发 disconnect（SseClient 内部 cancel owner_task 清掉未完成命令），
-                    # 下次 invoke 的 acquire 发现 worker 已死便重建。
+                    # 超时后退出 remote worker，在 owner 上关闭连接；下次 acquire 重建。
                     if client_type in ("sse", "streamable-http"):
                         await _drain_queue_with_error(worker, exc)
                         break
@@ -1189,10 +1184,11 @@ async def _enter_remote_mcp_session(
 
     rebuild_cfg = _build_remote_mcp_config(params.get("server_name") or "", params, client_type)
     client = client_cls(rebuild_cfg)
-    # mcp_call_timeout_patch 把 SseClient/StreamableHttpClient 的 call_tool/list_tools
-    # 包了内层 anyio.fail_after：不经 ToolMgr._create_client 自建的 client 不会被打
-    # _jws_call_timeout，内层按 300s 默认先掐断，令 params["timeout_s"] 失效。按
-    # _run_mcp_worker 的口径（下发合法值直接生效）在此补打。
+    if client_type == "sse":
+        from jiuwenswarm.common.mcp_call_timeout_patch import manage_sse_owner_cleanup
+
+        manage_sse_owner_cleanup(client)
+    # 自建 client 不经 ToolMgr._create_client，需补打调用超时印章。
     call_timeout_s = (
         _positive_timeout_s(params.get("timeout_s"))
         or _MCP_CALL_TOOL_TIMEOUT_S
@@ -1202,49 +1198,17 @@ async def _enter_remote_mcp_session(
         _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
         call_timeout_s,
     )
-    # remote transport（sse/streamable-http）的 client.connect 内部 enter async
-    # context manager（streamable-http 尤其用 anyio TaskGroup + cancel scope）。
-    # connect 失败时 anyio cancel()+uncancel() 本 task，抛出 CancelledError；它是
-    # BaseException（Py3.8+），外层 ``except Exception`` 抓不住，会一路泄漏杀死流式
-    # 任务。用 asyncio.wait_for 套住防卡死，再显式 except CancelledError + cancelling()
-    # 区分：anyio 内部取消（cancelling()==0）→ 当连接失败跳过；外层真取消 → re-raise。
-    try:
-        connected = await asyncio.wait_for(
-            client.connect(timeout=discovery_timeout),
-            timeout=discovery_timeout,
-        )
-    except asyncio.TimeoutError:
-        raise RuntimeError(  # pylint: disable=raise-missing-from
-            f"remote MCP client connect timed out after {discovery_timeout}s: "
-            f"{rebuild_cfg.server_path}"
-        )
-    except asyncio.CancelledError:
-        if is_asyncio_outer_cancellation():
-            raise
-        logger.warning(
-            "request-scoped MCP worker init cancelled (anyio internal), "
-            "isolating as connect failure: server=%s transport=%s path=%s",
-            rebuild_cfg.server_name,
-            client_type,
-            rebuild_cfg.server_path,
-        )
-        raise RuntimeError(  # pylint: disable=raise-missing-from
-            f"remote MCP client connect cancelled (anyio internal): "
-            f"{rebuild_cfg.server_path}"
-        )
+    # worker 就是生命周期 owner；不能只把 connect 移到 wait_for 的子任务。
+    from jiuwenswarm.common.mcp_call_timeout_patch import disconnect_remote_mcp_client
+
+    # 提前登记，覆盖 initialize 中断等半连接路径。SDK 已成功关闭时 helper 不重复关闭。
+    stack.push_async_exit(lambda *exc: disconnect_remote_mcp_client(client, *exc))
+    async with asyncio.timeout(discovery_timeout):
+        connected = await client.connect(timeout=discovery_timeout)
     if not connected:
         raise RuntimeError(
             f"remote MCP client connect returned false: {rebuild_cfg.server_path}"
         )
-    # 把 disconnect 注册进 stack，worker 退出时统一关连接。
-
-    async def _disconnect() -> None:
-        try:
-            await client.disconnect(timeout=10.0)
-        except Exception as exc:
-            logger.debug("remote MCP client disconnect failed: %s", exc)
-
-    stack.push_async_callback(_disconnect)
     return _RemoteMcpCallAdapter(client)
 
 
@@ -1423,9 +1387,7 @@ async def shutdown_pooled_mcp_worker(
     if task is None:
         return
     # Ask the owner loop to exit gracefully, then await (cancel as fallback).
-    # 用 anyio.fail_after 而非 asyncio.wait_for：后者在新 Task 里跑协程，会破坏
-    # MCP transport（stdio 的 task group / remote 的 SseClient owner-task）的
-    # anyio cancel-scope 不变量，与 _run_mcp_worker 内部的超时机制保持一致。
+    # 等待既有 owner task 不会改变上下文归属；超时取消后仍等它完成 finally。
     try:
         worker.queue.put_nowait(None)
     except Exception as exc:
@@ -2380,6 +2342,10 @@ async def _list_remote_mcp_connector_tools(
     # _run_mcp_worker 用 connect_params 字段经 _build_remote_mcp_config 重建 client。
     rebuild_cfg = _build_remote_mcp_config(server_name, connect_params, client_type)
     client = client_cls(rebuild_cfg)
+    if client_type == "sse":
+        from jiuwenswarm.common.mcp_call_timeout_patch import manage_sse_owner_cleanup
+
+        manage_sse_owner_cleanup(client)
     # 同 _enter_remote_mcp_session：自建 client 不经 ToolMgr._create_client，需补打
     # _jws_call_timeout，否则 mcp_call_timeout_patch 的内层 300s 默认会先掐断长调用。
     setattr(
@@ -2387,91 +2353,42 @@ async def _list_remote_mcp_connector_tools(
         "_jws_call_timeout",
         _connector_timeout or _MCP_CALL_TOOL_TIMEOUT_S,
     )
-    connected = False
-    try:
-        try:
-            # remote transport（sse/streamable-http）的 client.connect 内部会 enter
-            # async context manager（streamable-http transport 尤其用 anyio cancel
-            # scope）；若用 anyio.fail_after 包，外层 scope 与 transport 的 scope 跨
-            # task 退出会抛 "Attempted to exit a cancel scope that isn't the current
-            # tasks's current cancel scope"（实测企查查 streamable-http 即此故障）。
-            # 改用 asyncio.wait_for：在新 task 里跑协程，scope 隔离，与 SseClient
-            # 内部超时机制（同样用 asyncio.wait_for）一致。
-            connected = await asyncio.wait_for(
-                client.connect(timeout=discovery_timeout),
-                timeout=discovery_timeout,
-            )
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "request-scoped MCP connector '%s' discovery timed out after "
-                "%.0fs (connect/list_tools hung)",
-                server_name,
-                discovery_timeout,
-            )
-            return [], {}
-        except asyncio.CancelledError:
-            # connect 失败时 anyio TaskGroup cancel()+uncancel() 本 task 抛
-            # CancelledError（BaseException，Py3.8+）；``except Exception`` 在下方
-            # 抓不住，会泄漏杀死流式任务。cancelling()==0 → anyio 内部取消 → 当
-            # 该连接器连接失败跳过（返回空）；cancelling()>0 → 外层真取消 → re-raise。
-            if is_asyncio_outer_cancellation():
-                raise
-            logger.warning(
-                "request-scoped MCP connector '%s' connect cancelled (anyio "
-                "internal), isolating as connect failure: transport=%s path=%s",
-                server_name,
-                client_type,
-                connect_params["server_path"],
-            )
-            return [], {}
-        if not connected:
-            logger.warning(
-                "request-scoped MCP connector '%s' (%s) connect failed: %s",
-                server_name,
-                client_type,
-                connect_params["server_path"],
-            )
-            return [], {}
-        try:
-            # 同理避免 anyio.fail_after 撞 streamable-http transport 的 cancel scope。
-            # StreamableHttpClient.list_tools 的 timeout 参数当前未生效（直接调
-            # session.list_tools 无超时），必须靠这层 asyncio.wait_for 兜底防卡死。
-            tools = await asyncio.wait_for(
-                client.list_tools(timeout=discovery_timeout),
-                timeout=discovery_timeout,
-            )
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "request-scoped MCP connector '%s' list_tools timed out after %.0fs",
-                server_name,
-                discovery_timeout,
-            )
-            return [], {}
-        except asyncio.CancelledError:
-            # list_tools 与 connect 共用 anyio TaskGroup，失败时同样 cancel() 本
-            # task 抛 CancelledError。隔离语义同 connect：内部取消跳过该连接器，
-            # 外层真取消 re-raise。
-            if is_asyncio_outer_cancellation():
-                raise
-            logger.warning(
-                "request-scoped MCP connector '%s' list_tools cancelled (anyio "
-                "internal), isolating as discovery failure: transport=%s path=%s",
-                server_name,
-                client_type,
-                connect_params["server_path"],
-            )
-            return [], {}
-        tool_defs = [
-            {
-                "name": getattr(t, "name", "") or "",
-                "description": getattr(t, "description", "") or "",
-                "input_params": getattr(t, "input_params", None)
-                or getattr(t, "inputSchema", {})
-                or {},
-            }
-            for t in (tools or [])
-        ]
+    from jiuwenswarm.common.mcp_call_timeout_patch import disconnect_remote_mcp_client
+
+    async def _discover() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        # 两个阶段各自保留 deadline；finally 仍由进入 transport 的任务执行。
+        async with AsyncExitStack() as stack:
+            stack.push_async_exit(lambda *exc: disconnect_remote_mcp_client(client, *exc))
+            async with asyncio.timeout(discovery_timeout):
+                connected = await client.connect(timeout=discovery_timeout)
+            if not connected:
+                raise RuntimeError("remote MCP client connect returned false")
+            async with asyncio.timeout(discovery_timeout):
+                tools = await client.list_tools(timeout=discovery_timeout)
+            tool_defs = [
+                {
+                    "name": getattr(t, "name", "") or "",
+                    "description": getattr(t, "description", "") or "",
+                    "input_params": getattr(t, "input_params", None)
+                    or getattr(t, "inputSchema", {})
+                    or {},
+                }
+                for t in (tools or [])
+            ]
         return tool_defs, connect_params
+
+    try:
+        # 外层限制包含清理的完整生命周期，不拆分 connect/disconnect 所属任务。
+        return await asyncio.wait_for(_discover(), timeout=2 * discovery_timeout + 10.0)
+    except asyncio.CancelledError:
+        if is_asyncio_outer_cancellation():
+            raise
+        logger.warning(
+            "请求级 MCP 连接器 '%s' (%s) 发现阶段内部取消，跳过当前连接器",
+            server_name,
+            client_type,
+        )
+        return [], {}
     except Exception as exc:
         logger.warning(
             "request-scoped MCP connector '%s' (%s) tool discovery failed: %s",
@@ -2480,16 +2397,6 @@ async def _list_remote_mcp_connector_tools(
             exc,
         )
         return [], {}
-    finally:
-        if connected:
-            try:
-                await client.disconnect(timeout=10.0)
-            except Exception as exc:
-                logger.debug(
-                    "request-scoped MCP connector '%s' discovery disconnect failed: %s",
-                    server_name,
-                    exc,
-                )
 
 
 def _remote_mcp_client_cls(client_type: str) -> Any | None:
