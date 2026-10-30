@@ -35,6 +35,7 @@ import { JoyAIProvider } from './joyaiProvider';
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
+import { duplexModelParams } from '../duplexModelParams';
 import { reportedRuntimeState } from './runtimeState';
 import {
   mergeSearchProgressJob,
@@ -1085,6 +1086,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   turn_id: latestInstruction.turnId,
                   search_session_id: searchSessionId,
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
+                  ...duplexModelParams(searchSessionId),
                 },
                 { timeoutMs: call.name === 'jiuwen_queue_manage' ? 0 : 10_000 },
               )

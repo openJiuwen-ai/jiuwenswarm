@@ -24,6 +24,7 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
     QwenOmniRealtimeConfig,
 )
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import qwen_omni_tools
+from jiuwenswarm.extensions.video_duplex.backend.task_adapter import selected_model
 from jiuwenswarm.extensions.video_duplex.backend.tasks.prompts import task_receipt_followup
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
@@ -568,6 +569,7 @@ def register_video_live_handler(
                     visual_context=str(result.get("response") or ""),
                     frame_data_url=frame_data_url,
                     command_id=str(params.get("command_id") or req_id),
+                    model=selected_model(params),
                     **({"scheduling": scheduling} if scheduling is not None else {}),
                 )
             except ValueError as exc:
