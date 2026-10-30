@@ -88,6 +88,11 @@ Slider 使用 Ant Design Slider 管理本地数值，按 value、defaultValue �
 拖动或键盘调整的每次有效变化为已绑定的 `ui.change` 发送数值 `{value}`，不合并中间值、不等待回执。
 未绑定事件时仍可本地调整；disabled 或断连时禁用，合法 replace 重新初始化数值。
 
+Tabs 使用 Ant Design Tabs 管理本地激活页，activeKey 优先于 defaultActiveKey，缺省取首个可用页签。
+切换页签时为已绑定的 `ui.change` 发送 `{activeKey}`；未绑定事件时仍可本地切换，disabled 页签与断连时不可切换。
+隐藏页内容通过内容激活边界停用，其节点绑定在不可见期间释放，因此不会派发事件。
+默认保留已挂载隐藏页的本地状态，destroyOnHidden 时卸载并在切回后重新初始化；页签内容计入 8 层与 512 节点预算。
+
 插件不能提供 style 或 className。宿主可通过 `WebUIStyleOverrides` 按组件注入外观，
 宿主样式优先；Box 与 Button 还可使用原生元素承接宿主布局和按钮样式。
 适配器保留库组件的属性和交互语义，不复制整套控件实现。
@@ -104,5 +109,6 @@ Slider 使用 Ant Design Slider 管理本地数值，按 value、defaultValue �
 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`
 和 `test:webui-store` 验证。
 `test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change/click、
-Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、Slider 数值变更、宿主外观、主题继承和 Iframe 生命周期。
+Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、Slider 数值变更、Tabs 页签切换与内容重建、
+宿主外观、主题继承和 Iframe 生命周期。
 `test:webui-input` 定向验证 Input 的 click、change 与 Enter 数据、组合输入保护、禁用、草稿更新和 WebClient 传输封装。
