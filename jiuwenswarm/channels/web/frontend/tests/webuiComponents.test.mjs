@@ -56,7 +56,7 @@ test('registered adapters have matching component rules', () => {
     .sort();
   assert.deepEqual(catalogNames, componentRendererRegistry.list().slice().sort());
   assert.ok(catalogNames.includes('Box'));
-  for (const name of ['Box', 'Text', 'Button', 'Card', 'Divider', 'Empty', 'Image', 'Tag', 'Panel', 'Iframe']) {
+  for (const name of ['Box', 'Text', 'Button', 'Input', 'Card', 'Divider', 'Empty', 'Image', 'Tag', 'Panel', 'Iframe']) {
     assert.ok(componentRendererRegistry.has(name), `missing adapter: ${name}`);
   }
 });

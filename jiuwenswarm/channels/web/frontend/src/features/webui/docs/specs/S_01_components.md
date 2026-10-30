@@ -51,6 +51,9 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
   Button 逐字显示插件标签，不自动在两个中文字之间添加空格。
 - C-18：Iframe 仅在内容激活且连接有效时持有浏览上下文；隐藏或断连时卸载 iframe，
   重新激活或 src 改变后重新加载，不保留旧文档。
+- C-19：Input 只为已绑定的 ui.change 派发 `{value, isComposing}`；组合输入结束发送一次提交值，
+  其后浏览器重复的同值提交不再派发。未绑定 change 时允许本地编辑；disabled、readOnly 和断连时不派发。
+  合法 replace 重新初始化输入值，拒绝的更新保留当前草稿；清空发送空字符串。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。

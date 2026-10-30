@@ -29,6 +29,21 @@ Handlers read editable values from `event.event_input.payload["data"]`. The args
 Input changes carry `{value, isComposing}`, Switch events carry `{checked}`, and Slider changes carry `{value}`.
 The initial `ui.ready` request has an empty payload and does not require an existing instance.
 
+Declare a text input as follows:
+
+```python
+RenderNode(
+    "Input",
+    {"value": "Beijing", "ariaLabel": "City", "allowClear": True},
+    events={"ui.change": {"id": "city.edit"}},
+)
+```
+
+The `ui.change` handler receives composition drafts and a committed value with `isComposing=False`.
+Check that flag when processing complete text only. The clear button submits an empty string.
+The value and defaultValue props initialize the local draft. A valid replace reinitializes it;
+a rejected frame preserves the current input. Disabled, read-only and disconnected inputs do not send changes.
+
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
 instead of appending it to declared args. A node cannot declare both action and events.
