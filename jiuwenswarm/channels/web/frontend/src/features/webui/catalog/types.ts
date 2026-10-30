@@ -1,9 +1,10 @@
 /**
  * 协议目录：协议处理层与渲染层共用的类型规则来源。
- * 本期由测试目录注入；后续替换为后端 constants.py 的镜像（组件、槽位、token、限制）。
+ * 生产组件与测试组件使用同一事件契约登记；槽位、token 和限制与后端同步。
  */
 
 import type { WebUIUpstreamEvent } from '../contracts/wire.ts';
+import { WEBUI_COMPONENT_EVENTS } from '../contracts/wire.ts';
 
 export type WebUIPropRule =
   | { kind: 'token'; values: readonly string[] }
@@ -11,7 +12,14 @@ export type WebUIPropRule =
   | { kind: 'number'; min?: number; max?: number; integer?: boolean }
   | { kind: 'boolean' }
   | { kind: 'string-list'; maxItems?: number }
-  | { kind: 'record-list'; maxItems?: number };
+  | { kind: 'record-list'; maxItems?: number }
+  | { kind: 'null' }
+  | { kind: 'array'; item: WebUIPropRule; maxItems?: number }
+  | { kind: 'object'; fields: Readonly<Record<string, WebUIPropRule>>; required?: readonly string[] }
+  | { kind: 'record'; value: WebUIPropRule; maxItems?: number }
+  | { kind: 'union'; choices: readonly WebUIPropRule[] }
+  | { kind: 'lazy'; get: () => WebUIPropRule }
+  | { kind: 'nodes' };
 
 export interface WebUIComponentRule {
   name: string;
@@ -19,14 +27,29 @@ export interface WebUIComponentRule {
   /** 协议允许的默认值；缺省时渲染层使用自己的兜底，不允许协议层静默丢字段。 */
   defaults?: Readonly<Record<string, unknown>>;
   allowChildren: boolean;
-  allowAction: boolean;
+  allowAction?: boolean;
   /** 交互组件对应的上行事件；allowAction 为 true 时必填。 */
   actionEvent?: WebUIUpstreamEvent;
+  required?: readonly string[];
+  events?: Readonly<Record<string, WebUIPropRule>>;
+  /** Only the Tabs catalog declares this restricted content location. */
+  content?: { prop: string; children: string };
+  childComponents?: readonly string[];
+  validate?: (props: Readonly<Record<string, unknown>>) => string | null;
+  /** Validate component event semantics after the common payload shape checks. */
+  validateEvent?: (
+    event: string,
+    data: Readonly<Record<string, unknown>>,
+    props: Readonly<Record<string, unknown>>,
+  ) => string | null;
+  prepare?: (props: Record<string, unknown>) => Record<string, unknown>;
 }
 
 export interface WebUISlotRule {
   id: string;
   display: 'list' | 'single';
+  /** 该 slot 允许作为整棵渲染树根的组件名。 */
+  rootComponents?: readonly string[];
 }
 
 export interface WebUICatalog {
@@ -42,7 +65,7 @@ export interface WebUICatalogConfig {
 }
 
 /**
- * 组装目录并在初始化时做一致性检查：重复项、交互组件缺少事件、默认值未声明。
+ * 组装目录并在初始化时做一致性检查：重复项、交互组件缺少事件、非法事件、默认值未声明。
  * 规则不完整时直接抛错，避免“可校验但不可渲染”或相反的情况静默存在。
  */
 export function createCatalog(config: WebUICatalogConfig): WebUICatalog {
@@ -56,6 +79,11 @@ export function createCatalog(config: WebUICatalogConfig): WebUICatalog {
     }
     if (!rule.allowAction && rule.actionEvent) {
       throw new Error(`component ${rule.name} declares actionEvent but does not allow action`);
+    }
+    for (const event of Object.keys(rule.events ?? {})) {
+      if (!(WEBUI_COMPONENT_EVENTS as readonly string[]).includes(event)) {
+        throw new Error(`component ${rule.name} declares unsupported event: ${event}`);
+      }
     }
     for (const propName of Object.keys(rule.defaults ?? {})) {
       if (!(propName in rule.props)) {
