@@ -3805,9 +3805,18 @@ class JiuWenSwarm:
         from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
 
         # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
-        with bind_request_subject(request.metadata):
-            async for chunk in self._stream_control_input(request):
+        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        stream = self._stream_control_input(request)
+        try:
+            while True:
+                with bind_request_subject(request.metadata):
+                    try:
+                        chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        return
                 yield chunk
+        finally:
+            await stream.aclose()
 
     async def _stream_control_input(
         self, request: AgentRequest
@@ -4104,9 +4113,18 @@ class JiuWenSwarm:
         """处理流式请求，并带上本次请求的用户身份。"""
         from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
 
-        with bind_request_subject(request.metadata):
-            async for chunk in self._process_message_stream(request):
+        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        stream = self._process_message_stream(request)
+        try:
+            while True:
+                with bind_request_subject(request.metadata):
+                    try:
+                        chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        return
                 yield chunk
+        finally:
+            await stream.aclose()
 
     async def _process_message_stream(
             self, request: AgentRequest
