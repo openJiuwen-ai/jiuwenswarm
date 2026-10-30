@@ -298,9 +298,17 @@ def test_same_topic_different_file_name_not_blocked_and_logged(caplog):
     ctx = _build_callback_ctx(sess, tool_call_id="wf_variant", args={
         "query": "深度研究AI芯片行业", "file_name": "ai_chip_report_v2", "report_type": "brief"})
     with caplog.at_level(logging.INFO, logger=rail.logger.name):
-        asyncio.run(
-            rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx)
-        )
+        # caplog 的捕获 handler 挂在 root logger 上，而 import 链中的 setup_logger
+        # 会把 jiuwenswarm 命名空间 logger 置 propagate=False，记录止步于命名空间
+        # 根、到不了 root，caplog.text 恒空（openJiuwen-bot 审查 Issue 11 /
+        # 曹凯淇 CR-7）。显式挂到 rail logger 上，断言不依赖 logger 传播配置。
+        rail.logger.addHandler(caplog.handler)
+        try:
+            asyncio.run(
+                rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx)
+            )
+        finally:
+            rail.logger.removeHandler(caplog.handler)
     assert ctx.force_finish_requests == []
     assert ctx.inputs.tool_result is None
     assert "delivery miss" in caplog.text
