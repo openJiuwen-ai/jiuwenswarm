@@ -1252,6 +1252,26 @@ class CronSchedulerService:
                 # 结果文本排在计费收口之后写入 state：否则到点的 push 事件会在这段等待
                 # 窗口内把结果以「无 consumed_points」的最终推送提前发走并置 pushed_final，
                 # 随后运行方自己排的补发被跳过，本轮「点数消耗」就永远回填不上（见 _on_push）。
+                # 产物文件回收必须先于 result_text 对外可见：一旦 result_text 写入，
+                # _on_push 的最终推送分支随时可能在任一 await 挂起点触发，届时
+                # deliver_files 为空会推送空文件并置 pushed_final，本轮产物永久丢失
+                # （与上方 consumed_points 同一时序坑）。回收为同步文件读取，放线程
+                # 执行避免大历史阻塞事件循环。发送方在轮内落盘 chat.file，此处必已就绪。
+                if state.error != "cancelled":
+                    try:
+                        state.deliver_files = await asyncio.to_thread(
+                            self._collect_run_deliverables, exec_session_id, job.id
+                        )
+                        if state.deliver_files:
+                            logger.info(
+                                "[Cron] collected deliver_files run_id=%s count=%d",
+                                run_id,
+                                len(state.deliver_files),
+                            )
+                    except Exception:  # noqa: BLE001 - 回收失败不阻断结果投递
+                        logger.exception(
+                            "[Cron] collect deliver_files failed run_id=%s", run_id
+                        )
                 if text:
                     state.result_text = text
                 is_cancelled_ghost = state.error == "cancelled"
@@ -1639,6 +1659,215 @@ class CronSchedulerService:
             await self._finish_one_shot(job, state)
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
+    def _collect_run_deliverables(self, exec_session_id: str, job_id: str) -> list[dict[str, Any]]:
+        """从本轮执行会话历史回收 send_file_to_user 产生的文件载荷.
+
+        cron 轮运行于 ``__cron__`` 临时会话：send_file_to_user 轮内直投
+        用户不可达（会话无法归属到可见界面），且 approved_outbound 下载
+        令牌对该会话必然生成失败（会话 id 首字符非字母数字，被目录
+        白名单拒绝）。其 chat.file 载荷（path/name/artifact_id）已先于
+        push 落在执行会话历史（send_file_to_user 的 append_history_record），
+        在此回收，交由 _push_to_targets 随总结文本重投到绑定会话。
+        """
+        if not exec_session_id:
+            return []
+        from jiuwenswarm.server.runtime.session.session_history import (
+            flush_history_writes,
+            get_read_history_path,
+        )
+
+        # chat.file 由 send_file_to_user 经异步 writer 队列落盘；扫描前先等队列
+        # 刷完，否则轮末可能读到尚未写入的旧内容（本函数已在线程中执行，join 安全）。
+        try:
+            flush_history_writes()
+        except Exception:  # noqa: BLE001 - 刷盘失败不阻断回收
+            logger.debug("[Cron] flush history before collect failed", exc_info=True)
+
+        history_path = get_read_history_path(exec_session_id)
+        try:
+            if not history_path.exists():
+                return []
+        except OSError:
+            return []
+        prefix = f"cron-{job_id}:"
+        deliverables: list[dict[str, Any]] = []
+        with open(history_path, encoding="utf-8") as stream:
+            for line in stream:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:  # noqa: BLE001 - 坏行跳过
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                if record.get("event_type") != "chat.file":
+                    continue
+                request_id = str(record.get("request_id") or "")
+                if not request_id.startswith(prefix):
+                    continue
+                files = record.get("files")
+                if not isinstance(files, list):
+                    continue
+                for item in files:
+                    if isinstance(item, dict) and str(item.get("path") or "").strip():
+                        deliverables.append(item)
+        return deliverables
+
+    async def _push_run_deliverables(
+        self,
+        *,
+        job: CronJob,
+        state: CronRunState,
+        channel_id: str,
+        msg_session_id: str | None,
+        routing_session_id: str | None,
+        metadata: dict | None,
+        group_digital_avatar: bool,
+        app_id: str | None,
+    ) -> None:
+        """随总结文本把产物文件重投到绑定会话.
+
+        下载令牌在投递点按 job 绑定会话生成（真实会话可落盘，token 才能
+        建立）；生成失败的文件降级为无下载信息的载荷，前端至少能拿到
+        artifact/path 提示。文件挨着总结文本推送，用户先看到总结再看到
+        文件卡。
+
+        文件消息固定带 session_id=job.session_id（绑定会话）：前端
+        resolveConversationId 对无 session 的帧返回 undefined 后整帧忽略，
+        cron 文本帧由前端专门的 cron 会话流逻辑接住、chat.file 没有，
+        必须自带归属。广播豁免（payload.cron）条件也不受影响——豁免只
+        要求 payload.cron 存在。job.session_id 为空（极端：老 job 无绑定）
+        时退回文本同款 None，行为同修复前。
+        """
+        if not state.deliver_files:
+            return
+        token_session_id = str(getattr(job, "session_id", None) or "").strip()
+        msg_session_id = (
+            str(msg_session_id or "").strip()
+            or str(routing_session_id or "").strip()
+            or None
+        )
+        files_payload: list[dict[str, Any]] = []
+        from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+            build_file_download_info,
+        )
+
+        for item in state.deliver_files:
+            file_path = str(item.get("path") or item.get("source_path") or "").strip()
+            if not file_path or not os.path.isfile(file_path):
+                logger.warning(
+                    "[Cron] deliver file missing, skip run_id=%s path=%s",
+                    state.run_id, file_path,
+                )
+                continue
+            base_name = str(item.get("name") or "").strip() or os.path.basename(file_path)
+            payload_item: dict[str, Any] = {
+                "path": file_path,
+                "source_path": file_path,
+                "name": base_name,
+            }
+            artifact_id = str(item.get("artifact_id") or "").strip()
+            if artifact_id:
+                payload_item["artifact_id"] = artifact_id
+            try:
+                info = build_file_download_info(
+                    file_path, base_name, token_session_id, approved_outbound=True
+                )
+                payload_item.update(
+                    {
+                        "size": info["size"],
+                        "mime_type": info["mime_type"],
+                        "download_url": info["download_url"],
+                        "download_token": info["download_token"],
+                    }
+                )
+            except Exception as info_exc:  # noqa: BLE001 - 令牌失败降级为纯路径载荷
+                logger.warning(
+                    "[Cron] deliver file token generation failed, fallback plain "
+                    "run_id=%s path=%s error=%s",
+                    state.run_id, file_path, info_exc,
+                )
+            files_payload.append(payload_item)
+        if not files_payload:
+            return
+        file_msg = Message(
+            id=f"cron-file-{state.run_id}-{channel_id}",
+            type="event",
+            channel_id=channel_id,
+            session_id=msg_session_id,
+            params={},
+            timestamp=self._now_fn(),
+            ok=True,
+            payload={
+                "event_type": "chat.file",
+                "files": files_payload,
+                # 前端 chat.file 处理第一步就是 resolveEventSessionId(payload)
+                # （useWebSocket.ts getPayloadSessionId 只认 payload.session_id，
+                # 不认 wire 顶层）——缺失即静默忽略整帧。这里带 job 绑定会话
+                # （= 用户发起会话），文件卡落在绑定会话的聊天流里。
+                "session_id": token_session_id or None,
+                # 与文本推送同款的 cron 标记：WebChannel 对带 payload.cron 的
+                # 消息绕过 session 路由广播给 web 客户端（无 session_id 的
+                # 定时任务推送靠它放行，否则被"cannot route"丢弃）。
+                "cron": {
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "run_id": state.run_id,
+                    "push_at": state.push_at_iso,
+                    "wake_at": state.wake_at_iso,
+                    "exec_channel_id": state.exec_channel_id,
+                    "exec_session_id": state.exec_session_id,
+                    "status": state.status,
+                },
+            },
+            event_type=EventType.CHAT_FILE,
+            metadata=metadata,
+            group_digital_avatar=group_digital_avatar,
+            app_id=app_id,
+        )
+        try:
+            await self._message_handler.publish_robot_messages(file_msg)
+            logger.info(
+                "[Cron] deliver_files pushed run_id=%s count=%d",
+                state.run_id, len(files_payload),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[Cron] deliver_files push failed run_id=%s", state.run_id
+            )
+        # 双保险：同一载荷落绑定会话历史。UI 在 run 结束后会拉取会话历史
+        # 渲染（实测 19:04 run 后 history.get 连发），历史重放对
+        # event_type=chat.file 的 files 有原生支持（extractHistoryChatFileBlocks）；
+        # 即时 broadcast 帧因各端版本差异可能接不住，落盘保证可达。
+        if token_session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.session_history import (
+                    append_history_record,
+                )
+
+                append_history_record(
+                    session_id=token_session_id,
+                    request_id=f"cron-{state.run_id}",
+                    channel_id=str(job.targets or channel_id or "").strip(),
+                    role="assistant",
+                    content="",
+                    timestamp=self._now_fn(),
+                    event_type="chat.file",
+                    extra={"files": files_payload},
+                )
+                logger.info(
+                    "[Cron] deliver_files appended to bound-session history "
+                    "run_id=%s session=%s count=%d",
+                    state.run_id, token_session_id, len(files_payload),
+                )
+            except Exception:  # noqa: BLE001 - 落盘失败不影响推送
+                logger.exception(
+                    "[Cron] deliver_files history append failed run_id=%s",
+                    state.run_id,
+                )
+
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
         logger.info(
             "[Cron] push_to_targets job=%s run_id=%s channel=%s is_placeholder=%s text_len=%d status=%s",
@@ -1934,5 +2163,22 @@ class CronSchedulerService:
             )
             if not is_placeholder:
                 state.delivery_status = "failed"
+        # 产物文件随总结文本重投到绑定会话（轮内 __cron__ 直投不可达，
+        # see _collect_run_deliverables）。
+        try:
+            await self._push_run_deliverables(
+                job=job,
+                state=state,
+                channel_id=channel_id,
+                msg_session_id=msg_session_id,
+                routing_session_id=str(getattr(job, "session_id", None) or "").strip() or None,
+                metadata=metadata,
+                group_digital_avatar=_group_digital_avatar,
+                app_id=_msg_app_id,
+            )
+        except Exception:  # noqa: BLE001 - 文件投递失败不影响文本
+            logger.exception(
+                "[Cron] deliver_files dispatch failed run_id=%s", state.run_id
+            )
 
 
