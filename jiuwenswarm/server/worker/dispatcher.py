@@ -675,7 +675,9 @@ class WorkerDispatcher:
             snapshot["dispatches"] = self._bridge.events.snapshot(request, after=after)["dispatches"]
         # Copy the replay before the first await: other scopes can publish and
         # evict journal frames while this scope's snapshot is being delivered.
-        needs_questions = message.get("subscribe") or any(item["pending_interactions"] for item in snapshot["dispatches"])
+        needs_questions = message.get("subscribe") or any(
+            item["pending_interactions"] for item in snapshot["dispatches"]
+        )
         frames = self._bridge.events.replay(request, after=0) if needs_questions else []
         include = self._question_recovery_filter(request, snapshot, frames)
         frames = [frame for frame in frames if frame["sequence"] > after] if message.get("subscribe") else []

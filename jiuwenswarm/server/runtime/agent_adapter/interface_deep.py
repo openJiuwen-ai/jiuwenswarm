@@ -3635,8 +3635,9 @@ class JiuWenSwarmDeepAdapter:
         params = request.params if isinstance(request.params, dict) else {}
         text = params.get("query") or params.get("content")
         if (not isinstance(text, str) or not text.strip()
-                or any(key in params for key in ("answers", "card_id", "request_id"))
-                or self._is_interrupt_resume_dispatch(params) or self._wants_attach_goal(params)
+                or any(key in params for key in ("answers", "card_id", "request_id"))):
+            return False
+        if (self._is_interrupt_resume_dispatch(params) or self._wants_attach_goal(params)
                 or self._resolve_input_dispatch_mode(params) is not None):
             return False
         sid = self._resolve_interrupt_session_id(request.session_id)
@@ -4037,13 +4038,17 @@ class JiuWenSwarmDeepAdapter:
             if existing is not None:
                 if execution_request is not None:
                     try:
-                        # Page status commands can prewarm a restored child before text arrives.
-                        if existing._restored_permission_fresh_input(execution_request):
+                        # The parent owns this same-class child under the session lock.
+                        # Page status commands can prewarm it before text arrives.
+                        if existing._restored_permission_fresh_input(  # pylint: disable=protected-access
+                            execution_request,
+                        ):
                             await discard_restored_permission_batch(
-                                existing._instance, sid, existing._deep_agent_loop_session_id(),
+                                existing._instance, sid,  # pylint: disable=protected-access
+                                existing._deep_agent_loop_session_id(),  # pylint: disable=protected-access
                             )
                     except BaseException:
-                        await existing._isolate_permission_instance()
+                        await existing._isolate_permission_instance()  # pylint: disable=protected-access
                         await self._evict_failed_permission_session_adapter(sid, existing)
                         raise
                 if requested_mcp_scan_names is not None:
@@ -4155,7 +4160,9 @@ class JiuWenSwarmDeepAdapter:
                 # Keep this child unpublished until cold permission settlement succeeds.
                 restoring_permission = execution_request is not None
                 if restoring_permission:
-                    restoring_permission = adapter._restored_permission_fresh_input(execution_request)
+                    restoring_permission = adapter._restored_permission_fresh_input(  # pylint: disable=protected-access
+                        execution_request,
+                    )
                 if not restoring_permission:
                     self._session_adapters[sid] = adapter
                 if metadata.get("moa_enabled") is not effective_moa:
@@ -4210,7 +4217,8 @@ class JiuWenSwarmDeepAdapter:
                     )
                 if restoring_permission:
                     await discard_restored_permission_batch(
-                        adapter._instance, sid, adapter._deep_agent_loop_session_id(),
+                        adapter._instance, sid,  # pylint: disable=protected-access
+                        adapter._deep_agent_loop_session_id(),  # pylint: disable=protected-access
                     )
                     await self._reload_session_adapter_if_stale(
                         sid, adapter, host_external_input=host_external_input, freshly_built=True,
@@ -4218,7 +4226,7 @@ class JiuWenSwarmDeepAdapter:
                     self._session_adapters[sid] = adapter
             except BaseException:
                 if restoring_permission:
-                    await adapter._isolate_permission_instance()
+                    await adapter._isolate_permission_instance()  # pylint: disable=protected-access
                     # Publish only an isolated owner, then use the existing cleanup gate.
                     self._session_adapters[sid] = adapter
                     await self._evict_failed_permission_session_adapter(sid, adapter)

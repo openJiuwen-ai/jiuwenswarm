@@ -3448,10 +3448,10 @@ class AgentRuntime:
         if (
             request.req_method is not ReqMethod.CHAT_SEND
             or str(params.get("source") or "").strip() != "permission_interrupt"
-            or cls._request_targets_team(request)
-            or not cls._is_single_agent_session_mode(
-                params.get("mode"), work_mode=params.get("work_mode"),
-            )
+        ):
+            return
+        if cls._request_targets_team(request) or not cls._is_single_agent_session_mode(
+            params.get("mode"), work_mode=params.get("work_mode"),
         ):
             return
         from jiuwenswarm.runtime.interaction import InteractionAnswerError, validate_answer_items

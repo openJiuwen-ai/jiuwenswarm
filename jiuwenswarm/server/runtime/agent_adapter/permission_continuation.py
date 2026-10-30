@@ -360,13 +360,16 @@ def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id:
                and "tool_invocation_key" in request.metadata for request in requests):
         return None
     expected = {getattr(call, "id", None): call for call in calls}
-    if None in expected or "" in expected or len(expected) != len(calls) or set(expected) != set(interrupted):
+    if None in expected or "" in expected:
+        raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+    if len(expected) != len(calls) or set(expected) != set(interrupted):
         raise RootPermissionQueueError("permission_continuation_identity_mismatch")
     for call, key in _permission_entries(state):
         original = expected[call.id]
         if (key.root_session_id != target_sid or key.execution_session_id != target_sid
-                or key.tool_call_id != call.id or call.name != original.name
-                or call.arguments != original.arguments):
+                or key.tool_call_id != call.id):
+            raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+        if call.name != original.name or call.arguments != original.arguments:
             raise RootPermissionQueueError("permission_continuation_identity_mismatch")
     return message
 
@@ -383,7 +386,7 @@ async def discard_restored_permission_batch(
     message = unanswered_permission_batch(instance, target_sid, loop_session_id)
     if message is None:
         raise RootPermissionQueueError("permission_continuation_state_missing")
-    session = instance._loop_session
+    session = instance.loop_session
     engine = instance.react_agent.context_engine
     context = engine.get_context(session_id=target_sid)
     if context is None:
@@ -395,9 +398,11 @@ async def discard_restored_permission_batch(
     messages = list(context.get_messages() or [])
     if any(getattr(item, "tool_call_id", None) in ids for item in messages):
         raise RootPermissionQueueError("permission_continuation_context_mismatch")
-    existing = [item for item in messages
-                if any(getattr(call, "id", None) in ids
-                       for call in (getattr(item, "tool_calls", None) or []))]
+    existing = []
+    for item in messages:
+        calls = getattr(item, "tool_calls", None) or []
+        if any(getattr(call, "id", None) in ids for call in calls):
+            existing.append(item)
     if existing and (len(existing) != 1 or existing[0].tool_calls != message.tool_calls):
         raise RootPermissionQueueError("permission_continuation_context_mismatch")
     try:
