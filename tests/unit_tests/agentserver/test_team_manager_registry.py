@@ -1277,6 +1277,53 @@ async def test_interact_uses_runner_only_for_active_session(
 
 
 @pytest.mark.asyncio
+async def test_purge_team_member_skill_mounts_probes_global_runner_pool(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """team_agent=None 的本地主路径必须经 GLOBAL_RUNNER 实例的 pool 枚举 leader。
+
+    误传 Runner 类时：Runner 不持有 _team_runtime_manager（那是 _RunnerImpl
+    的实例属性），helper 会新建一个空池 manager 并 setattr 到 Runner 类上
+    ——teams_for_session 恒空（purge 静默空转）且污染类属性。旧实现本用例
+    必红：捕获到的探池对象是 Runner 类而非 GLOBAL_RUNNER 实例。
+    """
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    from jiuwenswarm.agents.harness.team import team_manager as tm_mod
+
+    manager = _TeamManagerHarness()
+    monkeypatch.setattr(manager, "_resolve_session_agent_group", lambda _sid: "group-x")
+    monkeypatch.setattr(tm_mod, "_collect_team_package_skill_dirs", lambda _g: ["dir1"])
+
+    probed_runner: list[object] = []
+    purged: list[tuple[object, list[str]]] = []
+    leader = SimpleNamespace(name="leader-1")
+
+    class _FakePool:
+        async def teams_for_session(self, session_id: str):
+            assert session_id == "sess-purge"
+            return [SimpleNamespace(agent=leader)]
+
+    def fake_manager_helper(runner):
+        probed_runner.append(runner)
+        return SimpleNamespace(pool=_FakePool())
+
+    async def fake_purge(runtime, skill_dirs):
+        purged.append((runtime, skill_dirs))
+
+    monkeypatch.setattr(tm_mod, "_runner_team_runtime_manager", fake_manager_helper)
+    monkeypatch.setattr(tm_mod, "_iter_local_member_runtimes", lambda _leader: ["rt1"])
+    monkeypatch.setattr(tm_mod, "_purge_runtime_skill_mounts", fake_purge)
+
+    await manager._purge_team_member_skill_mounts("sess-purge", team_agent=None)
+
+    assert probed_runner == [GLOBAL_RUNNER], (
+        "探池必须打 GLOBAL_RUNNER 实例（不是 Runner 类——类上没有 pool 状态）"
+    )
+    assert purged == [("rt1", ["dir1"])], "枚举到的 leader 成员 runtime 必须实际被 purge"
+
+
+@pytest.mark.asyncio
 async def test_interact_bumps_user_turn_epoch_only_for_answer_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
