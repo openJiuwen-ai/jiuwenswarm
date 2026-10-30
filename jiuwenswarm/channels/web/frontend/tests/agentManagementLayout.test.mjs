@@ -573,19 +573,27 @@ test('group card actions keep uninstall in the detail page and install created g
   assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{/);
 });
 
-test('failed expert upload install rolls back the import and shows the backend error in the notice slot', () => {
+test('failed expert upload install rolls back the import and shows the error in the upload dialog', () => {
   assert.match(panelSource, /onError: \(message\) => \{ installErrorMessage = message; \}/);
   // Only a definite backend rejection rolls the import back; uncertain
   // outcomes (timeout/disconnect) keep the package for a manual retry.
   assert.match(panelSource, /installFailed = outcome === 'failed';/);
   assert.match(panelSource, /installOutcomeUnknown = outcome === 'uncertain';/);
+  // Install failure keeps the dialog open and shows the error inside it
+  // instead of closing the dialog and showing a notice on the card page.
   assert.match(
     panelSource,
-    /if \(installFailed\) \{[\s\S]*client\.deleteDefinition\(result\.id\)[\s\S]*\}[\s\S]*showActionNotice\(installErrorMessage \|\| t\('agentManagement\.states\.actionError'\), true\);/,
+    /if \(installFailed\) \{[\s\S]*client\.deleteDefinition\(result\.id\)[\s\S]*\}[\s\S]*if \(installFailed\) \{[\s\S]*setGroupUploadError\(installErrorMessage \|\| t\('agentManagement\.states\.actionError'\)\)[\s\S]*setUploadError\(installErrorMessage \|\| t\('agentManagement\.states\.actionError'\)\)/,
   );
   assert.match(
     panelSource,
-    /\} else if \(installOutcomeUnknown\) \{\s*\n\s*showActionNotice\(t\('agentManagement\.states\.installOutcomeUnknown'\), true\);/,
+    /\} else if \(installOutcomeUnknown\) \{\s*\n\s*if \(kind === 'group'\) setGroupUploadError\(t\('agentManagement\.states\.installOutcomeUnknown'\)\)/,
+  );
+  // The dialog must NOT be closed inside the installFailed branch —
+  // setUploadDialogOpen(false) only appears in the success branch.
+  assert.match(
+    panelSource,
+    /\} else \{\s*\n\s*setUploadDialogOpen\(false\);\s*\n\s*setUploadError\(null\);\s*\n\s*setGroupUploadDialogOpen\(false\);/,
   );
   // The canned "imported but install failed" notice is fully replaced by the
   // raw backend error message.
