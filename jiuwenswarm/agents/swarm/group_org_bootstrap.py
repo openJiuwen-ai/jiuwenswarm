@@ -345,18 +345,12 @@ def _owner_for_organization(
     *,
     legacy_id: str,
 ) -> str:
-    """Keep the Owner when this expert set rejoins its organization.
+    """Owner is always the first @ for this round.
 
-    A new set uses the first mentioned team. A plan stored before organization
-    ids existed is treated as the legacy session organization.
+    Rounds no longer rejoin a prior organization id, so there is no retained
+    Owner to prefer. Unused parameters remain for call-site compatibility.
     """
-    for earlier in reversed(plans):
-        saved = str(earlier.get("organization_id") or "").strip() or legacy_id
-        if saved != organization_id:
-            continue
-        previous = str(earlier.get("owner_member") or "")
-        if previous in names:
-            return previous
+    del organization_id, plans, legacy_id
     return names[0]
 
 
@@ -404,9 +398,9 @@ def record_organization_plan(
     )
     if existing is not None:
         return existing
-    # A new expert set takes the first mentioned team as Owner. Rejoining the
-    # same set keeps that organization's Owner, so a different @ order does not
-    # add a second owner. Overlapping instances wait in _blocking_earlier_plans.
+    # Each multi-@ round creates a new organization; Owner is the first @.
+    # Expert-team instances are still reused. Overlapping live rounds wait in
+    # _blocking_earlier_plans.
     plans = group_organization_plans(session_id)
     organization_id = resolve_organization_id(
         session_id,
@@ -2982,11 +2976,37 @@ async def _run_owner_proxy(
         raise
     finally:
         try:
-            if start_watchdog is not None:
-                start_watchdog.cancel()
-            _results.pop(key, None)
-            try:
-                await pause_organization_instances(
+            await pause_organization_instances(
+                session_id=session_id,
+                task_pool=task_pool,
+                team_ids=[
+                    str(item["team_id"])
+                    for item in group_organization_teams(session_id)
+                    if item.get("team_id")
+                ],
+                include_summary=completed,
+            )
+        except Exception:
+            logger.exception("group organization pause failed session=%s", session_id)
+        # Release while this plan is still the live one, then mark it done or
+        # failed. Marking it earlier let the next queued round bind, and this
+        # finally then released that new binding. A failed round releases too,
+        # but only while the instance still points at this organization.
+        try:
+            bound_now = await _live_backend(runtime, team_id, session_id)
+            current = _bound_organization(bound_now)
+            if current and current != organization_id:
+                logger.info(
+                    "group organization release skipped; instance moved "
+                    "session=%s plan=%s bound=%s",
+                    session_id,
+                    plan_id,
+                    current,
+                )
+            else:
+                await dissolve_completed_swarm_organization(
+                    org_runtime=org_runtime,
+                    task_pool=task_pool,
                     session_id=session_id,
                     task_pool=task_pool,
                     team_ids=[
@@ -2996,9 +3016,15 @@ async def _run_owner_proxy(
                     ],
                     include_summary=completed,
                 )
-            except Exception:
-                logger.exception(
-                    "group organization pause failed session=%s", session_id
+        except Exception:
+            logger.exception(
+                "group organization dissolve failed session=%s",
+                session_id,
+            )
+        try:
+            if failed_error is not None:
+                update_group_organization_plan(
+                    session_id, plan_id, status="failed", error=failed_error
                 )
             # Release while this plan is still the live one, then mark it done
             # or failed. Marking it earlier let the next queued round bind, and

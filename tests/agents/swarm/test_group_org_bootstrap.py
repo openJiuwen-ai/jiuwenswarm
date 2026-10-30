@@ -595,8 +595,10 @@ def test_identical_expert_set_still_gets_a_new_organization(monkeypatch):
         plan_id="round-3",
     )
     assert set(same["members"]) == set(first["members"])
-    assert same["organization_id"] == first["organization_id"]
-    assert same["owner_member"] == first["owner_member"] == "insight"
+    assert same["organization_id"] == bootstrap.new_organization_id(SESSION, "round-2")
+    assert same["organization_id"] != first["organization_id"]
+    assert same["owner_member"] == "business"
+    assert first["owner_member"] == "insight"
     assert changed["organization_id"] == bootstrap.new_organization_id(SESSION, "round-3")
     assert changed["organization_id"] != first["organization_id"]
     assert bootstrap.instance_team_id(SESSION, "insight") == bootstrap.instance_team_id(
