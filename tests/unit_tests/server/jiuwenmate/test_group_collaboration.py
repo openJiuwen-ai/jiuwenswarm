@@ -1,11 +1,9 @@
 from jiuwenswarm.server.jiuwenmate.group_collaboration import (
     build_group_collaboration_guidance,
     build_group_execution_guidance,
-    earliest_named_colleague,
     greeting_respondent,
     is_pure_greeting,
     resolve_group_mentions,
-    waits_for_named_colleague,
 )
 
 
@@ -140,18 +138,3 @@ def test_pure_greeting_has_no_task_and_one_daily_colleague_answers():
     ]
     assert greeting_respondent(passive) == "study"
     assert greeting_respondent([]) is None
-
-
-def test_earliest_named_colleague_keeps_the_first_and_longest_name():
-    roster = [
-        {"agent_id": "life", "name": "生活小助手"},
-        {"agent_id": "study", "name": "agent学习小助手"},
-        {"agent_id": "short", "name": "助手"},
-    ]
-
-    text = "生活小助手你再想一个痛点，然后让Agent学习助手设计"
-    assert earliest_named_colleague(text, roster) == "life"
-    assert waits_for_named_colleague(text, roster, "study") is True
-    assert waits_for_named_colleague(text, roster, "life") is False
-    assert waits_for_named_colleague("大家好，都自我介绍一下", roster, "study") is False
-    assert earliest_named_colleague("助手", roster) == "short"

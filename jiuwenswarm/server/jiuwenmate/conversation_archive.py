@@ -19,7 +19,7 @@ from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 from openjiuwen.harness.persistent_agent import GroupMessage
 
 # The Swarm group record keeps this many newest messages. Older rows are deleted.
-_RETAINED_MESSAGES = 100
+_RETAINED_MESSAGES = 5000
 _RICH_TEXT_MENTION = re.compile(r"@[^\s@]+")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS archive_info (
@@ -248,6 +248,54 @@ class ConversationArchive:
             return ArchivePage("incomplete" if partial else "found" if page else "empty",
                                tuple(GroupMessage.model_validate_json(row["payload"]) for row in page),
                                next_cursor, scanned, "known collection gap" if partial else None)
+
+    def history_page(self, namespace_id: str, group_id: str, *, cursor: str | None, limit: int,
+                     visible_from: datetime, reader_id: str) -> ArchivePage:
+        """Read the newest public page, then continue toward older retained messages."""
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise PersistentAgentError("invalid group page limit")
+        with self.connection(namespace_id, group_id) as conn:
+            _retain_latest(conn)
+            info = conn.execute("SELECT * FROM archive_info").fetchone()
+            secret = bytes(conn.execute("SELECT secret FROM archive_secrets WHERE singleton=1").fetchone()[0])
+            scope = hashlib.sha256(json.dumps([namespace_id, group_id, reader_id,
+                                              utc_time(visible_from).isoformat()]).encode()).hexdigest()
+            current_upper = conn.execute("SELECT COALESCE(MAX(ingest_seq),0) FROM messages").fetchone()[0]
+            upper = current_upper
+            before = upper + 1
+            if cursor is not None:
+                try:
+                    state = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+                    before, cursor_upper, revision, cursor_scope, signature = state
+                    signed = json.dumps([cursor_scope, before, cursor_upper, revision]).encode()
+                    expected = hmac.new(secret, signed, hashlib.sha256).hexdigest()
+                    if (type(before) is not int or type(cursor_upper) is not int or type(revision) is not int
+                            or cursor_scope != scope or cursor_upper > current_upper
+                            or revision > info["content_revision"] or not 1 <= before <= cursor_upper + 1
+                            or not hmac.compare_digest(signature, expected)):
+                        raise ValueError("cursor scope changed")
+                    upper = cursor_upper
+                except (ValueError, TypeError, UnicodeError, OverflowError):
+                    return ArchivePage("incomplete", reason="unknown or expired group cursor")
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE ingest_seq < ? AND ingest_seq <= ? AND received_at_us >= ? "
+                "ORDER BY ingest_seq DESC LIMIT ?",
+                (before, upper, time_micros(visible_from), limit + 1),
+            ).fetchall()
+            more = len(rows) > limit
+            page = list(reversed(rows[:limit]))
+            next_cursor = None
+            if more and page:
+                position = page[0]["ingest_seq"]
+                signed = json.dumps([scope, position, upper, info["content_revision"]]).encode()
+                state = [position, upper, info["content_revision"], scope,
+                         hmac.new(secret, signed, hashlib.sha256).hexdigest()]
+                next_cursor = base64.urlsafe_b64encode(json.dumps(state).encode()).decode()
+            partial = bool(info["gap"])
+            messages = tuple(GroupMessage.model_validate_json(row["payload"]) for row in page)
+            return ArchivePage("incomplete" if partial else "found" if messages else "empty", messages,
+                               next_cursor, messages[0].message_id if messages else None,
+                               "known collection gap" if partial else None)
 
 
 def _retain_latest(conn) -> None:

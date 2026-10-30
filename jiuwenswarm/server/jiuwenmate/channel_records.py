@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
+from urllib.parse import unquote
 
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
@@ -32,6 +33,17 @@ def _event_type(event) -> str:
 
 def _number(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _attachment_views(group, message) -> list[dict[str, str]]:
+    if message.status in {"recalled", "unavailable"}:
+        return []
+    attachments = []
+    prefix = f"{group.platform}:outgoing-attachment:"
+    for reference in message.attachment_refs:
+        name = unquote(reference[len(prefix):]) if reference.startswith(prefix) else ""
+        attachments.append({"name": name, "kind": "file"})
+    return attachments
 
 
 def _usage_tokens(payload) -> tuple[int, int]:
@@ -239,7 +251,7 @@ class ChannelRecords:
         by_group: dict[str, list] = {}
         for access in self._groups.active_accesses(namespace_id, agent_id):
             by_group.setdefault(access.group_id, []).append(access)
-        chosen: dict[tuple[str, str], tuple[dict[str, object], datetime | None]] = {}
+        channels: list[tuple[dict[str, object], datetime | None]] = []
         now = self._clock()
         for group_id, accesses in by_group.items():
             if len(accesses) != 1:
@@ -251,29 +263,33 @@ class ChannelRecords:
                 "id": group_id,
                 "name": name,
                 "platform": group.platform,
+                "coverage": "received_events_only" if group.platform == "dingtalk" else "archive",
                 "artifacts": 0,
                 "token_usage": 0,
                 "last_response_minutes": 0 if latest is None else max(0, int((now - latest).total_seconds() // 60)),
             }
-            key = (group.platform, name.strip().casefold())
-            current = chosen.get(key)
-            if current is None or (latest is not None and (current[1] is None or latest > current[1])):
-                chosen[key] = (channel, latest)
-        return [item for item, _latest in chosen.values()]
+            channels.append((channel, latest))
+        channels.sort(key=lambda item: item[1] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return [item for item, _latest in channels]
 
-    def messages(self, namespace_id: str, agent_id: str, group_id: str) -> dict[str, object]:
-        """Recent public messages visible to this colleague. A missing archive is an empty page."""
+    def messages(self, namespace_id: str, agent_id: str, group_id: str,
+                 cursor: str | None = None) -> dict[str, object]:
+        """A public history page visible to this colleague. A missing archive is an empty page."""
         access = self._readable(namespace_id, agent_id, group_id)
         try:
-            page = self._archive.recent(
-                namespace_id, group_id, cursor=None, limit=_MESSAGE_LIMIT, visible_from=access.visible_from,
-                reader_id=agent_id,
+            page = self._archive.history_page(
+                namespace_id, group_id, cursor=cursor, limit=_MESSAGE_LIMIT,
+                visible_from=access.visible_from, reader_id=agent_id,
             )
         except PersistentAgentError:
-            return {"messages": [], "status": "empty"}
+            return {"messages": [], "status": "empty", "next_cursor": None}
         labels = self._human_labels(namespace_id, group_id)
+        group = self._groups.get(namespace_id, group_id)
         return {
             "status": page.status,
+            "next_cursor": page.next_cursor,
+            "coverage": "received_events_only" if group.platform == "dingtalk" else "archive",
+            "coverage_reason": page.reason,
             "messages": [
                 {
                     "id": item.message_id,
@@ -288,7 +304,7 @@ class ChannelRecords:
                     "text": "" if item.text is None else item.text,
                     "status": item.status,
                     "received_at": item.received_at.isoformat(),
-                    "attachments": len(item.attachment_refs),
+                    "attachments": _attachment_views(group, item),
                 }
                 for item in page.messages
             ],

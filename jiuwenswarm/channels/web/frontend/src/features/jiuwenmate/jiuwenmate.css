@@ -1411,7 +1411,7 @@
 }
 
 .jiuwenmate-workspace--panel-open:not(.jiuwenmate-workspace--collapsed) {
-  grid-template-columns: minmax(320px, 368px) minmax(0, 1fr) minmax(320px, 368px);
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) clamp(320px, 31vw, 600px);
 }
 
 .jiuwenmate-workspace--collapsed,
@@ -2594,7 +2594,7 @@
 .jiuwenmate-session-view footer {
   display: grid;
   flex-shrink: 0;
-  width: min(720px, calc(100% - 48px));
+  width: min(720px, 100%);
   gap: 6px;
   margin: 0 auto;
   padding-bottom: 12px;
@@ -2608,26 +2608,89 @@
 
 .jiuwenmate-channel-view {
   display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   min-height: 100%;
   flex-direction: column;
 }
 
+.jiuwenmate-side-panel .jiuwenmate-channel-view {
+  height: 100%;
+  min-height: 0;
+}
+
+.jiuwenmate-channel-detail__header {
+  display: flex;
+  min-height: 52px;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.jiuwenmate-channel-detail__header > strong {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-channel-detail__header > strong svg {
+  flex: none;
+}
+
+.jiuwenmate-channel-detail__header > .jiuwenmate-link-button {
+  flex: none;
+  margin-left: auto;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages {
+  overflow-y: auto;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] {
+  justify-items: stretch;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] > header {
+  flex-direction: row;
+}
+
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] > p,
+.jiuwenmate-side-panel .jiuwenmate-channel-view__messages article[data-own='true'] > .jiuwenmate-attachment-card {
+  max-width: 100%;
+  justify-self: start;
+}
+
 .jiuwenmate-channel-view__messages {
   display: grid;
-  width: min(720px, calc(100% - 48px));
+  width: min(720px, 100%);
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 22px;
   margin: 0 auto;
-  padding: 8px 0 40px;
+  padding: 8px clamp(12px, 3vw, 24px) 40px;
 }
 
 .jiuwenmate-channel-view__messages article {
   display: grid;
+  min-width: 0;
   gap: 8px;
 }
 
 .jiuwenmate-channel-view__messages article > header {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 8px;
 }
@@ -2635,6 +2698,22 @@
 .jiuwenmate-channel-view__messages article > header strong {
   font-size: 13px;
   font-weight: 600;
+}
+
+.jiuwenmate-channel-view__messages article > header time {
+  color: var(--jm-text-3);
+  font-size: 11px;
+}
+
+.jiuwenmate-channel-history-notice {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--jm-muted-2);
+  color: var(--jm-text-2);
+}
+
+.jiuwenmate-channel-history-more {
+  justify-self: center;
 }
 
 .jiuwenmate-channel-view__messages article[data-own='true'] {
@@ -2668,8 +2747,10 @@
 }
 
 .jiuwenmate-channel-view__messages p {
+  max-width: 100%;
   font-size: 13px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
 .jiuwenmate-mention {
@@ -2679,6 +2760,8 @@
 .jiuwenmate-attachment-card {
   display: flex;
   width: 300px;
+  max-width: 100%;
+  box-sizing: border-box;
   align-items: center;
   gap: 10px;
   padding: 14px;

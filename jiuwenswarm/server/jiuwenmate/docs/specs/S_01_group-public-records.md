@@ -7,16 +7,16 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / group-public-records |
 | 关联模块 | `jiuwenswarm.server.jiuwenmate` 群归档、访问关系与 `ports.group_chat` |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联 feature | [F_11](../features/F_11_group-public-records.md)、[F_21](../features/F_21_cross-group-search.md)、[F_21_03](../features/F_21_03_group-sharing-approval.md) |
 
 本规约维护 JM-11 已实现的宿主契约；验证证据、未完成的生产验证及交付状态见 F_11 和开发计划。
 
 ## 1. 范围、术语与适用条件
 
-本模块负责 JiuwenMate 飞书群消息的公共归档、Agent—群关系、当前群读取、单群底层查询及 PA-23 跨群搜索的宿主实现。agent-core 负责 PA-07 参与判断、PA-23 工具和窗口背景合并；搜索 DTO 与公共 `GroupChatPort` 签名以 agent-core 的 `specs/S_09_group-chat-and-knowledge.md` 为准。
+本模块负责 JiuwenMate 飞书与钉钉群消息的公共归档、Agent—群关系、当前群读取和频道记录展示，以及 PA-23 跨群搜索的宿主实现。钉钉目前只接入公共记录展示，未完成跨群查询所需的实时成员核验。agent-core 负责 PA-07 参与判断、PA-23 工具和窗口背景合并；搜索 DTO 与公共 `GroupChatPort` 签名以 agent-core 的 `specs/S_09_group-chat-and-knowledge.md` 为准。
 
-仅绑定 JiuwenMate Agent 的飞书渠道接入此链。个人版和集群模式不订阅新增生命周期事件，不使用本模块端口。JM-21 跨群子范围已接入宿主执行链并通过本地 SQLite、真实 core 与模型替身验证；真实飞书成员核验及平台联调尚未完成。JM-21 的其他 IM 平台扩展不在本规约范围。
+仅绑定 JiuwenMate Agent 的飞书或钉钉渠道接入此链。个人版和集群模式不订阅新增生命周期事件，不使用本模块端口。钉钉记录只代表机器人回调实际送达并被保存的消息；当前回调不构成完整群历史来源，读取状态必须标记为不完整，且不提供历史回拉承诺。JM-21 跨群子范围已接入宿主执行链并通过本地 SQLite、真实 core 与模型替身验证；真实平台成员核验及联调尚未完成。
 
 ## 2. 数据结构与事实归属
 
@@ -27,7 +27,7 @@
 | 群身份、群名 | `agents.sqlite3` 中 `group_chats`、`group_details`；`GroupChatRepository` |
 | Agent 访问关系 | 同库 `agent_group_access`；可信入站事实和成员事件更新 |
 | 公共消息与撤回 | `group_messages/<group_id>/messages.sqlite3`；`ConversationArchive` |
-| 附件引用 | `GroupMessage.attachment_refs`；目前只保留来源引用，不下载文件 |
+| 附件引用 | `GroupMessage.attachment_refs`；保存平台来源和已确认投递文件名，不下载文件 |
 | 已发送消息的归档进度 | `agents.sqlite3` 中 `group_delivery_archives`；投递服务与归档回调 |
 | 跨群搜索游标 | `agents.sqlite3` 中 `group_search_cursors`；`GroupSearchCursorRepository`，保存 token 摘要和查询／授权／归档分页元数据，不保存正文或文件路径 |
 
@@ -92,7 +92,7 @@ Gateway 使用当前渠道凭据查询，并以内部 E2A 方法 `jiuwenmate.gro
 
 需要续页时，宿主发放 15 分钟有效的不透明随机游标。`group_search_cursors` 只保存游标 SHA-256 摘要、namespace、Agent、规范化查询摘要及授权／归档快照、上界和最后排序键，不保存正文或物理路径。续页必须使用相同查询并重新核验全部目标授权；授权修订、可见下界或群名变化，归档内容修订／撤回，游标失效或过期均拒绝旧页。首轮上界之后新增的消息不进入该游标结果。
 
-仅当目标范围完整读取且没有已知采集缺口时，才能返回 `found` 或 `empty` 并令 `query_complete=true`。有下一页时返回 `incomplete` 和 next_cursor；存在部分可读目标、已知缺口、读取中变化或无法取得下一页时返回无 cursor 的 `incomplete`；没有任何可读取目标归档时返回 `failed`。授权未知或查询目标不可用返回 `unavailable`，执行身份不匹配返回 `forbidden`。搜索结果不代表飞书平台全量历史，JM-11 §6 的归档限制继续适用。
+仅当目标范围完整读取且没有已知采集缺口时，才能返回 `found` 或 `empty` 并令 `query_complete=true`。有下一页时返回 `incomplete` 和 next_cursor；存在部分可读目标、已知缺口、读取中变化或无法取得下一页时返回无 cursor 的 `incomplete`；没有任何可读取目标归档时返回 `failed`。授权未知或查询目标不可用返回 `unavailable`，执行身份不匹配返回 `forbidden`。搜索结果不代表平台全量历史；钉钉不完整回调带来的缺口会保持 `incomplete`，JM-11 §6 的归档限制继续适用。
 
 ### 4.6 所有者跨群分享审批
 
@@ -120,15 +120,15 @@ Core 以 GroupMessageApprovalRequired 发出安全中断，事件携带可选 ap
 
 ## 5. 生命周期与部分成功
 
-已确认 Feishu 发送 ACK 先持久化，再以实际平台消息 ID 和发送正文归档。归档标记仅在群库提交后写入；中间失败留下可重试项，已有投递扫描在运行和重启后继续补归档。没有发送 ACK 的模型候选不进入公共群历史。
+已确认 Feishu / DingTalk 发送 ACK 先持久化，再以实际平台消息 ID 和发送正文归档。归档标记仅在群库提交后写入；中间失败留下可重试项，已有投递扫描在运行和重启后继续补归档。没有发送 ACK 的模型候选不进入公共群历史。
 
 补归档按 `updated_at, delivery_id` 稳定分页；本进程保留扫描位置，到尾后重新扫描。失败项保留，但不会令下一轮总停在最早一批而阻断其他群；重启可从头扫描，进度丢失只导致幂等重读，不导致重发。
 
-删除 Agent 删除其访问关系，但保留共享群消息库。每个群只保留最近 100 条消息，更早的在写入或读取时删除；关闭能力不删除整个归档。每次数据库访问独立开启与释放连接，不跨调用持有 SQLite 事务。
+删除 Agent 删除其访问关系，但保留共享群消息库。每个群最多保留最近 5000 条消息，更早的在写入或读取时删除；部署升级前已经清理的旧消息无法恢复。Web 群记录按每页 100 条读取，使用签名游标向较早记录翻页。关闭能力不删除整个归档。每次数据库访问独立开启与释放连接，不跨调用持有 SQLite 事务。
 
 ## 6. 限制与兼容
 
-不回拉接入前的完整历史，不下载附件，不撤销已经进入模型窗口的派生内容，不承诺跨库原子提交或平台事件无损。现有跨 namespace 群 ID 冲突须报错处理，不自动改写 Session 引用。平台真实成员与消息状态、断连重投行为仍须真实飞书验证。
+不回拉接入前的完整历史，不下载附件，不撤销已经进入模型窗口的派生内容，不承诺跨库原子提交或平台事件无损。现有跨 namespace 群 ID 冲突须报错处理，不自动改写 Session 引用。飞书成员与消息状态、断连重投行为仍须真实联调；钉钉全量群历史和实时成员核验未实现。
 
 本模块不替代宿主 PA-18 容量配置与可靠计数支持；正式执行需满足 core 最新装配条件。生产能力不能由端口构造成功或模型替身测试推导。
 
