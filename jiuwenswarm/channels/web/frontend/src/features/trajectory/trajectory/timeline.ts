@@ -166,15 +166,22 @@ function requestGroupKey(cell: Pick<TrajectoryCellProps, 'requestRecordId' | 'ph
   return undefined
 }
 
+type PrepTimedSpan = TrajectoryTimelineSpan & {
+  groupKey?: string
+  behaviorOrder?: number
+}
+
 /**
  * Context-window commits often record after inference start, so a raw wall-clock
  * projection draws CONTEXT over the ASSISTANT bar. Slide those prep rows back
  * into the open interval after earlier on-time prep (USER/SYSTEM) and before
- * the model reply, matching ledger phase order without rewriting recorded times.
+ * the model reply, matching ledger phase order without rewriting cell.startedAt.
+ *
+ * Only mutate display coordinates. Callers that feed shared-axis `toWall` brush
+ * selection must keep absolute wall-clock spans (see deriveTimedTimeline /
+ * alignPrepSpansBeforeModel).
  */
-function placePrepSpansBeforeModel(
-  spans: Array<TrajectoryTimelineSpan & { groupKey?: string; behaviorOrder?: number }>,
-): void {
+function placePrepSpansBeforeModel(spans: PrepTimedSpan[]): void {
   const messageStartByGroup = new Map<string, number>()
   for (const span of spans) {
     if (span.groupKey === undefined || !isModelCell(span.kind)) continue
@@ -218,10 +225,11 @@ function placePrepSpansBeforeModel(
       )
     const room = messageStart - floor
     if (!(room > 0)) {
+      // No open interval before the reply: park as a point on the reply edge
+      // instead of extending a duration into the ASSISTANT bar.
       for (const span of late) {
-        const duration = Math.max(0, span.end - span.start)
         span.start = messageStart
-        span.end = messageStart + duration
+        span.end = messageStart
       }
       continue
     }
@@ -461,7 +469,10 @@ function deriveTimedTimeline(
   })
   const rawSpans = timedTurns.flatMap(turn => turn.rawSpans)
   if (rawSpans.length === 0) return null
-  placePrepSpansBeforeModel(rawSpans)
+  // Duration mode already abandons absolute wall-clock identity via idle
+  // compression. Relocating late prep there keeps ledger phase order without
+  // desyncing shared-axis toWall selection (analysis browse uses time/actual).
+  if (compressIdle) placePrepSpansBeforeModel(rawSpans)
 
   const removedIdleBySpan = new Map<TimedRawSpan, number>()
   let removedIdle = 0
@@ -488,9 +499,6 @@ function deriveTimedTimeline(
         kind: span.kind,
         label: span.label,
         lane: span.lane,
-        ...(span.segment === undefined ? {} : { segment: span.segment }),
-        ...(span.splitFraction === undefined ? {} : { splitFraction: span.splitFraction }),
-        ...(span.coveredIndexes === undefined ? {} : { coveredIndexes: span.coveredIndexes }),
       }
     })
     spans.push(...projected)
@@ -507,6 +515,60 @@ function deriveTimedTimeline(
     end: Math.max(...spans.map(span => span.end)),
     spans,
     turnBoundaries,
+  }
+}
+
+/**
+ * Browse-only display realignment for wall-clock projections (`time` / `actual`).
+ *
+ * Duration mode relocates inside `deriveTimedTimeline` because idle compression
+ * already drops absolute wall identity. Wall-clock modes keep recorded span
+ * times for shared-axis `toWall` brush selection; the overview may still slide
+ * late prep for ledger-phase readability while left-drag is free to pan
+ * (`lockViewport === false`). Diagnosis selection locks the viewport and must
+ * keep the unrelocated model so brushed wall ranges cover real record times.
+ */
+export function alignPrepSpansBeforeModel(
+  model: TrajectoryTimelineModel | null,
+  turns: readonly TrajectoryTurnModel[],
+): TrajectoryTimelineModel | null {
+  if (model === null || model.spans.length === 0) return model
+  const metaByIndex = new Map<number, { groupKey?: string; behaviorOrder?: number }>()
+  for (const turn of turns) {
+    for (const group of turn.groups) {
+      for (const cell of group.cells) {
+        if (cell.requestOnly === true) continue
+        const groupKey = requestGroupKey(cell)
+        metaByIndex.set(cell.index, {
+          ...(groupKey === undefined ? {} : { groupKey }),
+          ...(cell.behaviorOrder === undefined ? {} : { behaviorOrder: cell.behaviorOrder }),
+        })
+      }
+    }
+  }
+  const spans: PrepTimedSpan[] = model.spans.map((span) => {
+    const meta = metaByIndex.get(span.index)
+    return {
+      ...span,
+      ...(meta?.groupKey === undefined ? {} : { groupKey: meta.groupKey }),
+      ...(meta?.behaviorOrder === undefined ? {} : { behaviorOrder: meta.behaviorOrder }),
+    }
+  })
+  placePrepSpansBeforeModel(spans)
+  return {
+    ...model,
+    spans: spans.map((span): TrajectoryTimelineSpan => ({
+      start: span.start,
+      end: span.end,
+      index: span.index,
+      isError: span.isError,
+      kind: span.kind,
+      label: span.label,
+      lane: span.lane,
+      ...(span.segment === undefined ? {} : { segment: span.segment }),
+      ...(span.splitFraction === undefined ? {} : { splitFraction: span.splitFraction }),
+      ...(span.coveredIndexes === undefined ? {} : { coveredIndexes: span.coveredIndexes }),
+    })),
   }
 }
 
