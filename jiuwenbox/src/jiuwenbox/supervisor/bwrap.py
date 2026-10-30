@@ -237,6 +237,51 @@ class BwrapConfig:
         for spec in fs.bind_root_entries:
             BwrapConfig._apply_bind_root_entries(cfg, spec)
         for mount in fs.bind_mounts:
+            # 跨发行版布局差异容错：bind_mounts 是声明式列表（x86_64 布局有
+            # /lib64，Debian 系 arm64 只有 /lib -> usr/lib）。bwrap 对不存在的
+            # --ro-bind 源会直接失败（"Can't find source path ..."），单个缺失
+            # 条目就拖垮整个沙箱启动，这里降级为跳过 + warning。read_only 侧
+            # 无需同样处理：to_args 只对 created_paths 发 --remount-ro，未 bind
+            # 的路径天然被跳过。
+            #
+            # 存在性检查需处理两类边缘情况：
+            # 1. EACCES 等权限错误：Path.exists()/is_symlink() 可能抛 OSError
+            #    （CPython 只吞 ENOENT/ENOTDIR/ELOOP，EACCES 会外溢），若不兜底
+            #    则容错检查本身反而拖垮启动。
+            # 2. 悬空 symlink：exists() 跟随链接返回 False（与真正不存在不可区分），
+            #    但 is_symlink() 用 lstat 能区分——为运维提供更精确的诊断信号。
+            #    两种情况 bwrap 均会失败，此处一律跳过。
+            path = Path(mount.host_path)
+            try:
+                path_exists = path.exists()
+                is_broken_symlink = (
+                    not path_exists and path.is_symlink()
+                )
+            except OSError as exc:
+                logger.warning(
+                    "bind_mounts: cannot stat host_path %r: %s; "
+                    "skipping bind (sandbox_path=%s)",
+                    mount.host_path,
+                    exc,
+                    mount.sandbox_path,
+                )
+                continue
+            if not path_exists:
+                if is_broken_symlink:
+                    logger.warning(
+                        "bind_mounts: host_path %r is a broken symlink; "
+                        "skipping bind (sandbox_path=%s)",
+                        mount.host_path,
+                        mount.sandbox_path,
+                    )
+                else:
+                    logger.warning(
+                        "bind_mounts: host_path %r does not exist on this "
+                        "host; skipping bind (sandbox_path=%s)",
+                        mount.host_path,
+                        mount.sandbox_path,
+                    )
+                continue
             if mount.mode == "ro":
                 cfg.ro_binds.append((mount.host_path, mount.sandbox_path))
             else:
