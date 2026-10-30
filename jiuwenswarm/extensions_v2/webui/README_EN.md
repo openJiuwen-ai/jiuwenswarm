@@ -137,9 +137,10 @@ RenderNode(
 Hidden pages do not dispatch events and keep their local state by default; with destroyOnHidden they reinitialize after switching back.
 Disabled tabs and disconnected sessions cannot switch, and tab content also counts toward the depth and node budgets.
 
-Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
-Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
-instead of appending it to declared args. A node cannot declare both action and events.
+Legacy action components and legacy event names (`ui.press`, `ui.toggle`, `ui.input`) are removed:
+nodes only accept catalog components, and interactions are declared through `events` with `ui.click`,
+`ui.change`, `ui.press_enter`, `ui.select`, `ui.search` and `ui.clear`.
+Handlers read event data from `payload["data"]`; action declarations are no longer supported.
 Downstream frames use schema_version=1.
 
 Application entry, targets without a session, and file components are not supported.

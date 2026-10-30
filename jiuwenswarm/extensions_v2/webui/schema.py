@@ -10,9 +10,6 @@ from typing import Any
 
 from jiuwenswarm.extensions_v2.webui.constants import (
     CODE_SCHEMA_ERROR,
-    COMPONENT_PROPS,
-    CONTAINER_COMPONENTS,
-    INTERACTIVE_COMPONENTS,
     MAX_ACTION_ARGS_BYTES,
     MAX_DEPTH,
     MAX_FRAME_BYTES,
@@ -21,9 +18,8 @@ from jiuwenswarm.extensions_v2.webui.constants import (
     MAX_PROP_DEPTH,
     MAX_TEXT_BYTES,
     SESSION_SLOTS,
-    STYLE_TOKENS,
 )
-from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, check_value, validate_props
+from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, validate_props
 from jiuwenswarm.extensions_v2.webui.models import (
     RenderFrame,
     RenderMode,
@@ -136,41 +132,17 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
         return _fail(f"node count exceeds {MAX_NODES}")
 
     component_rule = COMPONENT_RULES.get(node.component)
-    old_props = COMPONENT_PROPS.get(node.component)
-    legacy = node.events is None and (
-        node.action is not None
-        or (component_rule is not None and old_props is not None
-            and bool(set(node.props) - component_rule["props"].keys()) and set(node.props) <= old_props)
-        or (node.component == "Tabs" and bool(node.children))
-    )
-    # Select the prop whitelist for action-based or event-based declarations.
-    allowed_props = old_props if legacy or component_rule is None else frozenset(component_rule["props"])
-    if allowed_props is None:
+    if component_rule is None:
         return _fail(f"component not allowed: {node.component}")
 
+    allowed_props = frozenset(component_rule["props"])
     unknown = set(node.props) - allowed_props
     if unknown:
         return _fail(f"props not allowed for {node.component}: {list(unknown)}")
 
-    if component_rule is not None and not legacy:
-        error = validate_props(node.component, node.props)
-        report = _fail(error) if error else _OK
-    else:
-        report = _validate_props(node, allowed_props)
-        if report.ok and component_rule is not None and node.action is not None:
-            for name, value in node.props.items():
-                prop_rule = component_rule["props"].get(name)
-                if prop_rule is not None and not check_value(prop_rule, value):
-                    return _fail(f"invalid {node.component}.{name}")
-    if not report.ok:
-        return report
-
-    if node.action is not None:
-        if node.events is not None:
-            return _fail("node cannot declare both action and events")
-        report = _validate_action(node)
-        if not report.ok:
-            return report
+    error = validate_props(node.component, node.props)
+    if error:
+        return _fail(error)
 
     report = _validate_events(node)
     if not report.ok:
@@ -180,7 +152,7 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
         return _fail(f"{node.component} is only allowed at the tree root")
     if node.component == "Panel" and not node.children:
         return _fail("Panel requires body children")
-    if node.component == "Tabs" and not legacy:
+    if node.component == "Tabs":
         for item in node.props["items"]:
             for child in item.get("children", ()):
                 report = _validate_node(child, depth=depth + 1, counter=counter)
@@ -188,29 +160,15 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
                     return report
 
     if node.children:
-        allows_children = (component_rule.get("children", False) if component_rule and not legacy
-                           else node.component in CONTAINER_COMPONENTS)
-        if not allows_children:
+        if not component_rule.get("children", False):
             return _fail(f"component {node.component} does not accept children")
         for child in node.children:
-            if (component_rule and not legacy and component_rule.get("childComponents")
+            if (component_rule.get("childComponents")
                     and (not isinstance(child, RenderNode) or child.component not in component_rule["childComponents"])):
                 return _fail(f"invalid child component for {node.component}")
             report = _validate_node(child, depth=depth + 1, counter=counter)
             if not report.ok:
                 return report
-    return _OK
-
-
-def _validate_props(node: RenderNode, allowed_props: frozenset[str]) -> ValidationReport:
-    for name, value in node.props.items():
-        if name in STYLE_TOKENS:
-            if not isinstance(value, str) or value not in STYLE_TOKENS[name]:
-                return _fail(f"invalid {name} token: {value!r}")
-            continue
-        report = _validate_value(name, value)
-        if not report.ok:
-            return report
     return _OK
 
 
@@ -251,30 +209,6 @@ def _validate_value(name: str, value: Any, *, depth: int = 0) -> ValidationRepor
                 return report
         return _OK
     return _fail(f"prop {name} type not supported: {type(value).__name__}")
-
-
-def _validate_action(node: RenderNode) -> ValidationReport:
-    if node.component not in INTERACTIVE_COMPONENTS:
-        return _fail(f"component {node.component} does not accept an action")
-    action = node.action
-    if not isinstance(action, Mapping) or set(action) - {"id", "args"}:
-        return _fail("action must declare id and optional args")
-    action_id = action.get("id")
-    if not isinstance(action_id, str) or not action_id.strip():
-        return _fail("action.id is required")
-    if len(action_id.encode("utf-8")) > 200:
-        return _fail("action.id too long")
-    args = action.get("args")
-    if args is not None:
-        if not isinstance(args, Mapping):
-            return _fail("action.args must be an object")
-        report = _validate_value("action.args", args)
-        if not report.ok:
-            return report
-        size = len(json.dumps(dict(args), ensure_ascii=False, allow_nan=False).encode("utf-8"))
-        if size > MAX_ACTION_ARGS_BYTES:
-            return _fail(f"action.args exceeds {MAX_ACTION_ARGS_BYTES} bytes")
-    return _OK
 
 
 def _validate_events(node: RenderNode) -> ValidationReport:

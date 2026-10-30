@@ -188,7 +188,6 @@ def _snapshot_content(value: Any) -> Any:
             component=value.component,
             props=_snapshot_content(value.props),
             children=tuple(_snapshot_content(child) for child in value.children),
-            action=_snapshot_content(value.action),
             events=_snapshot_content(value.events),
         )
     if isinstance(value, Mapping):

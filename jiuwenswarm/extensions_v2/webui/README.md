@@ -136,9 +136,9 @@ RenderNode(
 隐藏页内容不派发事件，默认保留其本地状态；destroyOnHidden 为真时切回后重新初始化。
 禁用页签与断连时不可切换，页签内容同样计入层级与节点预算。
 
-旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
-旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，
-不能再向声明 args 追加 key。单个节点不允许同时声明 action 与 events。
+旧 action 组件与旧事件名（`ui.press`、`ui.toggle`、`ui.input`）已移除：节点只接受目录内的组件，
+交互只通过 `events` 声明 `ui.click`、`ui.change`、`ui.press_enter`、`ui.select`、`ui.search`、`ui.clear`。
+Handler 从 `payload["data"]` 读取事件数据；单个节点不再支持 action 声明。
 下行帧的 schema_version 为 1。
 
 不支持 application.entry、无会话应用目标或文件组件。请求校验与回执见

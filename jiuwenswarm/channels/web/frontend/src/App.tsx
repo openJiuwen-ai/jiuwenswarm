@@ -88,7 +88,6 @@ import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import { WebUISlotProvider, WebUIPageHost, type WebUIPageTarget } from './features/webui';
-import { useWebUIRender } from './features/webui/useWebUIRender';
 import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,
@@ -897,8 +896,6 @@ function AppContent({
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
   const browserAgentActive = useBrowserAgentActivity(sessionId);
   const browserHeadless = useDesktopBrowserHeadless();
-  // WebUI 扩展：订阅下行渲染帧（webui.render / webui.render.error）
-  useWebUIRender();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
