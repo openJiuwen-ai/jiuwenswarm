@@ -1650,6 +1650,19 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 exc,
             )
         shutil.rmtree(session_dir)
+        try:
+            from jiuwenswarm.server.runtime.session.openclaw_runtime_history import (
+                delete_openclaw_history,
+            )
+
+            delete_openclaw_history(target)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[cli session.delete] OpenClaw history cleanup failed: "
+                "session_id=%s error=%s",
+                target,
+                exc,
+            )
         await channel.send_response(ws, req_id, ok=True, payload={"session_id": target})
 
     async def _forward_rewind_e2a(params: ForwardRewindE2AParams) -> bool:
