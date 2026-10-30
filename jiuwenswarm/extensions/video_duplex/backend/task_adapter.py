@@ -26,29 +26,26 @@ from .core_receipts import receipt_payload
 logger = logging.getLogger(__name__)
 
 
-def _login_credential_ref(ws, target) -> str:
-    """登录下发的免费模型：把发起连接上的华为账号绑定到任务（凭据句柄，不存 token）。
-
-    任务直发 AgentServer，不经过 Gateway 转发时挂凭据那一步；与 cron 一样创建时绑定、执行时补挂。
-    """
-    from jiuwenswarm.common.auth.passthrough import _is_login_model
-    from jiuwenswarm.gateway.cron.controller import _login_credential_ref_from_session
-
-    model_name = str(target.get("model_name") or "").strip()
-    auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
-    if not model_name or not _is_login_model(model_name, auth_session or None):
-        return ""
-    return _login_credential_ref_from_session(auth_session)
+def selected_model(params) -> dict[str, Any]:
+    model = {"model_name": str(params.get("model_name") or "").strip()}
+    if isinstance(params.get("model_selection"), dict):
+        model["model_selection"] = params["model_selection"]
+    return model
 
 
-async def _login_model_auth(task) -> dict[str, Any] | None:
-    ref = (task.get("request") or {}).get("credential_ref")
-    if not ref:
+async def _login_model_auth(model_name, auth_session) -> dict[str, Any] | None:
+    """登录模型的凭据：复用普通对话转发时的续期和挂凭据（Gateway 的同一套函数）。"""
+    if not model_name or not auth_session:
         return None
     from types import SimpleNamespace
-    from jiuwenswarm.gateway.cron.scheduler import _login_model_auth_for_job
+    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+    from jiuwenswarm.gateway.app_gateway import _normalize_model_auth, _refresh_expired_login_credential
 
-    return await asyncio.to_thread(_login_model_auth_for_job, SimpleNamespace(credential_ref=ref))
+    msg = SimpleNamespace(id=model_name, params={"model_name": model_name},
+                          metadata={"auth_session": auth_session})
+    await _refresh_expired_login_credential(msg)
+    _normalize_model_auth(msg.params, msg)
+    return msg.params.get(E2A_MODEL_AUTH_PARAM_KEY)
 
 
 AGENT_QUERY_TIMEOUT = 20
@@ -146,8 +143,10 @@ async def task_agent_query(client, method, params, session, owner):
 
 
 class AgentTaskExecutor:
-    def __init__(self, client, store, normalize_media):
+    def __init__(self, client, store, normalize_media, auth_sessions=None):
         self.client, self.store, self.normalize_media = client, store, normalize_media
+        # 发起连接的登录会话，按 (owner, scope) 记在内存里，不落盘
+        self.auth_sessions = auth_sessions if auth_sessions is not None else {}
         from .tasks.bridge import GatewayTaskEndpoint
 
         self.endpoint = GatewayTaskEndpoint(store)
@@ -291,7 +290,7 @@ class AgentTaskExecutor:
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
         request = self.answer_input(task).to_agent_request()
-        model_auth = await _login_model_auth(task)
+        model_auth = await self._model_auth(task)
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
@@ -342,7 +341,14 @@ class AgentTaskExecutor:
             else None,
             managed_task_binding=self.endpoint.binding(task),
             execution_target=target,
-            model_auth=await _login_model_auth(task),
+            model_auth=await self._model_auth(task),
+        )
+
+    async def _model_auth(self, task):
+        target = (task.get("request") or {}).get("execution_target") or {}
+        return await _login_model_auth(
+            str(target.get("model_name") or "").strip(),
+            self.auth_sessions.get((task["owner"], task["session"])),
         )
 
     async def cancel(self, task, *, probe=False):
@@ -436,6 +442,7 @@ class VideoSearchManager:
         self.subscribers = {}
         self._approval_cards = {}
         self._execution_targets = {}
+        self._auth_sessions = {}
         # Typed chat cards the web channel pushed, by Core session (latest only).
         self._chat_cards = {}
         self._chat_resumed = {}
@@ -450,7 +457,7 @@ class VideoSearchManager:
             store = TaskStore(self.path or task_database())
             self._service = TaskService(
                 store,
-                AgentTaskExecutor(self.client, store, self.normalize_media),
+                AgentTaskExecutor(self.client, store, self.normalize_media, self._auth_sessions),
                 on_change=self.changed,
                 concurrency=self.concurrency,
                 notification_timeout=AGENT_QUERY_TIMEOUT + 2 * EVENT_SEND_TIMEOUT + 1,
@@ -460,6 +467,9 @@ class VideoSearchManager:
     async def scope(self, ws, params):
         owner, session = await self.authorized_scope(ws, params.get("search_session_id", ""))
         self.subscribers[(owner, session, id(ws))] = ws
+        auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+        if auth_session:
+            self._auth_sessions[(owner, session)] = auth_session
         return owner, session
 
     async def authorized_scope(self, ws, scope):
@@ -818,12 +828,14 @@ class VideoSearchManager:
         command_id="",
         scheduling=None,
         title="",
+        model=None,
     ):
         owner, scope = await self.scope(ws, {"search_session_id": search_session_id})
         from .mode_routing import resolve_execution_target
 
         target = await resolve_execution_target(self.client, owner, scope)
-        credential_ref = _login_credential_ref(ws, target)
+        # 主对话下拉选的模型（前端随派任务带来），和普通对话 chat.send 一样
+        target.update({key: value for key, value in (model or {}).items() if value})
         request = dict(
             title=title,
             query=query,
@@ -836,8 +848,6 @@ class VideoSearchManager:
         )
         request.update(scheduling or {})
         request["execution_target"] = target
-        if credential_ref:
-            request["credential_ref"] = credential_ref
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )
@@ -907,6 +917,7 @@ class VideoSearchManager:
                     tool_call_id=call.call_id,
                     tool_name=call.name,
                     turn_id=params.get("turn_id", ""),
+                    model=selected_model(params),
                     scheduling={
                         k: call.arguments[k]
                         for k in ("independent", "depends_on", "resources")
