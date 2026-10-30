@@ -572,15 +572,27 @@ class TeamMonitorHandler(BaseMonitorHandler):
         token = set_session_id(sid)
         try:
             await db.initialize()
-            # Ensure the per-session dynamic task table is mapped (checkfirst);
-            # historical sessions already have the table from the live run.
-            await db.create_cur_session_tables()
+            # 不再预建会话动态表：读路径前置写锁 DDL 会在团队拉起高峰期让
+            # 前端快照轮询持续挤占进程唯一写锁（每次 poll 一遍 5 表 ensure +
+            # 迁移检查）。表不存在 = 团队从未建立/已删除，下方查询的
+            # no such table 由 TeamNotEstablishedError 分支正确收口。
 
             team_info = await db.team.get_team(tname)
             # 确定性判定：team_info 无行 / 会话动态表不存在 = 团队
             # 从未建立（或已被删除），不是瞬态读失败——抛 TeamNotEstablishedError
             # 让 settle 复核立即收口；「database is locked」等瞬态错误仍走
             # 下方通用 except 返回 None。
+            #
+            # 「team_info 有行 + 动态表缺失」为何不是健康瞬态（评审复勘钉案，
+            # 勿再改成瞬态 None）：次序不变式 = kernel.start 先 bind_session
+            # 建会话动态表（agent-core session_manager.py →
+            # create_cur_session_tables），后跑 run 循环里 build_team 才写
+            # team_info 行（tools/team.py create_team）——同进程同会话内
+            # team_info 有行 ⇒ 动态表已建。该组合仅出现于：①bind-DDL 降级
+            # 放弃（建表重试耗尽后团队残疾）；
+            # ②teardown drop（delete_team / release_session 按 session 删表，
+            # 数据已删）。两者对该会话都是终态而非瞬态。若把 no such table
+            # 当瞬态返回 None，①会退化为 settle 续窗永挂（PM-52 原症状）。
             if team_info is None:
                 raise TeamNotEstablishedError(
                     f"team_info has no row for team '{tname}' "
@@ -592,6 +604,20 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 else ""
             )
             try:
+                # DAO 未挂载（共享库 close 竞态/初始化未竟）是瞬态态，不是
+                # 「团队从未建立」——抛 TeamNotEstablishedError 会让 settle 按
+                # 「已解散」补 error 终态并级联 park 收流，误杀健康回合。
+                # 按瞬态返回 None（settle 续窗复核），日志口径与通用失败
+                # 区分开，便于排查「挂载缺失」与「读取失败」。
+                if db.member is None or db.task is None:
+                    logger.warning(
+                        "[TeamMonitorHandler] get_team_snapshot_from_db: team DAOs "
+                        "not mounted (db closed or init incomplete); transient, "
+                        "session_id=%s team_name=%s",
+                        sid,
+                        tname,
+                    )
+                    return None
                 members = await db.member.get_team_members(tname, status=None) or []
                 if leader_name:
                     members = [m for m in members if m.member_name != leader_name]

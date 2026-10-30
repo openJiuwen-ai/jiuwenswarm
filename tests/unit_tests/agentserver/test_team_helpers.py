@@ -166,6 +166,15 @@ class _InactiveTeamRuntimeManagerMixin:
         self._workflow_completed: dict[str, bool] = {}
         self._stream_round_terminal: dict[str, bool] = {}
         self._degraded_sessions: dict[str, str] = {}
+        self._user_turn_epochs: dict[str, int] = {}
+
+    def bump_user_turn_epoch(self, session_id: str) -> int:
+        epoch = self._user_turn_epochs.get(session_id, 0) + 1
+        self._user_turn_epochs[session_id] = epoch
+        return epoch
+
+    def user_turn_epoch(self, session_id: str) -> int:
+        return self._user_turn_epochs.get(session_id, 0)
 
     def mark_session_degraded(self, session_id: str, detail: str = "") -> None:
         self._degraded_sessions[session_id] = detail
@@ -2713,6 +2722,94 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
 
 
 @pytest.mark.anyio
+async def test_process_team_message_stream_survives_skill_link_init_failure(monkeypatch):
+    """ensure_team_shared_skills_ready_for_session
+    抛 PermissionError（EDR 拦截 cmd.exe → junction WinError 5）时，
+    团队流不得整体失败——技能共享链接是增强能力，降级为不带共享技能继续。
+    """
+    captured: dict[str, Any] = {}
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        async def session_has_runtime(session_id: str) -> bool:
+            return True
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**_kwargs):
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
+
+        @staticmethod
+        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
+            raise PermissionError(5, "拒绝访问")
+
+        @staticmethod
+        async def prepare_runtime_activation(session_id: str, team_name: str):
+            captured["prepared"] = (session_id, team_name)
+
+        @staticmethod
+        def register_stream_task(session_id: str, task: object) -> None:
+            captured["registered"] = session_id
+
+        @staticmethod
+        async def interact(*_args, **_kwargs):
+            raise AssertionError("plain text query should start a new team round")
+
+    async def _fake_consume_stream_with_query(
+            channel_id: str | None,
+            session_id: str,
+            spec: object,
+            query: str,
+            *,
+            round_id: int,
+            envs: dict | None = None,
+    ) -> None:
+        _ = channel_id, spec, envs
+        captured["consumed"] = (session_id, query, round_id)
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 1)
+    monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
+
+    request = SimpleNamespace(
+        session_id="sess-team-skill-link-fail",
+        request_id="req-team-skill-link-fail",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team"},
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+            request,
+            {"query": "你好"},
+            object(),
+    ):
+        chunks.append(chunk)
+    await asyncio.sleep(0)
+
+    # 技能链接初始化炸了，流照样走完且不带 chat.error
+    assert captured["consumed"] == ("sess-team-skill-link-fail", "你好", 1)
+    assert chunks[-1].is_complete is True
+    assert not any(
+        (chunk.payload or {}).get("event_type") == "chat.error"
+        for chunk in chunks
+        if isinstance(chunk.payload, dict)
+    )
+
+
+@pytest.mark.anyio
 async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
 
@@ -4295,6 +4392,9 @@ async def test_settle_not_blocked_after_hitl_answered(monkeypatch):
                 "questions": [{"question": "继续吗？"}],
             }
         if ctype == "delta":
+            # 用户作答被接受 = 新用户轮次（真实链路在 TeamManager.interact
+            # 投递确认后 bump；本测试直驱流函数，在答案恢复产出前补 bump）
+            fake_mgr.bump_user_turn_epoch("sess")
             return {"event_type": "chat.delta", "content": chunk.payload}
         if ctype == "tool":
             return {
@@ -4349,6 +4449,681 @@ async def test_settle_not_blocked_after_hitl_answered(monkeypatch):
         if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
     ]
     assert terminals, "HITL 作答恢复后 settle 必须能补终态（挂起标记已随恢复产出清除）"
+
+
+@pytest.mark.anyio
+async def test_settle_not_blocked_after_hitl_answered_final_only(monkeypatch):
+    """恢复轮全程只产 final（无 delta/reasoning/tool_call 前导——纯文本回合
+    的 task_completion 合成 final 即此形态）也必须清除 HITL 挂起标记：
+    清除面若只认内容帧，标记留成流级粘性，同流后续轮 settle 补终态被永久
+    拦死（流永挂）。
+    """
+    broadcasted: list[dict] = []
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="ask", payload={}, role=TeamRole.LEADER)
+        # 用户作答后恢复轮只产 final
+        yield SimpleNamespace(type="answer", payload="正文", role=TeamRole.LEADER)
+        await asyncio.sleep(0.05)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "ask":
+            return {
+                "event_type": "chat.ask_user_question",
+                "request_id": "q1",
+                "questions": [{"question": "继续吗？"}],
+            }
+        if ctype == "answer":
+            # 用户作答被接受 = 新用户轮次（真实链路在 TeamManager.interact
+            # 投递确认后 bump；本测试直驱流函数，在恢复产出前补 bump）
+            fake_mgr.bump_user_turn_epoch("sess")
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    async def _settled_true(_cid, _sid):
+        return True
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled_true)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "问",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "恢复轮只产 final 时挂起标记也必须清除，settle 得以补终态"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("pool_running", [True, False])
+async def test_zero_output_stream_running_pool_entry_teardown(monkeypatch, pool_running):
+    """零产出流 + Runner 池中 RUNNING 条目（reject_running
+    失同步）→ 调度残留拆除（下一问冷重建）；无 RUNNING 条目 → 不拆（原行为）。
+
+    两种形态都必须照常广播「零产出」chat.error。
+    """
+    broadcasted: list[dict] = []
+    teardowns: list[str] = []
+
+    async def _fake_stream(**kwargs):
+        return
+        yield  # 零产出流（reject_running 形状）
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+
+    async def _probe(_sid):
+        return pool_running
+
+    monkeypatch.setattr(team_helpers, "_runner_pool_has_running_team", _probe)
+    monkeypatch.setattr(
+        team_helpers,
+        "_schedule_stale_running_entry_teardown",
+        lambda _tm, sid: teardowns.append(sid),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "问",
+    )
+
+    errors = [e for e in broadcasted if e["event_type"] == "chat.error"]
+    assert errors and "no output" in errors[0]["error"]
+    if pool_running:
+        assert teardowns == ["sess"], "RUNNING 池条目必须调度拆除（自愈）"
+    else:
+        assert teardowns == [], "无 RUNNING 池条目不得拆除"
+
+
+@pytest.mark.anyio
+async def test_runner_pool_probe_via_repo_helper(monkeypatch):
+    """探针经仓库既有 _runner_team_runtime_manager 取管理器（直读 runner 的
+    _team_runtime_manager 属性，缺省自建）——不依赖 agent-core 版本是否带
+    公开访问器；RUNNING/PAUSING 命中，PAUSED/空池/坏形状保守 False。"""
+    import jiuwenswarm.server.runtime.agent_adapter.team_helpers as th
+    import openjiuwen.core.runner.runner as runner_mod
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    class _FakePool:
+        def __init__(self, state):
+            self._state = state
+
+        async def teams_for_session(self, session_id: str):
+            if self._state is None:
+                return []
+            return [SimpleNamespace(state=self._state)]
+
+    def _runner_with_state(state):
+        return SimpleNamespace(
+            _team_runtime_manager=SimpleNamespace(pool=_FakePool(state))
+        )
+
+    monkeypatch.setattr(
+        runner_mod, "GLOBAL_RUNNER", _runner_with_state(RuntimeState.RUNNING)
+    )
+    assert await th._runner_pool_has_running_team("sess") is True
+
+    # PAUSING 也命中（旧版 agent-core 无该枚举时 getattr 回退只认 RUNNING）
+    pausing = getattr(RuntimeState, "PAUSING", None)
+    if pausing is not None:
+        monkeypatch.setattr(
+            runner_mod, "GLOBAL_RUNNER", _runner_with_state(pausing)
+        )
+        assert await th._runner_pool_has_running_team("sess") is True
+
+    # PAUSED = 挂起可热恢复，不是失同步残留
+    # （PAUSED 在各版本枚举中恒存在，裸访问无需 getattr；仅 PAUSING 是
+    # R1b 新增、须 getattr 兼容旧版 agent-core）
+    monkeypatch.setattr(
+        runner_mod, "GLOBAL_RUNNER", _runner_with_state(RuntimeState.PAUSED)
+    )
+    assert await th._runner_pool_has_running_team("sess") is False
+
+    # 空池
+    monkeypatch.setattr(
+        runner_mod, "GLOBAL_RUNNER", _runner_with_state(None)
+    )
+    assert await th._runner_pool_has_running_team("sess") is False
+
+    # 坏形状（manager 无 pool.teams_for_session）→ 保守 False 且不落异常
+    monkeypatch.setattr(
+        runner_mod,
+        "GLOBAL_RUNNER",
+        SimpleNamespace(_team_runtime_manager=SimpleNamespace()),
+    )
+    assert await th._runner_pool_has_running_team("sess") is False
+
+    # 探测抛异常 → 保守 False（日志由实现内 logger.warning 携带）
+    class _BoomMgr:
+        @property
+        def pool(self):
+            raise RuntimeError("wedged")
+
+    monkeypatch.setattr(
+        runner_mod,
+        "GLOBAL_RUNNER",
+        SimpleNamespace(_team_runtime_manager=_BoomMgr()),
+    )
+    assert await th._runner_pool_has_running_team("sess") is False
+
+
+@pytest.mark.anyio
+async def test_zero_output_stream_teardown_skipped_when_pause_in_progress(monkeypatch):
+    """用户主动停止（pause 进行中）+ 零产出流：池条目是「挂起可热恢复」凭据，
+    不是失同步残留——不得调度拆除（拆除会丢 resume_from_pause 的暂停语义）。"""
+    broadcasted: list[dict] = []
+    teardowns: list[str] = []
+
+    async def _fake_stream(**kwargs):
+        return
+        yield  # 零产出流
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+        @staticmethod
+        def is_pause_in_progress(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+
+    async def _probe(_sid):
+        return True
+
+    monkeypatch.setattr(team_helpers, "_runner_pool_has_running_team", _probe)
+    monkeypatch.setattr(
+        team_helpers,
+        "_schedule_stale_running_entry_teardown",
+        lambda _tm, sid: teardowns.append(sid),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "问",
+    )
+
+    errors = [e for e in broadcasted if e["event_type"] == "chat.error"]
+    assert errors and "no output" in errors[0]["error"], "零产出 error 照常广播"
+    assert teardowns == [], "pause 进行中不得拆除可热恢复的运行时"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "stream_task,runtime_active,pool_running,expect_teardown",
+    [
+        (True, False, True, False),  # 窗口内新流已在跑 → 不拆
+        (False, True, True, False),  # 运行时已重新注册 → 不拆
+        (False, False, False, False),  # 池条目已消失/落定 → 不拆
+        (False, False, True, True),  # 仍是失同步残留 → 拆
+    ],
+)
+async def test_stale_entry_teardown_reverifies_before_terminate(
+        monkeypatch, stream_task, runtime_active, pool_running, expect_teardown
+):
+    """拆除回调执行前复核「此刻仍是那条失同步残留」：调度到执行之间隔着
+    本流 finally 的收尾窗口，窗口内冷重建出的健康运行时不得误拆。"""
+    import jiuwenswarm.server.runtime.agent_adapter.team_helpers as th
+
+    terminated: list[str] = []
+
+    class _Mgr:
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return stream_task
+
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            return runtime_active
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        async def terminate_session_runtime(session_id: str, reason: str = "") -> bool:
+            terminated.append(session_id)
+            return True
+
+    async def _probe(_sid):
+        return pool_running
+
+    monkeypatch.setattr(th, "_runner_pool_has_running_team", _probe)
+
+    async def _driver():
+        th._schedule_stale_running_entry_teardown(_Mgr(), "sess")
+
+    driver = asyncio.create_task(_driver())
+    await driver  # driver 完成 → done_callback 调度 _teardown
+    await asyncio.sleep(0.05)
+    assert bool(terminated) is expect_teardown
+
+
+@pytest.mark.anyio
+async def test_interact_bumps_user_turn_epoch(monkeypatch):
+    """interact 是所有用户侧投递（追问/HITL 作答/人类成员回复/godview）的
+    统一漏斗——作答型载荷（InteractiveInput/HumanAgentMessage）必须在投递
+    被确认接受后推进用户轮次号：否则不经 process_team_message_stream 的
+    恢复通道（如 swarmflow 人类成员回复 interface_deep.py 直调
+    team_manager.interact）恢复后，HITL 挂起标记因 epoch 未推进永不解除；
+    同时失败投递（not_active/runner_failed）不得推进 epoch——挂起期间一次
+    失败投递会让 epoch != pending_interaction_turn 成立，同轮晚到
+    final/delta 误清挂起标记，流末兜底给仍在等待作答的回合补带 error 的
+    终态帧。（载荷类型维度的收窄——非作答载荷不 bump——由
+    test_team_manager_registry.py::test_interact_bumps_user_turn_epoch_only_for_answer_payloads
+    钉案。）"""
+    from unittest.mock import AsyncMock
+
+    from openjiuwen.agent_teams.interaction.payload import HumanAgentMessage
+
+    from jiuwenswarm.agents.harness.team import team_manager as tm_mod
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    tm = TeamManager()
+    monkeypatch.setattr(tm, "wait_for_resumable_runtime", AsyncMock(return_value=False))
+
+    # 失败投递（运行时未激活）不推进轮次
+    ok, reason = await tm.interact("sess-epoch", "x")
+    assert ok is False and reason == "not_active"
+    assert tm.user_turn_epoch("sess-epoch") == 0, "失败投递不得推进轮次号"
+
+    # 作答型载荷被 Runner 运行时接受后才推进
+    monkeypatch.setattr(tm, "is_runtime_active", lambda sid: True)
+    monkeypatch.setattr(tm, "get_active_team_name", lambda sid: "demo-team")
+    monkeypatch.setattr(tm, "update_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(tm, "_refresh_active_team_trace", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        tm_mod.Runner, "interact_agent_team", AsyncMock(return_value=True)
+    )
+
+    answer = HumanAgentMessage(sender="user", target="corr-1", body="y")
+    ok, reason = await tm.interact("sess-epoch", answer)
+    assert ok is True and reason is None
+    assert tm.user_turn_epoch("sess-epoch") == 1, "作答被接受才推进轮次"
+
+    # Runner 侧失败（runner_failed）同样不推进（作答型载荷也不例外）
+    monkeypatch.setattr(
+        tm_mod.Runner, "interact_agent_team", AsyncMock(return_value=False)
+    )
+    ok, reason = await tm.interact("sess-epoch", answer)
+    assert ok is False and reason == "runner_failed"
+    assert tm.user_turn_epoch("sess-epoch") == 1, "runner 失败投递不得推进轮次号"
+
+
+@pytest.mark.anyio
+async def test_terminate_probes_runner_pool_before_early_exit(monkeypatch):
+    """失同步形态（本地注册已清、Runner 池仍 RUNNING）下 terminate 不得
+    静默早退"""
+    from unittest.mock import AsyncMock
+
+    import jiuwenswarm.server.runtime.agent_adapter.team_helpers as th
+    from jiuwenswarm.agents.harness.team import team_manager as tm_mod
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    tm = TeamManager()
+    stopped: list[str] = []
+
+    async def _probe_true(_sid):
+        return True
+
+    monkeypatch.setattr(th, "_runner_pool_has_running_team", _probe_true)
+    monkeypatch.setattr(tm, "_has_local_team_runtime", lambda sid: False)
+    monkeypatch.setattr(tm, "_resolve_session_team_name", lambda sid: "demo-team")
+
+    async def _fake_stop(sid, team, caller):
+        stopped.append(team)
+        return True
+
+    monkeypatch.setattr(tm, "_stop_runner_team_runtime", _fake_stop)
+
+    async def _fake_finalize(sid, caller):
+        return None
+
+    monkeypatch.setattr(tm, "_finalize_runtime_cleanup", _fake_finalize)
+    monkeypatch.setattr(
+        tm_mod.kv_cache_hooks, "dispatch_signal", AsyncMock(return_value=None)
+    )
+
+    result = await tm.terminate_session_runtime("sess-desync", reason="test")
+    assert result is True
+    assert stopped == ["demo-team"], "池有 RUNNING 残留时不得静默早退"
+
+    async def _probe_false(_sid):
+        return False
+
+    monkeypatch.setattr(th, "_runner_pool_has_running_team", _probe_false)
+    result = await tm.terminate_session_runtime("sess-clean", reason="test")
+    assert result is False, "池干净才允许早退"
+
+
+@pytest.mark.anyio
+async def test_cancel_probes_runner_pool_before_early_exit(monkeypatch):
+    """失同步形态（本地注册已清、Runner 池仍 RUNNING）下 cancel 不得静默
+    早退——与 terminate 同规：早退闸门不探池会让下方按会话反查 team_name
+    的停池兜底不可达，池条目残留。"""
+    from unittest.mock import AsyncMock
+
+    import jiuwenswarm.server.runtime.agent_adapter.team_helpers as th
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    tm = TeamManager()
+    stopped: list[str] = []
+
+    async def _probe_true(_sid):
+        return True
+
+    monkeypatch.setattr(th, "_runner_pool_has_running_team", _probe_true)
+    monkeypatch.setattr(tm, "_has_local_team_runtime", lambda sid: False)
+    monkeypatch.setattr(tm, "_resolve_session_team_name", lambda sid: "demo-team")
+
+    async def _fake_stop(sid, team, caller):
+        stopped.append(team)
+        return True
+
+    monkeypatch.setattr(tm, "_stop_runner_team_runtime", _fake_stop)
+
+    async def _fake_stop_transport(sid):
+        return None
+
+    monkeypatch.setattr(tm, "_stop_runner_team_agent_transport", _fake_stop_transport)
+
+    async def _fake_finalize(sid, caller):
+        return None
+
+    monkeypatch.setattr(tm, "_finalize_runtime_cleanup", _fake_finalize)
+
+    result = await tm.cancel_session_runtime("sess-desync", reason="test")
+    assert result is True
+    assert stopped == ["demo-team"], "池有 RUNNING 残留时 cancel 不得静默早退"
+
+    async def _probe_false(_sid):
+        return False
+
+    monkeypatch.setattr(th, "_runner_pool_has_running_team", _probe_false)
+    result = await tm.cancel_session_runtime("sess-clean", reason="test")
+    assert result is False, "池干净才允许早退"
+
+
+@pytest.mark.anyio
+async def test_terminate_resolves_team_name_from_runner_pool_when_local_missing(
+        monkeypatch,
+):
+    """失同步残留形态下本地三源（active/pending/metadata）全空：terminate 必须
+    按会话从 Runner 池反查 team_name 再停池——否则 _stop_runner_team_runtime
+    被 team_name 空守卫跳过，拆除静默空转。"""
+    from unittest.mock import AsyncMock
+
+    import jiuwenswarm.server.runtime.agent_adapter.team_helpers as th
+    from jiuwenswarm.agents.harness.team import team_manager as tm_mod
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    tm = TeamManager()
+    stopped: list[str] = []
+
+    async def _probe_true(_sid):
+        return True
+
+    monkeypatch.setattr(th, "_runner_pool_has_running_team", _probe_true)
+    monkeypatch.setattr(tm, "_has_local_team_runtime", lambda sid: False)
+    # 本地三源全空（失同步残留形态）
+    monkeypatch.setattr(tm, "_resolve_session_team_name", lambda sid: None)
+
+    # Runner 池条目自带 team_name（pool 以其为键），可按会话反查
+    fake_pool = SimpleNamespace(
+        teams_for_session=AsyncMock(
+            return_value=[SimpleNamespace(team_name="pool-team")]
+        )
+    )
+    monkeypatch.setattr(
+        tm_mod,
+        "_runner_team_runtime_manager",
+        lambda _runner: SimpleNamespace(pool=fake_pool),
+    )
+
+    async def _fake_stop(sid, team, caller):
+        stopped.append(team)
+        return True
+
+    monkeypatch.setattr(tm, "_stop_runner_team_runtime", _fake_stop)
+    monkeypatch.setattr(tm, "_finalize_runtime_cleanup", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        tm_mod.kv_cache_hooks, "dispatch_signal", AsyncMock(return_value=None)
+    )
+
+    result = await tm.terminate_session_runtime("sess-orphan", reason="test")
+    assert result is True
+    assert stopped == ["pool-team"], "本地三源全空时须从池反查 team_name 停池"
+
+    # 池反查也落空（池已空）：停池跳过但清理照常，拆除结果由调用侧
+    # 后置探池观测（_teardown 的 incomplete 告警）
+    fake_pool.teams_for_session = AsyncMock(return_value=[])
+    stopped.clear()
+    result = await tm.terminate_session_runtime("sess-empty", reason="test")
+    assert result is True
+    assert stopped == [], "池反查不到时不调用停池"
+
+
+@pytest.mark.anyio
+async def test_stale_entry_teardown_warns_when_pool_entry_survives(monkeypatch):
+    """terminate 报成功但池条目仍在 = 拆除目标未达成：必须告警留痕（不自旋
+    重试，下一问零产出分支会再调度）；terminate 早退 False（条目在探池到
+    拆除之间已落定）= 竞态良性，只记 info 不告警。"""
+    from unittest.mock import MagicMock
+
+    import jiuwenswarm.server.runtime.agent_adapter.team_helpers as th
+
+    class _Mgr:
+        def __init__(self, terminate_result: bool) -> None:
+            self._terminate_result = terminate_result
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            return False
+
+        async def terminate_session_runtime(
+                self, session_id: str, reason: str = ""
+        ) -> bool:
+            return self._terminate_result
+
+    async def _probe_true(_sid):
+        return True
+
+    monkeypatch.setattr(th, "_runner_pool_has_running_team", _probe_true)
+    logger_spy = MagicMock()
+    monkeypatch.setattr(th, "logger", logger_spy)
+
+    async def _drive(mgr) -> None:
+        async def _driver():
+            th._schedule_stale_running_entry_teardown(mgr, "sess")
+
+        driver = asyncio.create_task(_driver())
+        await driver  # driver 完成 → done_callback 调度 _teardown
+        await asyncio.sleep(0.05)
+
+    def _warnings() -> list[str]:
+        return [
+            c.args[0] % c.args[1:] if len(c.args) > 1 else str(c.args[0])
+            for c in logger_spy.warning.call_args_list
+            if c.args
+        ]
+
+    # terminate True 但池条目仍在 → 拆除未遂告警
+    await _drive(_Mgr(terminate_result=True))
+    assert any("teardown incomplete" in m for m in _warnings()), (
+        "terminate 后池条目仍在须告警（拆除目标未达成）"
+    )
+
+    # terminate False（竞态良性落定）→ 不告警
+    logger_spy.reset_mock()
+    await _drive(_Mgr(terminate_result=False))
+    assert not any("teardown incomplete" in m for m in _warnings()), (
+        "条目竞态落定（terminate False）是良性，不得告警"
+    )
+
+
+@pytest.mark.anyio
+async def test_hitl_pending_flag_survives_same_turn_late_final(monkeypatch):
+    """同一暂停轮 ask 之后晚到的带正文 final（轮次号未推进）不得清除
+    挂起标记——否则流末强制兜底会给「挂起待作答」的回合补带 error 的终态帧。
+    """
+    broadcasted: list[dict] = []
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="ask", payload={}, role=TeamRole.LEADER)
+        # 同一轮内晚到的带正文 final（leader 先输出正文再调提问工具的乱序形态）
+        yield SimpleNamespace(type="answer", payload="正文", role=TeamRole.LEADER)
+        await asyncio.sleep(0.05)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "ask":
+            return {
+                "event_type": "chat.ask_user_question",
+                "request_id": "q1",
+                "questions": [{"question": "继续吗？"}],
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+
+    # settle 路径必须真实到点运行，否则「零终态」无法区分「挂起标记保住」
+    # 与「settle 压根没跑」（假绿）：桩落定=True + 静默窗 0.01s（流在 final
+    # 后 sleep 0.05s，窗口必到点）——若轮次号门被回退（final 误清标记），
+    # settle 会补出终态，断言即红。
+    async def _settled_true(_cid, _sid):
+        return True
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled_true)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "问",
+    )
+
+    terminals = [
+        e
+        for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals == [], "挂起待作答的回合不得被补任何终态（同轮晚到 final 不算恢复）"
 
 
 @pytest.mark.anyio
