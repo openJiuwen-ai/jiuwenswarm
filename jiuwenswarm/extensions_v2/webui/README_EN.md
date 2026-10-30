@@ -67,6 +67,26 @@ RenderNode(
 The handler reads the boolean checked value from data. checked takes precedence over defaultChecked.
 A valid replace reinitializes the state without sending change. Disabled, loading or disconnected switches are disabled;
 without a change binding, the switch can still update its local state.
+Bind `"ui.click": {"id": "enabled.inspect"}` independently to receive the new `{checked}` state after a click.
+When both events are bound, a click sends change followed by click. Bind change alone to handle state changes only.
+
+A select can bind selection, search and clear actions together:
+
+```python
+RenderNode(
+    "Select",
+    {"options": [{"value": "bj", "label": "Beijing"}], "showSearch": True, "allowClear": True},
+    events={
+        "ui.select": {"id": "city.choose"},
+        "ui.search": {"id": "city.search"},
+        "ui.clear": {"id": "city.clear"},
+    },
+)
+```
+
+These actions send `{value}`, `{searchValue}` and `{}` respectively. Each binding is optional.
+In multiple mode, select still sends the single option just selected. Selection updates locally without a change event.
+value takes precedence over defaultValue; a valid replace reinitializes selection. Disabled or disconnected selects cannot be used.
 
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
