@@ -3580,7 +3580,16 @@ class SkillManager:
             "[SkillManager] uninstall recv name=%s origin=%s",
             params.get("name", ""), str(params.get("origin", "") or "").strip(),
         )
-        return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        _t0 = time.perf_counter()
+        try:
+            return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        finally:
+            # done = 请求端到端，与安装侧 done 同口径（含等锁与线程调度）
+            logger.info(
+                "[SkillManager] uninstall done name=%s total_ms=%.1f",
+                params.get("name", ""),
+                (time.perf_counter() - _t0) * 1000.0,
+            )
 
     @_state_transactional
     def _handle_skills_uninstall_sync(self, params: dict) -> dict:
@@ -3592,8 +3601,9 @@ class SkillManager:
         try:
             return self._handle_skills_uninstall_txn_body(params)
         finally:
+            # txn 行只覆盖事务体（获锁后起计）；lock_wait_ms 单列，供「等锁 vs 真实处理」拆分
             logger.info(
-                "[SkillManager] uninstall done name=%s total_ms=%.1f lock_wait_ms=%.1f",
+                "[SkillManager] uninstall txn name=%s txn_ms=%.1f lock_wait_ms=%.1f",
                 params.get("name", ""),
                 (time.perf_counter() - _txn_t0) * 1000.0,
                 _lock_wait_ms,
@@ -3964,14 +3974,27 @@ class SkillManager:
 
     async def handle_skills_web_install(self, params: dict) -> dict:
         """企业 Web 安装兼容入口：下载、校验、落盘并提交 workspace JSON。"""
+        url = str(params.get("url") or "").strip()
+        logger.info("[SkillManager] enterprise_install recv url=%s", url)
+        _t0 = time.perf_counter()
+        try:
+            return await self._handle_skills_web_install_body(params)
+        finally:
+            # done = 请求端到端（含等锁与下载），失败早退路径也打，与 source_install finally 口径一致
+            logger.info(
+                "[SkillManager] enterprise_install done url=%s total_ms=%.1f",
+                url,
+                (time.perf_counter() - _t0) * 1000.0,
+            )
+
+    async def _handle_skills_web_install_body(self, params: dict) -> dict:
+        """下载、校验、落盘并提交的实际执行体（recv/done 计时由 handler 层负责）。"""
         from jiuwenswarm.agents.harness.common.installed_skill import (
             verify_skill_download_hmac,
         )
 
         url = str(params.get("url") or "").strip()
         signature = str(params.get("signature") or "").strip()
-        logger.info("[SkillManager] enterprise_install recv url=%s", url)
-        _t0 = time.perf_counter()
         if not url:
             return {
                 "success": False,
@@ -4043,19 +4066,13 @@ class SkillManager:
                 }
             skill_version = str(meta.get("version") or "").strip() or None
 
-            result = await asyncio.to_thread(
+            return await asyncio.to_thread(
                 self._commit_web_skill_install,
                 skill_dir,
                 skill_name=skill_name,
                 skill_version=skill_version,
                 source_url=url,
             )
-            logger.info(
-                "[SkillManager] enterprise_install done url=%s total_ms=%.1f",
-                url,
-                (time.perf_counter() - _t0) * 1000.0,
-            )
-            return result
 
     async def handle_skills_web_uninstall(self, params: dict) -> dict:
         """企业 Web 卸载兼容入口：允许删除 source_type 为 user 或未标记的安装。"""
