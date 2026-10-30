@@ -1,6 +1,6 @@
 /**
  * 规范化内部模型：协议层的输出，供挂载与实例管理层使用。
- * 与 wire 的差异：目标字段改为驼峰；节点补齐默认值并生成路径 key；action 归一为对象或 null。
+ * 与 wire 的差异：目标字段改为驼峰；节点补齐默认值并生成路径 key；events 补齐动作参数。
  */
 
 export interface WebUINormalizedTarget {
@@ -21,7 +21,8 @@ export interface WebUINormalizedNode {
   component: string;
   props: Readonly<Record<string, unknown>>;
   children: readonly WebUINormalizedNode[];
-  action: WebUINormalizedAction | null;
+  events: Readonly<Record<string, WebUINormalizedAction>>;
+  contentGroups?: Readonly<Record<string, readonly WebUINormalizedNode[]>>;
 }
 
 export interface WebUINormalizedRenderFrame {
@@ -68,7 +69,7 @@ export function findNormalizedNode(tree: WebUINormalizedNode, key: string): WebU
   if (tree.key === key) {
     return tree;
   }
-  for (const child of tree.children) {
+  for (const child of [...tree.children, ...Object.values(tree.contentGroups ?? {}).flat()]) {
     const found = findNormalizedNode(child, key);
     if (found) {
       return found;

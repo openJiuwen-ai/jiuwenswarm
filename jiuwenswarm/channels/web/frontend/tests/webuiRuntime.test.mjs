@@ -10,7 +10,7 @@ import {
   demoRenderFrame,
 } from '../node_modules/.cache/webui-runtime/testing/fixtures.js';
 
-const INSTANCE_KEY = 'sess-1|conversation.panel.right|pkg.demo|main';
+const INSTANCE_KEY = 'sess-1|conversation.input.above|pkg.demo|main';
 
 function setup(options = {}) {
   const transport = createMockTransport(options);
@@ -104,99 +104,113 @@ test('reconnect resends ready per consumer', async () => {
   handle.release();
 });
 
-test('dispatch requires the current frame revision and a live connection', async () => {
+function bindDisplayed(runtime, revision) {
+  const owner = runtime.mountSlot('sess-1', DEMO_SLOT);
+  const snapshot = runtime.getInstance(INSTANCE_KEY);
+  runtime.reportDisplayed(INSTANCE_KEY, revision, snapshot.localFrameId);
+  return runtime.bindNode(INSTANCE_KEY, snapshot.localFrameId, '0.0', owner.mountLeaseId);
+}
+
+test('dispatch requires the current displayed frame and a live connection', async () => {
   const { transport, runtime } = setup();
   transport.injectRenderFrame(demoRenderFrame({ revision: 5 }));
-
-  const stale = await runtime.dispatchIntent({
-    instanceKey: INSTANCE_KEY,
-    nodeKey: '0.0',
-    actionId: 'demo.refresh',
-    frameRevision: 4,
-  });
+  const stale = await runtime.dispatchIntent({ instanceKey: INSTANCE_KEY, nodeKey: '0.0', frameRevision: 4 });
   assert.deepEqual(stale, { status: 'inactive' });
-
-  const sent = await runtime.dispatchIntent({
-    instanceKey: INSTANCE_KEY,
-    nodeKey: '0.0',
-    actionId: 'demo.refresh',
-    frameRevision: 5,
-  });
+  const binding = bindDisplayed(runtime, 5);
+  const sent = await binding.emit('ui.click', {});
   assert.equal(sent.status, 'sent');
-  assert.equal(transport.dispatches.at(-1).payload.action_id, 'demo.refresh');
-
-  transport.setConnectionState('disconnected');
-  const offline = await runtime.dispatchIntent({
-    instanceKey: INSTANCE_KEY,
-    nodeKey: '0.0',
-    actionId: 'demo.refresh',
-    frameRevision: 5,
+  assert.deepEqual(transport.dispatches.at(-1).payload, {
+    action_id: 'demo.refresh', args: { page: 1 }, data: {}, node_key: '0.0', revision: 5,
   });
-  assert.deepEqual(offline, { status: 'disconnected' });
+  transport.setConnectionState('disconnected');
+  assert.deepEqual(await binding.emit('ui.click', {}), { status: 'disconnected' });
 });
 
-test('duplicate in-flight interactions are ignored until the first completes', async () => {
+test('repeated in-flight component callbacks are all sent', async () => {
   const { transport, runtime } = setup({ autoAccept: false });
-  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
-  const first = runtime.dispatchIntent({
-    instanceKey: INSTANCE_KEY,
-    nodeKey: '0.0',
-    actionId: 'demo.refresh',
-    frameRevision: 1,
-  });
-  const duplicate = await runtime.dispatchIntent({
-    instanceKey: INSTANCE_KEY,
-    nodeKey: '0.0',
-    actionId: 'demo.refresh',
-    frameRevision: 1,
-  });
-  assert.deepEqual(duplicate, { status: 'duplicate' });
+  transport.injectRenderFrame(demoRenderFrame());
+  const binding = bindDisplayed(runtime, 1);
+  const first = binding.emit('ui.click', {});
+  const second = binding.emit('ui.click', {});
+  assert.equal(transport.pendingDispatchCount, 2);
   transport.resolveNextDispatch({ accepted: true, status: 'handled' });
-  assert.equal((await first).status, 'sent');
+  transport.resolveNextDispatch({ accepted: true, status: 'handled' });
+  assert.deepEqual((await Promise.all([first, second])).map((result) => result.status), ['sent', 'sent']);
 });
 
 test('transport exceptions become a failed interaction result', async () => {
-  const transport = createMockTransport();
-  transport.dispatch = async () => {
-    throw new Error('offline');
-  };
-  const runtime = createWebUIRuntime({ transport, catalog: demoCatalog });
-  runtime.start();
-  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
-  const result = await runtime.dispatchIntent({
-    instanceKey: INSTANCE_KEY,
-    nodeKey: '0.0',
-    actionId: 'demo.refresh',
-    frameRevision: 1,
-  });
+  const { transport, runtime } = setup();
+  transport.dispatch = async () => { throw new Error('offline'); };
+  transport.injectRenderFrame(demoRenderFrame());
+  const result = await bindDisplayed(runtime, 1).emit('ui.click', {});
   assert.deepEqual(result, { status: 'failed', error: 'offline' });
+});
+
+test('unsupported schema frames never create or replace a runtime instance', () => {
+  const { transport, runtime } = setup();
+  transport.injectRenderFrame(demoRenderFrame({ schemaVersion: 2 }));
+  assert.equal(runtime.getInstance(INSTANCE_KEY), undefined);
+  transport.injectRenderFrame(demoRenderFrame());
+  const current = runtime.getInstance(INSTANCE_KEY);
+  transport.injectRenderFrame(demoRenderFrame({ schemaVersion: 2, revision: 2 }));
+  assert.equal(runtime.getInstance(INSTANCE_KEY), current);
 });
 
 test('display feedback and render failures are frame-scoped', () => {
   const { transport, runtime } = setup();
   transport.injectRenderFrame(demoRenderFrame({ revision: 2 }));
-  const frameId = runtime.getInstance(INSTANCE_KEY).localFrameId;
 
-  runtime.reportDisplayed(INSTANCE_KEY, 2, frameId);
+  runtime.reportDisplayed(INSTANCE_KEY, 2, runtime.getInstance(INSTANCE_KEY).localFrameId);
   assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 2);
-  runtime.reportDisplayed(INSTANCE_KEY, 1, frameId);
+  runtime.reportDisplayed(INSTANCE_KEY, 1);
   assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 2, 'stale confirmation ignored');
-  runtime.reportDisplayed(INSTANCE_KEY, 2, frameId - 1);
-  assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 2, 'confirmation from another generation ignored');
 
-  runtime.reportRenderFailure(INSTANCE_KEY, 2, 'adapter crash', frameId);
-  assert.deepEqual(runtime.getInstance(INSTANCE_KEY).renderFailure, {
-    revision: 2,
-    localFrameId: frameId,
-    message: 'adapter crash',
-  });
-  runtime.reportRenderFailure(INSTANCE_KEY, 1, 'old failure', frameId);
-  assert.equal(runtime.getInstance(INSTANCE_KEY).renderFailure.message, 'adapter crash');
-  runtime.reportRenderFailure(INSTANCE_KEY, 2, 'old generation failure', frameId - 1);
+  runtime.reportRenderFailure(INSTANCE_KEY, 2, 'adapter crash', runtime.getInstance(INSTANCE_KEY).localFrameId);
+  assert.deepEqual(runtime.getInstance(INSTANCE_KEY).renderFailure, { revision: 2, message: 'adapter crash' });
+  runtime.reportRenderFailure(INSTANCE_KEY, 1, 'old failure');
   assert.equal(runtime.getInstance(INSTANCE_KEY).renderFailure.message, 'adapter crash');
 
   transport.injectRenderFrame(demoRenderFrame({ revision: 3 }));
   assert.equal(runtime.getInstance(INSTANCE_KEY).renderFailure, null, 'new frame clears old failure');
+});
+
+test('error frames attach to active instances and create error-only instances', () => {
+  const { transport, runtime } = setup();
+  transport.injectErrorFrame(demoErrorFrame({ revision: 0, code: 'SCHEMA_ERROR', message: 'bad tree' }));
+  const errored = runtime.getInstance(INSTANCE_KEY);
+  assert.equal(errored.state, 'error');
+  assert.equal(errored.frame, null);
+
+  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
+  assert.equal(runtime.getInstance(INSTANCE_KEY).state, 'active');
+  transport.injectErrorFrame(demoErrorFrame({ revision: 1, code: 'DELIVERY_FAILED' }));
+  const active = runtime.getInstance(INSTANCE_KEY);
+  assert.equal(active.state, 'active');
+  assert.equal(active.error.code, 'DELIVERY_FAILED');
+  assert.notEqual(active.frame, null);
+});
+
+test('clearSession drops one session without touching another', () => {
+  const { transport, runtime } = setup();
+  transport.injectRenderFrame(demoRenderFrame());
+  transport.injectRenderFrame(demoRenderFrame({ target: { session_id: 'sess-2' } }));
+  runtime.clearSession('sess-1');
+  assert.equal(runtime.getInstance(INSTANCE_KEY), undefined);
+  assert.notEqual(runtime.getInstance('sess-2|conversation.input.above|pkg.demo|main'), undefined);
+});
+
+test('start is idempotent and a disposed runtime cannot restart', () => {
+  const { transport, runtime } = setup();
+  runtime.start();
+  assert.equal(transport.dispatches.length, 0);
+  runtime.dispose();
+  assert.throws(() => runtime.start(), /disposed/);
+});
+
+test('unknown slots are rejected at mount time', () => {
+  const { runtime } = setup();
+  assert.throws(() => runtime.mountSlot('sess-1', 'application.menu'), /not registered/);
+  assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT_SINGLE).mounted, false);
 });
 
 test('clear and rebuild with the same revision starts a new render generation', () => {
@@ -224,62 +238,9 @@ test('clear and rebuild with the same revision starts a new render generation', 
   assert.equal(runtime.getInstance(INSTANCE_KEY).displayedRevision, 1);
 });
 
-test('dedupe distinguishes submitted payload and current frame', async () => {
-  const { transport, runtime } = setup({ autoAccept: false });
-  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
-  const request = (revision, payload) => ({
-    instanceKey: INSTANCE_KEY,
-    nodeKey: '0.0',
-    actionId: 'demo.refresh',
-    frameRevision: revision,
-    payload,
-  });
-
-  const first = runtime.dispatchIntent(request(1, { value: 'a' }));
-  const second = runtime.dispatchIntent(request(1, { value: 'ab' }));
-  assert.equal(transport.pendingDispatchCount, 2, 'different submitted payload starts a new request');
-  transport.resolveNextDispatch({ accepted: true, status: 'handled' });
-  transport.resolveNextDispatch({ accepted: true, status: 'handled' });
-  assert.equal((await first).status, 'sent');
-  assert.equal((await second).status, 'sent');
-
-  transport.injectRenderFrame(demoRenderFrame({ revision: 2 }));
-  const nextFrame = runtime.dispatchIntent(request(2, { value: 'a' }));
-  assert.equal(transport.pendingDispatchCount, 1, 'same interaction on a new frame starts a new request');
-  transport.resolveNextDispatch({ accepted: true, status: 'handled' });
-  assert.equal((await nextFrame).status, 'sent');
-});
-
-test('releasing an instance consumer drops only instances it no longer covers', async () => {
-  const { transport, runtime } = setup();
-  const otherKey = 'sess-1|conversation.panel.right|pkg.demo|other';
-  const main = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'main' });
-  const other = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'other' });
-  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
-  transport.injectRenderFrame(demoRenderFrame({ revision: 1, target: { instance_key: 'other' } }));
-
-  main.release();
-  assert.equal(runtime.getInstance(INSTANCE_KEY), undefined, 'uncovered instance is dropped');
-  assert.notEqual(runtime.getInstance(otherKey), undefined, 'instance still covered by another consumer stays');
-  assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT).mounted, true);
-  assert.deepEqual(
-    await runtime.dispatchIntent({
-      instanceKey: INSTANCE_KEY,
-      nodeKey: '0.0',
-      actionId: 'demo.refresh',
-      frameRevision: 1,
-    }),
-    { status: 'inactive' },
-  );
-
-  other.release();
-  assert.equal(runtime.getInstance(otherKey), undefined);
-  assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT).mounted, false);
-});
-
 test('releasing a slot-wide consumer keeps instances covered by instance consumers', () => {
   const { transport, runtime } = setup();
-  const otherKey = 'sess-1|conversation.panel.right|pkg.demo|other';
+  const otherKey = 'sess-1|conversation.input.above|pkg.demo|other';
   const slotWide = runtime.mountSlot('sess-1', DEMO_SLOT);
   const other = runtime.mountSlot('sess-1', DEMO_SLOT, { instanceKey: 'other' });
   transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
@@ -307,43 +268,4 @@ test('reconnect keeps consumer instance identity after content clear', async () 
   assert.equal(ready.length, 2);
   assert.equal(ready.at(-1).target.instanceKey, 'main', 'ready identity is kept until the consumer releases');
   handle.release();
-});
-
-test('error frames attach to active instances and create error-only instances', () => {
-  const { transport, runtime } = setup();
-  transport.injectErrorFrame(demoErrorFrame({ revision: 0, code: 'SCHEMA_ERROR', message: 'bad tree' }));
-  const errored = runtime.getInstance(INSTANCE_KEY);
-  assert.equal(errored.state, 'error');
-  assert.equal(errored.frame, null);
-
-  transport.injectRenderFrame(demoRenderFrame({ revision: 1 }));
-  assert.equal(runtime.getInstance(INSTANCE_KEY).state, 'active');
-  transport.injectErrorFrame(demoErrorFrame({ revision: 0, code: 'DELIVERY_FAILED' }));
-  const active = runtime.getInstance(INSTANCE_KEY);
-  assert.equal(active.state, 'active');
-  assert.equal(active.error.code, 'DELIVERY_FAILED');
-  assert.notEqual(active.frame, null);
-});
-
-test('clearSession drops one session without touching another', () => {
-  const { transport, runtime } = setup();
-  transport.injectRenderFrame(demoRenderFrame());
-  transport.injectRenderFrame(demoRenderFrame({ target: { session_id: 'sess-2' } }));
-  runtime.clearSession('sess-1');
-  assert.equal(runtime.getInstance(INSTANCE_KEY), undefined);
-  assert.notEqual(runtime.getInstance('sess-2|conversation.panel.right|pkg.demo|main'), undefined);
-});
-
-test('start is idempotent and a disposed runtime cannot restart', () => {
-  const { transport, runtime } = setup();
-  runtime.start();
-  assert.equal(transport.dispatches.length, 0);
-  runtime.dispose();
-  assert.throws(() => runtime.start(), /disposed/);
-});
-
-test('unknown slots are rejected at mount time', () => {
-  const { runtime } = setup();
-  assert.throws(() => runtime.mountSlot('sess-1', 'application.menu'), /not registered/);
-  assert.equal(runtime.getScopeSnapshot('sess-1', DEMO_SLOT_SINGLE).mounted, false);
 });

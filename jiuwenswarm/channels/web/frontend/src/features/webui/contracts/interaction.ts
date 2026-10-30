@@ -1,16 +1,15 @@
 /**
  * 渲染层与挂载层共用的交互契约。
- * 适配器不依赖 Runtime：dispatch 返回统一结果，调用方据此展示或记录，不据此修改渲染树。
+ * 适配器不依赖 Runtime：emit 返回统一结果，调用方据此展示或记录，不据此修改渲染树。
  */
 
 export type WebUIInteractionStatus =
   | 'sent'
-  | 'duplicate'
   | 'disconnected'
   | 'inactive'
   | 'invalid_action'
-  | 'unsupported_action'
-  | 'failed';
+  | 'failed'
+  | 'stale';
 
 export interface WebUIInteractionReceipt {
   accepted: boolean;
@@ -18,13 +17,12 @@ export interface WebUIInteractionReceipt {
   code?: string;
 }
 
-/** 一次交互意图；nodeKey 与 actionId 必须来自当前已渲染的树。 */
+/** 一次交互意图；nodeKey、event 与节点绑定必须来自当前已渲染的树。 */
 export interface WebUIInteractionIntent {
   nodeKey: string;
-  actionId: string;
-  args?: Record<string, unknown>;
-  /** 输入控件等由适配器补充的字段；action_id 与 args 由挂载层统一写入。 */
-  payload?: Record<string, unknown>;
+  event: string;
+  data: Record<string, unknown>;
+  nodeLeaseId: number;
 }
 
 export interface WebUIInteractionResult {

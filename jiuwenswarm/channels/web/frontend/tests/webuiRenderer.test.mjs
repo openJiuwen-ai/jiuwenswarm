@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { StrictMode, act, createElement, useState } from 'react';
+import { StrictMode, act, createElement, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { JSDOM, VirtualConsole } from 'jsdom';
 
-import { createRendererRegistry } from '../node_modules/.cache/webui-renderer/renderer/index.js';
+import { createRendererRegistry, WebUIContentActivity } from '../node_modules/.cache/webui-renderer/renderer/index.js';
 import { WebUIHost } from '../node_modules/.cache/webui-renderer/react/WebUIHost.js';
 import { WebUIInstanceView } from '../node_modules/.cache/webui-renderer/react/WebUIInstanceView.js';
 import { WebUIProvider } from '../node_modules/.cache/webui-renderer/react/WebUIProvider.js';
@@ -46,8 +46,10 @@ function installDom() {
 
 function createProbeAdapter() {
   let renders = 0;
-  function Adapter({ node, children, context, dispatch }) {
+  const callbacks = new Map();
+  function Adapter({ node, children, context, emit }) {
     renders += 1;
+    callbacks.set(`${context.instanceKey}:${node.key}`, emit);
     const [local, setLocal] = useState(0);
     const [status, setStatus] = useState('');
     if (node.props.title === 'crash') {
@@ -59,11 +61,11 @@ function createProbeAdapter() {
       createElement('span', { 'data-testid': 'probe-title' }, String(node.props.title ?? '')),
       createElement('span', { 'data-testid': 'probe-local' }, String(local)),
       createElement('button', { 'data-testid': 'probe-local-button', onClick: () => setLocal((value) => value + 1) }),
-      node.action
+      node.events['ui.click']
         ? createElement('button', {
             'data-testid': 'probe-action',
             onClick: async () => {
-              const result = await dispatch();
+              const result = await emit('ui.click', {});
               setStatus(result.status);
             },
           })
@@ -72,10 +74,10 @@ function createProbeAdapter() {
       children,
     );
   }
-  return { Adapter, renders: () => renders, reset: () => { renders = 0; } };
+  return { Adapter, callbacks, renders: () => renders, reset: () => { renders = 0; } };
 }
 
-const INSTANCE_KEY = 'sess-1|conversation.panel.right|pkg.demo|main';
+const INSTANCE_KEY = 'sess-1|conversation.input.above|pkg.demo|main';
 
 function setup() {
   const transport = createMockTransport();
@@ -523,4 +525,87 @@ test('assembly rejects a catalog and registry that do not match', () => {
     () => createWebUIAppRuntime({ client, catalog: demoCatalog, registry: createRendererRegistry({}) }),
     /adapter is missing/,
   );
+});
+
+test('reconnect binds fresh node callbacks without reactivating retained callbacks', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  const probe = createProbeAdapter();
+  const registry = createRendererRegistry({ demo: probe.Adapter });
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => renderHost(root, runtime, registry));
+    await act(async () => transport.injectRenderFrame(demoRenderFrame()));
+    const previous = probe.callbacks.get(`${INSTANCE_KEY}:0.0`);
+    assert.equal((await previous('ui.click', {})).status, 'sent');
+    await act(async () => transport.setConnectionState('disconnected'));
+    assert.equal((await previous('ui.click', {})).status, 'inactive');
+    await act(async () => transport.setConnectionState('connected'));
+    const current = probe.callbacks.get(`${INSTANCE_KEY}:0.0`);
+    assert.equal((await previous('ui.click', {})).status, 'inactive');
+    assert.equal((await current('ui.click', {})).status, 'sent');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    restoreDom();
+  }
+});
+
+test('hidden content releases bindings and creates independent callbacks when shown again', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  const probe = createProbeAdapter();
+  const registry = createRendererRegistry({ demo: probe.Adapter });
+  const root = createRoot(document.getElementById('root'));
+  const render = (active) => root.render(createElement(WebUIContentActivity, { active },
+    createElement(WebUIProvider, { runtime, registry },
+      createElement(WebUIHost, { slotId: DEMO_SLOT, sessionId: 'sess-1' }))));
+  try {
+    await act(async () => render(true));
+    await act(async () => transport.injectRenderFrame(demoRenderFrame()));
+    const previous = probe.callbacks.get(`${INSTANCE_KEY}:0.0`);
+    assert.equal((await previous('ui.click', {})).status, 'sent');
+    await act(async () => render(false));
+    assert.equal((await previous('ui.click', {})).status, 'inactive');
+    await act(async () => render(true));
+    assert.equal((await previous('ui.click', {})).status, 'inactive');
+    assert.equal((await probe.callbacks.get(`${INSTANCE_KEY}:0.0`)('ui.click', {})).status, 'sent');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    restoreDom();
+  }
+});
+
+test('retained component state survives replace but resets after batched clear and recreation', async () => {
+  const restoreDom = installDom();
+  const { transport, runtime } = setup();
+  function RetainedAdapter({ node, context }) {
+    const state = context.componentState.retain(node.key, node.component, () => 0);
+    const value = useSyncExternalStore(state.subscribe, state.getSnapshot);
+    return createElement('button', {
+      'data-testid': 'retained-value', onClick: () => state.set(value + 1),
+    }, value);
+  }
+  const registry = createRendererRegistry({ demo: RetainedAdapter });
+  const root = createRoot(document.getElementById('root'));
+  const frame = (revision) => demoRenderFrame({ revision, root: { component: 'demo' } });
+  const button = () => document.querySelector('[data-testid="retained-value"]');
+  try {
+    await act(async () => renderHost(root, runtime, registry));
+    await act(async () => transport.injectRenderFrame(frame(1)));
+    await act(async () => button().dispatchEvent(new window.MouseEvent('click', { bubbles: true })));
+    assert.equal(button().textContent, '1');
+    await act(async () => transport.injectRenderFrame(frame(2)));
+    assert.equal(button().textContent, '1');
+    await act(async () => {
+      transport.injectClearFrame(demoClearFrame({ revision: 3 }));
+      transport.injectRenderFrame(frame(1));
+    });
+    assert.equal(button().textContent, '0');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    restoreDom();
+  }
 });

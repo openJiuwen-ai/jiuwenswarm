@@ -16,7 +16,7 @@
 
 前端需要在固定位置展示插件内容，并把用户操作回传给对应插件实例。渲染树来自后端，组件和样式必须受控；同一会话可能有多个实例，更新可能乱序到达，也可能在 `clear` 后按相同 `revision` 重新生成。
 
-一句话概括：**前端按 `session × slot × package × instance` 保存最近一帧；新运行时负责协议校验、实例状态、挂载所有权和上行交互，React 宿主通过可注入的组件目录与渲染注册表把规范化树映射为组件。生产页面迁移前，旧链路继续工作。**
+前端按 `session × slot × package × instance` 保存最近一帧；运行时负责协议校验、实例状态、挂载所有权和上行交互，React 宿主通过可注入的组件目录与渲染注册表把规范化树映射为组件。
 
 ## 2. 范围
 
@@ -24,11 +24,11 @@
 
 新增前端运行时底座（本方案对应的实现，已落地，尚未接入页面入口）：
 
-- 协议管线：`webui.render`、`webui.render.clear`、`webui.render.error` 的 wire 校验、限额检查与规范化；组件目录用于校验组件名、props、子节点与 action。
-- 运行时：实例记录、`revision` 比较、`clear`/`error` 处理、挂载所有权与释放、上行交互校验与去重、显示确认与渲染失败反馈。
+- 协议管线：`webui.render`、`webui.render.clear`、`webui.render.error` 的 wire 校验、限额检查与规范化；组件目录用于校验组件名、props、子节点与 events。
+- 运行时：实例记录、`revision` 比较、`clear`/`error` 处理、挂载所有权与释放、节点绑定、上行事件校验、显示确认与渲染失败反馈。
 - React 宿主：`WebUIProvider`、`WebUIHost`、`WebUIInstanceView`、实例错误边界与渲染注册表。
 - 接入适配：可注入的 `WebUICatalog`、`WebUIRendererRegistry` 与 `WebUIClientLike`；WebClient 传输适配与 Mock 传输。
-- 独立验证：demo 目录、demo 适配器、测试夹具与四组模块测试；`package.json` 新增四条测试脚本。
+- 独立验证：demo 目录、demo 适配器、共享组件样本与协议、运行时、事件、传输及渲染测试。
 
 当前生产入口使用 `webuiStore`、`useWebUIRender`、`WebUISlotHost`、`RenderTree` 和 `actionBridge`，由 `test:webui-store` 覆盖存储行为。
 
@@ -58,8 +58,8 @@ flowchart LR
     HO --> IV["WebUIInstanceView（逐实例订阅）"]
     IV --> SR["SchemaRenderer（渲染注册表）"]
     SR --> AD["注入的组件适配器"]
-    AD -->|"dispatch"| IV
-    IV -->|"dispatchIntent"| RT
+    AD -->|"emit(event, data)"| RT
+    IV -->|"bindNode / reportDisplayed"| RT
     RT -->|"webui.dispatch"| TR
 ```
 
@@ -78,9 +78,11 @@ flowchart LR
 | `frame` | `WebUINormalizedRenderFrame \| null` | 最近接受的规范化渲染帧 |
 | `error` | `{ code, message } \| null` | 最近错误帧的反馈，可附着在已有内容上 |
 | `connected` | `boolean` | 最近一次连接状态 |
-| `displayedRevision` | `number` | React 提交后确认显示的 `revision`；0 表示尚未确认 |
-| `renderFailure` | `{ revision, localFrameId, message } \| null` | 当前渲染代次的失败反馈 |
+| `displayedRevision` | `number` | 最近确认显示的 `revision`，初值为 0 |
+| `displayedLocalFrameId` | `number \| null` | 当前已显示的本地代次；null 表示当前代次尚未确认显示 |
+| `renderFailure` | `{ revision, message } \| null` | 当前渲染代次的失败反馈，写入前校验 localFrameId |
 | `localFrameId` | `number` | 运行时本地单调渲染代次，每次创建快照时分配，不随 `revision` 重置 |
+| `lifetimeId` | `number` | 实例生存期标识，replace 时保留，clear 后重建时重新分配 |
 
 `revision` 是后端语义的实例内版本；`clear` 后实例被删除，重建时 `revision` 可能从 1 重新开始，因此不能用 `revision` 单独判断 React 渲染代次或反馈归属。`localFrameId` 在运行时生命周期内只增不减，用于 React 重挂载键，以及显示确认、失败反馈的归属校验。
 
@@ -94,8 +96,8 @@ flowchart LR
 | `message.assistant.meta` | `list` | `MessageItem` 的助手消息 meta 行，消息级宿主按实例键过滤 |
 
 - `list` 槽位展示范围内全部实例，每个实例对应一个独立的 `WebUIInstanceView`。
-- `single` 槽位由宿主按 `revision` 选择最新实例；不同实例的 `revision` 不可比较，排序使用 `localFrameId`，避免跨实例误比较。
-- 挂载消费者分为两类：不传 `instanceKey` 的消费者覆盖整个槽位；传 `instanceKey` 的消费者只覆盖该实例（消息级槽位使用）。
+- `single` 槽位按 `localFrameId` 选择最新实例，不跨实例比较 `revision`。
+- 不传 `instanceKey` 的消费者覆盖整个槽位，传入时只覆盖该实例；可用 `packageId` 进一步限定所属包。
 
 ### 3.4 公开接口与生命周期
 
@@ -108,7 +110,8 @@ flowchart LR
 | `mountSlot(sessionId, slotId, options?)` | `WebUIHost` | 注册消费者并返回挂载句柄；槽位未在目录中注册时抛错 |
 | `handle.notifyReady()` | `WebUIHost` | 上报消费者就绪；范围消费者上报空实例键，实例消费者上报自己的实例键 |
 | `handle.release()` | `WebUIHost` 卸载 | 只释放本消费者；清理不再被剩余消费者覆盖的实例 |
-| `dispatchIntent(request)` | `WebUIInstanceView` | 校验并把交互转为 `webui.dispatch`，返回统一状态 |
+| `bindNode(instanceKey, localFrameId, nodeKey, mountLeaseId?)` | `SchemaRenderer` 经实例视图注入 | 创建属于当前挂载消费者的节点绑定，返回 emit 与 release |
+| `dispatchIntent(request)` | 节点绑定 | 校验绑定与事件数据，再转为 `webui.dispatch`，返回统一状态 |
 | `reportDisplayed(instanceKey, revision, localFrameId)` | `WebUIInstanceView` | React 提交后确认显示；帧版本与代次都必须匹配 |
 | `reportRenderFailure(instanceKey, revision, message, localFrameId)` | 实例错误边界 | 记录当前代次的整树渲染失败；旧代次反馈被拒绝 |
 | `clearSession(sessionId)` | 宿主或组装入口 | 清理一个会话的实例与消费者 |
@@ -119,8 +122,8 @@ React 宿主接口：
 | 组件 | Props | 语义 |
 | --- | --- | --- |
 | `WebUIProvider` | `runtime`、`registry`、`children` | 挂载前校验目录与注册表精确对应，缺失或多余适配器直接失败 |
-| `WebUIHost` | `slotId`、`sessionId`、`instanceKey?`、`className?`、`runtime?`、`registry?` | 订阅范围快照、注册消费者、按 `list`/`single` 展示实例 |
-| `WebUIInstanceView` | `runtime`、`registry`、`instanceKey` | 独立订阅一个实例，持有错误边界、显示确认与交互接口 |
+| `WebUIHost` | `slotId`、`sessionId`、`instanceKey?`、`packageId?`、`className?`、`runtime?`、`registry?` | 订阅范围快照、注册消费者、按 `list`/`single` 展示实例 |
+| `WebUIInstanceView` | `runtime`、`registry`、`instanceKey`、`mountLeaseId?` | 独立订阅一个实例，持有错误边界、显示确认与节点绑定 |
 
 生命周期与所有权语义：
 
@@ -142,27 +145,30 @@ React 宿主接口：
 - 渲染树按帧对象与代次缓存；显示确认等快照更新不重建未变化的组件树，避免重复执行适配器。
 - `reportDisplayed` 与 `reportRenderFailure` 同时匹配 `revision` 和 `localFrameId`；旧代次迟到的确认或失败被忽略。
 - 新的合法渲染帧会清空上一帧的失败反馈；错误帧只附着错误信息，不触发整树重建。
+- 节点绑定在 layout effect 中建立并在清理时释放；隐藏内容通过 `WebUIContentActivity` 停用绑定。
+- 实例视图持有可选组件状态端口。组件可按节点路径与组件名保留自身交互值，节点删除或类型改变时清理；clear、断连或消费者更换时重建端口。状态端口按 lifetimeId 区分实例生存期，因此同一次 React 更新中的 clear 与重建也不会继承旧状态。
 
 ## 4. 处理流程
 
 ### 4.1 下行
 
 1. 传输适配把事件外壳交给协议管线，帧以 `unknown` 接收。
-2. 协议层校验目标字符串、槽位、`revision`、`mode`/`schema_version`、节点数量/深度/文本大小与 action 参数大小；非法帧整帧丢弃。
-3. 规范化：目标字段转驼峰，节点生成路径 key（根 `0`、子节点 `0.0`），action 归一为对象或 `null`。
-4. 实例提交：`replace` 帧只接受更大的 `revision`；`clear` 帧删除实例；`error` 帧附着到已有实例，没有实例时创建只显示错误的空实例。
+2. 协议层校验目标字符串、槽位、`revision`、`mode`/`schema_version`、节点数量/深度/文本大小及 events 参数大小；非法帧整帧丢弃。
+3. 规范化：目标字段转驼峰，节点生成路径 key（根 `0`、子节点 `0.0`、Tabs 内容 `0.items.1.children.0`），事件参数补齐为对象，结果与输入隔离并递归冻结。Tabs 隐藏内容共享预算，根组件受槽位约束。
+4. 实例提交：`replace` 帧只接受更大的 `revision`；`clear` 帧删除实例；旧 `error` 帧被忽略，其余错误附着到已有实例，没有实例时创建只显示错误的空实例。
 5. 通知：新实例、删除实例、消费者变化通知范围；实例内容更新只通知该实例；`single` 槽位在内容更新时额外通知范围，宿主据此按 `localFrameId` 重新选择最新实例。
 6. `WebUIHost` 渲染实例列表；`WebUIInstanceView` 订阅的快照变化后按新代次重建或复用组件树。
 
 ### 4.2 上行
 
-组件适配器只通过 `dispatch` 派发当前节点声明的 action；运行时按以下顺序校验并发送：
+组件适配器通过 `emit(event, data)` 触发当前节点声明的事件；运行时按以下顺序校验并发送：
 
 1. 实例存在且 `frame.revision === request.frameRevision`，否则返回 `inactive`。
 2. 连接状态为 `connected`，否则返回 `disconnected`。
-3. 节点存在、声明了 action、`actionId` 匹配且目录允许该组件的上行事件，否则返回 `invalid_action` 或 `unsupported_action`。
-4. 去重键由 `instanceKey`、`frameRevision`、`nodeKey`、`actionId`、`args` 和实际提交的 `payload` 组成；同一请求未完成时重复操作返回 `duplicate`。不同输入、不同帧或不同参数不合并。
-5. 发送 `webui.dispatch`，payload 包含 `action_id`、`args` 与适配器提交的字段；发送异常返回 `failed`，成功返回 `sent`。
+3. 节点绑定属于当前消费者、实例与 localFrameId，当前代次已显示且未渲染失败；禁用或加载中的节点返回 `inactive`。只读 Input 允许 `ui.click`，其余事件返回 `inactive`。
+4. 节点和目录均声明该事件，data 为合法 JSON 对象且满足事件形状与组件语义限制，否则返回 `invalid_action`。
+5. 从当前树读取动作与 args，构造 `{action_id, args, data, node_key, revision}`。完整 payload 按 `maxFrameBytes` 校验序列化字节数，默认上限 256 KiB；data 中的文本字段单独执行 16 KiB 限制。每次合法回调独立发送，不合并重复值。
+6. 发送异常返回 `failed`；回执到达时绑定和代次仍有效则返回 `sent`，否则返回 `stale`。stale 只表示本地视图已失效，不撤销服务端已经执行的动作。
 
 ### 4.3 挂载、释放与重连
 
@@ -171,6 +177,7 @@ React 宿主接口：
 3. `release` 从消费者与范围集合中移除本消费者，逐个检查范围实例是否仍被剩余消费者覆盖；未覆盖实例被删除并通知对应实例与范围。
 4. 范围没有剩余消费者时删除范围记录并通知范围；最后一个实例的本地状态不会自动保留给后来挂载的消费者。
 5. 连接状态由断开变为连接时，按消费者重发 `ui.ready`；就绪身份不因内容 `clear` 而删除。
+6. replace、clear、断连、渲染失败和所属消费者释放都会使旧节点绑定失效，重连后必须由当前视图重新绑定。
 
 ### 4.4 React 渲染、显示确认与错误隔离
 
@@ -217,9 +224,9 @@ export const WEBUI_SLOT_SPECS = {
 
 ### 5.1 独立运行时
 
-- 组件名、props 规则、默认值、是否允许子节点与 action、上行事件由 `WebUICatalog` 描述；组件目录在初始化时校验重复项、交互组件缺少事件和默认值未声明。
+- 组件名、props 规则、默认值、子节点、内容组与上行事件由 `WebUICatalog` 描述；组件目录在初始化时校验重复项、非法事件和默认值未声明。
 - `WebUIRendererRegistry` 只在组装时创建一次，运行期不做全局注册；`WebUIProvider` 要求目录与注册表精确对应，缺失适配器或多余适配器都会在子树挂载前抛错。
-- `SchemaRenderer` 按节点 `component` 查注册表并递归渲染；适配器只接收节点、子内容、实例上下文与 `dispatch`，不接触 Runtime、通信客户端或完整实例快照。
+- `SchemaRenderer` 按节点 `component` 查注册表并递归渲染；适配器只接收节点、子内容、内容组、实例上下文与 `emit`，不接触 Runtime、通信客户端或完整实例快照。
 - demo 目录与 demo 适配器用于模块测试，实际组件与样式 token 映射由宿主适配器提供。
 
 ### 5.2 旧链路（现行生产）
@@ -250,7 +257,7 @@ export const WEBUI_SLOT_SPECS = {
 - 目标缺少会话、槽位未注册或帧字段非法时整帧丢弃。
 - 旧 `revision` 帧被忽略；`clear` 的旧 `revision` 被忽略；跨实例的 `revision` 不比较。
 - 未知组件在目录校验阶段即失败：要么组装前目录与注册表不匹配，要么实例渲染时缺少适配器，整棵实例树降级，不影响其他实例。
-- 组件没有 action 时不派发事件，只展示；目录未声明上行事件时返回 `unsupported_action`。
+- 组件没有声明对应事件时不派发；目录或节点未声明该事件时返回 `invalid_action`。
 - 交互请求失败保留当前界面，不自动重试；结果只作为适配器可观察的返回值。
 - `clear` 后按相同 `revision` 重建时，以新的 `localFrameId` 触发重新挂载；旧代次的显示确认与失败反馈被拒绝。
 - 消费者释放后不再持有其未覆盖的实例；旧交互因实例不存在返回 `inactive`。
@@ -260,7 +267,7 @@ export const WEBUI_SLOT_SPECS = {
 - 新增 `src/features/webui/` 下的 `assembly/`、`catalog/`、`contracts/`、`protocol/`、`react/`、`renderer/`、`runtime/`、`testing/`、`transport/` 与统一导出；旧文件与旧入口保持不变。
 - `package.json` 新增 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`；保留 `test:webui-store` 及其他脚本。
 - 不修改 `App.tsx`、`ChatPanel` 等生产挂载点，不新增后端事件、Ops 方法、槽位或文件服务；前端只消费既有 `webClient` 事件与 `webui.dispatch`。
-- 目录与注册表契约后续替换为后端 `extensions_v2/webui/constants.py` 的镜像；调整组件白名单时两侧需要同步。
+- 组件属性与事件契约由组件目录维护，并与后端规则同步；调整白名单时检查两侧校验。
 
 ## 8. 验证
 
@@ -268,23 +275,22 @@ export const WEBUI_SLOT_SPECS = {
 
 | 验证 ID | 场景 / 前置状态与输入 | 操作或验证入口 | 预期结果 / 通过条件 |
 | --- | --- | --- | --- |
-| EXTV2-08-V-01 | 正常帧、clear、错误帧与重复操作 | 四组模块测试 | 状态转移、显示确认与重复拦截符合上文 |
+| EXTV2-08-V-01 | 正常帧、clear、错误帧与重复操作 | 协议与运行时测试 | 状态转移、显示确认与事件派发符合上文 |
 | EXTV2-08-V-02 | 目录外组件、非法帧、适配器缺失 | 协议与渲染测试 | 非法输入被丢弃或整树失败，不影响其他实例 |
-| EXTV2-08-V-03 | 多实例独立更新、交互回传 | 运行时与 JSDOM 测试 | 更新 A 不执行 B 的适配器；交互 payload 与去重语义正确 |
+| EXTV2-08-V-03 | 多实例独立更新、交互回传 | 运行时与 JSDOM 测试 | 更新 A 不执行 B 的适配器；交互 payload 与绑定归属正确 |
 | F-08-V-04 | `clear` 后按相同 `revision` 重建 | 运行时与 JSDOM 测试 | 新 `localFrameId` 触发重新挂载；局部状态与旧错误不继承；显示确认重新上报 |
-| F-08-V-05 | 不同输入在请求未完成时连续提交 | 运行时测试 | 不同 payload/帧不被误判为 duplicate，两次请求都发出 |
+| F-08-V-05 | 请求未完成时连续提交相同或不同输入 | 事件测试 | 每次合法回调都发出请求，旧代次回执返回 stale |
 | F-08-V-06 | 实例级消费者与范围消费者混合释放 | 运行时测试 | 只删除不再被剩余消费者覆盖的实例 |
 | F-08-V-07 | 内容 `clear` 后重连 | 运行时测试 | 按消费者原实例键重发 `ui.ready`，不变成空实例键 |
 
 ### 8.2 验证入口
 
 前端目录下执行 `npm run test:webui-protocol`、`npm run test:webui-runtime`、
-`npm run test:webui-transport`、`npm run test:webui-renderer` 和 `npm run test:webui-store`。
+`npm run test:webui-events`、`npm run test:webui-transport`、`npm run test:webui-renderer` 和 `npm run test:webui-store`。
 
 ## 9. 风险与遗留
 
 - **入口未迁移（未实现）**：生产页面仍走旧链路，两套实现并存期间需要避免重复订阅与重复渲染；迁移时按页面逐点接入并回归旧入口。
-- **后端契约镜像（未验证）**：前端组件目录与限额当前由测试目录注入，尚未替换为后端 `constants.py` 的真实镜像；两侧需要同步维护并补充一致性测试。
-- **去重键序列化（有意取舍）**：去重使用 `JSON.stringify` 比较参数与 payload，键顺序不同会被视为不同请求；如果后续适配器产生不稳定键顺序，需要改为稳定序列化。
+- **双端规则维护**：前端组件目录与后端规则分别实现，共用组件属性样本；变更规则时需要同时验证两端。
 - **显示确认仅本地（未联调）**：`displayedRevision` 只保存在前端运行时，未接入后端显示回执事件；跨端显示语义需要另行确认。
 - **真实恢复链路（未验证）**：`ui.ready` 的重连重发只验证到请求构造，插件端是否按实例键恢复轮次视图需要真实联调。

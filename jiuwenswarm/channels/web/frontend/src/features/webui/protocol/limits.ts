@@ -3,8 +3,6 @@
  * 后端是权威校验方，这里只做防御性检查；后端调整限制时需同步本文件。
  */
 
-import { WEBUI_SUPPORTED_SCHEMA_VERSION } from '../contracts/wire.ts';
-
 export interface WebUILimits {
   maxDepth: number;
   maxNodes: number;
@@ -13,7 +11,6 @@ export interface WebUILimits {
   maxFrameBytes: number;
   maxActionArgsBytes: number;
   maxTargetStringBytes: number;
-  supportedSchemaVersion: number;
 }
 
 export const DEFAULT_WEBUI_LIMITS: WebUILimits = Object.freeze({
@@ -24,5 +21,4 @@ export const DEFAULT_WEBUI_LIMITS: WebUILimits = Object.freeze({
   maxFrameBytes: 256 * 1024,
   maxActionArgsBytes: 8 * 1024,
   maxTargetStringBytes: 200,
-  supportedSchemaVersion: WEBUI_SUPPORTED_SCHEMA_VERSION,
 });

@@ -5,11 +5,14 @@
  */
 
 import type { WebUIInteractionResult } from '../contracts/interaction.ts';
-import { webUIInstanceKey, webUISlotKey } from '../contracts/normalized.ts';
+import { findNormalizedNode, webUIInstanceKey, webUISlotKey } from '../contracts/normalized.ts';
+import type { WebUIComponentEvent } from '../contracts/wire.ts';
+import { checkPropValue } from '../protocol/checkPropValue.ts';
+import { DEFAULT_WEBUI_LIMITS } from '../protocol/limits.ts';
+import { isJSONData, isRecord, jsonByteLength } from '../protocol/utils.ts';
 import type {
   WebUINormalizedClearFrame,
   WebUINormalizedErrorFrame,
-  WebUINormalizedNode,
   WebUINormalizedRenderFrame,
   WebUINormalizedTarget,
 } from '../contracts/normalized.ts';
@@ -33,11 +36,12 @@ interface InstanceRecord {
   snapshot: WebUIInstanceSnapshot;
 }
 
-interface MountedOwner {
+interface MountedOwner extends WebUIMountOptions {
   id: number;
   sessionId: string;
   slotId: string;
   instanceKey?: string;
+  packageId?: string;
   /** 本消费者上报过就绪的 instanceKey；重连时按消费者重发。 */
   ready: Set<string>;
 }
@@ -60,9 +64,10 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   const instanceVersions = new Map<string, number>();
   const scopeVersions = new Map<string, number>();
 
-  const inFlight = new Set<string>();
-  let ownerCounter = 0;
+  const nodeBindings = new Map<number, { instanceKey: string; localFrameId: number; nodeKey: string; ownerIds: number[] }>();
   let localFrameCounter = 0;
+  let nodeLeaseCounter = 0;
+  let ownerCounter = 0;
   let version = 0;
   let connectionState: WebUIConnectionState = transport.getConnectionState();
   let unsubscribeTransport: (() => void) | null = null;
@@ -166,6 +171,8 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       displayedRevision,
       renderFailure: null,
       localFrameId: ++localFrameCounter,
+      lifetimeId: localFrameCounter,
+      displayedLocalFrameId: null,
     };
   }
 
@@ -175,6 +182,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (existing && frame.revision <= existing.lastRenderRevision) {
       return;
     }
+    invalidateBindings(key);
     const snapshot = buildSnapshot(
       frame.target,
       'active',
@@ -184,6 +192,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       existing?.snapshot.displayedRevision ?? 0,
     );
     if (existing) {
+      snapshot.lifetimeId = existing.snapshot.lifetimeId;
       existing.target = frame.target;
       existing.lastRenderRevision = frame.revision;
       existing.snapshot = snapshot;
@@ -201,16 +210,14 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   function commitClearFrame(frame: WebUINormalizedClearFrame): void {
     const key = webUIInstanceKey(frame.target);
     const existing = records.get(key);
-    if (!existing) {
+    if (existing && frame.revision < existing.lastRenderRevision) {
       return;
     }
-    if (frame.revision < existing.lastRenderRevision) {
-      return;
-    }
+    if (!existing) return;
     const target = existing.target;
+    invalidateBindings(key);
     records.delete(key);
     unindexInstance(target);
-    // ready 记录的是消费者的挂载身份，不随内容清除；释放消费者时才移除，重连按原实例键重发。
     notifyScope(webUISlotKey(target.sessionId, target.slotId));
     notifyInstance(key);
   }
@@ -220,6 +227,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     const existing = records.get(key);
     const error = { code: frame.code, message: frame.message };
     if (existing) {
+      if (frame.revision < existing.lastRenderRevision) return;
       // 有旧界面时保留并附带错误，不清空已显示内容。
       existing.target = frame.target;
       existing.snapshot = {
@@ -283,6 +291,9 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         return;
       }
       connectionState = state;
+      if (state !== 'connected') {
+        nodeBindings.clear();
+      }
       refreshConnectedFlag();
       notifyAll();
       if (state === 'connected') {
@@ -298,11 +309,11 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     try {
       await transport.dispatch({
         event: 'ui.ready',
-        target: { sessionId: owner.sessionId, slotId: owner.slotId, packageId: '', instanceKey },
+        target: { sessionId: owner.sessionId, slotId: owner.slotId, packageId: owner.packageId ?? '', instanceKey },
         payload: {},
       });
     } catch {
-      // 就绪上报失败不影响挂载；断连后重连时会重发。
+      // Ready failures do not affect mounting; reconnect retries the request.
     }
   }
 
@@ -329,10 +340,12 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     }
     ownerCounter += 1;
     const owner: MountedOwner = {
+      ...mountOptions,
       id: ownerCounter,
       sessionId,
       slotId,
       instanceKey: mountOptions.instanceKey,
+      packageId: mountOptions.packageId,
       ready: new Set<string>(),
     };
     owners.set(owner.id, owner);
@@ -347,6 +360,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
 
     let released = false;
     const handle: WebUIMountHandle = {
+      mountLeaseId: owner.id,
       sessionId,
       slotId,
       instanceKey: mountOptions.instanceKey,
@@ -364,37 +378,41 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         }
         released = true;
         owners.delete(owner.id);
+        for (const [id, binding] of nodeBindings) {
+          if (!binding.ownerIds.some((ownerId) => owners.has(ownerId))) nodeBindings.delete(id);
+        }
         const currentOwnerIds = scopeOwners.get(scopeKey);
         currentOwnerIds?.delete(owner.id);
-        const remainingOwners = (currentOwnerIds ? [...currentOwnerIds] : [])
-          .map((ownerId) => owners.get(ownerId))
-          .filter((item): item is MountedOwner => item !== undefined);
-        // 只保留仍被剩余消费者覆盖的实例：范围消费者覆盖整槽，实例消费者只覆盖自己的实例键。
-        let membershipChanged = false;
-        for (const instanceKey of [...(scopeIndex.get(scopeKey) ?? [])]) {
-          const record = records.get(instanceKey);
-          if (!record) {
-            continue;
+        if (currentOwnerIds && currentOwnerIds.size > 0) {
+          for (const key of [...(scopeIndex.get(scopeKey) ?? [])]) {
+            const record = records.get(key);
+            if (!record) continue;
+            const held = [...owners.values()].some((remaining) => remaining.sessionId === record.target.sessionId
+              && remaining.slotId === record.target.slotId
+              && (remaining.instanceKey === undefined || remaining.instanceKey === record.target.instanceKey)
+              && (remaining.packageId === undefined || remaining.packageId === record.target.packageId));
+            if (!held) {
+              invalidateBindings(key); records.delete(key); unindexInstance(record.target); notifyInstance(key);
+            }
           }
-          const covered = remainingOwners.some(
-            (item) => item.instanceKey === undefined || item.instanceKey === record.target.instanceKey,
-          );
-          if (covered) {
-            continue;
-          }
-          records.delete(instanceKey);
-          unindexInstance(record.target);
-          notifyInstance(instanceKey);
-          membershipChanged = true;
-        }
-        if (remainingOwners.length === 0) {
-          scopeOwners.delete(scopeKey);
           notifyScope(scopeKey);
           return;
         }
-        if (membershipChanged) {
-          notifyScope(scopeKey);
+        // 最后一个消费者退出：移除该范围不再被持有的本地实例。
+        scopeOwners.delete(scopeKey);
+        const instanceKeys = scopeIndex.get(scopeKey);
+        if (instanceKeys) {
+          for (const instanceKey of [...instanceKeys]) {
+            const record = records.get(instanceKey);
+            if (!record) {
+              continue;
+            }
+            records.delete(instanceKey);
+            unindexInstance(record.target);
+            notifyInstance(instanceKey);
+          }
         }
+        notifyScope(scopeKey);
       },
     };
     return handle;
@@ -409,71 +427,97 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (connectionState !== 'connected') {
       return { status: 'disconnected' };
     }
-    const node = findNode(frame.tree, request.nodeKey);
-    if (!node || node.action === null || node.action.id !== request.actionId) {
+    return dispatchComponentEvent(request, record, frame);
+  }
+
+  function invalidateBindings(instanceKey: string): void {
+    for (const [id, binding] of nodeBindings) {
+      if (binding.instanceKey === instanceKey) nodeBindings.delete(id);
+    }
+  }
+
+  function bindNode(instanceKey: string, localFrameId: number, nodeKey: string, mountLeaseId?: number) {
+    const id = ++nodeLeaseCounter;
+    const record = records.get(instanceKey);
+    const ownerIds = record ? [...owners.values()].filter((owner) => owner.sessionId === record.target.sessionId
+      && owner.slotId === record.target.slotId
+      && (owner.instanceKey === undefined || owner.instanceKey === record.target.instanceKey)
+      && (owner.packageId === undefined || owner.packageId === record.target.packageId)
+      && (mountLeaseId === undefined || owner.id === mountLeaseId)).map((owner) => owner.id).slice(0, 1) : [];
+    if (!disposed && record?.snapshot.localFrameId === localFrameId && connectionState === 'connected' && ownerIds.length) {
+      nodeBindings.set(id, { instanceKey, localFrameId, nodeKey, ownerIds });
+    }
+    return {
+      emit: (event: string, data: Record<string, unknown>) => dispatchIntent({
+        instanceKey, localFrameId, frameRevision: record?.snapshot.frame?.revision ?? -1,
+        nodeKey, nodeLeaseId: id, event, data,
+      }),
+      release: () => { nodeBindings.delete(id); },
+    };
+  }
+
+  async function dispatchComponentEvent(
+    request: WebUIInstanceDispatch,
+    record: InstanceRecord,
+    frame: WebUINormalizedRenderFrame,
+  ): Promise<WebUIInteractionResult> {
+    const binding = request.nodeLeaseId === undefined ? undefined : nodeBindings.get(request.nodeLeaseId);
+    if (disposed || !binding || binding.instanceKey !== request.instanceKey || binding.nodeKey !== request.nodeKey
+      || binding.localFrameId !== record.snapshot.localFrameId || request.localFrameId !== record.snapshot.localFrameId
+      || !binding.ownerIds.some((id) => owners.has(id))
+      || record.snapshot.displayedLocalFrameId !== record.snapshot.localFrameId || record.snapshot.renderFailure) return { status: 'inactive' };
+    const node = findNormalizedNode(frame.tree, request.nodeKey);
+    if (!node || node.props.disabled === true || node.props.loading === true) return { status: 'inactive' };
+    const event = request.event ?? '';
+    if (node.component === 'Input' && node.props.readOnly === true && event !== 'ui.click') return { status: 'inactive' };
+    const rule = catalog.getComponent(node.component);
+    const dataRule = rule?.events?.[event];
+    const action = node.events?.[event];
+    if (!dataRule || !action || !Object.prototype.hasOwnProperty.call(rule?.events ?? {}, event)
+      || !Object.prototype.hasOwnProperty.call(node.events ?? {}, event)) return { status: 'invalid_action' };
+    const data = request.data;
+    const limits = options.limits ?? DEFAULT_WEBUI_LIMITS;
+    if (!isRecord(data) || !isJSONData(data) || checkPropValue(dataRule, data, limits)) {
       return { status: 'invalid_action' };
     }
-    const rule = catalog.getComponent(node.component);
-    if (!rule || !rule.actionEvent) {
-      return { status: 'unsupported_action' };
-    }
-
-    const args = request.args ?? node.action.args;
-    const submittedPayload = request.payload ?? {};
-    // 去重键区分实例、当前帧、节点、动作、已有参数与实际提交数据；同一控件连续提交不同输入不合并。
-    const dedupeKey = [
-      request.instanceKey,
-      request.frameRevision,
-      request.nodeKey,
-      request.actionId,
-      JSON.stringify(args),
-      JSON.stringify(submittedPayload),
-    ].join('|');
-    if (inFlight.has(dedupeKey)) {
-      return { status: 'duplicate' };
-    }
-    inFlight.add(dedupeKey);
+    if (rule?.validateEvent?.(event, data, node.props)) return { status: 'invalid_action' };
+    const payload = {
+      action_id: action.id, args: action.args, data: JSON.parse(JSON.stringify(data)),
+      node_key: request.nodeKey, revision: frame.revision,
+    };
+    if (jsonByteLength(payload) > limits.maxFrameBytes) return { status: 'invalid_action' };
+    // Each callback is a separate action, including repeated equal values. No in-flight coalescing.
     try {
-      const payload: Record<string, unknown> = { ...submittedPayload };
-      payload.action_id = request.actionId;
-      payload.args = args;
       const receipt = await transport.dispatch({
-        event: rule.actionEvent,
-        target: record.target,
+        event: event as WebUIComponentEvent, target: record.target,
         payload,
       });
+      if (!nodeBindings.has(request.nodeLeaseId!) || records.get(record.key)?.snapshot.localFrameId !== request.localFrameId) {
+        return { status: 'stale' };
+      }
       return { status: 'sent', receipt };
     } catch (error) {
       return { status: 'failed', error: error instanceof Error ? error.message : String(error) };
-    } finally {
-      inFlight.delete(dedupeKey);
     }
   }
 
-  function reportDisplayed(instanceKey: string, revision: number, localFrameId: number): void {
+  function reportDisplayed(instanceKey: string, revision: number, localFrameId?: number): void {
     const record = records.get(instanceKey);
     if (!record || record.snapshot.frame?.revision !== revision) {
       return;
     }
-    if (record.snapshot.localFrameId !== localFrameId) {
-      return;
-    }
-    if (record.snapshot.displayedRevision >= revision) {
-      return;
-    }
-    record.snapshot = { ...record.snapshot, displayedRevision: revision };
-    notifyInstance(instanceKey);
+    if (record.snapshot.localFrameId !== localFrameId || record.snapshot.renderFailure) return;
+    record.snapshot = { ...record.snapshot, displayedRevision: revision, displayedLocalFrameId: localFrameId };
   }
 
-  function reportRenderFailure(instanceKey: string, revision: number, message: string, localFrameId: number): void {
+  function reportRenderFailure(instanceKey: string, revision: number, message: string, localFrameId?: number): void {
     const record = records.get(instanceKey);
     if (!record || record.snapshot.frame?.revision !== revision) {
       return;
     }
-    if (record.snapshot.localFrameId !== localFrameId) {
-      return;
-    }
-    record.snapshot = { ...record.snapshot, renderFailure: { revision, localFrameId, message } };
+    if (record.snapshot.localFrameId !== localFrameId) return;
+    invalidateBindings(instanceKey);
+    record.snapshot = { ...record.snapshot, renderFailure: { revision, message } };
     notifyInstance(instanceKey);
   }
 
@@ -484,6 +528,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         continue;
       }
       changedScopes.add(webUISlotKey(record.target.sessionId, record.target.slotId));
+      invalidateBindings(key);
       records.delete(key);
       unindexInstance(record.target);
       notifyInstance(key);
@@ -547,7 +592,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     instanceVersions.clear();
     scopeVersions.clear();
     globalListeners.clear();
-    inFlight.clear();
+    nodeBindings.clear();
     version += 1;
   }
 
@@ -592,22 +637,10 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     getScopeSnapshot,
     mountSlot,
     dispatchIntent,
+    bindNode,
     reportDisplayed,
     reportRenderFailure,
     clearSession,
     getConnectionState: () => connectionState,
   };
-}
-
-function findNode(tree: WebUINormalizedNode, key: string): WebUINormalizedNode | null {
-  if (tree.key === key) {
-    return tree;
-  }
-  for (const child of tree.children) {
-    const found = findNode(child, key);
-    if (found) {
-      return found;
-    }
-  }
-  return null;
 }
