@@ -70,6 +70,9 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
 - C-24：Slider 的 ui.change 发送数值 `{value}`，拖动与键盘调整的每次有效变化都独立派发，不合并、不等待回执。
   仅在已绑定时派发；未绑定时仍可本地调整。初始化与合法 replace 不派发事件，disabled 或断连时禁用。
   数值需满足 min/max 以及 step（或 dots/marks）允许的取值。
+- C-25：Tabs 的 ui.change 发送当前激活页的 `{activeKey}`，切换只派发该事件，隐藏页内容不派发其他事件。
+  未绑定时仍可本地切换；disabled 页签与断连时不可切换；初始化与合法 replace 不派发事件。
+  默认保留已挂载的隐藏页内容状态，destroyOnHidden 时切回后重新初始化。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。

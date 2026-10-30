@@ -7,6 +7,7 @@ import { WebUISwitch } from './webuiSwitch/WebUISwitch.tsx';
 import { WebUISelect } from './webuiSelect/WebUISelect.tsx';
 import { WebUITreeSelect } from './webuiTreeSelect/WebUITreeSelect.tsx';
 import { WebUISlider } from './webuiSlider/WebUISlider.tsx';
+import { WebUITabs } from './webuiTabs/WebUITabs.tsx';
 import { WebUIEmpty } from './webuiEmpty/WebUIEmpty.tsx';
 import { WebUIImage } from './webuiImage/WebUIImage.tsx';
 import { WebUIDivider } from './webuiDivider/WebUIDivider.tsx';
@@ -25,6 +26,7 @@ export function createComponentRendererRegistry() {
     Select: WebUISelect,
     TreeSelect: WebUITreeSelect,
     Slider: WebUISlider,
+    Tabs: WebUITabs,
     Empty: WebUIEmpty,
     Image: WebUIImage,
     Divider: WebUIDivider,

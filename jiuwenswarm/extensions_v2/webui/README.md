@@ -120,6 +120,22 @@ RenderNode(
 每次有效变化独立发送，不合并中间值；未绑定时仍可本地调整。
 数值需落在 min/max 与 step 允许的取值上，禁用或断连时不可操作。
 
+页签容器在切换时为 `ui.change` 发送当前激活页的 `{activeKey}`：
+
+```python
+RenderNode(
+    "Tabs",
+    {"items": [
+        {"key": "one", "label": "概览", "children": [{"component": "Text", "props": {"value": "第一页"}}]},
+        {"key": "two", "label": "详情", "children": [{"component": "Text", "props": {"value": "第二页"}}]},
+    ]},
+    events={"ui.change": {"id": "tab.change"}},
+)
+```
+
+隐藏页内容不派发事件，默认保留其本地状态；destroyOnHidden 为真时切回后重新初始化。
+禁用页签与断连时不可切换，页签内容同样计入层级与节点预算。
+
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，
 不能再向声明 args 追加 key。单个节点不允许同时声明 action 与 events。
