@@ -1974,6 +1974,10 @@ def _hub_package_id_resolver(kind: str) -> Callable[[str, str], str]:
         recorded = store.get(asset_id)
         if recorded is not None and recorded.package_id:
             return recorded.package_id
+        # A built_in copy whose shelf package is gone is invisible yet still owns
+        # the name; let the existing cleanup reclaim it so the Hub package keeps
+        # the original id instead of taking an alias.
+        _discard_orphaned_built_in_copy(kind, hub_package_id)
         if not _package_id_claimed(kind, hub_package_id):
             return hub_package_id
         for index in range(2, 100):
