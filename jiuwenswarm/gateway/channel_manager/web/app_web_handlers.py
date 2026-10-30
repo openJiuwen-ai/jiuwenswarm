@@ -2619,6 +2619,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         for param_key in _CONFIG_YAML_KEYS:
             if param_key not in params:
                 continue
+            # permissions_mode 为权威键：双键同发（GET payload 原样回写
+            # /外部 API 手工构造）时跳过 enabled——frozenset 迭代序不定，
+            # enabled 先写会按旧 mode 投影、mode 后写覆盖，mode 先写则
+            # enabled=True 的 full_access→auto 投影回写，两种顺序终态
+            # 不同且跨进程不可复现（评审 2026-10-30）。
+            if param_key == "permissions_enabled" and "permissions_mode" in params:
+                continue
             val = params[param_key]
             parsed = _parse_config_bool(val)
             try:
