@@ -1119,7 +1119,6 @@ function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; 
 
 // The dismissal notice stays long enough to use its buttons, fades out over its last second
 // (ChatPanel.css) and then leaves the page.
-const DISMISS_NOTICE_MS = 8000;
 // An open global new page asks for the hot-list check every 30 minutes. The gateway runs one only
 // 30 minutes after the last one ended, so the page asks a minute later to land past that mark.
 const NEWS_CHECK_INTERVAL_MS = 31 * 60 * 1000;
@@ -1355,23 +1354,6 @@ export const ChatPanel = React.memo(function ChatPanel({
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const readyWhileHiddenRef = useRef(false);
   const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
-  // The notice after a dismissal or a pause keeps the shown card it is about, so pausing and undoing name it.
-  const [topicStarterDismissNotice, setTopicStarterDismissNotice] = useState<{
-    id: number;
-    visitId: string;
-    text: string;
-    slate: TopicStarterVisibleSlate;
-    topicId: string;
-    pausable: boolean;
-    undo: 'not_interested_undone' | 'interest_pause_undone';
-  } | null>(null);
-  const topicStarterNoticeActionPendingRef = useRef(false);
-  const [topicStarterNoticeActionPending, setTopicStarterNoticeActionPending] = useState(false);
-  useEffect(() => {
-    if (!topicStarterDismissNotice) return;
-    const timer = window.setTimeout(() => setTopicStarterDismissNotice(null), DISMISS_NOTICE_MS);
-    return () => window.clearTimeout(timer);
-  }, [topicStarterDismissNotice]);
   const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
   const acceptingDynamicRef = useRef(false);
@@ -2035,7 +2017,7 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 包装发送消息函数，添加滚动逻辑
   const sendTopicStarterEvent = useCallback(async (event: TopicStarterEvent) => {
-    const response = await webRequest<{ recorded?: boolean; pausable?: boolean }>('topic_starters.event', { ...event });
+    const response = await webRequest<{ recorded?: boolean }>('topic_starters.event', { ...event });
     if (response.recorded !== true) {
       throw new Error(`topic_starters.event was not recorded: ${event.event_type}`);
     }
@@ -2435,16 +2417,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       };
       void ensureTopicStarterExposureAcknowledged(slate)
         .then(() => sendTopicStarterEvent(buildNotInterestedEvent(slate, topic.id)))
-        .then(recorded => {
-          setTopicStarterDismissNotice({
-            id: Date.now(),
-            visitId: topicStarterVisitIdRef.current,
-            text: t('chat.topicStarter.cardRemoved'),
-            slate,
-            topicId: topic.id,
-            pausable: recorded.pausable === true,
-            undo: 'not_interested_undone',
-          });
+        .then(() => {
           // 先在本地移除，再重新读同一池补上空出的位置。
           if (slate.policyId === 'topic-starter-mvp-v6' && visibleTopicSlateRef.current?.slateId === slate.slateId) {
             rereadTopicStarterPool();
@@ -2457,38 +2430,7 @@ export const ChatPanel = React.memo(function ChatPanel({
         })
         .finally(releaseDismissPending);
     },
-    [ensureTopicStarterExposureAcknowledged, keepShownCards, rereadTopicStarterPool, sendTopicStarterEvent, t],
-  );
-
-  // The notice's buttons pause the dismissed card's interest or undo the dismissal or the pause.
-  const handleDismissNoticeAction = useCallback(
-    (notice: NonNullable<typeof topicStarterDismissNotice>, action: 'pause' | 'undo') => {
-      if (topicStarterNoticeActionPendingRef.current) return;
-      topicStarterNoticeActionPendingRef.current = true;
-      setTopicStarterNoticeActionPending(true);
-      void sendTopicStarterEvent(buildNotInterestedEvent(notice.slate, notice.topicId, action === 'pause' ? 'interest_paused' : notice.undo))
-        .then(() => {
-          if (action === 'pause') {
-            setTopicStarterDismissNotice({
-              ...notice, id: Date.now(), text: t('chat.topicStarter.interestPaused'), pausable: false, undo: 'interest_pause_undone',
-            });
-          } else {
-            setTopicStarterDismissNotice(current => (current?.id === notice.id ? null : current));
-          }
-          // An undo reads the page back from the slate the card was dismissed on, so the restored
-          // card takes its place again instead of waiting behind the cards that filled it.
-          rereadTopicStarterPool(action === 'undo' ? notice.slate.slateId : undefined);
-        })
-        .catch(error => {
-          setTopicStarterErrorKey('network.requestFailed');
-          console.error(`topic_starters ${action} was not recorded:`, error);
-        })
-        .finally(() => {
-          topicStarterNoticeActionPendingRef.current = false;
-          setTopicStarterNoticeActionPending(false);
-        });
-    },
-    [rereadTopicStarterPool, sendTopicStarterEvent, t],
+    [ensureTopicStarterExposureAcknowledged, keepShownCards, rereadTopicStarterPool, sendTopicStarterEvent],
   );
 
   const markDesktopFileDropZoneActive = useCallback(() => {
@@ -2920,39 +2862,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                <p className="chat-suggestions__label" data-testid="chat-panel-welcome-recommendation-label">
-                  {t('chat.topicStarter.recommendations')}
-                </p>
-                {topicStarterDismissNotice?.visitId === topicStarterVisitId && (
-                  <p
-                    key={topicStarterDismissNotice.id}
-                    className="chat-suggestions__notice text-sm text-text-muted"
-                    role="status"
-                    data-testid="chat-panel-topic-starter-dismiss-notice"
-                  >
-                    <span data-testid="chat-panel-topic-starter-dismiss-notice-text">{topicStarterDismissNotice.text}</span>
-                    {topicStarterDismissNotice.pausable && (
-                      <button
-                        type="button"
-                        className="ml-2 text-text-link underline"
-                        data-testid="chat-panel-topic-starter-dismiss-notice-pause"
-                        disabled={topicStarterNoticeActionPending}
-                        onClick={() => handleDismissNoticeAction(topicStarterDismissNotice, 'pause')}
-                      >
-                        {t('chat.topicStarter.pauseInterest')}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="ml-2 text-text-link underline"
-                      data-testid="chat-panel-topic-starter-dismiss-notice-undo"
-                      disabled={topicStarterNoticeActionPending}
-                      onClick={() => handleDismissNoticeAction(topicStarterDismissNotice, 'undo')}
-                    >
-                      {t('chat.topicStarter.undoDismissal')}
-                    </button>
-                  </p>
-                )}
                 {topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
                   {t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate)))}
                   {topicStarterShowsProviderRefusal(recommendationState) ? ` ${t('chat.topicStarter.providerRefusal')}` : null}

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A finished turn forks its own last model call into one or two suggestions of the user's next input."""
+"""A finished turn forks its own last model call into one suggestion of the user's next input."""
 
 from __future__ import annotations
 
@@ -321,9 +321,60 @@ async def test_finished_turn_forks_its_last_model_call_and_reaches_the_page(prod
     [generation] = _generations(product.store)
     assert generation["suggestion_id"] == event.payload["suggestion_id"]
     assert (generation["outcome"], generation["request_id"], generation["model"]) == ("candidate", "req-1", "dialogue-model")
-    assert generation["prompt_version"] == "prompt-suggestion-fork-v11"
+    assert generation["prompt_version"] == "prompt-suggestion-fork-v13"
     assert generation["usage"]["prompt_tokens_details"] == {"cached_tokens": 3000}
     assert generation["latency_ms"] >= 0
+
+
+async def test_the_fork_sends_the_parents_parameters_without_adding_any() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import _MainCall
+
+    class _RecordingLLM:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def invoke(self, **kwargs: Any) -> AssistantMessage:
+            self.calls.append(kwargs)
+            return AssistantMessage(content="ok")
+
+    llm = _RecordingLLM()
+    parent_messages = [UserMessage(content="hi")]
+    answer = AssistantMessage(content="hello")
+    call = _MainCall(
+        llm=llm, model="dialogue-model", messages=tuple(parent_messages), tools=("lookup",),
+        answer=answer, max_iterations=1,
+        parameters={"return_token_ids": True, "kv_cache_affinity": {"turn": 3}},
+    )
+    await call.fork("prompt")
+
+    [sent] = llm.calls
+    assert sent["model"] == "dialogue-model"
+    assert sent["tools"] == ("lookup",)
+    assert sent["messages"][:2] == [*parent_messages, answer]
+    assert sent["messages"][-1] == UserMessage(content="prompt")
+    assert sent["return_token_ids"] is True
+    assert sent["kv_cache_affinity"] == {"turn": 3}
+
+
+def test_parent_parameters_keep_the_calls_config_flags() -> None:
+    class _Config:
+        llm_return_token_ids = True
+        llm_logprobs = True
+        llm_top_logprobs = 5
+        kv_cache_affinity_config = None
+
+    class _Agent:
+        _config = _Config()
+        _kv_cache_model_call_hook = None
+
+    class _Context:
+        agent = _Agent()
+
+    assert prompt_suggestion._main_call_parameters(_Context(), object()) == {
+        "return_token_ids": True,
+        "logprobs": True,
+        "top_logprobs": 5,
+    }
 
 
 async def test_tool_denial_continues_without_executing_tools_or_changing_main_history(product, monkeypatch) -> None:
@@ -861,18 +912,29 @@ async def test_reply_that_is_not_the_users_next_input_is_not_shown(product, monk
     assert _outcomes(product.store) == [(outcome, reason)]
 
 
-def test_prompt_may_predict_a_new_next_input_and_still_withholds_invented_consent() -> None:
+def test_prompt_predicts_one_grounded_next_message_or_null() -> None:
     prompt = prompt_suggestion.SUGGESTION_PROMPT
-    assert "回答里没有写过" in prompt
-    assert "不要输出回答里没有的选项" not in prompt
-    assert "不要输出替用户同意的那一句" in prompt
-    assert "其它下一句" in prompt
-    assert "（本轮不预测）" in prompt
-    assert prompt_suggestion.PROMPT_VERSION == "prompt-suggestion-fork-v11"
-    assert prompt_suggestion.MAX_SUGGESTIONS == 2
+    assert "app-generated request for a suggested next user message" in prompt
+    assert "will not be sent automatically" in prompt
+    assert "Predict the single message" in prompt
+    assert "at most 240 characters, or null" in prompt
+    assert "No alternatives or explanation" in prompt
+    assert prompt_suggestion.PROMPT_VERSION == "prompt-suggestion-fork-v13"
+    assert prompt_suggestion.MAX_SUGGESTIONS == 1
 
 
-async def test_two_likely_next_inputs_reach_the_page_and_a_bad_line_is_dropped(product, monkeypatch) -> None:
+@pytest.mark.parametrize("text", ["null", "NULL", "none", '{"suggestion": null}'])
+def test_a_null_reply_is_not_a_suggestion(text) -> None:
+    assert prompt_suggestion.select_suggestions(text) == ([], "suppressed", "empty")
+
+
+def test_a_json_suggestion_is_unwrapped() -> None:
+    assert prompt_suggestion.select_suggestions('{"suggestion": "run the tests"}') == (
+        ["run the tests"], "candidate", None,
+    )
+
+
+async def test_only_the_first_likely_next_input_reaches_the_page(product, monkeypatch) -> None:
     reply = AssistantMessage(
         content="买ETF，长期配置\n谢谢\n跌破4100美元时提醒我\n再写一条多余的",
         usage_metadata=_usage(3150, 3000, 12),
@@ -885,13 +947,12 @@ async def test_two_likely_next_inputs_reach_the_page_and_a_bad_line_is_dropped(p
     await _settled()
 
     shown = [event.payload["text"] for event in product.page.events]
-    assert shown == ["买ETF，长期配置", "跌破4100美元时提醒我"]
+    assert shown == ["买ETF，长期配置"]
     generations = _generations(product.store)
     assert [(row["outcome"], row["text"]) for row in generations] == [
         ("candidate", "买ETF，长期配置"),
-        ("candidate", "跌破4100美元时提醒我"),
     ]
-    assert len({row["suggestion_id"] for row in generations}) == 2
+    assert len({row["suggestion_id"] for row in generations}) == 1
     assert [event.payload["suggestion_id"] for event in product.page.events] == [row["suggestion_id"] for row in generations]
 
 
@@ -1089,6 +1150,8 @@ def test_every_agent_rail_set_keeps_the_last_model_call(monkeypatch) -> None:
 
 @pytest.mark.parametrize("text", [
     "导出成双语对照", "好的，继续", "检查错别字", "术语要统一成哪套译法？", "帮我来一份术语表", "提醒我不错过截止日期",
+    "把整份说明逐段译成英文并在每段后面附上原文和页码以便逐句核对术语",
+    "please run every single unit test in the repository and then report back to me",
     "run the tests", "yes", "/review", "push it to the release branch",
 ])
 def test_filter_keeps_what_the_user_would_type(text) -> None:
@@ -1109,8 +1172,7 @@ def test_filter_keeps_what_the_user_would_type(text) -> None:
     ("建议：检查错别字", "prefixed_label"),
     ("北京", "too_few_words"),
     ("refactor", "too_few_words"),
-    ("把整份说明逐段译成英文并在每段后面附上原文和页码以便逐句核对术语", "too_long"),
-    ("please run every single unit test in the repository and then report back to me", "too_many_words"),
+    ("长" * 241, "too_long"),
     ("检查错别字。然后导出", "multiple_sentences"),
     ("Run the tests. Then push it", "multiple_sentences"),
     ("**导出**成双语对照", "has_formatting"),

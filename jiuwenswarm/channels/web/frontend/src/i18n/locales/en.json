@@ -1772,12 +1772,7 @@
     },
     "topicStarter": {
       "heading": "What would you like to explore today?",
-      "recommendations": "Start with one of these",
       "notInterested": "Skip for now",
-      "cardRemoved": "Skipped for now",
-      "pauseInterest": "Show this less for a week",
-      "interestPaused": "Okay, showing this less",
-      "undoDismissal": "Undo",
       "dateAndVersion": "See this day",
       "openDateAndVersion": "Open the background for this day",
       "weiboHotList": "Weibo hot searches",

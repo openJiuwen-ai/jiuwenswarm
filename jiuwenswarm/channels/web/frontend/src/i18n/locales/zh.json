@@ -1712,12 +1712,7 @@
     },
     "topicStarter": {
       "heading": "今天想干点什么？",
-      "recommendations": "先从这些聊聊",
       "notInterested": "先跳过",
-      "cardRemoved": "这条先不看了",
-      "pauseInterest": "这类先藏一周",
-      "interestPaused": "好，这类先少出现",
-      "undoDismissal": "撤销",
       "dateAndVersion": "看看这一天",
       "openDateAndVersion": "打开这一天的背景",
       "weiboHotList": "微博热搜",

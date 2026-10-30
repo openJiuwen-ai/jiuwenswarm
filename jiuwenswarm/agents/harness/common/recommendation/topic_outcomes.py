@@ -1279,18 +1279,13 @@ def _shown_card(
     return exposure, card, revision_ids.index(card_revision_id) + 1
 
 
-# Each undo names the event it undoes; a dismissal or pause stands until one withdraws it.
-UNDONE_EVENT_TYPES = {
-    "not_interested_undone": "not_interested",
-    "interest_pause_undone": "interest_paused",
-}
-TERMINAL_INTERACTION_EVENT_TYPES = frozenset({"topic_click", "not_interested", "interest_paused", *UNDONE_EVENT_TYPES})
+TERMINAL_INTERACTION_EVENT_TYPES = frozenset({"topic_click", "not_interested"})
 
 
 def _standing_record(
-    preferences: list[Any], event_type: str, *, exposure_id: str, card_revision_id: str,
+    preferences: list[Any], *, exposure_id: str, card_revision_id: str,
 ) -> dict[str, Any] | None:
-    """The newest dismissal or pause of this shown card that no withdrawal names."""
+    """The newest dismissal of this shown card that no withdrawal names."""
 
     withdrawn = {record.get("withdraws") for record in preferences
                  if isinstance(record, dict) and record.get("reason") == "withdrawn"}
@@ -1301,10 +1296,8 @@ def _standing_record(
             continue
         if record.get("card_revision_id") != card_revision_id:
             continue
-        matches_kind = (record.get("dismissal_kind") == "pause") is (
-            event_type == "interest_paused"
-        )
-        if not matches_kind:
+        # A legacy interest pause is not a card dismissal, even on the same revision.
+        if record.get("dismissal_kind") == "pause":
             continue
         if record.get("record_id") in withdrawn:
             continue
@@ -1324,12 +1317,10 @@ def record_terminal_interaction(
     project_id: str | None,
     created_at: float,
 ) -> bool:
-    """Record a click, dismissal, interest pause or undo only for an exact visible revision.
+    """Record a click or a card dismissal only for an exact visible revision.
 
-    A dismissal takes off that card. Only a global regular card's interest can
-    be paused. An undo appends a withdrawal of the record it undoes, so the card
-    may be dismissed or its interest paused again; each of them is a ledger event
-    of its own.
+    A dismissal takes off that card alone, and it stands until the user deletes
+    their recommendation data.
     """
 
     if event_type not in TERMINAL_INTERACTION_EVENT_TYPES or not _finite_timestamp(
@@ -1386,15 +1377,14 @@ def record_terminal_interaction(
     }
     if event_type == "topic_click":
         return store.record_event(event)
-    global_regular = context_scope == GLOBAL_NEW_CHAT_SCOPE and not card_is_news(card)
-    if event_type == "interest_paused" and not global_regular:
+    if event_type != "not_interested":
         return False
     # A dismissal recorded before dismissals could be undone stands for good.
     _row_items = store.query_events(
         event_type="not_interested", slate_id=exposure_id, topic_id=card_revision_id,
         policy_id=POLICY_ID, limit=1,
     )
-    if event_type in {"not_interested", "not_interested_undone"} and any(
+    if any(
         "dismissal_record_id" not in row["payload"]
         for row in _row_items
     ):
@@ -1405,46 +1395,23 @@ def record_terminal_interaction(
     sidecar = sidecar_value if isinstance(sidecar_value, dict) else {}
     state["memory_sidecar"] = sidecar
     preferences = list(sidecar.get("negative_preferences") or [])
-    undone_type = UNDONE_EVENT_TYPES.get(event_type)
-    standing = _standing_record(
-        preferences, undone_type or event_type, exposure_id=exposure_id, card_revision_id=card_revision_id,
-    )
-    # A dismissal or pause already standing is not recorded twice; an undo needs one standing.
-    if (standing is None) is (undone_type is not None):
+    # A dismissal already standing is not recorded twice.
+    if _standing_record(
+        preferences, exposure_id=exposure_id, card_revision_id=card_revision_id,
+    ) is not None:
         return False
-    if standing is not None:
-        undone_record_id = standing["record_id"]
-        record: dict[str, Any] = {
-            "context_scope": context_scope,
-            "project_id": project_id,
-            "reason": "withdrawn",
-            "withdraws": undone_record_id,
-            "withdrawn_at": created_at,
-        }
-        event_payload["withdrawn_record_id"] = undone_record_id
-        event["feedback_record_id"] = undone_record_id
-    else:
-        if event_type == "not_interested":
-            record = _card_dismissal_record(
-                store, card, manifest_id=manifest_id, context_scope=context_scope,
-                project_id=project_id, dismissed_at=created_at,
-            )
-        else:
-            # A pause holds the card's direction and the interest the card came from.
-            record = _dismissal_record(
-                store, state, card, manifest_id=manifest_id, context_scope=context_scope,
-                project_id=project_id, dismissed_at=created_at,
-            )
-            record["dismissal_kind"] = "pause"
-        record.update({
-            "record_id": f"dismissal-{uuid.uuid4().hex}",
-            "exposure_id": exposure_id,
-            "card_revision_id": card_revision_id,
-        })
-        event_payload["dismissal_record_id"] = record["record_id"]
-        event["feedback_record_id"] = record["record_id"]
-        if event_type == "not_interested":
-            event_payload["reason"] = "explicit_not_interested"
+    record = _card_dismissal_record(
+        store, card, manifest_id=manifest_id, context_scope=context_scope,
+        project_id=project_id, dismissed_at=created_at,
+    )
+    record.update({
+        "record_id": f"dismissal-{uuid.uuid4().hex}",
+        "exposure_id": exposure_id,
+        "card_revision_id": card_revision_id,
+    })
+    event_payload["dismissal_record_id"] = record["record_id"]
+    event_payload["reason"] = "explicit_not_interested"
+    event["feedback_record_id"] = record["record_id"]
     preferences.append(record)
     sidecar["negative_preferences"] = preferences
     sidecar.setdefault("explicit_corrections", [])
@@ -1950,17 +1917,13 @@ def join_starter_outcomes(
 
 OUTCOME_SIGNAL_SCHEMA_VERSION = "topic-starter-v6-new-page-outcome-signal-v1"
 DeliveryStatus = Literal["queued", "recorded", "rejected"]
-OutcomeName = Literal[
-    "accepted", "not_interested", "interest_paused", "not_interested_undone", "interest_pause_undone",
-]
-_OUTCOME_NAMES = frozenset({
-    "accepted", "not_interested", "interest_paused", "not_interested_undone", "interest_pause_undone",
-})
+OutcomeName = Literal["accepted", "not_interested"]
+_OUTCOME_NAMES = frozenset({"accepted", "not_interested"})
 
 
 @dataclass(frozen=True)
 class NewPageOutcomeSignal:
-    """One accepted or dismissed card, a paused interest or an undo, bound to its shown revision."""
+    """One accepted or dismissed card, bound to its shown revision."""
 
     outcome: OutcomeName
     manifest_id: str
@@ -1980,7 +1943,7 @@ class NewPageOutcomeSignal:
         if self.schema_version != OUTCOME_SIGNAL_SCHEMA_VERSION:
             raise ValueError("unsupported outcome signal schema_version")
         if self.outcome not in _OUTCOME_NAMES:
-            raise ValueError("outcome must be accepted, not_interested, interest_paused or an undo of either")
+            raise ValueError("outcome must be accepted or not_interested")
         _value_items9 = (
             self.manifest_id,
             self.generation_batch_id,

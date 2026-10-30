@@ -965,14 +965,13 @@ def test_queue_drains_pre_attach_outcome_to_real_store_sink(tmp_path: Any) -> No
     )
     assert events[0]["payload"]["search_receipt"] == LIFECYCLE_SEARCH_RECEIPT
 
-def test_a_project_card_has_no_pause_and_its_dismissal_takes_off_only_that_card_until_undone(tmp_path: Any) -> None:
+def test_a_project_card_dismissal_takes_off_only_that_card(tmp_path: Any) -> None:
     scope = ("project:project-a", "project-a")
-    store = TopicStarterStore(tmp_path / "project-undo.sqlite3")
+    store = TopicStarterStore(tmp_path / "project-dismiss.sqlite3")
     _install_exact_exposure(store, scope=scope)
     queue = NewPageOutcomeQueue()
     assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
 
-    assert queue.publish(_signal(outcome="interest_paused", scope=scope)) == "rejected"
     assert queue.publish(_signal(outcome="not_interested", scope=scope)) == "recorded"
     assert queue.publish(_signal(outcome="not_interested", scope=scope)) == "rejected"
     feedback = InterestFeedback.from_state(
@@ -986,14 +985,7 @@ def test_a_project_card_has_no_pause_and_its_dismissal_takes_off_only_that_card_
                "prompt": "Compare uplift metrics", "source_memory_unit_ids": ["memory-causal-evaluation"]}
     assert feedback.still_wanted(sibling) is True
     assert feedback.still_wanted({**sibling, "title": "How should causal recommendation be evaluated?"}) is False
-    assert queue.publish(_signal(outcome="not_interested_undone", scope=scope)) == "recorded"
-    assert queue.publish(_signal(outcome="not_interested_undone", scope=scope)) == "rejected"
-    feedback = InterestFeedback.from_state(
-        load_latest_history_state(store), context_scope=scope[0], project_id=scope[1], now=LIFECYCLE_NOW + 3,
-    )
-    assert feedback.dismissed_units == frozenset()
-    assert feedback.version == 2
-    assert queue.publish(_signal(outcome="not_interested", scope=scope)) == "recorded"
+    assert feedback.version == 1
 
 def _not_interested_event(exposure_id: str, at: float) -> dict[str, Any]:
     return _ledger_event(
@@ -1228,7 +1220,6 @@ def _channel_event(
 
 class _TopicServiceStub:
     record_interaction = TopicService.record_interaction
-    _give_way_to_feedback = TopicService._give_way_to_feedback
     # A recommendation model is in force, so a read does not reload the configuration.
     ark_config = object()
     def schedule_news_check(self, *_args, **_kwargs):
@@ -1237,8 +1228,6 @@ class _TopicServiceStub:
     def __init__(self, store: TopicStarterStore) -> None:
         self.store = store
         self._news_refresh_task = None
-        # No replenishment runs here, so an undo or a pause has none to restart.
-        self._runs: dict[str, Any] = {}
         self.serve_calls: list[tuple[str, str, str | None]] = []
         self.exposure_calls: list[dict[str, Any]] = []
         self.successor_calls: list[tuple[str, str | None, str]] = []
@@ -1515,7 +1504,7 @@ async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
         "recorded": True
     }
     ws.request("ignored", "topic_starters.event", _ui_event(event_type="not_interested"))
-    assert (await _wait_response(ws, "ignored"))["payload"] == {"recorded": True, "pausable": True}
+    assert (await _wait_response(ws, "ignored"))["payload"] == {"recorded": True}
     ws.request(
         "direct",
         "topic_starters.event",
@@ -1654,14 +1643,14 @@ def _save_profile_with_dismissals(store: TopicStarterStore, times: tuple[float, 
     history.save_history_state(store, state, now=CHANNEL_NOW)
 
 @pytest.mark.asyncio
-async def test_dismissing_pausing_and_undoing_a_card_are_answered_and_refilled(
+async def test_dismissing_a_card_is_answered_and_refilled(
     tmp_path: Any,
     enabled_recommendation_consent,
 ) -> None:
     from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import InterestFeedback
 
-    store = TopicStarterStore(tmp_path / "dismiss-pause-undo.sqlite3")
+    store = TopicStarterStore(tmp_path / "dismiss.sqlite3")
     _install_manifest_and_card(store)
     # Two strikes written before a dismissal took off only its card stay as they were.
     _save_profile_with_dismissals(store, (CHANNEL_NOW - 200 * 86_400.0, CHANNEL_NOW - 100 * 86_400.0))
@@ -1674,29 +1663,20 @@ async def test_dismissing_pausing_and_undoing_a_card_are_answered_and_refilled(
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
 
-    def card_event(event_type: str) -> dict[str, Any]:
-        event = _ui_event(event_type="not_interested")
-        return {**event, "event_type": event_type}
-
     ws.request("exposure", "topic_starters.event", _ui_event(event_type="dynamic_exposure"))
     assert (await _wait_response(ws, "exposure"))["payload"] == {"recorded": True}
     replies = []
     for request_id, event_type in (
-        ("dismiss", "not_interested"), ("pause", "interest_paused"), ("pause-again", "interest_paused"),
-        ("undo-pause", "interest_pause_undone"), ("undo-dismiss", "not_interested_undone"),
-        ("dismiss-again", "not_interested"),
+        ("dismiss", "not_interested"), ("dismiss-again", "not_interested"),
     ):
-        ws.request(request_id, "topic_starters.event", card_event(event_type))
+        ws.request(request_id, "topic_starters.event", {**_ui_event(event_type="not_interested"), "event_type": event_type})
         replies.append((await _wait_response(ws, request_id))["payload"])
-    assert replies == [
-        {"recorded": True, "pausable": True}, {"recorded": True}, {"recorded": False},
-        {"recorded": True}, {"recorded": True}, {"recorded": True, "pausable": True},
-    ]
-    assert len(service.successor_calls) == 5
+    assert replies == [{"recorded": True}, {"recorded": False}]
+    assert len(service.successor_calls) == 1
     state = history.load_latest_history_state(store)
     feedback = InterestFeedback.load(store, state, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=CHANNEL_NOW)
     assert [item.status for item in feedback.permanent_directions] == []
-    assert len(state["memory_sidecar"]["negative_preferences"]) == 2 + 5
+    assert len(state["memory_sidecar"]["negative_preferences"]) == 2 + 1
 
     ws.release()
     await asyncio.wait_for(connection, timeout=5.0)
@@ -1890,6 +1870,7 @@ async def test_a_dismissed_preset_card_is_resampled_from_the_corpus(tmp_path):
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
 
+    clock = [1_700_000_000.0]
     store = TopicStarterStore(tmp_path / "recommendation.db")
     service = TopicService(
         store,
@@ -1899,7 +1880,7 @@ async def test_a_dismissed_preset_card_is_resampled_from_the_corpus(tmp_path):
             api_key="test", model="test", context_window_tokens=131072,
         ),
         enabled=False,
-        now=lambda: 1_700_000_000.0,
+        now=lambda: clock[0],
     )
     try:
         first = service.serve(
@@ -1940,6 +1921,7 @@ async def test_a_dismissed_preset_card_is_resampled_from_the_corpus(tmp_path):
         )
         assert reply["recorded"] is True
 
+        clock[0] += 1.0
         refilled = service.serve(
             "session-new",
             context_scope=GLOBAL_NEW_CHAT_SCOPE,
@@ -1952,6 +1934,84 @@ async def test_a_dismissed_preset_card_is_resampled_from_the_corpus(tmp_path):
         assert len(refilled["topics"]) == 4
         assert dismissed["id"] not in {topic["id"] for topic in refilled["topics"]}
         assert refilled["manifest_id"] != first["manifest_id"]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_opened_preset_cards_are_resampled_from_the_corpus(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
+        NewPageOutcomeQueue,
+        TopicStarterStoreOutcomeSink,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        first = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert len(first["topics"]) == 4
+        assert service.record_exposure({
+            "session_id": "session-new",
+            "slate_id": first["slate_id"],
+            "manifest_id": first["manifest_id"],
+            "generation_batch_id": first["generation_batch_id"],
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "exposure_slice_id": first["exposure_slice_id"],
+            "topics": [{"card_revision_id": topic["id"]} for topic in first["topics"]],
+        }) is True
+
+        queue = NewPageOutcomeQueue()
+        assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
+        opened = first["topics"][:2]
+        for topic in opened:
+            assert service.record_interaction(
+                {
+                    "session_id": "session-new",
+                    "slate_id": first["slate_id"],
+                    "event_type": "topic_click",
+                    "topic_id": topic["id"],
+                    "payload": {
+                        "manifest_id": first["manifest_id"],
+                        "generation_batch_id": first["generation_batch_id"],
+                        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                        "project_id": None,
+                        "card_revision_id": topic["id"],
+                    },
+                },
+                outcome_queue=queue,
+            )["recorded"] is True
+
+        # Returning to the welcome page reads without a slate: the two opened
+        # preset cards must not linger as a half-empty screen.
+        clock[0] += 1.0
+        reopened = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert reopened["available"] is True
+        assert len(reopened["topics"]) == 4
+        opened_starters = {topic["source_starter_id"] for topic in opened}
+        assert opened_starters.isdisjoint(
+            {topic["source_starter_id"] for topic in reopened["topics"]}
+        )
     finally:
         await service.shutdown()
 
