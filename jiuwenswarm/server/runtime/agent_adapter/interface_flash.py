@@ -979,11 +979,15 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                     return
                 self._context_assemble_rail = None
                 self._context_assemble_mode = None
-            disabled = getattr(self._disabled_tools_rail, "_disabled_tools", None)
-            if disabled:
-                disabled = [str(name).strip() for name in disabled if str(name).strip()]
-            else:
-                disabled = resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
+            disabled = []
+            try:
+                rail_names = getattr(self._disabled_tools_rail, "_disabled_tools", None)
+                if rail_names:
+                    disabled = [str(name).strip() for name in rail_names if str(name).strip()]
+                else:
+                    disabled = resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
+            except Exception as exc:
+                logger.warning("[FlashAdapter] ignore malformed disabled_tools for ContextAssembleRail: %s", exc)
             progressive = self._progressive_tool_rail
             rail = _build_context_assemble_rail(
                 disabled_tools=disabled or None,

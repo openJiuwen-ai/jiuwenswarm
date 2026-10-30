@@ -46,7 +46,7 @@
 9. **AgentManager 单进程单默认实例**：非 enterprise 进程内至多一个裸 AgentManager（由 AgentWebSocketServer 构造），不要在其他模块私自 AgentManager()。
 10. **企业版冷加载 best-effort**：每个 `reload_*_from_gateway_db` 调用失败只记 warning，不阻断 AgentServer 启动——用户配置 PVC 缺表或缺字段不应让进程起不来。
 11. **code.normal/plan 首建与重载共享工具懒加载策略**：首次创建的 None/空白 sub_mode 默认 normal；后续 `create_instance(sub_mode=None)` 沿用保存的 profile，并把有效 sub_mode 传入 rail 装配及后续 session 子 adapter，显式 normal/空白可切回 normal。首建按入参规范化后的 sub_mode 排队并显式传给 builder，配置热重载未传该参数时使用 `_session_instance_sub_mode`；仅 normal/plan 装配 `ProgressiveToolRail`。code.team 对齐普通 team，首建和完整/部分重载均不新增该 rail；历史误挂实例在 configure 成功后注销。单 agent 复用 `react.tool_lazy_load` 的开关、模型白名单及请求级 MCP allowlist，配置缺省重载保持既有 rail；编码记忆、LSP、模式切换与计划审批工具保持 eager，最终可见性仍受模式、技能门控及 `disabled_tools` 约束。一次 code 挂载仅记录一条带 `[JiuwenSwarmCodeAdapter]` 和规范化 sub_mode 的适配器日志。普通 agent/team 的装配、日志及重载策略不因此改变。
-12. **Flash 身份文件与内置记忆**：请求准备须保留并装配当前工作区的身份上下文，同时遵守禁用工具与渐进式工具可见范围；不同工作区不能共享身份内容。开启内置记忆时，完整 embedding 配置照常使用；配置缺失时不得因此丢失整个记忆工具，按 SDK 的无 embedding 接口进入关键词检索路径。当前 SDK 的索引重开仍有已知缺陷，不能据此认定该检索跨重开可用。
+12. **Flash 身份文件与内置记忆**：请求准备须保留并装配当前工作区的身份上下文，同时遵守禁用工具与渐进式工具可见范围；不同工作区不能共享身份内容。上下文组件读取禁用工具配置异常时记录警告并回退为空列表，与普通 agent 对齐，不改变实际工具禁用组件的校验。开启内置记忆时，完整 embedding 配置照常使用；配置缺失时不得因此丢失整个记忆工具，按 SDK 的无 embedding 接口进入关键词检索路径。当前 SDK 的索引重开仍有已知缺陷，不能据此认定该检索跨重开可用。
 
 ## 接口契约
 

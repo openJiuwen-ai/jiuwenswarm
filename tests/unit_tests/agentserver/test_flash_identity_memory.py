@@ -70,6 +70,37 @@ async def test_context_rail_survives_consecutive_flash_requests(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_context_rail_handles_malformed_disabled_tools(monkeypatch):
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {"disabled_tools": {"unexpected": "value"}}
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
+    _isolate_other_rails(monkeypatch, adapter)
+    warning = Mock()
+    monkeypatch.setattr(interface_flash.logger, "warning", warning)
+
+    await adapter._update_rails_for_mode("flash")
+
+    assert adapter._context_assemble_rail is not None
+    assert not adapter._context_assemble_rail._disabled_tools
+    adapter._instance.register_rail.assert_awaited_once_with(adapter._context_assemble_rail)
+    warning.assert_called_once()
+    adapter._handle_memory_rail_by_config.assert_awaited_once_with("agent")
+
+
+@pytest.mark.asyncio
+async def test_context_rail_prefers_existing_disabled_tools_over_malformed_config(monkeypatch):
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {"disabled_tools": {"unexpected": "value"}}
+    adapter._disabled_tools_rail = _DisabledToolsForContext(["blocked_tool"])
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
+    _isolate_other_rails(monkeypatch, adapter)
+
+    await adapter._ensure_flash_context_rail()
+
+    assert adapter._context_assemble_rail._disabled_tools == {"blocked_tool"}
+
+
+@pytest.mark.asyncio
 async def test_context_registration_failure_rolls_back_and_can_retry(monkeypatch):
     adapter = JiuwenSwarmFlashAdapter()
     adapter._instance = SimpleNamespace(
