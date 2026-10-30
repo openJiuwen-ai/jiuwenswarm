@@ -1,6 +1,5 @@
 /**
- * 测试用适配器：只用于渲染层测试，代表后续 schema 组件的接入方式。
- * 真实组件后续按同一 AdapterProps 契约逐个注册，不需要改全局渲染器。
+ * 测试用适配器：只用于渲染层测试，通过统一 emit 接口触发节点事件。
  */
 
 import { useState } from 'react';
@@ -18,7 +17,7 @@ export function resetDemoAdapterRenderCount(): void {
   adapterRenderCount = 0;
 }
 
-export function DemoComponentAdapter({ node, children, context, dispatch }: WebUIAdapterProps) {
+export function DemoComponentAdapter({ node, children, context, emit }: WebUIAdapterProps) {
   adapterRenderCount += 1;
   const [local, setLocal] = useState(0);
   const [lastStatus, setLastStatus] = useState('');
@@ -26,7 +25,7 @@ export function DemoComponentAdapter({ node, children, context, dispatch }: WebU
   const tone = typeof node.props.tone === 'string' ? node.props.tone : 'neutral';
 
   const send = async (): Promise<void> => {
-    const result = await dispatch();
+    const result = await emit('ui.click', {});
     setLastStatus(result.status);
   };
 
@@ -38,9 +37,9 @@ export function DemoComponentAdapter({ node, children, context, dispatch }: WebU
         local
       </button>
       {node.children.length > 0 ? <div data-testid="webui-demo-children">{children}</div> : null}
-      {node.action ? (
+      {node.events['ui.click'] ? (
         <button type="button" data-testid="webui-demo-action" onClick={send}>
-          {node.action.id}
+          {node.events['ui.click'].id}
         </button>
       ) : null}
       {lastStatus ? (

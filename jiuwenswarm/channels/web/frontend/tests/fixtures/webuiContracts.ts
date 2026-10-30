@@ -5,5 +5,4 @@ export { DEFAULT_WEBUI_LIMITS } from '../../src/features/webui/protocol/limits.t
 export {
   WEBUI_COMPONENT_EVENTS,
   WEBUI_COMPONENT_SCHEMA_VERSION,
-  WEBUI_SUPPORTED_SCHEMA_VERSION,
 } from '../../src/features/webui/contracts/wire.ts';

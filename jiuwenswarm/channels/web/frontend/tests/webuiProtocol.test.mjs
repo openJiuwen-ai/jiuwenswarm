@@ -40,8 +40,8 @@ test('render frame is validated, defaulted and keyed by path', () => {
   assert.equal(frame.tree.props.tone, 'neutral');
   assert.equal(frame.tree.props.active, false);
   assert.equal(frame.tree.children[0].key, '0.0');
-  assert.equal(frame.tree.children[0].action.id, 'demo.refresh');
-  assert.deepEqual(frame.tree.children[0].action.args, { page: 1 });
+  assert.equal(frame.tree.children[0].events['ui.click'].id, 'demo.refresh');
+  assert.deepEqual(frame.tree.children[0].events['ui.click'].args, { page: 1 });
 });
 
 test('protocol does not mutate the incoming payload', () => {
@@ -73,7 +73,7 @@ test('unknown props and invalid tokens are rejected', () => {
 
 test('children and actions follow the component rule', () => {
   const leafCatalog = createCatalog({
-    components: [{ name: 'leaf', props: {}, allowChildren: false, allowAction: false }],
+    components: [{ name: 'leaf', props: {}, allowChildren: false }],
     slots: [{ id: DEMO_SLOT, display: 'list' }],
   });
   const childrenOnLeaf = processRenderFrame(
@@ -146,15 +146,15 @@ test('malformed frames are rejected with stable codes', () => {
 test('action args keep their wire shape and size limit', () => {
   const withArgs = protocol.processRenderFrame(
     demoRenderFrame({
-      root: { component: DEMO_COMPONENT, props: {}, action: { id: 'demo.run', args: { page: 2, nested: [1, 2] } } },
+      root: { component: DEMO_COMPONENT, props: {}, events: { 'ui.click': { id: 'demo.run', args: { page: 2, nested: [1, 2] } } } },
     }),
   );
   assert.equal(withArgs.ok, true);
-  assert.deepEqual(withArgs.value.tree.action.args, { page: 2, nested: [1, 2] });
+  assert.deepEqual(withArgs.value.tree.events['ui.click'].args, { page: 2, nested: [1, 2] });
 
   const oversized = protocol.processRenderFrame(
     demoRenderFrame({
-      root: { component: DEMO_COMPONENT, props: {}, action: { id: 'demo.run', args: { text: 'x'.repeat(9000) } } },
+      root: { component: DEMO_COMPONENT, props: {}, events: { 'ui.click': { id: 'demo.run', args: { text: 'x'.repeat(9000) } } } },
     }),
   );
   assert.equal(oversized.ok, false);
@@ -200,4 +200,20 @@ test('same demo tree can be rebuilt and keeps deterministic keys', () => {
   assert.equal(built.ok, true);
   assert.equal(built.value.tree.children[0].key, '0.0');
   assert.equal(built.value.tree.children[0].children[0].key, '0.0.0');
+});
+
+test('schema version cannot be overridden through limits and legacy actions or events are rejected', () => {
+  const attemptedOverride = createProtocolPipeline(demoCatalog, { ...DEFAULT_WEBUI_LIMITS, supportedSchemaVersion: 2 });
+  const unsupportedFrame = attemptedOverride.processRenderFrame(demoRenderFrame({ schemaVersion: 2 }));
+  assert.equal(unsupportedFrame.ok, false);
+  assert.equal(unsupportedFrame.failure.code, 'UNSUPPORTED_SCHEMA_VERSION');
+  assert.equal(attemptedOverride.processRenderFrame(demoRenderFrame()).ok, true);
+  for (const root of [
+    { component: DEMO_COMPONENT, action: { id: 'old' } },
+    { component: DEMO_COMPONENT, events: { 'ui.press': { id: 'old' } } },
+  ]) {
+    const result = protocol.processRenderFrame(demoRenderFrame({ root }));
+    assert.equal(result.ok, false);
+    assert.equal(result.failure.code, 'SCHEMA_ERROR');
+  }
 });

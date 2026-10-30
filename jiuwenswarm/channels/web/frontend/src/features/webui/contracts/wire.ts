@@ -21,7 +21,7 @@ export interface WebUIWireNode {
   component: string;
   props?: Record<string, unknown>;
   children?: WebUIWireNode[];
-  action?: WebUIWireAction;
+  events?: Partial<Record<WebUIComponentEvent, WebUIWireAction>>;
 }
 
 export interface WebUIWireRenderFrame {
@@ -53,15 +53,9 @@ export const WEBUI_ERROR_EVENT = 'webui.render.error';
 /** 上行唯一入口方法名，与后端 ReqMethod.WEBUI_DISPATCH 一致。 */
 export const WEBUI_DISPATCH_METHOD = 'webui.dispatch';
 
-/** 本期支持的渲染协议版本，对应后端 RENDER_SCHEMA_VERSION。 */
-export const WEBUI_SUPPORTED_SCHEMA_VERSION = 1;
-
-/** 上行事件白名单，与后端 UPSTREAM_EVENTS 一致。 */
-export const WEBUI_UPSTREAM_EVENTS = ['ui.ready', 'ui.press', 'ui.toggle', 'ui.input', 'ui.select'] as const;
-
-export type WebUIUpstreamEvent = (typeof WEBUI_UPSTREAM_EVENTS)[number];
-
 /** The component contract uses schema_version 1 across all render entry points. */
 export const WEBUI_COMPONENT_SCHEMA_VERSION = 1;
 export const WEBUI_COMPONENT_EVENTS = ['ui.click', 'ui.change', 'ui.press_enter', 'ui.search', 'ui.clear', 'ui.select'] as const;
 export type WebUIComponentEvent = (typeof WEBUI_COMPONENT_EVENTS)[number];
+
+export type WebUIWireComponentNode = WebUIWireNode;

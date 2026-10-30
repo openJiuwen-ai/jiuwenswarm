@@ -37,7 +37,7 @@ test('mock transport delivers injected frames and connection changes', () => {
 test('mock transport records dispatch requests and can be synchronous or deferred', async () => {
   const transport = createMockTransport();
   const receipt = await transport.dispatch({
-    event: 'ui.press',
+    event: 'ui.click',
     target: { sessionId: 's', slotId: 'slot', packageId: 'p', instanceKey: 'i' },
     payload: { action_id: 'a' },
   });
@@ -46,7 +46,7 @@ test('mock transport records dispatch requests and can be synchronous or deferre
 
   const deferred = createMockTransport({ autoAccept: false });
   const pending = deferred.dispatch({
-    event: 'ui.press',
+    event: 'ui.click',
     target: { sessionId: 's', slotId: 'slot', packageId: 'p', instanceKey: 'i' },
     payload: {},
   });
@@ -147,9 +147,9 @@ test('web client transport builds the dispatch request and parses the receipt', 
   const client = createFakeClient();
   const transport = createWebClientTransport(client);
   const receipt = await transport.dispatch({
-    event: 'ui.select',
+    event: 'ui.change',
     target: { sessionId: 'sess', slotId: 'slot', packageId: 'pkg', instanceKey: 'inst' },
-    payload: { action_id: 'a', args: {}, name: 'choice', value: 'x' },
+    payload: { action_id: 'a', args: {}, data: { value: 'x' }, node_key: '0', revision: 1 },
   });
 
   assert.deepEqual(receipt, { accepted: true, status: 'handled' });
@@ -157,10 +157,10 @@ test('web client transport builds the dispatch request and parses the receipt', 
   assert.deepEqual(client.requests[0], {
     method: 'webui.dispatch',
     params: {
-      event: 'ui.select',
+      event: 'ui.change',
       session_id: 'sess',
       target: { slot_id: 'slot', package_id: 'pkg', instance_key: 'inst' },
-      payload: { action_id: 'a', args: {}, name: 'choice', value: 'x' },
+      payload: { action_id: 'a', args: {}, data: { value: 'x' }, node_key: '0', revision: 1 },
     },
   });
 });
@@ -173,7 +173,7 @@ test('web client transport returns null for failures and malformed receipts', as
   const failingTransport = createWebClientTransport(failing);
   assert.equal(
     await failingTransport.dispatch({
-      event: 'ui.press',
+      event: 'ui.click',
       target: { sessionId: 's', slotId: 'slot', packageId: 'p', instanceKey: 'i' },
       payload: {},
     }),
@@ -185,7 +185,7 @@ test('web client transport returns null for failures and malformed receipts', as
   const malformedTransport = createWebClientTransport(malformed);
   assert.equal(
     await malformedTransport.dispatch({
-      event: 'ui.press',
+      event: 'ui.click',
       target: { sessionId: 's', slotId: 'slot', packageId: 'p', instanceKey: 'i' },
       payload: {},
     }),
