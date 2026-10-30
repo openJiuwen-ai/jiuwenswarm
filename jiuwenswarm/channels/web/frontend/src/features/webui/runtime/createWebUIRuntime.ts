@@ -44,6 +44,8 @@ interface MountedOwner extends WebUIMountOptions {
   packageId?: string;
   /** 本消费者上报过就绪的 instanceKey；重连时按消费者重发。 */
   ready: Set<string>;
+  readySent?: boolean;
+  closed?: boolean;
 }
 
 type Listener = () => void;
@@ -213,7 +215,19 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (existing && frame.revision < existing.lastRenderRevision) {
       return;
     }
-    if (!existing) return;
+    if (frame.target.scope === 'application') {
+      for (const owner of owners.values()) {
+        if (owner.sessionId === frame.target.sessionId && owner.slotId === frame.target.slotId) {
+          owner.closed = true;
+        }
+      }
+    }
+    if (!existing) {
+      if (frame.target.scope === 'application') {
+        notifyScope(webUISlotKey(frame.target.sessionId, frame.target.slotId));
+      }
+      return;
+    }
     const target = existing.target;
     invalidateBindings(key);
     records.delete(key);
@@ -258,13 +272,27 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     }
   }
 
+  function acceptsTarget(target: WebUINormalizedTarget): boolean {
+    if (target.scope !== 'application') {
+      return true;
+    }
+    return [...owners.values()].some(
+      (owner) =>
+        owner.sessionId === target.sessionId &&
+        owner.slotId === target.slotId &&
+        !owner.closed &&
+        (owner.instanceKey === undefined || owner.instanceKey === target.instanceKey) &&
+        (owner.packageId === undefined || owner.packageId === target.packageId),
+    );
+  }
+
   const transportHandlers: WebUITransportHandlers = {
     onRenderFrame(payload) {
       if (disposed) {
         return;
       }
       const result = protocol.processRenderFrame(payload);
-      if (result.ok) {
+      if (result.ok && acceptsTarget(result.value.target)) {
         commitRenderFrame(result.value);
       }
     },
@@ -273,7 +301,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         return;
       }
       const result = protocol.processClearFrame(payload);
-      if (result.ok) {
+      if (result.ok && acceptsTarget(result.value.target)) {
         commitClearFrame(result.value);
       }
     },
@@ -282,7 +310,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         return;
       }
       const result = protocol.processErrorFrame(payload);
-      if (result.ok) {
+      if (result.ok && acceptsTarget(result.value.target)) {
         commitErrorFrame(result.value);
       }
     },
@@ -293,6 +321,11 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       connectionState = state;
       if (state !== 'connected') {
         nodeBindings.clear();
+        for (const owner of owners.values()) {
+          if (catalog.getSlot(owner.slotId)?.scope === 'application') {
+            owner.readySent = false;
+          }
+        }
       }
       refreshConnectedFlag();
       notifyAll();
@@ -303,17 +336,27 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
   };
 
   async function sendReady(owner: MountedOwner, instanceKey: string): Promise<void> {
-    if (disposed || connectionState !== 'connected') {
+    if (disposed || connectionState !== 'connected' || owner.closed || (owner.readyOnce && owner.readySent)) {
       return;
     }
+    owner.readySent = true;
+    const slot = catalog.getSlot(owner.slotId);
     try {
-      await transport.dispatch({
+      const receipt = await transport.dispatch({
         event: 'ui.ready',
-        target: { sessionId: owner.sessionId, slotId: owner.slotId, packageId: owner.packageId ?? '', instanceKey },
-        payload: {},
+        target: {
+          sessionId: owner.sessionId,
+          slotId: owner.slotId,
+          packageId: owner.packageId ?? '',
+          instanceKey,
+          ...(slot?.scope === 'application' ? { scope: 'application' as const } : {}),
+        },
+        payload: owner.readyPayload ? { ...owner.readyPayload } : {},
       });
+      owner.onReadySettled?.(receipt);
     } catch {
       // Ready failures do not affect mounting; reconnect retries the request.
+      owner.onReadySettled?.(null);
     }
   }
 
@@ -335,8 +378,12 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     if (disposed) {
       throw new Error('WebUI runtime is disposed');
     }
-    if (!catalog.getSlot(slotId)) {
+    const slot = catalog.getSlot(slotId);
+    if (!slot) {
       throw new Error(`WebUI slot is not registered: ${slotId}`);
+    }
+    if (slot.scope === 'application' && sessionId !== '') {
+      throw new Error(`Application WebUI slot must not specify sessionId: ${slotId}`);
     }
     ownerCounter += 1;
     const owner: MountedOwner = {
@@ -519,12 +566,15 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     invalidateBindings(instanceKey);
     record.snapshot = { ...record.snapshot, renderFailure: { revision, message } };
     notifyInstance(instanceKey);
+    if (record.target.scope === 'application') {
+      notifyScope(webUISlotKey(record.target.sessionId, record.target.slotId));
+    }
   }
 
   function clearSession(sessionId: string): void {
     const changedScopes = new Set<string>();
     for (const [key, record] of records) {
-      if (record.target.sessionId !== sessionId) {
+      if (record.target.scope === 'application' || record.target.sessionId !== sessionId) {
         continue;
       }
       changedScopes.add(webUISlotKey(record.target.sessionId, record.target.slotId));
@@ -534,7 +584,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
       notifyInstance(key);
     }
     for (const [ownerId, owner] of owners) {
-      if (owner.sessionId !== sessionId) {
+      if (catalog.getSlot(owner.slotId)?.scope === 'application' || owner.sessionId !== sessionId) {
         continue;
       }
       changedScopes.add(webUISlotKey(owner.sessionId, owner.slotId));
@@ -551,12 +601,14 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
 
   function getScopeSnapshot(sessionId: string, slotId: string): WebUIScopeSnapshot {
     const scopeKey = webUISlotKey(sessionId, slotId);
+    const ownerIds = [...(scopeOwners.get(scopeKey) ?? [])];
     return {
       sessionId,
       slotId,
-      mounted: (scopeOwners.get(scopeKey)?.size ?? 0) > 0,
+      mounted: ownerIds.length > 0,
       connected: connectionState === 'connected',
       instanceKeys: [...(scopeIndex.get(scopeKey) ?? [])],
+      closed: ownerIds.some((id) => owners.get(id)?.closed === true),
     };
   }
 

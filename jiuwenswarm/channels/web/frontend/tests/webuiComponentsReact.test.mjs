@@ -50,7 +50,7 @@ const { createRoot } = await import('react-dom/client');
 const { theme } = await import('antd');
 const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer,
-  createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIProvider, WebUIThemeProvider,
+  createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIEntryHost, WebUIProvider, WebUIThemeProvider,
   WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
@@ -880,4 +880,79 @@ test('Iframe releases inactive documents and resets loading on source changes an
     assert.ok(!iframe(), 'failed frame releases its iframe'); assert.equal(state().dataset.variant, 'error');
     assert.equal(app.business().length, 0);
   } finally { await app.close(); }
+});
+
+test('WebUIEntryHost renders application.entry with Avatar and closes on clear frame', async () => {
+  window.localStorage.removeItem('workswarm.webui.entry.visited');
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  const entryTarget = {
+    scope: 'application',
+    slot_id: 'application.entry',
+    package_id: 'webui.workbench-v2',
+    instance_key: 'workbench',
+  };
+  try {
+    await act(async () => {
+      root.render(
+        createElement(
+          WebUIProvider,
+          { runtime, registry: componentRendererRegistry },
+          createElement(WebUIEntryHost, null, createElement('div', { 'data-testid': 'workspace-main' }, 'Workspace')),
+        ),
+      );
+    });
+    const ready = transport.dispatches.find((item) => item.event === 'ui.ready');
+    assert.ok(ready, 'expected ui.ready on application.entry');
+    assert.equal(ready.target.slotId, 'application.entry');
+    assert.equal(ready.target.scope, 'application');
+    assert.equal(ready.target.sessionId, '');
+    assert.deepEqual(ready.payload, { reason: 'first_visit' });
+    assert.equal(window.localStorage.getItem('workswarm.webui.entry.visited'), '1');
+
+    await act(async () => {
+      transport.injectRenderFrame({
+        target: entryTarget,
+        schema_version: 1,
+        revision: 1,
+        mode: 'replace',
+        root: {
+          component: 'Box',
+          props: { direction: 'column', align: 'center' },
+          children: [
+            { component: 'Avatar', props: { url: '/logo.svg', alt: 'Welcome', size: 64 } },
+            {
+              component: 'Button',
+              props: { label: 'Get started', variant: 'primary' },
+              events: { 'ui.click': { id: 'workbench.entry.close' } },
+            },
+          ],
+        },
+      });
+    });
+
+    const dialog = container.querySelector('[data-testid="webui-entry-host"]');
+    assert.ok(dialog?.hasAttribute('open'), 'dialog opens when active tree arrives');
+    const avatar = container.querySelector('[data-testid="webui-avatar"]');
+    assert.ok(avatar, 'Avatar component renders in entry host');
+    assert.equal(avatar.querySelector('img')?.getAttribute('src'), '/logo.svg');
+
+    await click(container.querySelector('[data-testid="webui-button"]'));
+    const clickDispatch = transport.dispatches.find((item) => item.event === 'ui.click');
+    assert.ok(clickDispatch);
+    assert.equal(clickDispatch.payload.action_id, 'workbench.entry.close');
+
+    await act(async () => {
+      transport.injectClearFrame({ target: entryTarget, revision: 2, reason: 'completed' });
+    });
+    assert.equal(container.querySelector('[data-testid="webui-entry-host"]'), null, 'entry host unmounts after clear');
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    runtime.dispose();
+  }
 });

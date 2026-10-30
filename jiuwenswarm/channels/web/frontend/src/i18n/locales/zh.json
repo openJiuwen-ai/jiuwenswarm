@@ -77,6 +77,9 @@
     "retry": "请稍后重试或重新生成结果",
     "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
   },
+  "webui": {
+    "entryLabel": "欢迎"
+  },
   "nav": {
     "chat": "对话",
     "work": "任务",
