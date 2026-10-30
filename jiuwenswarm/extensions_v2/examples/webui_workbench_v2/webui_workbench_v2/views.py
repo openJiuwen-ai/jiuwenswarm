@@ -16,6 +16,7 @@ TURN_SLOTS = frozenset({"conversation.turn.content.after", "conversation.turn.fo
 # Static Iframe roots for the two main pages; unrelated actions must not republish them.
 IFRAME_PAGE_SLOTS = frozenset({"application.menu.main", "task.function.main"})
 SLOTS = (
+    "application.entry",
     "application.menu", "application.menu.main", "task.function", "task.function.main",
     "application.settings", "conversation.input.above", "conversation.input.below",
     "conversation.panel.right", "conversation.turn.content.after", "conversation.turn.footer.actions",
@@ -174,8 +175,29 @@ def iframe_page(title: str, src: str) -> RenderNode:
     return RenderNode("Iframe", {"title": title, "src": src})
 
 
+def welcome_page() -> RenderNode:
+    """Application-entry welcome card demonstrating Avatar(url=...) and entry close."""
+    return RenderNode("Card", {"title": "欢迎使用插件交互工作台 / Welcome to Plugin Workbench"}, children=(
+        RenderNode("Box", {
+            "direction": "column", "align": "center", "justify": "center", "gap": "md",
+        }, children=(
+            RenderNode("Avatar", {
+                "url": "/logo.svg", "alt": "欢迎 / Welcome", "size": 64, "shape": "circle",
+            }),
+            text(
+                "欢迎体验 JiuwenSwarm WebUI 插件演示，支持应用级入口槽位与会话级交互槽位。 / "
+                "Welcome to the JiuwenSwarm WebUI plugin demo.",
+                secondary=True,
+            ),
+            button("开始使用 / Get started", "workbench.entry.close", variant="primary", size="md"),
+        )),
+    ))
+
+
 def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
     """Build a complete replacement tree for one declared contribution."""
+    if slot == "application.entry":
+        return welcome_page()
     if slot == "application.menu":
         return button("交互工作台 / Workbench", "workbench.open")
     if slot == "task.function":
@@ -204,7 +226,10 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
             })
         raise ValueError(f"undeclared right-panel instance: {instance_key}")
     if slot == "conversation.header.title.after":
-        return RenderNode("Tag", {"children": "工作台 / Workbench", "color": "processing"})
+        return row(
+            RenderNode("Avatar", {"url": "/logo.svg", "alt": "工作台 / Workbench", "size": "small"}),
+            RenderNode("Tag", {"children": "工作台 / Workbench", "color": "processing"}),
+        )
     if slot == "conversation.header.actions":
         return button("刷新工作台 / Refresh workbench", "workbench.refresh")
     turn = state.turn(instance_key)

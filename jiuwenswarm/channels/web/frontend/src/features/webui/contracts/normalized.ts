@@ -8,6 +8,7 @@ export interface WebUINormalizedTarget {
   slotId: string;
   packageId: string;
   instanceKey: string;
+  scope?: 'session' | 'application';
 }
 
 export interface WebUINormalizedAction {

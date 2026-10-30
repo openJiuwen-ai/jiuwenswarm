@@ -6,7 +6,8 @@
 export type WebUIWireRenderMode = 'replace' | 'clear';
 
 export interface WebUIWireTarget {
-  session_id: string;
+  session_id?: string;
+  scope?: 'session' | 'application';
   slot_id: string;
   package_id: string;
   instance_key: string;

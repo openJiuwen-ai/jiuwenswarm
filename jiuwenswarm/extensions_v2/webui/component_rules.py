@@ -113,6 +113,11 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "centered": BOOL, "destroyOnHidden": BOOL, "ariaLabel": TEXT,
     }, "required": ("items",), "events": {"ui.change": obj({"activeKey": TEXT}, "activeKey")}},
     "Empty": {"props": {"image": TEXT, "description": TEXT}},
+    "Avatar": {"props": {
+        "url": TEXT, "alt": TEXT,
+        "size": union(token("small", "default", "large"), {"kind": "number", "min": 1, "max": 4096}),
+        "shape": token("circle", "square"),
+    }, "required": ("url",)},
     "Image": {"props": {
         "src": TEXT, "alt": TEXT, "width": union(NUMBER, TEXT), "height": union(NUMBER, TEXT),
         "fallback": TEXT, "preview": union(BOOL, obj({"src": TEXT}, "src")),
@@ -374,7 +379,7 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "invalid preview file"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"
-    url_fields = {"Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
+    url_fields = {"Avatar": ("url",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback"), "Iframe": ("src",)}
     if any(key in props and not valid_url(props[key], iframe=component == "Iframe") for key in url_fields.get(component, ())):
         return "invalid resource URL"
     if component == "Image":

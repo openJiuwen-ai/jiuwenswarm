@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.events import (
@@ -25,7 +26,7 @@ from jiuwenswarm.extensions_v2.webui.call_context import (
     bind_connection,
     current_connection,
 )
-from jiuwenswarm.extensions_v2.webui.constants import WebUIEvent
+from jiuwenswarm.extensions_v2.webui.constants import SlotScope, WebUIEvent, slot_spec
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.core_handlers.action_core import build_action_core_handler
 from jiuwenswarm.extensions_v2.webui.core_handlers.render_core import build_render_core_handler, clear_frame
@@ -118,11 +119,17 @@ class WebUIRuntime:
     ) -> UiActionOutput | None:
         """Upstream entry: turn a browser event into an event-chain call."""
 
+        connection_id = request.target.connection_id or connection_id
+        spec = slot_spec(request.target.slot_id)
+        if spec is not None and spec.scope is SlotScope.APPLICATION and connection_id and not request.target.connection_id:
+            request = replace(
+                request,
+                target=replace(request.target, scope=SlotScope.APPLICATION.value, connection_id=connection_id),
+            )
         rejection = validate_upstream(request, self.registry)
         if rejection is not None:
             return rejection
         metadata = {"user_id": user_id, "channel_id": channel_id}
-        connection_id = request.target.connection_id or connection_id
         if connection_id:
             metadata["ws_id"] = connection_id
         session_id = request.target.session_id.strip()

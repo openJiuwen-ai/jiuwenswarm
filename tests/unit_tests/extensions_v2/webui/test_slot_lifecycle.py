@@ -129,7 +129,7 @@ async def test_drop_connection_preserves_other_connections_and_chats() -> None:
     runtime, push = await build_runtime()
     for connection_id in ("sock-1", "sock-2"):
         await runtime.render(UiRenderInput(target(connection_id), RenderNode("Text")))
-    chat_target = RenderTarget("chat-1", "conversation.panel.right", "pkg", "home")
+    chat_target = RenderTarget("chat-1", "conversation.input.below", "pkg", "home")
     await runtime.render(UiRenderInput(chat_target, RenderNode("Text")), "chat-1")
     sent = len(push.messages)
 
@@ -206,7 +206,7 @@ async def test_connection_context_is_concurrent_and_cancel_safe() -> None:
 async def test_closed_socket_does_not_cancel_chat_scoped_rendering() -> None:
     runtime, push = await build_runtime()
     entered, resume = asyncio.Event(), asyncio.Event()
-    chat_target = RenderTarget("chat-1", "conversation.panel.right", "pkg", "home")
+    chat_target = RenderTarget("chat-1", "conversation.input.below", "pkg", "home")
     results = []
 
     async def handler(event, ops, next_handler):

@@ -57,10 +57,11 @@ export function WebUIHost({
 }: WebUIHostProps) {
   const context = useOptionalWebUIAppContext();
   const viewContext = useWebUISlotContext();
-  const sessionId = sessionOverride === undefined ? viewContext.sessionId : sessionOverride;
-  const hasTarget = !!sessionId;
   const runtime = runtimeOverride ?? context?.runtime;
   const registry = registryOverride ?? context?.registry;
+  const isApplicationSlot = runtime?.getCatalog().getSlot(slotId)?.scope === 'application';
+  const sessionId = sessionOverride === undefined ? (isApplicationSlot ? '' : viewContext.sessionId) : sessionOverride;
+  const hasTarget = isApplicationSlot ? sessionId === '' : !!sessionId;
   const [mountHandle, setMountHandle] = useState<WebUIMountHandle | null>(null);
 
   const scopeStore = useMemo<WebUIHostScopeStore | null>(() => {

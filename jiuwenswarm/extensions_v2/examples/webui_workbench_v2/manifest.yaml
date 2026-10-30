@@ -11,6 +11,7 @@ extensions:
 ui:
   apiVersion: 1
   items:
+    - {type: web.slot.contribution, id: workbench.entry, slot: application.entry, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.menu, slot: application.menu, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.main, slot: application.menu.main, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.task, slot: task.function, order: 40, renderer: {kind: webui-tree}}

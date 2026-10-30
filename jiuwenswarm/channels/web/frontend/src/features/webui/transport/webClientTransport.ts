@@ -57,10 +57,12 @@ export function createWebClientTransport(client: WebUIClientLike): WebUITranspor
     },
     async dispatch(request) {
       try {
+        const isApplication = request.target.scope === 'application';
         const response = await client.request<unknown>(WEBUI_DISPATCH_METHOD, {
           event: request.event,
-          session_id: request.target.sessionId,
+          ...(isApplication ? {} : { session_id: request.target.sessionId }),
           target: {
+            ...(isApplication ? { scope: 'application' } : {}),
             slot_id: request.target.slotId,
             package_id: request.target.packageId,
             instance_key: request.target.instanceKey,
