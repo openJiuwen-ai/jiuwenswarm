@@ -17,6 +17,8 @@ export interface WebUIInstanceError {
 
 export interface WebUIRenderFailure {
   revision: number;
+  /** 产生失败反馈的本地渲染代次；与当前代次不一致时忽略。 */
+  localFrameId: number;
   message: string;
 }
 
@@ -33,7 +35,10 @@ export interface WebUIInstanceSnapshot {
   displayedRevision: number;
   /** 当前 revision 的渲染失败反馈；旧帧反馈不会写入新帧。 */
   renderFailure: WebUIRenderFailure | null;
-  /** Monotonic local identity; revisions from different instances are not comparable. */
+  /**
+   * 单调递增的本地渲染代次；clear 后按相同 revision 重建也会分配新值。
+   * React 用它作为重挂载键，显示确认与失败反馈也按它校验。
+   */
   localFrameId: number;
 }
 
@@ -90,10 +95,10 @@ export interface WebUIRuntime {
   getScopeSnapshot(sessionId: string, slotId: string): WebUIScopeSnapshot;
   mountSlot(sessionId: string, slotId: string, options?: WebUIMountOptions): WebUIMountHandle;
   dispatchIntent(request: WebUIInstanceDispatch): Promise<WebUIInteractionResult>;
-  /** React 提交后确认显示；只接受当前帧 revision。 */
-  reportDisplayed(instanceKey: string, revision: number): void;
-  /** 渲染失败反馈；只接受当前帧 revision。 */
-  reportRenderFailure(instanceKey: string, revision: number, message: string): void;
+  /** React 提交后确认显示；revision 与 localFrameId 都必须匹配当前实例。 */
+  reportDisplayed(instanceKey: string, revision: number, localFrameId: number): void;
+  /** 渲染失败反馈；revision 与 localFrameId 都必须匹配当前实例。 */
+  reportRenderFailure(instanceKey: string, revision: number, message: string, localFrameId: number): void;
   clearSession(sessionId: string): void;
   getConnectionState(): WebUIConnectionState;
 }

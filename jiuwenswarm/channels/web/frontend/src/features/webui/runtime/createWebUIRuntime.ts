@@ -210,9 +210,7 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     const target = existing.target;
     records.delete(key);
     unindexInstance(target);
-    for (const ownerId of scopeOwners.get(webUISlotKey(target.sessionId, target.slotId)) ?? []) {
-      owners.get(ownerId)?.ready.delete(target.instanceKey);
-    }
+    // ready 记录的是消费者的挂载身份，不随内容清除；释放消费者时才移除，重连按原实例键重发。
     notifyScope(webUISlotKey(target.sessionId, target.slotId));
     notifyInstance(key);
   }
@@ -368,24 +366,35 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
         owners.delete(owner.id);
         const currentOwnerIds = scopeOwners.get(scopeKey);
         currentOwnerIds?.delete(owner.id);
-        if (currentOwnerIds && currentOwnerIds.size > 0) {
+        const remainingOwners = (currentOwnerIds ? [...currentOwnerIds] : [])
+          .map((ownerId) => owners.get(ownerId))
+          .filter((item): item is MountedOwner => item !== undefined);
+        // 只保留仍被剩余消费者覆盖的实例：范围消费者覆盖整槽，实例消费者只覆盖自己的实例键。
+        let membershipChanged = false;
+        for (const instanceKey of [...(scopeIndex.get(scopeKey) ?? [])]) {
+          const record = records.get(instanceKey);
+          if (!record) {
+            continue;
+          }
+          const covered = remainingOwners.some(
+            (item) => item.instanceKey === undefined || item.instanceKey === record.target.instanceKey,
+          );
+          if (covered) {
+            continue;
+          }
+          records.delete(instanceKey);
+          unindexInstance(record.target);
+          notifyInstance(instanceKey);
+          membershipChanged = true;
+        }
+        if (remainingOwners.length === 0) {
+          scopeOwners.delete(scopeKey);
+          notifyScope(scopeKey);
           return;
         }
-        // 最后一个消费者退出：移除该范围不再被持有的本地实例。
-        scopeOwners.delete(scopeKey);
-        const instanceKeys = scopeIndex.get(scopeKey);
-        if (instanceKeys) {
-          for (const instanceKey of [...instanceKeys]) {
-            const record = records.get(instanceKey);
-            if (!record) {
-              continue;
-            }
-            records.delete(instanceKey);
-            unindexInstance(record.target);
-            notifyInstance(instanceKey);
-          }
+        if (membershipChanged) {
+          notifyScope(scopeKey);
         }
-        notifyScope(scopeKey);
       },
     };
     return handle;
@@ -410,13 +419,22 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     }
 
     const args = request.args ?? node.action.args;
-    const dedupeKey = `${request.instanceKey}|${request.nodeKey}|${request.actionId}|${JSON.stringify(args)}`;
+    const submittedPayload = request.payload ?? {};
+    // 去重键区分实例、当前帧、节点、动作、已有参数与实际提交数据；同一控件连续提交不同输入不合并。
+    const dedupeKey = [
+      request.instanceKey,
+      request.frameRevision,
+      request.nodeKey,
+      request.actionId,
+      JSON.stringify(args),
+      JSON.stringify(submittedPayload),
+    ].join('|');
     if (inFlight.has(dedupeKey)) {
       return { status: 'duplicate' };
     }
     inFlight.add(dedupeKey);
     try {
-      const payload: Record<string, unknown> = { ...(request.payload ?? {}) };
+      const payload: Record<string, unknown> = { ...submittedPayload };
       payload.action_id = request.actionId;
       payload.args = args;
       const receipt = await transport.dispatch({
@@ -432,9 +450,12 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     }
   }
 
-  function reportDisplayed(instanceKey: string, revision: number): void {
+  function reportDisplayed(instanceKey: string, revision: number, localFrameId: number): void {
     const record = records.get(instanceKey);
     if (!record || record.snapshot.frame?.revision !== revision) {
+      return;
+    }
+    if (record.snapshot.localFrameId !== localFrameId) {
       return;
     }
     if (record.snapshot.displayedRevision >= revision) {
@@ -444,12 +465,15 @@ export function createWebUIRuntime(options: WebUIRuntimeOptions): WebUIRuntime {
     notifyInstance(instanceKey);
   }
 
-  function reportRenderFailure(instanceKey: string, revision: number, message: string): void {
+  function reportRenderFailure(instanceKey: string, revision: number, message: string, localFrameId: number): void {
     const record = records.get(instanceKey);
     if (!record || record.snapshot.frame?.revision !== revision) {
       return;
     }
-    record.snapshot = { ...record.snapshot, renderFailure: { revision, message } };
+    if (record.snapshot.localFrameId !== localFrameId) {
+      return;
+    }
+    record.snapshot = { ...record.snapshot, renderFailure: { revision, localFrameId, message } };
     notifyInstance(instanceKey);
   }
 
