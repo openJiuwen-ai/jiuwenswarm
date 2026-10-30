@@ -707,10 +707,14 @@ function ProfileOverview({
   const heatmap = useMemo(() => halfYearHeatmap(year, half, daily), [year, half, daily]);
   const taskKinds = tasksInHalf(activity?.kinds ?? [], year, half);
   const taskTotal = taskKinds.conversation + taskKinds.channel + taskKinds.schedule;
-  const primaryChannelConfigured = colleague.connections.some((connection) => connection.channel !== 'web')
+  const configuredChannels = new Set(colleague.connections.map((connection) => connection.channel));
+  const feishuConfigured = configuredChannels.has('feishu')
     || colleague.feishuConfigured === true
+    || (colleague.imConfigured && colleague.imPlatform === 'feishu');
+  const dingtalkConfigured = configuredChannels.has('dingtalk')
     || colleague.dingtalkConfigured === true
-    || (colleague.imConfigured && colleague.imPlatform !== undefined);
+    || (colleague.imConfigured && colleague.imPlatform === 'dingtalk');
+  const welinkConfigured = colleague.welinkConfigured === true;
 
   const metrics: { key: string; value: ReactNode; icon: LucideIcon }[] = [
     {
@@ -744,30 +748,36 @@ function ProfileOverview({
       <p className="jiuwenmate-profile__joined">
         {t('jiuwenmate.profile.joinedAt', { time: formatJoinedAt(colleague.joinedAt) })}
       </p>
-      {!primaryChannelConfigured || !colleague.welinkConfigured ? (
+      {!feishuConfigured || !dingtalkConfigured || !welinkConfigured ? (
         <section className="jiuwenmate-profile__im" data-testid="jiuwenmate-profile-quick-im">
           <header>
             <strong>{t('jiuwenmate.profile.quickIm')}</strong>
           </header>
-          {!primaryChannelConfigured ? (
+          {!feishuConfigured || !dingtalkConfigured ? (
             <div className="jiuwenmate-profile__quick-im-platforms">
-              {(['feishu', 'dingtalk'] as const).map((platform) => (
-                <div key={platform} className="jiuwenmate-profile__im-row">
-                  <img src={platform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
+              {!feishuConfigured ? (
+                <div className="jiuwenmate-profile__im-row">
+                  <img src={feishuIcon} alt="" aria-hidden />
                   <span>
-                    <strong>{t(`jiuwenmate.im.${platform}`)}</strong>
+                    <strong>{t('jiuwenmate.im.feishu')}</strong>
                     <small>{t('jiuwenmate.im.isolationHint')}</small>
                   </span>
-                  <ImBindingAction
-                    platform={platform}
-                    configured={false}
-                    onConfigure={() => onConfigureIm(platform)}
-                  />
+                  <ImBindingAction platform="feishu" configured={false} onConfigure={() => onConfigureIm('feishu')} />
                 </div>
-              ))}
+              ) : null}
+              {!dingtalkConfigured ? (
+                <div className="jiuwenmate-profile__im-row">
+                  <img src={dingtalkIcon} alt="" aria-hidden />
+                  <span>
+                    <strong>{t('jiuwenmate.im.dingtalk')}</strong>
+                    <small>{t('jiuwenmate.im.isolationHint')}</small>
+                  </span>
+                  <ImBindingAction platform="dingtalk" configured={false} onConfigure={() => onConfigureIm('dingtalk')} />
+                </div>
+              ) : null}
             </div>
           ) : null}
-          {!colleague.welinkConfigured ? (
+          {!welinkConfigured ? (
             <div className="jiuwenmate-profile__im-row">
               <img className="jiuwenmate-welink-logo" src={welinkIcon} alt="" aria-hidden />
               <span>

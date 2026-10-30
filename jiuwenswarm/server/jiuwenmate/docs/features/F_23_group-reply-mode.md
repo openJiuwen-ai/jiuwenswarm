@@ -37,7 +37,7 @@
 
 ### 4.1 方案概览
 
-员工详情保存 `group_reply_mode`，取值只有 `passive` 与 `adaptive`，缺省为 `adaptive`。飞书群消息先写入该群公开记录；Bot 消息未明确 @ 当前接收者时立即结束，不读取回复模式。有效目标交接复用明确 @ 的受理路径。接收 Bot 被明确 @ 时直接创建 Request；若飞书原生 @ 指向其他对象，未被点名的员工立即结束，不读取回复模式；`@all` 不视为点名其他对象。其余人类消息读取当前设置：被动模式到此结束，不创建 Request。自适应模式再判断纯寒暄和是否应等待先被点名的群内员工，然后才受理。执行前把职责边界和轻量交流说明放进 `system_prompt_addendum`，参与判断在 core 指令之后阅读这段说明。
+员工详情保存 `group_reply_mode`，取值只有 `passive` 与 `adaptive`，缺省为 `adaptive`。飞书群消息先写入该群公开记录；Bot 消息未明确 @ 当前接收者时立即结束，不读取回复模式。有效目标交接复用明确 @ 的受理路径。接收 Bot 被明确 @ 时直接创建 Request；若飞书原生 @ 指向其他对象，未被点名的员工立即结束，不读取回复模式；`@all` 不视为点名其他对象。其余人类消息读取当前设置：被动模式到此结束，不创建 Request。自适应模式再判断纯寒暄：没有具体内容的寒暄只由一位自适应员工受理；其余无原生 @ 的消息均创建 Request，是否回复交给参与判断。正文里的登记名不是宿主静默条件。执行前把职责边界和轻量交流说明放进 `system_prompt_addendum`，参与判断在 core 指令之后阅读这段说明。
 
 ```mermaid
 flowchart TD
@@ -51,8 +51,7 @@ flowchart TD
     C -->|是| H
     C -->|否| D{"没有具体内容的寒暄"}
     D -->|是且不是选定员工| H
-    D -->|否，且先点到了其他员工| H
-    D -->|应由本员工处理| R
+    D -->|否 / 应由本员工处理| R
     R --> P["参与判断阅读职责与轻量交流说明"]
     P --> N{"需要回复，且任务需要思考时间"}
     N -->|是| W["向该 Request 的渠道发送一条等待提示"]
@@ -126,7 +125,7 @@ flowchart TD
 2. 飞书群消息归档。普通 Bot 未明确 @ 当前接收者时结束；明确 @ 或有效目标交接时，把该员工内部 ID 放入本次 Request 的提及名单并受理。
 3. 未被 @ 且当前设置为被动时结束。公开记录保留这条消息。
 4. 人类消息明确 @ 了其他对象且没有 @ 当前员工时结束；`@all` 例外，继续作为广播处理。公开记录保留该消息。
-5. 人类消息没有明确收件对象且为自适应时，纯寒暄只受理选定员工；用户先点名另一位本群员工时，其余员工等待该员工的公开回复。
+5. 人类消息没有明确收件对象且为自适应时，纯寒暄只受理选定员工；正文出现同事登记名、但没有平台原生 @ 时，仍为各位自适应员工创建 Request，由参与判断决定是否回复。
 6. 已受理的群 Request 在参与判断中阅读职责与轻量交流说明。明确 @ 当前员工也进入这道判断，且必须回复。`effort` 为 `extended` 时，core 把等待提示写入 `notice`；宿主先向该 Request 路由上的渠道投递这一句，再继续正式回复和终态投递。简单任务和 `ignore` 不带 `notice`，也不发送等待提示。
 
 切换模式不会为第 3 步已经结束的消息补建 Request。
@@ -143,7 +142,7 @@ flowchart TD
 | --- | --- | --- |
 | I-01 | `models.py` | 设置与视图增加 `group_reply_mode`，缺省 `adaptive` |
 | I-02 | 员工详情页、`jiuwenmateApi.ts`、中英文文案 | 展示并保存两种模式 |
-| I-03 | `feishu_group_fanout.py` | 被动、纯寒暄和点名等待都发生在受理之前 |
+| I-03 | `feishu_group_fanout.py` | 被动与纯寒暄分流发生在受理之前；宿主静默仅认平台原生 @ |
 | I-04 | `group_collaboration.py`、`execution_driver.py` | 生成并附上职责与轻量交流说明 |
 | I-05 | core `participation.py`、`agent_manager.py`、`channel_manager.py` | 参与判断写入 `notice`；宿主按路由渠道投递，不另选文案 |
 
@@ -169,7 +168,7 @@ flowchart TD
 
 | 命令 | 结果 | 覆盖内容 |
 | --- | --- | --- |
-| `uv run pytest tests/unit_tests/server/jiuwenmate/test_group_collaboration.py tests/unit_tests/gateway/test_persistent_group_fanout.py::test_a_pure_greeting_is_accepted_only_for_one_daily_colleague tests/unit_tests/gateway/test_persistent_group_fanout.py::test_later_named_colleague_waits_for_the_first_public_reply tests/unit_tests/server/jiuwenmate/test_session_scheduler.py::test_group_execution_preserves_verified_bot_mention_after_trigger_refresh --no-cov -q` | 通过 | 职责说明、纯寒暄分流、点名等待和群执行附加说明 |
+| `uv run pytest tests/unit_tests/server/jiuwenmate/test_group_collaboration.py tests/unit_tests/gateway/test_persistent_group_fanout.py::test_a_pure_greeting_is_accepted_only_for_one_daily_colleague tests/unit_tests/gateway/test_persistent_group_fanout.py::test_body_colleague_name_without_native_mention_still_creates_adaptive_requests tests/unit_tests/server/jiuwenmate/test_session_scheduler.py::test_group_execution_preserves_verified_bot_mention_after_trigger_refresh --no-cov -q` | 通过 | 职责说明、纯寒暄分流、正文登记名不触发宿主静默，以及群执行附加说明 |
 | `uv run pytest tests/unit_tests/server/jiuwenmate/test_recovery_service.py::test_web_recovery_leaves_a_dispatched_feishu_request_for_the_feishu_runtime --no-cov -q` | 此前已通过 | Web 恢复不接手飞书 Request |
 | `uv run pytest tests/unit_tests/server/jiuwenmate/test_thinking_notice.py --no-cov -q` | 2026-10-22，7 passed | 宿主投递事件上的 `notice`：`respond` 与 `intervene` 各发送一次，`ignore`、没有 `notice` 与 Web 不发送；有持久发送接口的渠道与只有普通 `send` 的渠道都能收到 |
 
@@ -198,3 +197,5 @@ flowchart TD
 On 2026-10-26, an incident record showed that a message natively mentioning another Feishu bot still reached adaptive participation. The model mistook the similar display name for a mention of the local employee. Adaptive employees now skip messages with a specific native recipient mention unless the receiving bot was mentioned; the message remains archived, with no Session or Request created. A native `@all` remains a broadcast, identified from structured mention IDs, while typed `@all` text cannot override a specific recipient mention. Explicit mentions of the receiving bot keep their existing behavior. Fifteen focused routing tests pass; the full fanout test file has 69 passes and one existing `HANDLED` / `REJECTED` expectation mismatch for unpublished configuration. The live service has not been restarted or tested in a real Feishu group.
 
 2026-10-26：现场记录确认某员工在收到指向另一 Bot 的飞书原生 @ 时仍进入自适应判断，且 core 将相似名称误判为当前员工被 @。自适应只适用于未明确指向其他对象的人类消息；具体对象提及先由宿主按平台 `mention_ids` 和当前 Bot 提及标记过滤，防止模型解释正文中的相似名称。群广播 `@all` 不属于特定对象提及。该规则覆盖路由误触发，不改变真正 @ 当前 Bot 后的参与判断。
+
+2026-10-30：去掉宿主入站的正文登记名等待（`waits_for_named_colleague`）。未使用平台原生 @ 时，正文出现同事登记名不再让其他自适应员工在宿主层静默；是否回复交给参与判断。原生 @ 他人、被动模式与纯寒暄分流保持不变。飞书、钉钉、WeLink 入站与对应单测、文档已对齐。

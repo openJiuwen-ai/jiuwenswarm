@@ -228,7 +228,6 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
             RequestRouteSnapshot,
         )
         from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ
-        from jiuwenswarm.server.jiuwenmate.group_collaboration import waits_for_named_colleague
         from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
         connection = await asyncio.to_thread(fanout._service.connection_of, binding.namespace_id, binding.agent_id)
@@ -307,10 +306,6 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
                 return InboundDisposition.HANDLED
             settings = await asyncio.to_thread(fanout._service.read_settings, binding.namespace_id, binding.agent_id)
             if getattr(settings, "group_reply_mode", "adaptive") != "adaptive":
-                return InboundDisposition.HANDLED
-            roster = await asyncio.to_thread(fanout._agent_manager.group_participant_roster,
-                binding.namespace_id, group.group_chat_id)
-            if waits_for_named_colleague(event.text, roster, binding.agent_id):
                 return InboundDisposition.HANDLED
         request_input = request_input.model_copy(update={"source": source, "text": source.text})
         session = await asyncio.to_thread(
