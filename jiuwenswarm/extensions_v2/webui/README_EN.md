@@ -88,6 +88,26 @@ These actions send `{value}`, `{searchValue}` and `{}` respectively. Each bindin
 In multiple mode, select still sends the single option just selected. Selection updates locally without a change event.
 value takes precedence over defaultValue; a valid replace reinitializes selection. Disabled or disconnected selects cannot be used.
 
+A tree select can bind node selection, the whole selection value and clearing separately:
+
+```python
+RenderNode(
+    "TreeSelect",
+    {"treeData": [{"value": "root", "title": "All", "children": [{"value": "bj", "title": "Beijing"}]}],
+     "allowClear": True},
+    events={
+        "ui.select": {"id": "node.choose"},
+        "ui.change": {"id": "node.change"},
+        "ui.clear": {"id": "node.clear"},
+    },
+)
+```
+
+Selecting a node sends that node as `{value}`. change sends the whole selection: a string in single mode,
+an array in multiple or treeCheckable mode, and null or an empty array after clearing.
+The clear action additionally sends `{}`. Each binding is optional.
+treeData keys default to their values and search filters by title; disabled or disconnected tree selects cannot be used.
+
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
 instead of appending it to declared args. A node cannot declare both action and events.
