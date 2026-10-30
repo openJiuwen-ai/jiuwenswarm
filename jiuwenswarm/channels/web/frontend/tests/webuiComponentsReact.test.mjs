@@ -51,7 +51,7 @@ const { theme } = await import('antd');
 const {
   componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer,
   createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIProvider, WebUIThemeProvider,
-  WebUIContentActivity, resolveWebUITheme, i18n,
+  WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
 
 const target = {
@@ -376,6 +376,32 @@ test('Tabs reinitializes hidden content when destroyOnHidden is set', async () =
     await click(tabLabel(app, 'one'));
     assert.equal(input().value, 'draft');
   } finally { await app.close(); }
+});
+
+test('WebUIHost inherits the slot session and applies the requested layout', async () => {
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(WebUIProvider, { runtime, registry: componentRendererRegistry },
+      createElement(WebUISlotProvider, { sessionId: 'sess-1' },
+        createElement(WebUIHost, { slotId: 'conversation.input.above', layout: 'row' })))));
+    await act(async () => transport.injectRenderFrame(frame(
+      { component: 'Text', props: { value: 'Context' } }, 1, { ...target },
+    )));
+    const host = container.querySelector('[data-testid="webui-host"]');
+    assert.ok(host);
+    assert.match(host.className, /flex-row/);
+    assert.equal(host.getAttribute('data-variant'), 'conversation.input.above');
+    assert.equal(host.getAttribute('data-connected'), 'true');
+  } finally {
+    await act(async () => root.unmount());
+    runtime.dispose();
+    container.remove();
+  }
 });
 
 const switchTree = (props = {}, bindings = { 'ui.change': { id: 'toggle', args: { field: 'enabled' } } }) => ({

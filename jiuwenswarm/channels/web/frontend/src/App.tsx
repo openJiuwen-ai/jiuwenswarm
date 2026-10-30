@@ -110,7 +110,7 @@ import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useDesktopBrowserAutoOpen } from './features/desktopBrowserFile';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
-import { WebUISlotHost } from './features/webui/WebUISlotHost';
+import { WebUISlotProvider, WebUIPageHost, type WebUIPageTarget } from './features/webui';
 import { useWebUIRender } from './features/webui/useWebUIRender';
 import {
   applyBrowserDisplaySettings,
@@ -297,7 +297,7 @@ function normalizeConfigBoolean(value: unknown): boolean {
   );
 }
 
-type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
+type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
 
 type LoadedHistoryBatch = {
   batchSeq: number;
@@ -577,6 +577,7 @@ function AppContent({
     }
   }, [isJiuwenMate]);
   const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
+  const [webUIPage, setWebUIPage] = useState<WebUIPageTarget | null>(null);
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -635,6 +636,7 @@ function AppContent({
   const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
   const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
   const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
+  const webUITaskPageVisible = activeNav === 'webui' && webUIPage?.slotId === 'task.function.main';
 
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
@@ -1378,7 +1380,7 @@ function AppContent({
   }, [closeSidebarPeek, designCanvasOpen, setSecondarySidebarCollapsed]);
   const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
   const hasFixedSecondarySidebar =
-    ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
+    ((activeNav === 'chat' || activeNav === 'cron' || webUITaskPageVisible) && !conversationSidebarCollapsed) ||
     (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
 
   useEffect(() => {
@@ -5000,6 +5002,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     );
   };
 
+  useEffect(() => {
+    if (webUIPage && webUIPage.sessionId !== sessionId) {
+      setWebUIPage(null);
+      if (activeNav === 'webui') setActiveNav('chat');
+    }
+  }, [activeNav, sessionId, webUIPage]);
+
   if (isJiuwenMate) {
     return (
       <>
@@ -5020,7 +5029,20 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     );
   }
 
+  const webUIPageSection = activeNav === 'webui' && webUIPage && webUIPage.sessionId === sessionId ? (
+    <div className="app-section min-w-0 overflow-y-auto" data-testid="app-webui-page">
+      <WebUIPageHost target={webUIPage} />
+    </div>
+  ) : null;
+
   return (
+    <WebUISlotProvider
+      sessionId={sessionId && sessionId !== NEW_CONVERSATION_ID ? sessionId : null}
+      activePage={activeNav === 'webui' ? webUIPage : null}
+      onOpenPage={(target) => {
+        if (handleNavigate('webui')) setWebUIPage(target);
+      }}
+    >
     <div
       className={`shell shell--icon-rail ${activeNav === 'agents' ? 'shell--agent-management' : ''}`}
       data-testid="app-shell"
@@ -5297,11 +5319,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 )}
 
                 {/* Tool Panel / Expanded Team Panel */}
-                {/* WebUI 扩展：会话右侧附加面板，无插件内容时不占位 */}
-                <WebUISlotHost
-                  slotId="conversation.panel.right"
-                  className="w-[420px] max-w-full shrink-0 overflow-y-auto border-l border-border bg-bg p-2"
-                />
                 {!toolPanelHidden && trajectoryTaskPanelAvailable && !showConversationNotFound && !heartbeatPanelOpen && (
                   <ToolPanel
                     sessionId={sessionId}
@@ -5618,9 +5635,34 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         </div>
       )}
 
+        {/* 任务功能区的右侧页面：会话列表保留在左，插件页面进入工作区；菜单主页面仍为独立整页 */}
+        {webUIPageSection && webUIPage?.slotId === 'task.function.main' ? (
+          <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
+            <ConversationSidebar
+              activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+              onNew={(options) => requestSessionNavigation('new', options)}
+              onSelect={requestSessionNavigation}
+              onSelectDesignSession={handleSelectDesignSession}
+              activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+              onProjectRemoved={handleProjectRemoved}
+              onOpenCron={() => handleNavigate('cron')}
+              isCronActive={false}
+              collapsed={conversationSidebarCollapsed}
+              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
+              hideCollapseButton={workspaceWorkMode === 'design' && route.kind === 'design-project'}
+            />
+            <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
+              {webUIPageSection}
+            </div>
+          </div>
+        ) : (
+          webUIPageSection
+        )}
+
       {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
       <LoginDialog />
     </div>
+    </WebUISlotProvider>
   );
 }
 
