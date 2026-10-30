@@ -67,6 +67,26 @@ RenderNode(
 
 Handler 从 data 读取布尔值 checked。checked 优先于 defaultChecked；合法 replace 重新初始化状态，
 初始化不触发 change。disabled、loading 或断连时开关禁用；未绑定 change 时仍可本地切换。
+开关也可独立绑定 `"ui.click": {"id": "enabled.inspect"}`，接收切换后的 `{checked}`。
+同时绑定 change 和 click 时，一次点击依次发送 change、click；只需处理开关状态变化时绑定 change 即可。
+
+选择框可以同时绑定选择、搜索和清空动作：
+
+```python
+RenderNode(
+    "Select",
+    {"options": [{"value": "bj", "label": "北京"}], "showSearch": True, "allowClear": True},
+    events={
+        "ui.select": {"id": "city.choose"},
+        "ui.search": {"id": "city.search"},
+        "ui.clear": {"id": "city.clear"},
+    },
+)
+```
+
+三项分别发送 `{value}`、`{searchValue}` 和 `{}`，可以按需省略绑定。
+多选时 select 仍发送本次选中的单个选项值，选择值在组件内更新，不发送 change。
+value 优先于 defaultValue；合法 replace 重新初始化选择。禁用或断连时不可操作。
 
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，

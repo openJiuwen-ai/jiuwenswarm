@@ -18,5 +18,8 @@ export function WebUISwitch({ node, context, emit, appearance }: WebUIAdapterPro
       setChecked(next);
       if (node.events['ui.change']) void emit('ui.change', { checked: next });
     }}
+    onClick={(next) => {
+      if (node.events['ui.click'] && !disabled) void emit('ui.click', { checked: next });
+    }}
   />;
 }
