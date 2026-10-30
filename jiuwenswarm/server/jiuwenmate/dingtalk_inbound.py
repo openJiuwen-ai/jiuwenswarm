@@ -174,7 +174,6 @@ class DingTalkInboundHandler:
         from jiuwenswarm.server.jiuwenmate.group_collaboration import (
             greeting_respondent,
             is_pure_greeting,
-            waits_for_named_colleague,
         )
         from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
         from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ
@@ -292,12 +291,12 @@ class DingTalkInboundHandler:
                     )
                     if settings.group_reply_mode == "passive":
                         return InboundDisposition.HANDLED
-                    roster = await asyncio.to_thread(
-                        self._manager.group_participant_roster,
-                        binding.namespace_id,
-                        group.group_chat_id,
-                    )
                     if is_pure_greeting(event.text):
+                        roster = await asyncio.to_thread(
+                            self._manager.group_participant_roster,
+                            binding.namespace_id,
+                            group.group_chat_id,
+                        )
                         enriched = []
                         for member in roster:
                             member_view = await asyncio.to_thread(
@@ -313,8 +312,6 @@ class DingTalkInboundHandler:
                         respondent = greeting_respondent(enriched)
                         if respondent is not None and respondent != binding.agent_id:
                             return InboundDisposition.HANDLED
-                    elif waits_for_named_colleague(event.text, roster, binding.agent_id):
-                        return InboundDisposition.HANDLED
                 conversation = ConversationRef.group(group.group_chat_id)
                 request_input = RequestInput(
                     kind="group_message",

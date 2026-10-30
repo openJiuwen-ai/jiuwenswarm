@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 from jiuwenswarm.server.jiuwenmate.group_collaboration import (
     greeting_respondent,
     is_pure_greeting,
-    waits_for_named_colleague,
 )
 
 logger = logging.getLogger(__name__)
@@ -623,12 +622,12 @@ class PersistentGroupFanout:
                     )
                     if settings.group_reply_mode == "passive":
                         return InboundDisposition.HANDLED
-                    roster = await asyncio.to_thread(
-                        self._agent_manager.group_participant_roster,
-                        binding.namespace_id,
-                        group.group_chat_id,
-                    )
                     if is_pure_greeting(request_input.text or ""):
+                        roster = await asyncio.to_thread(
+                            self._agent_manager.group_participant_roster,
+                            binding.namespace_id,
+                            group.group_chat_id,
+                        )
                         enriched = []
                         for member in roster:
                             view = await asyncio.to_thread(
@@ -646,12 +645,6 @@ class PersistentGroupFanout:
                                 binding.agent_id,
                             )
                             return InboundDisposition.HANDLED
-                    elif waits_for_named_colleague(request_input.text or "", roster, binding.agent_id):
-                        logger.info(
-                            "[JiuwenMate] group message waits for the named colleague: agent_id=%s",
-                            binding.agent_id,
-                        )
-                        return InboundDisposition.HANDLED
                 if event.group_name:
                     await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
             else:

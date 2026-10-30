@@ -108,36 +108,6 @@ def build_group_collaboration_guidance(roster: Iterable[Mapping[str, Any]]) -> s
     )
 
 
-def earliest_named_colleague(text: str, roster: Iterable[Mapping[str, Any]]) -> str | None:
-    """Return the colleague whose registered name occurs first. A longer name wins the same span."""
-    if not isinstance(text, str) or not text:
-        return None
-    folded = text.casefold()
-    best: tuple[int, int, str] | None = None
-    for member in _unique_members(roster):
-        name = member["name"].casefold()
-        start = 0
-        while True:
-            index = folded.find(name, start)
-            if index < 0:
-                break
-            candidate = (index, -len(name), member["agent_id"])
-            if best is None or candidate < best:
-                best = candidate
-            start = index + 1
-    return None if best is None else best[2]
-
-
-def waits_for_named_colleague(
-    text: str,
-    roster: Iterable[Mapping[str, Any]],
-    self_agent_id: str,
-) -> bool:
-    """A later-named colleague waits; an unnamed broadcast still lets everyone judge."""
-    primary = earliest_named_colleague(text, roster)
-    return primary is not None and primary != self_agent_id
-
-
 def resolve_group_mentions(
     text: str,
     roster: Iterable[Mapping[str, Any]],

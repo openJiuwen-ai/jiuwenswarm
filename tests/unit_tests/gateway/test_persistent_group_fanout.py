@@ -334,7 +334,8 @@ async def test_receiver_bot_mention_adds_internal_agent_id_only_to_request_sourc
 
 
 @pytest.mark.asyncio
-async def test_later_named_colleague_waits_for_the_first_public_reply(host):
+async def test_body_colleague_name_without_native_mention_still_creates_adaptive_requests(host):
+    """Registered names in plain text are not a host silence gate; only native @ is."""
     life = host.connected("生活小助手", "app-life")
     study = host.connected("agent学习小助手", "app-study")
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
@@ -352,22 +353,7 @@ async def test_later_named_colleague_waits_for_the_first_public_reply(host):
     assert await fanout.handle(study_event) is InboundDisposition.HANDLED
 
     assert len(host.request_states(life, life_event)) == 1
-    assert host.request_states(study, study_event) == []
-
-    mentioned = _event(
-        receiving_app_id="app-study",
-        message_id="om_reply",
-        text="这个痛点交给你",
-        mention_ids=("ou_study",),
-        receiver_bot_mentioned=True,
-        reply_to="om_001",
-        sender_type="bot",
-        sender_id=life,
-        sender_name="生活小助手",
-        sender_app_id="app-life",
-    )
-    assert await fanout.handle(mentioned) is InboundDisposition.HANDLED
-    assert len(host.request_states(study, mentioned)) == 1
+    assert len(host.request_states(study, study_event)) == 1
 
 
 @pytest.mark.asyncio
