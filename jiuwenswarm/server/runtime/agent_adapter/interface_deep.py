@@ -20471,24 +20471,31 @@ class JiuWenSwarmDeepAdapter:
                 rendered_query = inputs.get("query")
                 if rewrite_turn_text:
                     inputs["query"] = team_turn.text
-                inputs = self._prepare_multimodal_image_inputs(request, inputs)
-                enable_read_image_multimodal = self._native_image_input_enabled(
-                    self._config_cache,
-                    resolved_model,
-                )
-                image_tool_fallback_notice = self._build_image_tool_fallback_notice(
-                    request,
-                    enable_read_image_multimodal=enable_read_image_multimodal,
-                    model=resolved_model,
-                )
-                inputs = self._prepare_react_image_tool_prompt(
-                    request,
-                    inputs,
-                    enable_read_image_multimodal=enable_read_image_multimodal,
-                )
-                if rewrite_turn_text:
-                    inputs[TEAM_USER_TURN_KEY] = team_turn.with_text(inputs["query"])
-                    inputs["query"] = rendered_query
+                try:
+                    inputs = self._prepare_multimodal_image_inputs(request, inputs)
+                    enable_read_image_multimodal = self._native_image_input_enabled(
+                        self._config_cache,
+                        resolved_model,
+                    )
+                    image_tool_fallback_notice = self._build_image_tool_fallback_notice(
+                        request,
+                        enable_read_image_multimodal=enable_read_image_multimodal,
+                        model=resolved_model,
+                    )
+                    inputs = self._prepare_react_image_tool_prompt(
+                        request,
+                        inputs,
+                        enable_read_image_multimodal=enable_read_image_multimodal,
+                    )
+                    if rewrite_turn_text:
+                        inputs[TEAM_USER_TURN_KEY] = team_turn.with_text(inputs["query"])
+                finally:
+                    # 评审 2026-10-30：还原不依赖 prepare 成功——异常路径
+                    # 也恢复 rendered_query，防止临时改写污染复用 inputs
+                    # 的后续逻辑（当前 prepare 抛异常即 re-raise 终止请
+                    # 求，此还原为防御性收尾）。
+                    if rewrite_turn_text:
+                        inputs["query"] = rendered_query
                 if image_tool_fallback_notice is not None:
                     yield AgentResponseChunk(
                         request_id=rid,
