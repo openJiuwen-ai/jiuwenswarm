@@ -40,7 +40,7 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
   Panel/Iframe 只能作为目录允许槽位的根节点，右侧面板根组件必须匹配其 `rootComponents`。
 - C-13：交互绑定同时关联挂载句柄、实例、localFrameId 与节点。只有当前代次已确认显示、
   渲染成功且连接有效时才能发送；禁用或加载中的节点不能发送交互。
-  只读 Input 允许 ui.click，禁止 ui.change 和 ui.press_enter。
+  Input 的 ui.click 携带当前编辑值 `{value}`；只读 Input 允许 ui.click，禁止 ui.change 和 ui.press_enter。
 - C-14：replace、clear、断连、渲染失败或所属消费者释放均使旧节点绑定失效。
   同 revision 重建也分配新的 localFrameId；旧显示确认和失败反馈不能作用于新代次。
 - C-15：每次合法组件回调独立发送，包括值相同且前一个请求未完成的回调。

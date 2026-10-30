@@ -51,6 +51,9 @@ The `ui.press_enter` handler receives `{value}` with the current draft when Ente
 Bind it independently of change; an input can declare Enter alone. Enter used to confirm composition does not submit.
 Disabled, read-only and disconnected inputs do not submit. Each valid submission is sent without waiting for prior receipts.
 
+Bind `"ui.click": {"id": "city.inspect"}` to receive input clicks with the current draft as `{value}`.
+Read-only inputs allow clicks. Disabled or disconnected inputs do not send them; unbound clicks keep the default input behavior.
+
 Existing action components remain available and use the same request structure; flat interaction payloads are rejected.
 Update handlers from `payload["value"]` to `payload["data"]["value"]`. List selections also put key in data,
 instead of appending it to declared args. A node cannot declare both action and events.

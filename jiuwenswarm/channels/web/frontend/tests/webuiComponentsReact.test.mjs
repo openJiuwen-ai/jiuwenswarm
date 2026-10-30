@@ -161,6 +161,35 @@ test('disabled and unbound buttons never dispatch actions', async () => {
 
 const inputEvents = { 'ui.change': { id: 'edit', args: { field: 'city' } } };
 const inputTree = (props = {}, bindings = inputEvents) => ({ component: 'Input', props, events: bindings });
+const inputClickEvents = { 'ui.click': { id: 'inspect', args: { field: 'city' } } };
+
+test('Input click sends the current draft and allows read-only clicks while blocking disabled and disconnected inputs', async () => {
+  const bindings = inputClickEvents;
+  const app = await setup(inputTree({ value: 'Initial' }, bindings));
+  try {
+    const input = app.container.querySelector('input');
+    await changeInput(input, 'Edited');
+    assert.equal(app.business().length, 0);
+    await click(input);
+    assert.deepEqual(app.business()[0].payload, {
+      node_key: '0', revision: 1, action_id: 'inspect', args: { field: 'city' }, data: { value: 'Edited' },
+    });
+    await app.replace(inputTree({ value: 'Read only', readOnly: true }, bindings));
+    await click(app.container.querySelector('input'));
+    assert.deepEqual(app.business().at(-1).payload.data, { value: 'Read only' });
+    await app.replace(inputTree({ value: 'Disabled', disabled: true }, bindings), 3);
+    await click(app.container.querySelector('input'));
+    await app.replace(inputTree({ value: 'Live' }, bindings), 4);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    await click(app.container.querySelector('input'));
+    assert.equal(app.business().length, 2);
+    await act(async () => app.transport.setConnectionState('connected'));
+    await click(app.container.querySelector('input'));
+    assert.equal(app.business().at(-1).event, 'ui.click');
+    assert.equal(app.business().at(-1).payload.revision, 4);
+    assert.deepEqual(app.business().at(-1).payload.data, { value: 'Live' });
+  } finally { await app.close(); }
+});
 
 test('Input sends exact change data and clear values without dispatching on mount, click, Enter or blur', async () => {
   const app = await setup(inputTree({ value: '北京', ariaLabel: 'City', allowClear: true, showCount: true, maxLength: 20 }));
@@ -336,7 +365,7 @@ test('Input blocks Enter when disabled, read-only or disconnected and uses the r
 });
 
 async function verifyInputTransport(eventName) {
-  const bindings = eventName === 'ui.change' ? inputEvents : inputSubmitEvents;
+  const bindings = { 'ui.change': inputEvents, 'ui.press_enter': inputSubmitEvents, 'ui.click': inputClickEvents }[eventName];
   const subscriptions = new Map();
   const requests = [];
   const client = {
@@ -361,6 +390,7 @@ async function verifyInputTransport(eventName) {
     await act(async () => subscriptions.get('webui.render')({ payload: frame(inputTree({ value: 'Initial' }, bindings)) }));
     await changeInput(container.querySelector('input'), 'Edited');
     if (eventName === 'ui.press_enter') await pressEnter(container.querySelector('input'));
+    if (eventName === 'ui.click') await click(container.querySelector('input'));
     const [method, params] = requests.find(([, request]) => request.event === eventName);
     assert.equal(method, 'webui.dispatch');
     assert.deepEqual(params, {
@@ -375,7 +405,7 @@ async function verifyInputTransport(eventName) {
     assert.equal(subscriptions.size, 0);
   }
 }
-for (const eventName of ['ui.change', 'ui.press_enter']) {
+for (const eventName of ['ui.change', 'ui.press_enter', 'ui.click']) {
   test(`Input ${eventName} uses the WebClient transport envelope and applies returned render frames`,
     () => verifyInputTransport(eventName));
 }
