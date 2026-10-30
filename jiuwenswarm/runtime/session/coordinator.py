@@ -407,16 +407,10 @@ class RuntimeSessionCoordinator:
                 self._registry.mark_waiting(heartbeat_root)
                 self._registry.mark_terminal(handle, SessionExecutionState.SUCCEEDED)
             else:
-                parent_finished_while_delivering = (
-                    parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-                    and _waits_on(parent, request_id)
+                self._finish_control_parent(
+                    parent, request_id, set(control_ids),
+                    parent_was_waiting=parent_was_waiting,
                 )
-                if parent_was_waiting or parent_finished_while_delivering:
-                    self._registry.mark_terminal(
-                        parent, SessionExecutionState.SUCCEEDED
-                    )
-                elif _waits_on(parent, request_id):
-                    _release_control(parent, request_id)
             if control_id and heartbeat_root is None:
                 for reasked in control_ids:
                     self._registry.mark_awaiting_control(handle, reasked)
@@ -430,6 +424,23 @@ class RuntimeSessionCoordinator:
             self._control_claims.discard(claim)
             self._resuming_parents.discard(parent.execution_id)
             self._refresh_session_state(record)
+
+    def _finish_control_parent(
+        self,
+        parent: SessionExecutionHandle,
+        request_id: str,
+        reissued_ids: set[str],
+        *,
+        parent_was_waiting: bool,
+    ) -> None:
+        """Transfer reissued controls to the child, retaining unrelated ones."""
+        for control_id in reissued_ids | {request_id}:
+            _release_control(parent, control_id)
+        if parent.waiting_control_id:
+            if parent_was_waiting:
+                self._registry.mark_waiting(parent)
+        elif parent_was_waiting or parent.state is SessionExecutionState.WAITING_FOR_CONTROL:
+            self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
 
     def has_control_target(self, session_id: str, request_id: str) -> bool:
         """Return whether control input can resume a live Session execution."""
@@ -473,23 +484,26 @@ class RuntimeSessionCoordinator:
         parent_was_waiting = parent.state is SessionExecutionState.WAITING_FOR_CONTROL
         record.stream_control_claims.add(request_id)
         self._resuming_parents.add(parent.execution_id)
-        if parent_was_waiting:
-            self._registry.resume_waiting(parent)
-        handle = self._new_execution(
-            record,
-            request_id,
-            SessionWorkKind.CONTROL_INPUT,
-            parent_execution_id=parent.execution_id,
-        )
-        handle.task = asyncio.current_task()
-        self._registry.mark_running(handle)
+        handle: SessionExecutionHandle | None = None
+        reissued_ids: set[str] = set()
         try:
+            handle = self._new_execution(
+                record,
+                request_id,
+                SessionWorkKind.CONTROL_INPUT,
+                parent_execution_id=parent.execution_id,
+            )
+            if parent_was_waiting:
+                self._registry.resume_waiting(parent)
+            handle.task = asyncio.current_task()
+            self._registry.mark_running(handle)
             candidate = operation()
             stream = await candidate if inspect.isawaitable(candidate) else candidate
             try:
                 async for item in stream:
                     control_id = suspension_key(item) if suspension_key else None
                     if control_id:
+                        reissued_ids.add(control_id)
                         self._registry.mark_awaiting_control(handle, control_id)
                         self._refresh_control_gate(record)
                     yield item
@@ -498,22 +512,28 @@ class RuntimeSessionCoordinator:
                 if callable(close):
                     await close()
         except (asyncio.CancelledError, GeneratorExit) as exc:
-            self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED, error=exc)
+            if handle is not None:
+                self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED, error=exc)
             if parent_was_waiting:
                 self._registry.mark_waiting(parent)
             raise
         except BaseException as exc:
-            self._registry.mark_terminal(handle, SessionExecutionState.FAILED, error=exc)
+            if handle is not None:
+                self._registry.mark_terminal(handle, SessionExecutionState.FAILED, error=exc)
             if parent_was_waiting:
                 self._registry.mark_waiting(parent)
             raise
         else:
-            if parent_was_waiting:
-                self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
-            elif _waits_on(parent, request_id):
-                # The original producer may already have published another
-                # question. Do not erase that newer control locator.
-                _release_control(parent, request_id)
+            if self._heartbeat_root(parent) is not None:
+                if parent_was_waiting:
+                    self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
+                elif _waits_on(parent, request_id):
+                    _release_control(parent, request_id)
+            else:
+                self._finish_control_parent(
+                    parent, request_id, reissued_ids,
+                    parent_was_waiting=parent_was_waiting,
+                )
             if handle.waiting_control_id:
                 self._registry.mark_waiting(handle)
             else:
@@ -521,7 +541,7 @@ class RuntimeSessionCoordinator:
         finally:
             record.stream_control_claims.discard(request_id)
             self._resuming_parents.discard(parent.execution_id)
-            if handle.task is asyncio.current_task():
+            if handle is not None and handle.task is asyncio.current_task():
                 handle.task = None
             self._refresh_session_state(record)
 
