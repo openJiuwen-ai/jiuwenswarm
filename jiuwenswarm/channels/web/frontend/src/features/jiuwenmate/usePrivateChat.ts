@@ -49,6 +49,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
   const reloadSeq = useRef(0);
   const unsent = useRef<{ scope: string; text: string; messageId: string } | null>(null);
   const listed = useRef(requests);
+  const liveRequestIds = useRef(new Set<string>());
   const visibleRequests = loadedScope === scope ? requests : [];
   const visibleError = loadedScope === scope ? error : null;
   const loading = Boolean(agentId && conversationId && loadedScope !== scope);
@@ -61,6 +62,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     if (scopeRef.current !== scope) {
       scopeRef.current = scope;
       setRequests([]);
+      liveRequestIds.current.clear();
       setError(null);
     }
     if (!agentId || !conversationId) return;
@@ -105,6 +107,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     };
     const unsubscribe = api.onStream((event) => {
       if (!active || event.agentId !== agentId) return;
+      liveRequestIds.current.add(event.requestId);
       const known = listed.current.some((item) => item.requestId === event.requestId);
       setRequests((current) => applyStreamEvent(current, event) ?? current);
       if (!known || event.kind === 'ended') refresh(event.requestId);
@@ -158,7 +161,10 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
       try {
         const sent = await api.sendMessage(agentId, conversationId, text, messageId);
         unsent.current = null;
-        if (scopeRef.current === scope) setRequests((current) => mergeChatRequest(current, sent.request));
+        if (scopeRef.current === scope) {
+          liveRequestIds.current.add(sent.request.requestId);
+          setRequests((current) => mergeChatRequest(current, sent.request));
+        }
         return sent.conversation;
       } catch (reason) {
         if (scopeRef.current === scope) setError(errorMessage(reason));
@@ -211,5 +217,5 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     }
   }, [api, agentId, conversationId, scope]);
 
-  return { requests: visibleRequests, error: visibleError, loading, sending, send, abort, decidePermission, reload };
+  return { liveRequestIds: liveRequestIds.current, requests: visibleRequests, error: visibleError, loading, sending, send, abort, decidePermission, reload };
 }

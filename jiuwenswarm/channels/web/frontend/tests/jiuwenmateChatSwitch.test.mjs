@@ -125,3 +125,152 @@ test('keeps polling while a manually reviewed request resumes', async () => {
 });
 
 test.after(() => dom.window.close());
+
+const { build } = await import('esbuild');
+const progressiveBundle = 'node_modules/.cache/jiuwenmate-chat-switch/useProgressiveText.mjs';
+await build({
+  entryPoints: ['src/hooks/useProgressiveText.ts'], outfile: progressiveBundle,
+  bundle: true, platform: 'node', format: 'esm', packages: 'external',
+});
+const { useProgressiveText } = await import(`../${progressiveBundle}`);
+
+test('live replies reveal Unicode characters and keep their prefix when the final text arrives', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const root = createRoot(document.getElementById('root'));
+  function Reply({ text, animate }) {
+    return React.createElement('div', null, useProgressiveText(text, animate));
+  }
+  const render = async (text, animate) => act(async () => {
+    root.render(React.createElement(Reply, { text, animate }));
+  });
+  await render('历史回复', false);
+  assert.equal(document.getElementById('root').textContent, '历史回复');
+  await render('A😀B', true);
+  assert.equal(document.getElementById('root').textContent, '');
+  await act(async () => t.mock.timers.tick(16));
+  assert.equal(document.getElementById('root').textContent, 'A');
+  await render('A😀BCD', true);
+  assert.equal(document.getElementById('root').textContent, 'A');
+  await act(async () => t.mock.timers.tick(16));
+  assert.equal(document.getElementById('root').textContent, 'A😀');
+  await act(async () => t.mock.timers.tick(160));
+  assert.equal(document.getElementById('root').textContent, 'A😀BCD');
+  await act(async () => root.unmount());
+});
+
+const groupContentBundle = 'node_modules/.cache/jiuwenmate-chat-switch/GroupMessageContent.mjs';
+await build({
+  entryPoints: ['src/features/groupChat/GroupMessageContent.tsx'], outfile: groupContentBundle,
+  bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic',
+  plugins: [{ name: 'group-markdown', setup(plugin) {
+    plugin.onResolve({ filter: /components\/MarkdownRenderer$/ }, () => ({ path: 'markdown', namespace: 'test' }));
+    plugin.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
+      contents: 'export const MarkdownRenderer = ({ content }) => content;', loader: 'js',
+    }));
+  } }],
+});
+const { GroupMessageContent } = await import(`../${groupContentBundle}`);
+
+test('group replies animate even when delivered as a complete message, while history and user text stay instant', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const root = createRoot(document.getElementById('root'));
+  const render = async (id, sender, animate) => act(async () => {
+    root.render(React.createElement(GroupMessageContent, {
+      key: id, message: { message_id: id, sender, content: '你好😀，欢迎一起规划旅行', attachments: [] }, animate,
+    }));
+  });
+  await render('history', 'travel-team', false);
+  assert.equal(document.getElementById('root').textContent, '你好😀，欢迎一起规划旅行');
+  await render('new-reply', 'travel-team', true);
+  assert.equal(document.getElementById('root').textContent, '');
+  await act(async () => t.mock.timers.tick(16));
+  assert.equal(document.getElementById('root').textContent, '你');
+  await act(async () => t.mock.timers.tick(1600));
+  assert.equal(document.getElementById('root').textContent, '你好😀，欢迎一起规划旅行');
+  await render('user', 'user', true);
+  assert.equal(document.getElementById('root').textContent, '你好😀，欢迎一起规划旅行');
+  await act(async () => root.unmount());
+});
+
+const workspaceBundle = 'node_modules/.cache/jiuwenmate-chat-switch/GroupChatWorkspace.mjs';
+const workspaceMocks = {
+  'services/webClient': `export const webClient = globalThis.groupTest.client;`,
+  'services/teamAttach': `export const attachTeamSession = async () => {};`,
+  'stores/sessionStore': `export const useSessionStore = (select) => select({ defaultModelName: 'test' });`,
+  'stores/workspaceStore': `export const useWorkspaceStore = {};`,
+  '/ModelPicker': `export default () => null;`,
+  '/TeamMemberAvatar': `export const TeamMemberAvatar = () => null;`,
+  '/Dialog/Dialog': `export const Dialog = () => null;`,
+  '/MessageItem': `export const FileDownloadList = () => null;`,
+  '/fileDownloadDedup': `export const getFileIdentityKey = (file) => file.path;`,
+  './client': `export const groupChatClient = globalThis.groupTest.api;`,
+  './MemberPicker': `export const MemberPicker = () => null;`,
+  './ExecutionCard': `export const ExecutionCard = () => null;`,
+  './GroupFileRow': `export const GroupFilePreviewPanel = () => null; export const GroupFileRow = () => null;
+    export const groupFileTarget = () => ({});`,
+  '/InteractionPrompt': `export const InteractionPrompt = () => null;`,
+  '/MarkdownRenderer': `export const MarkdownRenderer = ({ content }) => content;`,
+  'react-i18next': `const t = (key) => key; export const useTranslation = () => ({ t });`,
+};
+await build({
+  entryPoints: ['src/features/groupChat/GroupChatWorkspace.tsx'], outfile: workspaceBundle,
+  bundle: true, platform: 'node', format: 'esm', packages: 'external', jsx: 'automatic', loader: { '.css': 'empty' },
+  plugins: [{ name: 'workspace-boundaries', setup(plugin) {
+    plugin.onResolve({ filter: /.*/ }, (args) => {
+      const key = Object.keys(workspaceMocks).find((name) => args.path.endsWith(name));
+      return key ? { path: key, namespace: 'workspace-test' } : undefined;
+    });
+    plugin.onLoad({ filter: /.*/, namespace: 'workspace-test' }, ({ path }) => ({ contents: workspaceMocks[path] }));
+  } }],
+});
+
+test('group WebSocket delivery triggers typing and follows resized replies until the user scrolls up', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const listeners = new Map();
+  const history = [{ message_id: 'old', sender: 'team', content: '已有消息', timestamp: 1, attachments: [] }];
+  globalThis.groupTest = {
+    client: { getState: () => 'ready', on: (name, callback) => {
+      listeners.set(name, callback); return () => listeners.delete(name);
+    }, onStateChange: () => () => {} },
+    api: { get: async () => ({ name: 'Test group', members: [] }),
+      history: async (_groupId, page) => ({ total: 1, messages: history.slice(0, page.limit) }),
+      executions: async () => ({ executions: [], total: 0 }) },
+  };
+  const resizeCallbacks = new Set();
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; resizeCallbacks.add(callback); }
+    observe() {}
+    disconnect() { resizeCallbacks.delete(this.callback); }
+  };
+  const { GroupChatWorkspace } = await import(`../${workspaceBundle}`);
+  const root = createRoot(document.getElementById('root'));
+  await act(async () => {
+    root.render(React.createElement(GroupChatWorkspace, { groupId: 'test-group', directory: {} }));
+  });
+  const list = document.querySelector('[data-testid="group-chat-messages"]');
+  assert.ok(list.textContent.includes('已有消息'));
+  await act(async () => listeners.get('group.message')({ event: 'group.message', payload: {
+    group_id: 'test-group', message: { message_id: 'new', sender: 'team', content: '新的群聊回复',
+      timestamp: 2, attachments: [] },
+  } }));
+  const reply = document.querySelector('[data-variant="new"]');
+  assert.ok(!reply.textContent.includes('新的群聊回复'));
+  await act(async () => t.mock.timers.tick(16));
+  assert.ok(reply.textContent.endsWith('新'));
+  let height = 1000;
+  Object.defineProperty(list, 'scrollHeight', { get: () => height });
+  Object.defineProperty(list, 'clientHeight', { value: 100 });
+  list.scrollTop = 900;
+  await act(async () => list.dispatchEvent(new dom.window.Event('scroll', { bubbles: true })));
+  height = 1200;
+  for (const callback of resizeCallbacks) callback();
+  assert.equal(list.scrollTop, 1200);
+  list.scrollTop = 100;
+  await act(async () => list.dispatchEvent(new dom.window.Event('scroll', { bubbles: true })));
+  height = 1400;
+  for (const callback of resizeCallbacks) callback();
+  assert.equal(list.scrollTop, 100);
+  await act(async () => t.mock.timers.tick(1000));
+  assert.ok(reply.textContent.endsWith('新的群聊回复'));
+  await act(async () => root.unmount());
+});

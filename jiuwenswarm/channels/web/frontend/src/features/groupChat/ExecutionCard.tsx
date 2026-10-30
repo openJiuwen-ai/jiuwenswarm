@@ -11,9 +11,11 @@ const STOPPED = ['cancelled', 'stopped', 'interrupted'];
 type RenderAvatar = (member: string) => ReactNode;
 
 /** Circular progress ring; without a known percentage it spins as an indeterminate indicator. */
-function TaskStatus({ status, percent, testId }: { status: string; percent?: number; testId: string }) {
+function TaskStatus({ status, percent, testId, labelOverride }: {
+  status: string; percent?: number; testId: string; labelOverride?: string;
+}) {
   const { t } = useTranslation();
-  const label = t(`groupChat.status.${status}`, { defaultValue: status });
+  const label = labelOverride ?? t(`groupChat.status.${status}`, { defaultValue: status });
   const known = typeof percent === 'number' && Number.isFinite(percent);
   if (RUNNING.includes(status) && known) {
     const value = Math.min(100, Math.max(0, Math.round(percent)));
@@ -67,7 +69,8 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
     ? (execution.progress.completed / execution.progress.total) * 100 : undefined;
   return <article className="group-chat-execution" data-testid="group-chat-execution" data-variant={execution.execution_id}>
     <header className="group-chat-execution-heading">
-      <Network size={16} aria-hidden /><strong data-testid="group-chat-execution-title">{title}</strong>
+      <Network size={16} aria-hidden /><strong data-testid="group-chat-execution-title"
+        title={shortTaskName(execution.title || execution.task, t('groupChat.taskTitle'), Infinity)}>{title}</strong>
       {!singleAgent && <div className="group-chat-task-counts" data-testid="group-chat-task-counts">
         {(['total', 'running', 'completed', 'stopped', 'failed'] as const).map((key) => <span key={key}
           data-testid="group-chat-task-count" data-variant={key}>
@@ -79,12 +82,15 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
       {!singleAgent && Object.entries(execution.tasks ?? {}).map(([id, status]) => {
         const detail = execution.task_details?.[id];
         const member = detail?.member_id || owner;
+        const teammate = detail?.member_id && detail.member_id !== owner ? detail.member_id : '';
+        const assigneeName = teammate ? `${ownerName}｜${teammate}` : ownerName;
         return <div className="group-chat-subtask" key={id} data-testid="group-chat-subtask" data-variant={id}>
           <div className="group-chat-subtask-info">
             <strong data-testid="group-chat-subtask-title" title={detail?.title}>
               {shortTaskName(detail?.title, t('groupChat.unnamedTask'))}
             </strong>
-            <Assignee member={member} name={detail?.member_id || ownerName} renderAvatar={renderAvatar} />
+            <Assignee member={member} name={assigneeName} renderAvatar={renderAvatar}
+              testId="group-chat-subtask-assignee" />
           </div>
           <TaskStatus status={status} testId="group-chat-subtask-status" />
         </div>;
@@ -102,7 +108,8 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
     </div>
     {!singleAgent && !counts.total && <div className="group-chat-no-subtasks" data-testid="group-chat-no-subtasks">
       <span>{t('groupChat.noSubtasks')}</span>
-      <TaskStatus status={execution.status} percent={progress} testId="group-chat-execution-status" />
+      <TaskStatus status={execution.status} percent={progress} testId="group-chat-execution-status"
+        labelOverride={RUNNING.includes(execution.status) ? t('groupChat.generatingTasks') : undefined} />
     </div>}
     {result && <a className="group-chat-text-button" href={`#group-chat-message-${result.message_id}`}
       data-testid="group-chat-execution-result">{t('groupChat.viewResult')}</a>}
