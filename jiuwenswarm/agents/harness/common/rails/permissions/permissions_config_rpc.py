@@ -454,6 +454,12 @@ def dispatch_permissions_config_request(
             return _ok(request, updated)
 
         if m == ReqMethod.PERMISSIONS_TOOLS_GET:
+            # TOOLS 系列（GET/SET/UPDATE/DELETE）刻意只操作 User 层全局
+            # 名单（user_permissions.yaml），无 agent 作用域分支；agent
+            # 感知读视图走 TOOLS_LIST（_permissions_body）。当前无携带
+            # agent_id 的 TOOLS 调用路径（前端 params 不含 agent_id、
+            # 企业版 persist target 恒 None），与 ENABLED/RULES 的
+            # agent 分支不对称属有意为之（评审 2026-10-30：声明语义）。
             return _ok(request, {"tools": get_user_tools_map()})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_LIST:
