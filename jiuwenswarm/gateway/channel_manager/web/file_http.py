@@ -133,71 +133,6 @@ def resolve_under_project(roots: FileHttpRoots, rel_or_abs: str) -> Path:
     return (roots.project_root / rel_or_abs).resolve()
 
 
-def _normalize_lang_suffix(name: str) -> str:
-    stem, suffix = name.rpartition(".")[0], name.rpartition(".")[2]
-    suffix_lower = suffix.lower()
-    if suffix_lower in ("md", "mdx"):
-        stem_lower = stem.lower()
-        if stem_lower.endswith("_zh"):
-            stem = stem[:-3]
-        elif stem_lower.endswith("_en"):
-            stem = stem[:-3]
-    return f"{stem}.{suffix}" if stem else name
-
-
-def generate_agent_data(project_root: Path) -> None:
-    """Generate agent/jiuwenclaw_workspace/agent-data.json from agent tree."""
-    agent_root = (project_root / "agent").resolve()
-    workspace_root = (agent_root / "jiuwenclaw_workspace").resolve()
-    output_path = (workspace_root / "agent-data.json").resolve()
-    root_folder_key = "__root__"
-
-    if not agent_root.exists():
-        raise FileNotFoundError("agent directory not found")
-    if not agent_root.is_dir():
-        raise NotADirectoryError("agent is not a directory")
-
-    folder_data: dict[str, list[dict[str, str | bool]]] = {}
-    seen_paths: dict[str, set[str]] = {}
-    for entry in sorted(workspace_root.rglob("*")):
-        if not entry.is_file() or entry.name.startswith("."):
-            continue
-        if any(part.startswith(".") for part in entry.relative_to(workspace_root).parts):
-            continue
-        relative_folder_path = entry.parent.relative_to(agent_root).as_posix()
-        folder_key = root_folder_key if relative_folder_path == "." else relative_folder_path
-
-        display_name = _normalize_lang_suffix(entry.name)
-        display_path = (
-            f"agent/{relative_folder_path}/{display_name}".replace("/.", "/").replace("//", "/")
-            if relative_folder_path != "."
-            else f"agent/{display_name}"
-        )
-        seen = seen_paths.setdefault(folder_key, set())
-        if display_path in seen:
-            continue
-        seen.add(display_path)
-
-        folder_data.setdefault(folder_key, []).append(
-            {
-                "name": display_name,
-                "path": display_path,
-                "isMarkdown": entry.suffix.lower() in {".md", ".mdx"},
-            }
-        )
-
-    sorted_folder_data = {
-        folder_key: sorted(files, key=lambda item: item["path"])
-        for folder_key, files in sorted(folder_data.items(), key=lambda item: item[0])
-    }
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(sorted_folder_data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
 def parse_single_byte_range(
     range_header: str,
     file_size: int,
@@ -289,29 +224,12 @@ def read_file_text(
     if not is_path_under_allowed_root(roots, full_path):
         return 403, {"error": "forbidden_path"}, None, None
     if not full_path.exists():
-        normalized_arg = file_arg.replace("\\", "/")
-        if normalized_arg in (
-            "agent/jiuwenclaw_workspace/agent-data.json",
-            # legacy pre-rename path (old frontend caches / bookmarks)
-            "agent/workspace/agent-data.json",
-        ):
-            try:
-                generate_agent_data(roots.project_root)
-            except Exception as exc:  # noqa: BLE001
-                return 500, {"error": "generate_failed", "detail": str(exc)}, None, None
-            # generate_agent_data only writes to the new path; rewrite legacy
-            # requests to it so the caller actually receives the data.
-            if normalized_arg == "agent/workspace/agent-data.json":
-                full_path = (
-                    roots.project_root / "agent" / "jiuwenclaw_workspace" / "agent-data.json"
-                ).resolve()
-        if not full_path.exists():
-            return (
-                404,
-                {"error": "file_not_found", "fullPath": str(full_path)},
-                None,
-                None,
-            )
+        return (
+            404,
+            {"error": "file_not_found", "fullPath": str(full_path)},
+            None,
+            None,
+        )
 
     try:
         data, used_encoding = _read_file_with_encoding(full_path, encoding_arg)

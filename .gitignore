@@ -64,7 +64,6 @@ developerID_application.cer
 **/JIUWENCLAW.local.md
 **/JIUWENCLAW.md
 .jiuwen/settings.local.json
-workspace/agent-data.json
 
 # reference
 reference/
