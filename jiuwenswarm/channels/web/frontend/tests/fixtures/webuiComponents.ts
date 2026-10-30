@@ -16,6 +16,7 @@ export { WebUISchemaRenderer, assertCatalogMatchesRegistry, WebUIContentActivity
 export { WebUIBox, resolveBoxLayout } from '../../src/features/webui/renderer/adapters/webuiBox/WebUIBox.tsx';
 export { webUIInstanceKey } from '../../src/features/webui/contracts/normalized.ts';
 export { createWebUIRuntime } from '../../src/features/webui/runtime/index.ts';
+export { createWebUIAppRuntime } from '../../src/features/webui/assembly/index.ts';
 export { createMockTransport } from '../../src/features/webui/transport/index.ts';
 export { WebUIHost } from '../../src/features/webui/react/WebUIHost.tsx';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';

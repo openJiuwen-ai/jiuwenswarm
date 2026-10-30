@@ -30,6 +30,21 @@ Handler 从 `event.event_input.payload["data"]` 读取输入值，`args` 保持�
 例如 Input 的 `ui.change` 使用 `{value, isComposing}`，Switch 使用 `{checked}`，Slider 使用 `{value}`。
 `ui.ready` 使用空 payload，首次挂载时不要求已有实例。
 
+文本输入可这样声明：
+
+```python
+RenderNode(
+    "Input",
+    {"value": "北京", "ariaLabel": "城市", "allowClear": True},
+    events={"ui.change": {"id": "city.edit"}},
+)
+```
+
+`ui.change` Handler 收到组合输入过程中的草稿，以及 `isComposing=False` 的提交值。
+只处理完整文本时先检查该标志；清空按钮提交空字符串。
+`value` 和 `defaultValue` 用于初始化编辑值，合法 replace 会重新初始化草稿，
+下行帧校验失败则保留当前输入。disabled、readOnly 或断连时不发送 change。
+
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，
 不能再向声明 args 追加 key。单个节点不允许同时声明 action 与 events。
