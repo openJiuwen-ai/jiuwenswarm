@@ -1249,8 +1249,10 @@ channels:
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；
-# mode: full_access|auto|strict 为产品权限三态（默认 auto）；旧 permission_mode 已并入 mode。
-# 完全访问 = enabled:true + mode:full_access（禁止再用 enabled:false 表示完全访问）。
+# mode: full_access|auto|strict 为产品权限三态；旧 permission_mode 已并入 mode。
+# 缺省种子 enabled:false（develop 同款）：启动迁移将其投影为
+# enabled:true + mode:full_access——与基线「权限默认关闭」行为等价；
+# 显式表达完全访问请写 enabled:true + mode:full_access。
 # Global 不写顶层 defaults / tools；整工具兜底由 mode preset 注入。
 # 整工具 ask/deny 名单写 user_permissions.yaml（ask_tools / deny_tools）。
 # pattern 规则继续写下方 rules；规则动作 allow / ask / deny。
@@ -1260,9 +1262,9 @@ channels:
 # 未命中使用下方全局段。Gateway/UI 读写全局时会剥离并保留 agents 表。
 # 企业版忽略 yaml agents，只用 Agent template_ref.permissions。
 permissions:
-  enabled: true
-  mode: auto
+  enabled: false
   schema: tiered_policy
+  permission_mode: normal
   # 技能级动态授权（Skill overlay）：默认关闭；开启后根 SKILL.md 加载经
   # SkillAuthorizationRail 门禁审批，ACTIVE Grant 参与权限合成。
   skill_authorization:
