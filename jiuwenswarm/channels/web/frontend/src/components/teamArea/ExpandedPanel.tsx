@@ -113,7 +113,7 @@ export function ExpandedPanel({
         id={`${tabPanelId}-panel`}
         className="flex min-h-0 flex-1 overflow-hidden"
         role="tabpanel"
-        aria-labelledby={`${tabPanelId}-${resolvedTab}`}
+        aria-labelledby={`${tabPanelId}-${encodeURIComponent(resolvedTab)}`}
       >
         {selectedPanel ? selectedPanel.content : resolvedTab === 'organization' && showOrganization ? <OrgInfoPanel /> : resolvedTab === middleTab.key ? (
           renderMiddleTabContent()

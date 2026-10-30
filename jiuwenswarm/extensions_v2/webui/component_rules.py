@@ -130,16 +130,6 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "variant": token("filled", "solid", "outlined"), "disabled": BOOL,
         "href": TEXT, "target": token("_self", "_blank"),
     }},
-    "FilePreview": {
-        "props": {
-            "file": union(NIL, obj({
-                "name": TEXT, "path": TEXT, "mimeType": TEXT, "size": INTEGER, "content": TEXT,
-            }, "name", "path", "content")),
-            "emptyText": TEXT,
-            "status": token("ready", "missing", "unsupported", "too_large", "forbidden", "unavailable", "error"),
-        },
-        "required": ("file",),
-    },
     "FileTree": {
         "props": {
             "treeData": array(_FILE_NODE), "selectedKey": union(TEXT, NIL), "expandedKeys": array(TEXT),
@@ -169,7 +159,12 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
 
 
 def finite_number(value: Any) -> bool:
-    return type(value) in (int, float) and abs(value) <= 1.7976931348623157e308
+    if type(value) not in (int, float):
+        return False
+    try:
+        return abs(value) <= 1.7976931348623157e308
+    except OverflowError:
+        return False
 
 
 def check_value(rule: Mapping[str, Any], value: Any, *, depth: int = 0) -> bool:
@@ -362,10 +357,6 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         enabled = [item["key"] for item in items if not item.get("disabled")]
         if any(key in props and props[key] not in enabled for key in ("activeKey", "defaultActiveKey")):
             return "invalid active tab"
-    if component == "FilePreview":
-        file = props["file"]
-        if file is not None and (not file["name"].strip() or not _workspace_path_ok(file["path"])):
-            return "invalid preview file"
     if component == "FileTree":
         try:
             nodes = _file_tree_nodes(props["treeData"])
@@ -378,8 +369,8 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         if not _unique(expanded) or any(nodes.get(key, {}).get("kind") != "directory" for key in expanded):
             return "unknown expanded directory"
     if component == "FilePreview":
-        file = props.get("file")
-        if file is not None and (not str(file.get("name", "")).strip() or not _workspace_path_ok(file["path"])):
+        file = props["file"]
+        if file is not None and (not file["name"].strip() or not _workspace_path_ok(file["path"])):
             return "invalid preview file"
     if component in ("Panel", "Iframe") and not props["title"].strip():
         return "title is required"

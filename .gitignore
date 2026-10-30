@@ -116,7 +116,6 @@ report/index.html
 /context/
 /.plans/
 /todo/
-
 # Local launcher, notes, and task artifacts
 /jiuwen-start.cmd
 /README_JIUWEN_START.md
@@ -125,3 +124,6 @@ report/index.html
 /local-only/
 /outputs/
 /%SystemDrive%/
+.test-temp/
+jiuwenswarm/resources/.env.media-capability.lock
+/webui_workbench_v2.zip

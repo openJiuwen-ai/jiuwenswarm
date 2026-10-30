@@ -37,16 +37,31 @@ ZIP_PATH = REPO_ROOT / "webui_workbench_v2.zip"
 def _resolve_install_dir() -> Path:
     """Reuse the server-side resolution so the copy lands where the service looks."""
 
-    sys.path.insert(0, str(REPO_ROOT))
-    from jiuwenswarm.extensions_v2.config import resolve_install_dir
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from jiuwenswarm.extensions_v2.config import resolve_install_dir
 
-    return resolve_install_dir()
+        return resolve_install_dir()
+    except (ImportError, ModuleNotFoundError):
+        import os
+
+        base = Path(os.getenv("JIUWENSWARM_DATA_DIR") or Path.home() / ".jiuwenswarm")
+        return (base / "extension_pkgs").resolve()
 
 
 def _load_manifest(root: Path):
-    from openjiuwen.core.extension.manifest import load_manifest
+    try:
+        from openjiuwen.core.extension.manifest import load_manifest
 
-    return load_manifest(root)
+        return load_manifest(root)
+    except (ImportError, ModuleNotFoundError):
+        import yaml
+        from types import SimpleNamespace
+
+        with open(root / "manifest.yaml", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        pkg = data.get("package", {})
+        return SimpleNamespace(package_id=pkg.get("id"), version=pkg.get("version"))
 
 
 def build_zip() -> Path:
