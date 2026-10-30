@@ -81,6 +81,7 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
     finalize_assistant_response_if_a2ui,
     is_a2ui_channel,
     is_a2ui_probe_channel,
+    should_finalize_repair,
 )
 from jiuwenswarm.server.runtime.a2ui.protocol import is_a2ui_client_event
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
@@ -2215,11 +2216,22 @@ class JiuWenSwarm:
         session adapter），其 _model/_instance 恒为 None：repair_call 挂在 root 上
         时 repair_model_response 每轮都 skip，retry_without_a2ui 也在 _instance
         守卫处静默返回 None，repair_failed 后"降级非 a2ui 重答"的设计路径从不执行，
-        最终 a2ui 块被整块剥离。流执行链在 _process_message_stream_impl 内已经
-        _get_or_create_session_adapter 创建过 session adapter（create_instance
-        完成 _model 绑定），finalize 时刻这里是幂等缓存命中；解析失败保持旧的
-        root 接线行为，不引入新故障面。
+        最终 a2ui 块被整块剥离。
+
+        解析走 _get_or_create_session_adapter，常态是缓存命中：流执行链在
+        _process_message_stream_impl 内已创建过 session adapter（create_instance
+        完成 _model 绑定）。条目在 finalize 前被清理（cleanup_session_adapter /
+        空闲 TTL 驱逐 / 企业身份切换）或不在同一缓存域时会 miss，此时会冷建一个
+        新实例（create_instance + start_interaction + warmup_session_context，
+        秒级代价）——这是让 repair 拿到可用 _model 付出的代价，不是无成本命中。
+
+        仅对启用服务端 repair 的 a2ui 渠道解析；其他渠道的 finalize 会早退，直接
+        返回 root，避免每轮多走一次解析、也避免在没有 repair 的渠道上触发冷建。
+        解析失败保持旧的 root 接线行为，不引入新故障面。
         """
+        channel = getattr(request, "channel_id", None)
+        if not is_a2ui_channel(channel) or not should_finalize_repair(channel):
+            return adapter
         getter = getattr(adapter, "_get_or_create_session_adapter", None)
         if not callable(getter) or not session_id:
             return adapter

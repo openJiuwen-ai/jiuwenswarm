@@ -72,3 +72,13 @@ helper 级用例（`_a2ui_probe_for_frame` / `_a2ui_suppress_should_engage`）�
 - 若无法保证顺序，应把 officeclaw 的白名单翻转收敛到配置开关。
 
 行为未变（白名单仍为 web + officeclaw），本次仅修正注释事实与顺序声明。
+
+### 6.3 finalize adapter 解析的渠道门控与 docstring 修正
+
+`_resolve_turn_adapter_for_finalize` 原先的 docstring 写「finalize 时刻这里是幂等缓存命中」，与实现不符：解析走 `_get_or_create_session_adapter`，缓存条目在 finalize 前被清掉（`cleanup_session_adapter`、空闲 TTL 驱逐（默认 2h）、企业身份切换）或不在同一缓存域时会 miss，miss 分支会冷建新实例（`_new_session_scoped_adapter` → `create_instance` → `start_interaction` → `warmup_session_context`）。
+
+本次修正：
+
+- docstring 如实描述两条分支：常态命中；miss 时冷建是「让 repair 拿到可用 `_model`」付出的秒级代价，不再声称一定命中。
+- 解析前增加渠道门控：`is_a2ui_channel(channel)` 与 `should_finalize_repair(channel)` 任一不成立时直接返回 root。这两类渠道的 `finalize_assistant_response_if_a2ui` 本就早退，此前每轮仍多做一次解析，且 miss 时会无谓冷建。a2ui 且启用 repair 的渠道行为不变。
+- 单测：`tests/unit_tests/a2ui/test_finalize_adapter_wiring.py` 新增 2 例（非 a2ui 渠道、未启用 repair 渠道均不解析、不调用 getter）；a2ui 域 119 passed / 1 skipped。

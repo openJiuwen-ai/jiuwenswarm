@@ -79,7 +79,7 @@ async def _working_repair(prompt: str):
 async def test_resolve_turn_adapter_returns_session_scoped_adapter():
     session = _FakeRootAdapter()  # any object identity works as the session adapter
     root = _FakeRootAdapter(session_adapter=session)
-    request = SimpleNamespace(request_id="req-1")
+    request = SimpleNamespace(request_id="req-1", channel_id="web")
 
     resolved = await JiuWenSwarm._resolve_turn_adapter_for_finalize(
         root, request, "sess-1"
@@ -97,7 +97,7 @@ async def test_resolve_turn_adapter_falls_back_to_root_when_lookup_raises():
 
     resolved = await JiuWenSwarm._resolve_turn_adapter_for_finalize(
         root,
-        SimpleNamespace(request_id="req-2"),
+        SimpleNamespace(request_id="req-2", channel_id="web"),
         "sess-2",
     )
 
@@ -110,7 +110,7 @@ async def test_resolve_turn_adapter_falls_back_without_session_id():
 
     resolved = await JiuWenSwarm._resolve_turn_adapter_for_finalize(
         root,
-        SimpleNamespace(request_id="req-3"),
+        SimpleNamespace(request_id="req-3", channel_id="web"),
         None,
     )
 
@@ -124,7 +124,7 @@ async def test_resolve_turn_adapter_returns_adapter_without_getter():
 
     resolved = await JiuWenSwarm._resolve_turn_adapter_for_finalize(
         adapter,
-        SimpleNamespace(request_id="req-4"),
+        SimpleNamespace(request_id="req-4", channel_id="web"),
         "sess-4",
     )
 
@@ -149,7 +149,7 @@ async def test_finalize_repairs_invalid_block_via_resolved_session_adapter(monke
     )
     turn = await JiuWenSwarm._resolve_turn_adapter_for_finalize(
         root,
-        SimpleNamespace(request_id="req-5"),
+        SimpleNamespace(request_id="req-5", channel_id="web"),
         "sess-5",
     )
 
@@ -162,3 +162,37 @@ async def test_finalize_repairs_invalid_block_via_resolved_session_adapter(monke
     )
 
     assert result == VALID_A2UI_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_resolve_turn_adapter_skips_non_a2ui_channel():
+    """非 a2ui 渠道 finalize 会早退：不得解析 adapter，避免无意义的缓存查询与冷建。"""
+    root = _FakeRootAdapter(session_adapter=SimpleNamespace())
+
+    resolved = await JiuWenSwarm._resolve_turn_adapter_for_finalize(
+        root,
+        SimpleNamespace(request_id="req-6", channel_id="feishu"),
+        "sess-6",
+    )
+
+    assert resolved is root
+    assert root.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_turn_adapter_skips_channel_without_repair(monkeypatch):
+    """a2ui 渠道但未启用服务端 repair 时同样早退，避免为一个不会使用的 repair 冷建。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    monkeypatch.setattr(interface_module, "should_finalize_repair", lambda _channel: False)
+    root = _FakeRootAdapter(session_adapter=SimpleNamespace())
+
+    resolved = await JiuWenSwarm._resolve_turn_adapter_for_finalize(
+        root,
+        SimpleNamespace(request_id="req-7", channel_id="web"),
+        "sess-7",
+    )
+
+    assert resolved is root
+    assert root.calls == []
+
