@@ -15,6 +15,7 @@ import shutil
 import ssl
 import tarfile
 import tempfile
+import time
 import uuid
 import zipfile
 from contextlib import contextmanager
@@ -3555,7 +3556,20 @@ class SkillManager:
             origin: 可选，技能来源标识（如 ``clawhub:owner/slug``、URL）。提供时按
                 origin 精确定位目录与记录，避免重名技能误删另一个。
         """
-        return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        _recv_t0 = time.perf_counter()
+        logger.info(
+            "[SkillManager] uninstall recv name=%s origin=%s",
+            params.get("name", ""), str(params.get("origin", "") or "").strip(),
+        )
+        try:
+            return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        finally:
+            logger.info(
+                "[SkillManager] uninstall done name=%s total_ms=%.1f lock_wait_ms=%.1f",
+                params.get("name", ""),
+                (time.perf_counter() - _recv_t0) * 1000.0,
+                getattr(self, "_last_state_lock_wait_ms", 0.0),
+            )
 
     @_state_transactional
     def _handle_skills_uninstall_sync(self, params: dict) -> dict:
@@ -3647,6 +3661,7 @@ class SkillManager:
                 if dest.resolve() == builtin_skill_path.resolve():
                     return {"success": False, "detail": "内置技能不允许删除"}
 
+        _stage_t0 = time.perf_counter()
         _safe_rmtree(dest)
 
         # 处理 mirror 根目录中的技能
@@ -3654,12 +3669,21 @@ class SkillManager:
             mirror_dest = _safe_child_path(mirror_root, dest.name, "skill")
             if mirror_dest.exists() and mirror_dest.is_dir():
                 _safe_rmtree(mirror_dest)
+        logger.info(
+            "[SkillManager] uninstall stage=rmtree name=%s cost_ms=%.1f",
+            raw_name, (time.perf_counter() - _stage_t0) * 1000.0,
+        )
 
         # 按身份删除记录：origin 优先，避免误删同名另一条
+        _ledger_t0 = time.perf_counter()
         self._remove_installed_plugin(raw_name, origin=raw_origin or None)
         self._remove_local_skill(raw_name, origin=raw_origin or None)
         # 卸载时一并清掉该 skill 的 enabled 配置，避免重装同名 skill 时沿用旧的禁用状态。
         self.remove_skill_config(raw_name)
+        logger.info(
+            "[SkillManager] uninstall stage=ledger name=%s cost_ms=%.1f",
+            raw_name, (time.perf_counter() - _ledger_t0) * 1000.0,
+        )
         self._refresh_agent_data_indexes()
         return {"success": True}
 
@@ -6000,8 +6024,12 @@ class SkillManager:
         if not is_enterprise() or not self._persist_skills_state:
             yield
             return
+        _lock_wait_t0 = time.perf_counter()
         with enterprise_skill_state_lock(self._state_file) as outermost:
             if outermost:
+                # 最近一次最外层事务的锁等待耗时（进程 RLock + 跨 Pod portalocker），
+                # 供装卸类请求埋点区分「等锁」与「真实处理」。
+                self._last_state_lock_wait_ms = (time.perf_counter() - _lock_wait_t0) * 1000.0
                 self._state = self._load_state()
             yield
 

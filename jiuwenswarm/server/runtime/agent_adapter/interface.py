@@ -2454,7 +2454,14 @@ class JiuWenSwarm:
             skills_changed = False
             if _enterprise_web_handler and payload.get("success") is not False:
                 if is_enterprise():
+                    _post_refresh_t0 = time.perf_counter()
                     await self.refresh_enabled_skills_from_db()
+                    if handler_name in ("handle_skills_uninstall", "handle_skills_web_uninstall"):
+                        logger.info(
+                            "[SkillManager] uninstall post_refresh rail_refresh_ms=%.1f request_id=%s",
+                            (time.perf_counter() - _post_refresh_t0) * 1000.0,
+                            request.request_id,
+                        )
                     skills_changed = True
             elif _reload_after_skills and payload.get("success") is not False:
                 await self.create_instance()
