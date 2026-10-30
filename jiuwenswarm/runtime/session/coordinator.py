@@ -132,9 +132,12 @@ class RuntimeSessionCoordinator:
         team: TeamExecutionDetails | None = None,
     ) -> T:
         record = self._require_open_session(session_id)
+        team_target = None
+        if work_kind is SessionWorkKind.TEAM_CONTROL and team is not None and team.control_id:
+            team_target = self._control_target(record, (team.control_id,))
         handle = self._new_execution(record, request_id, work_kind, team=team)
         handle.retain_owner_task = wait_for_terminal
-        return await self._run_unary(
+        value = await self._run_unary(
             record,
             handle,
             operation,
@@ -143,6 +146,12 @@ class RuntimeSessionCoordinator:
             timeout_scope=timeout_scope,
             timeout_error=timeout_error,
         )
+        if team_target is not None:
+            parent, control_id = team_target
+            if parent.team is not None:
+                self._answered(parent, frozenset({control_id}), was_waiting=False)
+                self._refresh_session_state(record)
+        return value
 
     def submit_unary(
         self,

@@ -274,7 +274,8 @@ async def test_claim_failure_keeps_question_snapshot_retry(recovery, retained):
 
 
 @pytest.mark.parametrize("fault", [None, "failure", "cancel"])
-async def test_persistent_team_recovery_does_not_replay_an_answered_question(recovery, fault):
+@pytest.mark.parametrize("unary", [False, True])
+async def test_persistent_team_recovery_does_not_replay_an_answered_question(recovery, fault, unary):
     answered, finish = asyncio.Event(), asyncio.Event()
     details = TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT)
     dispatch = "team-producer"
@@ -298,26 +299,33 @@ async def test_persistent_team_recovery_does_not_replay_an_answered_question(rec
         recovery.append(dispatch, question("A", execution_id=execution.execution_id))
         assert await asyncio.wait_for(anext(root), 2) == "C"
         recovery.append(dispatch, question("C", execution_id=execution.execution_id))
+        async def deliver(rid, *, reject=False):
+            async def operation():
+                if reject:
+                    raise asyncio.CancelledError() if fault == "cancel" else ValueError("rejected")
+                answered.set()
+                return "accepted"
+
+            if unary:
+                return await recovery.coordinator.run_unary(
+                    "warm", rid, SessionWorkKind.TEAM_CONTROL, operation,
+                    team=TeamExecutionDetails(control_id="A"),
+                )
+
+            async def stream(_context):
+                yield await operation()
+
+            return [item async for item in recovery.coordinator.run_team_stream(
+                "warm", rid, SessionWorkKind.TEAM_CONTROL, stream,
+                details=TeamExecutionDetails(control_id="A"),
+            )]
+
         if fault:
-            async def rejected(_context):
-                raise asyncio.CancelledError() if fault == "cancel" else ValueError("rejected")
-                yield
             with pytest.raises(asyncio.CancelledError if fault == "cancel" else ValueError):
-                _ = [item async for item in recovery.coordinator.run_team_stream(
-                    "warm", "failed-team-answer", SessionWorkKind.TEAM_CONTROL, rejected,
-                    details=TeamExecutionDetails(control_id="A"),
-                )]
+                await deliver("failed-team-answer", reject=True)
             assert recovery.runtime.recoverable_control("warm", "A", execution.execution_id) is not None
         assert recovery.runtime.recoverable_control("warm", "C", execution.execution_id) is not None
-
-        async def reply(_context):
-            answered.set()
-            yield "accepted"
-
-        assert [item async for item in recovery.coordinator.run_team_stream(
-            "warm", "team-answer", SessionWorkKind.TEAM_CONTROL, reply,
-            details=TeamExecutionDetails(control_id="A"),
-        )] == ["accepted"]
+        assert await deliver("team-answer") == ("accepted" if unary else ["accepted"])
         assert await asyncio.wait_for(anext(root), 2) == "B"
         recovery.append(dispatch, question("B", execution_id=execution.execution_id))
         assert recovery.runtime.recoverable_control("warm", "A", execution.execution_id) is None

@@ -275,8 +275,8 @@ async def test_runtime_resumes_each_manual_batch_head(answer_host, harness, monk
         request_id = question["request_id"]
         assert request_id not in answered
         assert harness.coordinator.has_control_target(sid, request_id)
-        waiting = [item.waiting_control_id for item in harness.coordinator.snapshot_session(sid).executions
-                   if not item.state.terminal and item.waiting_control_id]
+        waiting = [control_id for item in harness.coordinator.snapshot_session(sid).executions
+                   if not item.state.terminal for control_id in item.waiting_control_ids]
         assert waiting == [request_id]
         answered.add(request_id)
         await _stream_request(h, **_answer(question, action))
