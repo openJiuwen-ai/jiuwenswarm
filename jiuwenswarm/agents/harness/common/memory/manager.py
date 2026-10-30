@@ -12,6 +12,8 @@ import datetime
 from typing import List, Optional, Dict, Any, Set
 from dataclasses import dataclass
 
+import yaml
+
 from .types import (
     MemorySearchResult, MemoryFileEntry, MemoryChunk, MemorySource
 )
@@ -30,6 +32,29 @@ VECTOR_TABLE = "chunks_vec"
 FTS_TABLE = "chunks_fts"
 EMBEDDING_CACHE_TABLE = "embedding_cache"
 SESSION_DIRTY_DEBOUNCE_MS = 5000
+
+# ── Scientific Artifact Memory Interface (search_claims) ──
+# Deterministic structured queries over claim ledger artifacts
+# (claims/reviews/experiments/evolutions files) complement the semantic
+# chunk search above: claim governance needs exact metadata filtering
+# (tag/level/status), which FTS/vector scoring cannot provide. Claim
+# ledgers are YAML/JSON, not part of the markdown memory index, so they
+# are scanned directly from the workspace — bounded and defensive.
+CLAIMS_LEDGER_NAMES = (
+    "claims.yml", "claims.yaml",
+    "reviews.yml", "reviews.yaml",
+    "experiments.yml", "experiments.yaml",
+    "evolutions.json",
+)
+CLAIMS_LEDGER_SUFFIXES = (".claims.yml", ".claims.yaml")
+CLAIMS_MAX_FILES = 100
+CLAIMS_MAX_FILE_BYTES = 2 * 1024 * 1024
+CLAIMS_TEXT_FIELDS = ("statement", "content", "text", "summary", "context")
+CLAIMS_LEVEL_FIELDS = ("level", "confidence")
+CLAIMS_MARKER_KEYS = frozenset(
+    {"id", "status", "tag", "tags", "level", "confidence"}
+    | set(CLAIMS_TEXT_FIELDS)
+)
 
 INDEX_CACHE: Dict[str, 'MemoryIndexManager'] = {}
 
@@ -51,6 +76,148 @@ def blob_to_vector(blob: bytes) -> List[float]:
     """Convert binary blob to vector."""
     count = len(blob) // 4
     return list(struct.unpack(f'{count}f', blob))
+
+
+# ── Scientific Artifact Memory Interface: pure claim-query layer ──
+
+def _claim_list_from_doc(data: Any) -> List[dict]:
+    """Extract the claim record list from one parsed ledger document.
+
+    Accepts a bare list of dicts or a mapping holding the list under
+    ``claims`` / ``entries`` / ``items``. Anything else yields ``[]``.
+    """
+    if isinstance(data, list):
+        return [c for c in data if isinstance(c, dict)]
+    if isinstance(data, dict):
+        for key in ("claims", "entries", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [c for c in value if isinstance(c, dict)]
+    return []
+
+
+def normalize_claim_record(record: dict, source_file: str) -> Optional[dict]:
+    """Normalize one ledger record to the claim query shape.
+
+    Returns ``None`` when the record carries none of the claim marker
+    fields (it is not a claim-shaped artifact). ``tag`` (scalar) and
+    ``tags`` (list) both fold into ``tags``; the first present of
+    ``level``/``confidence`` becomes ``level``; the known text fields are
+    joined into ``text`` for substring queries.
+    """
+    if not isinstance(record, dict) or not CLAIMS_MARKER_KEYS.intersection(record):
+        return None
+    tags: List[str] = []
+    if isinstance(record.get("tag"), str):
+        tags.append(record["tag"])
+    if isinstance(record.get("tags"), list):
+        tags.extend(str(t) for t in record["tags"] if t is not None)
+    level = ""
+    for field in CLAIMS_LEVEL_FIELDS:
+        value = record.get(field)
+        if value is not None and str(value).strip():
+            level = str(value)
+            break
+    text = " ".join(
+        str(record[field])
+        for field in CLAIMS_TEXT_FIELDS
+        if isinstance(record.get(field), str) and record[field].strip()
+    )
+    return {
+        "id": str(record.get("id") or ""),
+        "status": str(record.get("status") or ""),
+        "tags": sorted(set(tags)),
+        "level": level,
+        "text": text,
+        "file": source_file,
+        "raw": record,
+    }
+
+
+def load_claim_records(
+        workspace_dir: str,
+        ledger_names: tuple = CLAIMS_LEDGER_NAMES,
+) -> List[dict]:
+    """Scan a workspace for claim ledgers and normalize every record.
+
+    Discovery is name-based (canonical ledger names plus ``*.claims.yml``
+    siblings) and bounded (``CLAIMS_MAX_FILES`` files, each at most
+    ``CLAIMS_MAX_FILE_BYTES``). Unreadable or malformed files are skipped
+    with a warning — the query layer degrades, never hard-fails.
+
+    Returns:
+        Normalized claim records with provenance (``file`` is workspace-
+        relative).
+    """
+    records: List[dict] = []
+    seen = 0
+    for root, _dirs, files in os.walk(workspace_dir):
+        for name in files:
+            if seen >= CLAIMS_MAX_FILES:
+                return records
+            if name not in ledger_names and not name.endswith(CLAIMS_LEDGER_SUFFIXES):
+                continue
+            path = os.path.join(root, name)
+            try:
+                if os.path.getsize(path) > CLAIMS_MAX_FILE_BYTES:
+                    logger.warning("Skipping oversized claim ledger: %s", path)
+                    continue
+                with open(path, "r", encoding="utf-8") as fh:
+                    if name.endswith(".json"):
+                        data = json.load(fh)
+                    else:
+                        data = yaml.safe_load(fh)
+            except Exception as exc:  # noqa: BLE001 - defensive boundary by design
+                logger.warning("Unreadable claim ledger skipped (%s): %s", path, exc)
+                continue
+            seen += 1
+            rel = os.path.relpath(path, workspace_dir)
+            for record in _claim_list_from_doc(data):
+                normalized = normalize_claim_record(record, rel)
+                if normalized is not None:
+                    records.append(normalized)
+    return records
+
+
+def filter_claim_records(
+        records: List[dict],
+        tag: Optional[str] = None,
+        level: Optional[str] = None,
+        status: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 50,
+) -> List[dict]:
+    """Deterministically filter normalized claim records.
+
+    ``tag``/``level``/``status`` are case-insensitive exact matches (tag
+    matches any entry in the record's ``tags``); ``query`` is a
+    case-insensitive substring match over id/tags/level/text. ``None``
+    means "no constraint". Results keep ledger order, capped at ``limit``.
+    """
+    want_tag = str(tag).strip().lower() if tag is not None else None
+    want_level = str(level).strip().lower() if level is not None else None
+    want_status = str(status).strip().lower() if status is not None else None
+    needle = str(query).strip().lower() if query is not None else None
+
+    out: List[dict] = []
+    for record in records:
+        if want_tag is not None and want_tag not in (t.lower() for t in record["tags"]):
+            continue
+        if want_level is not None and record["level"].lower() != want_level:
+            continue
+        if want_status is not None and record["status"].lower() != want_status:
+            continue
+        if needle is not None:
+            haystack = " ".join(
+                [record["id"], record["status"], record["level"], record["text"]]
+                + record["tags"]
+            ).lower()
+            if needle not in haystack:
+                continue
+        out.append(record)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
 
 
 class MemoryIndexManager:
@@ -868,6 +1035,46 @@ class MemoryIndexManager:
         results = [r for r in merged if r["score"] >= min_score]
         results = self._filter_recent_memory_results(results)
         return results[:max_results]
+
+    async def search_claims(
+            self,
+            tag: Optional[str] = None,
+            level: Optional[str] = None,
+            status: Optional[str] = None,
+            query: Optional[str] = None,
+            limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Deterministically query claim ledger artifacts in the workspace.
+
+        Scientific Artifact Memory Interface: claim governance needs exact
+        metadata filtering (tag/level/status) over structured claim records,
+        which the semantic chunk search cannot provide. Claim ledgers
+        (claims/reviews/experiments YAML, evolutions JSON) are scanned
+        directly from the workspace and normalized; filtering is exact and
+        case-insensitive, with an optional substring ``query`` over the
+        record text. No embeddings, no index state, no network — the same
+        query always returns the same records for the same workspace files.
+
+        Args:
+            tag: Match records whose tags contain this value (exact, case-insensitive).
+            level: Match records whose level/confidence equals this value.
+            status: Match records whose status equals this value.
+            query: Case-insensitive substring over id/tags/level/text.
+            limit: Maximum records returned (default 50).
+
+        Returns:
+            Normalized claim records with provenance (``file`` is
+            workspace-relative), capped at ``limit``.
+        """
+        records = load_claim_records(self.workspace_dir)
+        return filter_claim_records(
+            records,
+            tag=tag,
+            level=level,
+            status=status,
+            query=query,
+            limit=limit,
+        )
 
     async def _search_vector(
             self,
