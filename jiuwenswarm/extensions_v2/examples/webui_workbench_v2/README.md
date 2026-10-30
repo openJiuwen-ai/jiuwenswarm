@@ -2,11 +2,11 @@
 
 [English](README_EN.md)
 
-`webui.workbench-v2` 演示 12 个已登记的 WebUI slot（共 13 项贡献，右侧面板包含两个实例），覆盖 `FileTree`、`FilePreview`、`Panel`、`Iframe`、`Switch`、`Button`、`Tag`、`Box`、`Text` 等目录组件。侧栏主页面与任务检查主页面均使用 `Iframe` 根加载示例页面，右侧面板同时提供工作区文件页签（`Panel` 根，内含 `FileTree` 与 `FilePreview`）和网页预览页签（`Iframe` 根）。插件保存会话状态及平台返回的文件数据，通过下行完整树更新界面；文件组件自行处理展开、选中和提示文案。示例不调用模型或外部业务 API。
+`webui.workbench-v2` 演示 13 个已登记的 WebUI slot（共 14 项贡献，右侧面板包含两个实例），覆盖 `Avatar`、`FileTree`、`FilePreview`、`Panel`、`Iframe`、`Switch`、`Button`、`Tag`、`Box`、`Text` 等目录组件。侧栏主页面与任务检查主页面均使用 `Iframe` 根加载示例页面，右侧面板同时提供工作区文件页签（`Panel` 根，内含 `FileTree` 与 `FilePreview`）和网页预览页签（`Iframe` 根）。插件保存会话状态及平台返回的文件数据，通过下行完整树更新界面；文件组件自行处理展开、选中和提示文案。示例不调用模型或外部业务 API。
 
 ## 安装与启用
 
-前提是运行包含本次 WebUI 协议和生产装配改动的 Gateway、AgentServer 与 Web 前端。需要从源码打包或部署时，可在仓库根目录执行 `python scripts/install_workbench_plugin.py`（或 `--zip-only` 仅生成 `webui_workbench_v2.zip`）。
+前提是运行包含本次 WebUI 协议和生产装配改动的 Gateway、AgentServer 与 Web 前端。热安装时在仓库根目录执行 `python scripts/install_workbench_plugin.py --zip-only`，仅生成 `webui_workbench_v2.zip`；不带参数会直接部署安装目录，之后须重启服务加载，不要再安装同版本 ZIP。
 
 将生成的 ZIP 放在运行 AgentServer 的机器可读取的位置，然后在 Web 单 Agent 模式的输入框执行，例如：
 
@@ -15,7 +15,7 @@
 /extension query webui.workbench-v2
 ```
 
-已有同 ID 的旧版本时，先执行 `/extension uninstall webui.workbench-v2`，成功后再安装新 ZIP 并查询。安装成功即激活，无需另执行 enable。服务启动只加载安装目录，不扫描源码中的 `examples/`。管理命令可以在新建空对话使用，但插件渲染仍需要真实会话。
+已有同 ID 的旧版本时，先执行 `/extension uninstall webui.workbench-v2`，成功后再安装新 ZIP 并查询。安装成功即激活，无需另执行 enable。服务启动只加载安装目录，不扫描源码中的 `examples/`。管理命令可以在新建空对话使用，会话级插件渲染需要真实会话；应用入口不要求会话。
 
 安装完成后进入已有真实会话，刷新页面或重新进入会话，让 Host 发送 `ui.ready`。首次 ready 即可生成演示树；再次 ready 恢复当前激活实例的任务状态。文件实例 ready 时重新读取根目录并清空预览；网页实例 ready 时重新发布 Iframe。
 
@@ -23,6 +23,7 @@
 
 | 位置 | 内容及访问方式 |
 | --- | --- |
+| `application.entry` | 首次访问展示欢迎卡片和 Avatar，点击开始使用关闭；ready 被接受后记录访问标记，刷新不再挂载 |
 | `application.menu` → `application.menu.main` | 点击侧栏“交互工作台 / Workbench”打开主页面（`Iframe` 根）；两处实例均为 `workbench` |
 | `task.function` → `task.function.main` | 点击任务区“任务检查 / Inspect tasks”打开任务主页面（`Iframe` 根）；两处实例均为 `task-inspector` |
 | `application.settings` | 设置内容区域显示“自动摘要 / Auto summary”开关，状态属于当前会话 |
@@ -42,7 +43,7 @@
 
 文件页签使用 `Panel(title, children)`，插件用一个 `Box` 并排组合 `FileTree` 与 `FilePreview`，仅提供目录数据、结构化状态和预览正文。两个文件组件各自注册，可以由其他插件单独使用。组件与平台接口见 [F_07](../../docs/features/F_07_ui-contributions.md#44-文件能力目录与预览)。
 
-单 Agent 聊天和代码会话均可浏览文件。有项目时显示会话已绑定项目根，无项目时显示已绑定任务根（包含 `work/` 和 `outputs/`）。团队模式显示不支持提示；未取得有效绑定时显示工作区不可用。
+单 Agent 聊天和代码会话均可浏览文件。有项目时显示会话已绑定项目根，无项目时显示已绑定的运行工作区；自动任务工作区包含 `work/` 和 `outputs/`，Code 配置的默认会话工作区沿用其实际目录布局。团队模式显示不支持提示；未取得有效绑定时显示工作区不可用。
 
 文件实例收到 `ui.ready` 时调用 `ops.session.files` 读取根目录并清空预览；展开目录时组件通过 `ui.change` 提供 `expandedKeys`，插件将 key 映射为路径后再次调用 `ops.session.files`。每层最多 100 项、总共 512 项、最多 8 层、96 KiB 预算。选择文件时，插件调用 `ops.session.read_file` 读取单文件 UTF-8 文本（上限 16 KiB），并交给 `FilePreview` 展示；二进制、图片或超大文件返回对应状态提示。
 
@@ -68,7 +69,7 @@ reload 读取安装副本，不重新读取原 ZIP；修改仓库源码后，需
 
 manifest `schemaVersion: 1`、`ui.apiVersion: 1` 与渲染帧 `schema_version: 1` 含义不同。本包使用 `events['ui.click']` 等组件事件；业务参数位于声明动作的 `args`，控件值位于规范事件的 `data`。dispatch 响应仅是回执，不能作为新树。通用版本策略与校验规则见 [F_08](../../docs/features/F_08_frontend-render.md)。
 
-所有槽位均使用真实 `session_id`。右侧贡献使用两个稳定实例，事件和更新按实例隔离；其余 single 位置按最近更新选择实例。`message.assistant.meta` 与 `application.entry` 不属于本包目标。
+`application.entry` 使用当前 Web 连接的应用身份，不带 `session_id`；其余槽位需要真实会话。新建空对话不挂载 `application.menu`、`task.function` 和 `application.settings`。右侧贡献使用两个稳定实例，事件和更新按实例隔离；其余 single 位置按最近更新选择实例。`message.assistant.meta` 不属于本包目标。
 
 ## 修改源码后重新打包
 

@@ -133,7 +133,7 @@ export function FileTree({ treeData, selection, selectedKey, expandedKeys, statu
     const previous = selection.getSnapshot();
     if (expandedKeys === undefined) selection.set({ ...previous, expandedKeys: next });
     if (needsRequest) void request(() => onExpand(data), key, () => {
-      if (expandedKeys === undefined) selection.set(previous);
+      if (expandedKeys === undefined) selection.set({ ...selection.getSnapshot(), expandedKeys: previous.expandedKeys });
     });
   }
 
@@ -183,7 +183,7 @@ export function FileTree({ treeData, selection, selectedKey, expandedKeys, statu
               const previous = selection.getSnapshot();
               if (selectedKey === undefined) selection.set({ ...previous, selectedKey: info.node.key });
               void request(() => onSelect(info.node.key), info.node.key, () => {
-                if (selectedKey === undefined) selection.set(previous);
+                if (selectedKey === undefined) selection.set({ ...selection.getSnapshot(), selectedKey: previous.selectedKey });
               });
             }}
             onExpand={(_, info) => toggleDirectory(info.node.key, info.expanded)} />

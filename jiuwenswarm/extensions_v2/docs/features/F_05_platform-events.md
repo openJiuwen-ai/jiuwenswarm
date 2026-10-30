@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-05 平台事件、能力注册与业务触发 |
 | 所属模块 | `jiuwenswarm/extensions_v2/event_types/webui.py`、`handler_ops/ui.py`、`webui/runtime.py`、`bootstrap.py` |
 | 设计依据 | agent-core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-31 |
 | 方案状态 | 事件类型与 `ops.ui.render` 已实现；`context.usage.updated` 已接入回合用量；工具调用等业务触发点待接入 |
 
 ## 1. 问题与目标
@@ -111,12 +111,14 @@ async def ui_render(ops_view: EventHandlerOps, request: UiRenderInput) -> object
 | `ui.render` | 后端（插件或宿主） | 渲染或清除一个实例 | 校验请求与帧大小，分配 revision，经传输层下发 |
 | `ui.ready` | 前端（槽位挂载） | 槽位已就绪，允许插件创建实例 | 直接回执 `ready`，不要求实例已存在 |
 | `ui.click` | 前端（`Button`、`Input`、`Switch`） | 按钮按压、输入框点击、开关点击 | 实例活跃时回执 `handled`，否则回执 `inactive` |
-| `ui.change` | 前端（`Input`、`Switch`、`TreeSelect`、`Slider`、`Tabs`） | 编辑、开关、选择或页签变化 | 同上 |
+| `ui.change` | 前端（`Input`、`Switch`、`TreeSelect`、`Slider`、`Tabs`、`FileTree`） | 编辑、开关、选择或页签变化 | 同上 |
 | `ui.press_enter` | 前端（`Input`） | Enter 提交 | 同上 |
-| `ui.select` | 前端（`Select`、`TreeSelect`） | 选中单个选项或节点 | 同上 |
+| `ui.select` | 前端（`Select`、`TreeSelect`、`FileTree`） | 选中单个选项、节点或文件 | 同上 |
 | `ui.search` | 前端（`Select`） | 搜索值变化 | 同上 |
 | `ui.clear` | 前端（`Select`、`TreeSelect`） | 清空选择 | 同上 |
 | `context.usage.updated` | 后端（`chat.usage_summary`） | 单轮 token 用量与上下文窗口信息 | 校验输入并返回回执；插件按需渲染 |
+
+`Avatar` 与 `FilePreview` 是展示组件，不发送交互事件；`FileTree` 的事件与文件 Ops 见 [F_07 第 4.4 节](F_07_ui-contributions.md#44-文件能力目录与预览)。
 
 旧事件名 `ui.press`、`ui.toggle`、`ui.input` 已随旧 action 组件移除，不再进入事件链。
 当前未实现设计稿中的 `ui.scroll`、`ui.focus`、`ui.close`、`ui.unmount`、`ui.host_info.changed` 和 `ui.message`。这些事件在架构中保留为后续能力，接入前不得在插件中依赖。
