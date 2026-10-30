@@ -265,10 +265,6 @@ def new_organization_id(session_id: str, plan_id: str) -> str:
     return f"{prefix}{suffix}"
 
 
-def _member_key(members: list) -> frozenset[str]:
-    return frozenset(str(name) for name in members if str(name).strip())
-
-
 def resolve_organization_id(
     session_id: str,
     members: list[str],
@@ -276,21 +272,14 @@ def resolve_organization_id(
     *,
     plan_id: str,
 ) -> str:
-    """Reuse the organization of an earlier identical expert set.
+    """Every SwarmChat multi-expert round gets a fresh organization id.
 
-    Any other set gets a new organization, so its task pool starts empty.
-    Plans recorded before organization ids were stored used the session id.
+    A finished round dissolves the organization while keeping each expert-team
+    instance. Reusing an earlier id would reattach to erased org rows, so the
+    member set no longer selects the organization. ``members`` / ``plans`` stay
+    on the signature for call-site compatibility.
     """
-    wanted = _member_key(members)
-    for plan in reversed(plans):
-        if str(plan.get("plan_id") or "") == plan_id:
-            continue
-        if _member_key(plan.get("members") or []) != wanted:
-            continue
-        saved = str(plan.get("organization_id") or "").strip()
-        if saved:
-            return saved
-        return organization_id_for_session(session_id)
+    del members, plans
     return new_organization_id(session_id, plan_id)
 
 
@@ -354,18 +343,12 @@ def _owner_for_organization(
     *,
     legacy_id: str,
 ) -> str:
-    """Keep the Owner when this expert set rejoins its organization.
+    """Owner is always the first @ for this round.
 
-    A new set uses the first mentioned team. A plan stored before organization
-    ids existed is treated as the legacy session organization.
+    Rounds no longer rejoin a prior organization id, so there is no retained
+    Owner to prefer. Unused parameters remain for call-site compatibility.
     """
-    for earlier in reversed(plans):
-        saved = str(earlier.get("organization_id") or "").strip() or legacy_id
-        if saved != organization_id:
-            continue
-        previous = str(earlier.get("owner_member") or "")
-        if previous in names:
-            return previous
+    del organization_id, plans, legacy_id
     return names[0]
 
 
@@ -413,9 +396,9 @@ def record_organization_plan(
     )
     if existing is not None:
         return existing
-    # A new expert set takes the first mentioned team as Owner. Rejoining the
-    # same set keeps that organization's Owner, so a different @ order does not
-    # add a second owner. Overlapping instances wait in _blocking_earlier_plans.
+    # Each multi-@ round creates a new organization; Owner is the first @.
+    # Expert-team instances are still reused. Overlapping live rounds wait in
+    # _blocking_earlier_plans.
     plans = group_organization_plans(session_id)
     organization_id = resolve_organization_id(
         session_id,
@@ -2972,7 +2955,7 @@ async def _run_owner_proxy(
                     current,
                 )
             else:
-                await unregister_completed_organization(
+                await dissolve_completed_swarm_organization(
                     org_runtime=org_runtime,
                     task_pool=task_pool,
                     session_id=session_id,
@@ -2981,7 +2964,7 @@ async def _run_owner_proxy(
                 )
         except Exception:
             logger.exception(
-                "group organization unregister failed session=%s",
+                "group organization dissolve failed session=%s",
                 session_id,
             )
         try:
@@ -3016,7 +2999,29 @@ async def _run_owner_proxy(
     )
 
 
-async def unregister_completed_organization(
+async def _stop_swarm_summary_team(
+    org_runtime: Any, *, team_id: str, session_id: str
+) -> None:
+    """Stop the Summary Team for a finished SwarmChat organization round."""
+    name = str(team_id or "").strip()
+    if not name:
+        return
+    launcher = getattr(org_runtime, "_summary_team_launcher", None)
+    stop = getattr(launcher, "stop", None)
+    if not callable(stop):
+        return
+    try:
+        await stop(team_id=name, session_id=session_id)
+    except Exception:
+        logger.warning(
+            "swarm summary team stop failed session=%s team=%s",
+            session_id,
+            name,
+            exc_info=True,
+        )
+
+
+async def dissolve_completed_swarm_organization(
     *,
     org_runtime: Any,
     task_pool: Any,
@@ -3024,16 +3029,33 @@ async def unregister_completed_organization(
     organization_id: str,
     owner_team_id: str,
 ) -> None:
-    """Drop the finished round's organization registration.
+    """Erase SwarmChat organization rows; keep expert-team instances alive.
 
-    ``dissolve_organization`` deletes organization tasks and stops expert
-    teams, which discards their context and outputs. A completed swarm round
-    only unregisters membership. Each team's own context and the saved task
-    outputs stay where they are.
+    Used after success and after failure/timeout. Callers still propagate the
+    original exception / ``plan.error``. Unlike agent-core
+    ``dissolve_organization``, this path never stops ``org-expert-*`` teams, so
+    each instance keeps its own conversation context. Summary Team is stopped
+    when a launcher is present.
     """
     from jiuwenswarm.server.runtime.group_service import (
         clear_group_organization_binding,
     )
+
+    summary_team_id = ""
+    try:
+        getter = getattr(task_pool, "get_summary_team", None)
+        if callable(getter):
+            summary = await getter()
+            if summary is not None:
+                summary_team_id = str(
+                    getattr(summary, "summary_team_id", "") or ""
+                ).strip()
+    except Exception:
+        logger.exception(
+            "swarm organization summary lookup failed session=%s org=%s",
+            session_id,
+            organization_id,
+        )
 
     try:
         release = getattr(org_runtime, "release_membership", None)
@@ -3046,15 +3068,56 @@ async def unregister_completed_organization(
                 )
             except Exception:
                 logger.exception(
-                    "organization membership release failed session=%s org=%s",
+                    "swarm organization membership release failed session=%s org=%s",
                     session_id,
                     organization_id,
                 )
-        releaser = getattr(task_pool, "release_membership", None)
-        if callable(releaser):
-            await releaser()
+        # release_membership only drops leaders; erase the remaining org rows.
+        eraser = getattr(task_pool, "dissolve_organization", None)
+        if callable(eraser):
+            try:
+                await eraser()
+            except Exception:
+                logger.exception(
+                    "swarm organization row erase failed session=%s org=%s",
+                    session_id,
+                    organization_id,
+                )
+        else:
+            releaser = getattr(task_pool, "release_membership", None)
+            if callable(releaser):
+                try:
+                    await releaser()
+                except Exception:
+                    logger.exception(
+                        "swarm organization pool release failed session=%s org=%s",
+                        session_id,
+                        organization_id,
+                    )
+        if summary_team_id:
+            await _stop_swarm_summary_team(
+                org_runtime, team_id=summary_team_id, session_id=session_id
+            )
     finally:
         clear_group_organization_binding(session_id)
+
+
+async def unregister_completed_organization(
+    *,
+    org_runtime: Any,
+    task_pool: Any,
+    session_id: str,
+    organization_id: str,
+    owner_team_id: str,
+) -> None:
+    """Backward-compatible alias for :func:`dissolve_completed_swarm_organization`."""
+    await dissolve_completed_swarm_organization(
+        org_runtime=org_runtime,
+        task_pool=task_pool,
+        session_id=session_id,
+        organization_id=organization_id,
+        owner_team_id=owner_team_id,
+    )
 
 
 async def dissolve_group_organization(group_id: str) -> None:
