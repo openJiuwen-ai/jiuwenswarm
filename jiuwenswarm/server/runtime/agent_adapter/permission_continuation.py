@@ -383,8 +383,9 @@ def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id:
                     or getattr(call, "id", None) != outer_id):
                 raise RootPermissionQueueError("permission_continuation_state_invalid")
             inner_id = next(iter(pending))
-            if (not isinstance(inner_id, str) or not inner_id
-                    or (inner_id != outer_id and call.name != "tool_call")):
+            if not isinstance(inner_id, str) or not inner_id:
+                raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+            if inner_id != outer_id and call.name != "tool_call":
                 raise RootPermissionQueueError("permission_continuation_identity_mismatch")
     expected = {getattr(call, "id", None): call for call in calls}
     if None in expected or "" in expected:
