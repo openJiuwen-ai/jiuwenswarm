@@ -49,7 +49,8 @@ def _optional_text(name: str, value: object) -> str:
     return value.strip()
 
 
-def _answer_items(value: object) -> tuple[Mapping[str, Any], ...]:
+def validate_answer_items(value: object) -> tuple[Mapping[str, Any], ...]:
+    """Validate and copy answer objects for typed and compatibility inputs."""
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise InteractionAnswerError("answers must be a sequence of objects")
     result: list[Mapping[str, Any]] = []
@@ -124,7 +125,7 @@ class InteractionAnswerInput:
             "interaction_id",
             _required_text("interaction_id", self.interaction_id),
         )
-        object.__setattr__(self, "answers", _answer_items(self.answers))
+        object.__setattr__(self, "answers", validate_answer_items(self.answers))
         object.__setattr__(self, "source", _optional_text("source", self.source))
         object.__setattr__(
             self,
