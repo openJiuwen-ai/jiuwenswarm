@@ -106,7 +106,7 @@ export function WebUIEntryHost({
     }
   }, [scope?.closed, hasFailedInstance]);
 
-  const entryMounted = Boolean(runtime && registry && !dismissed && !scope?.closed && !hasFailedInstance);
+  const entryMounted = Boolean(firstVisit && runtime && registry && !dismissed && !scope?.closed && !hasFailedInstance);
   const entryOpen = Boolean(entryMounted && hasActiveTree);
 
   return (

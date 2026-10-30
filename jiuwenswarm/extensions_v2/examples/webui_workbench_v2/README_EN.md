@@ -2,11 +2,11 @@
 
 [中文](README.md)
 
-`webui.workbench-v2` demonstrates 12 registered WebUI slots (13 contributions in total, with two instances in the right panel), covering catalog components such as `FileTree`, `FilePreview`, `Panel`, `Iframe`, `Switch`, `Button`, `Tag`, `Box`, and `Text`. The sidebar main page and task inspection main page use `Iframe` roots, while the right panel provides both a workspace files tab (`Panel` root combining `FileTree` and `FilePreview`) and a web preview tab (`Iframe` root). The plugin stores session state and platform file results, then publishes complete render trees. File components handle expansion, selection, and status messages locally. The demo calls no model or external business API.
+`webui.workbench-v2` demonstrates 13 registered WebUI slots (14 contributions in total, with two instances in the right panel), covering catalog components such as `Avatar`, `FileTree`, `FilePreview`, `Panel`, `Iframe`, `Switch`, `Button`, `Tag`, `Box`, and `Text`. The sidebar main page and task inspection main page use `Iframe` roots, while the right panel provides both a workspace files tab (`Panel` root combining `FileTree` and `FilePreview`) and a web preview tab (`Iframe` root). The plugin stores session state and platform file results, then publishes complete render trees. File components handle expansion, selection, and status messages locally. The demo calls no model or external business API.
 
 ## Install and activate
 
-Run Gateway, AgentServer, and the Web frontend with this branch's WebUI protocol and runtime assembly. To build or deploy the package from source, run `python scripts/install_workbench_plugin.py` (or `--zip-only` to only build `webui_workbench_v2.zip`) from the repository root.
+Run Gateway, AgentServer, and the Web frontend with this branch's WebUI protocol and runtime assembly. For hot installation, run `python scripts/install_workbench_plugin.py --zip-only` from the repository root to build `webui_workbench_v2.zip`. Without that flag, the script deploys directly to the install directory and requires a service restart; do not install the same version again from ZIP.
 
 Place the generated ZIP where the AgentServer machine can read it, then run these commands in the Web input in single-agent mode:
 
@@ -15,7 +15,7 @@ Place the generated ZIP where the AgentServer machine can read it, then run thes
 /extension query webui.workbench-v2
 ```
 
-If an older package with the same ID is active, run `/extension uninstall webui.workbench-v2` first, then install the new ZIP and query it. Successful installation activates the package immediately. Startup loads installed copies and does not scan `examples/` in the source tree. Management commands work in a new empty conversation, but rendering requires a real session.
+If an older package with the same ID is active, run `/extension uninstall webui.workbench-v2` first, then install the new ZIP and query it. Successful installation activates the package immediately. Startup loads installed copies and does not scan `examples/` in the source tree. Management commands work in a new empty conversation, session-scoped rendering requires a real session; application entry does not.
 
 After installation, open an existing real conversation and refresh or re-enter it so the Host sends `ui.ready`. The first ready builds the demo trees; later ready events restore the active extension's state. Ready for the file instance reads the root directory again and clears the preview; ready for the webpage instance republishes its Iframe.
 
@@ -23,6 +23,7 @@ After installation, open an existing real conversation and refresh or re-enter i
 
 | Slot | Content and entry |
 | --- | --- |
+| `application.entry` | Welcome card and Avatar on first visit; Get started closes it. Accepted ready stores a visit marker, so refresh skips mounting |
 | `application.menu` → `application.menu.main` | Click "交互工作台 / Workbench" in the sidebar to open the main page (`Iframe` root); both use instance `workbench` |
 | `task.function` → `task.function.main` | Click "任务检查 / Inspect tasks" in the task area to open the task page (`Iframe` root); both use `task-inspector` |
 | `application.settings` | "自动摘要 / Auto summary" switch in the settings content area, scoped to the current conversation |
@@ -42,7 +43,7 @@ The package declares two right-side contributions: `workbench.details` publishes
 
 The file tab uses `Panel(title, children)` and places `FileTree` and `FilePreview` side by side inside a `Box`. Both file components are registered independently for reuse by other plugins. See [F_07](../../docs/features/F_07_ui-contributions.md#44-文件能力目录与预览) for the component and platform API details.
 
-Single-agent chat and code sessions can browse files. Project sessions use their bound project root; projectless sessions use the bound task root (including `work/` and `outputs/`). Team mode returns an unsupported status, and missing bindings return an unavailable status.
+Single-agent chat and code sessions can browse files. Project sessions use their bound project root; projectless sessions use their bound runtime workspace. Automatically allocated task workspaces include `work/` and `outputs/`; a Code profile default session workspace retains its actual directory layout. Team mode returns an unsupported status, and missing bindings return an unavailable status.
 
 When the file instance receives `ui.ready`, it calls `ops.session.files` to read the root directory and clears the preview. Expanding a directory sends `expandedKeys` via `ui.change`; the plugin maps keys to paths in the current snapshot and calls `ops.session.files` again (up to 100 entries per directory, 512 entries total, 8 levels, and 96 KiB). Selecting a file calls `ops.session.read_file` to read UTF-8 text up to 16 KiB and passes the result to `FilePreview`; binary files, images, and oversized files display their corresponding status notices.
 
@@ -68,7 +69,7 @@ Reload reads the installed copy, not the original ZIP. After editing repository 
 
 Manifest `schemaVersion: 1`, `ui.apiVersion: 1`, and frame `schema_version: 1` describe separate formats. This package uses declared component events such as `events['ui.click']`. Business arguments come from the declared action's `args`; control values come from normalized event `data`. A dispatch response is a receipt, never a replacement tree. See [F_08](../../docs/features/F_08_frontend-render.md) for the shared version and validation strategy.
 
-All slots require a real `session_id`. The right panel uses two stable instances with isolated events and updates; other single slots select the latest update. `message.assistant.meta` and `application.entry` are outside this package's targets.
+`application.entry` uses application identity from the current Web connection, without `session_id`; all other slots require a real session. `application.menu`, `task.function` and `application.settings` do not mount in a new empty conversation. The right panel uses two stable instances with isolated events and updates; other single slots select the latest update. `message.assistant.meta` is outside this package's targets.
 
 ## Rebuild after editing sources
 

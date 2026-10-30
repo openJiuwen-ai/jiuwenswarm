@@ -3,6 +3,8 @@
   width: 100%;
   max-width: 960px;
   min-width: 0;
+  min-height: 0;
+  flex: 1 1 0%;
   margin-inline: auto;
   padding: 28px 32px 40px;
 }
@@ -13,7 +15,7 @@
   }
 }
 
-/* Iframe 根接管整页内容区，不使用阅读宽度和页面内边距。 */
+/* Iframe roots fill the page without reading-width or padding constraints. */
 .webui-page-host:has(.webui-iframe) {
   max-width: none;
   padding: 0;

@@ -49,7 +49,7 @@ const { act, createElement } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { theme } = await import('antd');
 const {
-  componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer,
+  componentCatalog, componentRendererRegistry, createProtocolPipeline, WebUISchemaRenderer, FileTree, createComponentState,
   createWebUIRuntime, createWebUIAppRuntime, createMockTransport, WebUIHost, WebUIEntryHost, WebUIProvider, WebUIThemeProvider,
   WebUISlotProvider, WebUIContentActivity, resolveWebUITheme, i18n,
 } = await import('../node_modules/.cache/webui-components/components.mjs');
@@ -956,3 +956,62 @@ test('WebUIEntryHost renders application.entry with Avatar and closes on clear f
     runtime.dispose();
   }
 });
+
+
+test('WebUIEntryHost skips mounting and ready after an accepted first visit', async () => {
+  window.localStorage.setItem('workswarm.webui.entry.visited', '1');
+  const transport = createMockTransport();
+  const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
+  runtime.start();
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(createElement(WebUIEntryHost,
+      { runtime, registry: componentRendererRegistry }, createElement('span', null, 'Workspace'))));
+    assert.equal(container.querySelector('[data-testid="webui-entry-host"]'), null);
+    assert.equal(container.textContent, 'Workspace');
+    assert.equal(transport.dispatches.length, 0);
+    await act(async () => {
+      transport.setConnectionState('disconnected');
+      transport.setConnectionState('connected');
+    });
+    assert.equal(transport.dispatches.length, 0);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove(); runtime.dispose();
+    window.localStorage.removeItem('workswarm.webui.entry.visited');
+  }
+});
+
+
+for (const operation of ['expand', 'select']) {
+  test(`FileTree rejected ${operation} preserves independent state updates`, async () => {
+    const selection = createComponentState({ selectedKey: null, expandedKeys: [] });
+    const treeData = [
+      { key: 'dir', title: 'Directory', path: 'dir', kind: 'directory', loaded: operation === 'select' },
+      { key: 'file', title: 'File', path: 'file.txt', kind: 'file' },
+    ];
+    let settle;
+    const request = () => new Promise((resolve) => { settle = resolve; });
+    const container = document.createElement('div'); document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(FileTree, {
+        treeData, selection, onSelect: request, onExpand: request,
+      })));
+      const key = operation === 'expand' ? 'dir' : 'file';
+      await click(container.querySelector(`[data-testid="webui-file-tree-item"][data-variant="${key}"]`));
+      assert.equal(typeof settle, 'function');
+      await act(async () => {
+        selection.set(operation === 'expand'
+          ? { ...selection.getSnapshot(), selectedKey: 'file' }
+          : { ...selection.getSnapshot(), expandedKeys: ['dir'] });
+      });
+      await act(async () => settle({ status: 'sent', receipt: { accepted: false } }));
+      assert.deepEqual(selection.getSnapshot(), operation === 'expand'
+        ? { selectedKey: 'file', expandedKeys: [] } : { selectedKey: null, expandedKeys: ['dir'] });
+    } finally {
+      await act(async () => root.unmount()); container.remove();
+    }
+  });
+}

@@ -14023,7 +14023,25 @@ class JiuWenSwarmDeepAdapter:
             task_cwd = str(runtime_paths.cwd)
 
         if bind_request:
-            self._session_workspace_snapshot = runtime_paths
+            if runtime_paths is not None:
+                self._session_workspace_snapshot = runtime_paths
+            else:
+                workspace_root = Path(task_workspace).expanduser()
+                cwd_path = Path(task_cwd).expanduser()
+                has_explicit_project = bool(
+                    runtime_config.workspace
+                    or runtime_config.project_dir
+                    or self._project_dir
+                )
+                self._session_workspace_snapshot = RuntimeWorkspacePaths(
+                    internal_workspace_dir=Path(
+                        self._workspace_dir or str(get_agent_workspace_dir())
+                    ).expanduser(),
+                    runtime_workspace_root=workspace_root,
+                    cwd=cwd_path,
+                    project_root=workspace_root,
+                    is_projectless=not has_explicit_project,
+                )
 
         task_workspace_root = (
             str(runtime_paths.runtime_workspace_root)

@@ -351,3 +351,26 @@ async def test_release_subagent_runtime_is_noop_without_existing_adapter() -> No
     )
 
     assert released is False
+
+
+@pytest.mark.asyncio
+async def test_workspace_lookup_skips_empty_snapshots_without_borrowing(monkeypatch):
+    from types import SimpleNamespace
+
+    manager = AgentManager()
+    snapshot = object()
+    calls = []
+
+    def lookup(session_id):
+        calls.append(session_id)
+        return snapshot
+
+    manager.agents["web"] = {
+        "empty": SimpleNamespace(get_session_workspace_paths=lambda sid: None),
+        "owner": SimpleNamespace(get_session_workspace_paths=lookup),
+    }
+    monkeypatch.setattr(manager, "_borrow_agent", lambda agent: pytest.fail("lookup borrowed an agent"))
+    assert manager.get_session_workspace_paths("web", " s1 ") is snapshot
+    assert calls == ["s1"]
+    assert manager.get_session_workspace_paths("web", " ") is None
+    assert manager.get_session_workspace_paths("missing", "s1") is None

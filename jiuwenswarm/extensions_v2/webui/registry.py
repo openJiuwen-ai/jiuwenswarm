@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""活跃渲染实例登记：实例定位、revision、同实例串行与容量淘汰。"""
+"""Track active render instances, revisions, locking and capacity eviction."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RenderInstance:
-    """一个渲染实例的最近一帧状态（只保留当前值，不留历史）。"""
+    """The latest frame state for one render instance, without history."""
 
     target: RenderTarget
     revision: int = 0
@@ -39,7 +39,7 @@ class RenderInstance:
 
 @dataclass(frozen=True, slots=True)
 class RenderClaim:
-    """一次串行化占用的结果：实例状态、待淘汰实例与新建标记。"""
+    """The instance, eviction candidates and creation flag for one claim."""
 
     instance: RenderInstance
     evicted: tuple[RenderInstance, ...] = field(default_factory=tuple)
@@ -47,7 +47,7 @@ class RenderClaim:
 
 
 class ActiveRenderRegistry:
-    """进程内渲染登记表：定位实例、分配 revision、容量淘汰与按范围清理。"""
+    """Manage in-process render instances, revisions, eviction and scoped cleanup."""
 
     def __init__(self, max_instances_per_session: int = MAX_INSTANCES_PER_SESSION) -> None:
         self._instances: dict[str, RenderInstance] = {}
@@ -66,7 +66,7 @@ class ActiveRenderRegistry:
 
     @asynccontextmanager
     async def claim(self, target: RenderTarget) -> AsyncIterator[RenderClaim]:
-        """串行占用一个实例，返回当前状态与待淘汰实例；跨实例可并发。"""
+        """Claim one instance exclusively; independent instances may run concurrently."""
 
         async with self._lock_for(target.key):
             evicted = self._evict_candidates(target)
@@ -79,7 +79,7 @@ class ActiveRenderRegistry:
             yield RenderClaim(instance=instance, evicted=evicted, created=created)
 
     def commit(self, instance: RenderInstance, request: UiRenderInput) -> RenderFrame:
-        """提交一次成功下发：revision 单调递增并产出帧。"""
+        """Commit a delivered update and return its next revision frame."""
 
         instance.revision += 1
         instance.mode = request.mode
@@ -93,7 +93,7 @@ class ActiveRenderRegistry:
         )
 
     def restore(self, instance: RenderInstance, previous: RenderInstance) -> None:
-        """下发失败时恢复提交前的状态，避免 revision 空跳。"""
+        """Restore the previous state after a failed delivery without skipping revisions."""
 
         instance.revision = previous.revision
         instance.mode = previous.mode
@@ -109,7 +109,7 @@ class ActiveRenderRegistry:
             yield current is expected and current.revision == expected.revision
 
     def drop_instance(self, target: RenderTarget) -> bool:
-        """移除单个实例（实例不再活跃）。"""
+        """Remove one instance from the active registry."""
 
         removed = self._instances.pop(target.key, None) is not None
         if removed and self._lock_users.get(target.key, 0) == 0:
@@ -117,7 +117,7 @@ class ActiveRenderRegistry:
         return removed
 
     def drop_session(self, session_id: str) -> tuple[RenderInstance, ...]:
-        """会话结束或归档时清理该会话全部实例。"""
+        """Drop session instances when their conversation ends or is archived."""
 
         return self._drop_matching(
             lambda target: (
@@ -126,7 +126,7 @@ class ActiveRenderRegistry:
         )
 
     def drop_package(self, package_id: str) -> tuple[RenderInstance, ...]:
-        """插件卸载时清理该包的全部实例。"""
+        """Drop all instances owned by an unloaded package."""
 
         return self._drop_matching(lambda target: target.package_id == package_id)
 
@@ -141,7 +141,7 @@ class ActiveRenderRegistry:
 
     @asynccontextmanager
     async def _lock_for(self, key: str) -> AsyncIterator[None]:
-        """按实例引用计数持有锁；最后一个使用者离开且实例已删除时回收锁。"""
+        """Hold a reference-counted lock and reclaim it when an absent instance has no users."""
 
         lock = self._locks.get(key)
         if lock is None:
@@ -172,7 +172,7 @@ class ActiveRenderRegistry:
         return tuple(dropped)
 
     def _evict_candidates(self, target: RenderTarget) -> tuple[RenderInstance, ...]:
-        """返回同会话最久未更新的实例；提交成功后再由调用方真正移除。"""
+        """Select the oldest instances in the capacity group for removal after delivery."""
 
         if self._max_per_session <= 0 or target.key in self._instances:
             return ()

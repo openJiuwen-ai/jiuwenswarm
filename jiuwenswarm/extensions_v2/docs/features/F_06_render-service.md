@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-06 渲染服务与下行帧 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{models,schema,constants,registry,transport}.py`、`webui/core_handlers/render_core.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-10-31 |
 | 方案状态 | 已实现；重连重发未实现 |
 
 ## 1. 问题与目标
@@ -92,7 +92,7 @@ WebUIRuntime 为调用绑定独立的连接上下文，后续 `ops.ui.render` �
 连接 ID 只用于定位投递目标，不是用户身份或授权结果。
 
 槽位定义方式见 [F_07 第 3.3 节](F_07_ui-contributions.md#33-槽位)，前端挂载与收发方式见
-[F_08 第 4.4 节](F_08_frontend-render.md#44-会话与全局槽位的挂载)。
+[F_08 第 4.5 节](F_08_frontend-render.md#45-会话与全局槽位的挂载)。
 
 #### 3.2.2 实例标识
 
@@ -114,8 +114,8 @@ WebUIRuntime 为调用绑定独立的连接上下文，后续 `ops.ui.render` �
 | 类别 | 组件 |
 | --- | --- |
 | 容器 | `Box`、`Card`、`Tabs`、`Panel` |
-| 基础 | `Text`、`Divider`、`Empty`、`Image`、`Tag`、`Iframe` |
-| 交互 | `Button`、`Input`、`Switch`、`Select`、`TreeSelect`、`Slider` |
+| 基础 | `Text`、`Divider`、`Empty`、`Avatar`、`Image`、`Tag`、`Iframe`、`FilePreview` |
+| 交互 | `Button`、`Input`、`Switch`、`Select`、`TreeSelect`、`Slider`、`FileTree` |
 
 每个组件只允许声明的 props；未声明的 props 会让整棵树被拒绝，而不是忽略。
 属性与事件规则统一由 `component_rules.py` 与前端目录维护，样式只接受组件规则内的 token。

@@ -2920,6 +2920,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         project_workspace = str(runtime_paths.runtime_workspace_root)
         task_cwd = str(runtime_paths.cwd)
         self._runtime_workspace_dir = project_workspace
+        self._session_workspace_snapshot = runtime_paths
         deep_config = getattr(self._instance, "deep_config", None)
         if deep_config is not None:
             # Keep DeepAgentConfig.workspace on the Agent's internal data

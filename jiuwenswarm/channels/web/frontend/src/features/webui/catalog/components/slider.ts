@@ -17,6 +17,7 @@ export const sliderRule = component('Slider', {
 }, {
   defaults: { min: 0, max: 100, step: 1, dots: false, included: true, reverse: false, orientation: 'horizontal' },
   events: { 'ui.change': valueData(number) },
+  validateEvent: (_event, data, p) => sliderValueAllowed(p, data.value as number) ? null : 'invalid slider value',
   validate(p) {
     const min = p.min as number; const max = p.max as number; const step = p.step as number;
     if (max <= min || step <= 0 || !Number.isFinite((max - min) / step)) return 'invalid slider interval';
