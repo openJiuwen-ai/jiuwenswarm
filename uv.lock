@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
@@ -3036,7 +3036,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.19"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f#2e77c1af1b2d284a5a02cbac070397048bc5678f" }
+source = { git = "https://gitcode.com/huenrui_/agent-core.git?branch=rsi_native_agent_os#bdde48a8de9cd0306aa62ec4491cda980c2c7117" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -5958,7 +5958,6 @@ dependencies = [
     { name = "faiss-cpu" },
     { name = "fastapi" },
     { name = "fastmcp" },
-    { name = "filelock" },
     { name = "gitcode-api" },
     { name = "gitcode-cli" },
     { name = "google-adk" },
@@ -6035,7 +6034,6 @@ harmony = [
     { name = "dingtalk-stream" },
     { name = "discord-py" },
     { name = "fastapi" },
-    { name = "filelock" },
     { name = "gitcode-api" },
     { name = "google-genai" },
     { name = "greenlet" },
@@ -6144,8 +6142,6 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
     { name = "fastmcp", specifier = ">=2.14.2,<3.4.1" },
-    { name = "filelock", specifier = ">=3.25.0,<4" },
-    { name = "filelock", marker = "extra == 'harmony'", specifier = ">=3.25.0,<4" },
     { name = "gitcode-api", specifier = ">=1.2.20,<2" },
     { name = "gitcode-api", marker = "extra == 'harmony'", specifier = ">=1.2.20" },
     { name = "gitcode-cli", specifier = "==0.12.0" },
@@ -6173,12 +6169,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
+    { name = "openjiuwen", git = "https://gitcode.com/huenrui_/agent-core.git?branch=rsi_native_agent_os" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/huenrui_/agent-core.git?branch=rsi_native_agent_os" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/huenrui_/agent-core.git?branch=rsi_native_agent_os" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/huenrui_/agent-core.git?branch=rsi_native_agent_os" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/huenrui_/agent-core.git?branch=rsi_native_agent_os" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/huenrui_/agent-core.git?branch=rsi_native_agent_os" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
