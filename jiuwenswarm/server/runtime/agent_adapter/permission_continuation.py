@@ -23,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
     RootNonPermissionResume, RootPermissionWrapperResume, put_root_nonpermission_resume_in_inputs,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import ToolInvocationKeyV1
+from jiuwenswarm.common.tool_display import extract_call_goal
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +345,7 @@ async def discard_pending_permission_interrupt_for_target(
 
 
 def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id: str | None) -> Any | None:
-    """Return the canonical, wholly unanswered native Smart batch, if present."""
+    """Return the canonical, wholly unanswered Smart batch, if present."""
     session = getattr(instance, "_loop_session", None)
     if session is None or loop_session_id != target_sid:
         return None
@@ -366,10 +367,12 @@ def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id:
         raise RootPermissionQueueError("permission_continuation_identity_mismatch")
     for call, key in _permission_entries(state):
         original = expected[call.id]
-        if (key.root_session_id != target_sid or key.execution_session_id != target_sid
-                or key.tool_call_id != call.id):
+        if key.root_session_id != target_sid or key.execution_session_id != target_sid:
             raise RootPermissionQueueError("permission_continuation_identity_mismatch")
-        if call.name != original.name or call.arguments != original.arguments:
+        # The stream rail strips display-only metadata before nested dispatch.
+        _, arguments = extract_call_goal(call.arguments)
+        _, original_arguments = extract_call_goal(original.arguments)
+        if call.name != original.name or arguments != original_arguments:
             raise RootPermissionQueueError("permission_continuation_identity_mismatch")
     return message
 

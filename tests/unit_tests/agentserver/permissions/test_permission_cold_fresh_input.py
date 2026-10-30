@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from unittest.mock import AsyncMock, Mock
 
@@ -76,14 +77,38 @@ async def stopped_checkpoint(h, reopen):
     await reopen()
 
 
+def wrap_batch(state, goal_key="call_goal"):
+    entries = {}
+    for entry in state.interrupted_tools.values():
+        call = entry.tool_call
+        entry.tool_call = call.model_copy(update={
+            "id": f"outer_{call.id}", "name": "tool_call",
+            "arguments": json.dumps({"name": call.name, "args": json.loads(call.arguments)}),
+        })
+        entries[entry.tool_call.id] = entry
+    state.ai_message.tool_calls = [entry.tool_call.model_copy(update={
+        "arguments": json.dumps({**json.loads(entry.tool_call.arguments), goal_key: "Describe the pending tool"}),
+    }) for entry in entries.values()]
+    state.interrupted_tools = entries
+    return state
+
+
+@pytest.mark.parametrize("wrapper_goal", [None, "call_goal", "callGoal"])
 @pytest.mark.parametrize("count", [1, 2])
 @pytest.mark.parametrize("prewarmed", [False, True])
 async def test_cold_fresh_text_replaces_real_sqlite_smart_batch(
-    hosts, sqlite_checkpoint, monkeypatch, count, prewarmed,
+    hosts, sqlite_checkpoint, monkeypatch, count, prewarmed, wrapper_goal,
 ):
     old = await hosts("old", "cold-fresh")
     await _interrupt(old, monkeypatch, mode="auto", kind="permission", count=count)
-    assert await _recovered_ids(old) == {f"call_{i}" for i in range(count)}
+    if wrapper_goal:
+        session = old.adapter._instance.loop_session
+        state = wrap_batch(deepcopy(session.get_state(INTERRUPTION_KEY)), wrapper_goal)
+        session.update_state({INTERRUPTION_KEY: state})
+        await session.commit()
+    prefix = "outer_" if wrapper_goal else ""
+    expected_ids = {f"{prefix}call_{i}" for i in range(count)}
+    assert await _recovered_ids(old) == expected_ids
     await stopped_checkpoint(old, sqlite_checkpoint)
     h = await hosts("new", "cold-fresh")
     assert h.adapter._root_permission_queue is not old.adapter._root_permission_queue
@@ -91,7 +116,7 @@ async def test_cold_fresh_text_replaces_real_sqlite_smart_batch(
     request = fresh(h)
     if prewarmed:
         assert await parent._get_or_create_session_adapter(request.session_id) is h.adapter
-        assert await _recovered_ids(h) == {f"call_{i}" for i in range(count)}
+        assert await _recovered_ids(h) == expected_ids
         assert h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY).interrupted_tools
     child = await parent._get_or_create_session_adapter(
         request.session_id, execution_request=request, host_external_input=True,
@@ -101,7 +126,7 @@ async def test_cold_fresh_text_replaces_real_sqlite_smart_batch(
     context = child._instance.react_agent.context_engine.get_context(session_id=request.session_id)
     messages = context.get_messages()
     cancellations = [m for m in messages if getattr(m, "role", None) == "tool"]
-    assert {m.tool_call_id for m in cancellations} == {f"call_{i}" for i in range(count)}
+    assert {m.tool_call_id for m in cancellations} == expected_ids
     assert len(cancellations) == count
     h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
     result = await _request(h, query=request.params["query"])
@@ -210,24 +235,42 @@ async def test_ineligible_input_or_live_owner_excludes_cold_validation(hosts, mo
     assert h.executions == []
 
 
-@pytest.mark.parametrize("malformed", ["id", "arguments", "root", "partial"])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("malformed", [
+    "id", "arguments", "root", "execution", "inner", "name", "partial", "display_name", "nested_goal",
+])
 async def test_canonical_batch_validation_rejects_mismatch_without_mutation(
-    hosts, monkeypatch, malformed,
+    hosts, monkeypatch, malformed, wrapped,
 ):
     h = await hosts("old", "cold-invalid")
     await _interrupt(h, monkeypatch, mode="auto", kind="permission", count=2)
     instance = h.adapter._instance
     state = deepcopy(instance.loop_session.get_state(INTERRUPTION_KEY))
-    entry = state.interrupted_tools["call_0"]
+    if wrapped:
+        state = wrap_batch(state)
+    outer_id = "outer_call_0" if wrapped else "call_0"
+    entry = state.interrupted_tools[outer_id]
     if malformed == "id":
         entry.tool_call = entry.tool_call.model_copy(update={"id": "foreign"})
     elif malformed == "arguments":
         entry.tool_call = entry.tool_call.model_copy(update={"arguments": '{"value":"foreign"}'})
-    elif malformed == "root":
+    elif malformed in {"display_name", "nested_goal"}:
+        arguments = json.loads(entry.tool_call.arguments)
+        if malformed == "display_name":
+            arguments["display_name"] = "foreign"
+        else:
+            arguments.setdefault("args", {})["call_goal"] = "foreign"
+        entry.tool_call = entry.tool_call.model_copy(update={"arguments": json.dumps(arguments)})
+    elif malformed in {"root", "execution"}:
         request = next(iter(entry.interrupt_requests.values()))
-        request.metadata["tool_invocation_key"]["root_session_id"] = "foreign"
+        request.metadata["tool_invocation_key"][f"{malformed}_session_id"] = "foreign"
+    elif malformed == "inner":
+        request = entry.interrupt_requests.pop("call_0")
+        entry.interrupt_requests["foreign"] = request
+    elif malformed == "name":
+        entry.tool_call = entry.tool_call.model_copy(update={"name": "foreign"})
     else:
-        state.interrupted_tools.pop("call_0")
+        state.interrupted_tools.pop(outer_id)
     instance.loop_session.update_state({INTERRUPTION_KEY: state})
     before = deepcopy(state)
     if malformed == "partial":
