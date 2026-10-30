@@ -10,8 +10,12 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+    JiuwenSwarmPermissionInterruptRail,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.root_ask_user import (
     ASK_USER_TOOL_NAME, ask_user_continuation, prepare_ask_user_resume,
     put_ask_user_resume_in_inputs,
@@ -400,7 +404,7 @@ async def discard_pending_permission_interrupt_for_target(
 
 
 def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id: str | None) -> Any | None:
-    """Return the canonical, wholly unanswered Smart batch, if present."""
+    """Return the canonical, wholly unanswered permission batch, if present."""
     session = getattr(instance, "_loop_session", None)
     if session is None or loop_session_id != target_sid:
         return None
@@ -412,17 +416,41 @@ def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id:
         return None
     requests = [request for entry in interrupted.values()
                 for request in (getattr(entry, "interrupt_requests", None) or {}).values()]
-    if not any(isinstance(getattr(request, "metadata", None), Mapping)
-               and "tool_invocation_key" in request.metadata for request in requests):
-        return None
+    smart = any(isinstance(getattr(request, "metadata", None), Mapping)
+                and "tool_invocation_key" in request.metadata for request in requests)
+    if not smart:
+        owner = (f"{JiuwenSwarmPermissionInterruptRail.__module__}."
+                 f"{JiuwenSwarmPermissionInterruptRail.__qualname__}")
+        if not requests or any(
+            getattr(request, "interrupt_kind", None) != InterruptKind.PERMISSION
+            or getattr(request, "interrupt_owner", None) != owner for request in requests
+        ):
+            return None
+        if any(getattr(entry, "is_sub_agent", False) or getattr(entry, "carried_answers", None)
+               for entry in interrupted.values()):
+            return None
+        # Default approvals have no Smart key. Only Core's exact, unanswered
+        # root calls may be cancelled; never infer identity from display text.
+        for outer_id, entry in interrupted.items():
+            call = getattr(entry, "tool_call", None)
+            pending = getattr(entry, "interrupt_requests", None)
+            if (not isinstance(pending, Mapping) or len(pending) != 1
+                    or getattr(call, "id", None) != outer_id):
+                raise RootPermissionQueueError("permission_continuation_state_invalid")
+            inner_id = next(iter(pending))
+            if (not isinstance(inner_id, str) or not inner_id
+                    or (inner_id != outer_id and call.name != "tool_call")):
+                raise RootPermissionQueueError("permission_continuation_identity_mismatch")
     expected = {getattr(call, "id", None): call for call in calls}
     if None in expected or "" in expected:
         raise RootPermissionQueueError("permission_continuation_identity_mismatch")
     if len(expected) != len(calls) or set(expected) != set(interrupted):
         raise RootPermissionQueueError("permission_continuation_identity_mismatch")
-    for call, key in _permission_entries(state):
+    entries = (_permission_entries(state) if smart else
+               ((entry.tool_call, None) for entry in interrupted.values()))
+    for call, key in entries:
         original = expected[call.id]
-        if key.root_session_id != target_sid or key.execution_session_id != target_sid:
+        if key is not None and (key.root_session_id != target_sid or key.execution_session_id != target_sid):
             raise RootPermissionQueueError("permission_continuation_identity_mismatch")
         # The stream rail strips display-only metadata before nested dispatch.
         _, arguments = extract_call_goal(call.arguments)
