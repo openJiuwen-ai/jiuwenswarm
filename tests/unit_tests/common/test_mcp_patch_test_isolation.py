@@ -5,9 +5,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
-def test_mcp_fixtures_preserve_preinstalled_patch():
+
+@pytest.mark.parametrize("preinstalled", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_mcp_fixtures_restore_bindings_in_any_order(preinstalled, reverse):
     code = """
+import sys
 import pytest
 
 class PreinstalledPatch:
@@ -18,8 +23,10 @@ class PreinstalledPatch:
         from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import StreamableHttpClient
         from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
         from openjiuwen.core.foundation.tool.base import Tool
-        patch.apply_mcp_call_timeout_patch()
+        if sys.argv[1] == 'True':
+            patch.apply_mcp_call_timeout_patch()
         self.patch = patch
+        self.installed = patch._PATCHED
         self.bindings = [(cls, name, cls.__dict__[name])
             for cls in (SseClient, StreamableHttpClient, ToolMgr, Tool)
             for name in ('connect', '_do_connect', 'disconnect', 'call_tool',
@@ -29,21 +36,25 @@ class PreinstalledPatch:
             ('_wrapped_methods', '_wrapped_connects', '_wrapped_factories')}
 
     def pytest_sessionfinish(self, session):
-        assert self.patch._PATCHED
+        assert self.patch._PATCHED == self.installed
         assert all(cls.__dict__[name] is value for cls, name, value in self.bindings)
         assert all(getattr(self.patch, name) == value for name, value in self.guards.items())
 
-raise SystemExit(pytest.main([
+files = [
     'tests/unit_tests/common/test_mcp_call_timeout_recovery.py',
     'tests/unit_tests/common/test_mcp_call_timeout_patch.py',
     'tests/unit_tests/common/test_mcp_remote_lifecycle.py',
+]
+if sys.argv[2] == 'True':
+    files.reverse()
+raise SystemExit(pytest.main(files + [
     '-k', 'stamped_timeout or unstamped_client or sse_timeout_reports_timeout or '
-          '(test_discovery_lifecycle and normal) or toolmgr_owner_reconnect',
+          'reapply_after_guard_reset or (test_discovery_lifecycle and normal) or toolmgr_owner_reconnect',
     '-o', 'addopts=', '-o', 'log_cli=false', '-q',
 ], plugins=[PreinstalledPatch()]))
 """
     result = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", code, str(preinstalled), str(reverse)],
         cwd=Path(__file__).resolve().parents[3],
         capture_output=True, text=True, timeout=60, check=False,
     )

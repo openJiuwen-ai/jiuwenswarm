@@ -19,9 +19,7 @@ from typing import Any, Optional
 from openjiuwen.core.common.logging import logger
 
 _PATCHED = False
-# (cls, name) pairs already wrapped — idempotency guard independent of
-# _PATCHED, so we don't stamp attributes onto function objects (which would
-# need a mypy ``[attr-defined]`` type-ignore).
+# 注册集合用于记录安装状态；幂等性以实际函数上的标记为准，集合重置不能叠加包装。
 _wrapped_methods: set[tuple[type, str]] = set()
 # (module, name) SDK factory functions already wrapped, and (cls, name)
 # client connect methods already wrapped — same idempotency purpose.
@@ -190,6 +188,28 @@ def manage_sse_owner_cleanup(client: Any) -> None:
     connect = client.connect
     disconnect = client.disconnect
 
+    if isinstance(getattr(client, "_exit_stack", None), AsyncExitStack):
+        async def do_disconnect(*, timeout: float = -1):
+            # 锁文件中的 SDK 用 wait_for 退出上下文，在 Python 3.11 会换任务。
+            # 沿用 SDK 的 owner 与 exit stack，只替换退出入口，不能跨任务补关。
+            if getattr(client, "_jws_sse_cleanup_failed", False):
+                return False
+            try:
+                async with asyncio.timeout(timeout if timeout > 0 else 10.0):
+                    await client._exit_stack.aclose()
+            except BaseException as exc:
+                setattr(client, "_jws_sse_cleanup_failed", True)
+                force_invalidate_mcp_client(client)
+                if isinstance(exc, Exception):
+                    # SDK public disconnect 收到 False 后仍会停止 owner；外层将 False 报错。
+                    logger.warning("[mcp-timeout] SSE owner cleanup failed", exc_info=True)
+                    return False
+                raise
+            _reset_closed_client(client)
+            return True
+
+        setattr(client, "_do_disconnect", do_disconnect)
+
     async def owner_with_cleanup():
         try:
             await owner_loop()
@@ -203,6 +223,8 @@ def manage_sse_owner_cleanup(client: Any) -> None:
                 _reset_closed_client(client)
 
     async def connect_with_cleanup(*args, **kwargs):
+        if getattr(client, "_jws_sse_cleanup_failed", False):
+            raise RuntimeError("SSE previous cleanup incomplete; replace client")
         owner = getattr(client, "_owner_task", None)
         if owner is not None and owner.done() and (
             getattr(client, "_session", None) is not None
@@ -441,10 +463,12 @@ async def _abandon_session(client: Any, *, context: str) -> None:
 
 def _wrap_disconnect_always_invalidate(cls: type, method_name: str) -> None:
     """清理失败只标记不可复用，成功才清状态，避免丢失待清理资源。"""
-    if (cls, method_name) in _wrapped_methods or not hasattr(cls, method_name):
+    if not hasattr(cls, method_name):
         return
     _wrapped_methods.add((cls, method_name))
     orig = getattr(cls, method_name)
+    if getattr(orig, "_jws_mcp_wrapper", None) == "disconnect":
+        return
 
     async def wrapped(self, *args, **kwargs):
         force_invalidate_mcp_client(self)
@@ -454,6 +478,7 @@ def _wrap_disconnect_always_invalidate(cls: type, method_name: str) -> None:
         _reset_closed_client(self)
         return result
 
+    setattr(wrapped, "_jws_mcp_wrapper", "disconnect")
     setattr(cls, method_name, wrapped)
 
 
@@ -640,10 +665,10 @@ def _patch_sdk_read_timeouts() -> None:
         (mcp_sse_module, "sse_client"),
         (mcp_streamable_http_module, "streamablehttp_client"),
     ):
-        if (module, factory_name) in _wrapped_factories:
-            continue
         _wrapped_factories.add((module, factory_name))
         orig_factory = getattr(module, factory_name)
+        if getattr(orig_factory, "_jws_mcp_wrapper", None) == "transport-read-timeout":
+            continue
 
         def factory_with_read_timeout(*args: Any, orig=orig_factory, name=factory_name, **kwargs: Any):
             hint = _pending_sdk_read_timeout.get()
@@ -658,6 +683,7 @@ def _patch_sdk_read_timeouts() -> None:
                     )
             return orig(*args, **kwargs)
 
+        setattr(factory_with_read_timeout, "_jws_mcp_wrapper", "transport-read-timeout")
         setattr(module, factory_name, factory_with_read_timeout)
 
     connect_targets: list[tuple[type, str]] = [
@@ -672,8 +698,6 @@ def _patch_sdk_read_timeouts() -> None:
         logger.debug("[mcp-timeout] SseClient has neither _do_connect nor connect; skip stamp")
 
     for cls, method_name in connect_targets:
-        if (cls, method_name) in _wrapped_connects:
-            continue
         if not hasattr(cls, method_name):
             logger.debug(
                 "[mcp-timeout] skip wrapping %s.%s (attribute missing)",
@@ -683,14 +707,22 @@ def _patch_sdk_read_timeouts() -> None:
             continue
         _wrapped_connects.add((cls, method_name))
         orig_method = getattr(cls, method_name)
+        if getattr(orig_method, "_jws_mcp_wrapper", None) == "connect-read-timeout":
+            continue
 
         async def method_with_read_timeout(self, *args: Any, orig=orig_method, **kwargs: Any):
             hint = getattr(self, "_jws_call_timeout", None)
             token = (
                 _pending_sdk_read_timeout.set(float(hint)) if _stamp_is_valid(hint) else None
             )
+            current = asyncio.current_task()
+            cancelling = current.cancelling() if current is not None else 0
             try:
                 connected = await orig(self, *args, **kwargs)
+                # 锁文件中的旧 SDK 会捕获 BaseException 并返回 False，不能让它
+                # 吞掉本次建连收到的取消（含 asyncio.timeout 发出的取消）。
+                if current is not None and current.cancelling() > cancelling:
+                    raise asyncio.CancelledError
                 if connected:
                     setattr(self, "_jws_needs_reconnect", False)
                 return connected
@@ -698,6 +730,7 @@ def _patch_sdk_read_timeouts() -> None:
                 if token is not None:
                     _pending_sdk_read_timeout.reset(token)
 
+        setattr(method_with_read_timeout, "_jws_mcp_wrapper", "connect-read-timeout")
         setattr(cls, method_name, method_with_read_timeout)
 
 
@@ -799,10 +832,10 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
         )
 
     def _wrap_with_timeout(cls: type, name: str) -> None:
-        if (cls, name) in _wrapped_methods:
-            return
         _wrapped_methods.add((cls, name))
         orig = getattr(cls, name)
+        if getattr(orig, "_jws_mcp_wrapper", None) == "call-timeout":
+            return
 
         async def wrapped(self, *args, **kwargs):
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
@@ -884,6 +917,7 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                         force_invalidate_mcp_client(self)
                         raise
 
+        setattr(wrapped, "_jws_mcp_wrapper", "call-timeout")
         setattr(cls, name, wrapped)
 
     # (A) HTTP long-poll transports — same failure mode when the server dies.
@@ -930,7 +964,9 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     # setattr (not direct assignment): rebinding a staticmethod on the class is
     # an mypy [assignment] error; setattr keeps the monkeypatch lint-clean
     # (no type: ignore needed).
-    setattr(ToolMgr, "_create_client", staticmethod(_create_client_with_timeout))
+    if getattr(_orig_create_client, "_jws_mcp_wrapper", None) != "toolmgr-factory":
+        setattr(_create_client_with_timeout, "_jws_mcp_wrapper", "toolmgr-factory")
+        setattr(ToolMgr, "_create_client", staticmethod(_create_client_with_timeout))
 
     # (C) AbilityManager 外层 fail_after → wait_for 桥（不改 agent-core）
     try:

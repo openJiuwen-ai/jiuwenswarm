@@ -159,11 +159,7 @@ async def transport(monkeypatch):
 def patched(monkeypatch):
     from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
 
-    # 全量 UT 可能已通过 adapter 安装补丁；清空 guard 再包会递归争用同一 I/O 锁。
-    if patch._PATCHED:
-        return
-
-    # 仅还原此测试装配点，不把 patch 泄漏给别的 MCP 测试。
+    # 成对恢复类方法与 guard；已有包装由函数标记识别，不依赖 _PATCHED 跳过。
     for cls, names in (
         (StreamableHttpClient, ("connect", "disconnect", "call_tool", "list_tools")),
         (
@@ -1018,8 +1014,15 @@ async def test_cancelled_connect_failure_cleanup_has_deadline(transport, patched
         assert client._jws_needs_reconnect
         assert client._jws_http_owner.task.done()
         assert transport.close_cancellations == 1  # 只有预算耗尽才取消 owner。
-        with pytest.raises(RuntimeError, match="previous owner cleanup incomplete"):
-            await client.connect()
+        if client._session is not None or client._client is not None:
+            with pytest.raises(RuntimeError, match="previous owner cleanup incomplete"):
+                await asyncio.wait_for(client.connect(), 1)
+        else:
+            # 旧 SDK 可能在取消后完成整个清理；没有残留资源时仍应允许重连。
+            transport.phase = "normal"
+            transport.hold_close = False
+            assert await asyncio.wait_for(client.connect(), 1)
+            assert await asyncio.wait_for(client.disconnect(), 1)
     finally:
         transport.release_close.set()
         await asyncio.gather(caller, return_exceptions=True)
@@ -1039,3 +1042,39 @@ async def test_failed_connect_owner_cancel_preserves_operation_error():
     assert not caller.cancelled() and caller.cancelling() == 0
     assert client._jws_http_owner.task.done()
     assert client._jws_needs_reconnect
+
+
+@pytest.mark.asyncio
+async def test_sse_failed_stack_close_stops_owner_without_reclosing(transport, patched, monkeypatch):
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
+    client = ToolMgr._create_client(McpServerConfig(
+        server_id="test", server_name="test", client_type="sse",
+        server_path=config("sse")["url"],
+    ))
+    assert await client.connect()
+    owner = client._owner_task
+    session = client._session
+    original = client._exit_stack.aclose
+    closes = 0
+
+    async def failed_close():
+        nonlocal closes
+        closes += 1
+        await original()
+        raise RuntimeError("session cleanup failed")
+
+    monkeypatch.setattr(client._exit_stack, "aclose", failed_close)
+    try:
+        with pytest.raises(RuntimeError, match="disconnect returned false"):
+            await asyncio.wait_for(client.disconnect(), 1)
+        assert owner.done()
+        assert client._session is session
+        assert closes == 1
+        with pytest.raises(RuntimeError, match="previous cleanup incomplete"):
+            await client.connect()
+    finally:
+        if not owner.done():
+            owner.cancel()
+        await asyncio.gather(owner, return_exceptions=True)
+    await settled(transport)

@@ -13,26 +13,26 @@ import asyncio
 from typing import Any
 
 import pytest
+from openjiuwen.core.foundation.tool import McpServerConfig
+from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
 
 from jiuwenswarm.common.mcp_call_timeout_patch import (
     DEFAULT_CALL_TIMEOUT,
     apply_mcp_call_timeout_patch,
 )
-from openjiuwen.core.foundation.tool import McpServerConfig
-from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
 
 
 @pytest.fixture(autouse=True)
 def _restore_patch_bindings(monkeypatch):
     from mcp.client import sse, streamable_http
-    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import StreamableHttpClient
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+        StreamableHttpClient,
+    )
     from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
     from jiuwenswarm.common import mcp_call_timeout_patch as patch
 
-    # 复用全量测试前序安装的补丁，不能仅清 guard 而保留已包装的方法。
-    if patch._PATCHED:
-        return
-
+    # 成对恢复绑定与 guard；实际函数标记保证重复 apply 不会叠加包装。
     for cls in (SseClient, StreamableHttpClient, ToolMgr):
         for name in ("connect", "_do_connect", "disconnect", "call_tool", "list_tools", "_create_client"):
             if name in cls.__dict__:
@@ -63,7 +63,7 @@ def _make_sse_client() -> SseClient:
         client_type="sse",
     )
     client = SseClient(config)
-    client._session = _FakeSession()  # noqa: SLF001 - test seam
+    client._session = _FakeSession()
     return client
 
 
@@ -74,7 +74,7 @@ class TestStampedTimeoutPropagation:
     ) -> None:
         apply_mcp_call_timeout_patch()
         client = _make_sse_client()
-        setattr(client, "_jws_call_timeout", 90.0)
+        client._jws_call_timeout = 90.0
 
         captured: dict[str, float] = {}
         real_wait_for = asyncio.wait_for
@@ -114,3 +114,68 @@ class TestStampedTimeoutPropagation:
         await client.call_tool("delay_remote", {"seconds": 0})
 
         assert captured["timeout"] == pytest.approx(DEFAULT_CALL_TIMEOUT + 5.0)
+
+
+@pytest.mark.asyncio
+async def test_reapply_after_guard_reset_keeps_single_wrapper(monkeypatch):
+    from mcp.client import sse, streamable_http
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+        StreamableHttpClient,
+    )
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
+    from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+    monkeypatch.setattr(patch, "_patch_ability_manager_fail_after", lambda: None)
+    # 记录 guard 的初始对象，不能把本测试的 reset 泄漏给已预装补丁的进程。
+    for name in ("_PATCHED", "_wrapped_methods", "_wrapped_connects", "_wrapped_factories"):
+        monkeypatch.setattr(patch, name, getattr(patch, name))
+    apply_mcp_call_timeout_patch()
+    bindings = [
+        (cls, name, getattr(cls, name))
+        for cls in (SseClient, StreamableHttpClient)
+        for name in ("connect", "disconnect", "call_tool", "list_tools")
+    ] + [
+        (SseClient, "_do_connect", SseClient._do_connect),
+        (ToolMgr, "_create_client", ToolMgr._create_client),
+        (sse, "sse_client", sse.sse_client),
+        (streamable_http, "streamablehttp_client", streamable_http.streamablehttp_client),
+    ]
+    for _ in range(10):
+        patch._PATCHED = False
+        patch._wrapped_methods = set()
+        patch._wrapped_connects = set()
+        patch._wrapped_factories = set()
+        apply_mcp_call_timeout_patch()
+        assert all(getattr(target, name) is method for target, name, method in bindings)
+    client = _make_sse_client()
+    assert await asyncio.wait_for(client.call_tool("echo", {}), 1) is None
+    assert client._session.calls == [("echo", {})]
+
+
+@pytest.mark.asyncio
+async def test_legacy_connect_cannot_swallow_timeout_cancellation(monkeypatch):
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+        StreamableHttpClient,
+    )
+
+    from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+    apply_mcp_call_timeout_patch()
+
+    async def legacy_connect(self, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return False
+
+    monkeypatch.setattr(StreamableHttpClient, "connect", legacy_connect)
+    # 方法被替换而注册集合未变，必须以实际函数为准重新包装。
+    patch._patch_sdk_read_timeouts()
+    client = StreamableHttpClient(McpServerConfig(
+        server_id="test", server_name="test", server_path="http://127.0.0.1:9/mcp",
+        client_type="streamable-http",
+    ))
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await client.connect()

@@ -75,6 +75,11 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   无论 scanner 是否启动都关闭全局 worker。
   `_jws_call_timeout` 印章、SDK read timeout、AbilityManager 截止桥、共享 client
   串行和死会话重试一次（at-least-once）保持；外部取消必须传播。
+  包装幂等性以当前方法/factory 的显式标记为准；即使 `_PATCHED` 与注册集合被重置，
+  也不得重复包装或叠加 ToolMgr owner。旧 SDK 建连吞掉新收到的取消并返回 False 时，
+  补丁须恢复该取消，让外层超时及用户取消保持原语义。
+  SSE 仍使用 SDK owner，在该任务内直接关闭 SDK 的 AsyncExitStack，避免旧 SDK 的
+  wait_for(__aexit__) 跨任务退出；失败保留不可复用状态，不重新关闭已消费的 stack。
 - **N8 refresh patch 修三缺陷**：`ToolMgr._inner_refresh_mcp_tools`（先 list 后删旧、
   失败保留旧快照）、`ToolMgr.refresh_tool_server`（`None` = TTL 跳过 vs `[]` = 空刷新）、
   `ResourceMgr.refresh_mcp_server`（真实现）+ `get_mcp_tool_infos`（刷新后
