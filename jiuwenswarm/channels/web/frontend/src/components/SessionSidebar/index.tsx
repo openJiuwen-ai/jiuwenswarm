@@ -22,8 +22,21 @@ import type {
 } from '../../applicationPlugins/types';
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
+import { WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
 
-type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
+const pluginNavigationStyles: WebUIStyleOverrides = {
+  Button: {
+    unstyled: true,
+    className: 'icon-rail-nav-item disabled:cursor-not-allowed disabled:opacity-50',
+    activeClassName: 'icon-rail-nav-item--active',
+    icon: <PluginIcon aria-hidden />,
+    iconClassName: 'icon-rail-nav-item__icon',
+    labelClassName: 'icon-rail-nav-item__label',
+  },
+  Box: { unstyled: true, className: 'flex min-w-0 w-full flex-col items-center' },
+};
+
+type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
 
 interface SessionSidebarProps {
   activeNav: MainNavKey;
@@ -202,6 +215,13 @@ export function SessionSidebar({
         </button>
       ))}
 
+      <WebUINavigationHost
+        slotId="application.menu"
+        className="min-w-0 w-full items-center"
+        style={{ gap: 0 }}
+        instanceClassName="flex min-w-0 w-full flex-col items-center"
+        styles={pluginNavigationStyles}
+      />
       <div className="icon-rail-spacer" />
       {onToggleJiuwenMate ? (
         <JiuwenMateModeSwitch

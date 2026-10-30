@@ -84,6 +84,7 @@ export function ExpandedPanelTabs({
   testIdPrefix = 'tool-panel',
   tabListLabel,
   actions,
+  idPrefix,
 }: {
   tabs: PanelTabItem[];
   activeTab: string;
@@ -95,9 +96,11 @@ export function ExpandedPanelTabs({
   testIdPrefix?: string;
   tabListLabel?: string;
   actions?: ReactNode;
+  idPrefix?: string;
 }) {
   const { t } = useTranslation();
-  const tabPanelId = useId();
+  const generatedId = useId();
+  const tabPanelId = idPrefix ?? generatedId;
 
   return (
     <div data-testid={`${testIdPrefix}-expanded-header`} className="single-agent-tool-tabs">

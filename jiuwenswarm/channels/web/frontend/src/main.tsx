@@ -8,6 +8,7 @@ import { isUserLoginRoute, userWebPaths } from './auth/manager/userWebPaths';
 import { UserLoginPage } from './auth/manager/UserLoginPage';
 import { EnterpriseEntry } from './EnterpriseEntry.tsx'
 import { SkillPackInstallPlanHost } from './components/SkillPanel/SkillPackInstallPlan';
+import { WebUIAppRoot } from './features/webui'
 import { ShareImageExportRunner } from './features/shareImageExport'
 import { openSourceSettingsPageDefinition } from './features/settings/registry/openSourceDefinition'
 import { enterpriseSettingsPageDefinition } from './features/settings/registry/enterpriseDefinition';
@@ -76,12 +77,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     ) : isEnterprise() && isUserLoginRoute(userWebPaths().route) ? (
       <UserLoginPage />
     ) : (
-      <EnterpriseEntry>
-        <App
-          settingsPageDefinition={isEnterprise() ? enterpriseSettingsPageDefinition : openSourceSettingsPageDefinition}
-          resolveSettingsRequest={resolveOpenSourceSettingsRequest}
-        />
-      </EnterpriseEntry>
+      <WebUIAppRoot>
+        <EnterpriseEntry>
+          <App
+            settingsPageDefinition={isEnterprise() ? enterpriseSettingsPageDefinition : openSourceSettingsPageDefinition}
+            resolveSettingsRequest={resolveOpenSourceSettingsRequest}
+          />
+        </EnterpriseEntry>
+      </WebUIAppRoot>
     )}
     <SkillPackInstallPlanHost />
   </A2UIProvider>,

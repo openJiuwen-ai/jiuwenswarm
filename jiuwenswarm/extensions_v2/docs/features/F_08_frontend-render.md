@@ -132,12 +132,17 @@ React 宿主接口：
 3. 连接断开后重新连接时，运行时按每个消费者上报过的就绪身份重发 `ui.ready`；范围消费者重发空实例键，实例消费者重发自己的实例键。
 4. 内容 `clear` 只删除实例与范围成员，不删除消费者的就绪身份；消费者释放前，重连仍以原实例键上报。
 
-接入顺序（目标接入方式，当前仅在模块测试中验证，生产入口未迁移）：
+接入顺序（应用级装配与槽位落位均已落地）：
 
 1. 用后端目录镜像创建 `WebUICatalog`，并为目录中每个组件实现同名适配器，创建 `WebUIRendererRegistry`。
 2. 调用 `createWebUIAppRuntime({ client, catalog, registry })` 得到 `runtime` 与 `registry`，在应用生命周期中显式 `start()`。
 3. 在应用子树外层挂载 `WebUIProvider`，在槽位位置挂载 `WebUIHost`；消息级槽位传入 `instanceKey`，其余槽位传 `sessionId` 与 `slotId`。
 4. 应用卸载时 `dispose()`，释放运行时与消费者；旧链路的 `useWebUIRender`/`WebUISlotHost` 在迁移完成前继续工作，不与新运行时共享实例状态。
+
+当前状态：`main.tsx` 用 `WebUIAppRoot` 创建唯一运行时（不含 `application.entry` 入口宿主）；
+13 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
+ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单）、ConversationSidebar（任务功能区）、
+`WebUIPageHost`（菜单主页面与任务页面）。旧链路仅保留代码，生产槽位不再使用它；删除放在独立提交。
 
 ### 3.5 渲染代次、显示确认与失败反馈
 
@@ -195,9 +200,12 @@ React 宿主接口：
 - `SchemaRenderer` 按节点 `component` 查注册表并递归渲染；适配器只接收节点、子内容、内容组、实例上下文与 `emit`，不接触 Runtime、通信客户端或完整实例快照。
 - demo 目录与 demo 适配器用于模块测试，实际组件与样式 token 映射由宿主适配器提供。
 
-### 5.2 旧链路（现行生产）
+### 5.2 旧链路（保留代码，生产不再使用）
 
-现行生产链路使用下列白名单组件与样式 token 映射：
+旧链路代码仍在仓库中，便于与迁移结果对照；生产槽位已全部由新宿主承载，删除旧链路放在独立提交，
+删除前需完成真实往返验证与示例插件迁移。
+
+旧链路支持下列白名单组件与样式 token 映射：
 
 | 组件 | 主要 props | 行为 |
 | --- | --- | --- |

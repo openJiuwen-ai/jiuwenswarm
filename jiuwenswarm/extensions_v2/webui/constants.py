@@ -58,6 +58,15 @@ SESSION_SLOTS: Final[Mapping[str, str]] = {
     "conversation.input.above": "list",
     "conversation.input.below": "single",
     "conversation.panel.right": "list",
+    "application.menu": "list",
+    "application.menu.main": "single",
+    "task.function": "list",
+    "task.function.main": "single",
+    "application.settings": "list",
+    "conversation.turn.content.after": "list",
+    "conversation.turn.footer.actions": "list",
+    "conversation.header.title.after": "list",
+    "conversation.header.actions": "list",
     "message.assistant.meta": "list",
 }
 

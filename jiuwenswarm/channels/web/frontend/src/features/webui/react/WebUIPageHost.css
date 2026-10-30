@@ -1,0 +1,20 @@
+.webui-page-host {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 960px;
+  min-width: 0;
+  margin-inline: auto;
+  padding: 28px 32px 40px;
+}
+
+@media (max-width: 640px) {
+  .webui-page-host {
+    padding: 20px 16px 28px;
+  }
+}
+
+/* Iframe 根接管整页内容区，不使用阅读宽度和页面内边距。 */
+.webui-page-host:has(.webui-iframe) {
+  max-width: none;
+  padding: 0;
+}
