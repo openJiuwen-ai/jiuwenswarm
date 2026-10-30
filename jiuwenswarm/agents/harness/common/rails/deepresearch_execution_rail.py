@@ -43,6 +43,7 @@ DEEPRESEARCH_DELIVERY_INDEX_KEY = "deepresearch_delivery_index"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
 _SHORT_CIRCUIT_FIELD = "idempotent_short_circuit"
 _MAX_DELIVERY_INDEX_ENTRIES = 20
+_REDO_HINT = "如需重新生成该报告，请更换报告文件名（file_name）后再次发起研究。"
 _TOOL_NAME = "deepresearch_execute"
 _BRIEF_REFRESH_SECTION = "deepresearch_brief_refresh"
 _BRIEF_REFRESH_INSTRUCTION = (
@@ -207,7 +208,8 @@ def _lookup_delivery(
     if not topic or not fname:
         return None
     requested_type = str(requested_report_type or "").strip()
-    for entry in reversed(list(_load_delivery_index(session).values())):
+    entries = list(_load_delivery_index(session).values())
+    for entry in reversed(entries):
         if (
             _normalize_topic(str(entry.get("query") or "")) != topic
             or str(entry.get("file_name") or "").strip() != fname
@@ -218,6 +220,21 @@ def _lookup_delivery(
         ):
             continue
         return dict(entry)
+    # 漏拦可观测：同主题已有交付但 file_name/报告类型不同，本次视为新任务正常
+    # 执行，记录对比日志以便评估守卫命中率（CR-2）。
+    delivered_file_names = [
+        str(entry.get("file_name") or "")
+        for entry in entries
+        if _normalize_topic(str(entry.get("query") or "")) == topic
+    ]
+    if delivered_file_names:
+        logger.info(
+            "[deepresearch_execution_rail] delivery miss: same topic with "
+            "different file_name/report_type query=%s file_name=%s delivered=%s",
+            topic,
+            fname,
+            delivered_file_names,
+        )
     return None
 
 
@@ -493,6 +510,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
                     {"file_name": str(hit.get("file_name") or "")},
                     hit.get("html_style_status"),
                 )
+            # 短路会吞掉「重新研究同一主题」的合法请求，文案须给出可自愈的重做
+            # 通道（曹凯淇审查 CR-1）。
+            completion_text = f"{completion_text}\n\n{_REDO_HINT}"
             short_state = _persist_delivered_state(
                 ctx,
                 workflow_id=workflow_id,

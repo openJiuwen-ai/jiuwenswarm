@@ -18,6 +18,7 @@ Covers GitCode issue #5131（深度研究报告已交付后再次对话重复执
 from __future__ import annotations
 
 import asyncio
+import logging
 import types
 
 import pytest
@@ -249,8 +250,9 @@ def test_short_circuit_reuses_first_delivery_content():
     ctx = _build_callback_ctx(sess, tool_call_id="wf_again", args={
         "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
     asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
-    assert ctx.inputs.tool_result["content"] == first_content
-    assert ctx.inputs.tool_msg.content == first_content
+    # CR-1 追加的重做指引在首次文案之后，首次文案本身原样复用。
+    assert ctx.inputs.tool_result["content"].startswith(first_content)
+    assert ctx.inputs.tool_msg.content.startswith(first_content)
 
 
 def test_short_circuit_uses_latest_delivery_content():
@@ -268,7 +270,41 @@ def test_short_circuit_uses_latest_delivery_content():
     ctx = _build_callback_ctx(sess, tool_call_id="wf_again2", args={
         "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
     asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
-    assert ctx.inputs.tool_result["content"] == "新文案"
+    assert ctx.inputs.tool_result["content"].startswith("新文案")
+
+
+def test_short_circuit_content_offers_redo_path():
+    """CR-1：用户显式要求重做同一主题时，短路文案须给出可自愈的重做指引。"""
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "requested_report_type": "brief", "content": "已交付文案",
+                 "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_redo", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert rail._REDO_HINT in ctx.inputs.tool_result["content"]
+    assert rail._REDO_HINT in ctx.inputs.tool_msg.content
+
+
+def test_same_topic_different_file_name_not_blocked_and_logged(caplog):
+    """CR-2：同主题不同 file_name 视为新任务（漏拦保持 PR 前行为），并留对比日志。"""
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "requested_report_type": "brief", "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_variant", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report_v2", "report_type": "brief"})
+    with caplog.at_level(logging.INFO, logger=rail.logger.name):
+        asyncio.run(
+            rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx)
+        )
+    assert ctx.force_finish_requests == []
+    assert ctx.inputs.tool_result is None
+    assert "delivery miss" in caplog.text
+    assert "ai_chip_report_v2" in caplog.text
 
 
 def test_delivery_index_keeps_only_latest_entries():
