@@ -11,7 +11,7 @@ RenderNode(
 ```
 
 这只声明视图与动作，组件是否能显示取决于宿主是否已接入对应渲染器。
-插件端校验支持 18 种目录组件（含 `FileTree` 与 `FilePreview`）。
+插件端校验支持 19 种目录组件（含 `Avatar`、`FileTree` 与 `FilePreview`）。
 组件列表和字段规则见 [组件规约](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
 
 浏览器统一调用 `webui.dispatch`。宿主从已显示的实例和节点补齐请求，插件不应自己生成 node_key 或 revision：
@@ -28,7 +28,7 @@ RenderNode(
 服务端在触发插件 Handler 前校验实例、版本、节点、事件、动作、参数和数据。
 Handler 从 `event.event_input.payload["data"]` 读取输入值，`args` 保持声明值，不接收用户编辑内容。
 例如 Input 的 `ui.change` 使用 `{value, isComposing}`，Switch 使用 `{checked}`，Slider 使用 `{value}`。
-`ui.ready` 使用空 payload，首次挂载时不要求已有实例。
+`ui.ready` 通常使用空 payload，首次挂载时不要求已有实例；`application.entry` 使用 `{"reason": "first_visit"}`。
 
 文本输入可这样声明：
 
@@ -126,8 +126,8 @@ RenderNode(
 RenderNode(
     "Tabs",
     {"items": [
-        {"key": "one", "label": "概览", "children": [{"component": "Text", "props": {"value": "第一页"}}]},
-        {"key": "two", "label": "详情", "children": [{"component": "Text", "props": {"value": "第二页"}}]},
+        {"key": "one", "label": "概览", "children": [RenderNode("Text", {"value": "第一页"})]},
+        {"key": "two", "label": "详情", "children": [RenderNode("Text", {"value": "第二页"})]},
     ]},
     events={"ui.change": {"id": "tab.change"}},
 )
@@ -141,5 +141,5 @@ RenderNode(
 Handler 从 `payload["data"]` 读取事件数据；单个节点不再支持 action 声明。
 下行帧的 schema_version 为 1。
 
-不支持 application.entry 或无会话应用目标。文件组件与请求校验、回执见
+`application.entry` 为应用范围，以当前 Web 连接为身份，不要求会话。首次访问时挂载，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。其余 13 个槽位使用真实会话，`application.menu`、`task.function`、`application.settings` 在新建空对话中不挂载。文件组件与请求校验、回执见
 [F_07](../docs/features/F_07_ui-contributions.md)。

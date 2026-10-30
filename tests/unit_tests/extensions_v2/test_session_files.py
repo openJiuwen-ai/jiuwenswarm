@@ -148,3 +148,73 @@ async def test_read_file_reports_missing_and_forbidden_paths(
 
     assert (await service.read_file("s1", "gone.txt"))["status"] == "missing"
     assert (await service.read_file("s1", "../outside.txt"))["status"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_symlinks_at_every_path_component(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "main.py").write_text("secret", encoding="utf-8")
+    _bind_project(monkeypatch, root)
+    try:
+        (root / "alias.py").symlink_to(root / "src" / "main.py")
+        (root / "alias-dir").symlink_to(root / "src", target_is_directory=True)
+        (root / "external.py").symlink_to(tmp_path / "outside.py")
+        (root / "broken.py").symlink_to(root / "missing.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable on this platform")
+    service = SessionWorkspaceFiles()
+    for path in ("alias.py", "alias-dir/main.py", "external.py", "broken.py"):
+        assert (await service.read_file("s1", path))["status"] == "forbidden", path
+    assert (await service.read_file("s1", "src/main.py"))["status"] == "ready"
+    tree = await service.files("s1", [])
+    assert [item["key"] for item in tree["treeData"]] == ["src"]
+    assert tree["truncated"] is False
+    assert tree["readFailed"] is False
+    assert "message" not in tree
+
+
+@pytest.mark.asyncio
+async def test_files_skips_special_files_without_reporting_a_limit(tmp_path, monkeypatch):
+    import os
+
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("Named pipes are unavailable on this platform")
+    os.mkfifo(tmp_path / "pipe")
+    _bind_project(monkeypatch, tmp_path)
+    result = await SessionWorkspaceFiles().files("s1", [])
+    assert result["treeData"] == []
+    assert result["truncated"] is False
+    assert "message" not in result
+
+
+def test_file_tree_expansion_limit_matches_workspace_service():
+    from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, check_value
+
+    props_rule = COMPONENT_RULES["FileTree"]["props"]["expandedKeys"]
+    event_rule = COMPONENT_RULES["FileTree"]["events"]["ui.change"]["fields"]["expandedKeys"]
+    keys = [f"dir-{index}" for index in range(workspace_files.MAX_EXPANDED_DIRECTORIES)]
+    for rule in (props_rule, event_rule):
+        assert check_value(rule, keys)
+        assert not check_value(rule, [*keys, "one-too-many"])
+
+
+@pytest.mark.asyncio
+async def test_directory_read_failure_does_not_report_a_browsing_limit(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    blocked = root / "blocked"
+    blocked.mkdir(parents=True)
+    _bind_project(monkeypatch, root)
+    scandir = workspace_files.os.scandir
+
+    def deny_blocked(path):
+        if Path(path) == blocked:
+            raise PermissionError("directory cannot be read")
+        return scandir(path)
+
+    monkeypatch.setattr(workspace_files.os, "scandir", deny_blocked)
+    result = await SessionWorkspaceFiles().files("s1", ["blocked"])
+    assert result["readFailed"] is True
+    assert result["truncated"] is False
+    assert "truncated" not in result["treeData"][0]
+    assert "could not be read" in result["message"]

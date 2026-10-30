@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""渲染请求校验：槽位、组件、props、规模上限（纯函数，无 IO）。"""
+"""Validate render slots, components, properties and budgets without I/O."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ _OK = ValidationReport(ok=True)
 
 
 def validate_slot(slot_id: str) -> ValidationReport:
-    """槽位必须在白名单内。范围由白名单决定，不在这里写死名字。"""
+    """Require a registered slot; the catalog determines its scope."""
 
     if slot_spec(slot_id) is None:
         return _fail(f"slot not allowed: {slot_id}")
@@ -90,7 +90,7 @@ def apply_slot_scope(
 
 
 def validate_target(target: RenderTarget) -> ValidationReport:
-    """会话槽位必须有 session_id；应用槽位必须有连接号，且不能带聊天号。"""
+    """Require a session for session targets or a connection without a chat for application targets."""
 
     if not isinstance(target, RenderTarget):
         return _fail("target must be a RenderTarget")
@@ -126,7 +126,7 @@ def validate_target(target: RenderTarget) -> ValidationReport:
 
 
 def validate_request(request: UiRenderInput) -> ValidationReport:
-    """校验一次渲染请求：目标、模式与渲染树。"""
+    """Validate a render request target, mode and tree."""
 
     report = validate_target(request.target)
     if not report.ok:
@@ -150,7 +150,7 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
 
 
 def validate_root(root: RenderNode) -> ValidationReport:
-    """深度、节点数、组件、props、动作与字节量校验。"""
+    """Validate tree depth, node count, components, properties, actions and text budgets."""
 
     counter = _Counter()
     try:
@@ -165,7 +165,7 @@ def validate_root(root: RenderNode) -> ValidationReport:
 
 
 def frame_payload_bytes(frame: RenderFrame) -> ValidationReport:
-    """整帧字节量必须落在 256 KiB 预算内（超限拒绝而非截断）。"""
+    """Reject frames exceeding the 256 KiB budget instead of truncating them."""
 
     try:
         size = len(json.dumps(frame.to_payload(), ensure_ascii=False, allow_nan=False).encode("utf-8"))
@@ -177,7 +177,7 @@ def frame_payload_bytes(frame: RenderFrame) -> ValidationReport:
 
 
 class _Counter:
-    """节点累计计数。"""
+    """Accumulate the render node count."""
 
     __slots__ = ("nodes",)
 

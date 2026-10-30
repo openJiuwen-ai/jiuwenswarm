@@ -34,4 +34,11 @@ export const selectRule = component('Select', {
     return null;
   },
   prepare: (p) => ({ ...p, showSearch: p.showSearch ?? p.mode !== undefined }),
+  validateEvent(event, data, p) {
+    if (event === 'ui.clear') return p.allowClear ? null : 'clearing is disabled';
+    if (event === 'ui.search') return (p.showSearch ?? p.mode !== undefined) ? null : 'search is disabled';
+    if (p.mode === 'tags') return typeof data.value === 'string' && nonEmpty(data.value) ? null : 'invalid tag';
+    return (p.options as { value: string | number; disabled?: boolean }[])
+      .some((item) => item.value === data.value && !item.disabled) ? null : 'selected value is not allowed';
+  },
 });

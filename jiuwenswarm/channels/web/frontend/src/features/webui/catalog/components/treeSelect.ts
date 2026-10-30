@@ -49,4 +49,22 @@ export const treeSelectRule = component('TreeSelect', {
   },
   prepare: (p) => ({ ...p, multiple: p.treeCheckable === true || p.multiple === true,
     showSearch: p.showSearch ?? (p.treeCheckable === true || p.multiple === true) }),
+  validateEvent(event, data, p) {
+    if (event === 'ui.clear') return p.allowClear ? null : 'clearing is disabled';
+    const values = new Set<string>();
+    function walk(items: Record<string, unknown>[]): void {
+      for (const item of items) {
+        const enabled = p.treeCheckable
+          ? item.checkable !== false && !item.disableCheckbox : item.selectable !== false;
+        if (!item.disabled && enabled) values.add(item.value as string);
+        walk((item.children ?? []) as Record<string, unknown>[]);
+      }
+    }
+    walk(p.treeData as Record<string, unknown>[]);
+    const multiple = event === 'ui.change' && (p.treeCheckable === true || p.multiple === true);
+    if (multiple !== Array.isArray(data.value)) return 'selection does not match tree mode';
+    const selected = Array.isArray(data.value) ? data.value : data.value === null ? [] : [data.value];
+    return unique(selected) && selected.every((value) => values.has(value as string))
+      ? null : 'selected value is not allowed';
+  },
 });

@@ -13,4 +13,7 @@ export const inputRule = component('Input', {
   validate: (p) => p.maxLength !== undefined && [p.value, p.defaultValue].some(
     (value) => typeof value === 'string' && value.length > (p.maxLength as number),
   ) ? 'initial text exceeds maxLength' : null,
+  validateEvent: (event, data, p) => (p.readOnly && event !== 'ui.click')
+    || (p.maxLength !== undefined && (data.value as string).length > (p.maxLength as number))
+    ? 'input value is not allowed' : null,
 });

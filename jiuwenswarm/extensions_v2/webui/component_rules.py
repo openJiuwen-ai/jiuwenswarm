@@ -431,7 +431,9 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
         if component == "Select" and props.get("mode") == "tags":
             return isinstance(value, str) and bool(value)
         values = [item["value"] for item in options if not item.get("disabled")
-                  and item.get("selectable", True) and not item.get("disableCheckbox")]
+                  and (item.get("checkable", True) and not item.get("disableCheckbox")
+                       if component == "TreeSelect" and props.get("treeCheckable")
+                       else item.get("selectable", True))]
         if component == "TreeSelect" and event == "ui.change":
             return _selection_allowed(value, values, props.get("treeCheckable", False) or props.get("multiple", False))
         return any(type(value) is type(item) and value == item or finite_number(value) and finite_number(item) and value == item

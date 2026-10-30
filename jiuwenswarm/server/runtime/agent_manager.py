@@ -1457,11 +1457,18 @@ class AgentManager:
         return None
 
     def get_session_workspace_paths(self, channel_id: str, session_id: str) -> RuntimeWorkspacePaths | None:
-        """Read paths from the Agent owning a session, without allocating it."""
-        owner = self.get_agent_for_session_nowait(channel_id, session_id)
-        if owner is None:
+        """Inspect cached session paths without borrowing or allocating an Agent."""
+        sid = str(session_id or "").strip()
+        if not sid:
             return None
-        return owner.get_session_workspace_paths(session_id)
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        for agent in channel_agents.values():
+            getter = getattr(agent, "get_session_workspace_paths", None)
+            if callable(getter):
+                paths = getter(sid)
+                if paths is not None:
+                    return paths
+        return None
 
     def get_auto_permission_agent_for_session_nowait(
         self,

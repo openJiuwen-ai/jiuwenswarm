@@ -14,8 +14,8 @@
   align-items: center;
   justify-content: center;
   border: 0;
-  background: var(--color-surface-card, var(--bg-base, #fff));
-  color: var(--color-text-primary, var(--text-primary, #1f2329));
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
   outline: none;
 }
 

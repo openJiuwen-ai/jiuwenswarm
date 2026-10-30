@@ -10,7 +10,7 @@ RenderNode(
 )
 ```
 
-Declaring a component does not enable its browser renderer. Plugin validation covers 18 catalog components (including `FileTree` and `FilePreview`).
+Declaring a component does not enable its browser renderer. Plugin validation covers 19 catalog components (including `Avatar`, `FileTree` and `FilePreview`).
 See the [component contract](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md).
 
 All browser interactions use `webui.dispatch`. The host takes the node path and revision from the displayed instance:
@@ -27,7 +27,7 @@ All browser interactions use `webui.dispatch`. The host takes the node path and 
 The server validates the instance, revision, node, event, action, arguments and data before entering plugin handlers.
 Handlers read editable values from `event.event_input.payload["data"]`. The args object must match the declaration.
 Input changes carry `{value, isComposing}`, Switch events carry `{checked}`, and Slider changes carry `{value}`.
-The initial `ui.ready` request has an empty payload and does not require an existing instance.
+The initial `ui.ready` normally has an empty payload and requires no existing instance; `application.entry` uses `{"reason": "first_visit"}`.
 
 Declare a text input as follows:
 
@@ -127,8 +127,8 @@ A tab container sends the active key to ui.change when switching:
 RenderNode(
     "Tabs",
     {"items": [
-        {"key": "one", "label": "Overview", "children": [{"component": "Text", "props": {"value": "First page"}}]},
-        {"key": "two", "label": "Details", "children": [{"component": "Text", "props": {"value": "Second page"}}]},
+        {"key": "one", "label": "Overview", "children": [RenderNode("Text", {"value": "First page"})]},
+        {"key": "two", "label": "Details", "children": [RenderNode("Text", {"value": "Second page"})]},
     ]},
     events={"ui.change": {"id": "tab.change"}},
 )
@@ -143,5 +143,5 @@ nodes only accept catalog components, and interactions are declared through `eve
 Handlers read event data from `payload["data"]`; action declarations are no longer supported.
 Downstream frames use schema_version=1.
 
-Application entry and targets without a session are not supported.
+`application.entry` uses application scope and the current Web connection, without a session. It mounts on first visit and stores a browser visit marker after ready is accepted; later refreshes skip it. Clear or failure closes the entry. The other 13 slots require a real session; `application.menu`, `task.function` and `application.settings` do not mount in a new empty conversation.
 See [F_07](../docs/features/F_07_ui-contributions.md) for file components, request validation and acknowledgements.

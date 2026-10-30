@@ -17,9 +17,9 @@ Usage (repository root):
     .venv/Scripts/python.exe scripts/install_workbench_plugin.py --force    # replace existing copy
     .venv/Scripts/python.exe scripts/install_workbench_plugin.py --zip-only # only build the ZIP
 
-After deployment either restart the debug service (``make start-debug``) or
-run the web command ``/extension install <repo>/webui_workbench_v2.zip`` in
-the single-agent input for a hot install without restart.
+After deployment restart the debug service. For a hot install without restart,
+use ``--zip-only`` first, then run ``/extension install <repo>/webui_workbench_v2.zip``
+in the single-agent input before that version has been deployed.
 """
 
 from __future__ import annotations
@@ -116,6 +116,7 @@ def main() -> int:
     print(f"[zip] {zip_path}")
 
     if args.zip_only:
+        print(f"在 Web 单 Agent 输入框执行热安装（该版本尚未部署时）:\n  /extension install {zip_path}")
         return 0
 
     install_dir = _resolve_install_dir()
@@ -123,10 +124,8 @@ def main() -> int:
     print(f"[deploy] {destination}")
 
     print(
-        "\n下一步（二选一）:\n"
-        "  1. 重启调试服务后自动加载: make stop && make start-debug\n"
-        f"  2. 不重启热安装，在 Web 单 Agent 输入框执行:\n"
-        f"     /extension install {zip_path}\n"
+        "\n下一步：重启调试服务后自动加载: make stop && make start-debug\n"
+        "该版本已部署；热安装请在部署前使用 --zip-only 生成安装包。\n"
         "安装后进入真实会话并刷新页面触发 ui.ready。"
     )
     return 0

@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-07 界面项声明、挂载与上行交互 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{contributions,adapter}.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[F_06 渲染服务](F_06_render-service.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-10-31 |
 | 方案状态 | 已实现 |
 
 ## 1. 问题与目标
@@ -95,6 +95,7 @@ ui:
 | `conversation.turn.content.after` | `list` | 单轮回复内容之后，按 `instance_key=requestId` 归属 |
 | `conversation.turn.footer.actions` | `list` | 单轮回复 meta 行，横向排列 |
 | `message.assistant.meta` | `list` | 助手消息 meta 行，按 `instance_key=requestId` 对应单轮实例 |
+| `application.entry` | `single` | 应用范围的首次访问入口 |
 | `application.settings` | `list` | 设置页内容区 |
 | `application.menu` | `list` | 左侧导航栏，点击进入 `application.menu.main` |
 | `application.menu.main` | `single` | 应用菜单主页面 |
@@ -102,9 +103,11 @@ ui:
 | `task.function.main` | `single` | 任务功能区页面，保留会话侧栏 |
 
 槽位是平台预定义位置，插件只能选择，不能新增。前端在没有实例时不渲染容器。
+`application.entry` 为应用范围的 single 入口，由 `WebUIEntryHost` 在浏览器首次访问时挂载；ready 被接受后写入访问标记，后续刷新跳过挂载，clear 或失败关闭入口。
+`application.menu`、`task.function`、`application.settings` 仍为会话范围，新建空对话中不挂载。
 平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围和展示模式；范围及目标字段见
 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)。新增槽位还需要接入前端，不能只改后端表项；
-前端挂载方式见 [F_08 第 4.4 节](F_08_frontend-render.md#44-会话与全局槽位的挂载)。
+前端挂载方式见 [F_08 第 4.5 节](F_08_frontend-render.md#45-会话与全局槽位的挂载)。
 
 #### 3.3.1 定义会话槽位和全局槽位
 
@@ -146,7 +149,7 @@ sequenceDiagram
     B-->>FE: {accepted: true, status: "ready"/"rendered"}
 ```
 
-`ui.ready` 只接受空 payload。会话级槽位的目标只带会话和槽位，包与实例标识为空；实例由插件在 Handler 中创建，因此 CORE Handler 对 `ui.ready` 不检查实例是否存在。消息级槽位在本地缺少实例时，会携带 `instance_key=requestId` 上报，插件可据此恢复该轮已缓存的视图。
+`ui.ready` 通常只接受空 payload；`application.entry` 接受 `{"reason": "first_visit"}`。会话级槽位的目标只带会话和槽位，包与实例标识为空；实例由插件在 Handler 中创建，因此 CORE Handler 对 `ui.ready` 不检查实例是否存在。消息级槽位在本地缺少实例时，会携带 `instance_key=requestId` 上报，插件可据此恢复该轮已缓存的视图。
 
 全局槽位挂载时不要求聊天会话。Gateway 从实际 WebSocket 取得连接 ID，并通过 E2A 的 `metadata.ws_id`
 交给 AgentServer；浏览器提交的目标不能指定投递连接。前端的全局宿主可以在没有当前聊天会话时挂载并上报 `ui.ready`。
@@ -247,7 +250,7 @@ Gateway 通过现有断连钩子发送内部 E2A 方法 `webui.connection.closed
 插件在 `ui.ready` 或 `ui.change` 后查询目录，用 `FileTree` 渲染；选中文件后调用 `read_file` 取小文本，
 再用 `FilePreview` 展示。会话与渠道取自当前 Ops 上下文，根目录来自已绑定的会话工作区，不接受浏览器自报路径。
 
-- `files` 返回 `status`、`treeData`、`truncated`、`readFailed`；目录最多 8 层、512 节点、每层 100 项、96 KiB 预算。
+- `files` 返回 `status`、`treeData`、`truncated`、`readFailed`；目录最多 8 层、512 节点、每层 100 项、96 KiB 预算，最多同时展开 100 个目录。符号链接和非常规文件被跳过，不计为超限；读取失败由 readFailed 单独表示，truncated 仅表示达到浏览预算。
 - `read_file` 返回 `status` 与 `file`（name/path/mimeType/size/content）；正文最多 16 KiB，
   二进制、图片与超大文件拒绝；目录边界、符号链接与文件类型在 Server 复核。
 
@@ -318,5 +321,4 @@ render → Handler → replace；前端测试使用 jsdom 验证页面点击产�
 - 目录随生效记录刷新、包卸载后目录失效尚未单独验证；当前用例只覆盖实例清理。
 - 本地化资源已声明和校验，但尚未参与标题解析。
 - 界面项不支持运行时禁用、灰度或按用户过滤。
-- 当前槽位为 13 个会话语境位置（含单轮与助手消息 meta 位置）；新增槽位需要同时修改后端白名单和前端宿主。
-- 新增槽位时，前后端登记的名称、范围和展示模式必须一致；未知槽位或范围不一致的目标会被拒绝。
+- 当前槽位为 14 个位置：13 个会话语境位置（含单轮与助手消息 meta 位置）和应用范围的 `application.entry`；新增槽位时，前后端登记的名称、范围和展示模式必须一致，未知槽位或范围不一致的目标会被拒绝。

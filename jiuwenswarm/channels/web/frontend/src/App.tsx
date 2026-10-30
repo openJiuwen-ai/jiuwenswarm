@@ -4416,7 +4416,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
   }, [activeNav, sessionId, webUIPage]);
 
   const webUIPageSection = activeNav === 'webui' && webUIPage && webUIPage.sessionId === sessionId ? (
-    <div className="app-section min-w-0 overflow-y-auto" data-testid="app-webui-page">
+    <div className="app-section flex min-h-0 min-w-0 flex-col overflow-y-auto" data-testid="app-webui-page">
       <WebUIPageHost target={webUIPage} />
     </div>
   ) : null;
