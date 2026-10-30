@@ -325,22 +325,6 @@ button.group-chat-member-row:hover:not(:disabled) { background: var(--color-surf
 .group-chat-stack-avatar { width: 64px; height: 64px; box-shadow: 0 0 0 2px var(--color-surface-content); }
 .group-chat-avatar-stack > * + * { margin-left: -8px; }
 .group-chat-empty-icon { width: 64px; height: 64px; flex-basis: 64px; }
-.group-chat-suggestions { display: flex; flex-direction: column; gap: 12px; width: min(552px, 100%); margin-top: 24px; }
-.group-chat-suggestion {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 52px;
-  padding: 0 16px;
-  border-radius: 8px;
-  background: var(--color-surface-page);
-  color: var(--color-text-primary);
-  font-size: 13px;
-  text-align: left;
-}
-.group-chat-suggestion svg { flex-shrink: 0; color: var(--color-text-secondary); }
-.group-chat-suggestion:hover:not(:disabled) { background: var(--color-surface-muted); }
 
 /* File preview shown in the side panel instead of a modal. */
 .group-chat-panel.is-preview { width: min(720px, 45%); min-width: 360px; padding: 0; gap: 0; overflow: hidden; }

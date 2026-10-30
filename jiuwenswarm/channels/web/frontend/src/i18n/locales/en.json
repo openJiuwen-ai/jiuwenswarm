@@ -6029,6 +6029,7 @@
     "taskTitle": "Task",
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
+    "generatingTasks": "Generating tasks",
     "counts": {"total": "Total", "running": "In progress", "completed": "Completed", "stopped": "Stopped", "failed": "Failed"},
 
     "pinned": "Pinned",
@@ -6064,11 +6065,6 @@
     "welcomeHint": "Invite experts and teams. Use @ to bring the right people into the conversation.",
     "start": "Welcome to your group",
     "startHint": "We are always online. Leave professional work to the professionals.",
-    "suggestions": {
-      "bugTeam": "Build a bug-fixing team for me",
-      "brainstormTeam": "Build a brainstorming team for me",
-      "customTeam": "Customize my own team"
-    },
     "humanCount": "{{count}} people",
     "agentCount": "{{count}} agents",
     "searchMembers": "Search members",

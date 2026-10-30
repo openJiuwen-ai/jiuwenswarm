@@ -6001,6 +6001,7 @@
     "taskTitle": "任务",
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
+    "generatingTasks": "任务生成中",
     "counts": {"total": "总任务数", "running": "进行中", "completed": "已完成", "stopped": "已停止", "failed": "异常失败"},
 
     "pinned": "置顶",
@@ -6036,11 +6037,6 @@
     "welcomeHint": "邀请专家和专家团加入群聊，通过 @ 让合适的成员参与讨论。",
     "start": "欢迎使用群组",
     "startHint": "我们随时在线，把专业工作交给专业的人。",
-    "suggestions": {
-      "bugTeam": "帮我组建修 bug 团队",
-      "brainstormTeam": "帮我组建脑暴团队",
-      "customTeam": "定制属于我的团队"
-    },
     "humanCount": "{{count}} 位成员",
     "agentCount": "{{count}} 位智能体",
     "searchMembers": "搜索群成员",
