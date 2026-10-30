@@ -782,6 +782,7 @@ class RuntimeSessionProvisioner:
                 raise SessionProvisionError(str(exc), code=getattr(exc, "code", "BAD_REQUEST")) from exc
             prewarm_eligible = (
                 not is_swarm
+                and not (provision_input.cron_id and channel_id == "web")
                 and not moa_enabled
                 and canonical_mode
                 in {

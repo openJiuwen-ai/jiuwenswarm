@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import Future
 
 import pytest
@@ -14,6 +15,51 @@ from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 
 class _FakeWebSocket:
     pass
+
+
+def test_cron_failure_writer_deduplicates_by_request_without_modifying_new_turn(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_history
+
+    history = tmp_path / "history.jsonl"
+    original = [
+        {"request_id": "first", "role": "assistant", "event_type": "chat.error", "content": "original error"},
+        {"request_id": "next", "role": "user", "content": "followup"},
+    ]
+    history.write_text("".join(json.dumps(record) + "\n" for record in original), encoding="utf-8")
+    monkeypatch.setattr(session_history, "use_legacy_history_json", lambda: False)
+    monkeypatch.setattr(session_history, "_ensure_jsonl_bootstrap", lambda session_id: history)
+    fallback = {"request_id": "first", "role": "assistant", "event_type": "chat.error", "content": "fallback", "cron_failure_record": True}
+    session_history._write_item("session", fallback)
+    assert [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()] == original
+    fallback = {**fallback, "request_id": "another-run"}
+    session_history._write_item("session", fallback)
+    session_history._write_item("session", fallback)
+    session_history._write_item("session", {
+        "request_id": "another-run", "role": "assistant", "event_type": "chat.error", "content": "late primary",
+    })
+    assert [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()] == [*original, fallback]
+
+
+def test_cron_failure_dedup_ignores_non_object_legacy_records(tmp_path, monkeypatch):
+    """A corrupted legacy JSON array must not block the cron failure append."""
+    from jiuwenswarm.server.runtime.session import session_history
+
+    history = tmp_path / "history.json"
+    original = [
+        "corrupted",
+        17,
+        None,
+        {"request_id": "first", "role": "assistant", "event_type": "chat.error", "content": "original error"},
+    ]
+    history.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(session_history, "use_legacy_history_json", lambda: True)
+    monkeypatch.setattr(session_history, "_ensure_legacy_json_bootstrap", lambda session_id: history)
+    fallback = {
+        "request_id": "first", "role": "assistant", "event_type": "chat.error",
+        "content": "fallback", "cron_failure_record": True,
+    }
+    session_history._write_item("session", fallback)
+    assert json.loads(history.read_text(encoding="utf-8")) == original
 
 
 @pytest.mark.asyncio
@@ -77,6 +123,7 @@ async def test_history_append_record_persists_and_waits_for_completion(monkeypat
         "timestamp": 123.5,
         "event_type": "chat.final",
         "mode": "deep",
+        "extra": None,
     }
     assert sent == [
         {

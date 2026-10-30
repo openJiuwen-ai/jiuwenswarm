@@ -680,6 +680,7 @@ class CronRunState:
     # Tenant route captured with the executing request.  A removed persisted
     # job must not make ghost/timeout cancellation fall back to the default user.
     exec_user_id: str | None = None
+    exec_app_id: str | None = None
     # Remaining AgentManager cache identity captured by the executing request.
     # These values survive removal of the persisted job so ghost/timeout
     # cancellation can still target the exact Runtime agent.
@@ -691,3 +692,7 @@ class CronRunState:
     execution_session_allocated: bool = False
     # Manual proactive checks report their outcome through a UI notification.
     manually_triggered: bool = False
+    exec_request_id: str | None = None
+    exec_execution_id: str | None = None
+    notification_revision: int = 0
+    stream_error_seen: bool = False

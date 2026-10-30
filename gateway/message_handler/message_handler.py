@@ -50,6 +50,7 @@ from gateway.common.mode_matrix import (
     deprecate_mode,
     is_team_mode,
 )
+from gateway.common.cron_events import CRON_SESSION_STREAM_KEY
 from gateway.hooks.handler import GatewayHookHandler
 from gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
@@ -355,6 +356,7 @@ class MessageHandler(ABC):
         self._stream_sessions: dict[str, str | None] = {}  # request_id -> session_id
         self._stream_team_ids: dict[str, str] = {}  # request_id -> targeted expert
         self._stream_metadata: dict[str, dict[str, Any] | None] = {}  # request_id -> request metadata
+        self._stream_processing_finished: set[str] = set()
         # AgentServer server_push frames only carry request_id. Keep the
         # authenticated owner so cron mutations and reverse E2A stay routed.
         self._stream_user_ids: dict[str, str] = {}
@@ -1128,6 +1130,7 @@ class MessageHandler(ABC):
         self._stream_sessions.pop(rid, None)
         self._stream_team_ids.pop(rid, None)
         self._stream_metadata.pop(rid, None)
+        self._stream_processing_finished.discard(rid)
         self._stream_user_ids.pop(rid, None)
         self._stream_emits_processing_status.pop(rid, None)
         self._stream_methods.pop(rid, None)
@@ -3951,10 +3954,23 @@ class MessageHandler(ABC):
         """
         if self._is_terminal_stream_chunk(chunk):
             return False
+        request_metadata = {
+            **(self._stream_metadata.get(chunk.request_id) or {}),
+            **(request_metadata or {}),
+        }
         # 跳过 keepalive chunk — 仅用于 WebSocket 保活，不投递到 IM 通道
         payload = getattr(chunk, "payload", None)
         if isinstance(payload, dict) and payload.get("event_type") == "keepalive":
             return False
+        if isinstance(payload, dict) and (request_metadata or {}).get(CRON_SESSION_STREAM_KEY):
+            payload = {"request_id": chunk.request_id, **payload, CRON_SESSION_STREAM_KEY: True}
+            chunk.payload = payload
+            if (
+                payload.get("event_type") == "chat.processing_status"
+                and payload.get("is_processing") is False
+                and self._session_has_streams_blocking_processing_false(session_id, exclude_rid=chunk.request_id)
+            ):
+                return False
         if not await self._handle_evolution_chunk(chunk, session_id, request_metadata):
             return False
         out = self._chunk_to_message(
@@ -3964,6 +3980,12 @@ class MessageHandler(ABC):
             app_id=self._stream_app_ids.get(chunk.request_id, ""),
         )
         await self.publish_robot_messages(out)
+        if (
+            isinstance(payload, dict)
+            and payload.get("event_type") == "chat.processing_status"
+            and payload.get("is_processing") is False
+        ):
+            self._stream_processing_finished.add(chunk.request_id)
         return True
 
     async def _publish_stream_error(
@@ -5625,6 +5647,57 @@ class MessageHandler(ABC):
             request_id,
         )
 
+    def _register_stream_consumer(
+        self, env: "E2AEnvelope", session_id: str | None, task: asyncio.Task,
+        *, metadata: dict | None, app_id: str, emit_processing_status: bool,
+    ) -> None:
+        """Register an existing consumer without starting a second execution."""
+        rid = env.request_id
+        route = self._expert_stream_route(env.params)
+        self._stream_team_ids[rid] = route.get("team_id", "")
+        self._stream_emits_processing_status[rid] = emit_processing_status
+        self._stream_methods[rid] = str(getattr(env.method, "value", env.method))
+        self._stream_modes[rid] = (env.params or {}).get("mode", "plan")
+        self._stream_tasks[rid] = task
+        self._stream_channels[rid] = env.channel
+        self._stream_sessions[rid] = session_id
+        self._stream_metadata[rid] = metadata
+        self._stream_user_ids[rid] = str(env.user_id or "").strip()
+        self._stream_app_ids[rid] = app_id
+
+    async def register_background_stream(self, env: "E2AEnvelope", session_id: str) -> None:
+        """Let a scheduler-owned stream use ordinary chat bookkeeping."""
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("background stream requires an owning task")
+        metadata = {**(env.channel_context or {}), "user_id": str(env.user_id or "").strip()}
+        app_id = str(metadata.get("app_id") or "")
+        self._register_stream_consumer(
+            env, session_id, task, metadata=metadata, app_id=app_id, emit_processing_status=True,
+        )
+        try:
+            await self._send_processing_status(
+                env.request_id, session_id, env.channel, is_processing=True, app_id=app_id, metadata=metadata,
+            )
+        except BaseException:
+            await self._pop_stream_tracking_and_broadcast([env.request_id])
+            raise
+
+    def background_stream_has_other_work(self, request_id: str, session_id: str) -> bool:
+        """Whether a cron terminal must leave a newer execution's UI alone."""
+        return self._session_has_streams_blocking_processing_false(session_id, exclude_rid=request_id)
+
+    async def finish_background_stream(self, env: "E2AEnvelope", session_id: str) -> None:
+        """Release only this consumer and preserve any newer chat's busy state."""
+        app_id = self._stream_app_ids.get(env.request_id, "")
+        metadata = self._stream_metadata.get(env.request_id)
+        processing_finished = env.request_id in self._stream_processing_finished
+        await self._pop_stream_tracking_and_broadcast([env.request_id])
+        if not processing_finished and not self._session_has_streams_blocking_processing_false(session_id):
+            await self._send_processing_status(
+                env.request_id, session_id, env.channel, is_processing=False, app_id=app_id, metadata=metadata,
+            )
+
     async def _start_stream_task(
         self,
         msg: "Message",
@@ -5634,35 +5707,34 @@ class MessageHandler(ABC):
         """Start a Gateway stream consumer and register stream bookkeeping."""
         emit_processing_status = self._should_emit_processing_status_for_stream(msg)
         stream_route = self._expert_stream_route(env.params)
-        self._stream_team_ids[stream_rid] = stream_route.get("team_id", "")
-        self._stream_emits_processing_status[stream_rid] = emit_processing_status
-        self._stream_methods[stream_rid] = self._stream_method_value(msg)
-        self._stream_modes[stream_rid] = (
-            msg.params.get("mode", "plan") if isinstance(msg.params, dict) else "plan"
-        )
-        if emit_processing_status:
-            await self._send_processing_status(
-                stream_rid,
-                msg.session_id,
-                msg.channel_id,
-                is_processing=True,
-                app_id=msg.app_id or "",
-                team_id=stream_route.get("team_id", ""),
-            )
-        task = asyncio.create_task(
-            self.process_stream(
+        ready = asyncio.Event()
+
+        async def consume() -> None:
+            await ready.wait()
+            await self.process_stream(
                 env,
                 msg.session_id,
                 msg.metadata,
                 emit_processing_status=emit_processing_status,
             )
+
+        task = asyncio.create_task(consume())
+        self._register_stream_consumer(
+            env, msg.session_id, task, metadata=msg.metadata,
+            app_id=msg.app_id or "", emit_processing_status=emit_processing_status,
         )
-        self._stream_tasks[stream_rid] = task
-        self._stream_channels[stream_rid] = msg.channel_id
-        self._stream_sessions[stream_rid] = msg.session_id
-        self._stream_metadata[stream_rid] = msg.metadata
-        self._stream_user_ids[stream_rid] = str(env.user_id or "").strip()
-        self._stream_app_ids[stream_rid] = msg.app_id or ""
+        try:
+            if emit_processing_status:
+                await self._send_processing_status(
+                    stream_rid, msg.session_id, msg.channel_id, is_processing=True,
+                    app_id=msg.app_id or "", team_id=stream_route.get("team_id", ""),
+                )
+        except BaseException:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await self._pop_stream_tracking_and_broadcast([stream_rid])
+            raise
+        ready.set()
         logger.info(
             "[MessageHandler] Stream 任务已启动（后台运行）: request_id=%s "
             "channel_id=%s 当前并发=%d",
@@ -5762,6 +5834,7 @@ class MessageHandler(ABC):
     async def _send_processing_status(
         self, request_id: str, session_id: str | None, channel_id: str, *,
         is_processing: bool, app_id: str = "", team_id: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """发送 chat.processing_status 事件到客户端。"""
         from openjiuwen_protocol.message import EventType, Message
@@ -5785,7 +5858,8 @@ class MessageHandler(ABC):
                 "is_complete": not is_processing
             },
             event_type=EventType.CHAT_PROCESSING_STATUS,
-            metadata={"mode": _mode} if _mode else None,
+            metadata={**(metadata or {}), **({"mode": _mode} if _mode else {})}
+            if metadata or _mode else None,
         )
         await self.publish_robot_messages(status_msg)
         # 广播全局运行态快照给所有 ws 客户端（不按 session 路由），用于多窗口配置保存锁。
@@ -5930,6 +6004,7 @@ class MessageHandler(ABC):
         self._stream_sessions.clear()
         self._stream_team_ids.clear()
         self._stream_metadata.clear()
+        self._stream_processing_finished.clear()
         self._stream_user_ids.clear()
         self._stream_emits_processing_status.clear()
         self._stream_methods.clear()

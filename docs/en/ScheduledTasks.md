@@ -2,7 +2,17 @@
 
 Scheduled tasks (Cron) are an essential mechanism for automation in JiuwenSwarm.
 
+## Web execution sessions
+
+Each ordinary Web cron run creates a separate session. Open it to view streaming replies, reasoning, tool calls, and Team state through the normal chat interface. Run now opens the session actually created by the server. The task list shows schedule enablement and execution status separately.
+
+The first turn retains existing unattended tool and approval restrictions. Follow-up turns use existing Web session rules. MoA remains disabled throughout cron sessions. Cron tasks continue to select a single model through the existing model_name interface; changing a session's model does not modify the job configuration.
+
+Refresh, reconnect, and later visits use normal chat history and state recovery. They do not restore an old scheduler CronRun or execute the job again. Results appear directly in the session; the scheduled push sends a reminder without appending a duplicate answer. Early wake-up behavior and cascading deletion of associated sessions remain unchanged.
+
 ---
+
+Each execution session inherits the single model saved in the job; changing the session model does not change the job. Run hints in the task list come only from live notifications and do not survive a page refresh. Disconnecting clears hints whose terminal state was not confirmed. Session content and history still recover through normal chat.
 
 ## Concepts
 

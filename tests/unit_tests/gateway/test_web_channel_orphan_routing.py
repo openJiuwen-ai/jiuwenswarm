@@ -33,6 +33,46 @@ def _make_channel() -> WebChannel:
     return channel
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_name", ["cron.run.updated", "chat.delta"])
+async def test_web_cron_events_preserve_owner_and_app_isolation(event_name):
+    channel = _make_channel()
+    owner = _FakeWs("owner")
+    other_user = _FakeWs("other-user")
+    other_app = _FakeWs("other-app")
+    channel.connection_user_id = lambda ws: "other" if ws is other_user else "owner"
+    for client, user_id, app_id in ((owner, "owner", "default"), (other_user, "other", "default"), (other_app, "owner", "another-app")):
+        channel._clients_by_key[RoutingKey(
+            user_id=user_id, channel_id="web", app_id=app_id,
+            agent_ref=AgentRef(mode="agent", id="default"), session_id="same-known-session",
+        )] = [client]
+    sent = []
+    channel._enqueue_send = lambda ws, frame: sent.append((ws, frame))
+    broadcasts = await _capture_broadcast(channel)
+    payload = {
+        "event_type": event_name, "user_id": "owner", "job_id": "job",
+        "run_id": "run", "revision": 1, "notify": False,
+    }
+    if event_name == "chat.delta":
+        payload.update({"content": "private output", "cron_session_stream": True})
+    await channel.send(Message(
+        id="event", type="event", channel_id="web", app_id="default",
+        session_id=None if event_name == "cron.run.updated" else "same-known-session",
+        params={}, timestamp=1.0, ok=True, payload=payload, event_type=None,
+        metadata={"user_id": "owner", "cron_session_stream": True},
+    ))
+    if event_name == "cron.run.updated":
+        assert [ws for ws, _ in sent] == [owner]
+        assert sent[0][1]["event"] == event_name
+        assert sent[0][1]["payload"]["run_id"] == "run"
+    else:
+        assert broadcasts[0][1] == {owner}
+        assert broadcasts[0][0]["payload"]["content"] == "private output"
+        # The public cron stream keeps its marker on the reduced payload so the
+        # frontend does not mistake it for a legacy cron result broadcast.
+        assert broadcasts[0][0]["payload"]["cron_session_stream"] is True
+
+
 def _chat_final_msg(ws_id: str | None, session_id: str = "sess-1") -> Message:
     metadata = {"ws_id": ws_id} if ws_id else {}
     return Message(

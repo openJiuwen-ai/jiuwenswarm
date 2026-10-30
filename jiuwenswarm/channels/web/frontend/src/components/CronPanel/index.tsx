@@ -161,7 +161,7 @@ interface CronPanelProps {
    * 传 Session 对象（如"触发的会话"列表里已有完整数据）或直接传 session_id 字符串
    * （如立即执行返回的 session_id，还没有完整 Session 数据）。
    */
-  onSelectSession: (session: Session | string) => void;
+  onSelectSession: (session: Session | string) => void | Promise<void>;
 }
 
 type TabKey = 'list' | 'template' | 'history';
@@ -323,6 +323,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 在这里创建/编辑/停止/删除任务后也要通知它刷新，否则侧边栏那边的任务文件夹会显示过期数据
   const reloadCronStore = useCronStore((s) => s.reload);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
+  const runUpdates = useCronStore((s) => s.runUpdates);
   // 手动创建未选项目时，后端以此把任务归入 default/default_code（Issue #5713）。
   const currentWorkMode = useWorkspaceStore((s) => s.workMode);
 
@@ -626,6 +627,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     projectsRef.current = projects;
   }, [projects]);
 
+  useEffect(() => webClient.on('cron.run.updated', () => {
+    void loadJobs(projectsRef.current, { silent: true });
+  }), [loadJobs]);
+
   // 定时任务列表除了"挂载时拉一次"、"本页面自己发起的创建/编辑/启停/删除"、"同一 web 会话内
   // cron_ 前缀工具调用完成"这三种触发方式外，没有别的刷新入口——跨渠道（飞书/钉钉等）创建的
   // 任务，以及纯粹随时间推移产生的"过期"状态变化，都覆盖不到，只能等用户手动切页重新挂载
@@ -890,6 +895,12 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 影响，其水平中心不是视口中心；toast 默认 fixed 视口居中会与面板内提示错位）。
         // animation:none 禁用 toast 默认入场/退场动画，避免其 transform 覆盖 translateX(-50%)。
         const panelRect = panelRef.current?.getBoundingClientRect();
+        useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
+        try {
+          await onSelectSession(result.session_id);
+        } catch {
+          throw new Error(t('cron.errors.sessionOpenFailed'));
+        }
         toast.open({
           id: 'cron-run-now-success',
           content: t('cron.success.runNow'),
@@ -912,8 +923,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             borderRadius: 'var(--radius-lg)',
           },
         });
-        useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
-        onSelectSession(result.session_id);
       } else {
         // proactive 或后端未返回 session_id：面板不卸载，local state 提示生命周期足够
         setSuccess(t(isProactiveJob ? 'cron.success.proactiveRunNow' : 'cron.success.runNow'));
@@ -1075,7 +1084,24 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 因此这里只有两态：过期 → 过期；否则 → 启用，不显示"禁用"中间态
         // （沿用 upstream 提交 59cf6de7 的约束）
         const isProactive = job.id === PROACTIVE_AUTO_JOB_ID;
-        return <StatusBadge enabled={isProactive ? !job.expired : job.enabled} expired={job.expired} />;
+        const executions = Object.values(runUpdates).filter((run) => run.job_id === job.id);
+        // Keep run ordering stable when an older run finishes or sends its reminder.
+        const latest = executions.sort((left, right) => right.firstSeenAt - left.firstSeenAt)[0];
+        return (
+          <div className="flex flex-col items-start gap-1" data-testid="cron-job-status" data-variant={job.id}>
+            <StatusBadge enabled={isProactive ? !job.expired : job.enabled} expired={job.expired} />
+            {latest && (
+              <span
+                className="text-xs text-text-muted"
+                data-testid="cron-job-run-status"
+                data-variant={job.id}
+                title={latest.error}
+              >
+                {t(`cron.execution.${latest.status}`)}
+              </span>
+            )}
+          </div>
+        );
       },
     },
     {

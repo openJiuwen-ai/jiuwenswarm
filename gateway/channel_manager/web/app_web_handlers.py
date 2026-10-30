@@ -4852,6 +4852,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
             # 体系），用后即弃、不落任务数据。
             params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
+            if str(params.get("targets") or "web").strip() == "web":
+                params["app_id"] = getattr(ws, "_jiuwen_app_id", "default") or "default"
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
             # 误把任务归到默认项目；缺省时让目标 AgentServer / 显式 project_id 决定。

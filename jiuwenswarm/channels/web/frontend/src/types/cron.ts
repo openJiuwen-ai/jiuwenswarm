@@ -1,5 +1,21 @@
 import type { AgentMode } from './index';
 
+export interface CronRunUpdate {
+  event_id: string;
+  revision: number;
+  job_id: string;
+  job_name?: string;
+  run_id: string;
+  session_id?: string | null;
+  status: 'pending' | 'running' | 'succeeded' | 'failed';
+  phase: 'started' | 'finished' | 'reminder';
+  mode: string;
+  project_id: string;
+  notify: boolean;
+  timestamp: number;
+  error?: string;
+}
+
 /** 后端 cron.job.* 系列 RPC 实际收发的字段，对齐 gateway/cron/models.py 的 CronJob.to_dict() */
 export interface CronJobDTO {
   id: string;

@@ -64,6 +64,27 @@ class FakeAgentClient:
         raise RuntimeError("connection lost")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("app_id", "expected"),
+    [("web-app", "web-app"), ("", "default")],
+)
+async def test_metadata_proxy_preserves_web_application_for_runtime_replay(app_id, expected):
+    # 与 app_web_handlers 创建 cron 任务时的口径一致：空 app_id 归一为
+    # default，恢复请求与首轮执行身份保持同一 app 作用域。
+    from types import SimpleNamespace
+
+    channel = FakeChannel()
+    client = FakeAgentClient()
+    await proxy_unary_request(
+        channel=channel, agent_client=client, ws=SimpleNamespace(_jiuwen_app_id=app_id),
+        req_id="metadata", params={"session_id": "session"}, session_id="session",
+        user_id="owner", req_method=ReqMethod.SESSION_GET_METADATA,
+    )
+    assert client.envelopes[0].channel_context["app_id"] == expected
+    assert client.envelopes[0].user_id == "owner"
+
+
 async def _invoke(channel, agent_client, **overrides):
     kwargs = {
         "channel": channel,

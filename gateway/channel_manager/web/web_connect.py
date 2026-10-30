@@ -965,6 +965,7 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            or event_name == "cron.run.updated"
         )
 
     @staticmethod
@@ -1040,6 +1041,9 @@ class WebChannel(BaseWsChannel):
                 # 为空 → 赞/踩按钮不出现（ProactiveRecommendationCard 按 proactiveRecId
                 # 条件渲染按钮）。
                 "proactive_rec_id",
+                # Cron 首轮接入公共会话流时用该标记区分旧版 cron 推送；
+                # 精简分支丢弃它会让前端守卫失效，见 S_01_web-cron-session。
+                "cron_session_stream",
             ):
                 _val = msg.payload.get(_key)
                 if _val is not None:
@@ -1109,14 +1113,27 @@ class WebChannel(BaseWsChannel):
             )
             return
 
+        if self._resolve_event_name(msg) == "cron.run.updated":
+            owner = str((msg.payload or {}).get("user_id") or "").strip()
+            frame = self._serialize_frame(msg, None)
+            for client in self.clients:
+                if owner and self.connection_user_id(client) != owner:
+                    continue
+                if msg.app_id and not any(
+                    key.app_id == msg.app_id and client in clients
+                    for key, clients in self._clients_by_key.items()
+                ):
+                    continue
+                self._enqueue_send(client, frame)
+            return
+
         # ── 定时任务推 web：不绑定旧 session_id，以支持关闭 tab/换设备；但在
         # AgentOS 下必须按 job.user_id 限定接收者。空 user_id 是历史单用户任务，
         # 仍保持原有广播行为。
-        if (
-            msg.event_type == EventType.CHAT_FINAL
-            and isinstance(msg.payload, dict)
-            and isinstance(msg.payload.get("cron"), dict)
-        ):
+        payload = msg.payload
+        cron_payload = payload.get("cron") if isinstance(payload, dict) else None
+        is_cron_push = isinstance(cron_payload, dict) and not payload.get("cron_session_stream")
+        if msg.event_type == EventType.CHAT_FINAL and is_cron_push:
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
             clients = (
@@ -1301,9 +1318,17 @@ class WebChannel(BaseWsChannel):
             )
             return
         if not ws_set:
+            cron_stream = bool(metadata.get("cron_session_stream") or (
+                isinstance(msg.payload, dict) and msg.payload.get("cron_session_stream")
+            ))
+            cron_owner = str(metadata.get("user_id") or "").strip()
             for rk, ws_list in self._clients_by_key.items():
                 if rk.session_id == msg.session_id:
+                    if cron_stream and msg.app_id and rk.app_id != msg.app_id:
+                        continue
                     for w in ws_list:
+                        if cron_stream and cron_owner and self.connection_user_id(w) != cron_owner:
+                            continue
                         if not getattr(w, "closed", False):
                             ws_set.add(w)
         if not ws_set:
@@ -1455,6 +1480,8 @@ class WebChannel(BaseWsChannel):
           - chat.interrupt_result: pause/supplement/resume 视为仍在处理,
             其余 intent(cancel)视为已结束
         """
+        if isinstance(msg.payload, dict) and msg.payload.get("output_suppressed") is True:
+            return
         if msg.type != "event":
             return
         payload = msg.payload if isinstance(msg.payload, dict) else None
@@ -1616,6 +1643,7 @@ class WebChannel(BaseWsChannel):
         # ── V2: 从 query 提取身份字段，构造默认 RoutingKey ──
         # session_id 和 agent_id 可能在首条消息中更新
         _app_id = _flat_query.get("app_id", "default")
+        setattr(ws, "_jiuwen_app_id", _app_id)
         _mode = _flat_query.get("mode", "agent")
         _agent_id = _flat_query.get("agent_id", "default")
         _raw_initial_sid = _flat_query.get("session_id")
