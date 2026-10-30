@@ -104,3 +104,6 @@ vendor/node/
 # Local smoke / verification scratch scripts (not part of the PR).
 _smoke_*.py
 _verify_*.py
+
+# Local testing handoff documents are not versioned.
+/.agents/testing/
