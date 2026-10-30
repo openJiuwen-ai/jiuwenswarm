@@ -4843,6 +4843,19 @@ class AgentWebSocketServer:
                                         )
                                         failed_session_ids.append(team_session_id)
                                         continue
+                                try:
+                                    from jiuwenswarm.server.runtime.session.openclaw_runtime_history import (
+                                        delete_openclaw_history,
+                                    )
+
+                                    delete_openclaw_history(team_session_id)
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.warning(
+                                        "[AgentWebSocketServer] OpenClaw history cleanup failed: "
+                                        "session_id=%s error=%s",
+                                        team_session_id,
+                                        exc,
+                                    )
                                 remove_session_metadata_cache(team_session_id)
 
                             if failed_session_ids:
@@ -5053,6 +5066,19 @@ class AgentWebSocketServer:
                     else:
                         if session_dir.exists():
                             shutil.rmtree(session_dir)
+                        try:
+                            from jiuwenswarm.server.runtime.session.openclaw_runtime_history import (
+                                delete_openclaw_history,
+                            )
+
+                            delete_openclaw_history(target)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[AgentWebSocketServer] OpenClaw history cleanup failed: "
+                                "session_id=%s error=%s",
+                                target,
+                                exc,
+                            )
                         _plan_exited_sessions.discard(target)
                         _plan_active_sessions.discard(target)
                         remove_session_metadata_cache(target)
