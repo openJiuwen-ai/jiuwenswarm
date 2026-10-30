@@ -45,6 +45,12 @@ Empty、Image、Divider、Card、Tag、Panel、Iframe。字段、默认值、必
   同 revision 重建也分配新的 localFrameId；旧显示确认和失败反馈不能作用于新代次。
 - C-15：每次合法组件回调独立发送，包括值相同且前一个请求未完成的回调。
   等待回执期间绑定或代次失效时返回 `stale`，不表示服务端副作用已撤销。
+- C-16：渲染器只接受规范化节点，插件不能注入 className 或 style；独立的宿主外观参数优先于组件默认样式。
+  Box/Button 的 unstyled 外观使用原生元素，Button 仍保留禁用、可访问标签与事件派发语义。
+- C-17：WebUI 主题配置仅作用于 Provider 子树，使用宿主语义 token 和语言设置；
+  Button 逐字显示插件标签，不自动在两个中文字之间添加空格。
+- C-18：Iframe 仅在内容激活且连接有效时持有浏览上下文；隐藏或断连时卸载 iframe，
+  重新激活或 src 改变后重新加载，不保留旧文档。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。
@@ -61,4 +67,5 @@ Select 只声明 ui.select、ui.search、ui.clear，不额外增加 ui.change。
 槽位使用 session 范围，不支持应用身份或无会话推送。
 
 验证入口为 `npm run test:webui-contracts`、`npm run test:webui-protocol`、
-`npm run test:webui-runtime`、`npm run test:webui-events` 和 `npm run test:webui-renderer`。
+`npm run test:webui-runtime`、`npm run test:webui-events`、`npm run test:webui-renderer`
+和 `npm run test:webui-components`。

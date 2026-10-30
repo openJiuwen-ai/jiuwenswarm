@@ -7415,5 +7415,10 @@
       "blocked": "等待中",
       "stopped": "已停止"
     }
+  },
+  "webuiIframe": {
+    "loading": "页面加载中...",
+    "error": "页面加载失败",
+    "inactive": "页面已暂停"
   }
 }
