@@ -913,7 +913,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         rails, removed = super()._get_current_agent_rails(config, config_base)
         # The SDK retains callbacks when reconfiguring with the same rail
         # instance, so requeueing it would register its callbacks again.
-        rails = [rail for rail in rails if rail is not self._context_assemble_rail]
+        context_rail = getattr(self, "_context_assemble_rail", None)
+        if context_rail is not None:
+            rails = [rail for rail in rails if rail is not context_rail]
         old = getattr(self, "_flash_skill_selection_rail", None)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
@@ -969,9 +971,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             if self._context_assemble_rail is not None:
                 is_registered = getattr(self._instance, "is_registered_rail", None)
                 is_pending = getattr(self._instance, "is_pending_rail", None)
-                if not callable(is_registered) or is_registered(self._context_assemble_rail) or (
-                    callable(is_pending) and is_pending(self._context_assemble_rail)
-                ):
+                mounted = not callable(is_registered) or is_registered(self._context_assemble_rail)
+                if not mounted and callable(is_pending):
+                    mounted = is_pending(self._context_assemble_rail)
+                if mounted:
                     self._sync_flash_context_bindings()
                     return
                 self._context_assemble_rail = None

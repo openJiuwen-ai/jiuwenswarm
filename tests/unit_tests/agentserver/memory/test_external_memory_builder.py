@@ -6,15 +6,11 @@ Covers the dispatch table in build_external_memory_rail() by stubbing the
 agent-core provider / rail classes via sys.modules before import.
 """
 
-import logging
 import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
-
-logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Stub agent-core modules so builder's deferred imports succeed
@@ -113,15 +109,18 @@ class _FakeAgentArtsProvider:
         self.kwargs = kwargs
 
 
-def _ensure_module(name: str) -> ModuleType:
+def _ensure_module(name: str, monkeypatch=None) -> ModuleType:
     mod = sys.modules.get(name)
     if mod is None:
         mod = ModuleType(name)
-        sys.modules[name] = mod
+        if monkeypatch is None:
+            sys.modules[name] = mod
+        else:
+            monkeypatch.setitem(sys.modules, name, mod)
     return mod
 
 
-def _install_agent_core_stubs():
+def _install_agent_core_stubs(monkeypatch):
     for pkg in [
         "openjiuwen",
         "openjiuwen.core",
@@ -130,40 +129,40 @@ def _install_agent_core_stubs():
         "openjiuwen.harness",
         "openjiuwen.harness.rails",
     ]:
-        _ensure_module(pkg)
+        _ensure_module(pkg, monkeypatch)
 
-    rails_mod = _ensure_module("openjiuwen.harness.rails")
-    rails_mod.ExternalMemoryRail = _FakeRail
+    rails_mod = _ensure_module("openjiuwen.harness.rails", monkeypatch)
+    monkeypatch.setattr(rails_mod, "ExternalMemoryRail", _FakeRail, raising=False)
 
-    rail_mod = _ensure_module("openjiuwen.harness.rails.external_memory_rail")
-    rail_mod.ExternalMemoryRail = _FakeRail
+    rail_mod = _ensure_module("openjiuwen.harness.rails.external_memory_rail", monkeypatch)
+    monkeypatch.setattr(rail_mod, "ExternalMemoryRail", _FakeRail, raising=False)
 
-    oj_mod = _ensure_module("openjiuwen.core.memory.external.openjiuwen_memory_provider")
-    oj_mod.OpenJiuwenMemoryProvider = _FakeOpenjiuwenProvider
+    oj_mod = _ensure_module("openjiuwen.core.memory.external.openjiuwen_memory_provider", monkeypatch)
+    monkeypatch.setattr(oj_mod, "OpenJiuwenMemoryProvider", _FakeOpenjiuwenProvider, raising=False)
 
-    mem0_mod = _ensure_module("openjiuwen.core.memory.external.mem0_provider")
-    mem0_mod.Mem0MemoryProvider = _FakeMem0Provider
+    mem0_mod = _ensure_module("openjiuwen.core.memory.external.mem0_provider", monkeypatch)
+    monkeypatch.setattr(mem0_mod, "Mem0MemoryProvider", _FakeMem0Provider, raising=False)
 
-    vk_mod = _ensure_module("openjiuwen.core.memory.external.openviking_memory_provider")
-    vk_mod.OpenVikingMemoryProvider = _FakeVikingProvider
+    vk_mod = _ensure_module("openjiuwen.core.memory.external.openviking_memory_provider", monkeypatch)
+    monkeypatch.setattr(vk_mod, "OpenVikingMemoryProvider", _FakeVikingProvider, raising=False)
 
-    lb_mod = _ensure_module("openjiuwen.core.memory.external.lakebase_memory_provider")
-    lb_mod.LakeBaseMemoryProvider = _FakeLakeBaseProvider
+    lb_mod = _ensure_module("openjiuwen.core.memory.external.lakebase_memory_provider", monkeypatch)
+    monkeypatch.setattr(lb_mod, "LakeBaseMemoryProvider", _FakeLakeBaseProvider, raising=False)
 
-    aa_mod = _ensure_module("openjiuwen.core.memory.external.agentarts_memory_provider")
-    aa_mod.AgentArtsMemoryProvider = _FakeAgentArtsProvider
+    aa_mod = _ensure_module("openjiuwen.core.memory.external.agentarts_memory_provider", monkeypatch)
+    monkeypatch.setattr(aa_mod, "AgentArtsMemoryProvider", _FakeAgentArtsProvider, raising=False)
 
     # OfficeAce cloud/pc providers (the two branches the officeace_cloud
     # builder dispatches to).
     oa_cloud_mod = _ensure_module(
-        "openjiuwen.core.memory.external.office_ace_memory_cloud_provider"
+        "openjiuwen.core.memory.external.office_ace_memory_cloud_provider", monkeypatch
     )
-    oa_cloud_mod.OfficeAceMemoryCloudProvider = _FakeAgentArtsProvider
+    monkeypatch.setattr(oa_cloud_mod, "OfficeAceMemoryCloudProvider", _FakeAgentArtsProvider, raising=False)
 
     oa_pc_mod = _ensure_module(
-        "openjiuwen.core.memory.external.office_ace_memory_pc_provider"
+        "openjiuwen.core.memory.external.office_ace_memory_pc_provider", monkeypatch
     )
-    oa_pc_mod.OfficeAceMemoryPcProvider = _FakeAgentArtsProvider
+    monkeypatch.setattr(oa_pc_mod, "OfficeAceMemoryPcProvider", _FakeAgentArtsProvider, raising=False)
 
 
 def _install_jiuwenswarm_stubs():
@@ -201,96 +200,29 @@ def _install_jiuwenswarm_stubs():
 
 
 # ---------------------------------------------------------------------------
-# Save real openjiuwen modules before stubbing, restore after import so
-# other test modules can still import openjiuwen subpackages.
+# Load the builder without installing agent-core stubs during collection.
+# Its agent-core imports are deferred until the builder is called.
 # ---------------------------------------------------------------------------
-_AGENT_CORE_STUB_MODULES = [
-    "openjiuwen",
-    "openjiuwen.core",
-    "openjiuwen.core.memory",
-    "openjiuwen.core.memory.external",
-    "openjiuwen.harness",
-    "openjiuwen.harness.rails",
-    "openjiuwen.harness.rails.external_memory_rail",
-    "openjiuwen.core.memory.external.openjiuwen_memory_provider",
-    "openjiuwen.core.memory.external.mem0_provider",
-    "openjiuwen.core.memory.external.openviking_memory_provider",
-    "openjiuwen.core.memory.external.lakebase_memory_provider",
-]
-
-_STUB_ATTR_OVERRIDES = [
-    ("openjiuwen.harness.rails", "ExternalMemoryRail"),
-    ("openjiuwen.harness.rails.external_memory_rail", "ExternalMemoryRail"),
-    ("openjiuwen.core.memory.external.openjiuwen_memory_provider", "OpenJiuwenMemoryProvider"),
-    ("openjiuwen.core.memory.external.mem0_provider", "Mem0MemoryProvider"),
-    ("openjiuwen.core.memory.external.openviking_memory_provider", "OpenVikingMemoryProvider"),
-    ("openjiuwen.core.memory.external.lakebase_memory_provider", "LakeBaseMemoryProvider"),
-]
-
-_saved_sys_modules: dict = {
-    name: sys.modules[name] for name in _AGENT_CORE_STUB_MODULES if name in sys.modules
-}
-
 # Save real jiuwenswarm.common.utils callables before patching
 import jiuwenswarm.common.utils as _utils_mod
 _saved_utils_get_config_file = _utils_mod.get_config_file
 _saved_utils_get_agent_workspace_dir = _utils_mod.get_agent_workspace_dir
 
 _install_jiuwenswarm_stubs()
-_install_agent_core_stubs()
 
 from jiuwenswarm.agents.harness.common.memory import external_memory_builder as emb  # noqa: E402
 from jiuwenswarm.agents.harness.common.memory import external_memory_config as emc  # noqa: E402
 
-
-# Immediately restore real modules/utils so other test modules can collect.
-def _restore_agent_core_modules():
-    # Restore saved originals, and remove stubs we created for modules that
-    # were not in sys.modules before we started.
-    for name in _AGENT_CORE_STUB_MODULES:
-        if name in _saved_sys_modules:
-            sys.modules[name] = _saved_sys_modules[name]
-        elif name in sys.modules and not hasattr(sys.modules[name], "__path__"):
-            # Only pop bare ModuleType stubs we created (no __path__ means
-            # not a real package).  Leave real modules alone.
-            sys.modules.pop(name, None)
-    _utils_mod.get_config_file = _saved_utils_get_config_file
-    _utils_mod.get_agent_workspace_dir = _saved_utils_get_agent_workspace_dir
-
-_restore_agent_core_modules()
-
-_SENTINEL = object()
+_utils_mod.get_config_file = _saved_utils_get_config_file
+_utils_mod.get_agent_workspace_dir = _saved_utils_get_agent_workspace_dir
 
 
 @pytest.fixture(autouse=True)
-def _isolate_agent_core_stubs():
-    """Re-install stubs for this module's tests, restore after."""
-    saved_attrs = {}
-    for mod_name, attr_name in _STUB_ATTR_OVERRIDES:
-        mod = sys.modules.get(mod_name)
-        if mod is not None:
-            saved_attrs[(mod_name, attr_name)] = getattr(mod, attr_name, _SENTINEL)
-
-    saved_utils_cfg = _utils_mod.get_config_file
-    saved_utils_wd = _utils_mod.get_agent_workspace_dir
-
-    _install_agent_core_stubs()
-    _install_jiuwenswarm_stubs()
-    yield
-
-    for (mod_name, attr_name), val in saved_attrs.items():
-        mod = sys.modules.get(mod_name)
-        if mod is not None:
-            if val is _SENTINEL:
-                try:
-                    delattr(mod, attr_name)
-                except AttributeError:
-                    logger.debug("Attribute %s not found on module %s, skipping deletion", attr_name, mod_name)
-            else:
-                setattr(mod, attr_name, val)
-    _utils_mod.get_config_file = saved_utils_cfg
-    _utils_mod.get_agent_workspace_dir = saved_utils_wd
-    _restore_agent_core_modules()
+def _isolate_agent_core_stubs(monkeypatch):
+    """Scope provider and rail doubles to each test, including newly created modules."""
+    _install_agent_core_stubs(monkeypatch)
+    monkeypatch.setattr(_utils_mod, "get_config_file", lambda: Path("/tmp/test_config.yaml"))
+    monkeypatch.setattr(_utils_mod, "get_agent_workspace_dir", lambda: Path("/tmp/test_workspace"))
 
 
 @pytest.fixture(autouse=True)

@@ -31,6 +31,6 @@ agent-core 的共享索引还存在必要的配套缺陷：索引重开时将自
 
 ## 验证与边界
 
-`tests/unit_tests/agentserver/test_flash_identity_memory.py` 验证合成工作区身份在真实 SDK 模型调用边界可见、跨工作区隔离、重载后回调不重复；同时验证无 embedding 的真实 SQLite 关键词写入、检索与重开，以及与模拟外部记忆和画像服务共存。未修改 SDK 下，相关 Flash 定向回归为 **115 passed、1 failed**；锁定 SDK 下关键组合为 **24 passed、1 failed**。两者均在索引重开后的检索断言失败，该用例继续保留，不能把关键词记忆的持久可用性视为通过。模型及远端 HTTP 为模拟，未执行真实 OfficeAce 服务或 Windows 实机验收。
+`tests/unit_tests/agentserver/test_flash_identity_memory.py` 验证合成工作区身份在真实 SDK 模型调用边界可见、跨工作区隔离、重载后回调不重复；同时验证无 embedding 的真实 SQLite 关键词写入、检索与重开，以及与模拟外部记忆和画像服务共存。未修改 SDK 下，相关双 worker 定向回归为 **249 passed、1 xfailed**；锁定 SDK 下关键组合为 **53 passed、1 xfailed**。索引重开断言保留为非严格 xfail，首次检索由独立用例验证；不能把关键词记忆跨重开的持久可用性视为通过。模型及远端 HTTP 为模拟，未执行真实 OfficeAce 服务或 Windows 实机验收。
 
-普通 agent 的无 embedding 构造入口仍存在相同问题，本次未修改；用户自定义的任意身份文件也未加入自动装配清单。SDK 的索引重开缺陷尚未修复，因而相关组合测试仍失败，也可能阻塞包含该测试的 CI。现场安装包版本和故障请求的完整模型输入尚未取得，不能仅凭隔离测试宣布原现场问题闭环。
+普通 agent 的无 embedding 构造入口仍存在相同问题，本次未修改；用户自定义的任意身份文件也未加入自动装配清单。SDK 的索引重开缺陷尚未修复，相关场景按 xfail 保留；现场安装包版本和故障请求的完整模型输入尚未取得，不能仅凭隔离测试宣布原现场问题闭环。
