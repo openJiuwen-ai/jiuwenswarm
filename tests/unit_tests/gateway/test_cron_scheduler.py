@@ -3927,7 +3927,7 @@ async def test_resume_success_clears_the_permission_hold(tmp_path):
 @pytest.mark.asyncio
 async def test_distributed_hold_is_written_to_redis(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.redis.redis_runtime.get_declared_deployment_mode",
+        "gateway.extensions.redis.redis_runtime.get_declared_deployment_mode",
         lambda: "distributed",
     )
     written = []
@@ -3941,7 +3941,7 @@ async def test_distributed_hold_is_written_to_redis(tmp_path, monkeypatch):
             return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
+        "gateway.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
         lambda: _Redis(),
     )
     store = CronJobStore(path=tmp_path / "cron_jobs.json")
@@ -3959,7 +3959,7 @@ async def test_distributed_hold_is_written_to_redis(tmp_path, monkeypatch):
 async def test_missing_redis_hold_drops_a_stale_local_note(tmp_path, monkeypatch):
     """另一份网关已经把 Redis 纸条擦掉时，本机不能再拦着。"""
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.redis.redis_runtime.get_declared_deployment_mode",
+        "gateway.extensions.redis.redis_runtime.get_declared_deployment_mode",
         lambda: "distributed",
     )
 
@@ -3974,7 +3974,7 @@ async def test_missing_redis_hold_drops_a_stale_local_note(tmp_path, monkeypatch
             return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
+        "gateway.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
         lambda: _Redis(),
     )
     store = CronJobStore(path=tmp_path / "cron_jobs.json")

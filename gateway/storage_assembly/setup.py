@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 def _on_config_written(path: Path) -> None:
     try:
-        from jiuwenswarm.common.config import clear_config_cache
-        from jiuwenswarm.common.utils import get_config_file
+        from gateway.common.config import clear_config_cache
+        from gateway.common.utils import get_config_file
 
         if path.resolve() == get_config_file().resolve():
             clear_config_cache()
@@ -32,7 +32,7 @@ def _on_config_written(path: Path) -> None:
 
 def _redis_client() -> Any | None:
     try:
-        from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client
+        from gateway.extensions.redis.redis_runtime import get_gateway_redis_client
 
         client = get_gateway_redis_client()
     except Exception:
@@ -56,7 +56,7 @@ def _create_persistent() -> PersistentStore:
             build_gateway_store_registry(),
         )
 
-    from jiuwenswarm.common.utils import (
+    from gateway.common.utils import (
         get_checkpoint_dir,
         get_config_file,
         get_user_workspace_dir,
@@ -123,7 +123,7 @@ def _storage_flag(
     default: bool = True,
 ) -> bool:
     if cfg is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         cfg = get_config()
     storage = (cfg.get("gateway") or {}).get("storage") or {}
@@ -256,7 +256,7 @@ async def setup_gateway_storage_repositories(
     if not session_on and not repos_on:
         return None
     if cfg is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         cfg = get_config()
 
@@ -361,7 +361,7 @@ def ensure_enterprise_storage_context(
     if existing is not None:
         return existing
     if cfg is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         cfg = get_config()
     if not is_enterprise():
@@ -385,7 +385,7 @@ async def wire_enterprise_persistent_repositories_async(
 ) -> None:
     """企业版：注入 PersistentStore 与企业配置等 Repository。"""
     if cfg is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         cfg = get_config()
     if not is_enterprise():
@@ -423,7 +423,7 @@ async def setup_session_map_repository(
     if not is_session_map_repository_enabled(cfg):
         return None
     if cfg is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         cfg = get_config()
     ctx = create_gateway_storage_context(cfg)
@@ -452,7 +452,7 @@ def create_gateway_storage_context(cfg: dict[str, Any] | None = None) -> Storage
     不创建 channel / logging 等 Repository（由 ``create_*_repository`` 负责）。
     """
     if cfg is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         cfg = get_config()
     return StorageContext(

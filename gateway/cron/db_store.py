@@ -16,7 +16,7 @@ from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.runtime.cron.cron_job_mutations import (
+from gateway.runtime.cron.cron_job_mutations import (
     apply_cron_job_patch,
     build_new_cron_job,
     ensure_proactive_deletable,

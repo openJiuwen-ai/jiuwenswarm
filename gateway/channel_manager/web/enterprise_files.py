@@ -12,14 +12,14 @@ from urllib.parse import quote, unquote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from jiuwenswarm.common.obs_files import (
+from gateway.common.obs_files import (
     AttachmentStore,
     MAX_FILE_BYTES,
     _obs_http_client,
     object_prefix,
 )
-from jiuwenswarm.common.utils import build_tenant_key
-from jiuwenswarm.common.request_identity import normalize_routing_identity
+from gateway.common.utils import build_tenant_key
+from gateway.common.request_identity import normalize_routing_identity
 from jiuwenswarm.server.runtime.attachments.upload_storage import safe_upload_filename
 
 
@@ -128,8 +128,8 @@ async def serve_presigned_download(request: Request, url: str, identity: dict) -
 def register_enterprise_file_routes(app: FastAPI, channel) -> None:
     @app.api_route("/file-api/raw-file", methods=["GET", "HEAD"])
     async def raw_file(request: Request) -> Response:
-        from jiuwenswarm.common.request_identity import apply_routing_metadata
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from gateway.common.request_identity import apply_routing_metadata
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.channel_manager.web.container_file_http import (
             _decode_verified_chunk, _error_json, serve_file_chunks,
         )

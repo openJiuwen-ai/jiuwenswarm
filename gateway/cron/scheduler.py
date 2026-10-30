@@ -36,7 +36,7 @@ from gateway.message_handler.message_handler import MessageHandler
 from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
 from gateway.runtime.cron.cron_expr import is_croniter_no_next_date, next_cron_datetime
 from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.common.request_identity import apply_routing_metadata
+from gateway.common.request_identity import apply_routing_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ class CronSchedulerService:
     def _redis_hold_required() -> bool:
         """多份网关一起跑时，这张纸条必须以 Redis 为准。Redis 读不到就先别开新的一轮。"""
         try:
-            from jiuwenswarm.extensions.redis.redis_runtime import get_declared_deployment_mode
+            from gateway.extensions.redis.redis_runtime import get_declared_deployment_mode
 
             mode = str(get_declared_deployment_mode() or "").strip().lower()
             return mode in {"distributed", "active-standby"}
@@ -492,8 +492,8 @@ class CronSchedulerService:
             return "", ""
         # 三份网关里，人可能在另一份上点完。Redis 没了，本机这份也作废。
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import cron_permission_hold_rel
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_keys import cron_permission_hold_rel
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 
@@ -618,11 +618,11 @@ class CronSchedulerService:
         if not self._redis_hold_required():
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_permission_hold_by_session_rel,
                 cron_permission_hold_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 
@@ -668,11 +668,11 @@ class CronSchedulerService:
         if not self._redis_hold_required():
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_permission_hold_by_session_rel,
                 cron_permission_hold_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 
@@ -708,11 +708,11 @@ class CronSchedulerService:
         if not sid:
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_permission_hold_by_session_rel,
                 cron_permission_hold_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 

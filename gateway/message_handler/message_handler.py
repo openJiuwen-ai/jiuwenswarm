@@ -3755,7 +3755,7 @@ class MessageHandler(ABC):
         # 空值会被 controller normalize 成 default，企业版任务筛不中 → 列表空。
         # 查询类：override=False，只补洞，保留 wire/body 已带的真实租户。
         # create：见下方硬覆盖——必须以 chat routing 为准，防 LLM 幻觉跨租户写入。
-        from jiuwenswarm.common.request_identity import (
+        from gateway.common.request_identity import (
             merge_routing_into_params,
             web_routing_identity,
         )

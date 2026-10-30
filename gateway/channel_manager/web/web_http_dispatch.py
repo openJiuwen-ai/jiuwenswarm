@@ -10,9 +10,9 @@ import time
 import uuid
 from typing import Any
 
-from jiuwenswarm.common.request_ext import attach_to_metadata as _ext_attach
-from jiuwenswarm.common.request_ext import build_ext_from_source as _ext_build
-from jiuwenswarm.common.schema.message import Message
+from gateway.common.request_ext import attach_to_metadata as _ext_attach
+from gateway.common.request_ext import build_ext_from_source as _ext_build
+from openjiuwen_protocol.message import Message
 from gateway.enterprise import is_enterprise
 from gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
 from gateway.channel_manager.web.outbound import (
@@ -177,7 +177,7 @@ async def dispatch_http_request(
     mode = str(params.get("mode") or "agent")
     agent_id = str(params.get("agent_id") or "default")
 
-    from jiuwenswarm.common.request_identity import (
+    from gateway.common.request_identity import (
         apply_routing_metadata,
     )
 

@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from gateway.enterprise import is_enterprise
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.utils import logger
+from openjiuwen_protocol.agent_models import AgentRequest
+from gateway.common.utils import logger
 
 from . import db_queries
 from .schemas import (
@@ -26,7 +26,7 @@ from .schemas import (
 
 def routing_context_from_request(request: AgentRequest | Any) -> RoutingContext:
     """从顶层 ``user_id`` + ``metadata.routing`` 解析路由上下文。"""
-    from jiuwenswarm.common.request_identity import web_routing_identity
+    from gateway.common.request_identity import web_routing_identity
 
     meta = getattr(request, "metadata", None)
     identity = web_routing_identity(meta if isinstance(meta, dict) else None)
