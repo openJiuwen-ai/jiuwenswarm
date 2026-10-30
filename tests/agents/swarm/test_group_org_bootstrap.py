@@ -1601,9 +1601,29 @@ async def test_stale_plan_without_a_live_owner_run_expires(monkeypatch):
     plan = _stale_plan()
     _MemoryGroup(monkeypatch, organization_plans=[plan])
     bootstrap._owner_runs.pop((SESSION, plan["plan_id"]), None)
+    bootstrap._queued_plans.pop((SESSION, plan["plan_id"], "business"), None)
 
     assert bootstrap.pending_organization_plan(SESSION, "insight") is None
     assert plan["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_queued_plan_is_not_expired_while_an_older_round_runs(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "pending"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+    bootstrap._owner_runs.pop((SESSION, plan["plan_id"]), None)
+    hold = asyncio.Event()
+    task = asyncio.create_task(hold.wait())
+    bootstrap._queued_plans[(SESSION, plan["plan_id"], "business")] = task
+    try:
+        found = bootstrap.pending_organization_plan(SESSION, "insight")
+        assert found["plan_id"] == "plan-1"
+        assert plan["status"] == "pending"
+    finally:
+        hold.set()
+        task.cancel()
+        bootstrap._queued_plans.pop((SESSION, plan["plan_id"], "business"), None)
 
 
 @pytest.mark.asyncio
@@ -2943,7 +2963,6 @@ async def test_a_later_message_still_uses_the_private_team(monkeypatch, tmp_path
 @pytest.mark.asyncio
 async def test_join_wait_holds_while_the_proxy_turn_is_active(monkeypatch):
     monkeypatch.setattr(bootstrap, "MEMBER_JOIN_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(bootstrap, "RESULT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(bootstrap, "_JOIN_POLL_SECONDS", 0.01)
     state = {"active": True, "bound": False}
 
@@ -2994,7 +3013,6 @@ async def test_join_wait_holds_while_the_proxy_turn_is_active(monkeypatch):
 @pytest.mark.asyncio
 async def test_join_wait_fails_after_the_proxy_turn_ends(monkeypatch):
     monkeypatch.setattr(bootstrap, "MEMBER_JOIN_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(bootstrap, "RESULT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(bootstrap, "_JOIN_POLL_SECONDS", 0.01)
 
     async def _backend(*_args, **_kwargs):
@@ -3015,6 +3033,133 @@ async def test_join_wait_fails_after_the_proxy_turn_ends(monkeypatch):
     elapsed = time.monotonic() - started
     assert missing == ["insight"]
     assert elapsed < 0.4
+
+
+@pytest.mark.asyncio
+async def test_result_wait_continues_until_the_round_finishes(monkeypatch):
+    monkeypatch.setattr(bootstrap, "POLL_SECONDS", 0.01)
+    state = {"round": "running"}
+
+    async def _round_state(_pool, _plan_id):
+        if state["round"] == "running":
+            return "running", []
+        return "completed", [SimpleNamespace(output="unused")]
+
+    monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+    future = asyncio.get_running_loop().create_future()
+
+    async def _finish():
+        await asyncio.sleep(0.05)
+        future.set_result("report")
+        state["round"] = "completed"
+
+    waiter = asyncio.create_task(_finish())
+    result = await asyncio.wait_for(
+        bootstrap._await_completed_result(future, object(), "plan-1"),
+        timeout=1.0,
+    )
+    await waiter
+    assert result == "report"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_owner_wait_marks_the_plan_failed(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "running"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+
+    async def _round(*_args, **_kwargs):
+        return "running", []
+
+    async def _empty(*_args, **_kwargs):
+        return []
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _backend(*_args, **_kwargs):
+        return SimpleNamespace(org_task_manager=object())
+
+    monkeypatch.setattr(bootstrap, "publish_organization_card", _noop)
+    monkeypatch.setattr(bootstrap, "_round_state", _round)
+    monkeypatch.setattr(bootstrap, "_wait_for_members", _empty)
+    monkeypatch.setattr(bootstrap, "_owner_primes_root_task", _noop)
+    monkeypatch.setattr(bootstrap, "_queue_owner_start_reminder", _noop)
+    monkeypatch.setattr(bootstrap, "pause_organization_instances", _noop)
+    monkeypatch.setattr(bootstrap, "dissolve_completed_swarm_organization", _noop)
+    monkeypatch.setattr(bootstrap, "_live_backend", _backend)
+    task = asyncio.create_task(
+        bootstrap._run_owner_proxy(
+            backend=SimpleNamespace(member_name="business"),
+            runtime=object(),
+            org_runtime=SimpleNamespace(),
+            session_id=SESSION,
+            plan=plan,
+            organization_id=ORG,
+            team_id="org-expert-business",
+        )
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert plan["status"] == "failed"
+    assert plan["error"] == "organization wait ended before the round finished"
+
+
+@pytest.mark.asyncio
+async def test_unbound_owner_marks_the_plan_failed(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "pending"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+
+    async def _backend(*_args, **_kwargs):
+        return SimpleNamespace(org_task_manager=None)
+
+    async def _card(**_kwargs):
+        return None
+
+    monkeypatch.setattr(bootstrap, "_live_backend", _backend)
+    monkeypatch.setattr(bootstrap, "publish_organization_card", _card)
+    with pytest.raises(RuntimeError, match="not bound"):
+        await bootstrap._run_owner_proxy(
+            backend=SimpleNamespace(member_name="business"),
+            runtime=object(),
+            org_runtime=object(),
+            session_id=SESSION,
+            plan=plan,
+            organization_id=ORG,
+            team_id="org-expert-business",
+        )
+    assert plan["status"] == "failed"
+    assert "not bound" in plan["error"]
+
+
+@pytest.mark.asyncio
+async def test_queue_task_error_marks_the_plan_failed(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "pending"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+
+    async def _wait(*_args, **_kwargs):
+        return None
+
+    async def _run(**_kwargs):
+        raise RuntimeError("queue broke")
+
+    monkeypatch.setattr(bootstrap, "wait_for_earlier_organization_plans", _wait)
+    monkeypatch.setattr(
+        bootstrap, "organization_plan_for_member", lambda *_args, **_kwargs: plan
+    )
+    monkeypatch.setattr(bootstrap, "run_organization_member", _run)
+    await bootstrap._join_queued_organization_plan(
+        backend=SimpleNamespace(member_name="business"),
+        session_id=SESSION,
+        member_name="business",
+        plan_id=plan["plan_id"],
+    )
+    assert plan["status"] == "failed"
+    assert "queue broke" in plan["error"]
 
 
 @pytest.mark.asyncio

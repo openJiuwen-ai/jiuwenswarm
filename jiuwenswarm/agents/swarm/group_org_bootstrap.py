@@ -45,7 +45,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MEMBER_JOIN_TIMEOUT_SECONDS = 120.0
-RESULT_TIMEOUT_SECONDS = 3600.0
+# Age at which a plan with nobody waiting on it becomes expired.
+# A running Owner background or a live queue for that plan is not subject to this clock.
+PLAN_STALE_SECONDS = 3720.0
 RESULT_GRACE_SECONDS = 180.0
 OWNER_START_WATCHDOG_SECONDS = 90.0
 POLL_SECONDS = 3.0
@@ -441,19 +443,28 @@ def _owner_run_active(session_id: str, plan_id: str) -> bool:
     return task is not None and not task.done()
 
 
+def _queue_run_active(session_id: str, plan_id: str) -> bool:
+    """Whether this plan is waiting behind an older round."""
+    for (queued_session, queued_plan, _owner), task in _queued_plans.items():
+        if queued_session == session_id and queued_plan == plan_id and not task.done():
+            return True
+    return False
+
+
 def _collect_live_plans(session_id: str, member_name: str) -> list[dict]:
     """Live plans that include this proxy, oldest first.
 
-    A running Owner background task stays live past the join-plus-result
-    clock. Expiring it here made the proxy's next run_team open a private
-    team execution and post that result to the group.
+    A running Owner background stays live for as long as that task runs.
+    A plan queued behind an older round stays live until that queue ends.
+    Expiring a live Owner run here made the proxy's next run_team open a
+    private team execution and post that result to the group.
     """
     from jiuwenswarm.server.runtime.group_service import (
         group_organization_plans,
         update_group_organization_plan,
     )
 
-    stale_after_ms = int((MEMBER_JOIN_TIMEOUT_SECONDS + RESULT_TIMEOUT_SECONDS) * 1000)
+    stale_after_ms = int(PLAN_STALE_SECONDS * 1000)
     now = _now_ms()
     live: list[dict] = []
     for plan in group_organization_plans(session_id):
@@ -462,6 +473,7 @@ def _collect_live_plans(session_id: str, member_name: str) -> list[dict]:
         plan_id = str(plan.get("plan_id") or "")
         if (
             not _owner_run_active(session_id, plan_id)
+            and not _queue_run_active(session_id, plan_id)
             and now - int(plan.get("created_at") or 0) > stale_after_ms
         ):
             update_group_organization_plan(
@@ -782,6 +794,18 @@ def release_organization_plan_claim(session_id: str, plan_id: str, member_name: 
     _accepted_plans.discard(_acceptance_key(session_id, plan_id, member_name))
 
 
+def _fail_open_organization_plan(session_id: str, plan_id: str, error: str) -> None:
+    """Mark a still-open plan failed. A finished plan is left as it is."""
+    from jiuwenswarm.server.runtime.group_service import update_group_organization_plan
+
+    current = _plan_record(session_id, plan_id)
+    if current is None or str(current.get("status") or "") not in {"pending", "running"}:
+        return
+    update_group_organization_plan(
+        session_id, plan_id, status="failed", error=error
+    )
+
+
 def _plan_record(session_id: str, plan_id: str) -> dict | None:
     from jiuwenswarm.server.runtime.group_service import group_organization_plans
 
@@ -994,13 +1018,18 @@ async def _join_queued_organization_plan(
                 release_organization_plan_claim(session_id, plan_id, member_name)
                 return
             return
-    except Exception:
+    except Exception as exc:
         release_organization_plan_claim(session_id, plan_id, member_name)
         logger.exception(
             "queued group organization did not start session=%s plan=%s member=%s",
             session_id,
             plan_id,
             member_name,
+        )
+        _fail_open_organization_plan(
+            session_id,
+            plan_id,
+            str(exc) or "queued organization did not start",
         )
 
 
@@ -1995,7 +2024,7 @@ async def _wait_for_members(
 
     The 120-second limit applies once that proxy's group turn has ended
     without ``run_team``, or when its status cannot be read. While the turn
-    is still running, the wait continues until the result timeout.
+    is still running, the wait continues with no time limit.
     """
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -2011,8 +2040,6 @@ async def _wait_for_members(
         if not missing:
             return []
         elapsed = loop.time() - started
-        if elapsed >= RESULT_TIMEOUT_SECONDS:
-            return missing
         idle: list[str] = []
         active: list[str] = []
         for name in missing:
@@ -2423,12 +2450,16 @@ async def _await_completed_result(
     plan_id: str,
     on_tick: Any = None,
 ) -> str:
-    """Wait for both the Owner submission and durable root/summary completion."""
+    """Wait for both the Owner submission and durable root/summary completion.
+
+    The wait has no time limit. It ends when the root fails, or when the
+    round is complete and the Owner has submitted (or the grace fallback
+    applies).
+    """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + RESULT_TIMEOUT_SECONDS
     completed_at: float | None = None
     submitted: str | None = None
-    while loop.time() < deadline:
+    while True:
         if on_tick is not None:
             await on_tick()
         if future.done() and not future.cancelled():
@@ -2449,7 +2480,6 @@ async def _await_completed_result(
                     return fallback
                 raise RuntimeError("organization completed without a final report")
         await asyncio.sleep(POLL_SECONDS)
-    raise RuntimeError("organization did not finish in time")
 
 
 async def pause_organization_instances(
@@ -2712,14 +2742,26 @@ def _start_owner_run(**kwargs: Any) -> None:
 
 
 async def _owner_background(**kwargs: Any) -> None:
+    session_id = str(kwargs["session_id"])
+    plan_id = str(kwargs["plan"]["plan_id"])
     try:
         await _run_owner_proxy(**kwargs)
     except Exception:
         logger.exception(
             "group organization owner background failed session=%s plan=%s",
-            kwargs["session_id"],
-            kwargs["plan"]["plan_id"],
+            session_id,
+            plan_id,
         )
+        try:
+            _fail_open_organization_plan(
+                session_id, plan_id, "organization owner background failed"
+            )
+        except Exception:
+            logger.exception(
+                "group organization status update failed session=%s plan=%s",
+                session_id,
+                plan_id,
+            )
 
 
 async def _ensure_mentioned_member_instances(
@@ -2851,7 +2893,17 @@ async def _run_owner_proxy(
 
     if task_pool is None:
         _results.pop(key, None)
-        await _refresh_card(status="failed", fail_unfinished=True, create=False)
+        try:
+            await _refresh_card(status="failed", fail_unfinished=True, create=False)
+        except Exception:
+            logger.exception(
+                "group organization card update failed session=%s", session_id
+            )
+        _fail_open_organization_plan(
+            session_id,
+            plan_id,
+            "owner instance is not bound to the organization",
+        )
         raise RuntimeError("owner instance is not bound to the organization")
     completed = False
     failed_error: str | None = None
@@ -2923,70 +2975,83 @@ async def _run_owner_proxy(
         await _refresh_card(status="failed", fail_unfinished=True)
         raise
     finally:
-        if start_watchdog is not None:
-            start_watchdog.cancel()
-        _results.pop(key, None)
         try:
-            await pause_organization_instances(
-                session_id=session_id,
-                task_pool=task_pool,
-                team_ids=[
-                    str(item["team_id"])
-                    for item in group_organization_teams(session_id)
-                    if item.get("team_id")
-                ],
-                include_summary=completed,
-            )
-        except Exception:
-            logger.exception("group organization pause failed session=%s", session_id)
-        # Release while this plan is still the live one, then mark it done or
-        # failed. Marking it earlier let the next queued round bind, and this
-        # finally then released that new binding. A failed round releases too,
-        # but only while the instance still points at this organization.
-        try:
-            bound_now = await _live_backend(runtime, team_id, session_id)
-            current = _bound_organization(bound_now)
-            if current and current != organization_id:
-                logger.info(
-                    "group organization release skipped; instance moved "
-                    "session=%s plan=%s bound=%s",
-                    session_id,
-                    plan_id,
-                    current,
-                )
-            else:
-                await dissolve_completed_swarm_organization(
-                    org_runtime=org_runtime,
-                    task_pool=task_pool,
+            if start_watchdog is not None:
+                start_watchdog.cancel()
+            _results.pop(key, None)
+            try:
+                await pause_organization_instances(
                     session_id=session_id,
-                    organization_id=organization_id,
-                    owner_team_id=team_id,
+                    task_pool=task_pool,
+                    team_ids=[
+                        str(item["team_id"])
+                        for item in group_organization_teams(session_id)
+                        if item.get("team_id")
+                    ],
+                    include_summary=completed,
                 )
-        except Exception:
-            logger.exception(
-                "group organization dissolve failed session=%s",
-                session_id,
-            )
-        try:
-            if failed_error is not None:
-                update_group_organization_plan(
-                    session_id, plan_id, status="failed", error=failed_error
+            except Exception:
+                logger.exception(
+                    "group organization pause failed session=%s", session_id
                 )
-            elif completed and posted is not None:
-                update_group_organization_plan(
+            # Release while this plan is still the live one, then mark it done
+            # or failed. Marking it earlier let the next queued round bind, and
+            # this finally then released that new binding. A failed round
+            # releases too, but only while the instance still points at this
+            # organization.
+            try:
+                bound_now = await _live_backend(runtime, team_id, session_id)
+                current = _bound_organization(bound_now)
+                if current and current != organization_id:
+                    logger.info(
+                        "group organization release skipped; instance moved "
+                        "session=%s plan=%s bound=%s",
+                        session_id,
+                        plan_id,
+                        current,
+                    )
+                else:
+                    await dissolve_completed_swarm_organization(
+                        org_runtime=org_runtime,
+                        task_pool=task_pool,
+                        session_id=session_id,
+                        organization_id=organization_id,
+                        owner_team_id=team_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "group organization dissolve failed session=%s",
+                    session_id,
+                )
+        finally:
+            # Cancellation is not an Exception, so the status write lives in
+            # this inner finally and still runs when the wait is cancelled.
+            try:
+                if failed_error is not None:
+                    update_group_organization_plan(
+                        session_id, plan_id, status="failed", error=failed_error
+                    )
+                elif completed and posted is not None:
+                    update_group_organization_plan(
+                        session_id,
+                        plan_id,
+                        status="done",
+                        message_id=posted.message.message_id,
+                    )
+                else:
+                    _fail_open_organization_plan(
+                        session_id,
+                        plan_id,
+                        "organization wait ended before the round finished",
+                    )
+            except Exception:
+                logger.exception(
+                    "group organization status update failed session=%s plan=%s",
                     session_id,
                     plan_id,
-                    status="done",
-                    message_id=posted.message.message_id,
                 )
-        except Exception:
-            logger.exception(
-                "group organization status update failed session=%s plan=%s",
-                session_id,
-                plan_id,
-            )
-        _plan_event(session_id, plan_id).set()
-        release_deferred_direct(session_id, plan_id)
+            _plan_event(session_id, plan_id).set()
+            release_deferred_direct(session_id, plan_id)
     return ToolOutput(
         success=True,
         data={
