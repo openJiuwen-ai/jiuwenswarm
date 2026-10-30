@@ -108,6 +108,7 @@ async def proxy_unary_request(
     on_done: Callable[[bool, dict[str, Any]], Awaitable[None] | None] | None = None,
     preserve_error_payload: bool = False,
     default_error_code: str = "BAD_REQUEST",
+    metadata: dict[str, Any] | None = None,
 ) -> bool:
     """向目标 AgentServer 发起一次 unary E2A 请求并按原外部协议返回。
 
@@ -165,6 +166,7 @@ async def proxy_unary_request(
         is_stream=False,
         timestamp=time.time(),
         user_id=user_id or None,
+        metadata=metadata,
     )
     try:
         response = await send_agent_request_with_timeout(
@@ -232,6 +234,7 @@ async def fetch_agent_unary(
     channel_id: str,
     label: str = DEFAULT_PROXY_LABEL,
     timeout_seconds: float | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """向目标 AgentServer 发起一次 unary E2A 请求，返回 ``(ok, payload)``。
 
@@ -258,6 +261,7 @@ async def fetch_agent_unary(
             is_stream=False,
             timestamp=time.time(),
             user_id=user_id or None,
+            metadata=metadata,
         )
         try:
             response = await send_agent_request_with_timeout(
