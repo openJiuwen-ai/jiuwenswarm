@@ -107,6 +107,19 @@ RenderNode(
 清空后分别为 null 和空数组；清空动作另外发送 `{}`。三项可按需省略绑定。
 treeData 的 key 缺省取 value，搜索按 title 过滤；禁用或断连时不可操作。
 
+滑块在拖动或键盘调整时为 `ui.change` 发送数值 `{value}`：
+
+```python
+RenderNode(
+    "Slider",
+    {"value": 20, "min": 0, "max": 100, "step": 1, "ariaLabel": "强度"},
+    events={"ui.change": {"id": "level.change"}},
+)
+```
+
+每次有效变化独立发送，不合并中间值；未绑定时仍可本地调整。
+数值需落在 min/max 与 step 允许的取值上，禁用或断连时不可操作。
+
 旧 action 组件继续可用，普通交互同样使用上述请求结构，不接受扁平 payload。
 旧 Handler 应把 `payload["value"]` 等读取改为 `payload["data"]["value"]`；List 的选中 key 也在 data 中，
 不能再向声明 args 追加 key。单个节点不允许同时声明 action 与 events。

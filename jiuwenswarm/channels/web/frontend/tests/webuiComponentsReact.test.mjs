@@ -78,6 +78,11 @@ async function pressEnter(input, options = {}) {
     input.dispatchEvent(new window.KeyboardEvent('keyup', init));
   });
 }
+async function pressKey(element, name, code) {
+  const init = { key: name, code: name, keyCode: code, which: code, bubbles: true };
+  await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', init)));
+  await act(async () => element.dispatchEvent(new window.KeyboardEvent('keyup', init)));
+}
 async function setup(tree, scope = target, transportOptions = {}) {
   const transport = createMockTransport(transportOptions);
   const runtime = createWebUIRuntime({ transport, catalog: componentCatalog });
@@ -278,6 +283,43 @@ test('TreeSelect sends the whole checked selection for change in treeCheckable m
     const change = app.business().find((request) => request.event === 'ui.change');
     assert.deepEqual([...change.payload.data.value].sort(), ['alpha', 'beta']);
     assert.equal(app.business().filter((request) => request.event === 'ui.select').length, 0);
+  } finally { await app.close(); }
+});
+
+const sliderTree = (props = {}, bindings = { 'ui.change': { id: 'slide', args: { field: 'level' } } }) => ({
+  component: 'Slider', props, events: bindings,
+});
+
+test('Slider sends every keyboard change as a number and stops when disconnected', async () => {
+  const app = await setup(sliderTree({ value: 10, ariaLabel: 'Level' }));
+  try {
+    const handle = () => app.container.querySelector('[role="slider"]');
+    assert.equal(handle().getAttribute('aria-valuenow'), '10');
+    await pressKey(handle(), 'ArrowRight', 39);
+    await pressKey(handle(), 'ArrowRight', 39);
+    assert.deepEqual(app.business().map((request) => request.payload.data.value), [11, 12]);
+    assert.deepEqual(app.business()[0].payload, {
+      node_key: '0', revision: 1, action_id: 'slide', args: { field: 'level' }, data: { value: 11 },
+    });
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.ok(app.container.querySelector('.ant-slider-disabled'));
+    await pressKey(handle(), 'ArrowRight', 39);
+    assert.equal(app.business().length, 2);
+  } finally { await app.close(); }
+});
+
+test('Slider keeps its local value without bindings and resets on valid replace', async () => {
+  const app = await setup({ component: 'Slider', props: { value: 20 } });
+  try {
+    const handle = () => app.container.querySelector('[role="slider"]');
+    await pressKey(handle(), 'ArrowRight', 39);
+    assert.equal(handle().getAttribute('aria-valuenow'), '21');
+    assert.equal(app.business().length, 0);
+    await app.replace({ component: 'Slider', props: { value: 60 } });
+    assert.equal(handle().getAttribute('aria-valuenow'), '60');
+    await pressKey(handle(), 'ArrowLeft', 37);
+    assert.equal(handle().getAttribute('aria-valuenow'), '59');
+    assert.equal(app.business().length, 0);
   } finally { await app.close(); }
 });
 

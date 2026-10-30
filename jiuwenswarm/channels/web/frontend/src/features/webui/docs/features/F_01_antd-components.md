@@ -84,6 +84,10 @@ TreeSelect 使用 Ant Design TreeSelect 管理本地选择值，treeData 的 key
 单选为字符串，multiple 或 treeCheckable 为数组，清空后分别为 null 与空数组。
 清空动作另为已绑定的 `ui.clear` 发送 `{}`；三项分别绑定，未绑定事件时仍可本地选择，disabled 或断连时禁用。
 
+Slider 使用 Ant Design Slider 管理本地数值，按 value、defaultValue 的顺序初始化，目录在缺省时准备合法默认值。
+拖动或键盘调整的每次有效变化为已绑定的 `ui.change` 发送数值 `{value}`，不合并中间值、不等待回执。
+未绑定事件时仍可本地调整；disabled 或断连时禁用，合法 replace 重新初始化数值。
+
 插件不能提供 style 或 className。宿主可通过 `WebUIStyleOverrides` 按组件注入外观，
 宿主样式优先；Box 与 Button 还可使用原生元素承接宿主布局和按钮样式。
 适配器保留库组件的属性和交互语义，不复制整套控件实现。
@@ -100,5 +104,5 @@ TreeSelect 使用 Ant Design TreeSelect 管理本地选择值，treeData 的 key
 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`
 和 `test:webui-store` 验证。
 `test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change/click、
-Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、宿主外观、主题继承和 Iframe 生命周期。
+Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、Slider 数值变更、宿主外观、主题继承和 Iframe 生命周期。
 `test:webui-input` 定向验证 Input 的 click、change 与 Enter 数据、组合输入保护、禁用、草稿更新和 WebClient 传输封装。
