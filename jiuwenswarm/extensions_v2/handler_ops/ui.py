@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from openjiuwen.core.events import (
     Event,
     EventHandler,
@@ -11,16 +13,24 @@ from openjiuwen.core.events import (
     EventHandlerOpsBuilder,
     EventNext,
     ExtensionEventBus,
+    SessionContext,
 )
 
 from jiuwenswarm.extensions_v2.webui.models import UiRenderInput
 
 
-def build_webui_ops_build_handler(bus: ExtensionEventBus, render_event_type: str) -> EventHandler:
+def build_webui_ops_build_handler(
+    bus: ExtensionEventBus,
+    render_event_type: str,
+    *,
+    render: Callable[[UiRenderInput, SessionContext | None], Awaitable[object]] | None = None,
+) -> EventHandler:
     """Build the BUILTIN handler that adds ``ui.render`` to the Ops catalog."""
 
     async def ui_render(ops_view: EventHandlerOps, request: UiRenderInput) -> object:
         # Verb: start a new ui.render chain. The current chain is not advanced.
+        if render is not None:
+            return await render(request, ops_view.session_context)
         return await bus.trigger(Event(render_event_type, request), ops_view.session_context)
 
     async def webui_ops_build(

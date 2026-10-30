@@ -24,8 +24,9 @@
 
 - 定义渲染树、目标、帧和事件输入输出模型。
 - 校验槽位、组件、props、动作、深度、节点数、文本量、帧大小与实例标识长度。
-- 维护活跃实例：实例定位、revision、同实例串行、容量淘汰、按包和会话清理。
+- 维护活跃实例：实例定位、revision、同实例串行、按会话或 Web 连接分别限制容量，以及按包和会话清理。
 - 通过 `RenderTransport` 下发 `webui.render`、`webui.render.clear` 和 `webui.render.error`。
+- 槽位允许依赖聊天会话，也允许只依赖 Web 连接；两类目标的字段、实例标识和下行路由规则在本文维护。
 
 ### 2.2 非目标
 
@@ -40,7 +41,8 @@
 
 ```mermaid
 flowchart LR
-    IN["UiRenderInput"] --> V["schema.validate_request"]
+    IN["UiRenderInput"] --> B["按槽位表确定范围并绑定连接"]
+    B --> V["schema.validate_request"]
     V -->|"失败"| E["webui.render.error"]
     V -->|"通过"| R["ActiveRenderRegistry.claim"]
     R --> F["构造 RenderFrame"]
@@ -57,7 +59,7 @@ flowchart LR
 
 | 类型 | 字段 | 说明 |
 | --- | --- | --- |
-| `RenderTarget` | `session_id`、`slot_id`、`package_id`、`instance_key` | 实例四元组；`key` 用 `|` 拼接 |
+| `RenderTarget` | `session_id`、`slot_id`、`package_id`、`instance_key`、`scope`、`connection_id` | 按槽位范围确定实例归属，字段与实例键见下文 |
 | `RenderNode` | `component`、`props`、`children`、`action`、`events` | 渲染树节点，组件名区分大小写；action 与 events 不能同时声明 |
 | `UiRenderInput` | `target`、`root`、`mode` | `mode` 为 `replace` 或 `clear` |
 | `UiRenderOutput` | `status`、`revision` | `delivered`、`rejected` 或 `delivery_failed` |
@@ -67,6 +69,40 @@ flowchart LR
 `revision` 按实例递增，不跨实例比较；`instance_key` 由插件在请求中给出，用于同一包在同一槽位创建多个实例。
 节点序列化递归处理 `children` 和 Tabs 的内容节点。registry 在 commit 时保存独立的只读树快照，
 插件随后修改原始 props、args 或 events 不会改变当前 revision 的声明。
+
+#### 3.2.1 槽位范围与目标字段
+
+支持会话槽位和全局槽位。`SLOT_SPECS` 为每个槽位指定 `scope` 和展示模式：
+`session` 属于一个聊天会话；`application` 是全局槽位，不依赖当前聊天会话。
+全局槽位按 Web 连接隔离，每个连接分别维护自己的实例和 revision。
+
+| 字段 | 默认值与含义 |
+| --- | --- |
+| `slot_id` | 必须是平台白名单中的槽位，插件不能自行新增 |
+| `scope` | 默认空字符串，表示采用槽位表的范围；显式填写时必须与槽位表一致 |
+| `session_id` | Python 构造函数要求传入；会话目标必须非空，全局目标归一化为空字符串，序列化时省略该字段 |
+| `package_id`、`instance_key` | 默认为空字符串；`ui.ready` 可以先不指定包和实例，其他用途沿用对应事件要求 |
+| `connection_id` | 默认为空字符串；全局目标在服务端绑定 Web 连接，前端不接收或填写该内部字段 |
+
+正常 Web 上行请求的连接 ID 由 Gateway 从实际 WebSocket 取得，放入请求的 `metadata.ws_id`。
+WebUIRuntime 为调用绑定独立的连接上下文，后续 `ops.ui.render` 自动沿用；请求同时指定不同连接 ID 时拒绝。
+会话槽位使用真实的 `SessionContext`；全局槽位没有聊天会话时传入 `None`，不将连接 ID 填入会话 ID。
+连接上下文在调用返回、异常或取消时恢复，并发连接之间互不影响。
+宿主直接调用渲染入口且没有连接上下文时，当前实现也允许显式提供 `connection_id`，其来源由宿主负责。
+连接 ID 只用于定位投递目标，不是用户身份或授权结果。
+
+槽位定义方式见 [F_07 第 3.3 节](F_07_ui-contributions.md#33-槽位)，前端挂载与收发方式见
+[F_08 第 4.4 节](F_08_frontend-render.md#44-会话与全局槽位的挂载)。
+
+#### 3.2.2 实例标识
+
+| 槽位范围 | 服务端实例键 |
+| --- | --- |
+| 会话 | `session_id\|slot_id\|package_id\|instance_key`，保持原有格式 |
+| 应用 | `application\|connection_id\|slot_id\|package_id\|instance_key` |
+
+同一个全局界面在两个 Web 连接打开时，会形成两个实例，各自维护 revision 和渲染树。
+连接 ID 不放入下行 `target`；当前接收连接本身就是该全局目标的范围。
 
 ### 3.3 组件与样式白名单
 
@@ -93,9 +129,9 @@ flowchart LR
 | 单文本 prop | 16 KiB |
 | 列表项 | 100 |
 | 整帧 | 256 KiB |
-| 单会话活跃实例 | 32 |
+| 活跃实例 | 每个会话最多 32 个；全局目标按每个 Web 连接分别限制为 32 个 |
 | `action.args` | 8 KiB |
-| `target` 字符串 | 200 字节 |
+| `package_id`、`instance_key`、`connection_id` | 每项最多 200 字节 |
 
 超限统一拒绝并返回 `SCHEMA_ERROR`，不做截断。
 Tabs 的全部内容节点共享深度与节点数预算，隐藏内容也参与计数；Panel 和 Iframe 不能嵌套为普通子节点。
@@ -104,7 +140,7 @@ Tabs 的全部内容节点共享深度与节点数预算，隐藏内容也参与
 
 ### 4.1 渲染
 
-1. 校验 `target`：会话非空、槽位在白名单内、包与实例标识不超长。
+1. 根据槽位表归一化目标范围；会话目标校验会话 ID，全局目标绑定连接 ID。再校验槽位和标识长度。
 2. `replace` 模式必须有根节点；`clear` 模式不要求。
 3. 深度、节点数、组件、props、动作逐项校验。
 4. 进入实例锁，复制旧状态，构造预览帧并检查整帧字节量。
@@ -128,11 +164,23 @@ stateDiagram-v2
 
 ### 4.2 容量淘汰
 
-同一会话最多保留 32 个实例。新实例到来且已达上限时，按 `updated_at` 选出最久未更新的实例；新帧发送成功后才向被淘汰实例发送 `webui.render.clear`，避免新帧失败时误删旧内容。
+会话目标按会话分组，全局目标按 Web 连接分组，每组最多保留 32 个实例，两类目标不共用同一份额度。
+新实例到来且该组已达上限时，按 `updated_at` 选出最久未更新的实例；新帧发送成功后才向被淘汰实例发送
+`webui.render.clear`，避免新帧失败时误删旧内容。此上限不限制所有连接的实例总数。
 
 ### 4.3 下行消息
 
-`RenderTransport` 生成 AgentServer 主动推送消息：
+`RenderTransport` 生成 AgentServer 主动推送消息。目标与路由分别放在两层：
+
+| 位置 | 会话目标 | 全局目标 |
+| --- | --- | --- |
+| `payload.target` | 包含 `scope="session"` 和会话 ID | 包含 `scope="application"`，省略 `session_id` 和内部 `connection_id` |
+| AgentServer 推送消息外层 | 包含 `session_id` | 省略 `session_id`，使用 `metadata.ws_id` 指定 Web 连接 |
+
+全局目标经 Web Channel 投递；指定连接已经关闭或找不到时，不改投其他连接。
+传输返回成功只证明消息已交给推送传输层，不证明浏览器已经收到或完成渲染。
+
+以下为会话目标的下行消息：
 
 ```json
 {
@@ -142,6 +190,7 @@ stateDiagram-v2
   "payload": {
     "event_type": "webui.render",
     "target": {
+      "scope": "session",
       "session_id": "web_xxx",
       "slot_id": "conversation.input.below",
       "package_id": "webui.token-weather",
@@ -167,7 +216,8 @@ stateDiagram-v2
 | 下发失败 | 恢复旧 revision 和旧树，返回 `delivery_failed` |
 | `clear` 请求 | 提交 revision 后下发清除帧，并移除实例 |
 | 包卸载 | 清理该包全部实例并逐个下发清除帧 |
-| 会话关闭 | 清理该会话全部实例并下发清除帧 |
+| 调用 `drop_session` | 只清理该会话的会话级实例，不影响应用级实例；会话删除入口尚未接入 |
+| Web 连接关闭 | Gateway 通知 AgentServer 清理该连接的全局实例；其他连接和聊天会话不受影响 |
 
 实例清理是进程内操作；多 AgentServer 进程不共享登记表。
 
@@ -184,6 +234,8 @@ stateDiagram-v2
 - `assembly.py` 创建 `RenderTransport` 和 `WebUIRuntime`，并把 AgentServer 的 `send_push` 注入传输层。
 - `WebUIRuntime.drop_package` 由包管理门面的 inactive 回调触发。
 - `WebUIRuntime.drop_session` 已提供，但会话删除入口尚未接入。
+- Gateway 在断连钩子中发送内部 `webui.connection.closed` 通知，适配器调用 `WebUIRuntime.drop_connection`。
+  清理不向已经关闭的浏览器发送帧；尚在等待的旧调用也不能重新创建该连接的实例。
 - 下行帧沿用 AgentServer 现有推送通道，Gateway 与 WebClient 只做转发，不解析渲染树。
 
 ## 8. 验证
@@ -193,6 +245,8 @@ stateDiagram-v2
 - `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`
 - `tests/unit_tests/extensions_v2/webui/test_webui_events.py`
 - `tests/unit_tests/channel/test_web_channel_webui_payload.py`
+- `tests/unit_tests/extensions_v2/webui/test_application_slots.py`
+- `tests/unit_tests/extensions_v2/webui/test_slot_lifecycle.py`
 
 覆盖内容：
 
@@ -204,8 +258,23 @@ stateDiagram-v2
 - 容量淘汰在新帧送达后发生。
 - WebClient 透传帧时保留完整 payload。
 - 组件属性、事件声明、Tabs 隐藏内容预算及只读树快照。
+- 测试临时登记应用槽位，覆盖连接绑定、不同连接的实例隔离、按连接限制容量、缺少连接和非 Web 渠道的拒绝。
 
 当前执行结果：上述用例通过。重连重发未实现，EXTV2-06-V-04 未验证。
+
+2026-10-30 对 `8b78d0634` 的定向复核：
+
+```text
+python -m pytest -q -o addopts= tests/unit_tests/extensions_v2/webui/ tests/unit_tests/channel/test_web_channel_webui_payload.py
+```
+
+原 commit 的初步复核为 **22 passed**，其中应用槽位专项为 8 项。
+补充修复后，增加错误帧寻址、无会话渲染、连接清理、并发和取消测试，并覆盖 Gateway 通知经 E2A 转换后到达适配器。
+与 E2A 及消息协议回归合并执行时为 **103 passed**。推送使用替身；前端 Runtime、React 宿主和交互的验证见 F_08。
+这次修复沿用 F_06～F_08，不新增 feature 或开发计划条目。
+
+合并回归命令在上述测试路径后追加
+`tests/unit_tests/e2a/test_gateway_normalize.py tests/unit_tests/evolution/test_message.py`。
 
 ## 9. 风险与遗留
 
@@ -214,3 +283,5 @@ stateDiagram-v2
 - 会话删除入口未接入 `drop_session`，已结束会话的实例可能保留到进程退出或容量淘汰。
 - 帧大小按完整 JSON 计算，压缩后的传输量不在校验范围内。
 - 传输层默认使用 `WebSocketGatewayPushTransport`；单元测试注入替身，跨进程链路仍需联调。
+- 断连通知依赖 Gateway 与 AgentServer 的通信。通知失败会记录清理失败，不能据此确认实例已经释放；
+  包卸载和运行时退出仍会清理相关实例。

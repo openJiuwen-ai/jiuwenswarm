@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 from openjiuwen.core.extension import ActivePackageRecord
 
-from jiuwenswarm.extensions_v2.webui.constants import RENDERER_WEBUI_TREE, SESSION_SLOTS
+from jiuwenswarm.extensions_v2.webui.constants import RENDERER_WEBUI_TREE, slot_spec
 
 _UI_TYPES = frozenset({"web.slot.contribution", "web.locale"})
 
@@ -129,7 +129,7 @@ def load_package_ui(record: ActivePackageRecord) -> tuple[UiContribution, ...] |
         if item.id in seen:
             raise ValueError(f"duplicate web.slot.contribution id: {item.id}")
         seen.add(item.id)
-        if item.slot not in SESSION_SLOTS:
+        if slot_spec(item.slot or "") is None:
             raise ValueError(f"slot is not allowed: {item.slot}")
         renderer = item.renderer
         if renderer.get("kind") != RENDERER_WEBUI_TREE:

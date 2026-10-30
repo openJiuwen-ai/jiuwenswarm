@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from jiuwenswarm.extensions_v2.webui.constants import (
+    CODE_CONNECTION_REQUIRED,
     CODE_SCHEMA_ERROR,
     COMPONENT_PROPS,
     CONTAINER_COMPONENTS,
@@ -20,8 +22,9 @@ from jiuwenswarm.extensions_v2.webui.constants import (
     MAX_NODES,
     MAX_PROP_DEPTH,
     MAX_TEXT_BYTES,
-    SESSION_SLOTS,
     STYLE_TOKENS,
+    SlotScope,
+    slot_spec,
 )
 from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, check_value, validate_props
 from jiuwenswarm.extensions_v2.webui.models import (
@@ -34,23 +37,57 @@ from jiuwenswarm.extensions_v2.webui.models import (
 )
 
 
-def _fail(message: str) -> ValidationReport:
-    return ValidationReport(ok=False, code=CODE_SCHEMA_ERROR, message=message)
+def _fail(message: str, code: str = CODE_SCHEMA_ERROR) -> ValidationReport:
+    return ValidationReport(ok=False, code=code, message=message)
 
 
 _OK = ValidationReport(ok=True)
 
 
 def validate_slot(slot_id: str) -> ValidationReport:
-    """槽位必须在会话语境白名单内。"""
+    """槽位必须在白名单内。范围由白名单决定，不在这里写死名字。"""
 
-    if slot_id not in SESSION_SLOTS:
+    if slot_spec(slot_id) is None:
         return _fail(f"slot not allowed: {slot_id}")
     return _OK
 
 
+def apply_slot_scope(
+    target: RenderTarget,
+    trusted_connection_id: str = "",
+) -> tuple[RenderTarget, ValidationReport]:
+    """Normalize scope from the slot table and attach the trusted connection.
+
+    A caller-supplied scope must match the table. An empty scope means "use the
+    table". Application targets drop any chat id. Their connection id comes from
+    the gateway, not from the browser payload.
+    """
+
+    spec = slot_spec(target.slot_id)
+    if spec is None:
+        return target, _fail(f"slot not allowed: {target.slot_id}")
+    declared = target.scope.strip()
+    if declared and declared != spec.scope.value:
+        return target, _fail("target.scope does not match the slot")
+    if spec.scope is SlotScope.SESSION:
+        normalized = replace(target, scope=SlotScope.SESSION.value, connection_id="")
+        return normalized, validate_target(normalized)
+
+    trusted = trusted_connection_id.strip()
+    supplied = target.connection_id.strip()
+    if trusted and supplied and trusted != supplied:
+        return target, _fail("target.connection_id does not match the caller")
+    normalized = replace(
+        target,
+        scope=SlotScope.APPLICATION.value,
+        session_id="",
+        connection_id=trusted or supplied,
+    )
+    return normalized, validate_target(normalized)
+
+
 def validate_target(target: RenderTarget) -> ValidationReport:
-    """目标必须携带 session_id 与合法槽位。"""
+    """会话槽位必须有 session_id；应用槽位必须有连接号，且不能带聊天号。"""
 
     if not isinstance(target, RenderTarget):
         return _fail("target must be a RenderTarget")
@@ -67,7 +104,19 @@ def validate_target(target: RenderTarget) -> ValidationReport:
     report = validate_slot(target.slot_id)
     if not report.ok:
         return report
-    for field_name, value in (("package_id", target.package_id), ("instance_key", target.instance_key)):
+    spec = slot_spec(target.slot_id)
+    if spec is not None and spec.scope is SlotScope.APPLICATION:
+        if target.session_id.strip():
+            return _fail("application slot must not carry session_id")
+        if not target.connection_id.strip():
+            return _fail("connection_id is required", CODE_CONNECTION_REQUIRED)
+    elif not target.session_id.strip():
+        return _fail("target.session_id is required")
+    for field_name, value in (
+        ("package_id", target.package_id),
+        ("instance_key", target.instance_key),
+        ("connection_id", target.connection_id),
+    ):
         if len(value.encode("utf-8")) > 200:
             return _fail(f"target.{field_name} too long")
     return _OK
