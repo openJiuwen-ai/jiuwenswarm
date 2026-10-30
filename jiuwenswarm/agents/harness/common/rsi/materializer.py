@@ -298,6 +298,7 @@ class RsiTaskMaterializer:
             "evaluator": {
                 "backend": "single_harness",
                 "evaluation_method": profile_options["evaluation_method"],
+                "score_mode": "continuous",
                 "transient_case_retry_limit": 2,
             },
             "evaluation_result_analyzer": {
@@ -325,8 +326,12 @@ class RsiTaskMaterializer:
             "scheduling": {
                 "evaluation_strategy": "hybrid",
                 "coordination_strategy": "team_first_single_pass",
-                "promotion_policy": "epoch_full_evaluation",
                 "full_evaluation_enabled": True,
+            },
+            "promotion": {
+                "policy_version": "continuous_two_stage_v2",
+                "min_improvement": 0.05,
+                "non_target_max_regression": 0.05,
             },
         }
         if profile_options["evaluation_method"] == "llm_as_judge":
