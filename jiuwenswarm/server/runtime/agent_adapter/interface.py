@@ -2204,6 +2204,36 @@ class JiuWenSwarm:
         return retry_without_a2ui_call
 
     @staticmethod
+    async def _resolve_turn_adapter_for_finalize(
+            adapter: AgentAdapter,
+            request: AgentRequest,
+            session_id: str | None,
+    ) -> AgentAdapter:
+        """Return the session-scoped adapter that actually executed this turn.
+
+        _ensure_adapter 返回的 root facade 按设计不自建实例（热更新仅级联
+        session adapter），其 _model/_instance 恒为 None：repair_call 挂在 root 上
+        时 repair_model_response 每轮都 skip，retry_without_a2ui 也在 _instance
+        守卫处静默返回 None，repair_failed 后"降级非 a2ui 重答"的设计路径从不执行，
+        最终 a2ui 块被整块剥离。流执行链在 _process_message_stream_impl 内已经
+        _get_or_create_session_adapter 创建过 session adapter（create_instance
+        完成 _model 绑定），finalize 时刻这里是幂等缓存命中；解析失败保持旧的
+        root 接线行为，不引入新故障面。
+        """
+        getter = getattr(adapter, "_get_or_create_session_adapter", None)
+        if not callable(getter) or not session_id:
+            return adapter
+        try:
+            return await getter(session_id, request=request)  # pylint: disable=protected-access
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarm] resolve turn-scoped finalize adapter failed "
+                "session_id=%s: %s (falling back to root adapter)",
+                session_id, exc, exc_info=True,
+            )
+            return adapter
+
+    @staticmethod
     def _build_interactive_input_from_answers(
             request_id: str,
             answers: list[dict],
@@ -3165,9 +3195,12 @@ class JiuWenSwarm:
             if result.ok and result.payload.get("content"):
                 content = result.payload["content"]
                 content_str = content if isinstance(content, str) else str(content)
-                repair_call = getattr(adapter, "repair_model_response", None)
+                turn_adapter = await self._resolve_turn_adapter_for_finalize(
+                    adapter, request, session_id,
+                )
+                repair_call = getattr(turn_adapter, "repair_model_response", None)
                 retry_without_a2ui_call = self._make_retry_without_a2ui_call(
-                    adapter=adapter,
+                    adapter=turn_adapter,
                     request=request,
                 )
                 pre_finalize_content_str = content_str
@@ -4334,9 +4367,10 @@ class JiuWenSwarm:
                 permission_reservation.release_if_unstarted()
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
-        repair_call = getattr(adapter, "repair_model_response", None)
+        turn_adapter = await self._resolve_turn_adapter_for_finalize(adapter, request, session_id)
+        repair_call = getattr(turn_adapter, "repair_model_response", None)
         retry_without_a2ui_call = self._make_retry_without_a2ui_call(
-            adapter=adapter,
+            adapter=turn_adapter,
             request=request,
         )
         

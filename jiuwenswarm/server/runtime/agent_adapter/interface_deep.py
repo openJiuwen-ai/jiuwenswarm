@@ -23851,7 +23851,11 @@ class JiuWenSwarmDeepAdapter:
     async def repair_model_response(self, prompt: str) -> str | None:
         """Run a focused repair prompt using the currently selected chat model."""
         if self._model is None:
-            logger.warning("[JiuWenSwarmDeepAdapter] repair skipped: no model instance available")
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] repair skipped: no model instance available "
+                "(cache_keys=%s default=%s)",
+                list(self._model_cache)[:5], self._default_model_name or "<unset>",
+            )
             return None
         from openjiuwen.core.foundation.llm.schema.message import UserMessage
 
