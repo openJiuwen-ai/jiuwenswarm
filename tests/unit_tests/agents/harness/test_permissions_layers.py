@@ -891,3 +891,101 @@ def test_ratchet_merge_skips_missing_action(isolated_data_dir: Path) -> None:
     )
     # 无 action 新键被跳过；存量保留
     assert [entry["id"] for entry in merged] == ["a"]
+
+
+def _write_template_like_global(root: Path, mode: str = "auto") -> None:
+    # 与随包模板参考段同值（resources/config.yaml 权限节：defaults
+    # ask×3、workspace allow/allow/ask、external_directory '*' ask）。
+    _write_global(
+        root,
+        {
+            "enabled": True,
+            "mode": mode,
+            "file_guard": {
+                "enabled": True,
+                "defaults": {"read": "ask", "write": "ask", "exec": "ask"},
+                "workspace": {"read": "allow", "write": "allow", "exec": "ask"},
+                "paths": [],
+            },
+            "external_directory": {"*": "ask"},
+        },
+    )
+
+
+def test_compose_template_baseline_axes_do_not_make_auto_strict(
+    isolated_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 评审 CR-016：模板自带三段轴随 prepare_workspace 拷入用户
+    # config.yaml，与模板同值属 preset 域参考而非显式增量，不得
+    # 参与取严合并——否则 Auto 合成被模板 ask 抬成 Strict。
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    monkeypatch.setattr(layers, "_import_core_compose", lambda: None)
+    monkeypatch.setattr(layers, "_import_mode_controller", lambda: None)
+    _write_template_like_global(isolated_data_dir)
+
+    eff = layers.compose_host_effective_permissions()
+    assert eff["mode"] == "auto"
+    assert eff["file_guard"]["defaults"]["read"] == "allow"
+    assert eff["file_guard"]["defaults"]["write"] == "ask"
+    assert eff["file_guard"]["workspace"]["read"] == "allow"
+    assert eff["file_guard"]["workspace"]["write"] == "allow"
+    assert eff["file_guard"]["workspace"]["exec"] == "allow"
+
+
+def test_compose_user_layer_legacy_deny_survives_template_global(
+    isolated_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 评审 CR-017：external_directory 须三层遍历按 key 取严合并，
+    # 不得只读 Global 即 break——模板 Global 恒带该段（'*': ask），
+    # user 层显式 deny 被遮蔽即静默放宽。
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    monkeypatch.setattr(layers, "_import_core_compose", lambda: None)
+    monkeypatch.setattr(layers, "_import_mode_controller", lambda: None)
+    _write_template_like_global(isolated_data_dir)
+    user_path = layers.get_user_permissions_path()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text(
+        yaml.safe_dump({"permissions": {"external_directory": {"*": "deny"}}}),
+        encoding="utf-8",
+    )
+
+    eff = layers.compose_host_effective_permissions()
+    assert eff["file_guard"]["defaults"]["read"] == "deny"
+    assert eff["file_guard"]["defaults"]["write"] == "deny"
+    assert eff["file_guard"]["workspace"]["write"] == "deny"
+
+
+def test_migrate_strips_template_baseline_axes(isolated_data_dir: Path) -> None:
+    # 评审 CR-016：迁移写回前剥离模板同值轴，运行期取严合并不再
+    # 依赖存量拷贝缺位；用户改写值与具名 external_directory 保留。
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    _write_template_like_global(isolated_data_dir, mode="auto")
+
+    migrated = layers.migrate_and_write_global_permissions()
+    assert migrated["file_guard"].get("defaults") is None
+    assert migrated["file_guard"].get("workspace") is None
+    assert "external_directory" not in migrated
+
+    # 用户显式改写值不剥离，参与后续取严合并
+    _write_global(
+        isolated_data_dir,
+        {
+            "enabled": True,
+            "mode": "auto",
+            "file_guard": {
+                "enabled": True,
+                "defaults": {"read": "deny", "write": "ask", "exec": "ask"},
+                "workspace": {"read": "allow", "write": "allow", "exec": "ask"},
+            },
+            "external_directory": {"*": "ask", "/data": "deny"},
+        },
+    )
+    migrated = layers.migrate_and_write_global_permissions()
+    assert migrated["file_guard"]["defaults"] == {"read": "deny"}
+    assert migrated["file_guard"].get("workspace") is None
+    assert migrated["external_directory"] == {"/data": "deny"}
