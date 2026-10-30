@@ -186,7 +186,7 @@ class CronController:
         cron_expr: str,
         timezone: str,
     ) -> int:
-        """企业版创建：提前量不能超过离下次触发还剩的秒数。"""
+        """任务创建和更新时：提前量wake_offset_seconds不能超过离下次触发还剩的秒数。"""
         try:
             tz = ZoneInfo(timezone)
             now = datetime.now(tz=tz)
@@ -555,12 +555,11 @@ class CronController:
 
         self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
         description = self._normalize_description(description, name)
-        if enterprise:
-            wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
-                wake_offset_seconds,
-                cron_expr=cron_expr,
-                timezone=timezone,
-            )
+        wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
+            wake_offset_seconds,
+            cron_expr=cron_expr,
+            timezone=timezone,
+        )
 
         routing_sid = self._routing_session_id(targets, params.get("session_id"))
         chat_type = params.get("chat_type")
@@ -718,7 +717,7 @@ class CronController:
             cron_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()
             timezone = str(patch.get("timezone") or existing.timezone).strip()
             self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
-        if enterprise and any(
+        if any(
             key in patch for key in ("wake_offset_seconds", "cron_expr", "timezone")
         ):
             upcoming_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()
