@@ -8,9 +8,10 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from gateway.enterprise import is_enterprise
 from openjiuwen_protocol.agent_models import AgentRequest
+
 from gateway.common.utils import logger
+from gateway.enterprise import is_enterprise
 
 from . import db_queries
 from .schemas import (

@@ -8,11 +8,12 @@ import inspect
 import logging
 from typing import Any
 
+from openjiuwen_protocol.message import Message
+
 from gateway.common.request_identity import (
     merge_routing_into_params,
     web_routing_identity,
 )
-from openjiuwen_protocol.message import Message
 from gateway.enterprise import is_enterprise
 
 logger = logging.getLogger(__name__)

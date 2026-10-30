@@ -10,9 +10,10 @@ import time
 import uuid
 from typing import Any
 
+from openjiuwen_protocol.message import Message
+
 from gateway.common.request_ext import attach_to_metadata as _ext_attach
 from gateway.common.request_ext import build_ext_from_source as _ext_build
-from openjiuwen_protocol.message import Message
 from gateway.enterprise import is_enterprise
 from gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
 from gateway.channel_manager.web.outbound import (
