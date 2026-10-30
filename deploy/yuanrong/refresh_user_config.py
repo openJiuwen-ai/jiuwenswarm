@@ -24,12 +24,13 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import shutil
 import sys
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -53,6 +54,25 @@ class FatalError(Exception):
     """参数、前置校验或配置合并失败，退出码 1。"""
 
 
+class _StreamHandler(logging.Handler):
+    """按级别写入当前的 sys.stdout / sys.stderr，兼容输出重定向与测试捕获。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFormatter(logging.Formatter("%(message)s"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        stream = sys.stderr if record.levelno >= logging.WARNING else sys.stdout
+        stream.write(self.format(record) + "\n")
+        stream.flush()
+
+
+_LOG = logging.getLogger("refresh_user_config")
+_LOG.setLevel(logging.INFO)
+_LOG.propagate = False
+_LOG.addHandler(_StreamHandler())
+
+
 def _paint(stream, code: str, text: str) -> str:
     if not stream.isatty() or os.environ.get("NO_COLOR"):
         return text
@@ -60,19 +80,19 @@ def _paint(stream, code: str, text: str) -> str:
 
 
 def info(message: str) -> None:
-    print(_paint(sys.stdout, "36", f"=== {message} ==="))
+    _LOG.info(_paint(sys.stdout, "36", f"=== {message} ==="))
 
 
 def success(message: str) -> None:
-    print(_paint(sys.stdout, "32", f"✅ {message}"))
+    _LOG.info(_paint(sys.stdout, "32", f"✅ {message}"))
 
 
 def warning(message: str) -> None:
-    print(_paint(sys.stderr, "33", f"⚠️  {message}"), file=sys.stderr)
+    _LOG.warning(_paint(sys.stderr, "33", f"⚠️  {message}"))
 
 
 def error(message: str) -> None:
-    print(_paint(sys.stderr, "31", f"❌ {message}"), file=sys.stderr)
+    _LOG.error(_paint(sys.stderr, "31", f"❌ {message}"))
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +166,15 @@ def _default_chown(path: Path, uid: int, gid: int) -> None:
     os.chown(path, uid, gid)
 
 
+def _default_geteuid() -> int:
+    getter = getattr(os, "geteuid", None)
+    return getter() if callable(getter) else 1
+
+
+def _default_is_tty() -> bool:
+    return sys.stdin.isatty()
+
+
 def _default_get_user_ids(name: str) -> tuple[int, int]:
     if pwd is None:
         raise FatalError("当前平台不支持 pwd，无法解析 agentos 用户")
@@ -175,11 +204,11 @@ class Runtime:
     """脚本外部 I/O 的最小集合；测试按需 replace。"""
 
     chown: Callable[[Path, int, int], None] = _default_chown
-    geteuid: Callable[[], int] = lambda: getattr(os, "geteuid", lambda: 1)()
+    geteuid: Callable[[], int] = _default_geteuid
     get_user_ids: Callable[[str], tuple[int, int]] = _default_get_user_ids
     load_round: Callable[[Path], Any] = _default_load_round
     dump_round: Callable[[Path, Any], None] = _default_dump_round
-    is_tty: Callable[[], bool] = lambda: sys.stdin.isatty()
+    is_tty: Callable[[], bool] = _default_is_tty
 
 
 @dataclass(frozen=True)
@@ -258,7 +287,7 @@ def confirm_targets(header: str, lines: list[str], rt: Runtime) -> bool:
         raise FatalError("非交互式环境请显式指定 -y/--yes")
     info(header)
     for line in lines:
-        print(line)
+        _LOG.info(line)
     try:
         answer = input("确认执行? [y/N] ").strip().lower()
     except EOFError as exc:
@@ -287,7 +316,7 @@ def backup(ctx: Context, rt: Runtime) -> Path | None:
     if not ctx.user_cfg.is_file():
         warning(f"目标配置不存在，将直接按模板新建: {ctx.user_cfg}")
         return None
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
     target = backup_candidate(ctx.user_cfg, stamp, Path.exists)
     shutil.copy2(ctx.user_cfg, target)
     rt.chown(target, ctx.uid, ctx.gid)
@@ -392,7 +421,7 @@ def print_all_dry_run(users: list[str], options: Options) -> None:
     info(f"[dry-run] 模板: {options.template}")
     info(f"[dry-run] 将刷新 {len(users)} 个用户:")
     for username in users:
-        print(f"  - {username}: {home_base / username / '.jiuwenswarm' / 'config' / 'config.yaml'}")
+        _LOG.info(f"  - {username}: {home_base / username / '.jiuwenswarm' / 'config' / 'config.yaml'}")
 
 
 def confirm_all(users: list[str], options: Options, rt: Runtime) -> bool:
@@ -446,11 +475,11 @@ def run_all(options: Options, rt: Runtime) -> int:
             continue
         updated.append(ctx)
 
-    print("")
+    _LOG.info("")
     info("配置刷新结果")
-    print(f"  成功: {len(updated)} / {len(users)}")
+    _LOG.info(f"  成功: {len(updated)} / {len(users)}")
     for line in failures:
-        print(f"  失败: {line}")
+        _LOG.info(f"  失败: {line}")
 
     return 1 if failures else 0
 
@@ -467,12 +496,12 @@ def run(options: Options, rt: Runtime) -> int:
 
     status, count, backup_path = refresh_config(ctx, rt)
 
-    print("")
+    _LOG.info("")
     info("完成")
     if backup_path is not None:
-        print(f"  备份          : {backup_path}")
-    print(f"  目标配置      : {ctx.user_cfg}")
-    print(f"  models.agentos: {status}（{count} 条）")
+        _LOG.info(f"  备份          : {backup_path}")
+    _LOG.info(f"  目标配置      : {ctx.user_cfg}")
+    _LOG.info(f"  models.agentos: {status}（{count} 条）")
     return 0
 
 
