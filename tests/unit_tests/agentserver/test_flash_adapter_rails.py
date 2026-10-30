@@ -10,7 +10,7 @@ Covers the review findings on PR6431:
   ``react.disabled_tools`` policy as agent / code.
 - #4 dynamic registration via ``_update_rails_for_mode`` must not penetrate the
   whitelist: rails outside ``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``
-  (e.g. ``_context_assemble_rail``, ``_memory_rail``) are unregistered. The
+  are unregistered; workspace context and memory rails are retained. The
   dead ``_ask_user_rail`` keep entry was removed (gated by ``agent`` prefix at
   build time, never built for flash).
 - #6 flash does not start memory dreaming (``try_start_dreaming`` /
@@ -81,7 +81,7 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         _info("_skill_authorization_rail"),     # in KEEP（本仓决策：授权门禁保留）
         _info("_memory_rail"),                  # in KEEP（本仓决策：统一 memory 工具）
         _info("_ask_user_rail"),                # in KEEP (interactive dynamic mount)
-        _info("_context_assemble_rail"),        # neither (dynamic reg target)
+        _info("_context_assemble_rail"),        # in KEEP (workspace identity)
         _info("_external_memory_rail"),         # in KEEP (config-driven)
         _info("_office_ace_user_profile_rail"),  # in KEEP (config-driven)
         _info("_symphony_orchestration_rail"),  # neither
@@ -100,6 +100,7 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         "_skill_active_state_rail",
         "_skill_authorization_rail",
         "_memory_rail",
+        "_context_assemble_rail",
         "_external_memory_rail",
         "_office_ace_user_profile_rail",
         "_ask_user_rail",
@@ -178,10 +179,7 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     # whitelisted (#4 corrected / unified-memory design), so the drop skips
     # them; ask_user's lifecycle is owned by _set_user_interaction_enabled,
     # memory's by _handle_memory_rail_by_config via the agent-profile gate.)
-    leaked = {
-        "_context_assemble_rail": SimpleNamespace(name="context_assemble"),
-        "_skill_create_rail": SimpleNamespace(name="skill_create"),
-    }
+    leaked = {"_skill_create_rail": SimpleNamespace(name="skill_create")}
     for attr, rail in leaked.items():
         setattr(adapter, attr, rail)
 
@@ -191,6 +189,7 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     # _ask_user_rail (kept, so dropped-skip applies to it too) and _memory_rail
     # (kept; flash mounts the unified memory rail itself before the drop).
     adapter._task_planning_rail = SimpleNamespace(name="keep-me")
+    adapter._context_assemble_rail = SimpleNamespace(name="keep-context")
     adapter._context_processor_rail = SimpleNamespace(name="keep-me-2")
     adapter._skill_rail = SimpleNamespace(name="keep-me-skill")
     adapter._ask_user_rail = SimpleNamespace(name="keep-me-ask-user")
@@ -213,6 +212,7 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     for rail in leaked.values():
         assert unregistered.count(rail) == 1
     assert adapter._task_planning_rail is not None
+    assert adapter._context_assemble_rail is not None
     assert adapter._context_processor_rail is not None
     assert adapter._skill_rail is not None
     assert adapter._ask_user_rail is not None  # kept, not churned
@@ -228,7 +228,7 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
 async def test_update_rails_for_mode_does_not_call_update_agent_rails():
     """Flash must not invoke the parent's full dynamic-registration path."""
     adapter = JiuwenSwarmFlashAdapter()
-    adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
 
     with pytest.MonkeyPatch.context() as mp:
         called = {"n": 0}
@@ -237,6 +237,7 @@ async def test_update_rails_for_mode_does_not_call_update_agent_rails():
             called["n"] += 1
 
         mp.setattr(adapter, "_update_agent_rails", _nope)
+        mp.setattr(adapter, "_rebind_late_read_rails_to_local", Mock())
         await adapter._update_rails_for_mode("flash")
 
     assert called["n"] == 0
@@ -251,7 +252,7 @@ def test_flash_rail_snapshot_is_stable_and_fingerprint_is_stable():
     snapshot = adapter._rail_snapshot()
     fingerprint = adapter._profile_fingerprint()
 
-    assert snapshot == "task_planning_rail,memory_rail"
+    assert snapshot == "task_planning_rail,context_assemble_rail,memory_rail"
     assert fingerprint == adapter._profile_fingerprint()
     assert len(fingerprint) == 12
 

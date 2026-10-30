@@ -43,7 +43,7 @@ flash 行为由类常量定义：
 - :meth:`_update_rails_for_mode` — 每请求调用（interface_deep.py:10596）。父类会调
   ``_update_agent_rails()`` 动态注册 context_assemble / memory 等 rail，绕过
   ``_instantiate_rails`` 的白名单裁剪——flash 覆盖此方法不调 ``_update_agent_rails()``，
-  只卸载白名单外的动态 rail，闭合白名单。
+  单独装配身份上下文和记忆，并卸载白名单外的动态 rail。
 - :meth:`try_start_dreaming` / :meth:`try_stop_dreaming` — no-op。flash 是「无自演进」
   profile，memory dreaming（被动记忆巩固）属自演进范畴，不挂。
 
@@ -72,6 +72,7 @@ skill_credential / skill_active_state / disabled_tools）全部在 keep 白名�
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import logging
@@ -138,6 +139,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _CRON_TOOL_NAMES,
     _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
+    _build_context_assemble_rail,
     _resolve_instance_config_base,
     acp_chat,
     create_vision_tools,
@@ -275,6 +277,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         #   这两个，本仓决策保留）。
         "_skill_active_state_rail",
         "_skill_authorization_rail",
+        # Workspace identity files are assembled on the request path.
+        "_context_assemble_rail",
         # _memory_rail: FlashMemoryRail（flash override，统一 memory 工具）挂在
         #   动态挂载路径上，进 keep 才不会被 _drop_non_whitelist_dynamic_rails
         #   卸载；闸门是 modes.agent.memory.enabled（flash 记忆档归一 agent）。
@@ -319,6 +323,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     ) -> None:
         super().__init__(workspace_dir=workspace_dir, agent_id=agent_id, service_id=service_id)
         self._flash_startup_preparations = {}
+        self._flash_context_rail_lock = asyncio.Lock()
+        self._flash_context_agent_sysop = None
 
     @contextmanager
     def _prepare_flash_startup(self, request=None):
@@ -905,6 +911,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
     def _get_current_agent_rails(self, config, config_base):
         rails, removed = super()._get_current_agent_rails(config, config_base)
+        # The SDK retains callbacks when reconfiguring with the same rail
+        # instance, so requeueing it would register its callbacks again.
+        rails = [rail for rail in rails if rail is not self._context_assemble_rail]
         old = getattr(self, "_flash_skill_selection_rail", None)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
@@ -926,9 +935,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ``_memory_rail`` / ``_external_memory_rail`` 等 rail——这些大多不在 flash 白名单
         内，却会绕过 ``_instantiate_rails`` 的冷启动裁剪被挂上，使白名单形同虚设。
 
-        flash 覆盖此方法：**不调** ``_update_agent_rails()``，只做三件事——
+        flash 覆盖此方法：**不调** ``_update_agent_rails()``，仅装配身份上下文和记忆，
+        并卸载白名单外的动态 rail——
         1. 记 ``_last_mode``（父类首行本就做）；
-        2. 记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
+        2. 身份上下文及记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
            这里按归一后的 agent 档调 ``_handle_memory_rail_by_config``（闸门
            ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
            白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
@@ -946,11 +956,67 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         重建」的 churn（参见 PR6431 review #4 修正）。
         """
         self._last_mode = mode
+        await self._ensure_flash_context_rail()
         await self._handle_memory_rail_by_config("agent")
         await self._handle_external_memory_rail_by_config()
         await self._handle_office_ace_user_profile_rail_by_config()
         await self._drop_non_whitelist_dynamic_rails()
         self._refresh_rail_observability_snapshot()
+
+    async def _ensure_flash_context_rail(self) -> None:
+        """Attach workspace identity without enabling the full agent profile."""
+        async with self._flash_context_rail_lock:
+            if self._context_assemble_rail is not None:
+                is_registered = getattr(self._instance, "is_registered_rail", None)
+                is_pending = getattr(self._instance, "is_pending_rail", None)
+                if not callable(is_registered) or is_registered(self._context_assemble_rail) or (
+                    callable(is_pending) and is_pending(self._context_assemble_rail)
+                ):
+                    self._sync_flash_context_bindings()
+                    return
+                self._context_assemble_rail = None
+                self._context_assemble_mode = None
+            disabled = getattr(self._disabled_tools_rail, "_disabled_tools", None)
+            if disabled:
+                disabled = [str(name).strip() for name in disabled if str(name).strip()]
+            else:
+                disabled = resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
+            progressive = self._progressive_tool_rail
+            rail = _build_context_assemble_rail(
+                disabled_tools=disabled or None,
+                tool_name_allowlist=list(progressive.eager_tools) if progressive is not None else None,
+            )
+            if rail is None:
+                return
+            try:
+                await self._instance.register_rail(rail)
+            except BaseException:
+                # Registration may have installed some callbacks before failing.
+                try:
+                    await self._instance.unregister_rail(rail)
+                except Exception:
+                    logger.warning("[FlashAdapter] context rail rollback failed", exc_info=True)
+                raise
+            self._context_assemble_rail = rail
+            self._context_assemble_mode = "agent"
+            config = getattr(self._instance, "deep_config", None)
+            self._flash_context_agent_sysop = getattr(config, "sys_operation", None)
+            self._rebind_late_read_rails_to_local()
+
+    def _sync_flash_context_bindings(self) -> None:
+        """Refresh retained context bindings after an agent reconfiguration."""
+        rail = self._context_assemble_rail
+        config = getattr(self._instance, "deep_config", None)
+        if rail is None or config is None:
+            return
+        workspace = getattr(config, "workspace", None)
+        sysop = getattr(config, "sys_operation", None)
+        if rail.workspace is workspace and self._flash_context_agent_sysop is sysop:
+            return
+        rail.set_workspace(workspace)
+        rail.set_sys_operation(sysop)
+        self._flash_context_agent_sysop = sysop
+        self._rebind_late_read_rails_to_local()
 
     async def try_start_dreaming(self, busy_checker=None) -> None:
         """no-op：flash 不启 memory dreaming.
@@ -1058,9 +1124,16 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 has_model = embed_config.get("model")
             if not all([has_api_key, has_base_url, has_model]):
                 logger.warning(
-                    "[JiuwenSwarmFlashAdapter] FlashMemoryRail create failed: "
-                    "No available embedding config"
+                    "[JiuwenSwarmFlashAdapter] Incomplete embedding config; "
+                    "FlashMemoryRail will attempt keyword search"
                 )
+                # The SDK uses an absent key to select its no-embedding provider.
+                # Keep the required string fields valid without using partial credentials.
+                embed_config = {
+                    "model": has_model or "",
+                    "base_url": has_base_url or "",
+                    "api_key": None,
+                }
             self._is_proactive_memory = is_proactive_memory(mode, config)
             memory_rail = FlashMemoryRail(
                 embedding_config=EmbeddingConfig(
