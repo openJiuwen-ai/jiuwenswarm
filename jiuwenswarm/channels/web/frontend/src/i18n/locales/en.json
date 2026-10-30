@@ -7245,5 +7245,10 @@
       "blocked": "Waiting",
       "stopped": "Stopped"
     }
+  },
+  "webuiIframe": {
+    "loading": "Loading page...",
+    "error": "Unable to load page",
+    "inactive": "Page paused"
   }
 }
