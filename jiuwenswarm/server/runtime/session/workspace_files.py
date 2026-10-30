@@ -307,7 +307,7 @@ class SessionWorkspaceFiles:
             current = os.fstat(stream.fileno())
             if not stat.S_ISREG(current.st_mode):
                 return {"status": "unsupported", "file": None}
-            if _confined(root, relative) != target or not os.path.samestat(current, target.stat()):
+            if _confined(root, relative) != target or not os.path.samestat(current, initial):
                 raise PermissionError("The file changed while opening it")
             if current.st_size > MAX_TEXT_BYTES:
                 return {"status": "too_large", "file": None}

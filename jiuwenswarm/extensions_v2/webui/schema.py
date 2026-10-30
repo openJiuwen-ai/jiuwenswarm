@@ -19,7 +19,7 @@ from jiuwenswarm.extensions_v2.webui.constants import (
     MAX_TEXT_BYTES,
     SESSION_SLOTS,
 )
-from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, validate_props
+from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, finite_number, validate_props
 from jiuwenswarm.extensions_v2.webui.models import (
     RenderFrame,
     RenderMode,
@@ -28,6 +28,13 @@ from jiuwenswarm.extensions_v2.webui.models import (
     UiRenderInput,
     ValidationReport,
 )
+
+_SLOT_ROOT_COMPONENTS: Mapping[str, tuple[str, ...]] = {
+    "conversation.panel.right": ("Panel", "Iframe"),
+    "application.menu.main": ("Iframe",),
+    "task.function.main": ("Iframe",),
+}
+_ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe"})
 
 
 def _fail(message: str) -> ValidationReport:
@@ -81,7 +88,16 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
         return _OK
     if request.root is None:
         return _fail("render tree is required for replace mode")
-    return validate_root(request.root)
+    report = validate_root(request.root)
+    if not report.ok:
+        return report
+    slot_roots = _SLOT_ROOT_COMPONENTS.get(request.target.slot_id, ())
+    if request.target.slot_id == "conversation.panel.right":
+        if request.root.component not in slot_roots:
+            return _fail(f"right panel requires one of: {', '.join(slot_roots)}")
+    elif request.root.component in _ROOT_ONLY_COMPONENTS and request.root.component not in slot_roots:
+        return _fail(f"{request.root.component} is only allowed in slots that accept it as the render root")
+    return _OK
 
 
 def validate_root(root: RenderNode) -> ValidationReport:
@@ -186,7 +202,7 @@ def _validate_value(name: str, value: Any, *, depth: int = 0) -> ValidationRepor
     if value is None or isinstance(value, bool):
         return _OK
     if type(value) in (int, float):
-        return _OK if abs(value) <= 1.7976931348623157e308 else _fail(f"prop {name} must be finite")
+        return _OK if finite_number(value) else _fail(f"prop {name} must be finite")
     if isinstance(value, Mapping):
         if len(value) > MAX_LIST_ITEMS:
             return _fail(f"prop {name} has too many fields")
