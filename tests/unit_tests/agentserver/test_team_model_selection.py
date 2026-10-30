@@ -666,3 +666,40 @@ def test_team_manual_route_without_routing_stays_a_single_model(monkeypatch: pyt
 
     assert compiled.model_client_config.intelli_router is None
     assert compiled.model_request_config.model_name == "model-two"
+
+
+def test_team_group_pool_entry_carries_the_group_display_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Team pool entry names its model group for history and the roster."""
+    _patch_team_loader(monkeypatch)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.model_routing_registry.ModelSelectionResolver",
+        lambda: SimpleNamespace(resolve=lambda selection: SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.model_compiler_adapter.compile_model_selection",
+        lambda resolved: _compiled_model_group(),
+    )
+    monkeypatch.setattr(
+        TeamManager, "_model_group_display_name", staticmethod(lambda group_id: f"name-of-{group_id}"),
+    )
+
+    spec = TeamManager._load_team_spec(
+        "session-1",
+        model_selection={"type": "model_group", "id": "group-1"},
+    )
+
+    assert spec.model_pool[0].metadata["model_group"] == {"id": "group-1", "display_name": "name-of-group-1"}
+
+
+def test_model_group_display_name_falls_back_to_the_group_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A group missing from the catalog never fails the Team build."""
+
+    class _Catalog:
+        def get_group(self, group_id):
+            raise ModelSelectionError(TEAM_MODEL_SELECTION_STALE, "gone")
+
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.ModelCatalog", _Catalog)
+
+    assert TeamManager._model_group_display_name("group-1") == "group-1"

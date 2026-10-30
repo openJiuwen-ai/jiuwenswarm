@@ -1435,6 +1435,18 @@ class TeamManager:
         return name
 
     @staticmethod
+    def _model_group_display_name(group_id: str) -> str:
+        """Return a model group's display name, falling back to its id."""
+        from jiuwenswarm.common.model_catalog import ModelCatalog
+
+        try:
+            group = ModelCatalog().get_group(group_id)
+        except Exception:  # noqa: BLE001 - naming must never fail the Team build
+            logger.debug("[TeamManager] model group %s has no catalog entry", group_id, exc_info=True)
+            return group_id
+        return str(group.get("display_name") or "").strip() or group_id
+
+    @staticmethod
     def _apply_compiled_team_selection(
         spec_dict: dict[str, Any],
         selection: SwarmModelSelection,
@@ -1477,6 +1489,15 @@ class TeamManager:
                 entry.model_dump(exclude_none=True)
                 for entry in materialize_model_group(compiled, selection)
             ]
+            # Name the group for the Team: members run on the logical "*"
+            # model, so history records and the leader's roster show this name
+            # until the router reports the model that actually served a call.
+            group_name = TeamManager._model_group_display_name(selection.id)
+            for entry in spec_dict["model_pool"]:
+                entry.setdefault("metadata", {})["model_group"] = {
+                    "id": selection.id,
+                    "display_name": group_name,
+                }
             spec_dict["model_pool_strategy"] = "intelli_router"
             # The compiled selection is authoritative. Clear convenience
             # sources from a legacy template and normalize every predefined
