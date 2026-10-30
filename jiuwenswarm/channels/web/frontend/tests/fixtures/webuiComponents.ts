@@ -24,3 +24,5 @@ export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx'
 export { WebUISlotProvider } from '../../src/features/webui/react/WebUISlotProvider.tsx';
 export { WebUIThemeProvider, resolveWebUITheme } from '../../src/features/webui/react/WebUIThemeProvider.tsx';
 export { default as i18n } from '../../src/i18n/index.ts';
+export { FileTree } from '../../src/features/webui/renderer/adapters/webuiFileTree/FileTree.tsx';
+export { createComponentState } from '../../src/features/webui/renderer/componentState.ts';

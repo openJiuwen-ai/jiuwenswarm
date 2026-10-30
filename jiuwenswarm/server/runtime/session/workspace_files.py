@@ -85,7 +85,13 @@ def _relative_path(value: str, *, allow_root: bool = False) -> str:
 
 
 def _confined(root: Path, relative: str) -> Path:
-    target = (root / _relative_path(relative, allow_root=True)).resolve(strict=True)
+    relative = _relative_path(relative, allow_root=True)
+    target = root
+    for part in PurePosixPath(relative).parts:
+        target = target / part
+        if target.is_symlink():
+            raise PermissionError("Symbolic links are not supported in session workspaces")
+    target = target.resolve(strict=True)
     if target != root and root not in target.parents:
         raise PermissionError("The path leaves this session's workspace")
     return target
@@ -226,17 +232,14 @@ class SessionWorkspaceFiles:
             path = f"{relative}/{entry.name}" if relative else entry.name
             try:
                 if entry.is_symlink():
-                    truncated = True
                     continue
                 path = _relative_path(path)
                 target = _confined(root, path)
                 file_stat = target.stat()
             except (OSError, RuntimeError, ValueError):
-                truncated = True
                 budget.read_failed = True
                 continue
             if not stat.S_ISDIR(file_stat.st_mode) and not stat.S_ISREG(file_stat.st_mode):
-                truncated = True
                 continue
             node: dict[str, Any] = {
                 "key": path, "title": entry.name, "path": path,
@@ -257,9 +260,7 @@ class SessionWorkspaceFiles:
                         if child_truncated:
                             node["truncated"] = True
                     except (OSError, RuntimeError, ValueError):
-                        node["truncated"] = True
                         budget.read_failed = True
-                        truncated = True
                 elif path in expanded:
                     node["truncated"] = True
                     truncated = True

@@ -4,7 +4,7 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'conversation.input.above', display: 'list' },
   { id: 'conversation.input.below', display: 'single' },
   { id: 'conversation.panel.right', display: 'list', rootComponents: ['Panel', 'Iframe'] },
-  // Registered for future hosts; targets still require a session_id.
+  // These navigation and settings hosts require a real session_id.
   { id: 'application.menu', display: 'list' },
   { id: 'application.menu.main', display: 'single', rootComponents: ['Iframe'] },
   { id: 'task.function', display: 'list' },

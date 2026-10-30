@@ -349,3 +349,11 @@ def test_shared_browser_valid_property_cases(name, props):
 @pytest.mark.parametrize("name,props", _CASES["invalid"])
 def test_shared_browser_invalid_property_cases(name, props):
     assert validate_props(name, props) is not None
+
+
+_EVENT_CASES = json.loads((Path(__file__).resolve().parents[4] / "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiEventCases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", _EVENT_CASES)
+def test_shared_browser_event_cases(case):
+    assert validate_event_data(case["component"], case["event"], case["data"], case["props"]) is case["allowed"]

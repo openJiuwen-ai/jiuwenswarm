@@ -305,3 +305,23 @@ test('package consumers keep independent bindings and only their own instances o
     owners[1].release();
   } finally { app.dispose(); }
 });
+
+
+const eventCases = JSON.parse(readFileSync(new URL('./fixtures/webuiEventCases.json', import.meta.url), 'utf8'));
+for (const [index, { component, props, event, data, allowed }] of eventCases.entries()) {
+  test(`shared event case ${index}: ${component} ${event} ${allowed ? 'sends' : 'rejects'} ${JSON.stringify(data)}`, async () => {
+    const app = createComponentMock(); app.start();
+    try {
+      const owner = app.runtime.mountSlot(target.session_id, target.slot_id);
+      app.transport.injectRenderFrame(componentMockFrame({
+        component, props, events: { [event]: { id: 'update' } },
+      }));
+      const snapshot = app.runtime.getInstance(key);
+      assert.ok(snapshot?.frame, 'case must have valid render props');
+      app.runtime.reportDisplayed(key, snapshot.revision, snapshot.localFrameId);
+      const binding = app.runtime.bindNode(key, snapshot.localFrameId, '0', owner.mountLeaseId);
+      assert.equal((await binding.emit(event, data)).status, allowed ? 'sent' : 'invalid_action');
+      assert.equal(app.transport.dispatches.length, allowed ? 1 : 0);
+    } finally { app.dispose(); }
+  });
+}

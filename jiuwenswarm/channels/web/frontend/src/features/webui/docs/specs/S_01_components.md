@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-10-30。关联设计：[F_01](../features/F_01_antd-components.md)。
+最近修订：2026-10-31。关联设计：[F_01](../features/F_01_antd-components.md)。
 
 ## 范围与适用条件
 
@@ -8,9 +8,9 @@
 目录登记与页面渲染是独立职责；登记规则不等于已启用对应组件或槽位。
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
-Empty、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe。字段、默认值、必填与事件数据的唯一实现定义在
+Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe。字段、默认值、必填与事件数据的唯一实现定义在
 [`catalog/components/`](../../catalog/components/)，本文不复制完整属性表。
-目录不包含 application.entry。
+槽位目录包含应用范围的 `application.entry`，其余 13 个槽位为会话范围。
 
 ## 接口与不变量
 
@@ -25,11 +25,11 @@ Empty、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe�
   再由 `prepare` 在合法属性上补充默认值。
 - C-06：组件协议版本常量为 1。普通上行交互使用 C-08 定义的 payload，不接受扁平交互字段。
 - C-07：插件节点的 `events` 为非空事件映射，每项只接受 `id` 和可选对象 `args`；省略 args 表示 `{}`，
-  显式 null 被拒绝。旧 `action` 字段继续保留，禁止与 events 同时出现，不做两者转换。
+  显式 null 被拒绝。旧 `action` 字段已移除，前后端均拒绝该字段。
 - C-08：普通 `webui.dispatch` 请求的 payload 只接受 `node_key`、`revision`、`action_id`、`args`、`data` 五个字段。
   node_key 定位当前下发树，revision 为正整数且等于当前实例版本，事件、动作和参数必须匹配该节点声明。
   data 按组件事件规则校验；禁用组件、非法选项、Slider 非步进值等在业务 Handler 前被拒绝。
-- C-09：`ui.ready` 使用空 payload，不要求实例已登记。普通交互在目标不存在时返回 `inactive/TARGET_INACTIVE`，
+- C-09：`ui.ready` 通常使用空 payload，`application.entry` 接受 `{"reason": "first_visit"}`，均不要求实例已登记。普通交互在目标不存在时返回 `inactive/TARGET_INACTIVE`，
   版本不符返回 `stale/TARGET_INACTIVE`，动作或数据非法返回 `invalid_action/SCHEMA_ERROR`。
   适配器校验目标包的槽位贡献；包、实例、会话身份不做字符串强制转换。
 - C-10：插件 registry 保留已下发树的只读快照，后续原始字典修改不改变已声明事件。
@@ -66,7 +66,7 @@ Empty、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe�
 - C-23：TreeSelect 的 ui.select 发送本次选中节点的单个 `{value}`；ui.change 发送整体选择值，
   单选为字符串，multiple 或 treeCheckable 为数组，清空后分别为 null 与空数组；ui.clear 发送 `{}`。
   三项分别绑定，未绑定事件时仍可本地选择。disabled 或断连时禁用；初始化与合法 replace 不派发事件。
-  节点 key 缺省取 value，搜索按 title 过滤。
+  节点 key 缺省取 value，搜索按 title 过滤。普通点选检查 selectable；treeCheckable 模式检查 checkable 和 disableCheckbox，两者均拒绝 disabled 节点。
 - C-24：Slider 的 ui.change 发送数值 `{value}`，拖动与键盘调整的每次有效变化都独立派发，不合并、不等待回执。
   仅在已绑定时派发；未绑定时仍可本地调整。初始化与合法 replace 不派发事件，disabled 或断连时禁用。
   数值需满足 min/max 以及 step（或 dots/marks）允许的取值。
@@ -87,7 +87,7 @@ TreeSelect 另外声明 ui.change，用于承载整体选择值。
 包含 action_id、args、data、node_key 和 revision 的完整 payload 序列化后按 maxFrameBytes 校验，默认上限为 256 KiB。
 前后端遍历全部 Tabs 内容，
 隐藏内容也计入 8 层、512 节点预算，Panel/Iframe 不能嵌套为普通子节点。
-槽位使用 session 范围，不支持应用身份或无会话推送。
+`application.entry` 使用 application 范围，以当前 Web 连接为身份，不要求会话；其他槽位使用 session 范围。
 
 验证入口为 `npm run test:webui-contracts`、`npm run test:webui-protocol`、
 `npm run test:webui-runtime`、`npm run test:webui-events`、`npm run test:webui-renderer`

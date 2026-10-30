@@ -19,7 +19,7 @@ from jiuwenswarm.extensions_v2.webui.models import (
     UiRenderOutput,
 )
 
-from .state import DEMO_ITEMS, SessionState
+from .state import SessionState
 from .views import (
     IFRAME_INSTANCE,
     IFRAME_PAGE_SLOTS,
@@ -170,7 +170,6 @@ class WorkbenchHandlers:
         args = payload.get("args", {})
         if not isinstance(data, Mapping) or not isinstance(args, Mapping):
             return "invalid"
-        value = data.get("value")
         if request.target.slot_id in TURN_SLOTS:
             turn = state.turn(request.target.instance_key)
             if action == "workbench.turn.refresh":
@@ -182,35 +181,8 @@ class WorkbenchHandlers:
             else:
                 return "invalid"
             return "updated"
-        if action == "workbench.query" and isinstance(value, str) and len(value) <= 80:
-            if data.get("isComposing") is True:
-                return "composing"
-            state.query = value
-        elif action == "workbench.category" and value in ("design", "test"):
-            state.category = value
-        elif action == "workbench.category.clear":
-            state.category = None
-        elif action == "workbench.project" and value in (None, "platform", "examples"):
-            state.project = value
-        elif action == "workbench.project.clear":
-            state.project = None
-        elif action == "workbench.threshold" and type(value) in (int, float) and 0 <= value <= 100 and value % 5 == 0:
-            state.threshold = int(value)
-        elif action == "workbench.option" and args.get("field") in ("auto_summary", "destroy_hidden") and type(data.get("checked")) is bool:
-            setattr(state, args["field"], data["checked"])
-        elif action == "workbench.tab" and data.get("activeKey") in ("form", "results"):
-            state.active_tab = data["activeKey"]
-        elif action == "workbench.search" and isinstance(data.get("searchValue"), str):
-            state.search_hint = data["searchValue"][:80]
-        elif action == "workbench.details" and args.get("item") in {item.key for item in DEMO_ITEMS}:
-            state.selected = args["item"]
-        elif action == "workbench.image":
-            state.image_failure = not state.image_failure
-        elif action == "workbench.reset":
-            state.reset()
-        elif action == "workbench.apply":
-            if request.event_type == "ui.press_enter" and isinstance(value, str) and len(value) <= 80:
-                state.query = value
+        if action == "workbench.option" and args.get("field") == "auto_summary" and type(data.get("checked")) is bool:
+            state.auto_summary = data["checked"]
         elif action not in ("workbench.open", "workbench.refresh"):
             return "invalid"
         state.last_result = f"已更新 / Updated · {state.operations + 1} · {state.summary()}"

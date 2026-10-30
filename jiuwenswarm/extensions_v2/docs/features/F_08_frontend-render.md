@@ -10,7 +10,7 @@
 | 所属模块 | `jiuwenswarm/channels/web/frontend/src/features/webui/` |
 | 设计依据 | [F_06 渲染服务](F_06_render-service.md)、[F_07 界面项与上行交互](F_07_ui-contributions.md) |
 | 最近一次修订日期 | 2026-10-31 |
-| 方案状态 | 新链路已接入生产页面并承接全部 13 个已登记槽位；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
+| 方案状态 | 新链路已接入生产页面并承接全部 14 个已登记槽位，同时支持会话与全局槽位范围；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
 
 ## 1. 问题与目标
 
@@ -22,7 +22,7 @@
 
 ### 2.1 本次范围
 
-新增前端运行时底座（本方案对应的实现，已落地，尚未接入页面入口）：
+新增前端运行时底座（本方案对应的实现，已落地，已接入页面入口）：
 
 - 协议管线：`webui.render`、`webui.render.clear`、`webui.render.error` 的 wire 校验、限额检查与规范化；组件目录用于校验组件名、props、子节点与 events。
 - 运行时：实例记录、`revision` 比较、`clear`/`error` 处理、挂载所有权与释放、节点绑定、上行事件校验、显示确认与渲染失败反馈。
@@ -142,8 +142,8 @@ React 宿主接口：
 3. 在应用子树外层挂载 `WebUIProvider`，在槽位位置挂载 `WebUIHost`；消息级槽位传入 `instanceKey`，其余槽位传 `sessionId` 与 `slotId`。
 4. 应用卸载时 `dispose()`，释放运行时与消费者；旧链路已删除，运行时是唯一订阅方。
 
-当前状态：`main.tsx` 用 `WebUIAppRoot` 创建唯一运行时（不含 `application.entry` 入口宿主）；
-13 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
+当前状态：`main.tsx` 用 `WebUIAppRoot` 创建唯一运行时，并由 `WebUIEntryHost` 承接 `application.entry`；
+14 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
 ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单）、ConversationSidebar（任务功能区）、
 `WebUIPageHost`（菜单主页面与任务页面）。
 
@@ -194,28 +194,19 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 3. 渲染提交后，确认组件在 effect 中以 `{ revision, localFrameId }` 上报显示；同一帧的显示确认不会再次执行适配器。
 4. `StrictMode` 的挂载/卸载与宿主重复挂载按消费者句柄独立处理，不泄漏范围所有权。
 
-### 4.4 会话与全局槽位的挂载
+<a id="44-会话与全局槽位的挂载"></a>
 
-前端支持 `session` 和 `application` 两种槽位。范围及目标字段见
-[F_06 第 3.2 节](F_06_render-service.md#32-数据模型)，上行参数见
+### 4.5 会话与全局槽位的挂载
+
+前端在 `catalog/slots.ts` 与后端 `SLOT_SPECS` 中同步登记范围与展示模式。`WebUIHost` 从
+`WebUICatalog` 读取定义；会话槽位使用 `WebUISlotProvider` 提供的真实会话 ID，应用槽位不要求会话。
+范围及目标字段见 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)，上行参数见
 [F_07 第 4.3 节](F_07_ui-contributions.md#43-请求与回执)。
 
-当前页面使用 `WebUISlotHost` 时，在 `types.ts` 的 `WEBUI_SLOT_SPECS` 登记与后端一致的表项：
-
-```ts
-export const WEBUI_SLOT_SPECS = {
-  'conversation.panel.right': { scope: 'session', mode: 'list' },
-  'application.panel.right': { scope: 'application', mode: 'list' },
-};
-```
-
-以上是表项示例，保留其他现有项。登记全局位置后，将 `<WebUISlotHost slotId="application.panel.right" />`
-放到对应页面位置即可；宿主按定义决定是否读取当前会话，全局槽位不要求 `activeSessionId`。
-
-通过 Runtime/Provider 使用公开的 `WebUIHost` 时，在传入的 `WebUICatalog` 中配置
-`{ id: 'application.panel.right', display: 'list', scope: 'application' }`，然后挂载
-`<WebUIHost slotId="application.panel.right" />`，无需传 `sessionId`。
-省略 catalog 中的 `scope` 时，沿用会话槽位的默认行为。
+当前应用范围只有 `application.entry`，由 `WebUIEntryHost` 在首次访问时挂载并发送
+`{"reason": "first_visit"}`。ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。
+`readyOnce` 避免同一挂载消费者重复就绪。其余 13 个槽位仍需要真实会话，`application.menu`、
+`task.function` 和 `application.settings` 在新建空对话中不挂载。
 
 | 行为 | 会话槽位 | 全局槽位 |
 | --- | --- | --- |
@@ -258,7 +249,7 @@ export const WEBUI_SLOT_SPECS = {
 
 - 新增 `src/features/webui/` 下的 `assembly/`、`catalog/`、`contracts/`、`protocol/`、`react/`、`renderer/`、`runtime/`、`testing/`、`transport/` 与统一导出；旧文件已删除。
 - `package.json` 保留 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer` 与 `test:webui-components`；旧 `test:webui-store`、`test:webui-dispatch` 已移除。
-- `App.tsx`、`ChatPanel`、`MessageItem`、`ToolPanel`、侧栏与设置页均已改用新宿主；未新增后端事件、Ops 方法或文件服务。
+- `App.tsx`、`ChatPanel`、`MessageItem`、`ToolPanel`、侧栏与设置页均已改用新宿主；后续文件能力增加了 `ops.session.files`、`ops.session.read_file` 与宿主只读文件服务，应用入口使用 `application.entry` 的 ready 负载。
 - 组件属性与事件契约由组件目录维护，并与后端规则同步；调整白名单时检查两侧校验。
 
 ## 8. 验证
@@ -283,8 +274,21 @@ export const WEBUI_SLOT_SPECS = {
 
 ## 9. 风险与遗留
 
-- **真实联调未完成**：13 个槽位已由新宿主承接，但尚未完成真实插件发帧 → 页面操作 → Handler → 回执的跨进程验证；
+- **真实联调未完成**：14 个槽位已由新宿主承接，但尚未完成真实插件发帧 → 页面操作 → Handler → 回执的跨进程验证；
   旧链路已删除，后续问题只能在单链路上定位。
 - **双端规则维护**：前端组件目录与后端规则分别实现，共用组件属性样本；变更规则时需要同时验证两端。
 - **显示确认仅本地（未联调）**：`displayedRevision` 只保存在前端运行时，未接入后端显示回执事件；跨端显示语义需要另行确认。
 - **真实恢复链路（未验证）**：`ui.ready` 的重连重发只验证到请求构造，插件端是否按实例键恢复轮次视图需要真实联调。
+- **槽位范围同步**：槽位范围来自平台目录，前后端配置需要保持一致；新增位置应同时登记并挂载宿主。
+
+
+### 2026-10-31 评审修复验证
+
+前后端共享 `webuiEventCases.json` 验证输入长度、Slider 步进、Tabs 和选择控件的合法选项，
+并区分 TreeSelect 的点选与复选语义。JSDOM 回归覆盖已访问用户跳过应用入口，以及 FileTree 拒绝回执仅回滚当前字段。
+后端 Extensions V2、会话清理与工作区测试 664 项通过；随后新增的 Deep Code normal/plan 快照测试 2 项通过，
+Code 适配器的无项目/有项目绑定测试也通过。文件服务 12 项定向测试通过，包含逐级符号链接拒绝、读取失败与预算超限区分；回归用例约束组件与文件服务的 100 个展开目录上限一致，核心层不反向依赖 Server。8 组前端测试（contracts、components、protocol、runtime、events、
+transport、renderer、i18n-locales）通过，Vite 生产打包通过。
+
+本次遵守本地约束，未运行格式化、lint 或类型检查。Vite 打包与 JSDOM 不能代替浏览器验收；
+全页 Iframe 高度、深浅主题及真实插件的跨进程链路仍待浏览器验证。
