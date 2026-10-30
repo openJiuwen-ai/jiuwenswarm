@@ -11,6 +11,7 @@ from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionQueue,
 )
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
     SessionPermissionState,
@@ -91,6 +92,35 @@ async def test_adapter_cleanup_drains_detached_evolution_tasks() -> None:
     await getattr(adapter, "_cleanup_evolution_background_tasks")()
 
     assert rail.cleaned is True
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_drains_ttse_with_host_timeout(monkeypatch) -> None:
+    class _BgTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self._done = False
+
+        def done(self) -> bool:
+            return self._done
+
+        async def wait(self) -> None:
+            await asyncio.sleep(3600)
+
+        async def cancel(self, reason: str | None = None) -> None:
+            del reason
+            self.cancelled = True
+            self._done = True
+
+    slow = _BgTask()
+    rail = SimpleNamespace(_bg_tasks={slow})
+    adapter = _make_adapter(_skill_evolution_rail=None, _ttse_rail=rail)
+    monkeypatch.setattr(interface_deep_module, "_TTSE_CLEANUP_WAIT_SECS", 0.01)
+
+    await getattr(adapter, "_cleanup_evolution_background_tasks")()
+
+    assert slow.cancelled is True
+    assert rail._bg_tasks == set()
 
 
 @pytest.mark.asyncio

@@ -541,6 +541,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     """
 
     _subagent_runtime_supported = True
+    _PLUGIN_RUNTIME_PROFILE = "code"
+    _TTSE_BANK_PROFILE = "code"
 
     # 固定 Rails 名字集合 — 用于动态 Rails 去重
     _FIXED_RAIL_NAMES = frozenset({
@@ -549,6 +551,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "PermissionInterruptRail",
         "ContextProcessorRail",
         "SysOperationRail", "LspRail", "ProjectMemoryRail", "CodingMemoryRail",
+        "TTSERail",  # Reserved: TTSE in code mode is provided by a plugin only.
         "MemoryForbiddenRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
         "FileSystemRail",  # 别名
@@ -2206,6 +2209,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             lsp_rail = None
         return lsp_rail
 
+    def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
+        """Code TTSE is constructed exclusively by the plugin context factory."""
+        return None
+
+    def _ttse_bank_root(self) -> Path:
+        """Code 的 ``_workspace_dir`` 常为 project_dir；经验库固定落在 agent 数据区。"""
+        agent_ws = getattr(self, "_agent_workspace_dir", None)
+        return Path(agent_ws) if agent_ws else get_agent_workspace_dir()
+
     def _build_coding_memory_rail(self) -> CodingMemoryRail | None:
         """构建 CodingMemoryRail（主 Agent 和 code_agent subagent 共用）.
 
@@ -2711,6 +2723,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] CodingMemoryRail (re)registered for %s",
                     mode,
                 )
+
+        # Refresh declared plugin tool exposure after a mode switch.
+        runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+        if runtime_manager is not None:
+            runtime_manager.refresh_tool_exposure()
 
         self._last_mode = mode
         await self._sync_personal_context_rail(mode)

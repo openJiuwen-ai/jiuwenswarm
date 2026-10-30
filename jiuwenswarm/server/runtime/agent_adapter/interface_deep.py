@@ -31,6 +31,7 @@ from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
 
 if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeHost, PluginRuntimeManager
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
     from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
     from jiuwenswarm.common.auth.login_credentials import LoginAuth
@@ -197,6 +198,70 @@ _TTSE_DREAM_INTERVAL = 50
 _TTSE_DREAM_MIN_HOURS = 24.0
 _TTSE_DREAM_TTL_DAYS = 90
 _TTSE_CONSULT_TOOL_NAME = "ttse_consult"
+# SDK EvolutionRail.cleanup_background_tasks hard-waits 120s then cancels; TTSE
+# detect+induce+classify often needs longer, so Host drains with a wider budget.
+_TTSE_CLEANUP_WAIT_SECS = 600.0
+# Default GENERATE_RECORDS_LLM_POLICY uses attempt=150; Host widens induce to 300s.
+_TTSE_INDUCE_ATTEMPT_TIMEOUT_SECS = 300.0
+_TTSE_INDUCE_TOTAL_BUDGET_SECS = 300.0
+
+
+def _ttse_induce_llm_policy() -> Any:
+    """Host-fixed LLM policy for TTSE induce/blame/synthesize/classify."""
+    from openjiuwen.agent_evolving.optimizer.llm_resilience import LLMInvokePolicy
+
+    return LLMInvokePolicy(
+        attempt_timeout_secs=_TTSE_INDUCE_ATTEMPT_TIMEOUT_SECS,
+        total_budget_secs=_TTSE_INDUCE_TOTAL_BUDGET_SECS,
+        max_attempts=2,
+    )
+
+
+async def _drain_ttse_rail_background_tasks(
+    rail: Any,
+    *,
+    timeout_secs: float = _TTSE_CLEANUP_WAIT_SECS,
+) -> None:
+    """Wait for TTSERail bg tasks, then force-cancel after ``timeout_secs``.
+
+    Mirrors ``EvolutionRail.cleanup_background_tasks`` but uses the Host budget
+    instead of the SDK's hardcoded 120s wait.
+    """
+    bg_tasks = getattr(rail, "_bg_tasks", None)
+    if bg_tasks is None:
+        cleanup = getattr(rail, "cleanup_background_tasks", None)
+        if callable(cleanup):
+            await cleanup()
+        return
+    pending = [task for task in list(bg_tasks) if not task.done()]
+    for task in pending:
+        try:
+            wait = getattr(task, "wait", None)
+            waiter = wait() if callable(wait) else asyncio.shield(task)
+            await asyncio.wait_for(waiter, timeout=timeout_secs)
+        except TimeoutError:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSE background task still running after "
+                "%.0fs wait; cancelling",
+                timeout_secs,
+            )
+            cancel = getattr(task, "cancel", None)
+            if callable(cancel):
+                try:
+                    result = cancel(reason="ttse_host_cleanup_wait_timeout")
+                except TypeError:
+                    result = cancel()
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSE background task wait failed: %s",
+                exc,
+            )
+        finally:
+            # A later equipment transition must still see surviving writers.
+            if isinstance(bg_tasks, set) and task.done():
+                bg_tasks.discard(task)
 
 
 async def _agent_template_version(pkg_dir: Path) -> str:
@@ -1804,6 +1869,8 @@ class JiuWenSwarmDeepAdapter:
     _subagent_progress_batches: dict[str, list[str]] = {}
     _subagent_progress_batches_lock = threading.Lock()
     _RUNTIME_STATE_WRITE_LIMIT = threading.BoundedSemaphore(2)
+    _PLUGIN_RUNTIME_PROFILE = "work"
+    _TTSE_BANK_PROFILE = "work"
     # Goal stream bookkeeping (see __init__ for what each one tracks). Declared
     # on the class as well so the goal helpers stay safe to call on an instance
     # that has not run through __init__.
@@ -1970,6 +2037,7 @@ class JiuWenSwarmDeepAdapter:
         self._model_anomaly_detection_rail: ModelAnomalyDetectionRail | None = None
         self._heartbeat_rail: HeartbeatRail | None = None
         self._heartbeat_service: Any | None = None
+        self._plugin_runtime_manager: PluginRuntimeManager | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
         self._ttse_rail: Any | None = None
@@ -2171,6 +2239,33 @@ class JiuWenSwarmDeepAdapter:
         self._rsi_default_harness: tuple[str, str] | None = None
         self._rsi_selected_plugin: tuple[str, str] | None = None
         self._rsi_selected_package_snapshot: TemporaryDirectory | None = None
+
+    def get_plugin_runtime_host(self) -> PluginRuntimeHost:
+        """Expose a fresh dependency snapshot without exposing adapter internals."""
+        from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeHost
+
+        active_config = getattr(self, "_active_code_config", None)
+        config = active_config() if callable(active_config) else self._config_base_cache or get_config()
+        return PluginRuntimeHost(
+            instance=self._instance,
+            loaded_plugins=self._loaded_plugins,
+            main_model=(self._model, self._default_model_name),
+            agent_data_workspace=Path(getattr(self, "_agent_workspace_dir", None) or get_agent_workspace_dir()),
+            profile=self._PLUGIN_RUNTIME_PROFILE,
+            config=config,
+            has_conflicting_turn=self._has_conflicting_inflight_turn,
+            wants_attach_goal=self._wants_attach_goal,
+        )
+
+    def get_plugin_runtime_manager(self) -> PluginRuntimeManager:
+        """Return this adapter's single native-plugin lifecycle manager."""
+        from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeManager
+
+        manager = getattr(self, "_plugin_runtime_manager", None)
+        if manager is None:
+            manager = PluginRuntimeManager(self)
+            self._plugin_runtime_manager = manager
+        return manager
 
     def set_heartbeat_service(self, service: Any | None) -> None:
         """Bind the one process-level Heartbeat runtime used by this rail."""
@@ -2818,11 +2913,18 @@ class JiuWenSwarmDeepAdapter:
                     request, f"equipment change rejected at non-fresh turn: {reason}"
                 )
 
+        from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import (
+            get_plugin_runtime_manager,
+        )
+
         try:
-            await self._unload_plugins_for_request(params)
-            await self._unload_agent_template_for_request(params)
-            await self._load_agent_template_for_request(params)
-            await self._load_plugins_for_request(params)
+            async with get_plugin_runtime_manager(self).transition(
+                params, request.session_id or self._parent_session_id or "default",
+            ):
+                await self._unload_plugins_for_request(params)
+                await self._unload_agent_template_for_request(params)
+                await self._load_agent_template_for_request(params)
+                await self._load_plugins_for_request(params)
         except (ValueError, RuntimeError, AgentError, OSError, RsiError) as exc:
             return self._equipment_error_response(request, str(exc))
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -2959,6 +3061,9 @@ class JiuWenSwarmDeepAdapter:
                 selected = getattr(self, "_rsi_selected_plugin", None)
                 if selected is not None and selected[0] == pid:
                     await self._select_rsi_harness_for_request(None)
+                runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+                if runtime_manager is not None:
+                    await runtime_manager.remove(pid)
                 entry = self._loaded_plugins.get(pid)
                 if entry is not None:
                     if self._instance is not None:
@@ -3020,6 +3125,13 @@ class JiuWenSwarmDeepAdapter:
             entry = self._loaded_plugins.get(name)
             if entry is None:
                 continue
+            runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+            bindings = runtime_manager.bindings if runtime_manager is not None else {}
+            if name in bindings:
+                # A prepared plugin transition already detached its old owner.
+                # Seeing it here means package/version observations drifted;
+                # never bypass its writer drain through the generic unloader.
+                raise RuntimeError("Plugin package changed after preflight; retry the equipment change")
             if self._instance is not None:
                 await self._instance.unload_extension(entry[0])
             self._loaded_plugins.pop(name, None)
@@ -3053,7 +3165,10 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("DeepAgent instance not ready for equipment load")
         for name, desired_version, pkg_dir in to_load:
-            record = await self._instance.load_plugin(str(pkg_dir))
+            runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+            record = await runtime_manager.load(name) if runtime_manager is not None else None
+            if record is None:
+                record = await self._instance.load_plugin(str(pkg_dir))
             self._loaded_plugins[name] = (record, desired_version)
 
     @staticmethod
@@ -10124,10 +10239,17 @@ class JiuWenSwarmDeepAdapter:
             skill_evolution_rail = None
         return skill_evolution_rail
 
+    def _ttse_bank_root(self) -> Path:
+        """Agent data root holding ``.ttse/``; must never be a user project dir."""
+        return Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
+
     def _ttse_bank_path(self) -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob."""
-        root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return str(root / ".ttse" / "bank.json")
+        """FACT/TIP bank is ``<root>/.ttse/<profile>/bank.json``; not a user knob.
+
+        Each profile (work / code) gets its own store path, so induce, consult
+        and dream never cross banks (``shared_store`` is keyed by path).
+        """
+        return str(self._ttse_bank_root() / ".ttse" / self._TTSE_BANK_PROFILE / "bank.json")
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins)."""
@@ -10224,6 +10346,7 @@ class JiuWenSwarmDeepAdapter:
                 "consult_top_k": consult_top_k,
                 "consult_retrieve_mode": consult_retrieve_mode,
                 "consult_rrf_k": consult_rrf_k,
+                "induce_llm_policy": _ttse_induce_llm_policy(),
             }
             try:
                 import inspect
@@ -10285,6 +10408,7 @@ class JiuWenSwarmDeepAdapter:
         cfg_obj = getattr(rail, "_ttse_config", None)
         if cfg_obj is not None:
             consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
+            induce_policy = _ttse_induce_llm_policy()
             for attr, value in (
                 ("dream_enabled", bool(dream_enabled)),
                 ("dream_interval", _TTSE_DREAM_INTERVAL),
@@ -10292,6 +10416,7 @@ class JiuWenSwarmDeepAdapter:
                 ("dream_ttl_days", _TTSE_DREAM_TTL_DAYS),
                 ("consult_top_k", consult_top_k),
                 ("consult_retrieve_mode", consult_retrieve_mode),
+                ("induce_llm_policy", induce_policy),
             ):
                 if hasattr(cfg_obj, attr):
                     setattr(cfg_obj, attr, value)
@@ -10337,9 +10462,8 @@ class JiuWenSwarmDeepAdapter:
         """
         if self._instance is None or self._ttse_rail is None:
             return
-        if not _ttse_consult_should_be_eager(
-            self._config_base_cache or self._config_cache
-        ):
+        inject_enabled = _ttse_consult_should_be_eager(self._config_base_cache or self._config_cache)
+        if not inject_enabled:
             return
         if not get_progressive_tool_enabled(
             self._config_base_cache or get_config()
@@ -10423,9 +10547,10 @@ class JiuWenSwarmDeepAdapter:
         if rail is None:
             return
         try:
-            cleanup = getattr(rail, "cleanup_background_tasks", None)
-            if cleanup is not None:
-                await cleanup()
+            await _drain_ttse_rail_background_tasks(
+                rail,
+                timeout_secs=_TTSE_CLEANUP_WAIT_SECS,
+            )
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] TTSE cleanup failed: request_id=%s "
@@ -14982,6 +15107,9 @@ class JiuWenSwarmDeepAdapter:
         )
 
         await stop_external_harness(self)
+        runtime_manager = getattr(self, "_plugin_runtime_manager", None)
+        if runtime_manager is not None:
+            await runtime_manager.close()
         await self._cleanup_evolution_background_tasks()
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
@@ -15086,10 +15214,12 @@ class JiuWenSwarmDeepAdapter:
                 )
                 raise
         ttse_rail = getattr(self, "_ttse_rail", None)
-        ttse_cleanup = getattr(ttse_rail, "cleanup_background_tasks", None)
-        if callable(ttse_cleanup):
+        if ttse_rail is not None:
             try:
-                await ttse_cleanup()
+                await _drain_ttse_rail_background_tasks(
+                    ttse_rail,
+                    timeout_secs=_TTSE_CLEANUP_WAIT_SECS,
+                )
             except Exception as exc:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] TTSE cleanup failed during "

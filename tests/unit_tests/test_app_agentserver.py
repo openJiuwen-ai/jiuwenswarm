@@ -16,6 +16,7 @@ class _FakeFront:
         self.host = host
         self.port = port
         self.readiness = Readiness()
+        self.forwarder = object()
         self.events: list[str] = []
 
     async def start(self) -> None:
@@ -75,3 +76,30 @@ async def test_run_does_not_delete_agent_teams_directory(
     assert "front_stop" in fake_front.events
     assert fake_front.events.index("front_start") < fake_front.events.index("attach")
     assert removed_paths == []
+
+
+@pytest.mark.asyncio
+async def test_supervisor_attaches_before_waiting_for_worker_ipc(monkeypatch):
+    from jiuwenswarm.server.supervisor import runtime_supervisor
+
+    events = []
+    front = _FakeFront("127.0.0.1", 18092)
+
+    class Supervisor:
+        def __init__(self, readiness, *, forwarder, host, port):
+            assert readiness is front.readiness
+            assert forwarder is front.forwarder
+            assert (host, port) == (front.host, front.port)
+            self.worker_pid = 123
+            events.append("construct")
+
+        async def run_until_ipc_ready(self):
+            assert front.events == ["attach"]
+            events.append("ipc_ready")
+
+    monkeypatch.setattr(runtime_supervisor, "RuntimeSupervisor", Supervisor)
+
+    supervisor = await app_agentserver._start_supervisor(front, front.host, front.port)
+
+    assert isinstance(supervisor, Supervisor)
+    assert events == ["construct", "ipc_ready"]
