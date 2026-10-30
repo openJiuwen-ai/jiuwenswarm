@@ -1940,7 +1940,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                       ? (range: TrajectoryTimeRange | null) => selectOnLaneRange(subjectId, range)
                       : ignoreTimelineRange,
                     spanSelectsRange: selecting,
-                    lockTimelineViewport: true,
+                    // Pan with a grab cursor after zoom, like the duration overview.
+                    // Selection mode locks the viewport so a left-drag paints the brush.
+                    lockTimelineViewport: selecting,
                     sharedViewport: timeAxis.viewport,
                     onSharedViewportChange: timeAxis.updateViewport,
                     sharedViewportRef: timeAxis.viewportRef,

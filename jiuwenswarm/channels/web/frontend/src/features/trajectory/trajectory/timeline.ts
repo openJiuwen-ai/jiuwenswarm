@@ -147,6 +147,109 @@ function isModelCell(kind: TrajectoryCellKind): boolean {
   return kind === 'message' || kind === 'compacted'
 }
 
+/** Prompt / window rows that the ledger lists before the model reply. */
+function isPrepCell(kind: TrajectoryCellKind): boolean {
+  return kind === 'system' || kind === 'user' || kind === 'context'
+}
+
+/**
+ * Request identity used to keep prep rows beside the reply they feed.
+ * Prefer the physical request id; fall back to the schema-v2 inference id.
+ */
+function requestGroupKey(cell: Pick<TrajectoryCellProps, 'requestRecordId' | 'physicalInferenceId'>): string | undefined {
+  if (cell.requestRecordId !== undefined && cell.requestRecordId !== '') {
+    return `request:${cell.requestRecordId}`
+  }
+  if (cell.physicalInferenceId !== undefined && cell.physicalInferenceId !== '') {
+    return `inference:${cell.physicalInferenceId}`
+  }
+  return undefined
+}
+
+/**
+ * Context-window commits often record after inference start, so a raw wall-clock
+ * projection draws CONTEXT over the ASSISTANT bar. Slide those prep rows back
+ * into the open interval after earlier on-time prep (USER/SYSTEM) and before
+ * the model reply, matching ledger phase order without rewriting recorded times.
+ */
+function placePrepSpansBeforeModel(
+  spans: Array<TrajectoryTimelineSpan & { groupKey?: string; behaviorOrder?: number }>,
+): void {
+  const messageStartByGroup = new Map<string, number>()
+  for (const span of spans) {
+    if (span.groupKey === undefined || !isModelCell(span.kind)) continue
+    const prior = messageStartByGroup.get(span.groupKey)
+    messageStartByGroup.set(
+      span.groupKey,
+      prior === undefined ? span.start : Math.min(prior, span.start),
+    )
+  }
+  if (messageStartByGroup.size === 0) return
+
+  const prepByGroup = new Map<string, Array<typeof spans[number]>>()
+  for (const span of spans) {
+    if (span.groupKey === undefined || !isPrepCell(span.kind)) continue
+    if (!messageStartByGroup.has(span.groupKey)) continue
+    const list = prepByGroup.get(span.groupKey)
+    if (list === undefined) prepByGroup.set(span.groupKey, [span])
+    else list.push(span)
+  }
+
+  for (const [groupKey, prep] of prepByGroup) {
+    const messageStart = messageStartByGroup.get(groupKey)
+    if (messageStart === undefined) continue
+    const onTime: typeof prep = []
+    const late: typeof prep = []
+    for (const span of prep) {
+      if (span.start > messageStart) late.push(span)
+      else onTime.push(span)
+    }
+    if (late.length === 0) continue
+    late.sort((left, right) =>
+      left.start - right.start
+      || (left.behaviorOrder ?? 0) - (right.behaviorOrder ?? 0)
+      || left.index - right.index)
+
+    const floor = onTime.length === 0
+      ? messageStart
+      : Math.max(
+        ...onTime.map(span => span.end),
+        ...onTime.map(span => span.start),
+      )
+    const room = messageStart - floor
+    if (!(room > 0)) {
+      for (const span of late) {
+        const duration = Math.max(0, span.end - span.start)
+        span.start = messageStart
+        span.end = messageStart + duration
+      }
+      continue
+    }
+
+    const totalDuration = late.reduce(
+      (sum, span) => sum + Math.max(0, span.end - span.start),
+      0,
+    )
+    if (totalDuration > 0 && totalDuration <= room) {
+      let cursor = floor
+      for (const span of late) {
+        const duration = Math.max(0, span.end - span.start)
+        span.start = cursor
+        span.end = cursor + duration
+        cursor += duration
+      }
+      continue
+    }
+
+    const step = room / (late.length + 1)
+    late.forEach((span, index) => {
+      const time = floor + step * (index + 1)
+      span.start = time
+      span.end = time
+    })
+  }
+}
+
 /**
  * Resolve the active projection from the toolbar's independent switches.
  * @param options - Token view flag plus the recorded-duration and complete-time switches.
@@ -324,6 +427,11 @@ function deriveTokenTimeline(
   }
 }
 
+type TimedRawSpan = TrajectoryTimelineSpan & {
+  groupKey?: string
+  behaviorOrder?: number
+}
+
 function deriveTimedTimeline(
   turns: readonly TrajectoryTurnModel[],
   actualDuration: boolean,
@@ -332,27 +440,30 @@ function deriveTimedTimeline(
 ): TrajectoryTimelineModel | null {
   const timedTurns = turns.flatMap((turn) => {
     const rawSpans = turn.groups.flatMap(group =>
-      group.cells.flatMap((cell): TrajectoryTimelineSpan[] => {
+      group.cells.flatMap((cell): TimedRawSpan[] => {
         if (cell.requestOnly === true) return []
         const range = cellRange(cell, nowMilliseconds)
-        return range === null
-          ? []
-          : [{
-            ...range,
-            index: cell.index,
-            isError: cell.isError === true,
-            kind: cell.kind,
-            label: cell.text,
-            lane: laneFor(cell.kind),
-          }]
+        if (range === null) return []
+        const groupKey = requestGroupKey(cell)
+        return [{
+          ...range,
+          index: cell.index,
+          isError: cell.isError === true,
+          kind: cell.kind,
+          label: cell.text,
+          lane: laneFor(cell.kind),
+          ...(groupKey === undefined ? {} : { groupKey }),
+          ...(cell.behaviorOrder === undefined ? {} : { behaviorOrder: cell.behaviorOrder }),
+        }]
       }),
     )
     return rawSpans.length === 0 ? [] : [{ turn: turn.turn, rawSpans }]
   })
   const rawSpans = timedTurns.flatMap(turn => turn.rawSpans)
   if (rawSpans.length === 0) return null
+  placePrepSpansBeforeModel(rawSpans)
 
-  const removedIdleBySpan = new Map<TrajectoryTimelineSpan, number>()
+  const removedIdleBySpan = new Map<TimedRawSpan, number>()
   let removedIdle = 0
   let coveredUntil: number | null = null
   for (const span of [...rawSpans].sort((left, right) =>
@@ -370,9 +481,16 @@ function deriveTimedTimeline(
     const projected = turn.rawSpans.map((span): TrajectoryTimelineSpan => {
       const offset = removedIdleBySpan.get(span) ?? 0
       return {
-        ...span,
         start: span.start - offset,
         end: (actualDuration ? span.end : span.start) - offset,
+        index: span.index,
+        isError: span.isError,
+        kind: span.kind,
+        label: span.label,
+        lane: span.lane,
+        ...(span.segment === undefined ? {} : { segment: span.segment }),
+        ...(span.splitFraction === undefined ? {} : { splitFraction: span.splitFraction }),
+        ...(span.coveredIndexes === undefined ? {} : { coveredIndexes: span.coveredIndexes }),
       }
     })
     spans.push(...projected)

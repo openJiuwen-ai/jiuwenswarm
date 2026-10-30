@@ -221,6 +221,49 @@ test('complete-time projections keep the idle gap that duration projection compr
   assert.deepEqual(ranges('time'), [[0, 0], [10_000, 10_000]]);
 });
 
+test('late context commits slide between on-time user and the model reply', () => {
+  const requestRecordId = 'req-1';
+  const turns = [turn(1, [
+    cell(0, 'user', { startedAt: 1_000, timeSeconds: null, requestRecordId }),
+    cell(1, 'message', { startedAt: 5_000, timeSeconds: 4, requestRecordId }),
+    cell(2, 'context', { startedAt: 7_000, timeSeconds: null, requestRecordId }),
+  ])];
+
+  const model = deriveTrajectoryTimeline(turns, 'actual');
+  const byKind = Object.fromEntries(model.spans.map(span => [span.kind, span]));
+  assert.equal(byKind.user.start, 1_000);
+  assert.equal(byKind.message.start, 5_000);
+  assert.equal(byKind.message.end, 9_000);
+  assert.ok(byKind.context.start > byKind.user.start);
+  assert.ok(byKind.context.start < byKind.message.start);
+  assert.equal(byKind.context.end, byKind.context.start);
+});
+
+test('late prep without an earlier user parks at the model reply start', () => {
+  const requestRecordId = 'req-2';
+  const turns = [turn(1, [
+    cell(0, 'message', { startedAt: 5_000, timeSeconds: 2, requestRecordId }),
+    cell(1, 'context', { startedAt: 6_000, timeSeconds: null, requestRecordId }),
+  ])];
+
+  const model = deriveTrajectoryTimeline(turns, 'actual');
+  const context = model.spans.find(span => span.kind === 'context');
+  assert.equal(context.start, 5_000);
+  assert.equal(context.end, 5_000);
+});
+
+test('prep without a shared request keeps its recorded wall-clock time', () => {
+  const turns = [turn(1, [
+    cell(0, 'user', { startedAt: 1_000, timeSeconds: null, requestRecordId: 'req-a' }),
+    cell(1, 'message', { startedAt: 2_000, timeSeconds: 1, requestRecordId: 'req-a' }),
+    cell(2, 'context', { startedAt: 8_000, timeSeconds: null }),
+  ])];
+
+  const model = deriveTrajectoryTimeline(turns, 'actual');
+  const context = model.spans.find(span => span.kind === 'context');
+  assert.equal(context.start, 8_000);
+});
+
 test('zoom keeps the pointed timeline time anchored and respects the minimum width', () => {
   const next = zoomTrajectoryTimelineViewport(
     { start: 0, end: 1_000 },
