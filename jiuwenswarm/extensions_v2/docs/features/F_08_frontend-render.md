@@ -9,8 +9,8 @@
 | 关联计划 | EXTV2-08 前端槽位渲染与复杂面板 |
 | 所属模块 | `jiuwenswarm/channels/web/frontend/src/features/webui/` |
 | 设计依据 | [F_06 渲染服务](F_06_render-service.md)、[F_07 界面项与上行交互](F_07_ui-contributions.md) |
-| 最近一次修订日期 | 2026-10-30 |
-| 方案状态 | 旧链路（store + 槽位宿主）保持线上；WebUI 前端运行时底座已实现并通过模块测试，尚未接入生产页面入口；加载态、真实插件联调未验收 |
+| 最近一次修订日期 | 2026-10-31 |
+| 方案状态 | 新链路已接入生产页面并承接全部 13 个已登记槽位；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
 
 ## 1. 问题与目标
 
@@ -30,7 +30,8 @@
 - 接入适配：可注入的 `WebUICatalog`、`WebUIRendererRegistry` 与 `WebUIClientLike`；WebClient 传输适配与 Mock 传输。
 - 独立验证：demo 目录、demo 适配器、共享组件样本与协议、运行时、事件、传输及渲染测试。
 
-当前生产入口使用 `webuiStore`、`useWebUIRender`、`WebUISlotHost`、`RenderTree` 和 `actionBridge`，由 `test:webui-store` 覆盖存储行为。
+当前生产入口使用 `WebUIAppRoot`、`WebUIProvider`、`WebUIHost`、`useWebUIPanels` 与
+`WebUINavigationHost`/`WebUIPageHost`，由组件、协议、运行时、传输与渲染测试共同覆盖。
 
 组件契约模块包含独立目录、事件数据规则和属性校验器。模块职责见
 [F_01 组件目录与属性校验](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md)，
@@ -47,7 +48,7 @@
 
 ### 3.1 组件关系
 
-新链路按「接入适配 → 协议管线 → 运行时 → React 宿主 → 渲染注册表」分层，旧链路保持原状：
+新链路按「接入适配 → 协议管线 → 运行时 → React 宿主 → 渲染注册表」分层，旧链路已移除：
 
 ```mermaid
 flowchart LR
@@ -63,7 +64,9 @@ flowchart LR
     RT -->|"webui.dispatch"| TR
 ```
 
-旧链路仍由 `App.tsx` 的 `useWebUIRender`、`WebUISlotHost` 与 `RenderTree` 承担生产渲染；新链路只在测试与显式组装入口中运行，二者不共享实例状态。
+生产页面由 `WebUIAppRoot` 组装的唯一运行时承接：`WebUIHost` 负责槽位挂载，`useWebUIPanels` 负责右侧面板，
+`WebUIHost` 与槽位上下文共同解析会话与页面导航。旧的 `useWebUIRender`、`WebUISlotHost` 与 `RenderTree`
+已删除，不存在第二套订阅。
 
 ### 3.2 实例状态
 
@@ -137,12 +140,12 @@ React 宿主接口：
 1. 用后端目录镜像创建 `WebUICatalog`，并为目录中每个组件实现同名适配器，创建 `WebUIRendererRegistry`。
 2. 调用 `createWebUIAppRuntime({ client, catalog, registry })` 得到 `runtime` 与 `registry`，在应用生命周期中显式 `start()`。
 3. 在应用子树外层挂载 `WebUIProvider`，在槽位位置挂载 `WebUIHost`；消息级槽位传入 `instanceKey`，其余槽位传 `sessionId` 与 `slotId`。
-4. 应用卸载时 `dispose()`，释放运行时与消费者；旧链路的 `useWebUIRender`/`WebUISlotHost` 在迁移完成前继续工作，不与新运行时共享实例状态。
+4. 应用卸载时 `dispose()`，释放运行时与消费者；旧链路已删除，运行时是唯一订阅方。
 
 当前状态：`main.tsx` 用 `WebUIAppRoot` 创建唯一运行时（不含 `application.entry` 入口宿主）；
 13 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
 ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单）、ConversationSidebar（任务功能区）、
-`WebUIPageHost`（菜单主页面与任务页面）。旧链路仅保留代码，生产槽位不再使用它；删除放在独立提交。
+`WebUIPageHost`（菜单主页面与任务页面）。
 
 ### 3.5 渲染代次、显示确认与失败反馈
 
@@ -234,31 +237,12 @@ export const WEBUI_SLOT_SPECS = {
 - `SchemaRenderer` 按节点 `component` 查注册表并递归渲染；适配器只接收节点、子内容、内容组、实例上下文与 `emit`，不接触 Runtime、通信客户端或完整实例快照。
 - demo 目录与 demo 适配器用于模块测试，实际组件与样式 token 映射由宿主适配器提供。
 
-### 5.2 旧链路（保留代码，生产不再使用）
+### 5.2 旧链路（已删除）
 
-旧链路代码仍在仓库中，便于与迁移结果对照；生产槽位已全部由新宿主承载，删除旧链路放在独立提交，
-删除前需完成真实往返验证与示例插件迁移。
-
-旧链路支持下列白名单组件与样式 token 映射：
-
-| 组件 | 主要 props | 行为 |
-| --- | --- | --- |
-| `Column` / `Row` | `gap`、`align`、`justify`、`padding`、`wrap`、`density` | 纵向/横向布局 |
-| `Card` | `title`、`tone`、`padding`、`collapsible`、`density` | 带标题容器 |
-| `Tabs` | `items`、`selected` | 展示标签头，内容由 children 提供 |
-| `Divider` | `axis`、`spacing` | 分隔线 |
-| `Text` | `value`、`variant`、`tone`、`size`、`weight`、`max_lines`、`monospace` | 文本 |
-| `Icon` | `name`、`size`、`tone` | 内置字形，不加载外部资源 |
-| `Badge` | `label`、`tone`、`size` | 状态标签 |
-| `Button` | `label`、`variant`、`size`、`disabled` | 点击触发 `ui.press` |
-| `TextField` | `name`、`placeholder`、`value`、`max_length` | 受控输入 |
-| `CheckBox` | `name`、`label`、`checked`、`disabled` | 开关 |
-| `MultipleChoice` | `name`、`options`、`value`、`multiple`、`disabled` | 下拉或多选 |
-| `Slider` | `name`、`min`、`max`、`step`、`value`、`disabled` | 数值选择 |
-| `List` | `items`、`ordered`、`selected` | 列表，支持 `title`、`tone`、`monospace` |
-| `Progress` | `value`、`tone`、`label` | 进度条 |
-
-样式 token 在旧链路 `RenderTree.tsx` 内集中映射为 Tailwind 类；插件不能传颜色或像素。迁移到新运行时后，适配器按同一 token 规则实现。
+`RenderTree`、`WebUISlotHost`、`webuiStore`、`actionBridge` 与 `useWebUIRender` 已从仓库删除，
+对应的 `webuiStore` / `webuiDispatch` 测试与 npm 脚本一并移除。旧组件 `Row`、`Column`、`Icon`、`Badge`、
+`TextField`、`CheckBox`、`MultipleChoice`、`List`、`Progress` 不再被协议接受，
+旧事件 `ui.press`、`ui.toggle`、`ui.input` 不再进入事件链。迁移对照可查阅本文件历史版本。
 
 ## 6. 异常与边界
 
@@ -272,9 +256,9 @@ export const WEBUI_SLOT_SPECS = {
 
 ## 7. 实施影响
 
-- 新增 `src/features/webui/` 下的 `assembly/`、`catalog/`、`contracts/`、`protocol/`、`react/`、`renderer/`、`runtime/`、`testing/`、`transport/` 与统一导出；旧文件与旧入口保持不变。
-- `package.json` 新增 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`；保留 `test:webui-store` 及其他脚本。
-- 不修改 `App.tsx`、`ChatPanel` 等生产挂载点，不新增后端事件、Ops 方法、槽位或文件服务；前端只消费既有 `webClient` 事件与 `webui.dispatch`。
+- 新增 `src/features/webui/` 下的 `assembly/`、`catalog/`、`contracts/`、`protocol/`、`react/`、`renderer/`、`runtime/`、`testing/`、`transport/` 与统一导出；旧文件已删除。
+- `package.json` 保留 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer` 与 `test:webui-components`；旧 `test:webui-store`、`test:webui-dispatch` 已移除。
+- `App.tsx`、`ChatPanel`、`MessageItem`、`ToolPanel`、侧栏与设置页均已改用新宿主；未新增后端事件、Ops 方法或文件服务。
 - 组件属性与事件契约由组件目录维护，并与后端规则同步；调整白名单时检查两侧校验。
 
 ## 8. 验证
@@ -294,11 +278,13 @@ export const WEBUI_SLOT_SPECS = {
 ### 8.2 验证入口
 
 前端目录下执行 `npm run test:webui-protocol`、`npm run test:webui-runtime`、
-`npm run test:webui-events`、`npm run test:webui-transport`、`npm run test:webui-renderer` 和 `npm run test:webui-store`。
+`npm run test:webui-events`、`npm run test:webui-transport`、`npm run test:webui-renderer`
+与 `npm run test:webui-components`。
 
 ## 9. 风险与遗留
 
-- **入口未迁移（未实现）**：生产页面仍走旧链路，两套实现并存期间需要避免重复订阅与重复渲染；迁移时按页面逐点接入并回归旧入口。
+- **真实联调未完成**：13 个槽位已由新宿主承接，但尚未完成真实插件发帧 → 页面操作 → Handler → 回执的跨进程验证；
+  旧链路已删除，后续问题只能在单链路上定位。
 - **双端规则维护**：前端组件目录与后端规则分别实现，共用组件属性样本；变更规则时需要同时验证两端。
 - **显示确认仅本地（未联调）**：`displayedRevision` 只保存在前端运行时，未接入后端显示回执事件；跨端显示语义需要另行确认。
 - **真实恢复链路（未验证）**：`ui.ready` 的重连重发只验证到请求构造，插件端是否按实例键恢复轮次视图需要真实联调。

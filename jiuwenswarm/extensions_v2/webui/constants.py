@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""WebUI extension constants: events, slots, component whitelist, tokens and limits."""
+"""WebUI extension constants: events, slots and size limits."""
 
 from __future__ import annotations
 
@@ -16,9 +16,6 @@ class WebUIEvent(StrEnum):
 
     RENDER = "ui.render"
     READY = "ui.ready"
-    PRESS = "ui.press"
-    TOGGLE = "ui.toggle"
-    INPUT = "ui.input"
     SELECT = "ui.select"
     CLICK = "ui.click"
     CHANGE = "ui.change"
@@ -36,9 +33,6 @@ FRAME_RENDER_ERROR: Final[str] = "webui.render.error"
 UPSTREAM_EVENTS: Final[frozenset[str]] = frozenset(
     {
         WebUIEvent.READY.value,
-        WebUIEvent.PRESS.value,
-        WebUIEvent.TOGGLE.value,
-        WebUIEvent.INPUT.value,
         WebUIEvent.SELECT.value,
         WebUIEvent.CLICK.value,
         WebUIEvent.CHANGE.value,
@@ -109,45 +103,6 @@ def slot_spec(slot_id: str) -> SlotSpec | None:
     """Return the allowlisted definition, or None when the slot is unknown."""
 
     return SLOT_SPECS.get(slot_id)
-
-# Component whitelist: names match the frontend component switch.
-CONTAINER_COMPONENTS: Final[frozenset[str]] = frozenset({"Column", "Row", "Card", "Tabs"})
-INTERACTIVE_COMPONENTS: Final[frozenset[str]] = frozenset(
-    {"Button", "TextField", "CheckBox", "MultipleChoice", "Slider", "List"}
-)
-
-# Allowed props per component. Unknown props reject the whole tree.
-COMPONENT_PROPS: Final[Mapping[str, frozenset[str]]] = {
-    "Column": frozenset({"gap", "align", "justify", "padding", "wrap", "density"}),
-    "Row": frozenset({"gap", "align", "justify", "padding", "wrap", "density"}),
-    "Card": frozenset({"title", "tone", "padding", "collapsible", "density"}),
-    "Tabs": frozenset({"items", "selected"}),
-    "Divider": frozenset({"axis", "spacing"}),
-    "Text": frozenset({"value", "variant", "tone", "size", "weight", "max_lines", "monospace"}),
-    "Icon": frozenset({"name", "size", "tone"}),
-    "Badge": frozenset({"label", "tone", "size"}),
-    "Button": frozenset({"label", "variant", "size", "disabled"}),
-    "TextField": frozenset({"name", "placeholder", "value", "max_length"}),
-    "CheckBox": frozenset({"name", "label", "checked", "disabled"}),
-    "MultipleChoice": frozenset({"name", "options", "value", "multiple", "disabled"}),
-    "Slider": frozenset({"name", "min", "max", "step", "value", "disabled"}),
-    "List": frozenset({"items", "ordered", "selected"}),
-    "Progress": frozenset({"value", "tone", "label"}),
-}
-
-# Style tokens: plugins pick a token, they never write colours or pixels.
-STYLE_TOKENS: Final[Mapping[str, frozenset[str]]] = {
-    "variant": frozenset({"default", "primary", "secondary", "danger", "ghost"}),
-    "tone": frozenset({"neutral", "info", "success", "warning", "danger"}),
-    "size": frozenset({"sm", "md", "lg"}),
-    "align": frozenset({"left", "center", "right"}),
-    "density": frozenset({"compact", "comfortable"}),
-    "gap": frozenset({"sm", "md", "lg"}),
-    "weight": frozenset({"regular", "medium", "bold"}),
-    "justify": frozenset({"start", "center", "end", "between"}),
-    "spacing": frozenset({"none", "sm", "md", "lg"}),
-    "axis": frozenset({"horizontal", "vertical"}),
-}
 
 # Size limits: the first four match the existing wire truncation budget.
 MAX_DEPTH: Final[int] = 8

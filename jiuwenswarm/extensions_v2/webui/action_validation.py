@@ -22,8 +22,6 @@ from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.extensions_v2.webui.schema import _validate_value, validate_target
 
 _PAYLOAD_FIELDS = frozenset({"action_id", "args", "data", "node_key", "revision"})
-_LEGACY_EVENTS = {"Button": "ui.press", "TextField": "ui.input", "CheckBox": "ui.toggle",
-                  "MultipleChoice": "ui.select", "Slider": "ui.select", "List": "ui.press"}
 
 
 def validate_upstream(request: UiActionInput, registry: ActiveRenderRegistry) -> UiActionOutput | None:
@@ -57,10 +55,9 @@ def validate_upstream(request: UiActionInput, registry: ActiveRenderRegistry) ->
             return invalid
     except (TypeError, ValueError):
         return invalid
-    if node.events is not None:
-        declaration = node.events.get(request.event_type)
-    else:
-        declaration = node.action if _LEGACY_EVENTS.get(node.component) == request.event_type else None
+    if node.events is None:
+        return invalid
+    declaration = node.events.get(request.event_type)
     if not isinstance(declaration, Mapping) or type(payload["action_id"]) is not str:
         return invalid
     if payload["action_id"] != declaration.get("id") or not isinstance(payload["args"], Mapping):
@@ -72,8 +69,7 @@ def validate_upstream(request: UiActionInput, registry: ActiveRenderRegistry) ->
     data = payload["data"]
     if not isinstance(data, Mapping):
         return invalid
-    valid = (validate_event_data(node.component, request.event_type, data, node.props) if node.events is not None
-             else _legacy_data_allowed(node, data))
+    valid = validate_event_data(node.component, request.event_type, data, node.props)
     return None if valid else invalid
 
 
@@ -121,34 +117,3 @@ def _find_node(root: RenderNode, node_key: Any) -> RenderNode | None:
         else:
             return None
     return node
-
-
-def _legacy_data_allowed(node: RenderNode, data: Mapping[str, Any]) -> bool:
-    """Validate the existing action API without translating it into component events."""
-    props = node.props
-    if props.get("disabled"):
-        return False
-    if node.component == "Button":
-        return not data
-    if node.component == "List":
-        return set(data) == {"key"} and any(item.get("key") == data["key"] for item in props.get("items", ()))
-    if not isinstance(data.get("name"), str) or data["name"] != props.get("name", ""):
-        return False
-    if node.component == "CheckBox":
-        return set(data) == {"name", "checked"} and type(data["checked"]) is bool
-    if set(data) != {"name", "value"}:
-        return False
-    value = data["value"]
-    if node.component == "TextField":
-        limit = props.get("max_length", 0)
-        return isinstance(value, str) and (not limit or len(value.encode("utf-16-le")) // 2 <= limit)
-    if node.component == "Slider":
-        from jiuwenswarm.extensions_v2.webui.component_rules import slider_value_allowed
-
-        return slider_value_allowed(props, value)
-    if node.component == "MultipleChoice":
-        values = [item.get("key") for item in props.get("options", ()) if not item.get("disabled")]
-        return (isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value)
-                and len(set(value)) == len(value) and (props.get("multiple") or len(value) <= 1)
-                and all(item in values for item in value))
-    return False

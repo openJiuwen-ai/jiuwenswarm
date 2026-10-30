@@ -88,7 +88,6 @@ import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import { WebUISlotProvider, WebUIPageHost, type WebUIPageTarget } from './features/webui';
-import { useWebUIRender } from './features/webui/useWebUIRender';
 import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,

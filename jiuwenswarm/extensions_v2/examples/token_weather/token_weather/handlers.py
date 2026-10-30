@@ -156,7 +156,11 @@ def _turn_tree(update: ContextUsageUpdate) -> RenderNode:
                 {"value": f"缓存 {cache}", "size": "sm", "tone": _cache_tone(rate)},
             )
         )
-    return RenderNode("Row", {"gap": "sm", "density": "compact", "justify": "end"}, children=tuple(children))
+    return RenderNode(
+        "Box",
+        {"direction": "row", "gap": "sm", "align": "center", "justify": "end"},
+        children=tuple(children),
+    )
 
 
 def _summary_tree(state: SessionUsage) -> RenderNode:
@@ -187,7 +191,11 @@ def _summary_tree(state: SessionUsage) -> RenderNode:
     children = [left]
     if right_value:
         children.append(right)
-    return RenderNode("Row", {"gap": "md", "justify": "between", "density": "compact"}, children=tuple(children))
+    return RenderNode(
+        "Box",
+        {"direction": "row", "gap": "md", "align": "center", "justify": "between"},
+        children=tuple(children),
+    )
 
 
 def _cache_tone(rate: float | None) -> str:

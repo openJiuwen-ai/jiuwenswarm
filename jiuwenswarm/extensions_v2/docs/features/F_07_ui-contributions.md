@@ -155,17 +155,11 @@ sequenceDiagram
 
 组件使用 `events` 声明事件及其动作。新组件事件的数据规则由
 [组件规约](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)维护；
-后端校验实现位于 `webui/component_rules.py`。以下旧 action 组件仍保留，表中的字段现在放在 `payload.data`：
+后端校验实现位于 `webui/component_rules.py`。旧 action 组件（`Row`/`TextField`/`CheckBox`/
+`MultipleChoice`/`List` 等）与对应事件 `ui.press`/`ui.toggle`/`ui.input` 已移除，不再接受声明。
 
-| 事件 | 来源组件 | payload |
-| --- | --- | --- |
-| `ui.press` | `Button` / `List` | `{}` / `{key}` |
-| `ui.toggle` | `CheckBox` | `{name, checked}` |
-| `ui.input` | `TextField` | `{name, value}` |
-| `ui.select` | `MultipleChoice`、`Slider` | `{name, value}` |
-
-`action_id`、`args` 来自对应事件声明；旧节点仍从 `action` 读取。同一节点不允许同时声明两者。
-插件按 `action_id` 区分同一实例内的多个动作，读取交互值时使用 `payload.data`。
+`action_id`、`args` 来自对应事件声明；节点不再支持 `action` 字段。
+插件按 `action_id` 区分同一实例内的多个动作，交互值统一从 `payload.data` 读取。
 
 请求处理顺序为：适配器校验字段类型和可信会话 → 目录校验包与槽位贡献 → runtime 校验当前实例、
 revision、节点路径、事件、action_id、args 与 data → 触发事件链。包、实例和会话标识不做字符串强制转换。
@@ -296,7 +290,7 @@ Gateway 通过现有断连钩子发送内部 E2A 方法 `webui.connection.closed
 - 没有界面贡献的槽位返回 `no_contribution`。
 - 槽位、会话和目标字段校验。
 - 正常交互、非法事件数据、过期 revision、伪造动作与参数，以及拒绝请求不触发业务 Handler。
-- 包卸载、会话与实例隔离，以及 action 组件的属性和事件校验。
+- 包卸载、会话与实例隔离，以及目录外组件与旧组件属性的拒绝。
 
 组件属性测试共用前端测试目录下的 `webuiComponentCases.json`。Python 测试覆盖进程内的
 render → Handler → replace；前端测试使用 jsdom 验证页面点击产生的请求。
