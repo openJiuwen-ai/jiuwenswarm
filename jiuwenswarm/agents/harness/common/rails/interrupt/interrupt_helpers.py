@@ -1432,15 +1432,12 @@ def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
         return True
     if normalized.startswith("**工具 `") or normalized.startswith("**Tool `"):
         return True
-    # New ASK copy: summary lines like ``write C:\...`` or ``powershell: ...``
-    ask_prefixes = (f"{tool_name}:", "write ", "read ", "edit ", "list ")
-    if tool_name and any(normalized.startswith(prefix) for prefix in ask_prefixes):
+    # 到达此处时 tool_name 必非 confirm 工具（白名单前置已 return）：
+    # 非空 tool_name（含 ASK 摘要行等任意文案）一律判权限中断；
+    # 空 tool_name 仅在空文案 / approve 话术时判 True。
+    if tool_name:
         return True
-    if tool_name and tool_name not in _CONFIRM_INTERRUPT_TOOLS:
-        return True
-    if normalized in {"", "Please approve or reject?"}:
-        return tool_name not in _CONFIRM_INTERRUPT_TOOLS
-    return False
+    return normalized in {"", "Please approve or reject?"}
 
 
 def _parse_plan_metadata_from_message(message: str) -> tuple[str, str]:
