@@ -1416,16 +1416,22 @@ def _read_interrupt_fields(value_obj: Any) -> tuple[str, str, dict | None]:
 
 def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
     """Heuristic: PermissionInterruptRail copy vs ConfirmInterruptRail copy."""
+    # Confirm 白名单必须最先判定（CR-6 扩展，评审 2026-10-30 Must
+    # Fix）：exit_plan_mode/switch_mode 的中断来源由 rail 类型决定
+    # （PlanApprovalInterruptRail 继承 ConfirmInterruptRail），文案
+    # 不可信——ASK 前缀是宽松通用词（write/read/edit/list）；计划
+    # 审批 message 还内嵌计划全文（任意自然文本，截断上限 3000），
+    # "Permission denied"/"requires permission" 等 marker 是常见英
+    # 文子串，任一先判都会把 confirm 中断误判为 permission_interrupt，
+    # 计划「批准/拒绝」选项丢失，下游 OfficeAce relay 据此自动放行，
+    # 绕过计划 HITL 审批门。
+    if tool_name in _CONFIRM_INTERRUPT_TOOLS:
+        return False
     normalized = message.strip()
     if any(marker in normalized for marker in _PERMISSION_INTERRUPT_MARKERS):
         return True
     if normalized.startswith("**工具 `") or normalized.startswith("**Tool `"):
         return True
-    # Confirm 白名单必须先于 ask_prefixes：ASK 文案前缀是宽松的通用词
-    # （write/read/edit/list），confirm rail 文案一旦踩中即被误判为
-    # permission_interrupt，下游 OfficeAce relay 会据此自动放行（CR-6）。
-    if tool_name in _CONFIRM_INTERRUPT_TOOLS:
-        return False
     # New ASK copy: summary lines like ``write C:\...`` or ``powershell: ...``
     ask_prefixes = (f"{tool_name}:", "write ", "read ", "edit ", "list ")
     if tool_name and any(normalized.startswith(prefix) for prefix in ask_prefixes):

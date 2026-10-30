@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    _is_permission_interrupt_message,
+    _resolve_interrupt_source,
     build_permission_rail,
     convert_interactions_to_ask_user_question,
 )
@@ -113,6 +115,60 @@ def test_legacy_skill_evolution_approval_metadata_is_classified():
     assert result is not None
     assert result["source"] == "evolution_interrupt"
     assert result["approval_kind"] == "evolve"
+
+
+def test_confirm_whitelist_precedes_markers_and_prefix():
+    """Confirm 工具的 marker/前缀命中不得判 permission_interrupt
+    （评审 2026-10-30 Must Fix 回归：白名单已前置到函数最顶端，
+    marker 与 **Tool ` 前缀检查不再先于白名单返回 True）。"""
+    marker_messages = (
+        "Permission denied while drafting the plan",
+        "every write requires permission from the admin",
+        "操作需要授权后才能继续",
+        "安全风险评估：删除临时目录",
+        "**Tool `read_file` 需要 `**` 前缀命中样本",
+        "**工具 `write_file` 需要确认",
+    )
+    for message in marker_messages:
+        assert _is_permission_interrupt_message(message, "exit_plan_mode") is False
+        assert _is_permission_interrupt_message(message, "switch_mode") is False
+        assert _resolve_interrupt_source("exit_plan_mode", message) == "confirm_interrupt"
+    # 非白名单工具的 marker/prefix 判定不受白名单前置影响
+    assert _is_permission_interrupt_message("安全风险评估：删除临时目录", "run_command") is True
+    assert _is_permission_interrupt_message("**工具 `write_file` 需要确认", "list_files") is True
+
+
+def test_exit_plan_mode_plan_markers_still_plan_approval():
+    """计划全文含 permission marker 时 exit_plan_mode 仍出计划审批
+    选项（评审 2026-10-30 Must Fix 行为路径回归：计划文本为任意
+    自然文本，易含 marker 子串，误判会丢「批准/拒绝」选项并触发
+    relay 自动放行）。"""
+    plan_text = (
+        "1. Fix the auth module: remove the stale `Permission denied` branch "
+        "so writes no longer require permission from admins.\n"
+        "2. Add a 安全风险评估 report for the cleanup."
+    )
+    message = (
+        "**Plan Approval**\n\n"
+        "The agent has completed a plan and is requesting your approval:\n\n"
+        f"{plan_text}\n\n"
+        "---\nChoose:\n"
+        "- **Approve**: Exit plan mode and begin implementation\n"
+        "- **Reject**: Stay in plan mode, the agent will revise the plan "
+        "based on your feedback"
+    )
+    interaction = SimpleNamespace(
+        id="call_plan_1",
+        value={"message": message, "tool_name": "exit_plan_mode"},
+    )
+
+    result = convert_interactions_to_ask_user_question([interaction])
+
+    assert result is not None
+    assert result["source"] == "confirm_interrupt"
+    assert result["plan_approval_kind"] == "plan_approval"
+    labels = {option["label"] for option in result["questions"][0]["options"]}
+    assert labels == {"Approve", "Reject"}
 
 
 def _scene_hook_input(normalized_tool_name: str, user_input):
