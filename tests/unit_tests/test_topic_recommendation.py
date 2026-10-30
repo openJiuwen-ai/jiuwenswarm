@@ -1882,6 +1882,81 @@ def test_preset_cards_serve_when_recommendation_is_off(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_dismissed_preset_card_is_resampled_from_the_corpus(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
+        NewPageOutcomeQueue,
+        TopicStarterStoreOutcomeSink,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: 1_700_000_000.0,
+    )
+    try:
+        first = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert len(first["topics"]) == 4
+        assert service.record_exposure({
+            "session_id": "session-new",
+            "slate_id": first["slate_id"],
+            "manifest_id": first["manifest_id"],
+            "generation_batch_id": first["generation_batch_id"],
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "exposure_slice_id": first["exposure_slice_id"],
+            "topics": [{"card_revision_id": topic["id"]} for topic in first["topics"]],
+        }) is True
+
+        queue = NewPageOutcomeQueue()
+        assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
+        dismissed = first["topics"][0]
+        reply = service.record_interaction(
+            {
+                "session_id": "session-new",
+                "slate_id": first["slate_id"],
+                "event_type": "not_interested",
+                "topic_id": dismissed["id"],
+                "payload": {
+                    "manifest_id": first["manifest_id"],
+                    "generation_batch_id": first["generation_batch_id"],
+                    "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                    "project_id": None,
+                    "card_revision_id": dismissed["id"],
+                },
+            },
+            outcome_queue=queue,
+        )
+        assert reply["recorded"] is True
+
+        refilled = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            slate_id=first["slate_id"],
+        )
+        # The preset screen stays full: the dismissed card is replaced by
+        # another corpus card instead of the page losing one.
+        assert refilled["available"] is True
+        assert len(refilled["topics"]) == 4
+        assert dismissed["id"] not in {topic["id"] for topic in refilled["topics"]}
+        assert refilled["manifest_id"] != first["manifest_id"]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_turning_recommendation_on_prepares_past_the_preset_pool(tmp_path):
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
@@ -2012,6 +2087,39 @@ def test_global_exposure_keeps_corpus_cards_without_an_interest_id():
         shown_before=frozenset(),
     )
     assert [item["card_revision_id"] for item in selected] == ["revision-1"]
+
+
+def test_global_refill_keeps_corpus_cards_without_an_interest_id():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        _select_exposure,
+    )
+
+    cards = [
+        {
+            "card_id": f"cold-corpus:life-00{index}",
+            "card_revision_id": f"revision-{index}",
+            "source_starter_id": f"life-00{index}",
+            "interest_summary_id": None,
+            "selector_rank": index,
+            "cold_start": True,
+        }
+        for index in (1, 2, 3)
+    ]
+    selected = _select_exposure(
+        cards,
+        eligible_revision_ids={card["card_revision_id"] for card in cards},
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        window_index=0,
+        now=1_700_000_000.0,
+        shown_before=frozenset(),
+        retained_card_ids=tuple(card["card_id"] for card in cards),
+    )
+    # A dismissal refills from the previous slate; the preset cards it kept
+    # on screen must survive that read, not only the first one.
+    assert [item["card_revision_id"] for item in selected] == [
+        "revision-1", "revision-2", "revision-3",
+    ]
 
 
 @pytest.mark.asyncio

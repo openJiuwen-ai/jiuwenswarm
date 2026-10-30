@@ -1531,8 +1531,14 @@ class TopicService:
         existing_is_preset = bool(empty["cards"]) and all(
             is_cold_start_card(card) for card in empty["cards"]
         )
-        if empty["cards"] and (not preset_only or existing_is_preset):
-            return empty
+        if empty["cards"]:
+            if not preset_only:
+                return empty
+            # With recommendations off the packaged pool is the whole page: a card
+            # the user dismissed leaves the screen short, so the corpus is sampled
+            # again instead of showing one card fewer.
+            if existing_is_preset and len(empty["cards"]) >= FIRST_SCREEN_CARD_TARGET:
+                return empty
         if not preset_only and self.configuration_status().get("provider_refused"):
             return empty
         cards = build_cold_start_cards(
@@ -1542,6 +1548,9 @@ class TopicService:
             feedback=feedback,
         )
         if not cards:
+            return empty
+        if preset_only and existing_is_preset and empty["cards"] and len(cards) <= len(empty["cards"]):
+            # The corpus cannot fill the screen again; keep what the page has.
             return empty
         written = write_cold_start_pool(
             self.store,

@@ -5317,9 +5317,16 @@ def _select_exposure(
                     break
                 if card in selected or (context_scope == GLOBAL_NEW_CHAT_SCOPE and card_is_news(card)):
                     continue
-                if context_scope == GLOBAL_NEW_CHAT_SCOPE and not card.get("interest_summary_id"):
-                    continue
-                direction = str(card.get("direction") or card.get("interest_summary_id") or "")
+                if context_scope == GLOBAL_NEW_CHAT_SCOPE:
+                    interest_id = str(card.get("interest_summary_id") or "")
+                    starter_id = str(card.get("source_starter_id") or "")
+                    if not interest_id and not starter_id and not card.get("cold_start"):
+                        continue
+                    direction = str(
+                        card.get("direction") or interest_id or starter_id or card.get("card_id") or ""
+                    )
+                else:
+                    direction = str(card.get("direction") or card.get("interest_summary_id") or "")
                 if mode == "spread" and direction in selected_directions:
                     continue
                 if str(card["card_revision_id"]) in reduced_revision_ids:
