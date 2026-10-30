@@ -614,11 +614,73 @@ assert.equal(runPlanModeExited("agent.code.plan", "code.normal"), "agent.code.no
 assert.equal(runPlanModeExited("team.work.plan", "team"), "team.work.normal");
 assert.equal(runPlanModeExited("team.code.plan", "code.team"), "team.code.normal");
 
+for (const [event, payload, action] of [
+  ["session.archived", { session_id: "closed-session" }, "archive"],
+  ["session.deleted", { session_id: "closed-session" }, "delete"],
+  [
+    "session.lifecycle.updated",
+    {
+      session_id: "closed-session",
+      execution_blocked: true,
+      lifecycle_operation: { kind: "archive" },
+    },
+    "archive",
+  ],
+  [
+    "session.lifecycle.updated",
+    {
+      session_id: "closed-session",
+      execution_blocked: true,
+      lifecycle_operation: { kind: "delete" },
+    },
+    "delete",
+  ],
+]) {
+  let redirected;
+  const lifecycleDelegate = {
+    getSessionId: () => "closed-session",
+    redirectFromClosedSession: (sessionId, lifecycleAction) => {
+      redirected = [sessionId, lifecycleAction];
+    },
+  };
+  assert.equal(handleIncomingFrame(lifecycleDelegate, { type: "event", event, payload }), true);
+  assert.deepEqual(redirected, ["closed-session", action]);
+}
+for (const payload of [
+  {
+    session_id: "another-session",
+    execution_blocked: true,
+    lifecycle_operation: { kind: "delete" },
+  },
+  {
+    session_id: "closed-session",
+    execution_blocked: false,
+    lifecycle_operation: { kind: "delete" },
+  },
+]) {
+  let redirected = false;
+  const lifecycleDelegate = {
+    getSessionId: () => "closed-session",
+    redirectFromClosedSession: () => {
+      redirected = true;
+    },
+  };
+  handleIncomingFrame(lifecycleDelegate, {
+    type: "event",
+    event: "session.lifecycle.updated",
+    payload,
+  });
+  assert.equal(redirected, false);
+}
+
 const expandedTeamLines = buildAppScreenLines(teamSnapshot, {
   ...teamLayoutOptions,
   showTeamPanel: true,
 });
-assert.equal(expandedTeamLines.some((line) => line.includes("teammate")), true);
+assert.equal(
+  expandedTeamLines.some((line) => line.includes("teammate")),
+  true,
+);
 
 const btwMarkdownLines = buildAppScreenLines(
   {

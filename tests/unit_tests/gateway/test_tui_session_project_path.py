@@ -285,6 +285,7 @@ async def test_session_list_current_dir_includes_top_level_only_session(
             return SimpleNamespace(
                 ok=True,
                 payload={
+                    "total": 3,
                     "sessions": [
                         {
                             "session_id": "tui_old_no_channel_meta",
@@ -297,6 +298,12 @@ async def test_session_list_current_dir_includes_top_level_only_session(
                             "channel_id": "tui",
                             "project_dir": str(tmp_path / "other"),
                             "last_message_at": 90.0,
+                        },
+                        {
+                            "session_id": "current-sid",
+                            "channel_id": "tui",
+                            "project_dir": project_dir,
+                            "last_message_at": 110.0,
                         },
                     ]
                 },
@@ -323,3 +330,19 @@ async def test_session_list_current_dir_includes_top_level_only_session(
     sessions = resp["payload"]["sessions"]
     assert [s["session_id"] for s in sessions] == ["tui_old_no_channel_meta"]
     assert sessions[0]["project_dir"] == os.path.realpath(project_dir)
+
+    await channel.local_handlers["/tui"]["session.list"](
+        object(),
+        "req-list-with-current",
+        {"project_dir": project_dir, "limit": 20, "include_current": True},
+        "current-sid",
+    )
+
+    resp = channel.responses[-1]
+    assert resp["ok"] is True
+    assert [s["session_id"] for s in resp["payload"]["sessions"]] == [
+        "current-sid",
+        "tui_old_no_channel_meta",
+    ]
+    assert resp["payload"]["total"] == 3
+    assert resp["payload"]["page_count"] == 3

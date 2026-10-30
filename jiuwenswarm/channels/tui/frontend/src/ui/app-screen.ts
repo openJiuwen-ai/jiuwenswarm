@@ -4232,7 +4232,7 @@ export class AppScreen implements Component, Focusable {
     try {
       await this.state.request("session.switch", {
         session_id: nextSessionId,
-        previous_session_id: previousSessionId,
+        previous_session_id: this.state.getCommandContext().previousSessionId ?? previousSessionId,
         previous_mode: snapshot.mode,
         mode: targetMode,
       });

@@ -150,6 +150,7 @@ async def test_admission_rejects_when_runtime_fails(
     await admission.dispatch(object(), _request(ReqMethod.CHAT_SEND), asyncio.Lock())
     assert sent
     assert "RUNTIME_FAILED" in str(sent[0])
+    assert "boot failed" in str(sent[0])
 
 
 @pytest.mark.asyncio

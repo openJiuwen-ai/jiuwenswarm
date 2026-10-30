@@ -175,6 +175,9 @@ async def test_register_cli_handlers_registers_local_methods():
     assert "config.get" in cli_handlers
     assert "config.validate_model" in cli_handlers
     assert "session.list" in cli_handlers
+    assert "session.archive" in cli_handlers
+    assert "session.unarchive" in cli_handlers
+    assert "session.archived.list" in cli_handlers
     assert "chat.send" in cli_handlers
     assert "chat.resume" in cli_handlers
     assert "history.get" in cli_handlers

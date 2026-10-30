@@ -981,6 +981,37 @@ class SessionArchiveService:
             return self._accepted_payload(
                 session_id, action, project_id, previous
             )
+        if action == "archive" and not pending and not archived.exists():
+            # Fence admission before checking Runtime state so a new task
+            # cannot start between the idle check and the archive operation.
+            lc.set_visibility(
+                "session",
+                session_id,
+                blocked=True,
+                write_blocked=False,
+                deleted=False,
+            )
+            try:
+                running_probe = getattr(self.runtime, "is_session_running", None)
+                if not callable(running_probe):
+                    raise lc.LifecycleError(
+                        "RUNTIME_STATE_UNAVAILABLE",
+                        "cannot verify whether the session has a running task",
+                    )
+                if running_probe(session_id):
+                    raise lc.LifecycleError(
+                        "SESSION_BUSY",
+                        "session has a running task and cannot be archived",
+                    )
+            except Exception:
+                lc.set_visibility(
+                    "session",
+                    session_id,
+                    blocked=False,
+                    write_blocked=False,
+                    deleted=False,
+                )
+                raise
         if not pending and action == "archive" and archived.exists():
             return dict(
                 session_id=session_id,

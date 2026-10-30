@@ -139,6 +139,7 @@ export interface HarnessActivateInteraction {
 export interface AppEventDelegate {
   getConnectionStatus(): ConnectionStatus;
   getSessionId(): string;
+  redirectFromClosedSession?: (sessionId: string, action: "archive" | "delete") => void;
   setSessionId(sessionId: string): void;
   setMode(mode: ClientMode): void;
   getMode(): ClientMode;
@@ -1157,6 +1158,20 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
   const effectiveEvent = typeof payload.event_type === "string" ? payload.event_type : frame.event;
   const activeSessionId = delegate.getSessionId();
   const eventSessionId = typeof payload.session_id === "string" ? payload.session_id : "";
+  let lifecycleAction: "archive" | "delete" | undefined;
+  if (effectiveEvent === "session.archived") lifecycleAction = "archive";
+  if (effectiveEvent === "session.deleted") lifecycleAction = "delete";
+  if (effectiveEvent === "session.lifecycle.updated" && payload.execution_blocked === true) {
+    const operation = payload.lifecycle_operation;
+    if (operation && typeof operation === "object" && !Array.isArray(operation)) {
+      const kind = (operation as Record<string, unknown>).kind;
+      if (kind === "archive" || kind === "delete") lifecycleAction = kind;
+    }
+  }
+  if (eventSessionId && eventSessionId === activeSessionId && lifecycleAction) {
+    delegate.redirectFromClosedSession?.(eventSessionId, lifecycleAction);
+    return true;
+  }
   if (effectiveEvent === "chat.processing_status" && !eventSessionId) {
     return connectionChanged;
   }

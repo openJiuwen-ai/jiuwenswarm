@@ -335,9 +335,13 @@ export class CliPiAppState {
   private bootSessionHandled = false;
   /** connection.ack 到来时放行启动会话创建；构造期即存在，避免 connected 回调抢跑。 */
   private bootSessionStart: (() => void) | null = null;
-  /** 启动会话创建完成前，后续命令与 chat 帧统一排队到该 Promise。 */
+  /** 启动初始化完成前，后续命令与 chat 帧统一排队到该 Promise。 */
   private bootSessionCreation: Promise<void> | null = null;
-  /** 普通启动的幂等创建 token；重连期间保持稳定。 */
+  private draftSession = false;
+  private draftCreatePromise: Promise<void> | null = null;
+  private draftPreviousSessionId = "";
+  private draftPreviousMode: ClientMode = "agent.code.normal";
+  /** 启动时立即创建 Persist Session 所用的幂等 token。 */
   private readonly bootCreateToken = generateCreateToken();
   private mode: ClientMode = "agent.code.normal";
   private themeName: ThemeName = getCurrentThemeName();
@@ -477,6 +481,7 @@ export class CliPiAppState {
   private harnessActivateInteraction: HarnessActivateInteraction | null = null;
   private deferTranscriptFrames = false;
   private deferredTranscriptFrames: EventFrame[] = [];
+  private readonly lifecycleRedirects = new Map<string, Promise<string>>();
 
   // ── /switch 公共契约端口（可选；由 index.ts 注入） ──
   /** HandoffPort；未注入时 /switch 通过 CommandContext 回退到 NOT_SUPERVISED。 */
@@ -506,6 +511,9 @@ export class CliPiAppState {
   private readonly eventDelegate: AppEventDelegate = {
     getConnectionStatus: () => this.connectionStatus,
     getSessionId: () => this.sessionId,
+    redirectFromClosedSession: (sessionId, action) => {
+      void this.redirectFromClosedSession(sessionId, action).catch(() => undefined);
+    },
     setSessionId: (sessionId) => {
       this.sessionId = sessionId;
       this.lastVisibleUserRequest = null;
@@ -1243,12 +1251,17 @@ export class CliPiAppState {
       askQuestions: this.askQuestions,
       sendMessage: this.sendMessage,
       sessionId: snapshot.sessionId,
+      previousSessionId: this.draftSession ? this.draftPreviousSessionId : snapshot.sessionId,
+      isDraftSession: this.draftSession,
       preferredLanguage: snapshot.preferredLanguage,
       entries: snapshot.entries,
       teamMessageEvents: snapshot.teamMessageEvents,
       themeName: snapshot.themeName,
       accentColor: snapshot.accentColor,
       updateSession: this.updateSession,
+      enterDraftSession: this.enterDraftSession,
+      restoreDraftSession: this.restoreDraftSession,
+      redirectFromClosedSession: this.redirectFromClosedSession,
       addItem: this.addItem,
       setBtwOverlay: this.setBtwOverlay,
       clearBtwOverlay: this.clearBtwOverlay,
@@ -1595,11 +1608,19 @@ export class CliPiAppState {
       });
     };
     const bootCreation = this.bootSessionCreation;
-    if (bootCreation) {
-      void bootCreation.then(send).catch(() => undefined);
-    } else {
-      send();
-    }
+    if (bootCreation || (method === "chat.send" && this.draftSession)) {
+      void (async () => {
+        if (bootCreation) await bootCreation;
+        if (method === "chat.send") await this.ensureDraftSessionCreated();
+        send();
+      })().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.lastError = `session.create failed: ${message}`;
+        this.addItem(addError(this.sessionId, this.lastError));
+        this.setStreamingStateInternal(StreamingState.Idle);
+        this.emitChange();
+      });
+    } else send();
     return id;
   };
 
@@ -1915,6 +1936,7 @@ export class CliPiAppState {
 
   readonly updateSession = (newId: string): void => {
     this.sessionId = newId;
+    this.draftSession = false;
     this.lastVisibleUserRequest = null;
     this.usageByModel.clear();
     this.resetCurrentUsageTokens();
@@ -1932,6 +1954,104 @@ export class CliPiAppState {
     }
     this.emitChange();
   };
+
+  readonly enterDraftSession = (): string => {
+    const previousId = this.draftSession ? this.draftPreviousSessionId : this.sessionId;
+    this.draftPreviousSessionId = previousId;
+    this.draftPreviousMode = this.mode;
+    this.updateSession(generateCreateToken());
+    this.draftSession = true;
+    return this.sessionId;
+  };
+
+  readonly restoreDraftSession = (id: string, previousId: string, mode: ClientMode): void => {
+    this.updateSession(id);
+    this.draftPreviousSessionId = previousId;
+    this.draftPreviousMode = mode;
+    this.draftSession = true;
+    this.setMode(mode);
+  };
+
+  private async ensureDraftSessionCreated(): Promise<void> {
+    if (!this.draftSession) return;
+    if (this.draftCreatePromise) return this.draftCreatePromise;
+    const draftId = this.sessionId;
+    const creation = (async () => {
+      const result = await this.requestAgentServer<{ session_id?: string; mode?: string }>(
+        "session.create",
+        {
+          create_token: draftId,
+          previous_session_id: this.draftPreviousSessionId,
+          previous_mode: this.draftPreviousMode,
+          mode: this.mode,
+          ...(this.sessionTitle ? { title: this.sessionTitle } : {}),
+        },
+        undefined,
+        false,
+      );
+      const realId = result.session_id;
+      if (!realId) throw new Error("session.create did not return a session id");
+      if (this.sessionId !== draftId) return;
+      const pendingVisibleRequest = this.lastVisibleUserRequest;
+      const draftAccent = this.accentColor;
+      this.updateSession(realId);
+      if (draftAccent !== "default") this.setAccentColor(draftAccent);
+      const resolvedMode = normalizeToClientMode(result.mode ?? "");
+      if (resolvedMode) this.setMode(resolvedMode);
+      this.entries = this.entries.map((entry) =>
+        entry.sessionId === draftId ? { ...entry, sessionId: realId } : entry,
+      );
+      if (pendingVisibleRequest?.sessionId === draftId) {
+        this.lastVisibleUserRequest = { ...pendingVisibleRequest, sessionId: realId };
+      }
+      if (draftAccent !== "default") {
+        void this.requestAgentServer("session.color_set", {
+          session_id: realId,
+          color: draftAccent,
+        }, undefined, false).catch(() => undefined);
+      }
+      this.emitChange();
+    })();
+    this.draftCreatePromise = creation;
+    try {
+      await creation;
+    } finally {
+      if (this.draftCreatePromise === creation) this.draftCreatePromise = null;
+    }
+  }
+
+  private readonly redirectFromClosedSession = (
+    sessionId: string,
+    action: "archive" | "delete",
+  ): Promise<string> => {
+    const pending = this.lifecycleRedirects.get(sessionId);
+    if (pending) return pending;
+    if (this.sessionId !== sessionId) return Promise.resolve(this.sessionId);
+    const redirect = this.performLifecycleRedirect(sessionId, action);
+    this.lifecycleRedirects.set(sessionId, redirect);
+    void redirect.finally(() => this.lifecycleRedirects.delete(sessionId)).catch(() => undefined);
+    return redirect;
+  };
+
+  private async performLifecycleRedirect(
+    sessionId: string,
+    action: "archive" | "delete",
+  ): Promise<string> {
+    try {
+      if (this.sessionId !== sessionId) return this.sessionId;
+      const nextId = this.enterDraftSession();
+      this.draftPreviousSessionId = "";
+      this.setSessionTitle("");
+      this.clearEntries();
+      const lifecycleLabel = action === "archive" ? "archived" : "deleted";
+      this.addItem(addInfo(nextId, `This session was ${lifecycleLabel}; started a fresh conversation.`, "i"));
+      return nextId;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.addItem(addError(this.sessionId, `Unable to leave ${sessionId}: ${message}`));
+      throw error;
+    }
+  }
 
   readonly setSessionTitle = (title: string): void => {
     this.sessionTitle = title;
@@ -3606,19 +3726,23 @@ export class CliPiAppState {
   }
 
   /**
-   * 普通启动不传 session_id，由 AgentServer 分配并领取预热实例；`--session <id>`
-   * 传入显式 ID，走 TUI 兼容的非预热恢复/登记路径。两者共享同一个启动 Promise。
+   * 普通启动只建立内存草稿；`--session <id>` 走显式 ID 的恢复/登记路径。
+   * `--persist-session` 立即创建 Persist Session。三者共享启动 Promise。
    */
   private async createBootSession(): Promise<void> {
     const target = this.bootSessionId;
     const previousMode = this.mode;
+    if (target === null && !this.bootPersistSession) {
+      this.draftSession = true;
+      return;
+    }
     try {
       type BootSessionResult = {
         session_id?: string;
         mode?: string;
         created?: boolean;
       };
-      let res: BootSessionResult;
+      let res: BootSessionResult | undefined;
       let retryIndex = 0;
       while (true) {
         try {

@@ -1,4 +1,5 @@
 import type { HistoryItem, DiffMeta } from "../types.js";
+import type { CommandContext } from "./types.js";
 
 function now(): string {
   return new Date().toISOString();
@@ -35,11 +36,67 @@ export function addCommandEcho(sessionId: string, content: string): HistoryItem 
   return makeItem(sessionId, "command_echo", content);
 }
 
-export function addDiff(
-  sessionId: string,
-  content: string,
-  meta: DiffMeta,
-): HistoryItem {
+export interface ReusableEmptySession {
+  session_id: string;
+  message_count: number;
+  created_at?: number;
+  mode?: string;
+  accent_color?: string;
+  active_in_window?: boolean;
+}
+
+export function findReusableEmptySession(
+  sessions: unknown,
+  excludedSessionId: string,
+): ReusableEmptySession | undefined {
+  if (!Array.isArray(sessions)) return undefined;
+  const candidates = sessions.filter(
+    (session): session is ReusableEmptySession =>
+      session !== null &&
+      typeof session === "object" &&
+      !Array.isArray(session) &&
+      typeof session.session_id === "string" &&
+      session.session_id.trim() !== excludedSessionId &&
+      session.message_count === 0 &&
+      session.active_in_window !== true,
+  );
+  return candidates.reduce<ReusableEmptySession | undefined>(
+    (latest, session) =>
+      !latest || (session.created_at ?? 0) > (latest.created_at ?? 0) ? session : latest,
+    undefined,
+  );
+}
+
+/** Read every server page; the TUI gateway filters each page after fetching it. */
+export async function listAllActiveSessions(request: CommandContext["request"]): Promise<unknown[]> {
+  const sessions: unknown[] = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await request<{ sessions?: unknown; total?: number; page_count?: number }>("session.list", {
+      include_current: true,
+      limit: 200,
+      offset,
+    });
+    if (Array.isArray(page.sessions)) sessions.push(...page.sessions);
+    const pageCount = page.page_count ?? (Array.isArray(page.sessions) ? page.sessions.length : 0);
+    if (typeof page.total === "number" ? offset + 200 >= page.total : pageCount < 200) break;
+  }
+  return sessions;
+}
+
+export async function listAllArchivedSessions(request: CommandContext["request"]): Promise<unknown[]> {
+  const sessions: unknown[] = [];
+  for (let offset = 0; ; offset += 200) {
+    const page = await request<{ sessions?: unknown; has_more?: boolean }>("session.archived.list", {
+      limit: 200,
+      offset,
+    });
+    if (Array.isArray(page.sessions)) sessions.push(...page.sessions);
+    if (!page.has_more) break;
+  }
+  return sessions;
+}
+
+export function addDiff(sessionId: string, content: string, meta: DiffMeta): HistoryItem {
   const id = `diff-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   return { kind: "diff", id, sessionId, content, meta, at: now() };
 }

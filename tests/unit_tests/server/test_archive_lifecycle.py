@@ -401,20 +401,24 @@ async def test_archive_flushes_accepted_writes_without_stopping(archive, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_running_session_archive_and_delete_are_accepted(archive):
+async def test_running_session_cannot_be_archived_but_can_be_deleted(archive):
     service, create, root, runtime = archive
     create()
     runtime.is_session_running.return_value = True
 
-    archived = await service.session("sess_a", "archive", "web")
-    assert archived["ok"] is True
-    assert archived["finalizing"] is True
-    # Cleanup runs in the background but still stops the live runtime.
-    runtime.stop_session_for_archive.assert_awaited_once()
-    assert not (root / "sessions/sess_a").exists()
+    with pytest.raises(lc.LifecycleError, match="running task"):
+        await service.session("sess_a", "archive", "web")
+    runtime.stop_session_for_archive.assert_not_awaited()
+    assert (root / "sessions/sess_a").exists()
+    assert not (root / "sessions_archived/sess_a").exists()
+    assert lc.state("session", "sess_a").get("blocked") is False
+
+    runtime.is_session_running.return_value = False
+    await service.session("sess_a", "archive", "web")
     assert (root / "sessions_archived/sess_a").exists()
 
     create("sess_b")
+    runtime.is_session_running.return_value = True
     deleted = await service.session("sess_b", "delete", "web")
     assert deleted["ok"] is True
     assert deleted["finalizing"] is True
@@ -476,6 +480,17 @@ async def test_local_runner_team_execution_controls_lifecycle_busy(
     manager.begin_round("sess_a", "old-owner")
     runtime._session_coordinator = SimpleNamespace(snapshot_session=lambda sid: None)
     runtime.is_session_running = lambda sid: AgentRuntime.is_session_running(runtime, sid)
+
+    if action == "archive" and phase in {"running", "pausing"}:
+        from jiuwenswarm.server.runtime.session import lifecycle
+
+        with pytest.raises(lifecycle.LifecycleError, match="running task"):
+            await service.session("sess_a", action, "web")
+        assert lifecycle.state("session", "sess_a")["blocked"] is False
+        assert (root / "sessions/sess_a").exists()
+        assert not (root / "sessions_archived/sess_a").exists()
+        runtime.stop_session_for_archive.assert_not_awaited()
+        return
 
     result = await service.session("sess_a", action, "web")
     assert result["ok"] is True
@@ -688,18 +703,20 @@ async def test_project_batch_archive_partial_and_delete_only_archived(archive):
     await service.session("sess_archived", "archive", "web")
     runtime.is_session_running.side_effect = lambda sid: sid == "sess_busy"
     result = await service.project_batch(project.project_id, "archive", "web")
-    assert result["succeeded_count"] == 2
-    assert result["failed_count"] == 0
+    assert result["succeeded_count"] == 1
+    assert result["failed_count"] == 1
     assert {item["session_id"] for item in result["results"]} == {
         "sess_idle",
         "sess_busy",
     }
-    assert all(item["ok"] and item["finalizing"] for item in result["results"])
-    # Only the running session needed a stop; idle archives skip the runtime.
-    runtime.stop_session_for_archive.assert_awaited_once()
-    assert (root / "sessions_archived/sess_busy").exists()
+    busy_result = next(item for item in result["results"] if item["session_id"] == "sess_busy")
+    assert busy_result["ok"] is False
+    assert busy_result["code"] == "SESSION_BUSY"
+    assert (root / "sessions_archived/sess_idle").exists()
+    assert (root / "sessions/sess_busy").exists()
+    runtime.stop_session_for_archive.assert_not_awaited()
     assert lc.state("project", project.project_id) == {}
-    assert service.list_sessions({"project_id": project.project_id})["total"] == 3
+    assert service.list_sessions({"project_id": project.project_id})["total"] == 2
     lc.guard(project_id=project.project_id)
 
     async def delete_session(*, channel_id, session_id):
@@ -708,8 +725,9 @@ async def test_project_batch_archive_partial_and_delete_only_archived(archive):
 
     runtime.delete_session.side_effect = delete_session
     result = await service.project_batch(project.project_id, "delete_archived", "web")
-    assert result["succeeded_count"] == 3 and result["failed_count"] == 0
+    assert result["succeeded_count"] == 2 and result["failed_count"] == 0
     assert set(service.project_sessions(project.project_id)) == {
+        "sess_busy",
         "cron_run",
         "heartbeat_run",
     }
@@ -1322,19 +1340,17 @@ async def test_pin_reindex_failure_keeps_operation_retryable(archive, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_running_team_round_archive_is_accepted(archive):
+async def test_running_team_round_cannot_be_archived(archive):
     service, create, _, runtime = archive
     create()
-    # A running round no longer rejects the action; the finalizer stops it.
     runtime.is_session_running = Mock(return_value=True)
     runtime.has_parked_team_streams = Mock(return_value=False)
     runtime.is_team_round_finishing = Mock(return_value=True)
 
-    result = await service.session("sess_a", "archive", "web")
-
-    assert result["ok"] is True
-    assert result["finalizing"] is True
-    runtime.stop_session_for_archive.assert_awaited_once()
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("sess_a", "archive", "web")
+    assert error.value.code == "SESSION_BUSY"
+    runtime.stop_session_for_archive.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1700,20 +1716,12 @@ async def test_archive_releases_subagents_instead_of_reporting_busy(archive):
 
     service, create, _, runtime = archive
     create("subagent_run")
-    released: list[str] = []
-
-    async def release(session_id, *, channel_id="", reason="session_deleted"):
-        released.append(session_id)
-        # 释放后会话落定：常驻 subagent 不再让 is_session_running 判真。
-        runtime.is_session_running = Mock(return_value=False)
-        return True
-
     runtime.is_session_running = Mock(return_value=True)
-    runtime.stop_subagent_runtimes = release
-    # A resident subagent must not turn archive into a busy rejection: the
-    # action releases it, then reads a settled session.
-    assert (await service.session("subagent_run", "archive", "web"))["ok"]
-    assert released == ["subagent_run"]
+    runtime.stop_subagent_runtimes = AsyncMock()
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("subagent_run", "archive", "web")
+    assert error.value.code == "SESSION_BUSY"
+    runtime.stop_subagent_runtimes.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1789,7 +1797,7 @@ async def test_subagent_release_falls_back_to_channel_agent_without_owner():
 
 
 @pytest.mark.asyncio
-async def test_archive_releases_subagents_through_the_session_own_channel(archive):
+async def test_archive_does_not_stop_a_running_subagent(archive):
     service, create, _, runtime = archive
     directory = create("cli_subagent")
     lc.atomic_json(
@@ -1803,19 +1811,12 @@ async def test_archive_releases_subagents_through_the_session_own_channel(archiv
         ),
     )
     sm._METADATA_CACHE.clear()
-    seen: list[str] = []
-
-    async def release(session_id, *, channel_id="", reason="session_deleted"):
-        seen.append(channel_id)
-        runtime.is_session_running = Mock(return_value=False)
-        return True
-
     runtime.is_session_running = Mock(return_value=True)
-    runtime.stop_subagent_runtimes = release
-    assert (await service.session("cli_subagent", "archive", "web"))["ok"]
-    # Agents are cached per channel, so the release has to reach the Session's
-    # own channel rather than the one serving this request.
-    assert seen == ["cli"]
+    runtime.stop_subagent_runtimes = AsyncMock()
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("cli_subagent", "archive", "web")
+    assert error.value.code == "SESSION_BUSY"
+    runtime.stop_subagent_runtimes.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2248,6 +2249,7 @@ async def test_queued_archive_retry_cannot_take_over_new_operation(
     try:
         # Bypass the fixture's synchronous drain while both tasks are queued.
         await SessionArchiveService.session(service, "sess_a", "unarchive", "web")
+        runtime.is_session_running.return_value = False
         await SessionArchiveService.session(service, "sess_a", "archive", "web")
         operation = lc.state("session", "sess_a")["operation"]
         assert operation["operation_id"] != old_operation["operation_id"]

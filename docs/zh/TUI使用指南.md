@@ -54,7 +54,7 @@
 | **已存在** | AgentServer 保留已落盘的项目与模式绑定，执行切换生命周期，随后前端拉取并回显历史 | 显式 ID 的 `session.create` + `history.get` + `session.rename`（取标题） |
 | **不存在** | AgentServer 校验 id，在该 id 的互斥锁内解析 TUI 项目并写入 `metadata.json`，以空历史启动且不领取预热实例 | 显式 ID 的 `session.create` + `history.get`（空）|
 
-显式 ID 的 `session.create` 仅对 TUI 开放且保持幂等，AgentServer 会记录该兼容请求绕过预热。该逻辑在收到 `connection.ack` 后由 `app-state.ts` 的 `initializeBootSession` 放行，重连时只执行一次；普通启动、`/new` 和 `/clear` 不传 `session_id`，仍由 AgentServer 分配新 ID。
+显式 ID 的 `session.create` 仅对 TUI 开放且保持幂等，AgentServer 会记录该兼容请求绕过预热。该逻辑在收到 `connection.ack` 后由 `app-state.ts` 的 `initializeBootSession` 放行，重连时只执行一次；普通启动、`/new` 和 `/clear` 先进入草稿，首条消息时的 `session.create` 不传 `session_id`，由 AgentServer 分配新 ID。
 
 **示例**：
 
@@ -86,7 +86,7 @@ jiuwenswarm-tui --session a/b            # 含 / → 同上
 jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超限
 ```
 
-**不传 `--session`**：前端生成随机 id（`generateSessionId` → `tui_<hex>_<hex>`），后端目录在**首条对话写入历史时**懒创建。即未传参启动、未发消息即退出 → 后端无目录、`/sessions` 列表不显示该 id（空会话不污染列表）。传 `--session` 启动即建目录，**即使不发言也会出现在列表**，方便下次恢复——这是两者关键行为差异。
+**不传 `--session`**：普通启动先进入内存草稿，首条消息发送前才创建真实会话。未发消息就退出不会留下空会话。传 `--session` 时按指定 id 立即恢复或新建；`--persist-session` 会立即创建 Persist Session。
 
 ### 连接到非标准端口（端口冲突回退后）
 
@@ -126,7 +126,7 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 
 当前 **已注册** 的顶层命令来自 `createBuiltinCommands()`（`registry.ts`），按名称排序如下表。
 
-> **与文档 [Slash命令表.md](Slash命令表.md) 的差异**：`jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/` 下另有 `cancel.ts`、`new.ts`、`sessions.ts` 等实现文件，但当前没有把它们注册为独立顶层命令。`/new` 仍然可用，因为它是 `/clear` 的别名；默认构建没有独立 `/cancel`，中断任务请优先使用 **`Ctrl+C`**（第一次中断，连按两次退出）。`/switch` 仅在 `agentos-tui` 托管环境（`AGENTOS_TUI_SUPERVISED=1`）中注册，用于 `/switch claude`、`/switch list` 等第三方 TUI handoff；它不同于 Gateway 受控频道的模式切换指令。Gateway 侧行为仍以 `gateway/slash_command.py` 与 Slash命令表为准。
+> **与文档 [Slash命令表.md](Slash命令表.md) 的差异**：`/new` 是独立命令，`/reset` 是 `/clear` 的别名；默认构建没有独立 `/cancel`，中断任务请优先使用 **`Ctrl+C`**（第一次中断，连按两次退出）。`/switch` 仅在 `agentos-tui` 托管环境（`AGENTOS_TUI_SUPERVISED=1`）中注册，用于 `/switch claude`、`/switch list` 等第三方 TUI handoff；它不同于 Gateway 受控频道的模式切换指令。Gateway 侧行为仍以 `gateway/slash_command.py` 与 Slash命令表为准。
 
 ### 命令总表
 
@@ -136,7 +136,11 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 | `/keybindings` | `/keybind` | 查看/编辑/重置 TUI 快捷键配置 | `/keybindings`、`/keybindings list` | 全部 |
 | `/hooks` | - | 浏览已配置的 hooks（只读） | `/hooks` | 全部 |
 | `/exit` | `/quit` | 退出 TUI | `/exit` | 全部 |
-| `/clear` | `/reset`, `/new` | 新建会话 ID、清空当前 transcript（忙时拒绝） | `/clear` | 全部 |
+| `/clear` | `/reset` | 清空 transcript 并进入草稿，首条消息时创建会话（忙时拒绝） | `/clear` | 全部 |
+| `/new` | - | 进入草稿，首条消息时创建会话；`--persist` 立即创建 Persist Session | `/new` | 全部 |
+| `/archive` | - | 仅当会话任务空闲时才可归档；若会话在 TUI 中打开，受理后该窗口进入新草稿 | `/archive` | 全部 |
+| `/delete` | - | 确认后可永久删除任意活跃或归档会话；若会话在 TUI 中打开，受理后该窗口进入新草稿 | `/delete` | 全部 |
+| `/unarchive` | `/restore` | 确认后恢复一个归档会话；使用 `/resume <id>` 切换到该会话 | `/unarchive` | 全部 |
 | `/copy` | - | 复制最近第 N 条助手回复到剪贴板 | `/copy` 或 `/copy 2` | 全部 |
 | `/theme` | - | 切换深/浅色主题 | `/theme dark` | 全部 |
 | `/color` | - | 设置提示条强调色 | `/color blue` | 全部 |
@@ -538,8 +542,8 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 #### `/clear` 与忙状态
 
 - 若 `session is busy`（正在处理），`/clear` 会拒绝执行，需先中断任务（**`Ctrl+C`** 第一次中断；默认构建无 `/cancel` 命令）。
-- `/clear` 会调用后端 `session.create` 创建全新会话，由 AgentServer 分配并返回新的 `session_id`，随后切换会话、清空 transcript 并恢复新会话的空历史；它不是只清理当前屏幕。
-- `/new`、`/reset` 是 `/clear` 的别名，执行相同的新建会话流程。若 `session.create` 失败，TUI 保持在原会话，不会先行切换到一个本地生成的 ID。
+- `/clear` 会清空当前 transcript 并进入新草稿；首条消息发送前由 AgentServer 分配真实 `session_id`。带 `--persist` 时会立即创建 Persist Session。
+- `/new` 是独立命令，`/reset` 是 `/clear` 的别名。普通草稿在首次发送消息时创建真实会话；创建失败会显示错误并保留草稿。
 
 ---
 

@@ -560,6 +560,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if isinstance(payload, dict)
             else []
         )
+        page_count = len(all_sessions)
         # 过滤掉 None/非 dict/无效 session_id，防止前端 SelectList.render() 崩溃
         normalized_sessions = []
         for s in all_sessions:
@@ -583,6 +584,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             bool(params.get("all_projects"))
             if isinstance(params, dict) else False
         )
+        include_current = (
+            bool(params.get("include_current"))
+            if isinstance(params, dict) else False
+        )
         project_dir = (
             str(params.get("project_dir", "")).strip()
             if isinstance(params, dict) else ""
@@ -603,7 +608,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 s, project_dir, show_all_projects=show_all_projects
             ):
                 continue
-            if s.get("session_id", "") == current_sid:
+            if not include_current and s.get("session_id", "") == current_sid:
                 continue
             cli_sessions.append(s)
         # 按 last_message_at 降序排序（最近活跃优先）
@@ -647,7 +652,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             ws,
             req_id,
             ok=True,
-            payload={"sessions": cli_sessions, "current_branch": current_branch},
+            payload={
+                "sessions": cli_sessions,
+                "current_branch": current_branch,
+                "total": payload.get("total") if isinstance(payload, dict) else None,
+                "page_count": page_count,
+            },
         )
 
     async def _session_create(ws, req_id, params, session_id, user_id=None):
@@ -1706,6 +1716,18 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     channel.register_local_handler(path, "session.rewind", _session_rewind)
     channel.register_local_handler(path, "session.rewind_and_restore", _session_rewind_and_restore)
     channel.register_local_handler(path, "session.restore_files", _session_restore_files)
+    from gateway.channel_manager.web.lifecycle_handlers import (
+        register_lifecycle_handlers,
+    )
+
+    register_lifecycle_handlers(
+        channel,
+        lambda: _resolve_agent_client(agent_client),
+        lambda: cron_controller_ref,
+        register_method=lambda method, handler: channel.register_local_handler(
+            path, method, handler
+        ),
+    )
     channel.register_local_handler(path, "command.rewind_compact", _command_rewind_compact)
     channel.register_local_handler(path, "history.list_turns", _history_list_turns)
     channel.register_local_handler(path, "chat.send", _chat_send)
