@@ -5104,7 +5104,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """按用户、群、机器人取出一条任务。项目编号可以再收窄。
 
         用户以这次连接为准，不采用请求参数里自报的用户。没登录时用户是空，
-        控制器会把它当成 default。群、机器人没写就是 default。
+        群、机器人没写也是空，与个人版旧数据一致，不收成 default。
         立即执行、编辑、停止、删除通常只带任务编号，这时不按项目筛，
         否则绑了真实项目的任务会被当成不存在。请求里写了 project_id（含空串）才按那一个项目核对。
 
@@ -5144,7 +5144,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             bot_id=str(raw.get("bot_id") or ""),
         )
         # 连接上带了用户时再对一下，避免列表里混进别的用户。
-        # 没带用户时，list_jobs 已经按 default 筛过。
+        # 没带用户时，list_jobs 按空身份筛（个人版旧任务三格都是空）。
         uid_str = str(user_id or "").strip()
         if uid_str:
             jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]

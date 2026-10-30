@@ -1189,8 +1189,8 @@ class WebChannel(BaseWsChannel):
         ):
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
-            # ``default`` 是个人版没填用户时写进任务的占位，不是登录名。
-            # 按它过滤会和当前网页连接对不上，结果只留在历史里，不刷新就看不到。
+            # 个人版没填用户是空串；历史误写成 ``default`` 的也当无主。
+            # 按登录名过滤会对不上当前网页连接，结果只留在历史里，不刷新就看不到。
             from gateway.enterprise.edition import is_enterprise
 
             if not is_enterprise() and (not cron_user_id or cron_user_id == "default"):

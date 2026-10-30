@@ -358,15 +358,16 @@ def is_team_cron_mode(mode: str | None) -> bool:
 
 
 def normalize_tenant_id(raw: Any) -> str:
-    """群、机器人、用户都是字符串。没填、不是字符串、或只有空白时写成 ``default``。
+    """群、机器人、用户都是字符串。没填、不是字符串、或只有空白时保持空串。
 
-    文件、etcd、企业库用同一条规则。``default`` 表示这格身份没有单独填写。
+    个人版旧数据没有这三格，读写都保持 ``""``，与原来一致。
+    企业版创建路径会要求三格都有真值，不会靠这里补占位。
     """
     if isinstance(raw, str):
         text = raw.strip()
         if text:
             return text
-    return "default"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -435,12 +436,12 @@ class CronJob:
     # 飞书多应用场景：创建该定时任务的 app_id，用于推送时定位到正确的 app 配置
     app_id: str = ""
     # 租户里的群、机器人。和 user_id 凑成「这条任务是谁的」。
-    # 没填时，文件、etcd、企业库读写都写成 "default"。
+    # 没填时保持空串（个人版旧数据没有这两格，与原来一致）。
     group_id: str = ""
     bot_id: str = ""
     # 创建者标识（web 端 user_id）。执行时透传给 faas 的 X-Session-Context，
     # 否则 CreateSandbox 拉不起导致 60s 超时（见 plan-cron-user-id）。
-    # 语义=创建者，创建后不可变。没填或空字符串在读写时写成 "default"。
+    # 语义=创建者，创建后不可变。没填或空字符串在读写时保持空串。
     user_id: str = ""
     # 登录免费模型的凭据句柄绑定：创建/改选登录模型时，由创建连接上的华为账号
     # 登录会话派生（credential_ref_for_user）。路由 user_id 与华为账号是两套
@@ -630,7 +631,7 @@ class CronJob:
         app_id_raw = data.get("app_id", "")
         job_app_id = str(app_id_raw).strip() if isinstance(app_id_raw, str) else ""
 
-        # 空值写成 "default"。
+        # 空值 / 缺字段保持空串（个人版旧数据没有这三格）。
         job_group_id = normalize_tenant_id(data.get("group_id", ""))
         job_bot_id = normalize_tenant_id(data.get("bot_id", ""))
         job_user_id = normalize_tenant_id(data.get("user_id", ""))

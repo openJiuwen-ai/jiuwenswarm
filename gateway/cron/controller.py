@@ -279,16 +279,17 @@ class CronController:
     def _matches_list_filter(
         job: Any,
         *,
-        project_id: str,
-        user_id: str,
-        group_id: str,
-        bot_id: str,
+        project_id: str | None,
+        user_id: str | None,
+        group_id: str | None,
+        bot_id: str | None,
     ) -> bool:
         """用户、群、机器人都要比。项目编号可以不比。
 
-        用户、群、机器人空着等于 ``default``。``project_id is None`` 表示不按项目筛，
-        定时任务总表和侧边栏要看到每个项目下的任务。空字符串才是默认项目，
-        不收成 ``default``。
+        身份空串就是空串，不收成 ``default``（个人版与旧数据一致）。
+        ``user_id is None`` 表示不按用户筛（个人版对话工具无用户时列全部）。
+        ``project_id is None`` 表示不按项目筛，定时任务总表和侧边栏要看到每个项目下的任务。
+        空字符串才是默认项目，不收成 ``default``。
         """
         if project_id is not None:
             current_project = str(getattr(job, "project_id", "") or "")
@@ -299,21 +300,36 @@ class CronController:
         )
 
     @staticmethod
-    def _matches_tenant(job: Any, *, user_id: str, group_id: str, bot_id: str) -> bool:
-        """用户、群、机器人都要对上。空着等于 ``default``。"""
-        if normalize_tenant_id(getattr(job, "user_id", "")) != normalize_tenant_id(user_id):
-            return False
-        if normalize_tenant_id(getattr(job, "group_id", "")) != normalize_tenant_id(group_id):
-            return False
-        if normalize_tenant_id(getattr(job, "bot_id", "")) != normalize_tenant_id(bot_id):
-            return False
+    def _matches_tenant(
+        job: Any,
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        bot_id: str | None,
+    ) -> bool:
+        """用户、群、机器人都要对上。空串对空串；``None`` 表示这一维不筛。"""
+        if user_id is not None:
+            if normalize_tenant_id(getattr(job, "user_id", "")) != normalize_tenant_id(
+                user_id
+            ):
+                return False
+        if group_id is not None:
+            if normalize_tenant_id(getattr(job, "group_id", "")) != normalize_tenant_id(
+                group_id
+            ):
+                return False
+        if bot_id is not None:
+            if normalize_tenant_id(getattr(job, "bot_id", "")) != normalize_tenant_id(
+                bot_id
+            ):
+                return False
         return True
 
     @staticmethod
     def _owns_job(job: Any, *, user_id: str, group_id: str, bot_id: str) -> bool:
         """改、删、预览前核对三个身份。
 
-        个人版没填的收成 ``default`` 再比。企业版缺一个就当不是这条任务，不补 ``default``。
+        个人版没填保持空串再比。企业版缺一个就当不是这条任务，不补 ``default``。
         """
         if is_enterprise():
             try:
@@ -337,14 +353,15 @@ class CronController:
         self,
         *,
         project_id: str | None = None,
-        user_id: str = "",
-        group_id: str = "",
-        bot_id: str = "",
+        user_id: str | None = "",
+        group_id: str | None = "",
+        bot_id: str | None = "",
     ) -> list[dict[str, Any]]:
         """按用户、群、机器人筛选。项目编号可以再收窄。
 
-        用户、群、机器人不传就是 ``default``。``project_id`` 不传表示这个人的全部项目。
-        传空字符串才只要默认项目。筛完后再问项目准入：项目已被隐藏或暂时不能执行的任务不出现在列表里。
+        身份空串就是空串，不收成 ``default``。``user_id is None`` 表示不按用户筛。
+        ``project_id`` 不传表示这个人的全部项目；传空字符串才只要默认项目。
+        筛完后再问项目准入：项目已被隐藏或暂时不能执行的任务不出现在列表里。
         同一个项目、同一个用户只问一次。
         """
         jobs = []
@@ -427,13 +444,13 @@ class CronController:
         job_id: str,
         *,
         project_id: str | None = "",
-        user_id: str = "",
-        group_id: str = "",
-        bot_id: str = "",
+        user_id: str | None = "",
+        group_id: str | None = "",
+        bot_id: str | None = "",
     ) -> dict[str, Any] | None:
         """按编号取出一条任务，再用和列表相同的条件核对。
 
-        用户、群、机器人不传就是 ``default``。项目编号不传（这个函数的默认值）或传空字符串，
+        身份空串就是空串，不收成 ``default``。项目编号不传（这个函数的默认值）或传空字符串，
         都表示只要默认项目。传 ``None`` 表示不按项目筛，网页上的立即执行、编辑、删除走这条。
         对不上就当没有这条任务。这里不查项目现在能不能跑。
         """

@@ -916,7 +916,7 @@ class TestHandleEventStoreValidation:
         cron = msg.payload["cron"]
         assert msg.channel_id == "web"
         assert msg.session_id is None
-        assert msg.payload["user_id"] == "default"
+        assert msg.payload["user_id"] == ""
         assert cron["exec_channel_id"] == "__cron__"
         assert cron["exec_session_id"] == run_info["session_id"]
 

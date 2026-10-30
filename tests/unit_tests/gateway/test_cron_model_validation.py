@@ -381,28 +381,28 @@ def test_cron_job_mcp_round_trip() -> None:
 
 
 def test_cron_job_tenant_ids_round_trip() -> None:
-    """三个身份没填时读写都是 default，表示个人版。旧文件没有这三个字段也能读。"""
+    """三个身份没填时读写都是空串（个人版与旧数据一致）。旧文件没有这三个字段也能读。"""
     job = _mcp_round_trip_job()
     job.group_id = "g1"
     job.bot_id = ""
     job.user_id = ""
     saved = job.to_dict()
     assert saved["group_id"] == "g1"
-    assert saved["bot_id"] == "default"
-    assert saved["user_id"] == "default"
+    assert saved["bot_id"] == ""
+    assert saved["user_id"] == ""
     assert "service_id" not in saved
     assert "agent_id" not in saved
 
     restored = CronJob.from_dict(saved)
     assert restored.group_id == "g1"
-    assert restored.bot_id == "default"
-    assert restored.user_id == "default"
+    assert restored.bot_id == ""
+    assert restored.user_id == ""
 
     legacy = {k: v for k, v in saved.items() if k not in {"group_id", "bot_id", "user_id"}}
     old = CronJob.from_dict(legacy)
-    assert old.group_id == "default"
-    assert old.bot_id == "default"
-    assert old.user_id == "default"
+    assert old.group_id == ""
+    assert old.bot_id == ""
+    assert old.user_id == ""
 
 
 def test_cron_job_without_mcp_round_trip_keeps_none() -> None:
