@@ -3556,24 +3556,30 @@ class SkillManager:
             origin: 可选，技能来源标识（如 ``clawhub:owner/slug``、URL）。提供时按
                 origin 精确定位目录与记录，避免重名技能误删另一个。
         """
-        _recv_t0 = time.perf_counter()
         logger.info(
             "[SkillManager] uninstall recv name=%s origin=%s",
             params.get("name", ""), str(params.get("origin", "") or "").strip(),
         )
-        try:
-            return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
-        finally:
-            logger.info(
-                "[SkillManager] uninstall done name=%s total_ms=%.1f lock_wait_ms=%.1f",
-                params.get("name", ""),
-                (time.perf_counter() - _recv_t0) * 1000.0,
-                getattr(self, "_last_state_lock_wait_ms", 0.0),
-            )
+        return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
 
     @_state_transactional
     def _handle_skills_uninstall_sync(self, params: dict) -> dict:
         """Uninstall one skill while holding the workspace state transaction."""
+        _txn_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时：此刻同实例其它事务被本锁
+        # 串行化，该属性不可能被并发覆盖；跨线程在事务外读会被后续事务取值覆盖。
+        _lock_wait_ms = getattr(self, "_last_state_lock_wait_ms", 0.0)
+        try:
+            return self._handle_skills_uninstall_txn_body(params)
+        finally:
+            logger.info(
+                "[SkillManager] uninstall done name=%s total_ms=%.1f lock_wait_ms=%.1f",
+                params.get("name", ""),
+                (time.perf_counter() - _txn_t0) * 1000.0,
+                _lock_wait_ms,
+            )
+
+    def _handle_skills_uninstall_txn_body(self, params: dict) -> dict:
         raw_name = params.get("name", "")
         raw_origin = str(params.get("origin", "") or "").strip()
         if not raw_name:
