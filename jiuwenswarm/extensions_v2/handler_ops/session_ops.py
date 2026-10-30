@@ -8,6 +8,7 @@ import asyncio
 from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
+from typing import Any, Protocol
 
 from openjiuwen.core.events import (
     OPS_BUILD_EVENT_TYPE,
@@ -205,11 +206,41 @@ async def session_ops_build(
     return builder
 
 
-def register_session_ops(bus: ExtensionEventBus) -> None:
+class SessionFileService(Protocol):
+    """Host-owned file data provider; no UI or package lifecycle ownership."""
+
+    async def files(self, session_id: str, expanded_paths: list[str], channel_id: str) -> dict[str, Any]: ...
+
+
+def register_session_ops(
+    bus: ExtensionEventBus,
+    *,
+    file_service: SessionFileService | None = None,
+) -> None:
     """Register session capabilities before Registry initializes Ops once."""
+
+    async def files(ops: EventHandlerOps, *, expanded_paths: list[str] | None = None) -> dict[str, Any]:
+        context = _require_session(ops, "session.files")
+        if file_service is None:
+            return {"status": "unavailable", "treeData": []}
+        return await file_service.files(
+            context.session_id,
+            [] if expanded_paths is None else expanded_paths,
+            str(context.metadata.get("channel_id") or "web"),
+        )
+
+    async def build(
+        event: Event,
+        ops: EventHandlerOps | None,
+        next_handler: EventNext,
+    ) -> EventHandlerOpsBuilder:
+        builder = await session_ops_build(event, ops, next_handler, bus=bus)
+        builder.add_method("session", "files", files)
+        return builder
+
     bus.register_event_handler(
         OPS_BUILD_EVENT_TYPE,
-        partial(session_ops_build, bus=bus),
+        build,
         {},
         HandlerLevel.BUILTIN,
     )

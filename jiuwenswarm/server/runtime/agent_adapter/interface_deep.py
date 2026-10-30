@@ -2000,6 +2000,7 @@ class JiuWenSwarmDeepAdapter:
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
         self._permission_runtime_paths: RuntimeWorkspacePaths | None = None
+        self._session_workspace_snapshot: RuntimeWorkspacePaths | None = None
         self._platform_trusted_root: Path | None = None
         self._agent_name: str = "main_agent"
         # 是否是 code-agent 形态. 基类 (deep adapter) 默认 False, 由子类
@@ -4533,6 +4534,18 @@ class JiuWenSwarmDeepAdapter:
             or self._active_session_ids
             or self._session_agent_tasks
         )
+
+    def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Return only a selected session's immutable, already-bound paths."""
+        sid = self._session_adapter_key(session_id)
+        if self._is_session_scoped_adapter:
+            if sid != self._session_adapter_key(self._parent_session_id):
+                return None
+            if self._external_harness_binding is not None:
+                return None
+            return self._session_workspace_snapshot
+        child = self._get_cached_session_adapter(session_id)
+        return child.get_session_workspace_paths(session_id) if child is not None else None
 
     def is_external_harness_session(self, session_id: str | None = None) -> bool:
         """Return whether the selected session child owns an External Harness."""
@@ -14008,6 +14021,9 @@ class JiuWenSwarmDeepAdapter:
                 )
             task_workspace = str(runtime_paths.runtime_workspace_root)
             task_cwd = str(runtime_paths.cwd)
+
+        if bind_request:
+            self._session_workspace_snapshot = runtime_paths
 
         task_workspace_root = (
             str(runtime_paths.runtime_workspace_root)

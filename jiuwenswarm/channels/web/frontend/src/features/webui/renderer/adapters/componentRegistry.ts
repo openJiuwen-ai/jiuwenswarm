@@ -14,6 +14,7 @@ import { WebUIDivider } from './webuiDivider/WebUIDivider.tsx';
 import { WebUICard } from './webuiCard/WebUICard.tsx';
 import { WebUITag } from './webuiTag/WebUITag.tsx';
 import { WebUIPanel } from './webuiPanel/WebUIPanel.tsx';
+import { WebUIFileTree } from './webuiFileTree/WebUIFileTree.tsx';
 import { WebUIIframe } from './webuiIframe/WebUIIframe.tsx';
 
 export function createComponentRendererRegistry() {
@@ -33,6 +34,7 @@ export function createComponentRendererRegistry() {
     Card: WebUICard,
     Tag: WebUITag,
     Panel: WebUIPanel,
+    FileTree: WebUIFileTree,
     Iframe: WebUIIframe,
   });
 }

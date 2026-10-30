@@ -27,6 +27,7 @@ from jiuwenswarm.common.mode_matrix import (
     normalize_work_mode,
     resolve_new_canonical_mode,
 )
+from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
     resolve_declared_auto_workspace,
@@ -1454,6 +1455,13 @@ class AgentManager:
                     cache_key,
                 )
         return None
+
+    def get_session_workspace_paths(self, channel_id: str, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Read paths from the Agent owning a session, without allocating it."""
+        owner = self.get_agent_for_session_nowait(channel_id, session_id)
+        if owner is None:
+            return None
+        return owner.get_session_workspace_paths(session_id)
 
     def get_auto_permission_agent_for_session_nowait(
         self,
