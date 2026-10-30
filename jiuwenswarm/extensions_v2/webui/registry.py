@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
-from jiuwenswarm.extensions_v2.webui.constants import MAX_INSTANCES_PER_SESSION
+from jiuwenswarm.extensions_v2.webui.constants import MAX_INSTANCES_PER_SESSION, SlotScope
 from jiuwenswarm.extensions_v2.webui.models import (
     RenderFrame,
     RenderMode,
@@ -119,12 +119,25 @@ class ActiveRenderRegistry:
     def drop_session(self, session_id: str) -> tuple[RenderInstance, ...]:
         """会话结束或归档时清理该会话全部实例。"""
 
-        return self._drop_matching(lambda target: target.session_id == session_id)
+        return self._drop_matching(
+            lambda target: (
+                target.resolved_scope != SlotScope.APPLICATION.value and target.session_id == session_id
+            )
+        )
 
     def drop_package(self, package_id: str) -> tuple[RenderInstance, ...]:
         """插件卸载时清理该包的全部实例。"""
 
         return self._drop_matching(lambda target: target.package_id == package_id)
+
+    def drop_connection(self, connection_id: str) -> tuple[RenderInstance, ...]:
+        """Release application instances without touching any chat session."""
+        return self._drop_matching(
+            lambda target: (
+                target.resolved_scope == SlotScope.APPLICATION.value
+                and target.connection_id == connection_id
+            )
+        )
 
     @asynccontextmanager
     async def _lock_for(self, key: str) -> AsyncIterator[None]:
@@ -166,13 +179,27 @@ class ActiveRenderRegistry:
         candidates = [
             instance
             for instance in self._instances.values()
-            if instance.target.session_id == target.session_id
+            if _same_capacity_group(instance.target, target)
         ]
         if len(candidates) < self._max_per_session:
             return ()
         candidates.sort(key=lambda instance: instance.updated_at)
         excess = len(candidates) - self._max_per_session + 1
         return tuple(candidates[:excess])
+
+
+def _same_capacity_group(left: RenderTarget, right: RenderTarget) -> bool:
+    """Session instances share a chat budget. Application instances share a connection budget."""
+
+    if right.resolved_scope == SlotScope.APPLICATION.value:
+        return (
+            left.resolved_scope == SlotScope.APPLICATION.value
+            and left.connection_id == right.connection_id
+        )
+    return (
+        left.resolved_scope != SlotScope.APPLICATION.value
+        and left.session_id == right.session_id
+    )
 
 
 def log_eviction(instance: RenderInstance) -> None:

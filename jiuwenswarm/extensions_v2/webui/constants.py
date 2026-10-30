@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
 
@@ -47,22 +49,60 @@ RENDERER_WEBUI_TREE: Final[str] = "webui-tree"
 RENDER_SCHEMA_VERSION: Final[int] = 1
 DEFAULT_CHANNEL_ID: Final[str] = "web"
 
-# Only conversation-scoped slots are served; downstream frames carry session_id for routing.
-SESSION_SLOTS: Final[Mapping[str, str]] = {
-    "conversation.input.above": "list",
-    "conversation.input.below": "single",
-    "conversation.panel.right": "list",
-    "application.menu": "list",
-    "application.menu.main": "single",
-    "task.function": "list",
-    "task.function.main": "single",
-    "application.settings": "list",
-    "conversation.turn.content.after": "list",
-    "conversation.turn.footer.actions": "list",
-    "conversation.header.title.after": "list",
-    "conversation.header.actions": "list",
-    "message.assistant.meta": "list",
-}
+
+class SlotScope(StrEnum):
+    """Whether a slot is tied to one chat or to one browser connection."""
+
+    SESSION = "session"
+    APPLICATION = "application"
+
+
+@dataclass(frozen=True, slots=True)
+class SlotSpec:
+    """One allowlisted slot. New positions are new rows, not new branches."""
+
+    capacity: str
+    scope: SlotScope
+
+
+def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION) -> SlotSpec:
+    return SlotSpec(capacity=capacity, scope=scope)
+
+
+# Allowlist. Session rows still require a chat id. Application rows are delivered
+# to the web socket that asked, and do not use a chat id.
+SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
+    {
+        "conversation.input.above": _slot("list"),
+        "conversation.input.below": _slot("single"),
+        "conversation.panel.right": _slot("list"),
+        "application.menu": _slot("list"),
+        "application.menu.main": _slot("single"),
+        "task.function": _slot("list"),
+        "task.function.main": _slot("single"),
+        "application.settings": _slot("list"),
+        "conversation.turn.content.after": _slot("list"),
+        "conversation.turn.footer.actions": _slot("list"),
+        "conversation.header.title.after": _slot("list"),
+        "conversation.header.actions": _slot("list"),
+        "message.assistant.meta": _slot("list"),
+    }
+)
+
+# Capacity of the conversation slots. Application slots live only in SLOT_SPECS.
+SESSION_SLOTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        slot_id: spec.capacity
+        for slot_id, spec in SLOT_SPECS.items()
+        if spec.scope is SlotScope.SESSION
+    }
+)
+
+
+def slot_spec(slot_id: str) -> SlotSpec | None:
+    """Return the allowlisted definition, or None when the slot is unknown."""
+
+    return SLOT_SPECS.get(slot_id)
 
 # Size limits: the first four match the existing wire truncation budget.
 MAX_DEPTH: Final[int] = 8
@@ -81,3 +121,5 @@ CODE_DELIVERY_FAILED: Final[str] = "DELIVERY_FAILED"
 CODE_SESSION_MISMATCH: Final[str] = "SESSION_MISMATCH"
 CODE_WEBUI_DISABLED: Final[str] = "WEBUI_UNAVAILABLE"
 CODE_NO_CONTRIBUTION: Final[str] = "NO_CONTRIBUTION"
+CODE_CONNECTION_REQUIRED: Final[str] = "CONNECTION_REQUIRED"
+CODE_CHANNEL_UNSUPPORTED: Final[str] = "CHANNEL_UNSUPPORTED"

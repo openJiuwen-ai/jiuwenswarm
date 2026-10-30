@@ -5,7 +5,7 @@
 | 项 | 说明 |
 | --- | --- |
 | 类型 | 设计基线；Events、Extension 公共机制、Registry 门面、AgentServer 装配与 WebUI 本地渲染链路已实现，跨进程联调待开展 |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-30 |
 | 维护责任 | Extensions V2 模块维护者；跨模块约定由 agent-core 与 JiuwenSwarm 相关维护者共同确认 |
 | 所属模块 | `jiuwenswarm/extensions_v2/` |
 | 详细设计 | [详细架构](extensions-v2-architecture.md) |
@@ -92,8 +92,8 @@ flowchart TB
 | Event、EventBus 与 Handler | Event 表达一次处理请求；Handler 是遵循 `EventHandler` 回调约定的事件处理器，由 EventBus 根据注册匹配并调用。同一条注册可供多次事件调用复用 |
 | SessionContext、Ops 与 next | 业务入口根据服务端会话记录构造只读 SessionContext；EventBus 为实际进入的每个普通 Handler 创建独立 Ops，包信息取自该 Handler 的登记记录。Extension Runtime 负责核实并在发布时填入包信息，用户扩展不填写。Ops 仅在所属 Handler 调用期间使用，next 在 Handler 退出后失效 |
 | 扩展UI界面项与 slot | 扩展UI界面项是包提供的面板、卡片等UI界面内容；扩展UI界面声明说明其标识、展示信息、挂载位置及渲染方式。slot 是产品预置的挂载位置；服务端提供可用目录，Web前端选择兼容内容 |
-| 视图实例 | 用户打开面板时，Web前端在页面预留区域（slot）创建的具体显示对象，后文简称“视图”；同一个报告面板在不同会话打开，会形成不同视图，各自维护显示和交互状态 |
-| 视图绑定与渲染帧 | AgentServer WebUI 服务校验面板的挂载请求后，保存该视图与Web前端连接、AgentServer 实例、会话、包、UI界面项和 slot 的对应记录，称为“视图绑定”；当前有效的记录称为“活跃绑定”。服务端据此核对交互来源和更新目标，Web前端接收渲染帧并更新对应视图 |
+| 视图实例 | 页面预留区域（slot）中的具体显示对象，后文简称“视图”；支持会话槽位和全局槽位，分别按聊天会话和 Web 连接隔离。各视图维护自己的显示和交互状态 |
+| 视图绑定与渲染帧 | 服务端根据槽位范围记录视图所属的会话或 Web 连接，以及包、slot 和实例标识，据此定位交互与更新目标。实例存在不等于拥有操作权限。目标字段、路由和当前实现边界见[详细架构第 4.4 节](extensions-v2-architecture.md#44-agentserver-webui-服务) |
 | 业务结果 | 工具、文件或外部操作的实际结果，以所属业务服务的记录或外部回执为准 |
 
 每个事件在 CORE 层有唯一的 Core Handler，负责该事件的默认动作。本文将 `ops.build` 以外的事件称为普通事件，参与这些事件的 USER、BUILTIN 层 Handler 及 Core Handler 统称普通 Handler。`ops.build` 的 Handler 称为 Build Handler，只负责收集能力，构建时不接收会话和可用 Ops，也不为自身递归构建 Ops；构建流程见[架构第 4.3.2 节](extensions-v2-architecture.md#432-能力注册与构建接入)。
