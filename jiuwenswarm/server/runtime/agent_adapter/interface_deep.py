@@ -7292,7 +7292,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     metadata=metadata_for_tool,
                 )
                 for ref_tool in self._append_reference_toolkit.get_tools():
-                    Runner.resource_mgr.add_tool(ref_tool)
+                    self._register_agent_owned_tool(ref_tool, self._tool_owner_id())
                     self._instance.ability_manager.add(ref_tool.card)
             elif self._append_reference_toolkit is not None:
                 self._append_reference_toolkit.update_runtime_context(
