@@ -60,3 +60,8 @@ export const WEBUI_SUPPORTED_SCHEMA_VERSION = 1;
 export const WEBUI_UPSTREAM_EVENTS = ['ui.ready', 'ui.press', 'ui.toggle', 'ui.input', 'ui.select'] as const;
 
 export type WebUIUpstreamEvent = (typeof WEBUI_UPSTREAM_EVENTS)[number];
+
+/** The component contract uses schema_version 1 across all render entry points. */
+export const WEBUI_COMPONENT_SCHEMA_VERSION = 1;
+export const WEBUI_COMPONENT_EVENTS = ['ui.click', 'ui.change', 'ui.press_enter', 'ui.search', 'ui.clear', 'ui.select'] as const;
+export type WebUIComponentEvent = (typeof WEBUI_COMPONENT_EVENTS)[number];

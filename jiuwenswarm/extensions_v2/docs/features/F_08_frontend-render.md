@@ -32,6 +32,10 @@
 
 沿用旧链路（仍为当前生产入口，本批不迁移）：`webuiStore`、`useWebUIRender`、`WebUISlotHost`、`RenderTree`、`actionBridge` 与 `test:webui-store`。
 
+组件契约准备模块已从完成分支提取，包含独立目录、事件数据规则和属性校验器，尚未替换上述生产入口或既有 action 消费方。
+本组范围、来源裁减与验证记录见 [F_01 组件接入](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md)，
+规则边界见 [S_01 组件规则](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
+
 ### 2.2 非目标
 
 - 不新增或修改后端事件、Ops 方法、槽位与文件服务；使用既有下行事件与 `webui.dispatch` 上行方法。
