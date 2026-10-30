@@ -10,7 +10,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-from jiuwenswarm.extensions_v2.webui.constants import RENDER_SCHEMA_VERSION
+from jiuwenswarm.extensions_v2.webui.constants import RENDER_SCHEMA_VERSION, SlotScope, slot_spec
 
 
 def _empty_props() -> Mapping[str, Any]:
@@ -19,24 +19,48 @@ def _empty_props() -> Mapping[str, Any]:
 
 @dataclass(frozen=True, slots=True)
 class RenderTarget:
-    """Render instance identity: session + slot + package + instance."""
+    """Render instance identity.
+
+    Session slots are keyed by the chat. Application slots are keyed by the
+    browser connection. ``connection_id`` is assigned by the server and is not
+    part of the browser payload.
+    """
 
     session_id: str
     slot_id: str
     package_id: str = ""
     instance_key: str = ""
+    scope: str = ""
+    connection_id: str = ""
+
+    @property
+    def resolved_scope(self) -> str:
+        declared = self.scope.strip()
+        if declared:
+            return declared
+        spec = slot_spec(self.slot_id)
+        if spec is None:
+            return SlotScope.SESSION.value
+        return spec.scope.value
 
     @property
     def key(self) -> str:
+        if self.resolved_scope == SlotScope.APPLICATION.value:
+            return "|".join(
+                ("application", self.connection_id, self.slot_id, self.package_id, self.instance_key)
+            )
         return "|".join((self.session_id, self.slot_id, self.package_id, self.instance_key))
 
     def to_payload(self) -> dict[str, str]:
-        return {
-            "session_id": self.session_id,
+        payload = {
+            "scope": self.resolved_scope,
             "slot_id": self.slot_id,
             "package_id": self.package_id,
             "instance_key": self.instance_key,
         }
+        if self.resolved_scope != SlotScope.APPLICATION.value:
+            payload["session_id"] = self.session_id
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

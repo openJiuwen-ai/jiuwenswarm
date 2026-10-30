@@ -14,7 +14,8 @@
 
 ## 1. 问题与目标
 
-前端不能凭插件任意声明就占用页面位置，也不能把任意请求送进事件链。宿主需要从**已生效**的包中派生可用界面项，只允许声明的槽位挂载，并把浏览器交互还原成带可信会话的事件。
+前端不能凭插件任意声明就占用页面位置，也不能把任意请求送进事件链。宿主需要从**已生效**的包中派生可用界面项，
+只允许声明的槽位挂载，并为浏览器交互确认会话或 Web 连接归属。全局槽位不依赖聊天会话。
 
 一句话概括：**界面项目录从生效包的 `manifest.yaml ui` 段派生，前端按目录挂载槽位，所有上行交互经唯一入口 `webui.dispatch` 校验后进入事件链。**
 
@@ -25,7 +26,7 @@
 - 读取并校验生效包的 `ui` 段，产出界面项目录。
 - 声明槽位、顺序、面板标题、语言资源和 `webui-tree` 渲染器。
 - 提供槽位白名单与槽位展示模式（`list` / `single`）。
-- 提供唯一上行入口 `webui.dispatch`，校验事件名、会话、目标和贡献。
+- 提供唯一上行入口 `webui.dispatch`，按槽位范围校验事件名、会话或连接、目标和贡献。
 - 定义上行回执字段与状态。
 
 ### 2.2 非目标
@@ -101,7 +102,26 @@ ui:
 | `task.function.main` | `single` | 任务功能区页面，保留会话侧栏 |
 
 槽位是平台预定义位置，插件只能选择，不能新增。前端在没有实例时不渲染容器。
-`application.entry` 仍未开放。
+平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围和展示模式；范围及目标字段见
+[F_06 第 3.2 节](F_06_render-service.md#32-数据模型)。新增槽位还需要接入前端，不能只改后端表项；
+前端挂载方式见 [F_08 第 4.4 节](F_08_frontend-render.md#44-会话与全局槽位的挂载)。
+
+#### 3.3.1 定义会话槽位和全局槽位
+
+范围由平台定义，插件的 manifest 只选择槽位，不改变范围。下面用两个表项说明后端登记方式，
+合入 `webui/constants.py` 的现有表时保留其他表项：
+
+```python
+SLOT_SPECS = MappingProxyType({
+    "conversation.panel.right": SlotSpec("list", SlotScope.SESSION),
+    "application.panel.right": SlotSpec("list", SlotScope.APPLICATION),
+})
+```
+
+`application.panel.right` 是新增位置的示例名称。平台还需在前端登记相同的槽位名称、范围和展示模式，
+并将宿主放到需要显示内容的位置；不需要按槽位名称新增后端分支。
+`list` / `single` 决定展示多个实例还是单个实例，`session` / `application` 决定实例属于会话还是连接，两者分别配置。
+扩展包仍使用第 3.2 节的 `web.slot.contribution` 声明，在 `slot` 中选择已登记的全局位置；manifest 不另行指定范围。
 
 ## 4. 处理流程
 
@@ -115,8 +135,8 @@ sequenceDiagram
     participant B as ExtensionEventBus
     participant P as 插件 Handler
 
-    FE->>AD: webui.dispatch(ui.ready, session, slot, 空包/实例)
-    AD->>AD: 校验事件、会话、目标与槽位贡献
+    FE->>AD: webui.dispatch(ui.ready, target, payload)
+    AD->>AD: 按槽位范围校验会话或连接，再校验槽位贡献
     AD->>RT: dispatch(UiActionInput)
     RT->>B: trigger(ui.ready)
     B->>P: 匹配 slot 的插件 Handler
@@ -126,6 +146,9 @@ sequenceDiagram
 ```
 
 `ui.ready` 只接受空 payload。会话级槽位的目标只带会话和槽位，包与实例标识为空；实例由插件在 Handler 中创建，因此 CORE Handler 对 `ui.ready` 不检查实例是否存在。消息级槽位在本地缺少实例时，会携带 `instance_key=requestId` 上报，插件可据此恢复该轮已缓存的视图。
+
+全局槽位挂载时不要求聊天会话。Gateway 从实际 WebSocket 取得连接 ID，并通过 E2A 的 `metadata.ws_id`
+交给 AgentServer；浏览器提交的目标不能指定投递连接。前端的全局宿主可以在没有当前聊天会话时挂载并上报 `ui.ready`。
 
 ### 4.2 上行交互
 
@@ -155,13 +178,14 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 
 ### 4.3 请求与回执
 
-请求方法为 `webui.dispatch`，参数结构：
+请求方法为 `webui.dispatch`，以下是会话级请求：
 
 ```json
 {
   "event": "ui.click",
   "session_id": "web_xxx",
   "target": {
+    "scope": "session",
     "slot_id": "message.assistant.meta",
     "package_id": "webui.token-weather",
     "instance_key": "req-123"
@@ -172,6 +196,37 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 
 普通交互的 payload 只接受 `node_key`、`revision`、`action_id`、`args`、`data` 五个字段，
 其中 revision 为正整数。宿主从已显示的实例与节点获取定位字段和动作声明。
+会话级请求从 `params.session_id` 或请求封套取得会话 ID，两者同时存在且不一致时拒绝。
+应用级请求省略 `params.session_id`，目标不带会话 ID 和连接 ID；连接由 Gateway 补充。
+`target.scope` 可以省略，省略时使用槽位表的范围；显式值与槽位定义不一致时拒绝。
+
+应用级请求缺少可信连接时返回 `CONNECTION_REQUIRED`；显式来自非 Web 渠道时返回 `CHANNEL_UNSUPPORTED`。
+下行帧的目标与连接路由字段见 [F_06 第 4.3 节](F_06_render-service.md#43-下行消息)。
+
+下面是全局槽位的浏览器请求参数，与会话级请求共用同一个方法：
+
+```json
+{
+  "event": "ui.ready",
+  "target": {
+    "scope": "application",
+    "slot_id": "application.panel.right",
+    "package_id": "",
+    "instance_key": ""
+  },
+  "payload": {}
+}
+```
+
+插件在事件 Handler 内调用 `ops.ui.render` 时，连接上下文自动沿用。
+全局事件的 `ops.session_context` 为 `None`，需要聊天会话的能力仍按各自契约拒绝无会话调用。
+
+#### 4.3.1 连接关闭
+
+Gateway 通过现有断连钩子发送内部 E2A 方法 `webui.connection.closed`，在 metadata 中携带实际连接的 `ws_id`。
+该方法只在 AgentServer 适配器登记，不作为浏览器方法开放，也不作为插件可处理的 `ui.*` 事件。
+适配器调用 `drop_connection`，只清理这个连接的全局实例，并阻止等待中的旧调用重新创建全局视图。
+聊天会话及其后台处理不因 Web 连接关闭而结束。
 
 回执字段：
 
@@ -226,10 +281,7 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 
 - `tests/unit_tests/extensions_v2/webui/test_webui_adapter.py`
 - `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`
-- `tests/unit_tests/extensions_v2/webui/test_webui_events.py`
-- `tests/unit_tests/extensions_v2/webui/test_webui_input.py`
-- `tests/unit_tests/extensions_v2/test_session_files.py`
-- 前端 `npm run test:webui-events`
+- `tests/unit_tests/extensions_v2/webui/test_application_slots.py`
 
 覆盖内容：
 
@@ -241,8 +293,11 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 
 组件属性测试共用前端测试目录下的 `webuiComponentCases.json`。Python 测试覆盖进程内的
 render → Handler → replace；前端测试使用 jsdom 验证页面点击产生的请求。
+- 应用槽位缺少连接或来自非 Web 渠道时拒绝；同一个包在两个连接上分别渲染，目标不携带聊天会话 ID。
 
 当前执行结果：上述用例通过。
+2026-10-30 的后端定向复核见 [F_06 第 8 节](F_06_render-service.md#8-验证)，前端宿主与交互验证见
+[F_08 第 8 节](F_08_frontend-render.md#8-验证)。
 
 ## 9. 风险与遗留
 
@@ -250,4 +305,4 @@ render → Handler → replace；前端测试使用 jsdom 验证页面点击产�
 - 目录随生效记录刷新、包卸载后目录失效尚未单独验证；当前用例只覆盖实例清理。
 - 本地化资源已声明和校验，但尚未参与标题解析。
 - 界面项不支持运行时禁用、灰度或按用户过滤。
-- 当前槽位为 13 个会话语境位置（含单轮与助手消息 meta 位置）；新增槽位需要同时修改后端白名单和前端宿主。
+- 新增槽位时，前后端登记的名称、范围和展示模式必须一致；未知槽位或范围不一致的目标会被拒绝。

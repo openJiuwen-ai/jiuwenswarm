@@ -194,6 +194,40 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 3. 渲染提交后，确认组件在 effect 中以 `{ revision, localFrameId }` 上报显示；同一帧的显示确认不会再次执行适配器。
 4. `StrictMode` 的挂载/卸载与宿主重复挂载按消费者句柄独立处理，不泄漏范围所有权。
 
+### 4.4 会话与全局槽位的挂载
+
+前端支持 `session` 和 `application` 两种槽位。范围及目标字段见
+[F_06 第 3.2 节](F_06_render-service.md#32-数据模型)，上行参数见
+[F_07 第 4.3 节](F_07_ui-contributions.md#43-请求与回执)。
+
+当前页面使用 `WebUISlotHost` 时，在 `types.ts` 的 `WEBUI_SLOT_SPECS` 登记与后端一致的表项：
+
+```ts
+export const WEBUI_SLOT_SPECS = {
+  'conversation.panel.right': { scope: 'session', mode: 'list' },
+  'application.panel.right': { scope: 'application', mode: 'list' },
+};
+```
+
+以上是表项示例，保留其他现有项。登记全局位置后，将 `<WebUISlotHost slotId="application.panel.right" />`
+放到对应页面位置即可；宿主按定义决定是否读取当前会话，全局槽位不要求 `activeSessionId`。
+
+通过 Runtime/Provider 使用公开的 `WebUIHost` 时，在传入的 `WebUICatalog` 中配置
+`{ id: 'application.panel.right', display: 'list', scope: 'application' }`，然后挂载
+`<WebUIHost slotId="application.panel.right" />`，无需传 `sessionId`。
+省略 catalog 中的 `scope` 时，沿用会话槽位的默认行为。
+
+| 行为 | 会话槽位 | 全局槽位 |
+| --- | --- | --- |
+| 挂载与切换 | 需要会话 ID，切换会话时切换实例 | 无需会话 ID，切换聊天不重新挂载 |
+| 上行 | 带 `session_id`，范围为 `session` | 省略 `session_id`，范围为 `application` |
+| 下行解析 | 要求会话 ID 与槽位范围合法 | 不要求会话 ID，仍校验槽位和范围 |
+| 清理 | 按会话清理 | 当前连接断开时清理本地全局实例 |
+| 重连 | 按既有会话恢复方式处理 | 重新上报 `ui.ready`，接受新连接从 revision 1 开始的首帧 |
+
+前端不发送 `connection_id` 或 `ws_id`；Gateway 从实际连接取得信息，AgentServer 按连接隔离实例。
+两种宿主的事件和渲染树协议一致，都使用 `webui.dispatch` 及现有三类下行帧。
+
 ## 5. 组件与样式映射
 
 ### 5.1 独立运行时

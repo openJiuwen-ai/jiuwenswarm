@@ -13,6 +13,7 @@ from jiuwenswarm.extensions_v2.webui.constants import (
     FRAME_CLEAR,
     FRAME_RENDER,
     FRAME_RENDER_ERROR,
+    SlotScope,
 )
 from jiuwenswarm.extensions_v2.webui.models import ClearFrame, RenderFrame, RenderTarget
 
@@ -54,12 +55,17 @@ class RenderTransport:
         )
 
     async def _send(self, target: RenderTarget, event_type: str, payload: dict[str, Any]) -> bool:
-        message = {
+        message: dict[str, Any] = {
             "request_id": f"webui-{event_type}-{uuid.uuid4().hex[:12]}",
             "channel_id": self._channel_id,
-            "session_id": target.session_id,
             "payload": {"event_type": event_type, **payload},
         }
+        # Application frames name the web socket. They do not carry a chat id,
+        # so the gateway cannot fall through to another channel or another tab.
+        if target.resolved_scope == SlotScope.APPLICATION.value:
+            message["metadata"] = {"ws_id": target.connection_id}
+        else:
+            message["session_id"] = target.session_id
         try:
             return bool(await self._resolve_push().send_push(message))
         except Exception as exc:  # noqa: BLE001 - a delivery failure must not break the event chain
