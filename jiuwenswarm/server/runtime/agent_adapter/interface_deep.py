@@ -6508,6 +6508,7 @@ class JiuWenSwarmDeepAdapter:
                 language=self._resolve_runtime_language(),
                 vision_model_config=self._vision_model_config,
                 agent_id=agent_id,
+                operation=self._sys_operation,
             ),
             warn_label="vision tools",
         )
@@ -11736,6 +11737,7 @@ class JiuWenSwarmDeepAdapter:
                     language=self._resolve_runtime_language(),
                     vision_model_config=self._vision_model_config,
                     agent_id=agent_id,
+                    operation=self._sys_operation,
                 ):
                     registered = self._register_agent_owned_tool(tool, agent_id)
                     tool_cards.append(registered.card)
@@ -12146,6 +12148,15 @@ class JiuWenSwarmDeepAdapter:
                     await self._try_init_a2x_client(config_base)
                 agent_card = AgentCard(name=self._agent_name, id=self._runtime_agent_scope_id())
 
+                # sys_operation 必须先于 _get_tool_cards 解析：vision 等多模态工具在
+                # _get_tool_cards 里创建实例时要透传 self._sys_operation，晚于此处赋值
+                # 的话工具只能拿到 None，沙箱读图能力会静默丢失。
+                sys_operation = self._create_sys_operation()
+                if sys_operation is None:
+                    raise RuntimeError("sys_operation is not available, maybe task is not running")
+
+                self._sys_operation = sys_operation
+
                 tool_cards = await self._get_tool_cards(self._tool_owner_id())
                 self._tool_cards = tool_cards
                 logger.info("[JiuWenSwarmDeepAdapter] Agent card id: %s", agent_card.id)
@@ -12155,12 +12166,6 @@ class JiuWenSwarmDeepAdapter:
                 # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
 
                 rails_list = self._build_agent_rails(config, config_base, mode=mode)
-
-                sys_operation = self._create_sys_operation()
-                if sys_operation is None:
-                    raise RuntimeError("sys_operation is not available, maybe task is not running")
-
-                self._sys_operation = sys_operation
                 configured_subagents, should_add_general_agent = self._build_configured_subagents(
                     model, config, config_base
                 )
