@@ -181,8 +181,8 @@ server/
 │   ├── agent_adapter/                # 适配层：interface_deep / interface_code / interface_flash + evolution_* + interrupt_state_machine + steering + team_helpers + workspace_host_init
 │   ├── a2ui/                         # A2UI 协议 + runtime（finalizer/formatter/response_finalization）+ validator + stream_guard
 │   ├── debug_trace/                  # /debug 模式调试追踪：stream_logger + directives + subagent_capture + task_tool_patch
-│   ├── enterprise_config/            # 企业配置 loader + apply_models / apply_mcp / db_queries
-│   ├── session/                      # 会话管理：session_manager（任务队列 + 优先级 + 一次性判定）+ session_history + git_diff_watcher + kv_cache 亲和 + permission_response_ledger + work_mode
+│   ├── enterprise_config/            # 企业配置 loader + apply_models / apply_mcp / db_queries（已有 AGENTS.md）
+│   ├── session/                      # 会话管理（**已有独立 AGENTS.md + docs/specs S_01~S_07**）：session_manager（任务队列 + 优先级 + 一次性判定）+ session_history + git_diff_watcher + kv_cache 亲和 + permission_response_ledger + work_mode
 │   ├── skill/                        # 技能管理：skill_manager + source_registry + artifact_security + enterprise_state_lock + skilldev 自演进流水线（11 stages：init → plan → generate → desc_optimize → test_design → test_run → evaluate → improve → package → validate → stages 编排）
 │   ├── skill_turbo/                  # Skill Turbo 执行框架（**已有独立 AGENTS.md + docs/specs/**）：
 │   │                                 #     见 jiuwenswarm/server/runtime/skill_turbo/AGENTS.md 与其
@@ -295,10 +295,11 @@ tests/unit_tests/server/im/            # im_connector / im_hosting 测试
 tests/integration/test_agent_server.py # 进程级集成
 ```
 
-pytest.ini 的 addopts 含全仓 coverage，日常跑请清掉：
+pytest.ini 的 addopts 含全仓 coverage 与 `-v`，日常跑请覆盖为仅保留 asyncio 模式
+（`-o addopts="--asyncio-mode=auto"`；**不能整个清空**——清空会让 async 用例全部报错）：
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/unit_tests/server/ -o addopts="" -x
+.venv\Scripts\python.exe -m pytest tests/unit_tests/server/ -o addopts="--asyncio-mode=auto" -x
 ```
 
 - **改 HANDLERS 注册表或 HandlerSpec 契约时**，先跑 `tests/unit_tests/server/test_dispatch.py`（注册表完整性、HandlerSpec 构造、stream_fn 分支）。

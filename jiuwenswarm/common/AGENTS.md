@@ -23,6 +23,20 @@ Gateway 与 AgentServer 双进程共用的公共基础层：对**外协议边缘
 - `docs/specs/S_13_request-context-and-tools.md` — 请求上下文与工具支持（路由身份四字段 / ext 白名单透传 / chat.final 注解 / 工具归属注册）
 - `docs/specs/S_14_session-lifecycle-and-upgrade.md` — 会话生命周期与自升级（todo 快照 / 后台清理 / cron 收轮状态机 / 三源自升级链路）
 
+跨目录分工：S_14 只管 todo **快照与清理的底层机制**；todo 工具链 / 代际 token /
+任务执行 rail / 计划审批的任务规划域契约，LLM 调用层失败恢复 / 工具循环熔断 /
+并发安全 / 输入侧守卫的可靠性域契约，子代理创建分发 / 持久运行时 / 授权审批 /
+分发通道的 subagent 域契约（机制主体在 openjiuwen SDK 与 server 装配层，授权 rail
+与 `subagent_executor` 装配在 harness common 子树），中断原语 / 权限拦截 / 宿主
+装配 / 相位守卫 / 取消结算的中断交互域契约，与事件流发射 / 暂停检查点的事件流域
+契约，都在 [agents/harness/AGENTS.md](../agents/harness/AGENTS.md)（其 specs
+S_01~S_21）。本模块
+S_07 的配额门禁在 harness 域有一层 rail 薄挂载（WorkspaceQuotaRail：命令工具满额拒绝 +
+du 卸线程池，env `WORKSPACE_QUOTA_ENABLED` 默认关），契约见其 S_10。**编号同名消歧**：
+harness 域 S_07 是 LLM 调用层失败恢复，与本模块 S_07（workspace-safety）无关；harness
+域 S_14 是 subagent 分发通道，与本模块 S_14（会话生命周期 todo 快照）无关——跨域引用
+写全路径。
+
 面向**理解系统**（而非改代码）的叙事文档在 `docs/designs/`：
 
 - `docs/designs/common_overview.md` — 特性文档：common 的功能、原理与能力边界（概念层面，含核心优势与术语表）
@@ -263,27 +277,30 @@ common/
 
 ## 测试
 
-pytest.ini 的 addopts 含全仓 coverage，日常跑请清掉（`-o addopts=""`）：
+pytest.ini 的 addopts 含全仓 coverage 与 `-v`，日常跑请覆盖为仅保留 asyncio 模式
+（`-o addopts="--asyncio-mode=auto"`；**不能整个清空**——清空会让 async 用例全部报错）：
 
 ```powershell
 # 模块主测试目录（31 个文件：config/secrets/workspace/mcp/thinking/audit/...）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/common/ -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/common/ -o addopts="--asyncio-mode=auto"
 
 # E2A 协议（独立目录）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/e2a/ -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/e2a/ -o addopts="--asyncio-mode=auto"
 
 # 自升级链路（updater/upgrade_executor/version_source）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/test_updater_install_mode.py -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/test_updater_install_mode.py -o addopts="--asyncio-mode=auto"
 
 # todo 快照（历史路径在 server/ 下——迁移遗留，勿再新增）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/server/test_todo_snapshot.py tests/unit_tests/server/test_history_todo_restore.py -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/server/test_todo_snapshot.py tests/unit_tests/server/test_history_todo_restore.py -o addopts="--asyncio-mode=auto"
 ```
 
 - 单测路径镜像源码：`common/<module>.py` → `tests/unit_tests/common/test_<module>.py`；
   e2a 例外（`tests/unit_tests/e2a/`），新增 e2a 测试进该目录。
 - **改 workspace 删除链 / quota 门禁时，除单测外必须对照 [[S_07]] 修改检查单跑全场景
   矩阵**：合法 zone 删除 / 越权 zone 拒绝 / symlink / 穿越 / 配额边界（soft 80 / hard
-  100 / -1 / 0）/ 多租户隔离。
+  100 / -1 / 0）/ 多租户隔离。门禁判定变更还波及 harness 域的 rail 薄挂载
+  （WorkspaceQuotaRail，见 [agents/harness/AGENTS.md](../agents/harness/AGENTS.md) 其
+  S_10）——改判定口径时两侧同查。
 - 修复类改动必须附**能复现原故障的测试**（先红后绿）；修 MCP patch 类问题必须列出全部
   同构装配点逐个确认（[[S_09]] 修改检查单）。
 
