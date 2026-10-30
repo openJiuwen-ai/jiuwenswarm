@@ -1,6 +1,7 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import { webClient } from './webClient';
+import { getWebTransport } from '../utils/env';
 
 /**
  * Attach the current Web connection to a Team Session event stream.
@@ -31,7 +32,7 @@ export async function attachTeamSession(
   sessionId: string,
   mode?: string
 ): Promise<void> {
-  if (!sessionId || sessionId === 'new' || attachedSessions.has(sessionId)) {
+  if (getWebTransport() !== 'websocket' || !sessionId || sessionId === 'new' || attachedSessions.has(sessionId)) {
     return;
   }
   attachedSessions.add(sessionId);

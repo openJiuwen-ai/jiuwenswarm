@@ -325,7 +325,9 @@ class CronLiveBus:
     ) -> None:
         if mark_seen and self._frame_already_seen(sid, frame):
             return
-        if not _queue_put(queue, frame):
+        # Only replay copies carry this marker; live fanout and the stored
+        # frame stay unchanged so clients can distinguish backlog from new output.
+        if not _queue_put(queue, {**frame, "replay": True}):
             return
         if mark_seen:
             self._remember_frame(sid, frame)

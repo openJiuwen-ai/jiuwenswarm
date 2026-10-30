@@ -353,6 +353,7 @@ def register_web_http_api_routes(
                         continue
                     event_name = str(frame.get("event") or "message")
                     data = frame.get("payload") if isinstance(frame.get("payload"), dict) else frame
+                    data = {**data, "live_replay": bool(frame.get("replay"))}
                     yield _sse_pack(sid, event_name, data)
             finally:
                 cron_live_bus.unsubscribe(sid, queue)

@@ -52,6 +52,8 @@ import {
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
+import { DesignerPage } from './features/designer/components/DesignerPage';
+import { submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -82,6 +84,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webClient, webRequest } from './services/webClient';
+import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
@@ -179,12 +182,17 @@ import { useApplicationPlugins } from './applicationPlugins/useApplicationPlugin
 import type { ApplicationPluginNavKey } from './applicationPlugins/types';
 import {
   findShareImageJobForSession,
+  fetchShareImageJobStatus,
   forgetPendingShareImageJob,
   readPendingShareImageJobId,
   readShareImageJobResponse,
   rememberPendingShareImageJob,
+  resumeBrowserShareImageJob,
+  waitForShareImageJobTransfer,
+  startShareImageJobDownload,
   type ShareImageExportJobStatus,
 } from './features/shareImageJob';
+import { cancelShareImageJobForClosedTab, openShareImageExportTab } from './features/shareImageBrowserExport';
 import {
   ModelSetupGuide,
   type ModelSetupGuideStep,
@@ -428,6 +436,20 @@ function ErrorFallback({ error }: { error: Error | null }) {
 }
 
 const SHARE_IMAGE_EXPORT_POLL_MS = 500;
+const SHARE_IMAGE_EXPORT_MAX_QUERY_FAILURES = 3;
+const SHARE_IMAGE_EXPORT_ERROR_KEYS: Record<string, string> = {
+  share_export_popup_blocked: 'share.popupBlocked',
+  share_export_tab_closed: 'share.browserTabClosed',
+  share_export_download_start_timeout: 'share.downloadStartFailed',
+  share_export_download_interrupted: 'share.downloadInterrupted',
+  share_export_status_timeout: 'share.statusTimeout',
+};
+
+function shareImageExportErrorKey(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  const key = SHARE_IMAGE_EXPORT_ERROR_KEYS[message];
+  return typeof key === 'string' ? key : 'share.exportFailed';
+}
 
 async function saveShareImageJob(jobId: string, filename: string): Promise<boolean> {
   const downloadUrl = `/share-api/jobs/${encodeURIComponent(jobId)}/download`;
@@ -457,15 +479,24 @@ async function saveShareImageJob(jobId: string, filename: string): Promise<boole
 async function waitForShareImageJob(
   initialStatus: ShareImageExportJobStatus,
   isCurrentMonitor: () => boolean,
+  onStatus: (status: ShareImageExportJobStatus) => Promise<ShareImageExportJobStatus>,
+  onQueryInterrupted: () => void,
 ): Promise<ShareImageExportJobStatus | null> {
-  let status = initialStatus;
+  let status = await onStatus(initialStatus);
+  let queryFailures = 0;
   while (status.state === 'queued' || status.state === 'running') {
     if (!isCurrentMonitor()) return null;
     await new Promise(resolve => window.setTimeout(resolve, SHARE_IMAGE_EXPORT_POLL_MS));
-    status = await readShareImageJobResponse(await fetch(
-      `/share-api/jobs/${encodeURIComponent(status.job_id)}`,
-      { cache: 'no-store' },
-    ));
+    try {
+      status = await fetchShareImageJobStatus(status.job_id);
+      status = await onStatus(status);
+      queryFailures = 0;
+    } catch (error) {
+      if (!(error instanceof TypeError) && !(error instanceof Error && error.message === 'share_export_status_timeout')) throw error;
+      if (++queryFailures >= SHARE_IMAGE_EXPORT_MAX_QUERY_FAILURES) throw new Error('share_export_status_timeout');
+      onQueryInterrupted();
+      continue;
+    }
   }
   return isCurrentMonitor() ? status : null;
 }
@@ -511,6 +542,10 @@ function AppContent({
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
   const [exportingShareSessionIds, setExportingShareSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [shareExportProgress, setShareExportProgress] = useState<Record<string, string>>({});
+  const [waitingShareExportSessionIds, setWaitingShareExportSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const waitingBrowserExportsRef = useRef(new Map<string, { status: ShareImageExportJobStatus; locale: string }>());
+  const browserExportTabsRef = useRef(new Map<string, Window>());
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
@@ -545,6 +580,7 @@ function AppContent({
   } = useResponsiveLayout();
 
   const [secondarySidebarCollapsed, setSecondarySidebarCollapsed] = useSecondarySidebarPreference();
+  const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(true);
   const {
     target: sidebarPeek,
     open: openSidebarPeek,
@@ -753,6 +789,24 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
+    } else if (route.kind === 'design-project' && !isEnterprise()) {
+      let cancelled = false;
+      const nextSessionId = route.sessionId ?? NEW_CONVERSATION_ID;
+      sessionIdRef.current = nextSessionId;
+      setSessionId(nextSessionId);
+      setActiveNav('chat');
+      void useWorkspaceStore.getState().setWorkMode('design').then(() => {
+        if (cancelled) return;
+        const project = useWorkspaceStore.getState().projects.find(
+          (item) => item.project_id === route.projectId,
+        );
+        useWorkspaceStore.getState().setSelectedProject(project ?? null);
+      });
+      setDesignSidebarCollapsed(true);
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+      setToolPanelHidden(true);
+      return () => { cancelled = true; };
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
         navigate({ kind: 'chat-new' }, { replace: true });
@@ -769,7 +823,7 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -1180,12 +1234,17 @@ function AppContent({
 
   const { shouldFullscreen, sidebarAutoCollapsed } = useResponsivePanelResize({
     isTeamAreaExpanded,
-    conversationSidebarCollapsed: secondarySidebarCollapsed,
+    conversationSidebarCollapsed: designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed,
     setSingleAgentPanelExpanded,
     setTeamAreaExpanded,
     mode,
   });
-  const conversationSidebarCollapsed = secondarySidebarCollapsed || isMobile || sidebarAutoCollapsed;
+  const conversationSidebarCollapsed = (designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed) || isMobile || sidebarAutoCollapsed;
+  const toggleConversationSidebar = useCallback(() => {
+    closeSidebarPeek();
+    if (designCanvasOpen) setDesignSidebarCollapsed(value => !value);
+    else setSecondarySidebarCollapsed(value => !value);
+  }, [closeSidebarPeek, designCanvasOpen, setSecondarySidebarCollapsed]);
   const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
   const hasFixedSecondarySidebar =
     ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
@@ -1229,6 +1288,7 @@ function AppContent({
     activeSessionId: sessionId,
     onConnect: () => {
       console.log('Connected');
+      resetTeamAttachments();
       // 连接建立/断线重连后重拉侧边栏定时任务列表（useCronStore）：web 先行
       // 导航时首屏挂载早于 gateway 就绪，挂载期的 cron.job.list 会失败并被
       // store 静默清空，且无其它重试入口，导致 project 页签定时任务空白直到
@@ -1267,6 +1327,13 @@ function AppContent({
       }
     },
   });
+  useEffect(() => {
+    if (!isConnected || !isTeamAgentMode(mode)) return;
+    void attachTeamSession(sessionId, mode).catch((error) => {
+      console.warn('[teamAttach] failed to attach session:', sessionId, error);
+    });
+  }, [isConnected, mode, sessionId]);
+
   const applicationPluginState = useApplicationPlugins(isConnected);
   const applicationPlugins = applicationPluginState.plugins;
   const visibleApplicationPlugins = enabledApplicationPlugins(applicationPlugins);
@@ -2520,6 +2587,8 @@ function AppContent({
 
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
+    // The canvas restores its own director history through DesignerPage.
+    if (route.kind === 'design-project') return;
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
@@ -2869,6 +2938,7 @@ function AppContent({
     isConnected,
     sessionId,
     historyBootstrapKey,
+    route.kind,
     request,
     addMessage,
     addToolCall,
@@ -3304,7 +3374,7 @@ function AppContent({
     const currentMetadata = currentState.currentSession?.session_id === currentSessionId
       ? currentState.currentSession
       : currentState.sessions.find((session) => session.session_id === currentSessionId);
-    const isDesignLanding = currentSessionId === NEW_CONVERSATION_ID
+    const isDesignLanding = !isEnterprise() && route.kind === 'chat-new' && currentSessionId === NEW_CONVERSATION_ID
       && useWorkspaceStore.getState().workMode === 'design';
     if (
       !isDesignLanding &&
@@ -3329,6 +3399,50 @@ function AppContent({
       if (creatingSessionRef.current) return;
       creatingSessionRef.current = true;
       useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
+      if (isDesignLanding) {
+        try {
+          const created = await submitDesignComposer({
+            prompt: messageContent,
+            mediaItems,
+          });
+          const store = useWorkspaceStore.getState();
+          if (!store.expandedProjectIds[created.projectId]) {
+            store.toggleProjectExpanded(created.projectId);
+          }
+          await store.loadProjects();
+          await store.loadProjectSessions(created.projectId);
+          const project = useWorkspaceStore.getState().projects.find(
+            (item) => item.project_id === created.projectId,
+          );
+          if (project && !project.is_default) store.setSelectedProject(project);
+          navigate({
+            kind: 'design-project',
+            projectId: created.projectId,
+            sessionId: created.sessionId,
+          });
+        } catch (error) {
+          const code = error instanceof Error ? error.message : '';
+          const referenceError = code === 'image_limit'
+            ? t('designer.chat.limitImages')
+            : code === 'video_limit'
+              ? t('designer.chat.limitVideo')
+              : code === 'audio_limit'
+                ? t('designer.chat.limitAudio')
+                : code === 'too_large'
+                  ? t('designer.chat.tooLarge')
+                  : code === 'unsupported'
+                    ? t('designer.chat.unsupported')
+                    : '';
+          toast.open({
+            content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
+            variant: 'error',
+          });
+        } finally {
+          creatingSessionRef.current = false;
+          useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        }
+        return;
+      }
       const newRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
       const runtimeSettings = {
         mode: newRuntime?.mode ?? mode,
@@ -3506,7 +3620,7 @@ function AppContent({
       restoreUnsentInput(currentSessionId, content);
     }
     return sent === true ? currentSessionId : undefined;
-  }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+  }, [disposeInFlightHistoryHandles, mode, navigate, request, route.kind, sendMessage, setGoalObjective, t]);
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -3883,10 +3997,8 @@ function AppContent({
       projectId: project.project_id,
       sessionId: nextSessionId,
     });
-    void handleRestoreSession(nextSessionId);
   }, [
     confirmLeaveSettings,
-    handleRestoreSession,
     isToolPanelAutoHideViewport,
     navigate,
     setSelectedProject,
@@ -4015,7 +4127,8 @@ function AppContent({
 
   const pinSecondarySidebar = (target: SecondarySidebar) => {
     if (!handleNavigate(target === 'chat' && activeNav === 'cron' ? 'cron' : target)) return;
-    setSecondarySidebarCollapsed(false);
+    if (target === 'chat' && designCanvasOpen) setDesignSidebarCollapsed(false);
+    else setSecondarySidebarCollapsed(false);
     if (target === 'chat' && sidebarAutoCollapsed) {
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
@@ -4064,6 +4177,19 @@ function AppContent({
   }, [request]);
 
   const setShareExportSessionActive = useCallback((targetSessionId: string, active: boolean) => {
+    if (!active) {
+      waitingBrowserExportsRef.current.delete(targetSessionId);
+      setWaitingShareExportSessionIds(current => {
+        const next = new Set(current);
+        next.delete(targetSessionId);
+        return next;
+      });
+    }
+    if (!active) setShareExportProgress(current => {
+      const next = { ...current };
+      delete next[targetSessionId];
+      return next;
+    });
     setExportingShareSessionIds(current => {
       const next = new Set(current);
       if (active) next.add(targetSessionId);
@@ -4072,28 +4198,114 @@ function AppContent({
     });
   }, []);
 
+  const closeShareExportTab = useCallback((targetSessionId: string) => {
+    browserExportTabsRef.current.get(targetSessionId)?.close();
+    browserExportTabsRef.current.delete(targetSessionId);
+  }, []);
+
+  const shareExportPhaseText = useCallback((phase?: string, progress?: number | null) => (
+    phase === 'rendering' && progress != null
+      ? t('share.renderingProgress', { percent: progress })
+      : phase === 'download_started' ? t('share.downloading')
+        : phase === 'saving' || phase === 'completed' || phase === 'download_sent'
+        ? t(window.jiuwenDesktop?.isElectron ? 'share.savingDesktop' : 'share.saving')
+        : phase === 'rendering' ? t('share.preparingDocument')
+          : phase === 'loading_snapshot' ? t('share.loadingHistory') : t('share.preparing')
+  ), [t]);
+
+  useEffect(() => {
+    if (!window.jiuwenDesktop?.isElectron || typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') return;
+    return window.jiuwenDesktop.onShareImageExportProgress(({ sessionId: targetSessionId, phase, progress }) => {
+      if (!shareExportMonitorTokensRef.current.has(targetSessionId)) return;
+      setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(phase, progress) }));
+    });
+  }, [shareExportPhaseText]);
+
   const monitorAndSaveShareImageJob = useCallback(async (
     initialStatus: ShareImageExportJobStatus,
     targetSessionId: string,
     token: symbol,
+    startBrowser = false,
   ) => {
-    const status = await waitForShareImageJob(
-      initialStatus,
+    const resumedStatus = await resumeBrowserShareImageJob(initialStatus, targetSessionId, window.sessionStorage);
+    let startedBrowser = false;
+    let status = await waitForShareImageJob(
+      resumedStatus,
       () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+      async snapshot => {
+        const current = await cancelShareImageJobForClosedTab(
+          { ...snapshot, client_token: resumedStatus.client_token },
+          browserExportTabsRef.current.get(targetSessionId),
+        );
+        const text = shareExportPhaseText(current.phase, current.progress);
+        setShareExportProgress(previous => ({ ...previous, [targetSessionId]: text }));
+        if (current.state !== 'queued') {
+          waitingBrowserExportsRef.current.delete(targetSessionId);
+          setWaitingShareExportSessionIds(previous => {
+            if (!previous.has(targetSessionId)) return previous;
+            const next = new Set(previous); next.delete(targetSessionId); return next;
+          });
+        }
+        if (current.renderer === 'browser' && current.state === 'queued' && !startedBrowser) {
+          startedBrowser = true;
+          const browserJob = { status: { ...current, client_token: resumedStatus.client_token }, locale: resumedStatus.locale ?? i18n.resolvedLanguage ?? i18n.language };
+          rememberPendingShareImageJob(window.sessionStorage, targetSessionId, browserJob.status, browserJob.locale);
+          const tab = startBrowser ? openShareImageExportTab(browserJob.status, browserJob.locale) : null;
+          if (tab) browserExportTabsRef.current.set(targetSessionId, tab);
+          else {
+            waitingBrowserExportsRef.current.set(targetSessionId, browserJob);
+            setWaitingShareExportSessionIds(previous => new Set(previous).add(targetSessionId));
+          }
+        }
+        return current;
+      },
+      () => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: tRef.current('share.statusReconnecting') })),
     );
     if (status === null) return;
     if (status.state === 'failed') {
+      closeShareExportTab(targetSessionId);
       forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
+      if (status.error === 'share_export_tab_closed') {
+        const sessionState = useSessionStore.getState();
+        const exportedSession = sessionState.currentSession?.session_id === targetSessionId
+          ? sessionState.currentSession
+          : sessionState.sessions.find(session => session.session_id === targetSessionId);
+        const exportedSessionTitle = toDisplaySessionTitle(exportedSession?.title ?? '') || targetSessionId;
+        toast.open({
+          id: `share-export-stopped:${status.job_id}`,
+          content: tRef.current('share.exportStopped', { sessionTitle: exportedSessionTitle }),
+          duration: 5,
+          wide: true,
+          testId: 'app-share-export-stopped-toast',
+          dataVariant: targetSessionId,
+        });
+        return;
+      }
       throw new Error(status.error || 'share_export_job_failed');
     }
 
-    const saved = await saveShareImageJob(status.job_id, status.filename.trim());
+    if (status.renderer === 'browser' && resumedStatus.state === 'completed' && status.phase !== 'download_started' && status.phase !== 'download_sent') {
+      // A reloaded chat can resume a published artifact after its renderer has gone.
+      status = await startShareImageJobDownload({ ...status, client_token: resumedStatus.client_token });
+    }
+    let saved: boolean;
+    try {
+      saved = status.renderer === 'browser'
+        ? await waitForShareImageJobTransfer(status, () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+          current => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(current.phase, current.progress) }))) !== null
+        : await saveShareImageJob(status.job_id, status.filename.trim());
+    } catch (error) {
+      if (error instanceof Error && ['share_export_download_start_timeout', 'share_export_download_interrupted'].includes(error.message)) closeShareExportTab(targetSessionId);
+      throw error;
+    }
+    if (saved) closeShareExportTab(targetSessionId);
     forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
     if (saved) showSaveToast();
-  }, [showSaveToast]);
+  }, [closeShareExportTab, showSaveToast, shareExportPhaseText, i18n.language, i18n.resolvedLanguage]);
 
   useEffect(() => {
     const targetSessionId = sessionId;
+    if (isEnterprise() || window.jiuwenDesktop?.isElectron) return;
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
     if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
@@ -4108,6 +4320,9 @@ function AppContent({
         return;
       }
       if (status === null) return;
+      // A failed transfer is retried by the user's next export click. Reloading
+      // preserves its artifact without repeating the failure dialog or download.
+      if (status.renderer === 'browser' && status.state === 'completed' && status.phase === 'download_failed') return;
       if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
       const token = Symbol(targetSessionId);
@@ -4121,7 +4336,7 @@ function AppContent({
         );
       } catch (error) {
         console.error('Failed to monitor share image export:', error);
-        window.alert(tRef.current('share.exportFailed'));
+        window.alert(tRef.current(shareImageExportErrorKey(error)));
       } finally {
         if (shareExportMonitorTokensRef.current.get(targetSessionId) === token) {
           shareExportMonitorTokensRef.current.delete(targetSessionId);
@@ -4132,7 +4347,25 @@ function AppContent({
   }, [monitorAndSaveShareImageJob, sessionId, setShareExportSessionActive]);
 
   const handleExportShare = useCallback(async () => {
+    if (isEnterprise()) return;
     const currentSessionId = sessionIdRef.current;
+    if (window.jiuwenDesktop?.isElectron && typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') {
+      window.alert(t('share.desktopRestartRequired'));
+      return;
+    }
+    const waitingJob = waitingBrowserExportsRef.current.get(currentSessionId);
+    if (waitingJob) {
+      const tab = openShareImageExportTab(waitingJob.status, waitingJob.locale);
+      if (!tab) { window.alert(t('share.popupBlocked')); return; }
+      browserExportTabsRef.current.set(currentSessionId, tab);
+      waitingBrowserExportsRef.current.delete(currentSessionId);
+      setWaitingShareExportSessionIds(previous => {
+        const next = new Set(previous);
+        next.delete(currentSessionId);
+        return next;
+      });
+      return;
+    }
     if (
       !currentSessionId
       || currentSessionId === NEW_CONVERSATION_ID
@@ -4142,8 +4375,10 @@ function AppContent({
       return;
     }
     const token = Symbol(currentSessionId);
+    const plainWeb = !window.jiuwenDesktop?.isElectron && !window.pywebview;
     shareExportMonitorTokensRef.current.set(currentSessionId, token);
     setShareExportSessionActive(currentSessionId, true);
+    setShareExportProgress(current => ({ ...current, [currentSessionId]: t('share.preparing') }));
     try {
       if (window.jiuwenDesktop?.isElectron) {
         const saved = await window.jiuwenDesktop.exportShareImage(
@@ -4153,6 +4388,11 @@ function AppContent({
         if (saved) showSaveToast();
         return;
       }
+      const pending = await findShareImageJobForSession(currentSessionId, window.sessionStorage);
+      if (pending && pending.state === 'completed') {
+        await monitorAndSaveShareImageJob(pending, currentSessionId, token);
+        return;
+      }
       const createResponse = await fetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
@@ -4160,18 +4400,20 @@ function AppContent({
         body: JSON.stringify({
           session_id: currentSessionId,
           locale: i18n.resolvedLanguage ?? i18n.language,
+          allow_browser_render: plainWeb,
         }),
       });
       const created = await readShareImageJobResponse(createResponse);
-      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created.job_id);
+      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created, i18n.resolvedLanguage ?? i18n.language);
       await monitorAndSaveShareImageJob(
         created,
         currentSessionId,
         token,
+        plainWeb,
       );
     } catch (error) {
       console.error('Failed to export share image:', error);
-      window.alert(t('share.exportFailed'));
+      window.alert(t(shareImageExportErrorKey(error)));
     } finally {
       if (shareExportMonitorTokensRef.current.get(currentSessionId) === token) {
         shareExportMonitorTokensRef.current.delete(currentSessionId);
@@ -4313,9 +4555,30 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
-                onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
+                onToggleCollapse={toggleConversationSidebar}
                 hideCollapseButton={designCanvasOpen}
               />
+              {!isEnterprise() && workspaceWorkMode === 'design' && route.kind === 'design-project' ? (
+                  <DesignerPage
+                    projectId={route.projectId}
+                    sessionId={route.sessionId}
+                    sidebarCollapsed={conversationSidebarCollapsed}
+                    onToggleSidebarCollapse={() => {
+                      if (isMobile) {
+                        if (sidebarPeek === 'chat') closeSidebarPeek();
+                        else openSidebarPeek('chat');
+                        return;
+                      }
+                      toggleConversationSidebar();
+                    }}
+                    onOpenSession={(nextProjectId, nextSessionId, options) => {
+                      navigate(
+                        { kind: 'design-project', projectId: nextProjectId, sessionId: nextSessionId },
+                        options,
+                      );
+                    }}
+                  />
+              ) : (
               <div
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
               >
@@ -4365,6 +4628,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onUserAnswer={handleUserAnswer}
                         onExportShare={handleExportShare}
                         isExportingShare={isExportingShare}
+                        shareExportProgress={shareExportProgress[sessionId]}
+                        isWaitingShareExportTab={waitingShareExportSessionIds.has(sessionId)}
                         canExportShare={Boolean(sessionId && sessionId !== NEW_CONVERSATION_ID && (!isProcessing || isPaused))}
                         sessionTitle={sessionTitle}
                         sessionProjectName={sessionProjectName}
@@ -4491,6 +4756,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   <HeartbeatPanel sessionId={sessionId} onClose={() => setHeartbeatPanelOpen(false)} />
                 )}
               </div>
+              )}
             </div>
           </>
         )}

@@ -50,6 +50,18 @@ const { attachTeamSession, resetTeamAttachments } = await import(
   '../node_modules/.cache/web-client-runtime-ack/teamAttach.mjs'
 );
 
+test('HTTP Team sessions do not submit a persistent WebSocket attachment', async () => {
+  window.__JIUWEN_WEB_TRANSPORT__ = 'http';
+  try {
+    const socket = FakeWebSocket.instance;
+    const count = socket?.sentRequests.length ?? 0;
+    await attachTeamSession('http-team', 'team');
+    assert.equal(socket?.sentRequests.length ?? 0, count);
+  } finally {
+    delete window.__JIUWEN_WEB_TRANSPORT__;
+  }
+});
+
 await webClient.connect();
 
 function gatewayResponse(id, ok = true) {
