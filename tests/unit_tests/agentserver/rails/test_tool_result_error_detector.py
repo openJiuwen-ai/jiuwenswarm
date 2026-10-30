@@ -52,6 +52,11 @@ FAILURES = [
     pytest.param({"isError": "true"}, id="dict-isError-string"),
     pytest.param({"status": "failed"}, id="dict-status-failed"),
     pytest.param({"result_type": "error"}, id="dict-result-type"),
+    pytest.param({"kind": "error", "error_code": "execution_context_missing"},
+                 id="dict-kind-error"),
+    # a2a outbound 工具族的历史失败形状：ok=False 且不带 error 键。
+    pytest.param({"ok": False, "error_code": "manager_unavailable",
+                  "error_summary": "manager unavailable"}, id="dict-ok-false"),
     pytest.param({"error": "something went wrong"}, id="dict-error-field"),
     pytest.param({"data": {"success": False}}, id="dict-nested-data"),
     # mcp_exec_command: a completed command that exited non-zero.
@@ -88,6 +93,8 @@ def test_failures_are_recognised(value) -> None:
 SUCCESSES = [
     pytest.param({"success": True, "data": {"content": "ok"}}, id="dict-success-true"),
     pytest.param({"status": "ok"}, id="dict-status-ok"),
+    # ok=True 是成功信号而非失败信号（a2a 既有契约）。
+    pytest.param({"ok": True}, id="dict-ok-true"),
     pytest.param({"error": None}, id="dict-error-none"),
     pytest.param({"error": "none"}, id="dict-error-literal-none"),
     pytest.param(

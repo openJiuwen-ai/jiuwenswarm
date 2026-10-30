@@ -5732,7 +5732,11 @@ class MessageHandler(FileTransferMixin, ABC):
                     "tool_name": tool_info.get("tool_name", ""),
                     "tool_call_id": tool_info.get("tool_call_id", ""),
                     "result": tool_info.get("result", ""),
-                    "status": tool_info.get("status", "error"),
+                    # T1 统一 schema：取消是 cancelled 而非 error（区别于工具失败）；
+                    # 成败字段优先取上游 tool_info（stream_event_rail 已产 schema）
+                    "status": tool_info.get("status", "cancelled"),
+                    "success": tool_info.get("success", False),
+                    "error_code": tool_info.get("error_code", "tool_cancelled"),
                 },
             },
             event_type=EventType.CHAT_TOOL_RESULT,

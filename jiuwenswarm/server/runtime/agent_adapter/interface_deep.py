@@ -2692,6 +2692,9 @@ class JiuWenSwarmDeepAdapter:
         # trust 判定使用；由白名单同步/热刷新/_refresh_skill_identity 维护。
         self._prebuilt_skills: set[str] = set()
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
+        # T1 出口归一化 rail：priority=82，归一所有工具结果为统一 schema
+        # （GitCode openJiuwen/jiuwenswarm#5243 v3.0 §4）
+        self._tool_result_normalize_rail: Any | None = None
         # ask_user 卡片序号：同一外层 tool_call_id 的第 N 次中断共用同一 id，
         # 卡片 request_id 以 {id}#{n} 区分（跨请求存续，见 should_skip_duplicate_ask_user）
         # 序号计数收口至 OuterCallIDDeduplicator（derive + seq 单一实现），
@@ -9719,6 +9722,27 @@ class JiuWenSwarmDeepAdapter:
             stream_event_rail = None
         return stream_event_rail
 
+    @staticmethod
+    def _build_tool_result_normalize_rail() -> Any | None:
+        """Build ToolResultNormalizeRail（T1 出口归一，priority=82）.
+
+        开关在 rail 内部经 config 懒加载（tool_result_normalize_enabled /
+        tool_result_llm_render_enabled），rail 构建本身不读 config。
+        """
+        try:
+            from jiuwenswarm.agents.harness.common.rails.tool_result_normalize_rail import (
+                ToolResultNormalizeRail,
+            )
+
+            rail = ToolResultNormalizeRail()
+            logger.info("[JiuWenSwarmDeepAdapter] ToolResultNormalizeRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] ToolResultNormalizeRail create failed: %s", exc
+            )
+            return None
+
     def _build_deepresearch_execution_rail(
         self,
     ) -> DeepResearchExecutionRail | None:
@@ -10828,6 +10852,10 @@ class JiuWenSwarmDeepAdapter:
                 self._build_deepresearch_execution_rail,
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
+            _RailBuildInfo(
+                "_tool_result_normalize_rail",
+                self._build_tool_result_normalize_rail,
+            ),
             # opt-in: AGENT_EXTENSION_CONFIG_DEBUG_RAIL=1 (default off)
             _RailBuildInfo(
                 "_extension_config_debug_rail",

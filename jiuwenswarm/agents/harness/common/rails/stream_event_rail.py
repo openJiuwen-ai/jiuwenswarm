@@ -273,8 +273,16 @@ def _infer_tool_result_error(value: Any) -> bool | None:
                 return False
         if _boolish_true(value.get("is_error")) or _boolish_true(value.get("isError")):
             return True
+        if _boolish_false(value.get("ok")):
+            return True
         status = value.get("status")
         if isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure"}:
+            return True
+        result_type = value.get("result_type")
+        if isinstance(result_type, str) and result_type.strip().lower() == "error":
+            return True
+        kind = value.get("kind")
+        if isinstance(kind, str) and kind.strip().lower() == "error":
             return True
         for key in ("exit_code", "exitCode", "returncode", "return_code"):
             exit_failed = _nonzero_exit(value.get(key))
@@ -918,7 +926,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "tool_name": getattr(tc, "name", ""),
                 "tool_call_id": tc_id,
                 "result": "[Interrupted] Tool execution cancelled by user.",
-                "status": "error",
+                # T1 统一 schema：取消是 cancelled 而非 error（工具失败才用 error）
+                "status": "cancelled",
+                "success": False,
+                "error_code": "tool_cancelled",
             })
             self._inflight_tool_calls.pop(tc_id, None)
         logger.info(
@@ -1568,6 +1579,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 if error_state:
                     tool_result_payload["status"] = "error"
                     tool_result_payload["is_error"] = True
+            if isinstance(raw_output, dict):
+                # T1 统一 schema：成败明细键提升到帧顶层（前端白名单已含
+                # error_code/error_message/display），原始形状保留在 raw_output
+                for key in ("error_code", "error_message", "display"):
+                    if key in raw_output and key not in tool_result_payload:
+                        tool_result_payload[key] = raw_output[key]
             source_skill = _resolve_source_skill(session)
             if source_skill:
                 tool_result_payload["source_skill"] = source_skill

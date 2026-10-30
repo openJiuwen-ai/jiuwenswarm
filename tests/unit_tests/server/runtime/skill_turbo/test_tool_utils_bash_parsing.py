@@ -29,9 +29,11 @@ from jiuwenswarm.server.runtime.skill_turbo.runtime.tool_utils import (
     BashResult,
     combined_output,
     get_tool_data,
+    get_tool_error,
     get_tool_exit_code,
     get_tool_stderr,
     get_tool_stdout,
+    get_tool_success,
     parse_bash_payload,
     parse_bash_result,
     quote_path,
@@ -270,3 +272,88 @@ async def test_run_bash_workdir_passed_through():
     node = _FakeNode(script=[_ok("ok")])
     await run_bash(node, "pwd", workdir="D:/tmp")
     assert node.calls[0][1]["workdir"] == "D:/tmp"
+
+
+# ── 结构化失败信号：success 键之外的假成功缺口 ────────────────────────
+#
+# 背景：部分工具失败时返回不带 success/error 键的 dict（a2a 的
+# {"ok": False}、deepresearch execution 的 {"kind": "error"}、
+# {"status": "error"}），旧判定链全部放行 → 假成功 → 不进 fallback。
+
+
+def test_exit_code_status_error_dict_is_one():
+    result = SimpleNamespace(success=True, data={"status": "error", "message": "boom"})
+    assert get_tool_exit_code(result, default=1) == 1
+
+
+def test_exit_code_ok_false_dict_is_one():
+    # a2a 历史失败形状：无 error 键，只有 ok=False + error_summary
+    result = SimpleNamespace(
+        success=True,
+        data={"ok": False, "error_code": "manager_unavailable", "error_summary": "down"},
+    )
+    assert get_tool_exit_code(result, default=1) == 1
+
+
+def test_exit_code_kind_error_dict_is_one():
+    result = SimpleNamespace(
+        success=True,
+        data={"kind": "error", "error_code": "execution_context_missing", "content": "不可用"},
+    )
+    assert get_tool_exit_code(result, default=1) == 1
+
+
+def test_exit_code_is_error_dict_is_one():
+    result = SimpleNamespace(success=True, data={"is_error": True})
+    assert get_tool_exit_code(result, default=1) == 1
+
+
+def test_parse_payload_json_status_error_is_one():
+    parsed = parse_bash_payload('{"status": "error", "message": "boom"}')
+    assert parsed.exit_code == 1
+
+
+def test_parse_payload_json_ok_false_is_one():
+    parsed = parse_bash_payload('{"ok": false, "error_summary": "manager unavailable"}')
+    assert parsed.exit_code == 1
+
+
+def test_parse_payload_json_kind_error_is_one():
+    parsed = parse_bash_payload('{"kind": "error", "content": "ctx missing"}')
+    assert parsed.exit_code == 1
+
+
+def test_exit_code_status_ok_dict_stays_zero():
+    # 合法业务 status 不受影响（如 a2a 任务态 forwarded/cancelled）
+    result = SimpleNamespace(success=True, data={"status": "forwarded", "job_id": "j1"})
+    assert get_tool_exit_code(result, default=1) == 0
+
+
+def test_get_tool_error_fallback_chain():
+    assert get_tool_error({"ok": False, "error_summary": "down"}) == "down"
+    assert get_tool_error({"status": "error", "message": "boom"}) == "boom"
+    assert get_tool_error({"kind": "error", "content": "ctx missing"}) == "ctx missing"
+    assert get_tool_error({"status": "ok", "message": "hello"}) == ""
+    assert get_tool_error({"success": True, "message": "hello"}) == ""
+
+
+def test_get_tool_success_failure_signal_beats_lying_success():
+    assert get_tool_success({"success": True, "status": "error"}) is False
+    assert get_tool_success({"success": True, "ok": False}) is False
+    assert get_tool_success({"success": True, "error": "boom"}) is False
+    # "none" 是历史占位字面量，不算失败（与 circuit_breaker 判定一致）
+    assert get_tool_success({"success": True, "error": "none"}) is True
+    assert get_tool_success({"success": True, "results": [1]}) is True
+    assert get_tool_success(SimpleNamespace(success=True, data={"kind": "error"})) is False
+
+
+def test_explicit_failure_detector_covers_failure_signals():
+    from jiuwenswarm.server.runtime.skill_turbo.runtime.tool_utils import (
+        _is_explicit_failure,
+    )
+
+    assert _is_explicit_failure({"ok": False}) is True
+    assert _is_explicit_failure({"status": "failed"}) is True
+    assert _is_explicit_failure({"success": True, "kind": "error"}) is True
+    assert _is_explicit_failure({"success": True}) is False
+    assert _is_explicit_failure({"status": "forwarded"}) is False
