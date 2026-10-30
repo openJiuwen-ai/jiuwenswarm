@@ -2515,11 +2515,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                     teamGroupIdentityOverride={teamGroupIdentity}
                     onForkFromMessage={handleForkFromMessage}
                   />
-                  <WebUIHost
-                    slotId="conversation.input.above"
-                    sessionId={activeSessionId}
-                    className="mt-2 w-full"
-                  />
                   {shouldShowHumanShare && (
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
@@ -2624,6 +2619,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
+                <WebUIHost slotId="conversation.input.above" className="mb-2 w-full" />
                 <InputArea
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
@@ -2649,6 +2645,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
+                <WebUIHost slotId="conversation.input.below" className="mt-1 px-1" />
               </div>
               {topicStartersEnabled && <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
@@ -2738,6 +2735,7 @@ export const ChatPanel = React.memo(function ChatPanel({
               onClearGoal={onClearGoal}
             />
           )}
+          <WebUIHost slotId="conversation.input.above" className="mb-2 w-full" />
           <InputArea
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
@@ -2766,7 +2764,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
-          <WebUIHost slotId="conversation.input.below" sessionId={activeSessionId} className="mt-1 px-1" />
+          <WebUIHost slotId="conversation.input.below" className="mt-1 px-1" />
         </div>
       )}
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">

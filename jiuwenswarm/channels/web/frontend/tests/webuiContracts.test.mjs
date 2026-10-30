@@ -22,9 +22,9 @@ function checkProps(name, input = {}) {
   return error ? { error } : { value: rule.prepare ? rule.prepare(props) : props };
 }
 
-test('catalog contains the supported non-file components', () => {
+test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Box', 'Button', 'Card', 'Divider', 'Empty', 'Iframe', 'Image', 'Input',
+    'Box', 'Button', 'Card', 'Divider', 'Empty', 'FileTree', 'Iframe', 'Image', 'Input',
     'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
   assert.equal(componentCatalog.getSlot('application.entry'), undefined);

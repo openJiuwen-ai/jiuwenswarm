@@ -28,6 +28,7 @@ from agent_gateway.common.mode_matrix import (
 
 from e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.common.config import get_available_models, get_config
+from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
@@ -1504,6 +1505,13 @@ class AgentManager:
         if any(agent is cached for channel_agents in self.agents.values() for cached in channel_agents.values()):
             return self._borrow_agent(agent)
         return None
+
+    def get_session_workspace_paths(self, channel_id: str, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Read paths from the Agent owning a session, without allocating it."""
+        owner = self.get_agent_for_session_nowait(channel_id, session_id)
+        if owner is None:
+            return None
+        return owner.get_session_workspace_paths(session_id)
 
     def get_auto_permission_agent_for_session_nowait(
         self,
