@@ -280,7 +280,8 @@ class RuntimeSessionCoordinator:
                 handle.task = None
 
     def record_interaction(
-        self, session_id: str, request_id: str, control_ids: frozenset[str]
+        self, session_id: str, request_id: str, control_ids: frozenset[str],
+        *, on_execution: Callable[[SessionExecutionSnapshot], None] | None = None,
     ) -> bool:
         """Associate an interaction emitted inside an owned callback execution."""
         record = self._sessions.get(session_id)
@@ -295,6 +296,8 @@ class RuntimeSessionCoordinator:
             if handle.state is SessionExecutionState.RUNNING:
                 self._registry.mark_awaiting_control(handle, control_ids)
                 self._refresh_control_gate(record)
+                if on_execution is not None:
+                    on_execution(handle.snapshot())
                 return True
         return False
 
@@ -324,6 +327,7 @@ class RuntimeSessionCoordinator:
         operation: Callable[[], Awaitable[T]],
         *,
         interaction_ids: Callable[[T], frozenset[str]] | None = None,
+        on_execution: Callable[[SessionExecutionSnapshot], None] | None = None,
     ) -> T:
         """Deliver input to the running Session work without joining its lane."""
         record, parent, request_id = await self._claim_control_parent(
@@ -345,6 +349,8 @@ class RuntimeSessionCoordinator:
             handle.task = asyncio.current_task()
             self._registry.mark_running(handle)
             try:
+                if on_execution is not None:
+                    on_execution(handle.snapshot())
                 value = await operation()
             except asyncio.CancelledError as exc:
                 self._registry.mark_terminal(
@@ -407,6 +413,25 @@ class RuntimeSessionCoordinator:
             record, request_id
         ) or self._control_parent(record, request_id) is not None
 
+    def recoverable_control(
+        self, session_id: str, request_id: str, execution_id: str,
+    ) -> SessionExecutionSnapshot | None:
+        """Resolve an unclaimed control only within its proven execution lineage."""
+        record = self._sessions.get(session_id)
+        if record is None or record.state in {RuntimeSessionState.CLOSED, RuntimeSessionState.QUIESCING}:
+            return None
+        if self._is_control_claimed(record, request_id):
+            return None
+        owner = self._control_parent(record, request_id)
+        if owner is None or owner.execution_id in record.deliveries:
+            return None
+        ancestor = owner
+        while ancestor is not None and ancestor.session_id == session_id and ancestor.generation == record.generation:
+            if ancestor.execution_id == execution_id:
+                return owner.snapshot()
+            ancestor = self._registry.get(ancestor.parent_execution_id) if ancestor.parent_execution_id else None
+        return None
+
     def waiting_interactions(self, session_id: str, request_id: str) -> frozenset[str]:
         """Every interaction the execution an answer to ``request_id`` resumes waits on."""
         record = self._sessions.get(session_id)
@@ -434,6 +459,7 @@ class RuntimeSessionCoordinator:
         operation: Callable[[], AsyncIterator[T] | Awaitable[AsyncIterator[T]]],
         *,
         interaction_ids: Callable[[T], frozenset[str]] | None = None,
+        on_execution: Callable[[SessionExecutionSnapshot], None] | None = None,
     ) -> AsyncIterator[T]:
         """Stream a matching control operation without joining the work lane.
 
@@ -458,6 +484,8 @@ class RuntimeSessionCoordinator:
             handle.task = asyncio.current_task()
             self._registry.mark_running(handle)
             try:
+                if on_execution is not None:
+                    on_execution(handle.snapshot())
                 candidate = operation()
                 stream = await candidate if inspect.isawaitable(candidate) else candidate
                 try:
@@ -672,6 +700,9 @@ class RuntimeSessionCoordinator:
     ) -> AsyncIterator[T]:
         """Run the shared stream lifecycle for generic and Team entry points."""
         record = self._require_open_session(session_id)
+        team_target = None
+        if work_kind is SessionWorkKind.TEAM_CONTROL and team is not None and team.control_id:
+            team_target = self._control_target(record, (team.control_id,))
         handle = self._new_execution(
             record,
             request_id,
@@ -710,6 +741,10 @@ class RuntimeSessionCoordinator:
                 )
                 terminal_item = _StreamItem(error=exc, done=True)
             else:
+                if team_target is not None:
+                    parent, control_id = team_target
+                    if parent.team is not None:
+                        self._answered(parent, frozenset({control_id}), was_waiting=False)
                 if handle.waiting_control_ids:
                     self._registry.mark_waiting(handle)
                 else:
