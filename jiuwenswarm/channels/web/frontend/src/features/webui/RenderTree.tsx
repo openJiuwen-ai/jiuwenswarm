@@ -6,8 +6,8 @@
  */
 
 import { useState } from 'react';
-import { dispatchWebUIAction } from './actionBridge';
-import { WebUIRenderNode, WebUIRenderTarget } from './types';
+import { dispatchWebUINodeEvent } from './actionBridge';
+import { WebUIActionEvent, WebUIRenderNode, WebUIRenderTarget } from './types';
 
 const MAX_DEPTH = 8;
 
@@ -122,15 +122,16 @@ function tokenClass(map: Record<string, string>, props: Record<string, unknown>,
 export interface RenderTreeProps {
   node: WebUIRenderNode | null;
   target: WebUIRenderTarget;
+  revision: number;
 }
 
-export function RenderTree({ node, target }: RenderTreeProps) {
+export function RenderTree({ node, target, revision }: RenderTreeProps) {
   if (!node) {
     return null;
   }
   return (
     <div className="webui-render-tree flex flex-col gap-2" data-testid="webui-render-tree">
-      <RenderNodeView node={node} target={target} depth={1} />
+      <RenderNodeView node={node} target={target} revision={revision} nodeKey="0" depth={1} />
     </div>
   );
 }
@@ -138,14 +139,23 @@ export function RenderTree({ node, target }: RenderTreeProps) {
 interface RenderNodeProps {
   node: WebUIRenderNode;
   target: WebUIRenderTarget;
+  revision: number;
+  nodeKey: string;
   depth: number;
 }
 
-function RenderNodeView({ node, target, depth }: RenderNodeProps) {
+function RenderNodeView({ node, target, revision, nodeKey, depth }: RenderNodeProps) {
   const props = node.props ?? {};
   const children = node.children ?? [];
-  const actionId = node.action?.id ?? '';
-  const actionArgs = node.action?.args ?? {};
+  const event: WebUIActionEvent = node.events
+    ? node.component === 'Button' ? 'ui.click' : 'ui.change'
+    : node.component === 'TextField' ? 'ui.input' : node.component === 'CheckBox' ? 'ui.toggle'
+      : node.component === 'MultipleChoice' || node.component === 'Slider' ? 'ui.select' : 'ui.press';
+  const actionId = (node.events ? node.events[event] : node.action)?.id ?? '';
+  const dispatch = (data: Record<string, unknown> = {}) => {
+    const eventData = node.events && node.component === 'Slider' ? { value: data.value } : data;
+    void dispatchWebUINodeEvent(node, event, target, revision, nodeKey, eventData);
+  };
 
   if (depth > MAX_DEPTH) {
     return null;
@@ -153,7 +163,8 @@ function RenderNodeView({ node, target, depth }: RenderNodeProps) {
 
   const renderChildren = () =>
     children.map((child, index) => (
-      <RenderNodeView key={`${child.component}-${index}`} node={child} target={target} depth={depth + 1} />
+      <RenderNodeView key={`${child.component}-${index}`} node={child} target={target}
+        revision={revision} nodeKey={`${nodeKey}.${index}`} depth={depth + 1} />
     ));
 
   switch (node.component) {
@@ -304,7 +315,7 @@ function RenderNodeView({ node, target, depth }: RenderNodeProps) {
           disabled={readFlag(props, 'disabled')}
           onClick={
             actionId
-              ? () => void dispatchWebUIAction('ui.press', target, { action_id: actionId, args: actionArgs })
+              ? () => dispatch()
               : undefined
           }
           className={`rounded ${tokenClass(BUTTON_VARIANT_CLASS, props, 'variant', 'default')} ${tokenClass(
@@ -329,8 +340,7 @@ function RenderNodeView({ node, target, depth }: RenderNodeProps) {
           maxLength={readNumber(props, 'max_length', 0)}
           disabled={readFlag(props, 'disabled')}
           actionId={actionId}
-          actionArgs={actionArgs}
-          target={target}
+          dispatch={dispatch}
         />
       );
     case 'CheckBox':
@@ -341,8 +351,7 @@ function RenderNodeView({ node, target, depth }: RenderNodeProps) {
           checked={readFlag(props, 'checked')}
           disabled={readFlag(props, 'disabled')}
           actionId={actionId}
-          actionArgs={actionArgs}
-          target={target}
+          dispatch={dispatch}
         />
       );
     case 'MultipleChoice':
@@ -354,8 +363,7 @@ function RenderNodeView({ node, target, depth }: RenderNodeProps) {
           multiple={readFlag(props, 'multiple')}
           disabled={readFlag(props, 'disabled')}
           actionId={actionId}
-          actionArgs={actionArgs}
-          target={target}
+          dispatch={dispatch}
         />
       );
     case 'Slider':
@@ -369,8 +377,7 @@ function RenderNodeView({ node, target, depth }: RenderNodeProps) {
           initialValue={readNumber(props, 'value', 0)}
           disabled={readFlag(props, 'disabled')}
           actionId={actionId}
-          actionArgs={actionArgs}
-          target={target}
+          dispatch={dispatch}
         />
       );
     case 'List': {
@@ -391,7 +398,7 @@ function RenderNodeView({ node, target, depth }: RenderNodeProps) {
                 } ${actionId ? 'cursor-pointer hover:bg-bg-hover' : ''}`}
                 onClick={
                   actionId
-                    ? () => void dispatchWebUIAction('ui.press', target, { action_id: actionId, args: { ...actionArgs, key } })
+                    ? () => dispatch({ key })
                     : undefined
                 }
                 data-testid="webui-list-item"
@@ -441,8 +448,7 @@ interface InteractiveProps {
   name: string;
   disabled: boolean;
   actionId: string;
-  actionArgs: Record<string, unknown>;
-  target: WebUIRenderTarget;
+  dispatch: (data: Record<string, unknown>) => void;
 }
 
 function TextFieldNode({
@@ -452,13 +458,12 @@ function TextFieldNode({
   maxLength,
   disabled,
   actionId,
-  actionArgs,
-  target,
+  dispatch,
 }: InteractiveProps & { placeholder: string; initialValue: string; maxLength: number }) {
   const [value, setValue] = useState(initialValue);
   const submit = () => {
     if (actionId) {
-      void dispatchWebUIAction('ui.input', target, { action_id: actionId, name, value, args: actionArgs });
+      dispatch({ name, value });
     }
   };
   return (
@@ -488,8 +493,7 @@ function CheckBoxNode({
   checked,
   disabled,
   actionId,
-  actionArgs,
-  target,
+  dispatch,
 }: InteractiveProps & { label: string; checked: boolean }) {
   return (
     <label className="inline-flex items-center gap-2 text-sm text-text" data-testid="webui-checkbox" data-variant={name || 'unnamed'}>
@@ -499,11 +503,9 @@ function CheckBoxNode({
         disabled={disabled}
         onChange={(event) => {
           if (actionId) {
-            void dispatchWebUIAction('ui.toggle', target, {
-              action_id: actionId,
+            dispatch({
               name,
               checked: event.target.checked,
-              args: actionArgs,
             });
           }
         }}
@@ -520,8 +522,7 @@ function MultipleChoiceNode({
   multiple,
   disabled,
   actionId,
-  actionArgs,
-  target,
+  dispatch,
 }: InteractiveProps & {
   options: Record<string, unknown>[];
   selected: string[];
@@ -536,7 +537,7 @@ function MultipleChoiceNode({
         ? selected.filter((item) => item !== value)
         : [...selected, value]
       : [value];
-    void dispatchWebUIAction('ui.select', target, { action_id: actionId, name, value: next, args: actionArgs });
+    dispatch({ name, value: next });
   };
 
   if (!multiple) {
@@ -592,13 +593,12 @@ function SliderNode({
   initialValue,
   disabled,
   actionId,
-  actionArgs,
-  target,
+  dispatch,
 }: InteractiveProps & { min: number; max: number; step: number; initialValue: number }) {
   const [value, setValue] = useState(initialValue);
   const commit = (next: number) => {
     if (actionId) {
-      void dispatchWebUIAction('ui.select', target, { action_id: actionId, name, value: next, args: actionArgs });
+      dispatch({ name, value: next });
     }
   };
   return (

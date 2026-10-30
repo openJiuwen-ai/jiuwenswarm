@@ -18,6 +18,11 @@ class WebUIEvent(StrEnum):
     TOGGLE = "ui.toggle"
     INPUT = "ui.input"
     SELECT = "ui.select"
+    CLICK = "ui.click"
+    CHANGE = "ui.change"
+    PRESS_ENTER = "ui.press_enter"
+    SEARCH = "ui.search"
+    CLEAR = "ui.clear"
 
 
 # Downstream frames consumed by the browser.
@@ -33,6 +38,11 @@ UPSTREAM_EVENTS: Final[frozenset[str]] = frozenset(
         WebUIEvent.TOGGLE.value,
         WebUIEvent.INPUT.value,
         WebUIEvent.SELECT.value,
+        WebUIEvent.CLICK.value,
+        WebUIEvent.CHANGE.value,
+        WebUIEvent.PRESS_ENTER.value,
+        WebUIEvent.SEARCH.value,
+        WebUIEvent.CLEAR.value,
     }
 )
 
@@ -92,6 +102,7 @@ STYLE_TOKENS: Final[Mapping[str, frozenset[str]]] = {
 
 # Size limits: the first four match the existing wire truncation budget.
 MAX_DEPTH: Final[int] = 8
+MAX_PROP_DEPTH: Final[int] = MAX_DEPTH * 3
 MAX_LIST_ITEMS: Final[int] = 100
 MAX_TEXT_BYTES: Final[int] = 16 * 1024
 MAX_NODES: Final[int] = 512

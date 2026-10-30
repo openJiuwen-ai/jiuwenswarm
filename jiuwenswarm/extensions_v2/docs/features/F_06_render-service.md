@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-06 渲染服务与下行帧 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{models,schema,constants,registry,transport}.py`、`webui/core_handlers/render_core.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-30 |
 | 方案状态 | 已实现；重连重发未实现 |
 
 ## 1. 问题与目标
@@ -58,17 +58,22 @@ flowchart LR
 | 类型 | 字段 | 说明 |
 | --- | --- | --- |
 | `RenderTarget` | `session_id`、`slot_id`、`package_id`、`instance_key` | 实例四元组；`key` 用 `|` 拼接 |
-| `RenderNode` | `component`、`props`、`children`、`action` | 渲染树节点，组件名区分大小写 |
+| `RenderNode` | `component`、`props`、`children`、`action`、`events` | 渲染树节点，组件名区分大小写；action 与 events 不能同时声明 |
 | `UiRenderInput` | `target`、`root`、`mode` | `mode` 为 `replace` 或 `clear` |
 | `UiRenderOutput` | `status`、`revision` | `delivered`、`rejected` 或 `delivery_failed` |
 | `RenderFrame` | `target`、`revision`、`mode`、`root`、`schema_version` | 下行 `webui.render` 载荷 |
 | `ClearFrame` | `target`、`revision`、`reason` | 独立 `webui.render.clear` 载荷 |
 
 `revision` 按实例递增，不跨实例比较；`instance_key` 由插件在请求中给出，用于同一包在同一槽位创建多个实例。
+节点序列化递归处理 `children` 和 Tabs 的内容节点。registry 在 commit 时保存独立的只读树快照，
+插件随后修改原始 props、args 或 events 不会改变当前 revision 的声明。
 
 ### 3.3 组件与样式白名单
 
-组件名与前端 `RenderTree.tsx` 的 `switch` 一一对应：
+组件属性与事件数据规则见
+[组件规约](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)，
+后端规则定义在 `webui/component_rules.py`。组件是否可显示取决于前端对应渲染器的注册。
+此外，后端保留以下组件与原有属性的校验：
 
 | 类别 | 组件 |
 | --- | --- |
@@ -76,7 +81,8 @@ flowchart LR
 | 基础 | `Divider`、`Text`、`Icon`、`Badge`、`Progress` |
 | 交互 | `Button`、`TextField`、`CheckBox`、`MultipleChoice`、`Slider`、`List` |
 
-每个组件只允许声明的 props；未声明的 props 会让整棵树被拒绝，而不是忽略。样式只接受 token，例如 `variant`、`tone`、`size`、`gap`、`padding`、`density`、`align`、`justify`、`weight`、`spacing`、`axis`，插件不能直接写颜色、像素或 CSS。
+每个组件只允许声明的 props；未声明的 props 会让整棵树被拒绝，而不是忽略。
+原有组件的样式只接受 token，例如 `variant`、`tone`、`size`、`gap`、`padding`、`density`、`align`、`justify`、`weight`、`spacing`、`axis`；其他组件以各自规则为准。
 
 ### 3.4 规模限制
 
@@ -92,6 +98,7 @@ flowchart LR
 | `target` 字符串 | 200 字节 |
 
 超限统一拒绝并返回 `SCHEMA_ERROR`，不做截断。
+Tabs 的全部内容节点共享深度与节点数预算，隐藏内容也参与计数；Panel 和 Iframe 不能嵌套为普通子节点。
 
 ## 4. 处理流程
 
@@ -184,6 +191,7 @@ stateDiagram-v2
 验证入口：
 
 - `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`
+- `tests/unit_tests/extensions_v2/webui/test_webui_events.py`
 - `tests/unit_tests/channel/test_web_channel_webui_payload.py`
 
 覆盖内容：
@@ -195,6 +203,7 @@ stateDiagram-v2
 - 包卸载清理该包视图。
 - 容量淘汰在新帧送达后发生。
 - WebClient 透传帧时保留完整 payload。
+- 组件属性、事件声明、Tabs 隐藏内容预算及只读树快照。
 
 当前执行结果：上述用例通过。重连重发未实现，EXTV2-06-V-04 未验证。
 

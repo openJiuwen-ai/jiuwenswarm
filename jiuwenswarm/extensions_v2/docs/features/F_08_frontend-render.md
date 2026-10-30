@@ -30,17 +30,17 @@
 - 接入适配：可注入的 `WebUICatalog`、`WebUIRendererRegistry` 与 `WebUIClientLike`；WebClient 传输适配与 Mock 传输。
 - 独立验证：demo 目录、demo 适配器、测试夹具与四组模块测试；`package.json` 新增四条测试脚本。
 
-沿用旧链路（仍为当前生产入口，本批不迁移）：`webuiStore`、`useWebUIRender`、`WebUISlotHost`、`RenderTree`、`actionBridge` 与 `test:webui-store`。
+当前生产入口使用 `webuiStore`、`useWebUIRender`、`WebUISlotHost`、`RenderTree` 和 `actionBridge`，由 `test:webui-store` 覆盖存储行为。
 
-组件契约准备模块已从完成分支提取，包含独立目录、事件数据规则和属性校验器，尚未替换上述生产入口或既有 action 消费方。
-本组范围、来源裁减与验证记录见 [F_01 组件接入](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md)，
+组件契约模块包含独立目录、事件数据规则和属性校验器。模块职责见
+[F_01 组件目录与属性校验](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md)，
 规则边界见 [S_01 组件规则](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
 
 ### 2.2 非目标
 
 - 不新增或修改后端事件、Ops 方法、槽位与文件服务；使用既有下行事件与 `webui.dispatch` 上行方法。
 - 不启用新的页面入口，不迁移 `App.tsx`、`ChatPanel` 等生产挂载点；旧入口与旧测试保留。
-- 不实现 Ant Design 等实际组件适配，本批只提供可注入注册表、组件契约和 demo 适配器。
+- 提供可注入注册表、组件契约和 demo 适配器；不包含 Ant Design 等实际组件适配。
 - 不实现加载态、空态样式、离线缓存、跨标签页同步与真实插件端到端联调。
 
 ## 3. 总体设计
@@ -181,16 +181,16 @@ React 宿主接口：
 
 ## 5. 组件与样式映射
 
-### 5.1 新运行时（本批）
+### 5.1 独立运行时
 
 - 组件名、props 规则、默认值、是否允许子节点与 action、上行事件由 `WebUICatalog` 描述；组件目录在初始化时校验重复项、交互组件缺少事件和默认值未声明。
 - `WebUIRendererRegistry` 只在组装时创建一次，运行期不做全局注册；`WebUIProvider` 要求目录与注册表精确对应，缺失适配器或多余适配器都会在子树挂载前抛错。
 - `SchemaRenderer` 按节点 `component` 查注册表并递归渲染；适配器只接收节点、子内容、实例上下文与 `dispatch`，不接触 Runtime、通信客户端或完整实例快照。
-- 本批只提供 demo 目录与 demo 适配器用于模块测试，实际组件适配与样式 token 映射在后续批次接入。
+- demo 目录与 demo 适配器用于模块测试，实际组件与样式 token 映射由宿主适配器提供。
 
 ### 5.2 旧链路（现行生产）
 
-旧链路仍使用下列白名单组件与样式 token 映射，本批不修改其行为：
+现行生产链路使用下列白名单组件与样式 token 映射：
 
 | 组件 | 主要 props | 行为 |
 | --- | --- | --- |
@@ -242,20 +242,10 @@ React 宿主接口：
 | F-08-V-06 | 实例级消费者与范围消费者混合释放 | 运行时测试 | 只删除不再被剩余消费者覆盖的实例 |
 | F-08-V-07 | 内容 `clear` 后重连 | 运行时测试 | 按消费者原实例键重发 `ui.ready`，不变成空实例键 |
 
-### 8.2 实际执行与证据
+### 8.2 验证入口
 
-| 执行日期 / 验证范围 | 实现版本与环境 | 命令 / 复现步骤 | 实际结果 | 未覆盖项 |
-| --- | --- | --- | --- | --- |
-| 2026-10-30 / 四组模块测试 | 本方案实现（2026-10-30 工作区版本），Node v24.20.0，依赖取目标分支 lockfile | `npm run test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer` | 通过：13 + 18 + 6 + 13 = 50 项，0 失败 | 未做真实插件端到端联调 |
-| 2026-10-30 / 旧链路回归 | 同上，Node v24.20.0，依赖取目标分支 lockfile | `npm run test:webui-store` | 通过：10 项 | 仅旧 store 模块 |
-| 2026-10-30 / 前端打包 | 同上 | `node node_modules/vite/bin/vite.js build` | 通过（Vite 5.4.21，约 39s） | 只证明可构建，不代表生产入口已接入 |
-| 2026-10-30 / 定向复现评审问题 | 同上 | Runtime/JSDOM 新增用例：clear 重建、payload 去重、混合释放、clear 后重连 | 通过：见 8.1 的 V-04 至 V-07 | 未覆盖真实后端恢复链路 |
-
-### 8.3 验证结论
-
-- 已证明范围：协议校验与规范化、实例提交与通知、挂载所有权释放、上行校验与去重、显示确认与失败反馈、`clear` 后同 revision 重建、重连就绪身份，均在模块与 JSDOM 测试中通过；前端可构建。
-- 未覆盖或未通过的承诺：新运行时未接入生产页面，未进行真实插件与后端联调；加载态、空态样式与真实恢复链路未验收。
-- 可支持的交付判断：可作为 WebUI 前端运行时底座交付并进行评审；上线切换仍依赖后续入口迁移与联调。
+前端目录下执行 `npm run test:webui-protocol`、`npm run test:webui-runtime`、
+`npm run test:webui-transport`、`npm run test:webui-renderer` 和 `npm run test:webui-store`。
 
 ## 9. 风险与遗留
 
@@ -264,14 +254,3 @@ React 宿主接口：
 - **去重键序列化（有意取舍）**：去重使用 `JSON.stringify` 比较参数与 payload，键顺序不同会被视为不同请求；如果后续适配器产生不稳定键顺序，需要改为稳定序列化。
 - **显示确认仅本地（未联调）**：`displayedRevision` 只保存在前端运行时，未接入后端显示回执事件；跨端显示语义需要另行确认。
 - **真实恢复链路（未验证）**：`ui.ready` 的重连重发只验证到请求构造，插件端是否按实例键恢复轮次视图需要真实联调。
-
-## 10. 设计演进与修订
-
-### 2026-10-30 clear 重建、释放覆盖与重连就绪语义修正
-
-- 原结论与适用范围：3.2、3.4、4.2 的原实现只用 `revision` 作为 React 重挂载、显示确认与失败反馈的归属依据；`release` 在范围仍有其他消费者时直接返回；`clear` 会删除消费者的就绪实例键。
-- 新证据与原因：评审用额外 Runtime/JSDOM 用例复现四个问题——(1) `clear` 后按相同 `revision` 重建时 React 复用旧树，局部状态与旧错误被继承、显示确认停在 0；(2) 去重键缺少 `payload` 与当前帧，连续提交不同输入被误判为重复；(3) 实例级消费者释放后未覆盖实例仍留在运行时可继续派发；(4) `clear` 删除就绪身份后，重连把消息级实例上报为空实例键。
-- 最终变化：引入并启用 `localFrameId` 作为渲染代次与反馈归属；去重键加入 `frameRevision` 与提交数据；`release` 按剩余消费者覆盖范围清理实例；`clear` 保留消费者就绪身份，重连按原实例键重发。
-- 旧结论的效力：`revision` 仍是后端帧版本与实例内去重依据，但不再单独承担 React 代次与反馈归属；原 3.2、3.4、4.2 的相关描述已按本节更新。
-- 影响与同步：同步更新 `runtime/types.ts`、`createWebUIRuntime.ts`、`WebUIInstanceView.tsx` 及运行时/渲染测试；本方案与开发计划 EXTV2-08 条目同步。
-- 验证：四组模块测试 50 项与旧 store 10 项通过，Vite 构建通过；未做真实插件联调。

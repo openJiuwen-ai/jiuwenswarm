@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+
+const componentCases = JSON.parse(readFileSync(new URL('./fixtures/webuiComponentCases.json', import.meta.url), 'utf8'));
 import {
   checkPropValue,
   componentCatalog,
@@ -51,39 +54,7 @@ test('Box keeps source layout defaults and supports column direction', () => {
   assert.equal(componentCatalog.getComponent('Box').events, undefined);
 });
 
-const invalid = [
-  ['Box', { direction: 'diagonal' }], ['Box', { flex: -1 }], ['Box', { padding: 'sm' }],
-  ['Box', { style: { color: 'red' } }], ['Text', { value: 'x'.repeat(16 * 1024 + 1) }],
-  ['Input', { value: 1 }], ['Input', { maxLength: 1, defaultValue: 'long' }],
-  ['Input', { value: 'valid', defaultValue: 8 }], ['Input', { variant: 'wrong' }], ['Input', { onChange: 'code' }],
-  ['Switch', { checked: null }], ['Switch', { size: 'default' }],
-  ['Select', {}], ['Select', { options: [{ value: 'a', label: 'A', render: true }] }],
-  ['Select', { options: [{ value: 'a', label: 'A' }, { value: 2, label: 'B' }] }],
-  ['Select', { options: [{ value: '', label: '' }] }], ['Select', { options: [], value: 'missing' }],
-  ['Select', { options: [], mode: 'multiple', value: null }],
-  ['Select', { options: [], mode: 'tags', value: [1] }],
-  ['Select', { options: [], mode: 'tags', value: ['a', 'a'] }],
-  ['Select', { options: [], mode: 'tags', maxCount: 1, value: ['a', 'b'] }],
-  ['TreeSelect', { treeData: [{ value: 'a', title: 'A', children: [{ value: 'a', title: 'Again' }] }] }],
-  ['TreeSelect', { treeData: [{ value: 'a', title: 'A', key: 'shared' }, { value: 'b', title: 'B', key: 'shared' }] }],
-  ['TreeSelect', { treeData: [], treeCheckable: true, multiple: false }],
-  ['TreeSelect', { treeData: [], treeDefaultExpandedKeys: ['missing'] }],
-  ['TreeSelect', { treeData: [{ value: 'a', title: 'A' }], treeDefaultExpandAll: true, treeDefaultExpandedKeys: ['a'] }],
-  ['Slider', { min: 10, max: 0 }], ['Slider', { step: 0 }], ['Slider', { step: 3 }], ['Slider', { value: 1.5 }],
-  ['Slider', { dots: true, value: 50 }], ['Slider', { marks: { 101: 'bad' } }],
-  ['Slider', { marks: { 1: 'one', '01': 'duplicate' } }], ['Slider', { range: true }],
-  ['Tabs', { items: [{ key: 'a', label: 'A' }, { key: 'a', label: 'Again' }] }],
-  ['Tabs', { items: [{ key: 'a', label: 'A', disabled: true }], activeKey: 'a' }],
-  ['Image', { src: 'javascript:alert(1)' }], ['Image', { src: 'a.png', width: 'calc(100% - 1px)' }],
-  ['Image', { src: 'a.png', width: '101%' }], ['Image', { src: 'a.png', width: 4097 }],
-  ['Image', { src: 'a.png', preview: { src: 'a.png', onOpenChange: 'code' } }],
-  ['Empty', { imageStyle: {} }], ['Empty', { image: 'data:image/png;base64,a' }],
-  ['Card', { actions: [] }], ['Card', { children: [] }], ['Card', { extra: {} }],
-  ['Divider', { orientation: 'vertical', children: 'Title' }],
-  ['Tag', { color: '#ff0000' }], ['Tag', { href: 'java\nscript:alert(1)' }],
-  ['Panel', { title: ' ' }], ['Iframe', { title: 'Preview', src: 'https://user:pass@example.com' }],
-  ['Iframe', { title: 'Preview', src: '///example.com' }], ['Iframe', { src: 'https://example.com' }],
-];
+const invalid = componentCases.invalid;
 
 for (const [index, [name, props]] of invalid.entries()) {
   test(`rejects invalid ${name} props (${index + 1})`, () => {
@@ -91,18 +62,7 @@ for (const [index, [name, props]] of invalid.entries()) {
   });
 }
 
-const valid = [
-  ['Text', { value: 'hello' }], ['Button', { label: 'Confirm', disabled: true }],
-  ['Input', { value: '', maxLength: 0 }], ['Switch', { checked: false, defaultChecked: true }],
-  ['Select', { options: [], value: null }], ['Select', { options: [], mode: 'tags', value: ['custom'] }],
-  ['TreeSelect', { treeData: [], multiple: true, value: [] }], ['Tabs', { items: [] }],
-  ['Slider', { min: 0, max: 1, step: 0.1, value: 0.3 }],
-  ['Slider', { step: 10, dots: true, marks: { 15: '15' }, value: 15 }],
-  ['Image', { src: 'a.png', width: '100%', height: 4096 }], ['Empty', { image: 'simple' }],
-  ['Card', { title: 'Title', cover: 'cover.png' }], ['Divider', { children: 'Title' }],
-  ['Tag', { href: 'https://example.com', color: 'success' }], ['Panel', { title: 'Panel' }],
-  ['Iframe', { title: 'Preview', src: '/preview' }],
-];
+const valid = componentCases.valid;
 
 for (const [index, [name, props]] of valid.entries()) {
   test(`accepts valid ${name} props (${index + 1})`, () => {

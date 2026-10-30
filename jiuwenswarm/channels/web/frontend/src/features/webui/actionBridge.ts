@@ -3,7 +3,7 @@
  */
 
 import { webClient } from '../../services/webClient';
-import { WebUIActionEvent, WebUIRenderTarget } from './types';
+import { WebUIActionEvent, WebUIRenderNode, WebUIRenderTarget } from './types';
 
 const inFlight = new Set<string>();
 
@@ -15,8 +15,30 @@ function actionKey(event: WebUIActionEvent, target: WebUIRenderTarget, payload: 
     target.instance_key,
     event,
     String(payload.action_id ?? ''),
-    JSON.stringify(payload.args ?? {}),
+    JSON.stringify(payload),
   ].join('|');
+}
+
+/** Use declarations from the rendered node; caller data cannot overwrite its identity. */
+export async function dispatchWebUINodeEvent(
+  node: WebUIRenderNode,
+  event: WebUIActionEvent,
+  target: WebUIRenderTarget,
+  revision: number,
+  nodeKey: string,
+  data: Record<string, unknown> = {},
+): Promise<void> {
+  const declaration = node.events ? node.events[event] : node.action;
+  if (!declaration || node.props?.disabled === true) {
+    return;
+  }
+  await dispatchWebUIAction(event, target, {
+    node_key: nodeKey,
+    revision,
+    action_id: declaration.id,
+    args: declaration.args ?? {},
+    data,
+  });
 }
 
 /** 派发一次 UI 交互；重复点击在首次请求返回前被忽略。 */

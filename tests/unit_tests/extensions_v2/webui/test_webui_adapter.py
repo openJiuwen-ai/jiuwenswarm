@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.events import Event, SessionContext
@@ -11,6 +13,8 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.event_types.context_usage import CONTEXT_USAGE_EVENT, ContextUsageUpdate
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.webui.constants import CODE_SESSION_MISMATCH, CODE_TARGET_INACTIVE
+from jiuwenswarm.extensions_v2.webui.contributions import UiCatalog, UiContribution
+from jiuwenswarm.extensions_v2.webui.models import UiActionOutput
 
 
 class FakeServer:
@@ -20,6 +24,58 @@ class FakeServer:
     async def send_push(self, message) -> bool:
         self.messages.append(message)
         return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes,code", [
+    ({"event": ["ui.click"]}, "SCHEMA_ERROR"),
+    ({"payload": []}, "SCHEMA_ERROR"),
+    ({"payload": None}, "SCHEMA_ERROR"),
+    ({"target": []}, "SCHEMA_ERROR"),
+    ({"target": {"slot_id": 1}}, "SCHEMA_ERROR"),
+    ({"target": {"slot_id": "conversation.input.below", "package_id": False}}, "SCHEMA_ERROR"),
+    ({"target": {"slot_id": "conversation.input.below", "unknown": "field"}}, "SCHEMA_ERROR"),
+    ({"session_id": 1}, "SCHEMA_ERROR"),
+    ({"session_id": "other"}, "SESSION_MISMATCH"),
+    ({"target": {"session_id": "other", "slot_id": "conversation.input.below"}}, "SESSION_MISMATCH"),
+    ({"target": {"slot_id": "conversation.input.below", "package_id": "spoofed"}}, "NO_CONTRIBUTION"),
+])
+async def test_invalid_adapter_requests_do_not_dispatch(monkeypatch, changes, code):
+    catalog = UiCatalog(items=(UiContribution("pkg.demo", "web.slot.contribution", "main", "conversation.input.below"),))
+    dispatch = AsyncMock(return_value=UiActionOutput(True, "handled"))
+    runtime = SimpleNamespace(catalog=lambda: SimpleNamespace(current=lambda: catalog), dispatch=dispatch)
+    monkeypatch.setattr(assembly, "get_webui_runtime", lambda: runtime)
+    params = {
+        "event": "ui.click", "session_id": "s1",
+        "target": {"slot_id": "conversation.input.below", "package_id": "pkg.demo", "instance_key": "main"},
+        "payload": {"node_key": "0", "revision": 1, "action_id": "refresh", "args": {}, "data": {}},
+    }
+    params.update(changes)
+    response = await WebUIDispatchAdapter().handle(AgentRequest(
+        request_id="invalid", session_id="s1", channel_id="web", req_method=ReqMethod.WEBUI_DISPATCH, params=params,
+    ))
+    assert response.payload["code"] == code
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adapter_preserves_component_event_data_and_receipt(monkeypatch):
+    catalog = UiCatalog(items=(UiContribution("pkg.demo", "web.slot.contribution", "main", "conversation.input.below"),))
+    dispatch = AsyncMock(return_value=UiActionOutput(True, "updated"))
+    runtime = SimpleNamespace(catalog=lambda: SimpleNamespace(current=lambda: catalog), dispatch=dispatch)
+    monkeypatch.setattr(assembly, "get_webui_runtime", lambda: runtime)
+    payload = {"node_key": "0.1", "revision": 3, "action_id": "edit", "args": {"id": 5},
+               "data": {"value": "Beijing", "isComposing": False}}
+    response = await WebUIDispatchAdapter().handle(AgentRequest(
+        request_id="valid", session_id="s1", channel_id="web", user_id="user",
+        req_method=ReqMethod.WEBUI_DISPATCH,
+        params={"event": "ui.change", "target": {"slot_id": "conversation.input.below", "package_id": "pkg.demo", "instance_key": "main"},
+                "payload": payload},
+    ))
+    assert response.ok and response.payload == {"event": "ui.change", "accepted": True, "status": "updated"}
+    action = dispatch.call_args.args[0]
+    assert action.target.session_id == "s1" and action.payload == payload
+    assert dispatch.call_args.kwargs == {"user_id": "user", "channel_id": "web"}
 
 
 @pytest.mark.asyncio
