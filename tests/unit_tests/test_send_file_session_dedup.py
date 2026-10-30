@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -72,6 +73,117 @@ def test_send_file_skips_duplicate_after_success(tmp_path, monkeypatch):
     assert "成功发送" in first
     assert "跳过重复投递" in second
     assert mock_server.send_push.await_count == 1
+
+
+def test_send_file_force_resends_after_duplicate(tmp_path, monkeypatch):
+    file_path = tmp_path / "ai_chip_report.md"
+    file_path.write_text("hello", encoding="utf-8")
+
+    toolkit = SendFileToolkit(
+        request_id="r-resend",
+        session_id="sess-resend",
+        channel_id="officeclaw",
+    )
+    mock_server = MagicMock()
+    mock_server.send_push = AsyncMock(return_value=1)
+
+    class _FakeAgentWebSocketServer:
+        @staticmethod
+        def get_instance():
+            return mock_server
+
+    monkeypatch.setitem(
+        sys.modules,
+        "jiuwenswarm.server.agent_ws_server",
+        types.SimpleNamespace(AgentWebSocketServer=_FakeAgentWebSocketServer),
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        first = asyncio.run(toolkit.send_file(str(file_path)))
+        second = asyncio.run(toolkit.send_file(str(file_path)))
+        third = asyncio.run(toolkit.send_file(str(file_path), force=True))
+
+    assert "成功发送" in first
+    assert "跳过重复投递" in second
+    assert "成功发送" in third
+    assert mock_server.send_push.await_count == 2
+
+
+def test_duplicate_skip_returns_a_usable_file_reference(tmp_path, monkeypatch):
+    file_path = tmp_path / "ai_chip_report.html"
+    file_path.write_text("<html></html>", encoding="utf-8")
+
+    toolkit = SendFileToolkit(
+        request_id="r-skip",
+        session_id="sess-skip",
+        channel_id="officeclaw",
+    )
+    mock_server = MagicMock()
+    mock_server.send_push = AsyncMock(return_value=1)
+
+    class _FakeAgentWebSocketServer:
+        @staticmethod
+        def get_instance():
+            return mock_server
+
+    monkeypatch.setitem(
+        sys.modules,
+        "jiuwenswarm.server.agent_ws_server",
+        types.SimpleNamespace(AgentWebSocketServer=_FakeAgentWebSocketServer),
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ), patch(
+        "jiuwenswarm.agents.harness.common.tools.web_file_download.build_file_download_info",
+        return_value={"download_url": "https://example.test/file", "size": 5},
+    ) as build_info:
+        asyncio.run(toolkit.send_file(str(file_path)))
+        build_info.reset_mock()
+        skipped = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "跳过重复投递" in skipped
+    assert "https://example.test/file" in skipped
+    assert build_info.call_count == 1
+
+
+def test_duplicate_skip_falls_back_to_path_when_link_generation_fails(tmp_path, monkeypatch):
+    file_path = tmp_path / "ai_chip_report.md"
+    file_path.write_text("hello", encoding="utf-8")
+
+    toolkit = SendFileToolkit(
+        request_id="r-skip-fallback",
+        session_id="sess-skip-fallback",
+        channel_id="officeclaw",
+    )
+    mock_server = MagicMock()
+    mock_server.send_push = AsyncMock(return_value=1)
+
+    class _FakeAgentWebSocketServer:
+        @staticmethod
+        def get_instance():
+            return mock_server
+
+    monkeypatch.setitem(
+        sys.modules,
+        "jiuwenswarm.server.agent_ws_server",
+        types.SimpleNamespace(AgentWebSocketServer=_FakeAgentWebSocketServer),
+    )
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ), patch(
+        "jiuwenswarm.agents.harness.common.tools.web_file_download.build_file_download_info",
+        side_effect=RuntimeError("download token unavailable"),
+    ):
+        asyncio.run(toolkit.send_file(str(file_path)))
+        skipped = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "跳过重复投递" in skipped
+    assert str(file_path) in skipped
+    assert "https://" not in skipped
 
 
 def test_send_file_fails_when_send_push_delivers_zero(tmp_path, monkeypatch):
@@ -151,3 +263,21 @@ def test_send_file_succeeds_when_append_history_raises(tmp_path, monkeypatch):
     assert new_paths == []
     assert skipped == [str(file_path)]
     assert mock_server.send_push.await_count == 1
+
+
+def test_all_missing_files_return_non_retryable_contract(tmp_path):
+    toolkit = SendFileToolkit(
+        request_id="r-missing",
+        session_id="sess-missing",
+        channel_id="web",
+    )
+    missing = tmp_path / "ai_chip_report.md"
+
+    result = asyncio.run(toolkit.send_file(str(missing)))
+
+    payload = json.loads(result)
+    assert payload["contract"] == "jiuwenswarm.non_retryable.v1"
+    assert payload["success"] is False
+    assert payload["retryable"] is False
+    assert payload["suggested_tool"] == "read_file"
+    assert "ai_chip_report.md" in payload["error"]
