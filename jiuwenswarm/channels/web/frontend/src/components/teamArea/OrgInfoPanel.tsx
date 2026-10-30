@@ -6,6 +6,9 @@
  * （organization_id / display_name / owner_team_id / leaders / metadata），
  * tasks 是 OrgTask.brief() 的列表。
  *
+ * 列表层级：主团（owner team）与根任务置顶并保持原尺寸；子团 / 非根任务排在
+ * 后面，略微缩小并右对齐（左侧缩进），用尺寸与缩进体现从属关系。
+ *
  * 面板先解析当前会话的 Team，再查询组织。相关事件触发刷新，低频刷新兜底，
  * 请求与订阅只在实验开关开启且面板挂载时启用。
  */
@@ -105,6 +108,11 @@ function formatUpdatedAt(value: number | string | null | undefined): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
+/** 根任务 = 无父任务（NULL 或历史空串），与后端 task_pool 的 _is_root_task_row 判定一致。 */
+function isRootOrgTask(task: OrgTaskBrief): boolean {
+  return !task.parent_task_id?.trim();
+}
+
 function InfoRow({ label, value, title, testId }: { label: string; value?: string | null; title?: string; testId?: string }) {
   if (!value) return null;
   return (
@@ -138,8 +146,22 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
     [runtimeTeams],
   );
 
-  const ownerTeam = organization?.owner_team_id ? runtimeTeamById.get(organization.owner_team_id) : undefined;
-  const ownerName = resolveOrganizationTeamLabel(ownerTeam, groups, organization?.owner_team_id || '-');
+  const ownerTeamId = organization?.owner_team_id ?? null;
+  const hasOwnerTeam = Boolean(ownerTeamId);
+  // 主团置顶、子团随后；sort 稳定，组内保持后端返回顺序。
+  const sortedTeams = useMemo(() => {
+    const leaders = organization?.leaders ?? [];
+    if (!ownerTeamId) return leaders;
+    return [...leaders].sort((a, b) => Number(b.team_id === ownerTeamId) - Number(a.team_id === ownerTeamId));
+  }, [organization, ownerTeamId]);
+  // 根任务置顶、非根任务随后；组内保持后端 updated_at 倒序。
+  const sortedTasks = useMemo(
+    () => [...tasks].sort((a, b) => Number(isRootOrgTask(b)) - Number(isRootOrgTask(a))),
+    [tasks],
+  );
+
+  const ownerTeam = ownerTeamId ? runtimeTeamById.get(ownerTeamId) : undefined;
+  const ownerName = resolveOrganizationTeamLabel(ownerTeam, groups, ownerTeamId || '-');
 
   if (!organizationUiEnabled || !activeSessionId) return null;
 
@@ -220,9 +242,14 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
 
             {(organization.leaders?.length ?? 0) > 0 && (
               <div className="pt-2" data-testid="team-area-org-info-teams">
-                <div className="mb-1.5 text-xs font-medium text-text-muted">{t('team.org.teams')}</div>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <span className="text-xs font-medium text-text-muted">{t('team.org.teams')}</span>
+                  <span className="text-[10px] text-text-muted" data-testid="team-area-org-info-team-count">
+                    {sortedTeams.length}
+                  </span>
+                </div>
                 <div className="space-y-1">
-                  {organization.leaders!.map((team, index) => {
+                  {sortedTeams.map((team, index) => {
                     const runtimeTeam = team.team_id ? runtimeTeamById.get(team.team_id) : undefined;
                     const teamId = team.team_id || runtimeTeam?.team_name?.trim() || '-';
                     const identity = resolveOrganizationTeamIdentity(runtimeTeam, groups);
@@ -230,23 +257,34 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                     const capabilities = team.capabilities?.length
                       ? team.capabilities
                       : (runtimeTeam?.capabilities ?? []);
+                    // 主团保持原尺寸置顶；子团略微缩小并右对齐（ml-3 左缩进），体现从属层级。
+                    const isOwnerTeam = hasOwnerTeam && team.team_id === ownerTeamId;
+                    const isSubTeam = hasOwnerTeam && !isOwnerTeam;
                     return (
                       <div
                         key={team.team_id ?? index}
-                        className="rounded border border-border bg-secondary/40 px-2 py-1.5"
+                        className={clsx(
+                          'rounded border bg-secondary/40',
+                          isSubTeam ? 'ml-3 border-border/70 px-2 py-1' : 'border-border px-2 py-1.5',
+                        )}
                         data-testid="team-area-org-info-team-row"
+                        data-variant={isOwnerTeam ? 'owner' : isSubTeam ? 'sub' : 'team'}
                       >
                         <div className="flex items-center gap-2 text-xs font-medium text-text" title={teamName}>
                           {identity?.avatarUrl && (
                             <img
                               src={identity.avatarUrl}
                               alt=""
-                              className="h-5 w-5 shrink-0 rounded object-contain"
+                              className={clsx('shrink-0 rounded object-contain', isSubTeam ? 'h-4 w-4' : 'h-5 w-5')}
                               data-testid="team-area-org-info-team-avatar"
                               data-variant={teamId}
                             />
                           )}
-                          <span className="truncate" data-testid="team-area-org-info-team-name" data-variant={teamId}>
+                          <span
+                            className={clsx('truncate', isSubTeam && 'text-[11px]')}
+                            data-testid="team-area-org-info-team-name"
+                            data-variant={teamId}
+                          >
                             {teamName}
                           </span>
                           {(team.available === false || runtimeTeam?.available === false) && (
@@ -298,50 +336,61 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  {tasks.map((task) => (
-                    <div
-                      key={task.task_id}
-                      className="rounded border border-border px-2 py-1.5"
-                      data-testid="team-area-org-info-task-row"
-                      data-task-id={task.task_id}
-                      data-task-status={task.status ?? ''}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <span
-                          className="min-w-0 flex-1 truncate text-xs font-medium text-text"
-                          title={task.description || task.title || task.task_id}
-                        >
-                          {task.title?.trim() || task.task_id}
-                        </span>
-                        {task.status && (
+                  {sortedTasks.map((task) => {
+                    // 根任务保持原尺寸置顶；非根任务略微缩小并右对齐（ml-3 左缩进），体现从属层级。
+                    const isRoot = isRootOrgTask(task);
+                    return (
+                      <div
+                        key={task.task_id}
+                        className={clsx(
+                          'rounded border border-border',
+                          isRoot ? 'px-2 py-1.5' : 'ml-3 border-border/70 px-2 py-1',
+                        )}
+                        data-testid="team-area-org-info-task-row"
+                        data-task-id={task.task_id}
+                        data-task-status={task.status ?? ''}
+                        data-variant={isRoot ? 'root' : 'sub'}
+                      >
+                        <div className="flex items-start justify-between gap-2">
                           <span
                             className={clsx(
-                              'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
-                              statusTone(task.status),
+                              'min-w-0 flex-1 truncate font-medium text-text',
+                              isRoot ? 'text-xs' : 'text-[11px]',
                             )}
-                            data-testid="team-area-org-info-task-status"
+                            title={task.description || task.title || task.task_id}
                           >
-                            {task.status}
+                            {task.title?.trim() || task.task_id}
                           </span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-text-muted">
-                        <span className="font-mono" data-testid="team-area-org-info-task-id">
-                          {task.task_id}
-                        </span>
-                        {task.task_type && <span>{task.task_type}</span>}
-                        {assignmentLabel(task) && (
-                          <span data-testid="team-area-org-info-task-assignee">{assignmentLabel(task)}</span>
-                        )}
-                        {task.parent_task_id && (
-                          <span>
-                            {t('team.org.taskParent')}: {task.parent_task_id}
+                          {task.status && (
+                            <span
+                              className={clsx(
+                                'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                                statusTone(task.status),
+                              )}
+                              data-testid="team-area-org-info-task-status"
+                            >
+                              {task.status}
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-text-muted">
+                          <span className="font-mono" data-testid="team-area-org-info-task-id">
+                            {task.task_id}
                           </span>
-                        )}
-                        {formatUpdatedAt(task.updated_at) && <span>{formatUpdatedAt(task.updated_at)}</span>}
+                          {task.task_type && <span>{task.task_type}</span>}
+                          {assignmentLabel(task) && (
+                            <span data-testid="team-area-org-info-task-assignee">{assignmentLabel(task)}</span>
+                          )}
+                          {task.parent_task_id && (
+                            <span>
+                              {t('team.org.taskParent')}: {task.parent_task_id}
+                            </span>
+                          )}
+                          {formatUpdatedAt(task.updated_at) && <span>{formatUpdatedAt(task.updated_at)}</span>}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
