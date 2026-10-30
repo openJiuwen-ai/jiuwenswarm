@@ -1,4 +1,4 @@
-﻿import { matchesAssetName } from '../../features/assetNameSearch';
+import { matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -1291,7 +1291,6 @@ export function SkillPanel({
           pauseHubFetching();
           setMarketplaceSubView('list');
         }
-
         setActiveTab('my');
       } else {
         // 企业版不展示技能图谱
@@ -1371,14 +1370,17 @@ export function SkillPanel({
     // 固定区（header/toolbar）：page-shell 限宽 1400px 居中，与下方滚动列共用内容线
     <div className="page-shell flex-none">
       <PageHeader title={t('skills.title')} subtitle={t('skills.subtitle')}>
-        <button
-          onClick={() => setSourceModalOpen(true)}
-          className="flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak hover:text-text"
-          data-testid="skill-panel-source-manager-btn"
-        >
-          <SourceManagerIcon className="w-4 h-4" />
-          {t('skills.actions.sourceManager')}
-        </button>
+        {/* 企业版技能源由管理端/企业技能源接入，不暴露个人版源管理入口 */}
+        {!enterpriseEdition && (
+          <button
+            onClick={() => setSourceModalOpen(true)}
+            className="flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak hover:text-text"
+            data-testid="skill-panel-source-manager-btn"
+          >
+            <SourceManagerIcon className="w-4 h-4" />
+            {t('skills.actions.sourceManager')}
+          </button>
+        )}
         <button
           onClick={() => {
             if (activeTab === 'graph') {
@@ -1492,15 +1494,17 @@ export function SkillPanel({
 
   const renderModals = () => (
     <>
-      <SourceManagerModal
-        open={sourceModalOpen}
-        sessionId={sessionId}
-        onClose={() => setSourceModalOpen(false)}
-        onNavigateToSettings={() => {
-          setSourceModalOpen(false);
-          onNavigateToSettings?.();
-        }}
-      />
+      {!enterpriseEdition && (
+        <SourceManagerModal
+          open={sourceModalOpen}
+          sessionId={sessionId}
+          onClose={() => setSourceModalOpen(false)}
+          onNavigateToSettings={() => {
+            setSourceModalOpen(false);
+            onNavigateToSettings?.();
+          }}
+        />
+      )}
       <SkillNetSearchModal
         open={skillNetModalOpen}
         sessionId={sessionId}
@@ -1816,8 +1820,11 @@ export function SkillPanel({
                       lockedSourceId={marketplaceSourceId}
                       installedSkillOrigins={installedSkillOrigins}
                       installedStateLoaded
+                      localSkills={skills}
+                      installedSkillNames={installedSkillNames}
                       externalSearchQuery={debouncedMarketplaceSearch}
                       onInstalled={() => fetchSkills()}
+                      onGoToChat={handleGoToChat}
                     />
                   ) : null}
                 </div>
