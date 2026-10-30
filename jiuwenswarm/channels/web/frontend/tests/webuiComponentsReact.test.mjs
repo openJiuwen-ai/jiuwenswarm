@@ -161,8 +161,96 @@ test('disabled and unbound buttons never dispatch actions', async () => {
 
 const inputEvents = { 'ui.change': { id: 'edit', args: { field: 'city' } } };
 
+const selectOptions = [{ value: 'a', label: 'Beijing' }, { value: 'b', label: 'Shanghai' }];
+const selectEvents = {
+  'ui.select': { id: 'choose', args: { field: 'city' } },
+  'ui.search': { id: 'search' },
+  'ui.clear': { id: 'clear' },
+};
+const selectTree = (props = {}, bindings = selectEvents) => ({
+  component: 'Select', props: { options: selectOptions, showSearch: true, allowClear: true, ...props }, events: bindings,
+});
+
+test('Select handles search, selection and clearing through the existing event bindings', async () => {
+  const app = await setup(selectTree({ defaultValue: 'a', ariaLabel: 'City' }));
+  try {
+    const control = app.container.querySelector('[data-testid="webui-select"]');
+    assert.match(control.textContent, /Beijing/);
+    assert.equal(app.business().length, 0);
+    await changeInput(control.querySelector('input'), 'Shanghai');
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.search').payload.data,
+      { searchValue: 'Shanghai' });
+    await click(document.querySelector('.ant-select-item-option[title="Shanghai"]'));
+    assert.match(control.textContent, /Shanghai/);
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.select').payload, {
+      node_key: '0', revision: 1, action_id: 'choose', args: { field: 'city' }, data: { value: 'b' },
+    });
+    const clear = control.querySelector('.ant-select-clear');
+    assert.ok(clear);
+    await click(clear);
+    assert.deepEqual(app.business().find((request) => request.event === 'ui.clear').payload.data, {});
+    assert.ok(!control.textContent.includes('Shanghai'));
+  } finally { await app.close(); }
+});
+
+test('Select preserves local edits without bindings, resets on replace and blocks disabled or disconnected searches', async () => {
+  const app = await setup({ component: 'Select', props: { options: selectOptions, showSearch: true } });
+  try {
+    await changeInput(app.container.querySelector('input'), 'Shanghai');
+    await click(document.querySelector('.ant-select-item-option[title="Shanghai"]'));
+    assert.match(app.container.textContent, /Shanghai/);
+    assert.equal(app.business().length, 0);
+    await app.replace(selectTree({ value: 'forged' }));
+    assert.match(app.container.textContent, /Shanghai/);
+    await app.replace(selectTree({ value: 'a', disabled: true }), 3);
+    assert.match(app.container.textContent, /Beijing/);
+    assert.equal(app.container.querySelector('input').disabled, true);
+    await changeInput(app.container.querySelector('input'), 'Blocked');
+    await app.replace(selectTree({ defaultValue: 'b' }), 4);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    assert.equal(app.container.querySelector('input').disabled, true);
+    await changeInput(app.container.querySelector('input'), 'Offline');
+    assert.equal(app.business().length, 0);
+    await act(async () => app.transport.setConnectionState('connected'));
+    await changeInput(app.container.querySelector('input'), 'Beijing');
+    assert.equal(app.business().at(-1).payload.revision, 4);
+    assert.deepEqual(app.business().at(-1).payload.data, { searchValue: 'Beijing' });
+  } finally { await app.close(); }
+});
+
 const switchTree = (props = {}, bindings = { 'ui.change': { id: 'toggle', args: { field: 'enabled' } } }) => ({
   component: 'Switch', props, events: bindings,
+});
+
+test('Switch click sends the new checked state independently of change and respects disabled states', async () => {
+  const bindings = { 'ui.click': { id: 'inspect', args: { field: 'enabled' } } };
+  const app = await setup(switchTree({ defaultChecked: true }, bindings));
+  try {
+    assert.equal(app.business().length, 0);
+    await click(app.container.querySelector('[role="switch"]'));
+    assert.equal(app.container.querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
+    assert.equal(app.business()[0].event, 'ui.click');
+    assert.deepEqual(app.business()[0].payload, {
+      node_key: '0', revision: 1, action_id: 'inspect', args: { field: 'enabled' }, data: { checked: false },
+    });
+    await app.replace(switchTree({ checked: false }, { ...bindings, 'ui.change': { id: 'toggle' } }));
+    await click(app.container.querySelector('[role="switch"]'));
+    assert.deepEqual(app.business().slice(1).map((request) => [request.event, request.payload.action_id, request.payload.data]), [
+      ['ui.change', 'toggle', { checked: true }], ['ui.click', 'inspect', { checked: true }],
+    ]);
+    await app.replace(switchTree({ disabled: true }, bindings), 3);
+    await click(app.container.querySelector('[role="switch"]'));
+    await app.replace(switchTree({ loading: true }, bindings), 4);
+    await click(app.container.querySelector('[role="switch"]'));
+    await app.replace(switchTree({ checked: false }, bindings), 5);
+    await act(async () => app.transport.setConnectionState('disconnected'));
+    await click(app.container.querySelector('[role="switch"]'));
+    assert.equal(app.business().length, 3);
+    await act(async () => app.transport.setConnectionState('connected'));
+    await click(app.container.querySelector('[role="switch"]'));
+    assert.equal(app.business().at(-1).payload.revision, 5);
+    assert.deepEqual(app.business().at(-1).payload.data, { checked: true });
+  } finally { await app.close(); }
 });
 
 test('Switch change initializes without dispatch and sends boolean states with the declared action', async () => {

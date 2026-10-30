@@ -72,6 +72,12 @@ disabled、readOnly 和断连时也不提交；空值与回执尚未完成时的
 Switch 使用 Ant Design Switch 管理本地开关状态，按 checked、defaultChecked、false 的顺序初始化。
 切换时为已绑定的 `ui.change` 发送 `{checked}`；未绑定事件时仍可本地切换。
 disabled、loading 或断连时禁用；合法 replace 重新初始化状态，不因初始化或更新主动派发 change。
+可独立绑定 `ui.click` 接收切换后的 `{checked}`；同时绑定 change 和 click 时，一次点击依次派发两个事件。
+
+Select 使用 Ant Design Select 管理本地选择值，value 优先于 defaultValue；合法 replace 重新初始化选择。
+选择选项为已绑定的 `ui.select` 发送单个选项值 `{value}`，多选模式也按本次选择的选项发送。
+搜索按 label 过滤，为已绑定的 `ui.search` 发送 `{searchValue}`；清空为已绑定的 `ui.clear` 发送 `{}`。
+选择值变化由组件本地更新，不额外派发 change；未绑定事件时保留默认操作，disabled 或断连时禁用。
 
 插件不能提供 style 或 className。宿主可通过 `WebUIStyleOverrides` 按组件注入外观，
 宿主样式优先；Box 与 Button 还可使用原生元素承接宿主布局和按钮样式。
@@ -88,5 +94,6 @@ disabled、loading 或断连时禁用；合法 replace 重新初始化状态，�
 默认值准备以及目录登记范围。协议、运行时、传输、渲染器和存储分别由
 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`
 和 `test:webui-store` 验证。
-`test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change、宿主外观、主题继承和 Iframe 生命周期。
+`test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change/click、
+Select 选择/搜索/清空、宿主外观、主题继承和 Iframe 生命周期。
 `test:webui-input` 定向验证 Input 的 click、change 与 Enter 数据、组合输入保护、禁用、草稿更新和 WebClient 传输封装。

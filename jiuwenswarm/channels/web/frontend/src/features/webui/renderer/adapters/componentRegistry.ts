@@ -4,6 +4,7 @@ import { WebUIText } from './webuiText/WebUIText.tsx';
 import { WebUIButton } from './webuiButton/WebUIButton.tsx';
 import { WebUIInput } from './webuiInput/WebUIInput.tsx';
 import { WebUISwitch } from './webuiSwitch/WebUISwitch.tsx';
+import { WebUISelect } from './webuiSelect/WebUISelect.tsx';
 import { WebUIEmpty } from './webuiEmpty/WebUIEmpty.tsx';
 import { WebUIImage } from './webuiImage/WebUIImage.tsx';
 import { WebUIDivider } from './webuiDivider/WebUIDivider.tsx';
@@ -19,6 +20,7 @@ export function createComponentRendererRegistry() {
     Button: WebUIButton,
     Input: WebUIInput,
     Switch: WebUISwitch,
+    Select: WebUISelect,
     Empty: WebUIEmpty,
     Image: WebUIImage,
     Divider: WebUIDivider,
