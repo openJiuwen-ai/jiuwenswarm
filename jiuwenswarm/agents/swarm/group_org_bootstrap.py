@@ -2907,9 +2907,35 @@ async def _run_owner_proxy(
         raise RuntimeError("owner instance is not bound to the organization")
     completed = False
     failed_error: str | None = None
+    card_marked_failed = False
     result = ""
     posted = None
     start_watchdog: asyncio.Task | None = None
+
+    async def _refresh_failed_card() -> None:
+        """Mark the card failed even when this wait is already cancelled.
+
+        ``CancelledError`` is not an ``Exception``, so the handler above never
+        runs. A cancelled task also raises again at the next await. Clear that
+        count for this write, then put it back so the cancellation still
+        propagates.
+        """
+        current = asyncio.current_task()
+        pending = 0
+        if current is not None:
+            while current.cancelling():
+                current.uncancel()
+                pending += 1
+        try:
+            await _refresh_card(status="failed", fail_unfinished=True)
+        except Exception:
+            logger.exception(
+                "group organization card update failed session=%s", session_id
+            )
+        finally:
+            if current is not None:
+                for _ in range(pending):
+                    current.cancel()
     try:
         if ensure_members:
             launcher = getattr(org_runtime, "_expert_team_launcher", None)
@@ -2973,6 +2999,7 @@ async def _run_owner_proxy(
     except Exception as exc:
         failed_error = str(exc)
         await _refresh_card(status="failed", fail_unfinished=True)
+        card_marked_failed = True
         raise
     finally:
         try:
@@ -3044,6 +3071,8 @@ async def _run_owner_proxy(
                         plan_id,
                         "organization wait ended before the round finished",
                     )
+                    if not card_marked_failed:
+                        await _refresh_failed_card()
             except Exception:
                 logger.exception(
                     "group organization status update failed session=%s plan=%s",
