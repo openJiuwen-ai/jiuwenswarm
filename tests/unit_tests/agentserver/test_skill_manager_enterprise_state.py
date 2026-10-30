@@ -316,6 +316,33 @@ def test_enterprise_builtin_skill_can_toggle_but_not_uninstall(
     assert skill_dir.is_dir()
 
 
+def test_personal_builtin_skill_can_uninstall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人版内置（builtin）与 develop 一致：安装副本可卸载。"""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace))
+    skill_dir = _write_skill(workspace, "docx-pro")
+    record = manager.record_skill_installation(
+        name="docx-pro",
+        source_type="builtin",
+        source="builtin",
+        origin="builtin:docx-pro",
+        version="1.0.0",
+    )
+
+    uninstall_result = asyncio.run(
+        manager.handle_skills_uninstall(
+            {"name": "docx-pro", "origin": record["origin"]}
+        )
+    )
+    assert uninstall_result.get("success") is True
+    assert not skill_dir.is_dir()
+    assert manager.list_skill_installations() == []
+
+
 def test_enterprise_web_install_and_uninstall_use_workspace_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -395,6 +422,52 @@ def test_enterprise_web_uninstall_still_rejects_prebuilt(tmp_path: Path) -> None
     assert result["success"] is False
     assert result["error_code"] == "prebuilt_not_removable"
     assert skill_dir.is_dir()
+
+
+def test_enterprise_web_uninstall_still_rejects_builtin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版 web 卸载入口：builtin 与主路径一致，仍不可卸。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "docx-pro")
+    manager.record_skill_installation(
+        name="docx-pro",
+        source_type="builtin",
+        source="builtin",
+        origin="builtin:docx-pro",
+        version="1.0.0",
+    )
+
+    result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
+
+    assert result["success"] is False
+    assert result["error_code"] == "prebuilt_not_removable"
+    assert skill_dir.is_dir()
+
+
+def test_personal_web_uninstall_allows_builtin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人版 web 卸载入口：builtin 安装副本可卸（与 handle_skills_uninstall 对齐）。"""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "docx-pro")
+    manager.record_skill_installation(
+        name="docx-pro",
+        source_type="builtin",
+        source="builtin",
+        origin="builtin:docx-pro",
+        version="1.0.0",
+    )
+
+    result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
+
+    assert result == {"success": True, "name": "docx-pro"}
+    assert not skill_dir.is_dir()
+    assert manager.list_skill_installations() == []
 
 
 def test_enterprise_uninstall_does_not_fall_back_from_unknown_origin(tmp_path: Path) -> None:

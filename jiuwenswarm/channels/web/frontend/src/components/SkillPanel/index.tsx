@@ -1150,7 +1150,7 @@ export function SkillPanel({
       labelTags.push(t('skills.mySkillsTabs.builtin'));
     }
 
-    const adminManaged = isAdminManagedSkill(skill);
+    const adminManaged = isAdminManagedSkill(skill, enterpriseEdition);
     const showEnableSwitch = shouldShowEnableSwitch(skill, enterpriseEdition);
     const actionContent = (
       <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
