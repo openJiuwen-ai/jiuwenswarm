@@ -1,0 +1,6 @@
+.webui-text-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: var(--webui-text-max-lines);
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

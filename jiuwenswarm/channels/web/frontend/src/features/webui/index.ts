@@ -12,11 +12,14 @@ export { WebUIHost } from './react/WebUIHost.tsx';
 export type { WebUIHostProps } from './react/WebUIHost.tsx';
 
 export { createRendererRegistry } from './renderer/index.ts';
+export { createComponentRendererRegistry } from './renderer/adapters/componentRegistry.ts';
 export type {
   WebUIAdapterContext,
   WebUIAdapterProps,
   WebUIComponentAdapter,
   WebUIRendererRegistry,
+  WebUIComponentStyle,
+  WebUIStyleOverrides,
 } from './renderer/index.ts';
 
 export type {
