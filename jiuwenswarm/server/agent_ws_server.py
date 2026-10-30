@@ -3207,8 +3207,15 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
                 params = request.params if isinstance(request.params, dict) else {}
+                # Runtime owns exact execution cancellation for a
+                # target_request_id. Do not first terminate every response
+                # stream in the Session bucket.
                 owner_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
-                if owner_stop or self._is_targeted_expert_cancel_request(request):
+                if (
+                    params.get("target_request_id")
+                    or owner_stop
+                    or self._is_targeted_expert_cancel_request(request)
+                ):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -6663,6 +6670,8 @@ class AgentWebSocketServer:
                 timestamp=timestamp,
                 event_type=event_type,
                 mode=mode,
+                extra={"cron_failure_record": True, "error": str(content)}
+                if params.get("cron_failure_record") is True else None,
             )
             # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
             # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入

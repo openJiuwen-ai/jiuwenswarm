@@ -1290,6 +1290,90 @@ class AgentRuntime:
         )
         is_team_request = self._request_targets_team(request)
         team_paused = False
+        target_request_id = str(params.get("target_request_id") or "").strip()
+        # Only the web cron path fences a specific execution. Other transports
+        # (for example process-cli request-scoped cancels) must keep the
+        # adapter's semantic-interrupt path before the coordinator cancel.
+        if target_request_id and request.channel_id == "web":
+            from jiuwenswarm.common.schema.agent import AgentResponse
+            from jiuwenswarm.runtime.session.model import CancelExecutionResult
+
+            expected_id = str(params.get("expected_execution_id") or "").strip()
+            executions = snapshot.executions if snapshot is not None else ()
+            owners = []
+            for item in executions:
+                if item.request_id != target_request_id:
+                    continue
+                if expected_id and item.execution_id != expected_id:
+                    continue
+                owners.append(item)
+            owned_ids = {item.execution_id for item in owners}
+            if snapshot is not None:
+                # A completed response owner may still have live control or
+                # supplement children. Keep the execution fence while tracing
+                # those children, rather than treating an absent live root as stopped.
+                if not expected_id:
+                    owned_ids.update(item.execution_id for item in snapshot.executions
+                                     if item.root_request_id == target_request_id)
+                while True:
+                    descendants = {item.execution_id for item in snapshot.executions
+                                   if item.parent_execution_id in owned_ids}
+                    if descendants.issubset(owned_ids):
+                        break
+                    owned_ids.update(descendants)
+            targets = [item for item in (snapshot.executions if snapshot is not None else ())
+                       if item.execution_id in owned_ids and not item.state.terminal]
+            producer_stopped = True
+            if targets and is_team_request:
+                from jiuwenswarm.server.runtime.agent_manager import get_team_manager
+
+                producer_stopped = await get_team_manager(request.channel_id).stop_session_runtime(
+                    request.session_id, reason="cron request cancellation",
+                    generation=snapshot.generation, expected_request_id=target_request_id,
+                )
+            result = None
+            if targets:
+                results = []
+                for target in targets:
+                    results.append(await self._session_coordinator.cancel_execution(
+                        request.session_id, execution_id=target.execution_id,
+                        generation=snapshot.generation,
+                    ))
+                result = CancelExecutionResult(
+                    matched=sum(item.matched for item in results),
+                    cancelled=sum(item.cancelled for item in results),
+                    timed_out=tuple(eid for item in results for eid in item.timed_out),
+                )
+            # Admission tracks control IDs, not the enclosing chat request ID.
+            # Capture them from the pre-cancel snapshot: cancellation clears the
+            # handles, and a late/mismatched cancel must leave newer prompts alone.
+            # A timed-out execution is still live, so its prompt stays valid;
+            # skip only those, rather than keeping every cleared prompt around.
+            if targets and result is not None:
+                timed_out_ids = set(result.timed_out)
+                for execution in snapshot.executions:
+                    if (
+                        execution.waiting_control_ids
+                        and execution.execution_id in owned_ids
+                        and execution.execution_id not in timed_out_ids
+                    ):
+                        for control_id in execution.waiting_control_ids:
+                            await self._clear_pending_interaction(
+                                request.session_id, control_id,
+                            )
+            stop_confirmed = (
+                producer_stopped and not result.timed_out
+                if result is not None else bool(owners)
+            )
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                payload={
+                    "event_type": "chat.interrupt_result", "success": stop_confirmed,
+                    "matched": result.matched if result is not None else 0,
+                    "stop_confirmed": stop_confirmed,
+                    "target_request_id": target_request_id,
+                },
+            )
         if is_team_request and snapshot is not None:
             context = SessionLifecycleContext(
                 session_id=snapshot.session_id,

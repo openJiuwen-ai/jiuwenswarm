@@ -1434,6 +1434,8 @@ async def handle_history_append_record(ctx: RequestContext) -> None:
             timestamp=timestamp,
             event_type=event_type,
             mode=mode,
+            extra={"cron_failure_record": True, "error": str(content)}
+            if params.get("cron_failure_record") is True else None,
         )
         # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
         # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import Future
 from types import SimpleNamespace
 
@@ -25,8 +26,32 @@ class _FakeWebSocket:
     pass
 
 
+def test_cron_failure_writer_deduplicates_by_request_without_modifying_new_turn(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_history
+
+    history = tmp_path / "history.jsonl"
+    original = [
+        {"request_id": "first", "role": "assistant", "event_type": "chat.error", "content": "original error"},
+        {"request_id": "next", "role": "user", "content": "followup"},
+    ]
+    history.write_text("".join(json.dumps(record) + "\n" for record in original), encoding="utf-8")
+    monkeypatch.setattr(session_history, "use_legacy_history_json", lambda: False)
+    monkeypatch.setattr(session_history, "_ensure_jsonl_bootstrap", lambda session_id: history)
+    fallback = {"request_id": "first", "role": "assistant", "event_type": "chat.error", "content": "fallback", "cron_failure_record": True}
+    session_history._write_item("session", fallback)
+    assert [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()] == original
+    fallback = {**fallback, "request_id": "another-run"}
+    session_history._write_item("session", fallback)
+    session_history._write_item("session", fallback)
+    session_history._write_item("session", {
+        "request_id": "another-run", "role": "assistant", "event_type": "chat.error", "content": "late primary",
+    })
+    assert [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()] == [*original, fallback]
+
+
 @pytest.mark.asyncio
-async def test_history_append_record_persists_and_waits_for_completion(monkeypatch) -> None:
+@pytest.mark.parametrize("cron_failure", [False, True])
+async def test_history_append_record_persists_and_waits_for_completion(monkeypatch, cron_failure) -> None:
     appended: dict = {}
     sent: list[dict] = []
     receipt: Future[None] = Future()
@@ -66,7 +91,8 @@ async def test_history_append_record_persists_and_waits_for_completion(monkeypat
             "request_id": "cron-request-1",
             "channel_id": "web",
             "role": "assistant",
-            "event_type": "chat.final",
+            "event_type": "chat.error" if cron_failure else "chat.final",
+            "cron_failure_record": cron_failure,
             "mode": "deep",
             "content": "[cron] task failed",
         },
@@ -81,8 +107,9 @@ async def test_history_append_record_persists_and_waits_for_completion(monkeypat
         "role": "assistant",
         "content": "[cron] task failed",
         "timestamp": 123.5,
-        "event_type": "chat.final",
+        "event_type": "chat.error" if cron_failure else "chat.final",
         "mode": "deep",
+        "extra": {"cron_failure_record": True, "error": "[cron] task failed"} if cron_failure else None,
     }
     assert sent == [
         {

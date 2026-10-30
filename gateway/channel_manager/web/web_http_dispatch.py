@@ -78,6 +78,21 @@ def _build_http_ext(
     return ext
 
 
+def resolve_http_routing_identity(headers: Any, client_host: str | None) -> dict[str, str]:
+    """Resolve notification scope through the same trusted headers as RPC ingress."""
+    from jiuwenswarm.common.request_identity import normalize_routing_identity
+
+    hdrs = _header_map(headers)
+    if not _trust_client_tenant_headers(client_host):
+        return {}
+    return normalize_routing_identity({
+        "user_id": _get_header(hdrs, "X-User-Id"),
+        "group_id": _get_header(hdrs, "X-Group-Id"),
+        "bot_id": _get_header(hdrs, "X-Bot-Id"),
+        "gateway_id": _get_header(hdrs, "X-Gateway-Id"),
+    })
+
+
 async def dispatch_http_request(
     channel: Any,
     *,
@@ -125,6 +140,7 @@ async def dispatch_http_request(
     )
 
     setattr(outbound, _WEB_CONNECTION_USER_ID_ATTR, user_id)
+    setattr(outbound, "_jiuwen_app_id", app_id)
     channel.register_request_outbound(outbound)
 
     # 仅新建会话且解析到 user_id 时打 http_resolve_identity UA。
@@ -163,13 +179,9 @@ async def dispatch_http_request(
 
     from jiuwenswarm.common.request_identity import (
         apply_routing_metadata,
-        normalize_routing_identity,
     )
 
-    _routing = normalize_routing_identity(
-        query,
-        {"user_id": user_id} if user_id else None,
-    )
+    _routing = resolve_http_routing_identity(hdrs, client_host)
     setattr(outbound, "_web_routing", _routing)
     _meta = apply_routing_metadata(
         {

@@ -5,6 +5,7 @@ import asyncio
 import tempfile
 import time
 from datetime import datetime, timedelta
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -255,6 +256,7 @@ class FakeAgentClient:
     def __init__(self) -> None:
         self.unary_requests = []
         self.stream_requests = []
+        self.created_session_id = "cron_agentserver_allocated"
 
     async def send_request(self, envelope, *a, **kw):
         self.unary_requests.append(envelope)
@@ -263,7 +265,7 @@ class FakeAgentClient:
                 request_id=envelope.request_id or "",
                 channel_id=envelope.channel or "",
                 ok=True,
-                payload={"session_id": "cron_agentserver_allocated"},
+                payload={"session_id": self.created_session_id},
             )
         if envelope.method == "project.lifecycle":
             # scheduler.project_execution_allowed 的准入查询：
@@ -320,6 +322,49 @@ class FailingAgentClient(FakeAgentClient):
         raise RuntimeError("agent unavailable")
 
 
+@pytest.mark.asyncio
+async def test_web_cron_allocation_failure_publishes_tenant_notification_without_session(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from gateway.common.cron_events import cron_notification_scope
+    from gateway.cron import live_bus
+
+    monkeypatch.setattr(live_bus, "_redis_client", lambda: None)
+    bus = live_bus.CronLiveBus()
+    monkeypatch.setattr(live_bus, "cron_live_bus", bus)
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, targets="web", user_id="owner")
+    scheduler = _make_scheduler(store, agent_client=FailingAgentClient())
+    monkeypatch.setattr(scheduler, "_allocate_execution_session", AsyncMock(side_effect=RuntimeError("allocation failed")))
+    scope = cron_notification_scope(user_id="owner", app_id="default")
+    queue = bus.subscribe(scope, replay=False)
+    try:
+        run_id = f"{job.id}:1234"
+        await scheduler.on_wake(job, run_id)
+        await scheduler.run_tasks[run_id]
+        frame = await asyncio.wait_for(queue.get(), 1)
+        assert frame["event"] == "cron.run.updated"
+        assert frame["payload"]["status"] == "failed"
+        assert frame["payload"]["session_id"] is None
+        assert frame["payload"]["phase"] == "finished"
+    finally:
+        bus.unsubscribe(scope, queue)
+
+
+class BlockingAgentClient(FakeAgentClient):
+    """Keep the stream open so a test can cancel the owning run task."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_started = asyncio.Event()
+
+    async def send_request_stream(self, envelope):
+        self.stream_requests.append(envelope)
+        self.stream_started.set()
+        await asyncio.Event().wait()
+        yield  # pragma: no cover - only reached after cancellation
+
+
 class HiddenProjectAgentClient(FakeAgentClient):
     """project.lifecycle 报告项目已被移除(hidden):调度闸门必须拒绝。"""
 
@@ -344,6 +389,15 @@ class FakeMessageHandler:
     async def publish_robot_messages(self, msg):
         self.published.append(msg)
 
+    async def register_background_stream(self, envelope, session_id):
+        return None
+
+    async def finish_background_stream(self, envelope, session_id):
+        return None
+
+    def background_stream_has_other_work(self, request_id, session_id):
+        return False
+
     async def publish_stream_chunk(self, chunk, *, session_id, request_metadata=None):
         if _MessageHandlerStreamTestApi.is_terminal_stream_chunk(chunk):
             return False
@@ -357,6 +411,136 @@ class FakeMessageHandler:
 
     async def _cancel_agent_work_for_session(self, msg, old_sid, **kwargs):
         self.cancel_calls.append((msg, old_sid, kwargs))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent", "team"])
+async def test_web_cron_stream_uses_one_web_session_without_result_broadcast(tmp_path, mode):
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, targets="web", user_id="owner", mode=mode)
+    job.group_id = "group"
+    job.bot_id = "bot"
+    handler = FakeMessageHandler()
+    client = FakeAgentClient()
+    client.created_session_id = f"web_allocated_{mode}"
+    scheduler = _make_scheduler(store, handler=handler, agent_client=client)
+    run_id = f"{job.id}:1234"
+    await scheduler.on_wake(job, run_id)
+    await scheduler.run_tasks[run_id]
+    created = next(env for env in client.unary_requests if env.method == "session.create")
+    assert created.channel == "web"
+    assert created.params["cron_id"] == job.id
+    assert created.channel_context["routing"]["group_id"] == "group"
+    assert created.channel_context["routing"]["bot_id"] == "bot"
+    assert len(client.stream_requests) == 1
+    execution = client.stream_requests[0]
+    assert execution.channel == "web"
+    assert execution.user_id == "owner"
+    assert execution.channel_context["routing"]["group_id"] == "group"
+    assert execution.channel_context["routing"]["bot_id"] == "bot"
+    assert execution.session_id == scheduler.runs[run_id].exec_session_id
+    assert execution.channel_context["cron"]["job_id"] == job.id
+    final = [msg for msg in handler.published if (msg.payload or {}).get("event_type") == "chat.final"]
+    assert len(final) == 1
+    assert final[0].session_id == execution.session_id
+    assert final[0].metadata["routing"]["group_id"] == "group"
+    for _, _, event in list(scheduler.events):
+        if event.kind == "push_update":
+            await scheduler.handle_event(event)
+    assert len([msg for msg in handler.published if (msg.payload or {}).get("event_type") == "chat.final"]) == 1
+    notices = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "cron.run.updated"]
+    assert [event["phase"] for event in notices] == ["started", "finished", "reminder"]
+    assert all("content" not in event for event in notices)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("event_type", "filtered"), [
+    ("execution.error", False), ("chat.error", False), ("runtime.error", False), ("chat.error", True),
+])
+async def test_web_cron_terminal_error_publishes_one_visible_chat_error(tmp_path, monkeypatch, event_type, filtered):
+    from unittest.mock import AsyncMock
+
+    class ErrorClient(FakeAgentClient):
+        async def send_request_stream(self, envelope):
+            yield AgentResponseChunk(
+                request_id=envelope.request_id,
+                channel_id=envelope.channel,
+                payload={"event_type": event_type, "error": "model offline"},
+                is_complete=True,
+            )
+
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, targets="web", mode="agent")
+    handler = FakeMessageHandler()
+    if filtered:
+        monkeypatch.setattr(handler, "publish_stream_chunk", AsyncMock(return_value=False))
+        monkeypatch.setattr(handler, "finish_background_stream", AsyncMock(side_effect=RuntimeError("delivery failed")))
+    scheduler = _make_scheduler(store, handler=handler, agent_client=ErrorClient())
+    run_id = f"{job.id}:1234"
+    await scheduler.on_wake(job, run_id)
+    await scheduler.run_tasks[run_id]
+
+    errors = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "chat.error"]
+    assert len(errors) == 1
+    assert errors[0]["error"] == "model offline"
+    assert scheduler.runs[run_id].status == "failed"
+    assert any((msg.payload or {}).get("phase") == "finished" for msg in handler.published)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("targets", ["web", "tui"])
+async def test_lifecycle_cancel_does_not_persist_a_failure(tmp_path, targets):
+    """Shutdown/project-hide/delete cancel the task; that is not a model failure."""
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, targets=targets, user_id="owner")
+    handler = FakeMessageHandler()
+    client = BlockingAgentClient()
+    scheduler = _make_scheduler(store, handler=handler, agent_client=client)
+    run_id = f"{job.id}:1234"
+
+    await scheduler.on_wake(job, run_id)
+    task = scheduler.run_tasks[run_id]
+    await asyncio.wait_for(client.stream_started.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    payloads = [
+        msg.payload for msg in handler.published
+        if isinstance(msg.payload, dict)
+    ]
+    assert [item for item in payloads if item.get("event_type") == "chat.error"] == []
+    assert [item for item in payloads if item.get("event_type") == "chat.final"] == []
+    assert [
+        env for env in client.unary_requests
+        if env.method == ReqMethod.HISTORY_APPEND_RECORD.value
+    ] == []
+    assert [
+        item for item in payloads
+        if item.get("event_type") == "cron.run.updated" and item.get("phase") == "reminder"
+    ] == []
+    if targets == "web":
+        notices = [item for item in payloads if item.get("event_type") == "cron.run.updated"]
+        # The run still reports that it stopped, but never as a user-facing reminder.
+        assert [item["phase"] for item in notices] == ["started", "finished"]
+        assert all(item["notify"] is False for item in notices)
+
+
+@pytest.mark.asyncio
+async def test_web_cron_timeout_cancel_targets_only_its_first_request(tmp_path):
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    client = FakeAgentClient()
+    scheduler = _make_scheduler(store, agent_client=client)
+    state = CronRunState(
+        run_id="job:1234", job_id="job", wake_at_iso="", push_at_iso="",
+        exec_channel_id="web", exec_session_id="session", exec_request_id="cron-first",
+        exec_execution_id="first-execution", exec_user_id="owner",
+    )
+    await scheduler.cancel_agent_session(state, reason="timeout")
+    cancel = client.unary_requests[-1]
+    assert cancel.params["target_request_id"] == "cron-first"
+    assert cancel.params["expected_execution_id"] == "first-execution"
+    assert cancel.user_id == "owner"
 
 
 async def _create_one_job(store, name="job", targets="tui", user_id="", mode=None):
@@ -642,8 +826,12 @@ class TestCronFailureDelivery:
         assert state.result_text == f"[cron] 任务执行失败: {expected_error}"
         push_event = next(ev for _, _, ev in svc.events if ev.kind == "push_update")
         await svc.handle_event(push_event)
-        assert len(handler.published) == 1
-        assert _cron_published_content(handler.published[0]) == state.result_text
+        errors = [msg for msg in handler.published if (msg.payload or {}).get("event_type") == "chat.error"]
+        assert len(errors) == 1
+        assert errors[0].payload["error"] == state.result_text
+        notifications = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "cron.run.updated"]
+        assert [event["phase"] for event in notifications] == ["started", "finished", "reminder"]
+        assert all("content" not in event for event in notifications)
         failure_log = next(
             call
             for call in warning_mock.call_args_list
@@ -679,8 +867,9 @@ class TestCronFailureDelivery:
         assert state.result_text == "[cron] 任务执行失败: 未知错误"
         push_event = next(ev for _, _, ev in svc.events if ev.kind == "push_update")
         await svc.handle_event(push_event)
-        assert len(handler.published) == 1
-        assert _cron_published_content(handler.published[0]) == state.result_text
+        errors = [msg for msg in handler.published if (msg.payload or {}).get("event_type") == "chat.error"]
+        assert len(errors) == 1
+        assert errors[0].payload["error"] == state.result_text
 
 
 class TestCheckStoreChanged:
@@ -913,12 +1102,13 @@ class TestHandleEventStoreValidation:
 
         assert len(handler.published) == 1
         msg = handler.published[0]
-        cron = msg.payload["cron"]
         assert msg.channel_id == "web"
         assert msg.session_id is None
         assert msg.payload["user_id"] == ""
-        assert cron["exec_channel_id"] == "__cron__"
-        assert cron["exec_session_id"] == run_info["session_id"]
+        assert msg.payload["event_type"] == "cron.run.updated"
+        assert msg.payload["session_id"] == run_info["session_id"]
+        assert msg.payload["notify"] is True
+        assert "content" not in msg.payload
 
     @pytest.mark.asyncio
     async def test_wake_executes_normally_when_job_present(self, tmp_path):
@@ -3203,7 +3393,10 @@ async def test_crash_recovery_skip_after_etcd_full_load(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ok, payload", [(False, {"error": "denied"}), (True, {"success": False})])
+@pytest.mark.parametrize("ok, payload", [
+    (False, {"error": "denied"}), (True, {"success": False}),
+    (True, {"success": True, "matched": 0, "stop_confirmed": False}),
+])
 async def test_strict_cancel_rejects_failed_response(tmp_path, ok, payload):
     from unittest.mock import AsyncMock
     from types import SimpleNamespace
@@ -3562,7 +3755,7 @@ def _parked_run_state(job, *, run_id: str, session_id: str, manual: bool) -> Cro
         targets=job.targets,
         timezone=job.timezone,
         exec_session_id=session_id,
-        exec_channel_id="__cron__",
+        exec_channel_id="web" if job.targets == "web" else "__cron__",
         execution_session_allocated=True,
         manually_triggered=manual,
     )
@@ -3576,7 +3769,8 @@ async def test_enterprise_manual_run_parks_and_writes_a_hold(tmp_path, monkeypat
     store = CronJobStore(path=tmp_path / "cron_jobs.json")
     job = await _create_one_job(store, targets="web")
     agent = _AskingStreamClient()
-    svc = _make_scheduler(store, agent_client=agent)
+    handler = FakeMessageHandler()
+    svc = _make_scheduler(store, agent_client=agent, handler=handler)
     run_id = f"{job.id}:manual"
     session_id = "cron_waiting_1"
     svc.runs[run_id] = _parked_run_state(
@@ -3592,6 +3786,16 @@ async def test_enterprise_manual_run_parks_and_writes_a_hold(tmp_path, monkeypat
     assert state.result_text is None
     assert agent.cancel_requests == []
     assert svc.local_permission_hold_session(job.id) == session_id
+
+    notices = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "cron.run.updated"]
+    assert notices[-1]["phase"] == "paused"
+    assert notices[-1]["status"] == "awaiting_approval"
+    assert state.finished_at is None
+    svc.jobs[job.id] = job
+    svc.mark_permission_resume(session_id)
+    await asyncio.sleep(0)
+    assert handler.published[-1].payload["status"] == "succeeded"
+    assert handler.published[-1].payload["run_id"] == run_id
 
 
 @pytest.mark.asyncio
@@ -3777,3 +3981,23 @@ def test_real_cron_file_keeps_the_lifecycle_note_beside_it(tmp_path):
     jobs = tmp_path / "cron_jobs.json"
     assert _cron_lifecycle_source(SimpleNamespace(path=jobs)) == jobs
     assert _cron_lifecycle_source(SimpleNamespace()) != jobs
+
+
+@pytest.mark.parametrize("package", ["gateway.runtime.cron", "jiuwenswarm.runtime.cron"])
+def test_cron_store_rejects_groups_on_create_and_update(package):
+    mutations = import_module(f"{package}.cron_job_mutations")
+    params = {
+        "name": "single model task",
+        "description": "report",
+        "cron_expr": "0 0 9 * * ? *",
+        "timezone": "Asia/Shanghai",
+        "targets": "web",
+    }
+    group = {"type": "model_group", "id": "group"}
+    with pytest.raises(ValueError, match="only support a single model"):
+        mutations.build_new_cron_job(**params, model_selection=group)
+    job = mutations.build_new_cron_job(**params, model_name="configured-model")
+    assert job.model_name == "configured-model"
+    with pytest.raises(ValueError, match="only support a single model"):
+        mutations.apply_cron_job_patch(job, {"model_selection": group})
+    assert job.model_name == "configured-model"

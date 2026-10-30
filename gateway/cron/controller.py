@@ -554,6 +554,8 @@ class CronController:
                 from gateway.common.model_selection import ModelSelection
                 from gateway.common.model_routing_registry import ModelSelectionResolver
                 selection = ModelSelection.model_validate(model_selection)
+                if selection.type != "model":
+                    raise ValueError("Scheduled tasks only support a single model")
                 ModelSelectionResolver().resolve(selection)
                 model_selection = selection.model_dump()
             # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由

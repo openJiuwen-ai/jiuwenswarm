@@ -5234,6 +5234,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
             # 体系），用后即弃、不落任务数据。
             params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
+            if str(params.get("targets") or "web").strip() == "web":
+                params["app_id"] = getattr(ws, "_jiuwen_app_id", "default") or "default"
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # 显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
             if (

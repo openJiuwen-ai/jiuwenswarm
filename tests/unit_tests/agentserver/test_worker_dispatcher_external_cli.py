@@ -47,6 +47,7 @@ def _bare_dispatcher(runtime: object, holder_generation: int = 1) -> worker_disp
     instance._failure = None
     instance._queued = []
     instance._startup_priorities = {}
+    instance._request_tasks = {}
     return instance
 
 

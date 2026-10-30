@@ -243,6 +243,41 @@ def register_web_http_api_routes(
     async def connection_status(request: Request) -> Response:
         return await _unary(request, channel, "connection.status", {})
 
+    @app.get("/api/v1/cron/runs/live", tags=["cron"], summary="订阅当前身份的定时任务运行通知")
+    async def cron_runs_live(request: Request) -> Response:
+        from gateway.channel_manager.web.web_http_dispatch import resolve_http_routing_identity
+        from gateway.common.cron_events import cron_notification_scope
+        from gateway.cron.live_bus import cron_live_bus
+
+        # Apply the same ownership checks as the task list before subscribing.
+        access = await _unary(request, channel, "cron.job.list", {}, bind_session_param=False)
+        if access.status_code >= 400 or not json.loads(access.body).get("ok"):
+            return access
+        identity = resolve_http_routing_identity(request.headers, _request_client_host(request))
+        scope = cron_notification_scope(
+            user_id=identity.get("user_id", ""), group_id=identity.get("group_id", ""),
+            bot_id=identity.get("bot_id", ""), app_id=request.headers.get("x-app-id") or "default",
+        )
+        queue = cron_live_bus.subscribe(scope, replay=False)
+
+        async def frames() -> AsyncIterator[str]:
+            try:
+                yield ": connected\n\n"
+                while not await request.is_disconnected():
+                    try:
+                        frame = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    payload = frame.get("payload") or {}
+                    yield _sse_pack(str(payload.get("event_id") or ""), "cron.run.updated", payload)
+            finally:
+                cron_live_bus.unsubscribe(scope, queue)
+
+        return StreamingResponse(frames(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
+
     @app.get("/api/v1/sessions", tags=["sessions"], summary="列会话（本地 session.list）")
     async def session_list(
         request: Request,
@@ -329,12 +364,17 @@ def register_web_http_api_routes(
     async def session_live(session_id: str, request: Request) -> Response:
         """把定时任务的执行结果以 SSE 推给已经打开的会话页。
 
-        企业版页面没有个人版那种常驻长连接。执行会话编号以 ``cron_`` 或
-        ``__cron__`` 开头时才允许订阅，其它会话直接 404。登录校验由企业版
-        中间件完成。
+        The routed metadata lookup validates the caller and cron membership.
+        Web execution sessions use ordinary Web session identifiers.
         """
         sid = str(session_id or "").strip()
-        if not sid.startswith("cron_") and not sid.startswith("__cron__"):
+        metadata_response = await _unary(request, channel, "session.get_metadata", {"session_id": sid})
+        if metadata_response.status_code >= 400:
+            return metadata_response
+        envelope = json.loads(metadata_response.body)
+        if not envelope.get("ok"):
+            return metadata_response
+        if not (envelope.get("data") or {}).get("cron_id"):
             return JSONResponse({"error": "not_cron_session"}, status_code=404)
 
         from gateway.cron.live_bus import cron_live_bus

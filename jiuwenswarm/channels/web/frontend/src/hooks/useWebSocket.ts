@@ -20,6 +20,7 @@ import {
   type NamedAsset,
 } from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { toast } from '../components/ui/Toast/toastStore';
 import { useTranslation } from 'react-i18next';
 import {
   ConnectionAckPayload,
@@ -83,10 +84,6 @@ import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { getWebTransport } from '../utils/env';
-import {
-  ensureCronUserSeedFirst,
-  resolveCronPlaceholderTimestampIso,
-} from '../features/cron/cronSeedMessage';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -714,6 +711,7 @@ function applyTeamTaskToolCall(_sessionId: string, _toolCall: ToolCall) {
 
 interface UseWebSocketOptions {
   activeSessionId?: string;
+  isActiveSessionVisible?: boolean;
   provider?: string;
   apiKey?: string;
   apiBase?: string;
@@ -1009,6 +1007,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const { t } = useTranslation();
   const {
     activeSessionId,
+    isActiveSessionVisible = true,
     provider,
     apiKey,
     apiBase,
@@ -1090,6 +1089,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const previousActiveSessionIdRef = useRef(activeSessionId);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const activeSessionVisibleRef = useRef(isActiveSessionVisible);
+  activeSessionVisibleRef.current = isActiveSessionVisible;
   const lastTeamConnectionSessionRef = useRef(activeSessionId);
   const lastTeamConnectionModeRef = useRef(activeSessionMode);
   const teamMemberSnapshotRequestRef = useRef(
@@ -3186,6 +3187,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     };
 
     const unsubs = [
+      webClient.on('cron.run.updated', ({ payload }) => {
+        const store = useCronStore.getState();
+        const update = store.applyRunUpdate(payload);
+        if (!update) return;
+        void store.loadCronSessions(update.project_id || 'default', update.job_id);
+        if (update.phase !== 'started' || !store.jobs.some((job) => job.id === update.job_id)) void store.reload();
+        if (update.notify) {
+          if (update.status === 'failed' && !update.session_id) {
+            toast.open({
+              id: `cron-start-failed-${update.run_id}`, variant: 'error',
+              testId: 'cron-start-failed-toast',
+              content: t('cron.execution.startFailed', {
+                name: update.job_name || update.job_id,
+                reason: update.error || t('network.unknownError'),
+              }),
+            });
+          }
+          if (activeSessionVisibleRef.current && update.session_id === activeSessionIdRef.current && document.visibilityState === 'visible') {
+            store.clearCronJobUnread(update.job_id);
+          } else {
+            store.markCronJobUnread(update.job_id);
+          }
+        }
+      }),
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
       }),
@@ -3483,7 +3508,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // makes each final safe to replay, while the latest one replaces the text.
         if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
 
-        const cronMeta = payload.cron as Record<string, unknown> | undefined;
+        const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
 
         // 达上限通知不绑定具体会话（后端 _send_notification_cb 不带 session_id），
         // 必须在下方 session 守卫（if (!sessionId) return）之前拦截，否则会被该守卫
@@ -3924,7 +3949,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         if (assistantStreamSplit && content) {
-          const cronMetaEarly = payload.cron as Record<string, unknown> | undefined;
+          const cronMetaEarly = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunIdEarly =
             typeof cronMetaEarly?.run_id === 'string' ? cronMetaEarly.run_id.trim() : '';
           if (!cronRunIdEarly && !cronMetaEarly && !isProactiveRecommendation) {
@@ -4024,7 +4049,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useChatStore.getState().stopStreaming(sessionId);
         }
         if (content) {
-          const cronMeta = payload.cron as Record<string, unknown> | undefined;
+          const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunId =
             typeof cronMeta?.run_id === 'string' ? cronMeta.run_id.trim() : '';
           const isCronPlaceholderContent =
@@ -4032,21 +4057,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             /正在执行中，结果稍后补发/.test(content) ||
             /^\[cron\].*正在执行中/.test(content);
 
-          // 占位比任务原话先到时，用「立即执行」时记下的原文把用户气泡排到最上。
-          if (isCronPlaceholderContent) {
-            const cronJobIdForSeed =
-              typeof cronMeta?.job_id === 'string' ? cronMeta.job_id.trim() : '';
-            const pendingSeed = cronJobIdForSeed
-              ? useCronStore.getState().pendingRunSeedByJobId[cronJobIdForSeed] || ''
-              : '';
-            if (pendingSeed) {
-              ensureCronUserSeedFirst(sessionId, pendingSeed);
-            }
-          }
-          // 聊天区按时间戳排序：占位时间必须晚于任务原话，否则原话会被排到下面。
-          const messageTimestampIso = isCronPlaceholderContent
-            ? resolveCronPlaceholderTimestampIso(sessionId, completedAtIso)
-            : completedAtIso;
+          const messageTimestampIso = completedAtIso;
 
           if (!isCronPlaceholderContent) {
             let placeholderId: string | null = null;
@@ -4939,6 +4950,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setGlobalTaskRunning(Boolean(payload?.running));
       }),
       webClient.on('chat.error', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.error', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -5940,6 +5952,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const connected = state === 'ready';
       setIsConnected(connected);
       setConnected(connected);
+      if (!connected) useCronStore.getState().clearUnconfirmedRuns();
       if (connected && teamConnectionGraceTimerRef.current) {
         const pending = teamConnectionGraceTimerRef.current;
         if (pending.timerId !== null) window.clearTimeout(pending.timerId);

@@ -55,7 +55,11 @@ async def handle_chat_cancel(ctx: RequestContext) -> None:
     """停掉当前这一轮。对方断开时，停完再清掉这条连接占着的运行状态。"""
     request = ctx.request
     services = ctx.services
-    if isinstance(request.params, dict) and request.params.get("target_team_id"):
+    if isinstance(request.params, dict) and (
+        request.params.get("target_team_id") or request.params.get("target_request_id")
+    ):
+        # Runtime must stop the matching producer before its response stream.
+        # A late cron cancel must leave newer streams in the same session live.
         await cancel_chat_request(ctx)
         return
     if isinstance(request.params, dict) and request.params.get("wait_for_stop"):

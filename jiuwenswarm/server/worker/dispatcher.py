@@ -69,6 +69,7 @@ class WorkerDispatcher:
         self._attached = False
         self._queued: list[tuple[int, AgentRequest, str]] = []
         self._tasks: dict[asyncio.Task[None], int] = {}
+        self._request_tasks: dict[str, asyncio.Task[Any]] = {}
         self._state_lock = asyncio.Lock()
         self.shutdown_requested = False
         self._draining = False
@@ -339,7 +340,8 @@ class WorkerDispatcher:
 
     async def _drop_queued_cancel(self, request: AgentRequest) -> bool:
         """Drop a cancel that arrived before Runtime exists. Return True when handled."""
-        target = str((request.params or {}).get("request_id") or "")
+        target = str((request.params or {}).get("target_request_id")
+                     or (request.params or {}).get("request_id") or "")
         session_id = request.session_id or ""
         async with self._state_lock:
             if self._ready or self._draining:
@@ -412,6 +414,8 @@ class WorkerDispatcher:
             )
             self._bridge.events.complete(dispatch_id, state="failed", error=self._failure or "worker queue is full")
             return
+        if request.req_method == ReqMethod.CHAT_CANCEL:
+            await self._cancel_target_dispatch(request)
         # A resident worker outlives SDK installs made from the settings panel
         # (the gateway process), so refresh the managed paths before this turn;
         # team members backed by external CLIs probe and import them here.
@@ -431,8 +435,15 @@ class WorkerDispatcher:
         token, box = begin_delivery_tracking()
         error = ""
         ok = True
+        cancelled = False
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._request_tasks[dispatch_id] = current_task
         try:
             await runtime.dispatch_parsed_request(self._bridge, request, self._lock)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except Exception as exc:  # noqa: BLE001
             ok = False
             error = str(exc)
@@ -440,6 +451,7 @@ class WorkerDispatcher:
                 "[Worker] dispatch failed: request_id=%s", request.request_id
             )
         finally:
+            self._request_tasks.pop(dispatch_id, None)
             self._release_startup_priority(dispatch_id)
             execution_entry_sink.reset(entry_token)
             sdk_entry_sink.reset(minimum_token)
@@ -447,6 +459,25 @@ class WorkerDispatcher:
             end_request_generation(gen_token)
             end_request_dispatch(dispatch_token)
             self._bridge.events.finish(dispatch_id)
+            if cancelled:
+                # A targeted cancel may stop this dispatch before Runtime admits
+                # it. Front still awaits request.done for this request, so report
+                # the terminal here instead of leaving that waiter until the
+                # connection closes. The canceling side owns the visible
+                # interrupt result, so do not turn this into a gateway error.
+                logger.info(
+                    "[Worker] dispatch cancelled: request_id=%s generation=%s",
+                    request.request_id,
+                    generation,
+                )
+                await self._finish(
+                    generation,
+                    str(request.request_id or ""),
+                    ok=True,
+                    error="request cancelled",
+                    delivered=False,
+                    dispatch_id=dispatch_id,
+                )
         await self._finish(
             generation,
             str(request.request_id or ""),
@@ -455,6 +486,32 @@ class WorkerDispatcher:
             delivered=bool(box),
             dispatch_id=dispatch_id,
         )
+
+    async def _cancel_target_dispatch(self, request: AgentRequest) -> None:
+        """Cancel the exact response owner even before Runtime allocates execution."""
+        params = request.params or {}
+        target = str(params.get("target_request_id") or "")
+        if not target or params.get("expected_execution_id"):
+            return
+        state = self._reconcile_execution_state(request)
+        if state is not None and any(
+            item.request_id == target or item.root_request_id == target for item in state.executions
+        ):
+            # Once admitted, Runtime must stop the domain producer before the
+            # response task exits (particularly for Team streams).
+            return
+        scope = request_scope(request)
+        matches = [
+            record for record in self._bridge.events.records.values()
+            if record.scope == scope and record.request.request_id == target and record.active
+        ]
+        for record in matches:
+            task = self._request_tasks.get(record.dispatch_id)
+            if task is None or task is asyncio.current_task() or task.done():
+                continue
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._bridge.events.complete(record.dispatch_id, state="cancelled", error="request cancelled")
 
     async def _finish(
         self,
