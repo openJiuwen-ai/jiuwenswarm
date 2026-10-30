@@ -374,7 +374,7 @@ def _execution_cleared(record: dict, state: dict) -> bool:
 
 def _with_file_overrides(execution: dict, state: dict) -> dict:
     overrides = state.get("file_overrides") or {}
-    if not overrides or not execution.get("attachments"):
+    if not execution.get("attachments"):
         return execution
     return {**execution, "attachments": group_files.apply_file_overrides(execution["attachments"], overrides)}
 
