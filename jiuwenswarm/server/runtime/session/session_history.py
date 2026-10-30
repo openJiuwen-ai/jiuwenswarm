@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import queue
+import contextvars
 import re
 import tempfile
 import threading
@@ -27,7 +28,7 @@ from jiuwenswarm.common.utils import get_agent_sessions_dir
 logger = logging.getLogger(__name__)
 FILE_LOCK = threading.Lock()
 WRITE_QUEUE: queue.Queue[
-    tuple[str, dict[str, Any], str | None, Future[None] | None, int]
+    tuple[str, dict[str, Any], str | None, Future[None] | None, int, contextvars.Context | None]
 ] = queue.Queue(maxsize=20000)
 _QUEUE_ENQUEUE_LOCK = threading.Lock()
 _WORKER_STARTED = False
@@ -499,6 +500,16 @@ def _has_persistable_assistant_payload(
     if et == "chat.ask_user_answer":
         answers = payload.get("answers")
         return isinstance(answers, list) and bool(answers)
+    # Prompt / usage capture records — no display content but persisted so
+    # the exact LLM prompt can be retrieved offline.
+    if et == "chat.llm_call_start" and str(payload.get("prompt") or "").strip():
+        return True
+    if et == "chat.usage_metadata" and payload.get("metadata"):
+        return True
+    # llm_call_end closes a model call; keep it even when the call produced no
+    # text (e.g. a tool-calling call) so start/end stay symmetric in the timeline.
+    if et == "chat.llm_call_end":
+        return True
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False
@@ -1319,15 +1330,18 @@ def _ensure_worker_started() -> None:
 
         def _worker() -> None:
             while True:
-                sid, item, subagent_id, receipt, generation = WRITE_QUEUE.get()
+                sid, item, subagent_id, receipt, generation, context = WRITE_QUEUE.get()
                 try:
                     if sid is None:
                         item.set()
                         continue
-                    from jiuwenswarm.server.runtime.session import lifecycle as lc
-                    with lc.resource_lock("session", sid):
-                        lc.write_guard(sid, generation)
-                        _write_item(sid, item, subagent_id=subagent_id)
+
+                    def write() -> None:
+                        from jiuwenswarm.server.runtime.session import lifecycle as lc
+                        with lc.resource_lock("session", sid):
+                            lc.write_guard(sid, generation)
+                            _write_item(sid, item, subagent_id=subagent_id)
+                    context.run(write)
                 except Exception as exc:  # noqa: BLE001
                     _settle_history_receipt(receipt, error=exc)
                     logger.warning("history 异步写入失败: %s", exc)
@@ -1346,7 +1360,7 @@ def flush_pending_writes(timeout: float = 10) -> bool:
     deadline = time.monotonic() + timeout
     barrier = threading.Event()
     try:
-        WRITE_QUEUE.put((None, barrier, None, None, 0), timeout=timeout)
+        WRITE_QUEUE.put((None, barrier, None, None, 0, None), timeout=timeout)
     except queue.Full:
         return False
     return barrier.wait(max(0, deadline - time.monotonic()))
@@ -1396,13 +1410,18 @@ def _enqueue_history_item(
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     generation = lc.state("session", session_id).get("generation", 0)
     normalized_subagent_id = (subagent_id or "").strip() or None
+    context = contextvars.copy_context()
     with _QUEUE_ENQUEUE_LOCK:
         try:
-            WRITE_QUEUE.put_nowait((session_id, item, normalized_subagent_id, receipt, generation))
+            WRITE_QUEUE.put_nowait(
+                (session_id, item, normalized_subagent_id, receipt, generation, context)
+            )
         except queue.Full:
             # A synchronous disk-write fallback can overtake queued records.
             # Block only under backpressure so request boundaries remain FIFO.
-            WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt, generation))
+            WRITE_QUEUE.put(
+                (session_id, item, normalized_subagent_id, receipt, generation, context)
+            )
 
 
 def resolve_final_record_timestamp(

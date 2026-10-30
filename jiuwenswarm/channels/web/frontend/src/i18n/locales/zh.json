@@ -1,4 +1,15 @@
 {
+  "enterpriseEntry": {
+    "invalidIdentity": "Identity 未返回用户标识。",
+    "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
+    "loadFailed": "加载 Agent 上下文失败。",
+    "switchFailed": "切换身份失败。",
+    "errorTitle": "无法进入工作空间",
+    "loadingTitle": "正在加载工作空间",
+    "loading": "正在读取当前账号可用的 Agent。",
+    "retry": "重试",
+    "login": "前往登录"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",
@@ -47,7 +58,7 @@
     "work": "任务",
     "agent": "专家",
     "design": "设计",
-    "experiments": "实验",
+    "experiments": "RSI",
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
@@ -57,6 +68,10 @@
     "logs": "日志",
     "update": "更新",
     "personalContext": "知识"
+  },
+  "experts": {
+    "podStarting": "正在启动专家运行环境，请稍候",
+    "podStartTimeout": "专家运行环境启动超时，请稍后重试"
   },
   "applicationPlugins": {
     "title": "应用插件",
@@ -906,7 +921,10 @@
         "title": "语音转写",
         "description": "开启后，任务对话可以使用麦克风进行语音转写。"
       },
-      "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
+      "skill_evolution": {
+        "title": "本地技能自动演进与沉淀",
+        "description": "控制本地技能的自动演进和沉淀"
+      },
       "symphony_evolution_enabled": {
         "title": "发现技能包",
         "description": "任务结束后从执行经验中沉淀技能组合，自动发现技能包"
@@ -959,28 +977,47 @@
         "title": "视频生成",
         "description": "启用视频生成工具（文生视频）；关闭后仍保留已保存的模型配置。"
       },
-      "visual_gen_provider": { "title": "模型提供商" },
-      "visual_gen_protocol": { "title": "协议" },
-      "visual_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
-      "visual_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
-      "visual_gen_model": { "title": "模型名称", "placeholder": "例如 google/gemini-3.1-flash-image" },
+      "visual_gen_provider": {
+        "title": "模型提供商"
+      },
+      "visual_gen_protocol": {
+        "title": "协议"
+      },
+      "visual_gen_api_base": {
+        "title": "API 地址",
+        "placeholder": "例如 https://openrouter.ai/api/v1"
+      },
+      "visual_gen_api_key": {
+        "title": "API 密钥",
+        "placeholder": "例如 sk-..."
+      },
+      "visual_gen_model": {
+        "title": "模型名称",
+        "placeholder": "例如 google/gemini-3.1-flash-image"
+      },
       "visual_gen_enabled": {
         "title": "图像生成",
         "description": "启用图像生成工具（文生图）；关闭后仍保留已保存的模型配置。"
       },
-      "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
-      "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
+      "permissions_mode": {
+        "title": "全局权限模式",
+        "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。"
+      },
+      "a2ui_enabled": {
+        "title": "启用 A2UI",
+        "description": "允许将支持的结果渲染成交互式界面。"
+      },
       "rsi_enabled": {
         "title": "启用 RSI",
-        "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
+        "description": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。"
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
         "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
       },
       "team_organization_ui_enabled": {
-        "title": "启用 Team Organization",
-        "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
+        "title": "启用 Team Organization 界面",
+        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI 工作流集成",
@@ -1001,6 +1038,10 @@
       "team_member_messaging_enabled": {
         "title": "启用成员间通信",
         "description": "允许成员之间直接发送消息（点对点、多播、广播），无需经 Leader 转达；任务指派与交接仍由 Leader 和调度框架负责。"
+      },
+      "team_member_subtasks_enabled": {
+        "title": "允许成员拆分子任务",
+        "description": "成员可以把正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后原任务暂停，子任务全部结束后带着结果恢复执行。子任务最多嵌套 2 层。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
@@ -2071,7 +2112,26 @@
     }
   },
   "sessionSidebar": {
-    "newSession": "新会话"
+    "newSession": "新会话",
+    "enterpriseContext": {
+      "user": "用户",
+      "userContext": "用户上下文",
+      "modeAria": "上下文设定方式",
+      "selectAgent": "选择 Agent",
+      "custom": "自定义",
+      "agentOrgLabel": "agent名称 | 组织名称 | 集群名称",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "jiuwenclawId": "jiuwenclaw_id",
+      "apply": "应用",
+      "switching": "正在切换...",
+      "logout": "注销登录",
+      "switchToManager": "进入管理面",
+      "customRequired": "请填写 bot_id、group_id、user_id、jiuwenclaw_id",
+      "noMatch": "没有匹配项",
+      "pleaseSelect": "请选择"
+    }
   },
   "offloadFiles": {
     "title": "离线文件",
@@ -3054,6 +3114,7 @@
     "tabs": {
       "mySkills": "我的技能",
       "marketplace": "技能广场",
+      "enterpriseSources": "企业技能源",
       "skillRetrieval": "技能检索",
       "skillGraph": "技能图谱"
     },
@@ -3061,13 +3122,18 @@
       "all": "全部",
       "enabled": "启用",
       "disabled": "禁用",
-      "builtin": "内置"
+      "builtin": "内置",
+      "prebuilt": "预置",
+      "user": "用户自装"
     },
     "mySkillsGroups": {
       "added": "已添加技能",
+      "prebuilt": "预置技能",
       "builtin": "内置技能",
       "skillPack": "技能包"
     },
+    "noPrebuiltSkills": "暂无预置技能",
+    "noUserSkills": "暂无用户自装技能",
     "skillTypes": {
       "skill": "技能包",
       "skillpack": "技能包",
@@ -3227,6 +3293,7 @@
       "cancel": "取消"
     },
     "builtIn": "内置",
+    "enterprisePrebuilt": "预置",
     "status": {
       "installed": "已安装",
       "notInstalled": "未安装",
@@ -3239,7 +3306,31 @@
       "clawhub": "ClawHub",
       "skillnet": "SkillNet",
       "teamskillshub": "TeamSkillsHub",
-      "unknown": "未知"
+      "unknown": "未知",
+      "swarmskillhub": "SwarmSkillHub",
+      "author": "作者",
+      "rating": "评分",
+      "downloads": "下载量",
+      "localVersion": "本地版本",
+      "updatedAt": "更新时间",
+      "searchPlaceholder": "搜索技能名称或描述",
+      "noResults": "暂无匹配的技能",
+      "noSources": "暂无可用技能源，请联系管理员配置",
+      "checkUpdates": "检查更新",
+      "prev": "上一页",
+      "next": "下一页",
+      "replaceConfirm": "技能 {{name}} 已安装，是否覆盖重装？",
+      "replaceConfirmTitle": "覆盖安装确认",
+      "errors": {
+        "loadFailed": "获取技能源失败",
+        "searchFailed": "搜索失败",
+        "installFailed": "安装失败",
+        "updateFailed": "更新失败"
+      },
+      "messages": {
+        "installed": "已安装：{{name}}",
+        "updated": "已更新：{{name}}"
+      }
     },
     "sourceLabel": "来源",
     "statusLabel": "状态",
@@ -3770,7 +3861,11 @@
       "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。",
       "uninstallGroupMessage": "确定要卸载专家团「{{name}}」吗？"
     },
-    "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作", "moreTagsTooltip": "更多标签：{{tags}}" },
+    "card": {
+      "open": "查看 {{name}} 详情",
+      "actions": "{{name}} 操作",
+      "moreTagsTooltip": "更多标签：{{tags}}"
+    },
     "states": {
       "installed": "已安装",
       "loadError": "专家列表加载失败，请重试。",
@@ -3942,7 +4037,10 @@
         "delete": "删除",
         "saving": "保存中…"
       },
-      "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作" },
+      "card": {
+        "open": "查看 {{name}} 详情",
+        "actions": "{{name}} 操作"
+      },
       "states": {
         "loadError": "专家团列表加载失败，请重试。",
         "detailError": "专家团详情加载失败，请重试。",
@@ -3969,7 +4067,10 @@
         "noDetails": "暂无更多详情",
         "filesUnavailable": "安装后即可查看该专家团的文件。"
       },
-      "files": { "loadError": "专家团文件列表加载失败，请重试。", "readError": "专家团文件读取失败，请重试。" },
+      "files": {
+        "loadError": "专家团文件列表加载失败，请重试。",
+        "readError": "专家团文件读取失败，请重试。"
+      },
       "form": {
         "title": "手动创建",
         "createAgentTab": "创建专家",
@@ -4374,6 +4475,9 @@
     "restoreDefaults": "恢复默认更新源",
     "currentVersion": "当前版本",
     "builtOn": "构建于",
+    "buildSource": "当前构建来源",
+    "branch": "分支",
+    "packageVersion": "包版本",
     "latestVersion": "最新版本",
     "state": "更新状态",
     "publishedAt": "发布时间",
@@ -4984,9 +5088,18 @@
       "expired": "已过期"
     },
     "schedule": {
-      "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
-      "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
-      "cron": { "hint": "支持 5 段（分 时 日 月 周）或与普通 Cron 任务相同的 7 段格式（秒 分 时 日 月 周 年）。" },
+      "tab": {
+        "interval": "按间隔",
+        "cron": "Cron 表达式",
+        "once": "单次"
+      },
+      "interval": {
+        "label": "每隔",
+        "unit": "分钟回到当前会话"
+      },
+      "cron": {
+        "hint": "支持 5 段（分 时 日 月 周）或与普通 Cron 任务相同的 7 段格式（秒 分 时 日 月 周 年）。"
+      },
       "once": {
         "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成",
         "dateLabel": "日期",
@@ -5099,18 +5212,18 @@
     }
   },
   "rsi": {
-    "title": "实验",
-    "createExperiment": "创建实验",
+    "title": "RSI",
+    "createExperiment": "创建 RSI 任务",
     "empty": {
-      "title": "暂无实验任务",
-      "hint": "我们支持创建Harness优化、论文优化和程序优化实验"
+      "title": "暂无 RSI 任务",
+      "hint": "支持创建 Harness 优化、论文优化和程序优化的 RSI 任务"
     },
     "intro": {
       "title": "RSI·递归自我改进",
       "lead": "让AI越用越强—从「会干活」到「越干越好」",
       "stepsTitle": "操作步骤",
-      "step1Title": "第一步：创建实验",
-      "step1Body": "选择实验场景：Harness 优化 / 产物优化（论文、程序），填写必要参数，点击「确定」，开始自动优化。",
+      "step1Title": "第一步：创建 RSI 任务",
+      "step1Body": "选择优化场景：Harness 优化 / 产物优化（论文、程序），填写必要参数，点击「创建」，开始自动优化。",
       "step2Title": "第二步：可视化优化过程",
       "step2Body": "实时可视训练进度条和得分曲线。 RSI 树搜索可视化，理解自动探索过程。全程自动迭代，无需人工干预。",
       "step3Title": "第三步：获得最优结果",
@@ -5122,15 +5235,15 @@
       "feature2Body": "把你的成品（论文 / 程序）交给 AI 反复打磨：生成多个优化候选，逐版检验评分，保留最好的一版继续迭代，直到产出最满意的那一版再交付给你。经过多轮打磨自动完成，质量稳步上升"
     },
     "list": {
-      "title": "RSI自进化实验",
+      "title": "RSI 任务",
       "loading": "加载中…",
-      "error": "加载实验列表失败"
+      "error": "加载 RSI 任务列表失败"
     },
     "createDialog": {
-      "title": "创建实验",
-      "nameLabel": "实验名称",
-      "namePlaceholder": "请输入实验名称",
-      "typeLabel": "实验类型",
+      "title": "创建 RSI 任务",
+      "nameLabel": "任务名称",
+      "namePlaceholder": "请输入任务名称",
+      "typeLabel": "任务类型",
       "typeHarness": "Harness 优化",
       "typeArtifact": "产物优化",
       "artifactSubtypeLabel": "产物子类型",
@@ -5175,7 +5288,7 @@
       "cancel": "取消",
       "infoBar": "请预先安装、调用evolve-design技能，创建产物优化的依赖项，填写程序路径",
       "validation": {
-        "nameRequired": "请输入实验名称",
+        "nameRequired": "请输入任务名称",
         "datasetRequired": "请选择数据集文件",
         "optimizerRequired": "请选择优化模型",
         "testerRequired": "请选择测试模型",
@@ -5276,13 +5389,13 @@
       "nodeId": "节点 ID",
       "nodeType": "生命周期",
       "close": "关闭",
-      "deleteTitle": "删除实验",
-      "deleteBody": "删除后实验数据不可恢复，确定删除该实验吗？",
-      "pauseTitle": "暂停实验",
-      "pauseBody": "暂停后将停止当前优化进程，确定暂停该实验吗？",
-      "stopTitle": "停止任务",
-      "stopBody": "停止后将终止当前优化任务，确定停止该实验吗？",
-      "queuedTitle": "本实验正在排队中",
+      "deleteTitle": "删除 RSI 任务",
+      "deleteBody": "删除后 RSI 任务数据不可恢复，确定删除该任务吗？",
+      "pauseTitle": "暂停 RSI 任务",
+      "pauseBody": "暂停后将停止当前优化进程，确定暂停该 RSI 任务吗？",
+      "stopTitle": "停止 RSI 任务",
+      "stopBody": "停止后将终止当前优化任务，确定停止该 RSI 任务吗？",
+      "queuedTitle": "当前 RSI 任务正在排队",
       "queuedHint": "下面还有 1 个任务正在优化中，请耐心等待"
     },
     "stage": {

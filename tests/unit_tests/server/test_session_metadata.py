@@ -3379,3 +3379,30 @@ class TestGetAllSessionsMetadataLifecycleVisibility:
         sessions, total = get_all_sessions_metadata()
         assert total == 1
         assert [item["session_id"] for item in sessions] == ["live"]
+
+
+def test_session_equipment_survives_full_metadata_write(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _enqueue_write,
+        get_session_equipment,
+        get_session_metadata,
+        init_session_metadata,
+        save_session_equipment,
+    )
+
+    init_session_metadata(
+        session_id="sess_expert",
+        channel_id="web",
+        user_id="user_1",
+        title="expert",
+    )
+    save_session_equipment("sess_expert", agent_template_name="pkg-a")
+    assert get_session_equipment("sess_expert")["agent_template_name"] == "pkg-a"
+
+    current = dict(get_session_metadata("sess_expert", cache_bust=True, enable_writeback=False))
+    current.pop("session_equipment", None)
+    current["title"] = "renamed"
+    _enqueue_write("sess_expert", current, sync_write=True, preserve_equipment=True)
+
+    assert get_session_equipment("sess_expert", cache_bust=True)["agent_template_name"] == "pkg-a"
+    assert _read_json(sessions_dir / "sess_expert" / "metadata.json")["title"] == "renamed"

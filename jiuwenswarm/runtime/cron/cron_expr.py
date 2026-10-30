@@ -1,15 +1,45 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
-
+from typing import Any
 from zoneinfo import ZoneInfo
 
 
 _MAX_YEARS_BETWEEN_MATCHES = 130
+# 提前唤醒默认量：0 = 到点执行。任务没填这个数时用它。
+_DEFAULT_WAKE_OFFSET_SECONDS = 0
 
 
 def cron_field_count(expr: str) -> int:
     return len(str(expr or "").split())
+
+
+def clamp_wake_offset_for_delay_seconds(
+    wake_offset_seconds: Any,
+    delay_seconds: float,
+    *,
+    default_when_missing: int = _DEFAULT_WAKE_OFFSET_SECONDS,
+) -> int:
+    """把提前唤醒的秒数缩小到不超过「离下次触发还剩多少秒」。
+
+    只跑一次的任务如果提前量比剩余等待时间还大，唤醒时刻会落在过去，
+    调度器会立刻误触发。delay 不是正数时直接返回 0（到点执行）。
+    """
+    delay = float(delay_seconds)
+    if delay <= 0:
+        return 0
+    if wake_offset_seconds is None:
+        requested = int(default_when_missing)
+    else:
+        try:
+            requested = int(wake_offset_seconds)
+        except (TypeError, ValueError):
+            requested = int(default_when_missing)
+    if requested < 0:
+        requested = 0
+    max_allowed = max(0, math.floor(delay))
+    return min(requested, max_allowed)
 
 
 def normalize_cron_expr(raw: str) -> str:
@@ -74,6 +104,14 @@ def validate_cron_expression(expr: str, *, timezone: str) -> None:
         raise ValueError(f"invalid cron expression: '{raw}'")
     _ = ZoneInfo(timezone)
     croniter(normalized, datetime.now(tz=ZoneInfo(timezone)), second_at_beginning=True)
+
+
+def is_croniter_no_next_date(exc: Exception) -> bool:
+    """表达式算不出下一次。常见于年份已经过去的一次性任务，这时视为过期。"""
+    return (
+        exc.__class__.__name__ == "CroniterBadDateError"
+        or "failed to find next date" in str(exc)
+    )
 
 
 def next_cron_datetime(cron_expr: str, base_dt: datetime) -> datetime:

@@ -130,9 +130,20 @@ async def test_group_request_routes_without_prompt_and_finishes_public_ack(monke
     monkeypatch.setattr(team_helpers, "update_session_metadata", Mock())
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", Mock())
     monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
-    request = _runtime_followup_request(
-        "session-group", "req-group",
-        params={"type": "group_chat", "mentions": mentions},
+    # AgentRequest (not SimpleNamespace): stream path uses dataclasses.replace().
+    # Active follow-ups need TeamExecutionContext + waiter_kind=NONE so the
+    # interact path does not attach an undrainable persistent waiter.
+    group_params = {"type": "group_chat", "mentions": mentions}
+    request = (
+        _runtime_followup_request("session-group", "req-group", group_params)
+        if active
+        else AgentRequest(
+            request_id="req-group",
+            channel_id="web",
+            session_id="session-group",
+            metadata={},
+            params={"mode": "team", **group_params},
+        )
     )
     chunks = [chunk async for chunk in team_helpers.process_team_message_stream(
         request, {"query": "讨论"}, object(),
@@ -7350,8 +7361,12 @@ async def test_broadcast_team_state_snapshot_replays_mirrored_workflow_members(m
 
 
 @pytest.mark.anyio
-async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(monkeypatch):
-    """A DB member already covering a run member id is not emitted twice."""
+@pytest.mark.parametrize("colliding_field", ["members", "departed_members"])
+async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(monkeypatch, colliding_field):
+    """A DB member already covering a run member id is not emitted twice.
+
+    A departed DB member still owns its id, so it blocks the replay too.
+    """
     broadcast_events: list[dict] = []
     run = WorkflowRunState(
         id="run-1",
@@ -7379,14 +7394,14 @@ async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(
     class _FakeMonitorHandler:
         @staticmethod
         async def get_team_snapshot():
-            return {
+            snapshot = {
                 "team_id": "team-snapshot-test",
-                "members": [
-                    {"member_id": "agent1", "status": "ready"},
-                    {"member_id": "run-1:a-claude", "status": "busy"},
-                ],
+                "members": [{"member_id": "agent1", "status": "ready"}],
+                "departed_members": [],
                 "tasks": [],
             }
+            snapshot[colliding_field].append({"member_id": "run-1:a-claude", "status": "busy"})
+            return snapshot
 
     class _FakeManager:
         @staticmethod

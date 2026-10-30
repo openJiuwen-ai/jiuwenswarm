@@ -8,6 +8,8 @@ import { isConversationModelGroupBlocked } from '../multi-session/state/conversa
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { readOutputOrder } from '../features/sessionOutput';
+import { isEnterprise } from '../edition';
+import { persistEnterpriseAttachments } from '../services/obsUpload';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
 import {
   assetKindFromMime,
@@ -80,6 +82,11 @@ import {
 import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
+import { getWebTransport } from '../utils/env';
+import {
+  ensureCronUserSeedFirst,
+  resolveCronPlaceholderTimestampIso,
+} from '../features/cron/cronSeedMessage';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -148,6 +155,7 @@ import { useAgentCatalogStore } from '../stores/agentCatalogStore';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
+import { isDepartedTeamMemberStatus, reconcileSnapshotRoster } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
@@ -1332,7 +1340,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const requestState = { revision: 0, changedMemberIds: new Set<string>() };
     teamMemberSnapshotRequestRef.current.set(sessionId, requestState);
     try {
-      const response = await request<{ members?: unknown; members_source?: string }>(
+      const response = await request<{ members?: unknown; departed_members?: unknown; members_source?: string }>(
         'team.snapshot',
         { session_id: sessionId },
         { timeoutMs: 5000 },
@@ -1342,12 +1350,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         requestState.revision !== 0
       ) return;
       if (response?.members_source !== 'live') return;
-      if (!Array.isArray(response?.members) || response.members.length === 0) return;
+      if (!Array.isArray(response?.members)) return;
+      // 旧后端不带 departed_members；新后端在队友全部离队时 members 为空，靠它收敛。
+      const rawDepartedMembers = Array.isArray(response.departed_members) ? response.departed_members : [];
+      if (response.members.length === 0 && rawDepartedMembers.length === 0) return;
       const runtime = useSessionStore.getState().getRuntime(sessionId);
       if (runtime?.mode !== 'team') return;
 
       const timestamp = Date.now();
-      const snapshotMembers = response.members.flatMap((item) => {
+      const knownMembers = [...runtime.teamMembers, ...(runtime.teamDepartedMembers ?? [])];
+      const toSnapshotMembers = (items: unknown[]) => items.flatMap((item) => {
         if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
         const snapshotMember = item as Record<string, unknown>;
         const memberId = typeof snapshotMember.member_id === 'string'
@@ -1355,7 +1367,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           : '';
         const status = typeof snapshotMember.status === 'string' ? snapshotMember.status : '';
         if (!memberId || !status) return [];
-        const existing = runtime.teamMembers.find((member) => member.member_id === memberId);
+        const existing = knownMembers.find((member) => member.member_id === memberId);
         return [{
           id: existing?.id ?? `team-snapshot-${memberId}`,
           member_id: memberId,
@@ -1386,31 +1398,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               : existing?.display_name,
         }];
       });
-      if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
+      const snapshotMembers = toSnapshotMembers(response.members);
+      if (snapshotMembers.length !== response.members.length) return;
+      // 旧后端把离队成员混在 members 里，这里与 departed_members 合成同一份离队目录。
+      const departedMembers = [
+        ...toSnapshotMembers(rawDepartedMembers),
+        ...snapshotMembers.filter((member) => isDepartedTeamMemberStatus(member.status)),
+      ];
 
       const changedMemberIds = requestState.changedMemberIds;
-      const reconciledMemberIds = snapshotMembers
-        .filter((member) => !changedMemberIds.has(member.member_id))
-        .map((member) => member.member_id);
-      if (reconciledMemberIds.length === 0) return;
-
-      const snapshotMemberIds = new Set(snapshotMembers.map((member) => member.member_id));
-      const members = snapshotMembers.flatMap((member) => {
-        if (!changedMemberIds.has(member.member_id)) return [member];
-        const currentMember = runtime.teamMembers.find(
-          (candidate) => candidate.member_id === member.member_id
-        );
-        return currentMember ? [currentMember] : [];
-      });
-      for (const member of runtime.teamMembers) {
-        if (changedMemberIds.has(member.member_id) && !snapshotMemberIds.has(member.member_id)) {
-          members.push(member);
-        }
-      }
+      const reconciled = reconcileSnapshotRoster(
+        snapshotMembers,
+        new Set(departedMembers.map((member) => member.member_id)),
+        runtime.teamMembers,
+        changedMemberIds,
+      );
+      if (!reconciled) return;
+      const { members, reconciledMemberIds } = reconciled;
 
       const currentRuntime = useSessionStore.getState().getRuntime(sessionId);
       if (currentRuntime?.mode !== 'team') return;
       useSessionStore.getState().setTeamMembers(sessionId, members);
+      for (const member of departedMembers) {
+        useSessionStore.getState().rememberDepartedTeamMember(sessionId, member);
+      }
       if (changedMemberIds.size === 0) {
         useSessionStore.getState().clearTeamConnectionPresentation(sessionId);
       } else {
@@ -1754,6 +1765,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const persistMedia = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
+      if (isEnterprise()) {
+        return persistEnterpriseAttachments(request, content, sessionId, mediaItems, 'image');
+      }
       return request<PersistMediaResponse>(
         'media.persist',
         {
@@ -1780,6 +1794,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const persistDocuments = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
+      if (isEnterprise()) {
+        return persistEnterpriseAttachments(request, content, sessionId, mediaItems, 'document');
+      }
       return request<PersistMediaResponse>(
         'document.persist',
         {
@@ -2127,6 +2144,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 不再预先创建助手消息，而是在收到第一个 content_chunk 时创建
       // 这样工具调用会先显示，然后才是助手的回复
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
       // 标记本地发起的发送，用于 processing_status 处理器区分"旧任务被打断"
@@ -2347,6 +2368,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       userInputVersionRef.current += 1;
       stopAllTts();
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
 
@@ -3046,12 +3071,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const sessionStore = useSessionStore.getState();
       const runtime = sessionStore.getRuntime(sessionId);
       const currentMembers = runtime?.teamMembers ?? [];
+      const departed = currentMembers.find((member) => member.member_id === normalizedMemberId);
+      if (!departed) {
+        return;
+      }
       const nextMembers = currentMembers.filter(
         (member) => member.member_id !== normalizedMemberId
       );
-      if (nextMembers.length === currentMembers.length) {
-        return;
-      }
+      // 离开名册但保留身份：它做过的任务卡片还要按 member_id 显示名字 / 头像。
+      sessionStore.rememberDepartedTeamMember(sessionId, { ...departed, status: 'shut_down' });
       clearPendingTeamMemberContextCompressionStart(sessionId, normalizedMemberId);
       clearTeamMemberContextCompressionStatus(sessionId, normalizedMemberId);
       sessionStore.setTeamMembers(sessionId, nextMembers);
@@ -4004,6 +4032,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             /正在执行中，结果稍后补发/.test(content) ||
             /^\[cron\].*正在执行中/.test(content);
 
+          // 占位比任务原话先到时，用「立即执行」时记下的原文把用户气泡排到最上。
+          if (isCronPlaceholderContent) {
+            const cronJobIdForSeed =
+              typeof cronMeta?.job_id === 'string' ? cronMeta.job_id.trim() : '';
+            const pendingSeed = cronJobIdForSeed
+              ? useCronStore.getState().pendingRunSeedByJobId[cronJobIdForSeed] || ''
+              : '';
+            if (pendingSeed) {
+              ensureCronUserSeedFirst(sessionId, pendingSeed);
+            }
+          }
+          // 聊天区按时间戳排序：占位时间必须晚于任务原话，否则原话会被排到下面。
+          const messageTimestampIso = isCronPlaceholderContent
+            ? resolveCronPlaceholderTimestampIso(sessionId, completedAtIso)
+            : completedAtIso;
+
           if (!isCronPlaceholderContent) {
             let placeholderId: string | null = null;
             if (cronRunId) {
@@ -4134,23 +4178,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             return;
           }
 
-          const rewriteId = findAssistantSegmentIdForFinal(
-            messages,
-            content,
-            preferredSegmentId || streamId
-          );
-          if (rewriteId) {
-            useChatStore.getState().updateMessage(sessionId, rewriteId, {
+          // 定时任务推送的终稿不要并进历史里较早的助手气泡：执行中途拉过半截
+          // 历史时，findAssistantSegmentIdForFinal 可能改到上面某条，页面底部仍
+          // 像「没出结果」，一刷新才按完整历史排对。
+          if (!cronMeta) {
+            const rewriteId = findAssistantSegmentIdForFinal(
+              messages,
               content,
-              isStreaming: false,
-              completedAt: completedAtIso,
-              ...agentIdentityPatch,
-              ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
-            });
-            if (!content.includes('MEDIA:')) {
-              handleTtsPlayback(sessionId, rewriteId, content);
+              preferredSegmentId || streamId
+            );
+            if (rewriteId) {
+              useChatStore.getState().updateMessage(sessionId, rewriteId, {
+                content,
+                isStreaming: false,
+                completedAt: completedAtIso,
+                ...agentIdentityPatch,
+                ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
+              });
+              if (!content.includes('MEDIA:')) {
+                handleTtsPlayback(sessionId, rewriteId, content);
+              }
+              return;
             }
-            return;
           }
           const last = messages[messages.length - 1];
           if (last?.role === 'assistant' && last.content === content) {
@@ -4166,7 +4215,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             id: messageId,
             role: 'assistant',
             content,
-            timestamp: completedAtIso,
+            timestamp: messageTimestampIso,
             completedAt: completedAtIso,
             ...agentIdentityPatch,
             isProactiveRecommendation,
@@ -5464,9 +5513,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (memberId && e.status && isRunningTeamTaskStatus(e.status)) {
             clearPendingTeamConnectionMember(sessionId, memberId);
             useSessionStore.getState().clearTeamConnectionPresentation(sessionId, memberId);
-          }
-          if (e.type === 'team.task.created' && e.task_id) {
-            useSessionStore.getState().registerConfirmedTeamTaskCreation(sessionId, e.task_id);
           }
           useSessionStore.getState().addTeamTaskEvent(sessionId, {
             id: `task-${Date.now()}`,

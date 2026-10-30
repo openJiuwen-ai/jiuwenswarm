@@ -5,6 +5,7 @@ import { Message, type TodoItem } from '../../types';
 import { type ParsedTeamEvent, parseTeamEventMessage } from './teamEventUtils';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { openTeamPanel } from '../../features/teamPanelState';
+import { isReachableTeamMemberStatus } from '../../features/teamMemberDeparture';
 import TeamProcessIcon from '../../assets/team-process.svg?react';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
@@ -113,8 +114,7 @@ function isVisibleTeamMember(memberId?: string): memberId is string {
 }
 
 function isActiveTeamMember(member: TeamMemberLike): boolean {
-  const status = `${member.status || ''}`.toLowerCase();
-  return isVisibleTeamMember(member.member_id) && !status.includes('shutdown') && !status.includes('down');
+  return isVisibleTeamMember(member.member_id) && isReachableTeamMemberStatus(member.status);
 }
 
 function pickTaskActivity(

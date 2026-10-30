@@ -50,8 +50,54 @@ def _ensure_req_method(name: str, value: str) -> None:
     ReqMethod._member_names_.append(name)  # pylint: disable=protected-access
 
 
-# 移除 composer 附件 chip 时同时清理 session-asset 注册表项（见 session_assets.py）；
-# 协议包当前 pin 尚未定义该成员。
+_ensure_req_method("PROMPT_SUGGESTION_CANCEL", "prompt_suggestion.cancel")
+_ensure_req_method("RECOMMENDATION", "recommendation.job")
+# Dispatch compares this member on every request. The pinned protocol package
+# does not define it, so a missing attribute fails chat and session creation
+# before their own handlers run.
+_ensure_req_method("MCP_OAUTH_START", "mcp.oauth.start")
+# Trajectory reads are served by the AgentServer. The pinned protocol package
+# does not define these members yet; registration leaves a matching upstream
+# member in place once that package ships the same name and value.
+_ensure_req_method("TRAJECTORY_SUBJECTS_LIST", "trajectory.subjects.list")
+_ensure_req_method("TRAJECTORY_STREAM_FRAMES_GET", "trajectory.stream_frames.get")
+_ensure_req_method("TRAJECTORY_SEQUENCES_GET", "trajectory.sequences.get")
+_ensure_req_method("TRAJECTORY_CHECKPOINTS_GET", "trajectory.checkpoints.get")
+_ensure_req_method("TRAJECTORY_USAGE_GET", "trajectory.usage.get")
+_ensure_req_method("TRAJECTORY_SUBJECT_GET", "trajectory.subject.get")
+_ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
+_ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
+_ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
+_ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
+# Enterprise verify still registers these wire methods in HANDLERS / adapters,
+# but the pinned openjiuwen-protocol revision does not ship them yet. Without
+# ensure, importing dispatch crashes the runtime worker and HTTP :8766 never
+# binds (readiness stays connection-refused).
+_ensure_req_method("FILE_READ_UPLOAD_CHUNK", "file.read_upload_chunk")
+_ensure_req_method("WORKSPACE_TREE", "workspace.tree")
+_ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
+_ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
+_ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
+_ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
+_ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
+_ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
+_ensure_req_method("SKILLS_UPDATES_CHECK", "skills.updates.check")
+_ensure_req_method("SKILLS_UPDATE", "skills.update")
+_ensure_req_method("SKILLS_ENTERPRISE_LIST", "skills.enterprise.list")
+_ensure_req_method("SKILLS_ENTERPRISE_INSTALL", "skills.enterprise.install")
+_ensure_req_method("SKILLS_ENTERPRISE_UNINSTALL", "skills.enterprise.uninstall")
+_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_PROVIDERS", "skills.enterprise.source.providers")
+_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_SEARCH", "skills.enterprise.source.search")
+_ensure_req_method("SKILLDEV_START", "skilldev.start")
+_ensure_req_method("SKILLDEV_RESPOND", "skilldev.respond")
+_ensure_req_method("SKILLDEV_STATUS", "skilldev.status")
+_ensure_req_method("SKILLDEV_DOWNLOAD", "skilldev.download")
+_ensure_req_method("SKILLDEV_CANCEL", "skilldev.cancel")
+_ensure_req_method("SKILLDEV_FILE_LIST", "skilldev.file.list")
+_ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
+# Removing a composer attachment chip should also drop the session-asset
+# registry entry it created (see session_assets.py). The pinned protocol
+# package does not define this member yet.
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
 
 __all__ = [

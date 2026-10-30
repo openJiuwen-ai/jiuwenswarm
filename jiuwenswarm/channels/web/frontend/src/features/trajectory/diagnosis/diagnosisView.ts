@@ -344,7 +344,12 @@ export interface FindingCounts {
   legacy: boolean;
 }
 
-/** How many reward failure causes, skill suggestions and experience verdicts a record reports. */
+/**
+ * How many findings a record reports.
+ *
+ * Artifact causes that answer the same problem count once, matching the
+ * grouped cards. Skill and experience items still count one each.
+ */
 export function findingCounts(record: DiagnosisRecord): FindingCounts {
   if (usesLegacyFindings(record)) {
     const experience = (record.root_causes ?? []).filter((cause) => (
@@ -359,7 +364,7 @@ export function findingCounts(record: DiagnosisRecord): FindingCounts {
   }
   const judges = record.evolution_judge ?? [];
   return {
-    causes: (record.reward_failure_causes ?? []).length,
+    causes: artifactCauseGroups(record.reward_failure_causes ?? []).length,
     skill: judges.filter(judge => judge.category === 'skill').length,
     experience: judges.filter(judge => judge.category === 'experience').length,
     legacy: false,
@@ -379,6 +384,62 @@ export interface FindingItem {
  * Every finding of a new-interface record in display order: Reward failure causes first, then skill
  * judgments, then the experience verdict (at most one).
  */
+export interface ArtifactCauseGroup {
+  /** Id of the first cause; the card key stays stable as later causes arrive. */
+  id: string;
+  causes: RewardFailureCause[];
+}
+
+/**
+ * Group deliverable causes that answer the same problem.
+ *
+ * A reward signal may be attributed at several steps. Those causes share one
+ * problem text, so the findings list shows that text once and one merged
+ * reason. Causes stay separate records: each entry's evidence is still one
+ * subject.
+ */
+export function artifactCauseGroups(causes: readonly RewardFailureCause[]): ArtifactCauseGroup[] {
+  const groups: ArtifactCauseGroup[] = [];
+  const byKey = new Map<string, ArtifactCauseGroup>();
+  for (const [index, cause] of causes.entries()) {
+    const key = artifactProblemKey(cause, index);
+    const existing = byKey.get(key);
+    if (existing === undefined) {
+      const created = { id: cause.id, causes: [cause] };
+      byKey.set(key, created);
+      groups.push(created);
+    } else {
+      existing.causes.push(cause);
+    }
+  }
+  return groups;
+}
+
+/** Distinct reason texts of one card, in report order. */
+export function causeReasonParts(causes: readonly Pick<RewardFailureCause, 'summary'>[]): string[] {
+  const parts: string[] = [];
+  for (const cause of causes) {
+    const text = cause.summary.trim();
+    if (text === '' || parts.includes(text)) continue;
+    parts.push(text);
+  }
+  return parts;
+}
+
+/** One reason line for a card. Identical summaries are kept once; several are numbered. */
+export function mergedCauseReason(causes: readonly Pick<RewardFailureCause, 'summary'>[]): string {
+  return numberedSuggestions(causeReasonParts(causes), '\n');
+}
+
+/** Identity of the problem a cause answers. A cause with no shared problem stays alone. */
+function artifactProblemKey(cause: RewardFailureCause, index: number): string {
+  const signalId = (cause.signal?.id ?? '').trim();
+  if (signalId !== '') return `signal:${signalId}`;
+  const problem = signalEvidenceBody(cause.signal, cause.dimension);
+  if (problem === '') return `cause:${index}`;
+  return `text:${cause.dimension.trim()}\n${problem}`;
+}
+
 export function findingItems(record: DiagnosisRecord): FindingItem[] {
   const causes = (record.reward_failure_causes ?? []).map(cause => ({
     kind: 'artifact' as const,

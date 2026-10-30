@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import subprocess
 import sys
 from typing import Any
@@ -89,14 +90,39 @@ def write_json(path: Path, data: dict[str, Any], pretty: bool = True) -> None:
     path.write_text(encoded + "\n", encoding="utf-8")
 
 
+def _which(tool: str, *fallbacks: str) -> str | None:
+    """Absolute path of an external tool, or None when it is unavailable.
+
+    External programs are invoked through this resolved path rather than a bare
+    name left to PATH lookup. `fallbacks` covers the usual install locations for
+    when PATH is minimal (CI sandboxes, service contexts).
+    """
+    found = shutil.which(tool)
+    if found:
+        return os.path.abspath(found)
+    for candidate in fallbacks:
+        if os.path.isabs(candidate) and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+GIT = _which("git", "/usr/bin/git", "/usr/local/bin/git", "/bin/git",
+             r"C:\Program Files\Git\cmd\git.exe")
+
+
 def run_git(root: Path, *args: str) -> str | None:
+    if GIT is None:
+        return None
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), *args],
+            [GIT, "-C", str(root), *args],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # git always writes UTF-8 (branch names, commits, file names).
+            encoding="utf-8",
+            errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
         return None

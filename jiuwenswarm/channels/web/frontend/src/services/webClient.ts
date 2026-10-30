@@ -8,9 +8,12 @@ import {
   WsRequest,
   WsResponse,
 } from '../types';
-import { getWsBase } from '../utils/env';
+import { getWebTransport, getWsBase } from '../utils/env';
 import { resolveUserId } from '../utils/userId';
+import { WebHttpClient } from './webHttpClient';
 import i18n from '../i18n';
+import { appendRuntimeScopeQuery } from './runtimeScope';
+import { withExpertUiLanguage } from './expertUiLanguage';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
 import { RuntimeResume } from './runtimeResume';
@@ -29,6 +32,20 @@ interface PendingRequest {
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RECOVERY_ATTEMPTS = 3;
+
+/** 暂停期间暂存、恢复后回放的流式事件 */
+export const PAUSABLE_STREAM_EVENTS = new Set([
+  'chat.delta', 'chat.final', 'chat.media', 'chat.file',
+  'chat.tool_call', 'chat.tool_result', 'chat.tool_update',
+  'chat.reasoning',
+  'todo.updated', 'context.compressed', 'context.usage',
+  'chat.subtask_update', 'chat.subagent_activity', 'chat.usage_summary',
+]);
+
+export interface PauseBufferHook {
+  isActive: () => boolean;
+  onBuffer: (event: WsEvent) => void;
+}
 
 const LEGACY_EVENT_MAP: Record<string, string> = {
   connection_ack: 'connection.ack',
@@ -294,7 +311,7 @@ class WebClient {
       type: 'req',
       id,
       method,
-      params: params ?? {},
+      params: withExpertUiLanguage(method, params),
       ...(options.isStream ? { is_stream: true } : {}),
     };
 
@@ -639,6 +656,11 @@ class WebClient {
     this.sessionEventGate.dispatch(event);
   }
 
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。长连接模式用不到。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
+  }
+
   private dispatchEventNow(event: WsEvent): void {
     const handlers = this.handlers.get(event.event);
     if (!handlers || handlers.size === 0) {
@@ -699,11 +721,9 @@ class WebClient {
     if (options.apiBase) params.set('api_base', options.apiBase);
     if (options.model) params.set('model', options.model);
     if (options.projectDir) params.set('project_dir', options.projectDir);
-    // user_id 来自 URL ?user_id= 或 localStorage（见 utils/userId.ts），
-    // 供 gateway 为 faas 注入 X-Session-Context（CreateSandbox 绑定用户标识）。
-    // 浏览器 new WebSocket 无法设置自定义 header，只能走 query string。
-    const userId = resolveUserId();
-    if (userId) params.set('user_id', userId);
+    // 浏览器 new WebSocket 无法设置自定义 header，身份走 query：
+    // user_id / group_id / bot_id（见 runtimeScope.ts；个人版可仅有 user_id）。
+    appendRuntimeScopeQuery(params);
     const query = params.toString();
     const target = `${base}${path}`;
     return query ? `${target}?${query}` : target;
@@ -735,7 +755,8 @@ class WebClient {
   }
 }
 
-export const webClient = new WebClient();
+export const webClient =
+  getWebTransport() === 'http' ? new WebHttpClient() : new WebClient();
 
 export async function webRequest<T = unknown>(
   method: string,

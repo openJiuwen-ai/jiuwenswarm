@@ -30,29 +30,17 @@ def _tool(directory, name, source):
     target.chmod(0o755)
 
 
-@pytest.mark.parametrize("mode", ["success", "untrusted", "wrong-id", "swap-failure", "launch-failure", "licensed", "worker-failure", "shutdown-failed", "shutdown-pending", "shutdown-missing"])
+@pytest.mark.parametrize("mode", ["success", "untrusted", "wrong-id", "swap-failure", "launch-failure", "licensed"])
 def test_real_helper_preserves_or_replaces_app(tmp_path, mode):
     destination = tmp_path / "installed" / "Work 'Swarm.app"
     incoming = tmp_path / "incoming" / "Work 'Swarm.app"
     _bundle(destination, "old")
-    backend = destination / "Contents/Resources/backend/workswarm"
-    backend.parent.mkdir(parents=True)
-    backend.write_text('''#!/bin/bash
-set -eu
-while [ "$1" != --shutdown-receipt ]; do shift; done
-test "$(cat "$2")" = ok
-[ "$TEST_MODE" != worker-failure ]
-''')
-    backend.chmod(0o755)
     _bundle(incoming, "new", "wrong.id" if mode == "wrong-id" else "com.example.workswarm")
     tools = tmp_path / "tools"
     tools.mkdir()
     installer = tmp_path / "update.dmg"
     installer.touch()
     log = tmp_path / "update.log"
-    receipt = tmp_path / "shutdown.result"
-    if mode != "shutdown-missing":
-        receipt.write_text({"shutdown-failed": "failed\n", "shutdown-pending": "pending\n"}.get(mode, "ok\n"))
     _tool(tools, "hdiutil", '''
 case "$1" in
 verify) exit 0 ;;
@@ -79,7 +67,7 @@ exec /bin/mv "$@"
            "FIXTURE_APP": str(incoming), "TEST_MODE": mode}
     result = subprocess.run(
         ["/bin/bash", str(HELPER), str(installer), str(destination), "99999999",
-         "", "", str(log), "arm64", str(backend), str(receipt)],
+         "", "", str(log), "arm64"],
         env=env, capture_output=True, text=True, timeout=15, check=False,
     )
     contents = (destination / "Contents/MacOS/Electron").read_text()
@@ -90,6 +78,6 @@ exec /bin/mv "$@"
     else:
         assert result.returncode != 0, log.read_text()
         assert contents == "old"
-        if mode not in {"swap-failure", "launch-failure", "worker-failure", "shutdown-failed", "shutdown-pending", "shutdown-missing"}:
+        if mode not in {"swap-failure", "launch-failure"}:
             assert "READY" not in result.stdout
     assert not list(destination.parent.glob(".electron-update.*"))

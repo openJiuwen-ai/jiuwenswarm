@@ -37,6 +37,14 @@ from jiuwenswarm.server.runtime.harmonyos.harmonyos_project import (
 )
 
 
+@pytest.fixture(autouse=True)
+def register_config_dependencies(monkeypatch):
+    from jiuwenswarm.common import external_providers
+    from jiuwenswarm.server.runtime.a2ui import integration
+
+    monkeypatch.setitem(external_providers._providers, "a2ui", integration)
+
+
 def _request(
     method: ReqMethod,
     params: dict | None = None,

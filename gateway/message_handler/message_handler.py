@@ -136,6 +136,13 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "permission_interrupt",
     "evolution_interrupt",
 })
+# 定时任务会话里点允许之后，如果这一轮又冒出新的提问，纸条先留着。
+_CRON_RESUME_PAUSE_EVENTS = frozenset({
+    "chat.ask_user_question",
+    "plan.approval_required",
+    "harness.activate_interaction",
+    "chat.invocation_paused",
+})
 _A2UI_OPEN_TAG_MARKER = "<a2ui-json>"
 # 只有会进入 Agent turn 的流式请求才需要刷新 AgentServer 的 cron 工具视图。
 # 读取类流(history.get 等)不产生 turn,却会按任务属主触发项目准入 RPC。
@@ -3619,6 +3626,50 @@ class MessageHandler(ABC):
     def set_cron_controller(self, controller: Any) -> None:
         self._cron_controller = controller
 
+    @staticmethod
+    def _is_cron_permission_resume(env: Any, session_id: str | None) -> bool:
+        """这次请求是不是在定时任务会话里回答刚才那道题。"""
+        sid = str(session_id or "").strip()
+        if not sid.startswith("cron_") and not sid.startswith("__cron__"):
+            return False
+        params = getattr(env, "params", None)
+        if not isinstance(params, dict):
+            return False
+        source = str(params.get("source") or "").strip()
+        if source not in _INTERRUPT_RESUME_SOURCES:
+            return False
+        answers = params.get("answers")
+        request_id = str(params.get("request_id") or "").strip()
+        return bool(request_id) and isinstance(answers, list)
+
+    @staticmethod
+    def _cron_permission_resume_settled(
+        *,
+        tracking: bool,
+        cancelled: bool,
+        request_error: BaseException | None,
+        saw_another_pause: bool,
+    ) -> bool:
+        """点允许的这一轮写完、并且没有再冒出新提问，才擦纸条。"""
+        if not tracking or cancelled or saw_another_pause:
+            return False
+        return request_error is None
+
+    def _release_cron_permission_hold(self, session_id: str | None) -> None:
+        """续跑写完了：通知调度器擦掉「还在等」的纸条。"""
+        controller = self._cron_controller
+        mark = getattr(controller, "mark_permission_resume_succeeded", None)
+        if not callable(mark):
+            return
+        try:
+            mark(str(session_id or ""))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[MessageHandler] release cron permission hold failed session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
     def create_cron_scheduler(
         self,
         store: Any,
@@ -3669,7 +3720,17 @@ class MessageHandler(ABC):
         owner_user_id = str(user_id or "").strip()
 
         async def _get_owned_job(job_id: str) -> dict[str, Any] | None:
-            job = await cc.get_job(job_id)
+            job = await cc.get_job(
+                job_id,
+                project_id=(
+                    str(params.get("project_id") or "")
+                    if "project_id" in params
+                    else None
+                ),
+                user_id=owner_user_id,
+                group_id=str(params.get("group_id") or ""),
+                bot_id=str(params.get("bot_id") or ""),
+            )
             if job is None:
                 return None
             job_owner = (
@@ -3683,13 +3744,34 @@ class MessageHandler(ABC):
 
         try:
             if action == "list":
-                data = await cc.list_jobs(user_id=owner_user_id or None)
+                # 个人版：无 user 时传 None，与 develop 一致可列全部；有 user 时按属主筛。
+                # 企业版额外带 project/group/bot；控制器若忽略筛选，下面再兜一层归属。
+                data = await cc.list_jobs(
+                    project_id=(
+                        str(params.get("project_id") or "")
+                        if "project_id" in params
+                        else None
+                    ),
+                    user_id=owner_user_id or None,
+                    group_id=str(params.get("group_id") or ""),
+                    bot_id=str(params.get("bot_id") or ""),
+                )
+                if owner_user_id:
+                    data = [
+                        job
+                        for job in data
+                        if str(job.get("user_id") or "").strip() == owner_user_id
+                    ]
             elif action == "get":
                 job_id = str(params.get("job_id") or "")
                 if params.get("authoritative") is True:
                     if not isinstance(params.get("job_id"), str) or not job_id.strip():
                         raise ValueError("authoritative cron query requires a nonempty job_id")
-                    data = await cc.get_job(job_id)
+                    # 权威查询要区分「没有这条」和「不是这个用户的」。
+                    # 控制器的 get_job 对不上身份就返回空，所以这里直接问存储器。
+                    store = getattr(cc, "store", None)
+                    raw_job = await store.get_job(job_id.strip()) if store is not None else None
+                    data = raw_job.to_dict() if hasattr(raw_job, "to_dict") else raw_job
                     if data is not None:
                         if (
                             not isinstance(data, dict)
@@ -3713,10 +3795,42 @@ class MessageHandler(ABC):
                 params.pop("_auth_session", None)
                 if auth_session:
                     params["_auth_session"] = auth_session
+                # 对话里的 cron 工具通常不带 group/bot；Agent 侧空值还会被
+                # normalize 成 "default"。这里用原始 chat 请求的 routing 盖回去，
+                # 企业库才能按真实 bot_id 查对话模型，而不是查到空名单或占位名。
+                from jiuwenswarm.common.request_identity import (
+                    merge_routing_into_params,
+                    web_routing_identity,
+                )
+                from gateway.enterprise import is_enterprise
+
+                identity_meta = (
+                    request_metadata
+                    if isinstance(request_metadata, dict)
+                    else None
+                )
+                if identity_meta is None and isinstance(metadata, dict):
+                    identity_meta = metadata
+                params = merge_routing_into_params(
+                    params,
+                    identity_meta,
+                    override=True,
+                )
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
                 if owner_user_id:
                     params["user_id"] = owner_user_id
+                if is_enterprise():
+                    identity = web_routing_identity(identity_meta)
+                    for key in ("group_id", "bot_id"):
+                        routed = str(identity.get(key) or "").strip()
+                        if routed:
+                            params[key] = routed
+                            continue
+                        # 没有路由身份时丢掉占位 default，让控制器明确报缺身份，
+                        # 避免拿 bot_id=default 去企业库查出空名单再误报 Unknown model。
+                        if str(params.get(key) or "").strip() in {"", "default"}:
+                            params.pop(key, None)
                 # 从原始请求中获取 mode，覆盖 LLM 工具调用的默认值
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:
@@ -3735,27 +3849,59 @@ class MessageHandler(ABC):
                 if auth_session:
                     patch["_auth_session"] = auth_session
                 patch["_agentos_project_binding_verified"] = True
-                data = await cc.update_job(job_id, patch)
+                data = await cc.update_job(
+                    job_id,
+                    patch,
+                    user_id=owner_user_id,
+                    group_id=str(params.get("group_id") or ""),
+                    bot_id=str(params.get("bot_id") or ""),
+                )
             elif action == "delete":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
-                data = {"deleted": await cc.delete_job(job_id)}
+                data = {
+                    "deleted": await cc.delete_job(
+                        job_id,
+                        user_id=owner_user_id,
+                        group_id=str(params.get("group_id") or ""),
+                        bot_id=str(params.get("bot_id") or ""),
+                    )
+                }
             elif action == "toggle":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
-                data = await cc.toggle_job(job_id, bool(params.get("enabled")))
+                data = await cc.toggle_job(
+                    job_id,
+                    bool(params.get("enabled")),
+                    user_id=owner_user_id,
+                    group_id=str(params.get("group_id") or ""),
+                    bot_id=str(params.get("bot_id") or ""),
+                )
             elif action == "preview":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
-                data = await cc.preview_job(job_id, int(params.get("count", 5)))
+                data = await cc.preview_job(
+                    job_id,
+                    int(params.get("count", 5)),
+                    user_id=owner_user_id,
+                    group_id=str(params.get("group_id") or ""),
+                    bot_id=str(params.get("bot_id") or ""),
+                )
             elif action == "run_now":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
-                data = {"run_id": await cc.run_now(job_id)}
+                data = {
+                    "run_id": await cc.run_now(
+                        job_id,
+                        user_id=owner_user_id,
+                        group_id=str(params.get("group_id") or ""),
+                        bot_id=str(params.get("bot_id") or ""),
+                    )
+                }
                 # P2：把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer，让
                 # CronTools.run_now 能拿到非空 run_id（异步确认；失败不影响下方
                 # 面向 web 的 chat.tool_result 推送，AgentServer 侧等待方超时降级）。
@@ -4038,6 +4184,7 @@ class MessageHandler(ABC):
     @staticmethod
     def _should_emit_processing_status_for_stream(msg: "Message") -> bool:
         from openjiuwen_protocol.message import ReqMethod
+        from gateway.runtime.session_input import SessionInputMode
 
         if msg.req_method != ReqMethod.CHAT_SEND:
             return False
@@ -4046,7 +4193,15 @@ class MessageHandler(ABC):
         # authoritative is_processing=False of the streams that actually own
         # the turn (a blocked terminal leaves the busy map stuck on True).
         params = msg.params if isinstance(msg.params, dict) else {}
-        return params.get(TEAM_ATTACH_ONLY_PARAM) is not True
+        if params.get(TEAM_ATTACH_ONLY_PARAM) is True:
+            return False
+        # STEER 是注入已有 execution 的短回执流：正文仍走父流。若对本请求发
+        # processing_status=true，HTTP SSE 上父流仍在时又常被挡住补 false，
+        # 前端会卡在「执行中」；强行补 false 又会误清父轮（WS/正常场景回归）。
+        # 因此 STEER 不抬 session busy，交给父流的 true/false 管理。
+        if resolve_session_input_mode(params) is SessionInputMode.STEER:
+            return False
+        return True
 
     def _session_has_streams_blocking_processing_false(
         self, session_id: str | None, *, exclude_rid: str | None = None
@@ -4311,6 +4466,7 @@ class MessageHandler(ABC):
                 msg.channel_id,
                 is_processing=False,
                 app_id=msg.app_id or "",
+                metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
             )
             return
 
@@ -4344,6 +4500,7 @@ class MessageHandler(ABC):
             msg.channel_id,
             is_processing=False,
             app_id=msg.app_id or "",
+            metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
         )
 
     @staticmethod
@@ -5300,10 +5457,13 @@ class MessageHandler(ABC):
         rid = env.request_id or ""
         channel_id = env.channel or ""
         stream_app_id = self._stream_app_ids.get(rid, "")  # 提前捕获，_pop_stream_tracking 后会清除
-        stream_route = self._expert_stream_route(env.params)
         cancelled = False
+        stream_route = self._expert_stream_route(env.params)
         completion_notified = False
+        request_error: BaseException | None = None
         has_processing_status_false = False
+        track_cron_resume = self._is_cron_permission_resume(env, session_id)
+        saw_another_pause = False
         _proc_count = 0
         logger.info(
             "[MessageHandler] process_stream started: request_id=%s channel=%s session_id=%s",
@@ -5395,6 +5555,11 @@ class MessageHandler(ABC):
                     continue
                 if isinstance(payload, dict):
                     event_type = payload.get("event_type")
+                    if track_cron_resume and (
+                        str(event_type or "") in _CRON_RESUME_PAUSE_EVENTS
+                        or payload.get("awaiting_user_input") is True
+                    ):
+                        saw_another_pause = True
                     if event_type == "chat.processing_status":
                         if payload.get("is_processing") is False and owns_status:
                             has_processing_status_false = True
@@ -5432,6 +5597,7 @@ class MessageHandler(ABC):
             )
         # Background stream failures must reach the client before per-request cleanup.
         except Exception as exc:  # pylint: disable=broad-exception-caught
+            request_error = exc
             if resolve_session_input_mode(env.params) is not None:
                 from openjiuwen_protocol.message import Message, ReqMethod
 
@@ -5450,6 +5616,13 @@ class MessageHandler(ABC):
                 env, session_id, request_metadata, exc,
             )
         finally:
+            if self._cron_permission_resume_settled(
+                tracking=track_cron_resume,
+                cancelled=cancelled,
+                request_error=request_error,
+                saw_another_pause=saw_another_pause,
+            ):
+                self._release_cron_permission_hold(session_id)
             if (
                 not cancelled
                 and self._is_interrupt_evolution_approval_answer_payload(env.params)
@@ -5526,6 +5699,11 @@ class MessageHandler(ABC):
                         rid, session_id, channel_id,
                         is_processing=False, app_id=stream_app_id,
                         team_id=stream_route.get("team_id", ""),
+                        metadata=(
+                            request_metadata
+                            if isinstance(request_metadata, dict)
+                            else None
+                        ),
                     )
                     logger.info(
                         "[MessageHandler] 该 session 流式任务已结束（cancelled=%s），已发送 is_processing=false: session_id=%s",
@@ -5648,6 +5826,7 @@ class MessageHandler(ABC):
                 is_processing=True,
                 app_id=msg.app_id or "",
                 team_id=stream_route.get("team_id", ""),
+                metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
             )
         task = asyncio.create_task(
             self.process_stream(
@@ -5762,11 +5941,20 @@ class MessageHandler(ABC):
     async def _send_processing_status(
         self, request_id: str, session_id: str | None, channel_id: str, *,
         is_processing: bool, app_id: str = "", team_id: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """发送 chat.processing_status 事件到客户端。"""
         from openjiuwen_protocol.message import EventType, Message
 
         _mode = self._stream_modes.get(request_id)
+        # 带上入站 ws_id，避免 HTTP cancel-replace 时旧 false 经 session
+        # 兜底打进新 SSE（与 chat.delta/final 的 request-scoped 路由对齐）。
+        # 同时保留 stream mode，供飞书等通道透传。
+        status_metadata: dict[str, Any] = (
+            dict(metadata) if isinstance(metadata, dict) else {}
+        )
+        if _mode:
+            status_metadata["mode"] = _mode
         status_msg = Message(
             id=request_id,
             type="event",
@@ -5785,7 +5973,7 @@ class MessageHandler(ABC):
                 "is_complete": not is_processing
             },
             event_type=EventType.CHAT_PROCESSING_STATUS,
-            metadata={"mode": _mode} if _mode else None,
+            metadata=status_metadata or None,
         )
         await self.publish_robot_messages(status_msg)
         # 广播全局运行态快照给所有 ws 客户端（不按 session 路由），用于多窗口配置保存锁。
@@ -5885,6 +6073,77 @@ class MessageHandler(ABC):
         self._forward_task = asyncio.create_task(self._forward_loop())
         logger.info("[MessageHandler] 转发循环已启动 (_user_messages -> AgentServer -> _robot_messages)")
 
+    async def _interrupt_in_flight_sessions_on_shutdown(self) -> None:
+        """Shutdown 前按 session 通知 AgentServer 取消，避免多副本删 pod 后空跑.
+
+        本地 ``_stream_tasks`` 只是北向 consumer；真正任务在 AgentServer。
+        必须先 interrupt（lease 仍在），再拆本地 consumer，否则只会
+        ``output_detached``，LLM/工具继续跑到写流失败才停。
+        """
+        sessions: dict[tuple[str, str], str | None] = {}
+        for rid, sid in list(self._stream_sessions.items()):
+            sid_s = (sid or "").strip()
+            if not sid_s:
+                continue
+            channel_id = (self._stream_channels.get(rid) or "").strip() or "web"
+            key = (channel_id, sid_s)
+            if key not in sessions:
+                sessions[key] = self._stream_user_ids.get(rid)
+        for item in list(self._non_stream_chat_messages.values()):
+            sid_s = (getattr(item, "session_id", None) or "").strip()
+            if not sid_s:
+                continue
+            channel_id = (getattr(item, "channel_id", None) or "").strip() or "web"
+            key = (channel_id, sid_s)
+            if key not in sessions:
+                uid = getattr(item, "user_id", None)
+                sessions[key] = str(uid).strip() if uid is not None else None
+
+        if not sessions:
+            return
+
+        logger.info(
+            "[MessageHandler] shutdown interrupt in-flight sessions: count=%d sessions=%s",
+            len(sessions),
+            [sid for _, sid in sessions.keys()],
+        )
+
+        async def _interrupt_one(
+            channel_id: str, session_id: str, user_id: str | None
+        ) -> None:
+            stub = self._build_disconnect_cancel_message(
+                channel_id, session_id, user_id=user_id
+            )
+            try:
+                # 不传 CLIENT_DISCONNECT：pod 退出后无法重连续跑，走硬取消而非 pause。
+                await asyncio.wait_for(
+                    self._cancel_agent_work_for_session(
+                        stub,
+                        session_id,
+                        publish_interrupt_result=False,
+                        channel_id=channel_id,
+                        cancel_gateway_tasks=False,
+                        agent_notify="await",
+                    ),
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.warning(
+                    "[MessageHandler] shutdown interrupt failed: "
+                    "channel_id=%s session_id=%s",
+                    channel_id,
+                    session_id,
+                    exc_info=True,
+                )
+
+        await asyncio.gather(
+            *[
+                _interrupt_one(channel_id, session_id, user_id)
+                for (channel_id, session_id), user_id in sessions.items()
+            ],
+            return_exceptions=True,
+        )
+
     async def stop_forwarding(self) -> None:
         """停止转发任务."""
         self._running = False
@@ -5894,6 +6153,13 @@ class MessageHandler(ABC):
             self._forward_task.cancel()
             await asyncio.gather(self._forward_task, return_exceptions=True)
             self._forward_task = None
+
+        # 企业版删 gateway 副本前需先 interrupt AgentServer；个人版保持 develop：只拆本地 consumer。
+        from gateway.enterprise import is_enterprise
+
+        if is_enterprise():
+            await self._interrupt_in_flight_sessions_on_shutdown()
+
         unary_tasks = list(self._non_stream_chat_tasks.values())
         for task in unary_tasks:
             task.cancel()

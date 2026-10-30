@@ -21,10 +21,10 @@ class _CapturingCronController:
         self.create_params = dict(params)
         return {"id": "job-1"}
 
-    async def get_job(self, job_id: str) -> dict:
+    async def get_job(self, job_id: str, **_kwargs) -> dict:
         return {"id": job_id, "user_id": self.user_id}
 
-    async def update_job(self, job_id: str, patch: dict) -> dict:
+    async def update_job(self, job_id: str, patch: dict, **_kwargs) -> dict:
         _ = job_id
         self.update_patch = dict(patch)
         return {"id": "job-1"}
@@ -35,12 +35,12 @@ class _RunNowCronController:
         self.run_calls = 0
         self.user_id = ""
 
-    async def run_now(self, job_id: str) -> str:
+    async def run_now(self, job_id: str, **_kwargs) -> str:
         _ = job_id
         self.run_calls += 1
         return "job-1:1710000000"
 
-    async def get_job(self, job_id: str) -> dict:
+    async def get_job(self, job_id: str, **_kwargs) -> dict:
         return {"id": job_id, "user_id": self.user_id}
 
 
@@ -121,6 +121,51 @@ async def test_agentos_cron_push_marks_remote_project_binding_verified() -> None
     )
 
     assert controller.update_patch == {"_agentos_project_binding_verified": True}
+
+
+@pytest.mark.asyncio
+async def test_cron_push_create_replaces_default_tenant_with_chat_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """对话工具把空身份 normalize 成 default 时，Gateway 用原始 chat routing 盖回。"""
+    controller = _CapturingCronController()
+    handler = _bare_handler(object(), controller)
+    handler._stream_metadata["req-1"] = {
+        "user_id": "u-1",
+        "routing": {
+            "group_id": "g-real",
+            "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
+        },
+    }
+    monkeypatch.setattr(
+        "gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
+
+    await handler._handle_cron_push_payload(
+        payload={
+            "action": "create",
+            "data": {
+                "name": "job",
+                "group_id": "default",
+                "bot_id": "default",
+                "user_id": "forged-tool-user",
+            },
+        },
+        request_id="req-1",
+        channel_id="web",
+        session_id="sess-1",
+        metadata=None,
+        user_id="u-1",
+    )
+
+    assert controller.create_params is not None
+    assert controller.create_params["user_id"] == "u-1"
+    assert controller.create_params["group_id"] == "g-real"
+    assert (
+        controller.create_params["bot_id"]
+        == "06b75225-753d-40be-b23c-a13de9038734"
+    )
 
 
 @pytest.mark.asyncio
@@ -338,8 +383,8 @@ async def test_cron_command_id_survives_wire_projection_for_gateway_ack() -> Non
         "metadata": {"_jiuwenswarm_cron_owner_user_id": "user-a"},
         "body": {"command_id": "cmd-1", "action": "list", "status": "ok", "data": {}},
     })
-    async def _list_jobs(user_id=None) -> list[dict]:
-        assert user_id == "user-a"
+    async def _list_jobs(**kwargs) -> list[dict]:
+        assert kwargs.get("user_id") == "user-a"
         return []
 
     controller.list_jobs = _list_jobs

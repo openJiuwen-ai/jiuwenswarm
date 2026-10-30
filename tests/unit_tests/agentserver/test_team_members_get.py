@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for AgentWebSocketServer._handle_team_members_get (/join seat validation).
+"""Tests for handle_team_members_get (/join seat validation).
 
 路线 B 后 server 退化为纯查询透传：mismatch 校验与对外文案均在 gateway，
 server 只查 member、过滤 human_agent、回 ok/members。查不到 → ok=False
@@ -47,13 +47,12 @@ async def _invoke(
     team_name: str = "jiwen-team_sess-1",
     channel_id: str = "feishu",
 ):
-    """Call _handle_team_members_get with ``query_team_human_members_for_join`` mocked.
+    """Call handle_team_members_get with ``query_team_human_members_for_join`` mocked.
 
     helpers_result 是 query_team_human_members_for_join 的新返回值（list[dict]，
     未 role 过滤，由 server 过滤 human_agent）。
     """
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-    from jiuwenswarm.server import agent_ws_server
 
     ws = _FakeWS()
     lock = asyncio.Lock()
@@ -67,9 +66,10 @@ async def _invoke(
         ".query_team_human_members_for_join",
         _stub,
     ):
-        await agent_ws_server.AgentWebSocketServer._handle_team_members_get(
-            None, ws, request, lock
-        )
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.team import handle_team_members_get
+
+        await handle_team_members_get(build_ws_request_context(object(), ws, request, lock))
     assert len(ws.sent) == 1
     return parse_agent_server_wire_unary(json.loads(ws.sent[0]))
 
@@ -105,6 +105,30 @@ async def test_only_non_human_members_returns_not_ok() -> None:
     """helpers 有成员但全是 team_leader（无 human_agent）→ 过滤后空 → ok=False。"""
     resp = await _invoke([
         {"member_id": "leader-1", "role": "team_leader"},
+    ])
+
+    assert resp.ok is False
+    assert resp.payload.get("members") == []
+
+
+@pytest.mark.anyio
+async def test_departed_human_seats_are_excluded() -> None:
+    """已 shut_down 的 human_agent 席位不再可 /join；shutdown_requested / dormant 仍在册。"""
+    resp = await _invoke([
+        {"member_id": "gone-1", "role": "human_agent", "status": "shut_down"},
+        {"member_id": "leaving-1", "role": "human_agent", "status": "shutdown_requested"},
+        {"member_id": "sleeper-1", "role": "human_agent", "status": "dormant"},
+    ])
+
+    assert resp.ok is True
+    assert [m["member_id"] for m in resp.payload["members"]] == ["leaving-1", "sleeper-1"]
+
+
+@pytest.mark.anyio
+async def test_only_departed_human_seats_returns_not_ok() -> None:
+    """human_agent 席位全部离队 → 过滤后空 → ok=False。"""
+    resp = await _invoke([
+        {"member_id": "gone-1", "role": "human_agent", "status": "shut_down"},
     ])
 
     assert resp.ok is False

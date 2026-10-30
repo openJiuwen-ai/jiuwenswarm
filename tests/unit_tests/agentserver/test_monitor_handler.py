@@ -300,6 +300,7 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
                 "cli_agent": None,
             }
         ],
+        "departed_members": [],
         "tasks": [
             {
                 "task_id": "task-1",
@@ -313,6 +314,28 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
         ],
         "team_id": "team-1",
     }
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_moves_shut_down_members_to_departed() -> None:
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[
+                _FakeMember("worker-1"),
+                _FakeMember("retired", display_name="Retired", status="shut_down"),
+                _FakeMember("sleeper", status="dormant"),
+                _FakeMember("leaving", status="shutdown_requested"),
+            ],
+            leader_member_name=None,
+        ),
+        "sess-retired",
+    )
+
+    snapshot = await handler.get_team_snapshot()
+
+    assert snapshot is not None
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper", "leaving"]
+    assert [(m["member_id"], m["name"]) for m in snapshot["departed_members"]] == [("retired", "Retired")]
 
 
 @pytest.mark.anyio
@@ -348,6 +371,7 @@ async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> N
                 "cli_agent": None,
             },
         ],
+        "departed_members": [],
         "tasks": [],
         "team_id": "team-1",
     }
@@ -1095,7 +1119,7 @@ def test_task_body_event_types_contains_only_created_and_updated() -> None:
 #
 # ``get_team_snapshot`` feeds BOTH the ``team.task.status_snapshot`` live
 # broadcast (emitted by ``_broadcast_team_state_snapshot``) AND the
-# ``team.snapshot`` RPC (served by ``agent_ws_server._handle_team_snapshot``).
+# ``team.snapshot`` RPC (served by ``handle_team_snapshot``).
 # So applying truncation here covers both exits (design D4).
 # =====================================================================
 
@@ -1218,13 +1242,19 @@ async def test_get_team_snapshot_from_db_requires_session_and_team() -> None:
 
 @pytest.mark.anyio
 async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
-    """When monitor is down, bind session_id and read tasks/members from team.db."""
+    """When monitor is down, bind session_id and read tasks/members from team.db.
+
+    Departed (``shut_down``) members stay out of the restored roster; dormant
+    ones stay in.
+    """
     from pathlib import Path
     from unittest.mock import patch
 
     long_title = "T" * (_TASK_TEXT_LIMIT + 20)
     member = _FakeMember("worker-1", display_name="Worker")
     leader = _FakeMember("team-leader", role="leader")
+    retired = _FakeMember("retired", status="shut_down")
+    sleeper = _FakeMember("sleeper", status="dormant")
     task = _FakeTask(
         task_id="uuid-1",
         title=long_title,
@@ -1240,7 +1270,7 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     class _FakeSharedDb:
         def __init__(self) -> None:
             self.member = SimpleNamespace(
-                get_team_members=AsyncMock(return_value=[leader, member])
+                get_team_members=AsyncMock(return_value=[leader, member, retired, sleeper])
             )
             self.task = SimpleNamespace(
                 get_team_tasks=AsyncMock(return_value=[task])
@@ -1290,7 +1320,8 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     shared.initialize.assert_awaited()
     shared.create_cur_session_tables.assert_awaited()
     assert snapshot["team_id"] == "team-sess-1"
-    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper"]
+    assert [m["member_id"] for m in snapshot["departed_members"]] == ["retired"]
     assert len(snapshot["tasks"]) == 1
     out = snapshot["tasks"][0]
     assert out["task_id"] == "uuid-1"

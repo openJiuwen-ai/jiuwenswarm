@@ -30,7 +30,7 @@ from typing import Any
 
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import ReqMethod
-
+from jiuwenswarm.common.request_identity import apply_routing_metadata
 from gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
@@ -170,6 +170,10 @@ async def proxy_unary_request(
         is_stream=False,
         timestamp=time.time(),
         user_id=user_id or None,
+        metadata=(
+            apply_routing_metadata(None, getattr(ws, "_web_routing"))
+            if isinstance(getattr(ws, "_web_routing", None), dict) else None
+        ),
     )
     try:
         response = await send_agent_request_with_timeout(
@@ -237,6 +241,7 @@ async def fetch_agent_unary(
     channel_id: str,
     label: str = DEFAULT_PROXY_LABEL,
     timeout_seconds: float | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """向目标 AgentServer 发起一次 unary E2A 请求，返回 ``(ok, payload)``。
 
@@ -264,6 +269,7 @@ async def fetch_agent_unary(
             is_stream=False,
             timestamp=time.time(),
             user_id=user_id or None,
+            metadata=metadata,
         )
         try:
             response = await send_agent_request_with_timeout(
@@ -333,12 +339,16 @@ async def resolve_agent_cron_project_binding(
     user_id: str | None,
     channel_id: str,
     session_id: str | None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Resolve a cron's project in the routed AgentServer user directory.
 
     The Gateway remains the cron job-store owner.  It only persists the
     concrete project binding returned by the target AgentServer and never
     probes its own deployment-side project store for AgentOS requests.
+
+    ``metadata`` should carry routing identity (team/bot/user) so the Agent
+    opens the caller's workspace; optional for personal edition.
     """
     return await fetch_agent_unary(
         agent_client=agent_client,
@@ -348,6 +358,7 @@ async def resolve_agent_cron_project_binding(
         user_id=user_id,
         channel_id=channel_id,
         label="cron.project_binding",
+        metadata=metadata,
     )
 
 

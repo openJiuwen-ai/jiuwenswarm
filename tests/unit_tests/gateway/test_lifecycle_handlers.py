@@ -138,3 +138,41 @@ async def test_failed_archive_does_not_clear_busy_flags(monkeypatch):
     await handler(object(), "req-2", {"session_ids": ["s1"]}, None, "u1")
 
     assert channel.cleared == []
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_watch_uses_and_isolates_connection_tenant(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    channel = _FakeChannel()
+    same = SimpleNamespace(_web_routing={"user_id": "u1", "group_id": "g1", "bot_id": "b1"})
+    other = SimpleNamespace(_web_routing={"user_id": "u1", "group_id": "g2", "bot_id": "b2"})
+    channel.clients = [same, other]
+    channel.send_event = AsyncMock()
+    calls = []
+    original_sleep = asyncio.sleep
+
+    async def fake_call(**kwargs):
+        calls.append(kwargs)
+        return True, {"events": [{
+            "event": "session.lifecycle", "kind": "archive", "completed": True,
+            "payload": {"resource_id": "s1", "project_id": "p1", "revision": len(calls)},
+            "result": {"session_id": "s1", "ok": True},
+        }]}
+
+    async def poll_again(delay):
+        if len(calls) >= 2:
+            channel.clients.clear()
+        await original_sleep(0)
+
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fake_call)
+    monkeypatch.setattr(lifecycle_handlers.asyncio, "sleep", poll_again)
+    lifecycle_handlers.register_lifecycle_handlers(channel, lambda: object(), lambda: None)
+    channel.ensure_lifecycle_watch("u1", same)
+    watcher = next(task for task in asyncio.all_tasks() if task.get_name() == "web-lifecycle-events")
+    await asyncio.wait_for(watcher, 1)
+    assert len(calls) == 2
+    assert all(call["metadata"] == {"user_id": "u1", "routing": {"group_id": "g1", "bot_id": "b1"}} for call in calls)
+    assert channel.send_event.await_count == 2
+    assert all(call.args[0] is same for call in channel.send_event.await_args_list)

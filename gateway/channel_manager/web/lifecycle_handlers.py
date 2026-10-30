@@ -6,14 +6,18 @@ import asyncio
 import logging
 
 from openjiuwen_protocol.message import ReqMethod
+
 from gateway.routing.agent_client import DuplicateRequestIdError
 from gateway.routing.e2a_proxy import fetch_agent_unary
+from jiuwenswarm.common.request_identity import apply_routing_metadata
 
 
 def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_session_deleted=None):
     watchers = {}
 
-    async def call(method, params, session_id, user_id):
+    async def call(method, params, session_id, user_id, ws=None):
+        routing = getattr(ws, "_web_routing", None)
+        metadata = apply_routing_metadata(None, routing) if isinstance(routing, dict) else None
         return await fetch_agent_unary(
             agent_client=resolve_client(),
             req_method=ReqMethod(method),
@@ -22,22 +26,32 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
             user_id=user_id,
             channel_id=channel.channel_id,
             timeout_seconds=120,
+            metadata=metadata,
         )
 
-    async def watch(user_id):
+    def scope_key(user_id, ws=None):
+        routing = getattr(ws, "_web_routing", None) or {}
+        return (
+            str(user_id or ""),
+            str(routing.get("group_id") or ""),
+            str(routing.get("bot_id") or ""),
+            str(routing.get("gateway_id") or ""),
+        )
+
+    async def watch(user_id, scope):
         revisions = {}
         first = True
         while True:
             clients = [
                 ws
                 for ws in getattr(channel, "clients", ())
-                if str(channel.connection_user_id(ws) or "") == str(user_id or "")
+                if scope_key(channel.connection_user_id(ws), ws) == scope
             ]
             if not clients:
                 return
             try:
                 ok, response = await call(
-                    "project.lifecycle", {"events": True}, None, user_id
+                    "project.lifecycle", {"events": True}, None, user_id, clients[0]
                 )
                 if ok:
                     for entry in response.get("events", []):
@@ -88,11 +102,11 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                 )
             await asyncio.sleep(2)
 
-    def ensure_watch(user_id):
-        owner = str(user_id or "")
+    def ensure_watch(user_id, ws=None):
+        owner = scope_key(user_id, ws)
         if owner not in watchers or watchers[owner].done():
             watchers[owner] = asyncio.create_task(
-                watch(owner), name="web-lifecycle-events"
+                watch(user_id, owner), name="web-lifecycle-events"
             )
 
     channel.ensure_lifecycle_watch = ensure_watch
@@ -129,7 +143,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
 
     def handler(method):
         async def handle(ws, req_id, params, session_id, user_id=None):
-            ensure_watch(user_id)
+            ensure_watch(user_id, ws)
             if not isinstance(params, dict):
                 await channel.send_response(
                     ws,
@@ -151,7 +165,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                     "completed_cron_job_ids",
                 }:
                     public[k] = v
-            ok, payload = await call(method, public, session_id, user_id)
+            ok, payload = await call(method, public, session_id, user_id, ws)
             if ok and on_session_deleted is not None and method in {
                 "session.delete",
                 "project.sessions.delete_archived",
@@ -188,7 +202,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                     if item.get("ok", True) and item.get("restored") and item.get("project_id")
                 }
                 for client_ws in list(getattr(channel, "clients", ()) or ()):
-                    if str(channel.connection_user_id(client_ws) or "") != str(user_id or ""):
+                    if scope_key(channel.connection_user_id(client_ws), client_ws) != scope_key(user_id, ws):
                         continue
                     for project_id in project_ids:
                         try:

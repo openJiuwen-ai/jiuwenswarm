@@ -623,6 +623,11 @@ agent_observability:
   traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
   file_retention_days: 7            # file exporter 文件保留天数
 
+session_cleanup:
+  # Automatic expiry only; explicit session archive/delete operations remain available.
+  # CLEANUP_PERIOD_DAYS overrides this setting when set.
+  retention_days: 30                # Set 0 to keep sessions and file-operation logs indefinitely.
+
 # ============================================================
 # 单 Agent 轨迹观测 Web 数据面
 # ============================================================
@@ -636,7 +641,7 @@ trajectory_ui:
   enabled: false                     # 数据面开关；由 diagnosis_enabled 同步写入，勿单独依赖实验设置
   diagnosis_enabled: false           # 启用「诊断与归因」入口并记录轨迹数据；关闭后隐藏轨迹相关页面
   db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
-  retention_days: 7                 # SQLite 轨迹保留天数
+  retention_days: 7                 # SQLite retention in days; 0 disables record expiry and database sweeping.
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间
@@ -880,7 +885,24 @@ task_memory:
   retrieval_algo: ACE
   summary_algo: ACE
 
+# standalone 不连接；active-standby / distributed 连接 Redis。
+redis:
+  mode: ${REDIS_MODE:-standalone}
+  host: ${REDIS_HOST:-localhost}
+  port: ${REDIS_PORT:-6379}
+  password: ${REDIS_PASSWORD:-}
+  username: ${REDIS_USER:-}
+  db: ${REDIS_DB:-0}
+  key_prefix: ${REDIS_KEY_PREFIX:-jiuwenclaw:}
+  pool_size: ${REDIS_POOL_SIZE:-10}
+  connect_timeout: ${REDIS_CONNECT_TIMEOUT:-5}
+  operation_timeout: ${REDIS_OPERATION_TIMEOUT:-10}
+  health_check_interval: ${REDIS_HEALTH_CHECK_INTERVAL:-30}
+
 gateway:
+  # standalone（默认）不连 Redis；distributed / active-standby 连接 Redis。
+  deployment_mode: ${DEPLOYMENT_MODE:-standalone}
+  instance_id: ${GATEWAY_INSTANCE_ID:-}
   # SessionMap 仅用于企业claw场景，如 feishu_enterprise 等通道：将平台身份映射为 Agent 的 session_id。
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: per_chat_bot
@@ -1790,6 +1812,15 @@ modes:
       # leader 转达；开启后成员可点对点、多播、广播给其他成员，任务指派与
       # 交接仍归 leader 和调度框架。autonomous 模式下忽略。见 core F_126。
       enable_member_messaging: false
+
+      # 调度模式下的成员子任务开关（TeamAgentSpec.max_subtask_depth）：
+      # 0 表示关闭，此时只有 leader 能建任务；大于 0 时成员可以用 create_task
+      # 把自己正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后父任务
+      # 挂起为 blocked、不占成员名额，子任务全部结束后由调度框架恢复给原承担者；
+      # 子任务不单独向 leader 汇报。取值同时是嵌套层数上限（leader 的任务为
+      # 第 0 层，成员拆出的子任务为第 1 层……）。设置页开关打开时写入 2。
+      # autonomous 模式下忽略。见 core F_128。
+      max_subtask_depth: 0
 
       leader:
         member_name: team-leader

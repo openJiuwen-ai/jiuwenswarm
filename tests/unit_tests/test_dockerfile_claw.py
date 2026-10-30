@@ -3,54 +3,36 @@
 """Regression coverage for the standalone JiuwenSwarm container image."""
 
 from pathlib import Path
-import re
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = PROJECT_ROOT / "docker" / "Dockerfile.claw"
-WEB_ENTRYPOINT = PROJECT_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 
 
-def test_dockerfile_installs_frontend_and_vcs_build_dependencies() -> None:
+def test_dockerfile_pins_uid_gid_contract() -> None:
     content = DOCKERFILE.read_text(encoding="utf-8")
-    install_block = re.search(
-        r"RUN apt-get update && apt-get install.*?rm -rf /var/lib/apt/lists/\*",
-        content,
-        flags=re.DOTALL,
-    )
-
-    assert install_block is not None
-    for package in ("ca-certificates", "git"):
-        assert re.search(rf"\b{re.escape(package)}\b", install_block.group())
-    assert not re.search(r"\bnodejs\b", install_block.group())
-    assert not re.search(r"\bnpm\b", install_block.group())
+    assert "groupadd --gid 1000 app" in content
+    assert "useradd --uid 1000 --gid 1000" in content
+    assert "USER app" in content
 
 
-def test_dockerfile_pins_node_and_verifies_bundled_playwright_mcp() -> None:
+def test_dockerfile_strips_and_reinstalls_runtime_foundation() -> None:
     content = DOCKERFILE.read_text(encoding="utf-8")
-
-    assert "ARG NODE_VERSION=22.11.0" in content
-    assert "FROM node:${NODE_VERSION}-bookworm-slim AS node-runtime" in content
-    assert "materialize_bundled_runtime" in content
-    assert "resolve_node_executable" in content
-    assert "manifest['version'] == '0.0.78'" in content
-    assert "[node, str(cli), '--help']" in content
+    assert "sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml" in content
+    assert 'sed -i \'0,/"openjiuwen @ git+/{/"openjiuwen @ git+/d;}\' pyproject.toml' in content
+    assert "git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation" in content
+    assert "git+${AGENT_CORE_REPOS}@${AGENT_CORE_BRANCH}" in content
+    assert "uv pip install --system" in content
 
 
-def test_container_exposes_web_ui_without_changing_other_launch_modes() -> None:
-    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
-    web_entrypoint = WEB_ENTRYPOINT.read_text(encoding="utf-8")
-
-    assert "ENV FRONTEND_HOST=0.0.0.0" in dockerfile
-    assert "sed -i" not in dockerfile
-    assert 'os.getenv("FRONTEND_HOST", "localhost")' in web_entrypoint
-
-
-def test_dockerfile_installs_declared_default_dependencies() -> None:
+def test_dockerfile_starts_via_role_entrypoint() -> None:
     content = DOCKERFILE.read_text(encoding="utf-8")
+    assert 'CMD ["/app/jiuwenswarm/docker/start.sh"]' in content
 
-    assert "pip install -i https://pypi.tuna.tsinghua.edu.cn/simple . --no-cache-dir" in content
-    assert '.[all]' not in content
+
+def test_dockerfile_does_not_install_optional_all_extra() -> None:
+    content = DOCKERFILE.read_text(encoding="utf-8")
+    assert ".[all]" not in content
 
 
 def test_noninteractive_initialization_does_not_read_stdin(monkeypatch) -> None:

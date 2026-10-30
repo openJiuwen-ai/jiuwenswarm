@@ -44,13 +44,25 @@ def _make_key(
 
 
 class SessionMap:
-    """Map stable identity (per config scope) -> rotating agent ``session_id``."""
+    """Map stable identity (per config scope) -> rotating agent ``session_id``.
+
+    - 个人版：读写 ``session_map.json``。
+    - 企业版：启动时注入 ``SessionMapRepository`` 后，经存储屏蔽层读写 DB 表
+      ``session_map``；进程内仍用 ``_mapping`` 做写穿缓存。
+    """
 
     def __init__(self, *, scope: SessionMapScope | None = None) -> None:
         self._scope = scope if scope is not None else load_session_map_scope()
         self._store_path: Path = get_checkpoint_dir() / "session_map.json"
         self._mapping: dict[str, str] = {}
-        self._load()
+        if self._repository() is None:
+            self._load()
+
+    @staticmethod
+    def _repository():
+        from gateway.routing.session_map_access import get_session_map_repository
+
+        return get_session_map_repository()
 
     def _load(self) -> None:
         try:
@@ -71,6 +83,43 @@ class SessionMap:
         except Exception as exc:  # noqa: BLE001
             logger.warning("SessionMap save failed: %s", exc)
 
+    def _persist_repository(self, identity_key: str, session_id: str) -> None:
+        from gateway.routing.session_map_repository import Session
+        from gateway.storage.async_bridge import run_awaitable
+
+        repo = self._repository()
+        if repo is None:
+            return
+        try:
+            run_awaitable(
+                repo.upsert(
+                    identity_key,
+                    Session(
+                        session_id=session_id,
+                        service_id=session_id,
+                        agent_id=None,
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SessionMap repository upsert failed: %s", exc)
+
+    def _lookup_repository(self, identity_key: str) -> str | None:
+        from gateway.storage.async_bridge import run_awaitable
+
+        repo = self._repository()
+        if repo is None:
+            return None
+        try:
+            session = run_awaitable(repo.get(identity_key))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SessionMap repository get failed: %s", exc)
+            return None
+        if session is None:
+            return None
+        sid = str(session.session_id or "").strip()
+        return sid or None
+
     def get_session_id(
         self,
         provider: str,
@@ -80,8 +129,7 @@ class SessionMap:
         *,
         rotate: bool = False,
     ) -> str:
-        key = _make_key(self._scope, provider, chat_id, bot_id, user_id)
-        existing = self._mapping.get(key)
+        existing = self.find_session_id(provider, chat_id, bot_id, user_id)
         if existing and not rotate:
             return existing
         raise RuntimeError(
@@ -96,7 +144,15 @@ class SessionMap:
         user_id: str,
     ) -> str | None:
         key = _make_key(self._scope, provider, chat_id, bot_id, user_id)
-        return self._mapping.get(key)
+        cached = self._mapping.get(key)
+        if cached:
+            return cached
+        if self._repository() is None:
+            return None
+        sid = self._lookup_repository(key)
+        if sid:
+            self._mapping[key] = sid
+        return sid
 
     def set_session_id(
         self,
@@ -110,6 +166,10 @@ class SessionMap:
         sid = str(session_id).strip()
         if not sid:
             raise ValueError("session_id is required")
-        if self._mapping.get(key) != sid:
-            self._mapping[key] = sid
+        if self._mapping.get(key) == sid:
+            return
+        self._mapping[key] = sid
+        if self._repository() is not None:
+            self._persist_repository(key, sid)
+        else:
             self._save()

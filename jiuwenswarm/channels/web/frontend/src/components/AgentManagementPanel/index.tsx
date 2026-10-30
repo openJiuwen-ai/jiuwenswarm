@@ -154,6 +154,7 @@ function getFriendlyErrorMessage(
   const code =
     error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
   if (code === 'agent_detail_empty') return translate('agentManagement.states.detailError');
+  if (code === 'pod_start_timeout') return translate('experts.podStartTimeout');
   const normalizedMessage = message.trim();
   if (code === 'REQUEST_TIMEOUT') return translate('network.requestTimeout');
   if (code === 'WS_NOT_READY') return translate('network.connectionUnavailable');
@@ -258,6 +259,7 @@ export function AgentManagementPanel({
   const [groupCatalogQuery, setGroupCatalogQuery] = useState('');
   const [groupMineQuery, setGroupMineQuery] = useState('');
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [catalogPodStarting, setCatalogPodStarting] = useState(false);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [detailOrigin, setDetailOrigin] = useState<'catalog' | 'mine'>('catalog');
   const [groupDetailOrigin, setGroupDetailOrigin] = useState<'teams' | 'mine'>('teams');
@@ -430,18 +432,27 @@ export function AgentManagementPanel({
     const revision = ++catalogRevisionRef.current;
     const requestScope = catalogScope();
     if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loading' });
+    setCatalogPodStarting(false);
     dispatch({ type: 'catalog.loading' });
     try {
       const compatibilityOptions = options.includeTeamCompatibility
         ? { includeTeamCompatibility: true }
         : {};
+      const onPodStarting = () => {
+        if (revision === catalogRevisionRef.current) setCatalogPodStarting(true);
+      };
       const [marketplaceCatalog, mineCatalog] = await Promise.all([
         client.listCatalog({
           filter: equipmentListFilter('agent', 'catalog'),
           ...compatibilityOptions,
           ...(options.query ? { query: options.query } : {}),
+          onPodStarting,
         }),
-        client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
+        client.listCatalog({
+          filter: equipmentListFilter('agent', 'mine'),
+          ...compatibilityOptions,
+          onPodStarting,
+        }),
       ]);
       if (requestScope !== catalogScope()) return;
       const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
@@ -451,6 +462,7 @@ export function AgentManagementPanel({
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, cache);
       catalogRef.current = catalog;
+      setCatalogPodStarting(false);
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
       if (!options.query) seedAgentCatalog(catalog);
@@ -1493,6 +1505,7 @@ export function AgentManagementPanel({
                   : state.catalogStatus
               }
               error={state.catalogError}
+              loadingText={catalogPodStarting ? t('experts.podStarting') : undefined}
               busyIds={busyIds}
               onCategoryChange={setCategory}
               onRetry={() => void loadCatalog(

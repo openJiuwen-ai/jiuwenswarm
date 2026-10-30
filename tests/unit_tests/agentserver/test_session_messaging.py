@@ -56,6 +56,8 @@ from jiuwenswarm.server.agent_ws_server import (
     AgentWebSocketServer,
     _strip_untrusted_session_message_context,
 )
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers._default import handle_stream, handle_unary
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -66,6 +68,20 @@ from gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_INTERNAL_KEY,
 )
+
+
+def _stub_ws() -> SimpleNamespace:
+    """Minimal WebSocket stand-in for build_ws_request_context / WSSink."""
+
+    return SimpleNamespace(send=AsyncMock())
+
+
+async def _send_runtime_event_ok(*_args: object, **_kwargs: object) -> bool:
+    return True
+
+
+async def _send_runtime_event_fail(*_args: object, **_kwargs: object) -> bool:
+    return False
 
 
 @pytest.mark.asyncio
@@ -769,20 +785,26 @@ async def test_restart_keeps_queued_message_idle_until_user_continues(
         queue_state = await service.queue_state_for_target("target-1", "user-1")
         assert queue_state["can_continue_queued"] is True
 
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_message_continue_queued
+
         server = AgentWebSocketServer.__new__(AgentWebSocketServer)
         server._session_message_service = service
         ws = SimpleNamespace(send=AsyncMock())
-        await server._handle_session_message_continue_queued(
-            ws,
-            AgentRequest(
-                request_id="continue-1",
-                channel_id="web",
-                session_id="target-1",
-                req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
-                params={"session_id": "target-1"},
-                user_id="user-1",
-            ),
-            asyncio.Lock(),
+        await handle_session_message_continue_queued(
+            build_ws_request_context(
+                server,
+                ws,
+                AgentRequest(
+                    request_id="continue-1",
+                    channel_id="web",
+                    session_id="target-1",
+                    req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+                    params={"session_id": "target-1"},
+                    user_id="user-1",
+                ),
+                asyncio.Lock(),
+            )
         )
         response = json.loads(ws.send.await_args.args[0])
         assert response["body"]["result"]["accepted"] is True
@@ -2425,16 +2447,14 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
-    await server._handle_stream_impl(object(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     rebound = store.waiting_for_resume(
         "target-1", "tool-call-third", "ask_user_interrupt"
@@ -2481,16 +2501,14 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=False
-    )
+    server.send_runtime_event = _send_runtime_event_fail
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
-    await server._handle_stream_impl(object(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2529,13 +2547,13 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
                 )
             ]
 
-    async def disconnect(*args, **kwargs):
+    async def disconnect(*args: object, **kwargs: object) -> bool:
         raise agent_ws_server_module.WebSocketConnectionClosed(None, None)
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = disconnect
+    server.send_runtime_event = disconnect
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2543,7 +2561,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     )
 
     with pytest.raises(agent_ws_server_module.WebSocketConnectionClosed):
-        await server._handle_unary_impl(object(), request, asyncio.Lock())
+        await handle_unary(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2588,9 +2606,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2598,7 +2614,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     )
 
     with pytest.raises(RuntimeError, match="uncorrelated follow-up question"):
-        await server._handle_stream_impl(object(), request, asyncio.Lock())
+        await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_persistence = store.get(waiting.message_id)
     assert failed_persistence.status == "unknown"
@@ -2930,9 +2946,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2940,9 +2954,9 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     )
     try:
         if streaming:
-            await server._handle_stream_impl(object(), request, asyncio.Lock())
+            await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
         else:
-            await server._handle_unary_impl(object(), request, asyncio.Lock())
+            await handle_unary(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
         record = store.get(waiting.message_id)
         assert record is not None

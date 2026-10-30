@@ -112,6 +112,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.tool_update",
         "chat.tool_result",
         "chat.processing_status",
+        "chat.llm_call_start",
+        "chat.llm_call_end",
         "chat.interrupt_result",
         "chat.evolution_status",
         "chat.error",
@@ -237,6 +239,12 @@ class WebChannel(BaseWsChannel):
         self.trajectory_agent_client: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
+        # 企业北向 HTTP/SSE 的请求级 Outbound 注册表。
+        from gateway.channel_manager.web.web_delivery_registry import (
+            WebDeliveryRegistry,
+        )
+
+        self.delivery = WebDeliveryRegistry()
         # 3rd-agent Web UI proxy: one northbound port per agent_type.
         self.web_proxy_enabled: bool = False
         self.web_proxy_auth_enabled: bool = True
@@ -248,6 +256,7 @@ class WebChannel(BaseWsChannel):
         self.web_proxy_session: Any = None
         self.web_proxy_http_session: Any = None
         self._web_proxy_session_lock = asyncio.Lock()
+
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -392,7 +401,49 @@ class WebChannel(BaseWsChannel):
             )
 
             data = project_agentos_web_frame(data)
+        # HTTP/SSE Outbound：不入 WS writer 队列，直接投递到请求级队列。
+        if getattr(ws, "is_http_outbound", False):
+            from gateway.channel_manager.web.outbound import _normalize_frame
+
+            frame = _normalize_frame(data)
+            if frame is None:
+                return
+            accept = getattr(ws, "accept_frame", None)
+            if callable(accept):
+                accept(frame)
+            return
         super()._enqueue_send(ws, data)
+
+    def register_request_outbound(self, outbound: Any) -> str:
+        """Register a request-scoped HTTP Outbound for Agent reply routing."""
+        return self.delivery.register(outbound)
+
+    async def unregister_request_outbound(self, outbound: Any) -> None:
+        await self.delivery.unregister(outbound)
+
+    def _lookup_peer(self, peer_id: str) -> Any | None:
+        """Resolve WS peer or HTTP outbound by id (metadata.ws_id / delivery.ws_id)."""
+        oid = str(peer_id or "").strip()
+        if not oid:
+            return None
+        ws = self._ws_by_id.get(oid)
+        if ws is not None and not getattr(ws, "closed", False):
+            return ws
+        return self.delivery.lookup(oid)
+
+    def _peers_for_session(self, session_id: str) -> set[Any]:
+        """WS clients + HTTP outbounds bound to ``session_id``."""
+        peers: set[Any] = set()
+        sid = str(session_id or "").strip()
+        if not sid:
+            return peers
+        for rk, ws_list in self._clients_by_key.items():
+            if rk.session_id == sid:
+                for w in ws_list:
+                    if not getattr(w, "closed", False):
+                        peers.add(w)
+        peers.update(self.delivery.peers_for_session(sid))
+        return peers
 
     # ── 帧发送 API（公开给处理器使用）─────────────────────
 
@@ -590,6 +641,9 @@ class WebChannel(BaseWsChannel):
                 )
             return False
 
+    # Public alias for gateway dispatch helpers (G.CLS.11).
+    invoke_method_handler = _invoke_method_handler
+
     async def broadcast_event(
             self,
             event: str,
@@ -622,6 +676,7 @@ class WebChannel(BaseWsChannel):
         session_id: str | None = None,
         req_id: str = "",
         user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """chat.send 上行文件处理（Phase 2：不再 Gateway 下载/落盘）。
 
@@ -643,7 +698,11 @@ class WebChannel(BaseWsChannel):
             return params
 
         ac = getattr(self, "agent_client", None)
+        from gateway.enterprise import is_enterprise
+
         if ac is None:
+            if is_enterprise():
+                raise ValueError("AgentServer unavailable for attachment import")
             logger.warning("[WebChannel] 文件导入跳过：AgentServer 不可用")
             return params
 
@@ -667,14 +726,26 @@ class WebChannel(BaseWsChannel):
             user_id=user_id or None,
             channel_id=self.channel_id,
             label="file.import_url",
+            metadata=metadata,
         )
         if not ok:
+            if is_enterprise():
+                raise ValueError("Attachment import failed")
             logger.warning(
                 "[WebChannel] 文件导入失败，保留原 files: %s",
                 payload.get("error") or "forward failed",
             )
             return params
         imported = payload.get("files")
+        if is_enterprise():
+            if not isinstance(imported, list) or len(imported) != len(url_files):
+                raise ValueError("Invalid attachment import result")
+            records = iter(imported)
+            params["files"] = [
+                next(records) if isinstance(item, dict) and (item.get("url") or item.get("uri")) else item
+                for item in files
+            ]
+            return params
         if isinstance(imported, list):
             # 按原 files 顺序合并：导入成功项替换为带 path 的元数据
             imported_by_url = {
@@ -802,6 +873,7 @@ class WebChannel(BaseWsChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
         self._expert_processing_requests.clear()
+        await self.delivery.clear()
 
         watcher = getattr(self, "web_registry_watcher", None)
         if watcher is not None:
@@ -1108,8 +1180,8 @@ class WebChannel(BaseWsChannel):
             return
 
         # ── 定时任务推 web：不绑定旧 session_id，以支持关闭 tab/换设备；但在
-        # AgentOS 下必须按 job.user_id 限定接收者。空 user_id 是历史单用户任务，
-        # 仍保持原有广播行为。
+        # AgentOS / 企业版必须按 job.user_id 限定接收者。
+        # 个人版空 user_id / 占位 ``default`` 广播是独立于企业的兼容修复。
         if (
             msg.event_type == EventType.CHAT_FINAL
             and isinstance(msg.payload, dict)
@@ -1117,18 +1189,30 @@ class WebChannel(BaseWsChannel):
         ):
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
-            clients = (
-                [ws for ws in self.clients if self.connection_user_id(ws) == cron_user_id]
-                if cron_user_id
-                else self.clients
-            )
+            # ``default`` 是个人版没填用户时写进任务的占位，不是登录名。
+            # 按它过滤会和当前网页连接对不上，结果只留在历史里，不刷新就看不到。
+            from gateway.enterprise.edition import is_enterprise
+
+            if not is_enterprise() and (not cron_user_id or cron_user_id == "default"):
+                clients = list(self.clients)
+            else:
+                clients = [
+                    ws for ws in self.clients
+                    if self.connection_user_id(ws) == cron_user_id
+                ]
             for w in clients:
                 self._enqueue_send(w, frame)
-            logger.debug(
-                "[WebChannel] cron push broadcast to %d client(s) id=%s run_id=%s",
-                len(clients), getattr(msg, "id", ""),
-                (msg.payload.get("cron") or {}).get("run_id", ""),
-            )
+            run_id = (msg.payload.get("cron") or {}).get("run_id", "")
+            if not clients and self.clients:
+                logger.warning(
+                    "[WebChannel] cron push matched 0/%d client(s) id=%s run_id=%s user_id=%r",
+                    len(self.clients), getattr(msg, "id", ""), run_id, cron_user_id,
+                )
+            else:
+                logger.debug(
+                    "[WebChannel] cron push broadcast to %d client(s) id=%s run_id=%s",
+                    len(clients), getattr(msg, "id", ""), run_id,
+                )
             return
 
         # ── 主动推荐系统通知推 web：与 cron 推送同理——后端主动推、无前端 session_id 绑定，
@@ -1194,8 +1278,8 @@ class WebChannel(BaseWsChannel):
             metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
             request_ws_id = str(metadata.get("ws_id") or "").strip()
             if request_ws_id:
-                ws = self._ws_by_id.get(request_ws_id)
-                if ws is not None and not getattr(ws, "closed", False):
+                ws = self._lookup_peer(request_ws_id)
+                if ws is not None:
                     ws_set.add(ws)
                 # 发起连接已断开时不在这里丢弃，交给下方 session 桶投给重连后的新连接。
 
@@ -1204,8 +1288,8 @@ class WebChannel(BaseWsChannel):
                 if delivery is not None:
                     ws_id = getattr(delivery, "ws_id", "")
                     if ws_id:
-                        ws = self._ws_by_id.get(ws_id)
-                        if ws is not None and not getattr(ws, "closed", False):
+                        ws = self._lookup_peer(str(ws_id))
+                        if ws is not None:
                             ws_set.add(ws)
                 if not ws_set:
                     for rk in routing_target.routing_keys:
@@ -1215,11 +1299,7 @@ class WebChannel(BaseWsChannel):
                                 ws_set.add(w)
 
             if not ws_set and msg.session_id:
-                for rk, ws_list in self._clients_by_key.items():
-                    if rk.session_id == msg.session_id:
-                        for w in ws_list:
-                            if not getattr(w, "closed", False):
-                                ws_set.add(w)
+                ws_set |= self._peers_for_session(msg.session_id)
 
             if not ws_set:
                 logger.debug(
@@ -1243,8 +1323,8 @@ class WebChannel(BaseWsChannel):
             if delivery is not None:
                 ws_id = getattr(delivery, "ws_id", "")
                 if ws_id:
-                    ws = self._ws_by_id.get(ws_id)
-                    if ws is not None and not getattr(ws, "closed", False):
+                    ws = self._lookup_peer(str(ws_id))
+                    if ws is not None:
                         ws_set.add(ws)
 
             # ── 兜底：按 routing_keys 5 维逻辑查 _clients_by_key ──
@@ -1281,8 +1361,8 @@ class WebChannel(BaseWsChannel):
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         request_ws_id = str(metadata.get("ws_id") or "").strip()
         if request_ws_id:
-            ws = self._ws_by_id.get(request_ws_id)
-            if ws is not None and not getattr(ws, "closed", False):
+            ws = self._lookup_peer(request_ws_id)
+            if ws is not None:
                 ws_set.add(ws)
             elif routing_target is None:
                 # A4P 在新连接上完成授权后登记了改绑：只投给该连接。
@@ -1299,11 +1379,7 @@ class WebChannel(BaseWsChannel):
             )
             return
         if not ws_set:
-            for rk, ws_list in self._clients_by_key.items():
-                if rk.session_id == msg.session_id:
-                    for w in ws_list:
-                        if not getattr(w, "closed", False):
-                            ws_set.add(w)
+            ws_set |= self._peers_for_session(msg.session_id)
         if not ws_set:
             logger.info(
                 "[WebChannel] session_id=%s has no connected ws, dropping msg id=%s ws_id=%s",
@@ -1522,18 +1598,20 @@ class WebChannel(BaseWsChannel):
         """Release expert request records after a session is closed."""
         self._expert_processing_requests.pop(session_id, None)
 
-    async def reconcile_expert_processing(self, session_id: str, user_id: str | None) -> None:
+    async def reconcile_expert_processing(self, session_id: str, user_id: str | None, ws: Any = None) -> None:
         """Reconcile disconnects with live tasks without declaring running work idle."""
         baseline = set(self._expert_processing_requests.get(session_id, set()))
         if not baseline or self.agent_client is None:
             return
         from gateway.routing.e2a_proxy import fetch_agent_unary
+        from jiuwenswarm.common.request_identity import apply_routing_metadata
 
         try:
             ok, payload = await fetch_agent_unary(
                 agent_client=self.agent_client, req_method=ReqMethod.TEAM_LIST,
                 params={"session_id": session_id}, session_id=session_id,
                 user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
+                metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
             )
             snapshot = payload.get("organization_requests", payload.get("expert_requests"))
             if not ok or not isinstance(snapshot, list):
@@ -1610,6 +1688,21 @@ class WebChannel(BaseWsChannel):
         connection_user_id, _user_id = self._resolve_ws_identity(
             ws, _flat_query, remote, route_type="ws",
         )
+        # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
+        from jiuwenswarm.common.request_identity import normalize_routing_identity
+        from gateway.enterprise import is_enterprise
+
+        _routing = normalize_routing_identity(
+            _flat_query,
+            {"user_id": connection_user_id} if connection_user_id else None,
+        )
+        setattr(ws, "_web_routing", _routing)
+        if is_enterprise() and not _routing.get("bot_id"):
+            logger.warning(
+                "WebChannel 新连接缺少 bot_id: remote=%s routing=%s",
+                remote,
+                _routing,
+            )
 
         # ── V2: 从 query 提取身份字段，构造默认 RoutingKey ──
         # session_id 和 agent_id 可能在首条消息中更新
@@ -1743,7 +1836,7 @@ class WebChannel(BaseWsChannel):
             ws_id = id(ws)
             disconnected_sessions = self._ws_sessions.pop(ws_id, set())
             await asyncio.gather(*(
-                self.reconcile_expert_processing(sid, self.connection_user_id(ws))
+                self.reconcile_expert_processing(sid, self.connection_user_id(ws), ws)
                 for sid in disconnected_sessions
             ))
             logger.info(
@@ -1950,12 +2043,20 @@ class WebChannel(BaseWsChannel):
                 self._ws_sessions[ws_id] = sessions
             sessions.add(session_id)
 
-        params = await self._process_files(
-            params,
-            session_id=session_id,
-            req_id=req_id if isinstance(req_id, str) else "",
-            user_id=self._connection_user_id(ws),
-        )
+        if method == "chat.send":
+            from jiuwenswarm.common.request_identity import apply_routing_metadata
+
+            try:
+                params = await self._process_files(
+                    params,
+                    session_id=session_id,
+                    req_id=req_id if isinstance(req_id, str) else "",
+                    user_id=self._connection_user_id(ws),
+                    metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
+                )
+            except ValueError as exc:
+                await self.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+                return
 
         # ── V2: 用实际的 session_id / mode / agent_id 更新 ws 注册 ──
         _flat_query = {k: (v[0] if v else "") for k, v in query.items()}
@@ -1977,6 +2078,29 @@ class WebChannel(BaseWsChannel):
         # Preserve client top-level is_stream (e.g. command.goal set/resume).
         # chat.send / history.get still become stream in _normalize_gateway_message
         # even when the client omits this field.
+        from jiuwenswarm.common.request_identity import (
+            apply_routing_metadata,
+            normalize_routing_identity,
+        )
+
+        _routing = getattr(ws, "_web_routing", None)
+        if not isinstance(_routing, dict):
+            _routing = normalize_routing_identity(
+                {"user_id": req_user_id} if req_user_id else None,
+            )
+        _meta = apply_routing_metadata(
+            {
+                "query": query,
+                "method": method,
+                "user_id": req_user_id,
+                # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
+                "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
+                # 登录会话id（握手时认的)。Gateway据此
+                # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
+                "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
+            },
+            _routing,
+        )
         user_message = Message(
             id=req_id,
             type="req",
@@ -1991,16 +2115,7 @@ class WebChannel(BaseWsChannel):
             app_id=_app_id,
             agent_ref={"mode": _mode, "id": _agent_id},
             user_id=req_user_id,
-            metadata={
-                "query": query,
-                "method": method,
-                # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
-                "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
-                "user_id": req_user_id,
-                # 登录会话id（握手时认的)。Gateway据此
-                # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
-                "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
-            },
+            metadata=_meta,
         )
 
         # 发布到 route 或回调
@@ -2176,9 +2291,14 @@ class WebChannel(BaseWsChannel):
                 return item
         return None
 
+    # Public aliases for HTTP dispatch (G.CLS.11).
+    parse_req_method = _parse_req_method
+
     @staticmethod
     def _parse_mode(raw_mode: Any) -> Mode:
         return Mode.from_raw(raw_mode, default=Mode.AGENT_WORK_NORMAL)
+
+    parse_mode = _parse_mode
 
     @staticmethod
     def _make_session_id() -> str:

@@ -1971,6 +1971,26 @@ async def _run(
     )
     log_startup_stage("extensions_loaded")
 
+    # 企业版在 MessageHandler / config_poll 之前装配存储屏蔽层并注入各配置模块。
+    # 个人版不进入该路径，配置读写保持原来的文件直读。
+    storage_ctx = None
+    from gateway.enterprise import is_enterprise
+
+    if is_enterprise():
+        from jiuwenswarm.extensions.redis import init_gateway_redis_from_config
+        from gateway.storage_assembly.setup import start_gateway_storage
+
+        try:
+            full_cfg = get_config()
+            await init_gateway_redis_from_config(dict(full_cfg or {}))
+            storage_ctx = await start_gateway_storage(full_cfg)
+        except Exception:
+            logger.exception(
+                "[App] enterprise Gateway storage wiring failed; aborting startup"
+            )
+            raise
+        log_startup_stage("storage_repositories_wired")
+
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
@@ -3823,6 +3843,16 @@ async def _run(
         await heartbeat_service.stop()
         await message_handler.stop_forwarding()
         await client.disconnect()
+
+        if storage_ctx is not None:
+            try:
+                from gateway.storage_assembly.setup import (
+                    teardown_gateway_storage_repositories,
+                )
+
+                await teardown_gateway_storage_repositories(storage_ctx)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[App] gateway storage teardown failed: %s", exc)
 
         _cleanup_task.cancel()
         try:

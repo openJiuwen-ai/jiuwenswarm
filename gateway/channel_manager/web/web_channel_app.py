@@ -115,6 +115,9 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
 
     Container file APIs are mounted when ``channel.container_file_client`` is an
     ``AgentOSRouterClient`` (wired during web handler registration).
+
+    企业版经 ``gateway.enterprise`` 平面增量挂载管理面 + ``/api/v1`` chat/SSE 等；
+    个人版不挂，继续主用 WS。不依赖 ``jiuwenswarm.enterprise``（便于 gateway 拆仓）。
     """
     from gateway.channel_manager.web.container_file_http import (
         attach_container_file_routes,
@@ -132,11 +135,25 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
 
     attach_container_file_routes(app, channel)
     attach_trajectory_routes(app, channel)
+    # 个人版与企业版均需挂载：OAuth 回调不属于企业平面增量能力。
     attach_mcp_oauth_routes(app)
     # The diagnosis service runs in the AgentServer; these routes only proxy to it.
     attach_diagnosis_routes(app, channel)
     # register auth http routes for huawei account login
     register_auth_routes(app)
+    # 企业能力：依赖 Gateway 平面。个人版跳过；企业版组装/挂载失败必须报错，
+    # 禁止静默回退成个人版行为。
+    from gateway.enterprise import is_enterprise, try_build_enterprise_plane
+
+    if is_enterprise():
+        plane = try_build_enterprise_plane()
+        if plane is None:
+            from gateway.enterprise import EnterprisePlaneError
+
+            raise EnterprisePlaneError(
+                "Gateway enterprise plane is required but try_build returned None"
+            )
+        plane.install_web_channel(app, channel)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

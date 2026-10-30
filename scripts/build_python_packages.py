@@ -10,8 +10,7 @@ import sys
 from pathlib import Path
 
 
-PACKAGING_ROOT = Path(os.environ.get("WORKSWARM_PACKAGING_ROOT", str(Path(__file__).resolve().parents[1]))).resolve()
-ROOT = Path(os.environ.get("WORKSWARM_SOURCE_ROOT", str(PACKAGING_ROOT))).resolve()
+ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_ROOT = ROOT / "packages" / "jiuwenswarm-tui"
 SIDE_CAR_DIST = SIDECAR_ROOT / "dist"
 JIUWENBOX_ROOT = ROOT / "jiuwenbox"
@@ -78,7 +77,7 @@ def build_jiuwenbox_wheel() -> None:
 
 
 def build_tui_binary(target: str, clean: bool) -> None:
-    cmd = [sys.executable, str(PACKAGING_ROOT / "scripts" / "build_tui.py"), "--target", target]
+    cmd = [sys.executable, "scripts/build_tui.py", "--target", target]
     if clean:
         cmd.append("--clean")
     run(cmd, ROOT)

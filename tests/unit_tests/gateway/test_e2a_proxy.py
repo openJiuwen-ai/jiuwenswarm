@@ -64,6 +64,25 @@ class FakeAgentClient:
         raise RuntimeError("connection lost")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [ReqMethod.SESSION_LIST, ReqMethod.FILE_IMPORT_URL])
+async def test_proxy_preserves_authoritative_routing_metadata(method):
+    from types import SimpleNamespace
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import identity_headers
+
+    client = FakeAgentClient()
+    await proxy_unary_request(
+        channel=FakeChannel(), agent_client=client,
+        ws=SimpleNamespace(_web_routing={"user_id": "u", "group_id": "g", "bot_id": "b"}),
+        req_id="file-req", params={"files": []}, session_id="s", user_id="u",
+        req_method=method,
+    )
+    headers = identity_headers(client.envelopes[0], accept="application/json")
+    assert headers["X-Group-Id"] == "g"
+    assert headers["X-Bot-Id"] == "b"
+    assert "group_id" not in client.envelopes[0].params
+
+
 async def _invoke(channel, agent_client, **overrides):
     kwargs = {
         "channel": channel,

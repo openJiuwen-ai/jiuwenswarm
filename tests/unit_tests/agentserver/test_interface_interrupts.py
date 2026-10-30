@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,6 +21,8 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+
+test_logger = logging.getLogger("tests.interface_interrupts")
 
 
 class _InterruptHarness(JiuWenSwarm):
@@ -222,10 +225,10 @@ async def test_team_interrupt_resume_is_ack_only(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_team_pause_success_broadcasts_terminal_processing_status(
+async def test_team_pause_leaves_terminal_delivery_to_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pause park must emit an explicit terminal frame for frame-based consumers."""
+    """The adapter must not duplicate Runtime's Session completion broadcast."""
     claw = _InterruptHarness()
     fake_manager = _FakeTeamManager(pause_result=True)
 
@@ -239,14 +242,11 @@ async def test_team_pause_success_broadcasts_terminal_processing_status(
         AsyncMock(),
     )
 
-    await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
+    response = await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
 
-    assert len(fake_manager.broadcast_events) == 1
-    event = fake_manager.broadcast_events[0]
-    assert event["event_type"] == "chat.processing_status"
-    assert event["is_processing"] is False
-    assert event["is_complete"] is True
-    assert "paused" not in event
+    assert response.payload["success"] is True
+    assert fake_manager.broadcast_events == []
+    test_logger.info("Team adapter returned pause success without a duplicate waiter frame")
 
 
 @pytest.mark.asyncio
@@ -578,6 +578,56 @@ def _ask_user_answer_resume_request(answers: list[dict] | None = None) -> AgentR
             "mode": "agent",
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_deliver_control_input_binds_package_allowlist_for_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版续聊不走 process_message，仍要看到当次请求带上的专家包名单。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.package_allowlist._is_user_owned",
+        lambda kind, package_id: False,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.package_allowlist._candidate_ids",
+        lambda kind, package_id: {package_id},
+    )
+    claw = _InterruptHarness()
+    _captured, set_fake_stream = _build_control_input_harness(claw, monkeypatch)
+    seen: list[bool] = []
+
+    async def _fake_stream_impl(_self, _request, _inputs):
+        from jiuwenswarm.server.runtime.package_allowlist import allows
+
+        seen.append(allows("agent_template", "granted-expert"))
+        yield AgentResponseChunk(
+            request_id="req-resume-new-456",
+            channel_id="web",
+            payload={"event_type": "chat.final", "content": "继续"},
+            is_complete=True,
+        )
+
+    set_fake_stream(_fake_stream_impl)
+    request = AgentRequest(
+        request_id="req-resume-new-456",
+        channel_id="web",
+        session_id="web-sess-1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "source": "ask_user_interrupt",
+            "request_id": "req-original-123",
+            "answers": [{"question": "用哪种方案?", "selected_options": ["方案A"]}],
+            "mode": "agent",
+        },
+        metadata={
+            "package_allowlist": [{"kind": "agent_template", "id": "granted-expert"}],
+        },
+    )
+    async for _ in claw.deliver_control_input(request):
+        pass
+    assert seen == [True]
 
 
 @pytest.mark.asyncio

@@ -505,6 +505,41 @@ def test_attach_only_stream_does_not_emit_processing_status() -> None:
     assert handler.should_emit_processing_status_for_stream(attach_message) is False
 
 
+def test_steer_stream_does_not_emit_processing_status() -> None:
+    """STEER is a receipt-only inject; session busy stays owned by the parent turn."""
+    handler = _TestMessageHandler.create()
+    steer_message = _message(ReqMethod.CHAT_SEND)
+    steer_message.params = {
+        "query": "111",
+        "input_mode": "steer",
+        "expected_execution_id": "exec-1",
+    }
+    follow_up = _message(ReqMethod.CHAT_SEND)
+    follow_up.params = {"query": "next", "input_mode": "follow_up"}
+    ordinary = _message(ReqMethod.CHAT_SEND)
+    ordinary.params = {"query": "hello"}
+
+    assert handler.should_emit_processing_status_for_stream(steer_message) is False
+    # follow_up may become an owning turn; keep emitting unless product says otherwise.
+    assert handler.should_emit_processing_status_for_stream(follow_up) is True
+    assert handler.should_emit_processing_status_for_stream(ordinary) is True
+
+
+def test_steer_stream_does_not_block_processing_false() -> None:
+    """A live STEER receipt stream must not strand parent is_processing=false."""
+    handler = _TestMessageHandler.create()
+    handler._stream_sessions["steer-1"] = "sess-1"
+    handler._stream_emits_processing_status["steer-1"] = False
+    handler._stream_methods["steer-1"] = ReqMethod.CHAT_SEND.value
+    handler._stream_sessions["parent-1"] = "sess-1"
+    handler._stream_emits_processing_status["parent-1"] = True
+    handler._stream_methods["parent-1"] = ReqMethod.CHAT_SEND.value
+
+    assert handler._session_has_streams_blocking_processing_false(
+        "sess-1", exclude_rid="parent-1"
+    ) is False
+
+
 @pytest.mark.asyncio
 async def test_attach_only_stream_does_not_block_processing_false() -> None:
     """A terminal is_processing=false must pass while an attach stream is live."""

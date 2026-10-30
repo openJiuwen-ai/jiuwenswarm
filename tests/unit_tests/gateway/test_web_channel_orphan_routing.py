@@ -25,6 +25,10 @@ class _FakeWs:
 
 def _make_channel() -> WebChannel:
     channel = object.__new__(WebChannel)
+    from gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
+
+    channel.delivery = WebDeliveryRegistry()
+    channel._expert_processing_requests = {}
     channel._session_busy = {}
     channel._clients_by_key = {}
     channel._ws_by_id = {}

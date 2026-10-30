@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, ClassVar
+
 from zoneinfo import ZoneInfo
 
 from gateway.common.scheduled_task_policy import is_scheduled_task_supported
@@ -13,24 +14,30 @@ from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     EXECUTION_WORK_MODES,
 )
-from gateway.cron.cron_expr import normalize_cron_expr
+from gateway.enterprise import is_enterprise
+from gateway.cron.cron_expr import (
+    clamp_wake_offset_for_delay_seconds,
+    normalize_cron_expr,
+)
 from gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
     CRON_JOB_NAME_MAX_LENGTH,
     CRON_MODEL_SOURCE_LOGIN,
     CronTargetChannel,
     cron_job_metadata,
-    cron_job_modes_for_tools,
     is_valid_target_channel_id,
     normalize_cron_job_mcp,
     normalize_cron_job_mode,
+    normalize_tenant_id,
     normalize_target_channel_id,
     resolve_cron_model,
-    validate_cron_model,
 )
 from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from gateway.cron.store_base import CronJobStoreBackend
+from gateway.runtime.cron.cron_job_mutations import strip_sticky_identity_fields
+
+logger = logging.getLogger(__name__)
 
 # 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
 _GATE_QUERY_CONCURRENCY = 8
@@ -54,6 +61,15 @@ def _login_credential_ref_from_session(auth_session: str) -> str:
             "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
         ) from exc
     return credential_ref_for_user(session.user_id)
+
+
+def _required_enterprise_tenant_id(raw: Any) -> str:
+    """企业版创建时三个身份必须都有内容，空白不补成 default。"""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text:
+            return text
+    raise ValueError("enterprise cron requires group_id, bot_id and user_id")
 
 
 def _serialize_mutation(method):
@@ -84,9 +100,17 @@ class CronController:
         # 避免任务/项目很多时一次性打出上百个请求。
         self._gate_concurrency = asyncio.Semaphore(_GATE_QUERY_CONCURRENCY)
 
-    async def _gate_allowed(self, project_id: str | None, user_id: str | None) -> bool:
+    async def _gate_allowed(
+        self,
+        project_id: str | None,
+        user_id: str | None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+    ) -> bool:
         async with self._gate_concurrency:
-            return await self._scheduler.project_execution_allowed(project_id, user_id)
+            return await self._scheduler.project_execution_allowed(
+                project_id, user_id, group_id, bot_id
+            )
 
     @property
     def store(self) -> CronJobStore:
@@ -155,6 +179,44 @@ class CronController:
         base = datetime.now(tz=tz)
         _ = _cron_next_push_dt(cron_expr, base)
 
+    @staticmethod
+    def _clamp_wake_offset_for_upcoming_run(
+        wake_offset_seconds: Any,
+        *,
+        cron_expr: str,
+        timezone: str,
+    ) -> int:
+        """企业版创建：提前量不能超过离下次触发还剩的秒数。"""
+        try:
+            tz = ZoneInfo(timezone)
+            now = datetime.now(tz=tz)
+            push_dt = _cron_next_push_dt(cron_expr, now)
+            delay = float(push_dt.timestamp() - now.timestamp())
+            clamped = clamp_wake_offset_for_delay_seconds(wake_offset_seconds, delay)
+            if wake_offset_seconds is not None:
+                try:
+                    before: Any = int(wake_offset_seconds)
+                except (TypeError, ValueError):
+                    before = wake_offset_seconds
+            else:
+                before = None
+            if before != clamped:
+                logger.info(
+                    "[Cron] clamp wake_offset for upcoming run delay≈%.1fs: %s -> %s",
+                    delay,
+                    before,
+                    clamped,
+                )
+            return clamped
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Cron] skip wake_offset clamp: %s", exc)
+            if wake_offset_seconds is None:
+                return 0
+            try:
+                return max(0, int(wake_offset_seconds))
+            except (TypeError, ValueError):
+                return 0
+
     _DESCRIPTION_TIME_KEYWORDS = (
         "每天",
         "每周",
@@ -213,41 +275,103 @@ class CronController:
             return raw_s
         return raw_s
 
-    async def list_jobs(self, user_id: str | None = None) -> list[dict[str, Any]]:
-        """List jobs, optionally scoped to one owner.
+    @staticmethod
+    def _matches_list_filter(
+        job: Any,
+        *,
+        project_id: str,
+        user_id: str,
+        group_id: str,
+        bot_id: str,
+    ) -> bool:
+        """用户、群、机器人都要比。项目编号可以不比。
 
-        ``user_id`` is applied before admission is queried.  Admission is a
-        cross-process RPC routed by the job owner's ``user_id``, so querying it
-        for other owners both delays this caller and may cold-start (or abort
-        the cold start of) another user's sandbox.  ``None``/empty keeps the
-        legacy all-owner behavior for callers without an identity.
+        用户、群、机器人空着等于 ``default``。``project_id is None`` 表示不按项目筛，
+        定时任务总表和侧边栏要看到每个项目下的任务。空字符串才是默认项目，
+        不收成 ``default``。
         """
-        jobs = await self._store.list_jobs()
-        owner = str(user_id or "").strip()
-        if owner:
-            # 先按属主过滤再打闸门:闸门按任务属主路由到其沙箱,过滤前全量
-            # 查询会让本请求替其他用户承担冷启动和 10s 超时。
-            jobs = [
-                job
-                for job in jobs
-                if str(getattr(job, "user_id", "") or "").strip() == owner
-            ]
-        # project_execution_allowed 是一次跨进程 RPC。同项目多任务共享同一
-        # (project_id, user_id) 判定:去重后并发查询,避免把一次列表请求
-        # 放大成逐任务串行 N 次往返(每个 10s 超时)。
-        # 同项目同属主共享一次判定;用有序列表而非集合,避免依赖集合迭代顺序
-        # 与 gather 结果逐一对应。
-        keys = list(dict.fromkeys((job.project_id, job.user_id) for job in jobs))
+        if project_id is not None:
+            current_project = str(getattr(job, "project_id", "") or "")
+            if current_project != str(project_id or ""):
+                return False
+        return CronController._matches_tenant(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        )
+
+    @staticmethod
+    def _matches_tenant(job: Any, *, user_id: str, group_id: str, bot_id: str) -> bool:
+        """用户、群、机器人都要对上。空着等于 ``default``。"""
+        if normalize_tenant_id(getattr(job, "user_id", "")) != normalize_tenant_id(user_id):
+            return False
+        if normalize_tenant_id(getattr(job, "group_id", "")) != normalize_tenant_id(group_id):
+            return False
+        if normalize_tenant_id(getattr(job, "bot_id", "")) != normalize_tenant_id(bot_id):
+            return False
+        return True
+
+    @staticmethod
+    def _owns_job(job: Any, *, user_id: str, group_id: str, bot_id: str) -> bool:
+        """改、删、预览前核对三个身份。
+
+        个人版没填的收成 ``default`` 再比。企业版缺一个就当不是这条任务，不补 ``default``。
+        """
+        if is_enterprise():
+            try:
+                wanted_group = _required_enterprise_tenant_id(group_id)
+                wanted_bot = _required_enterprise_tenant_id(bot_id)
+                wanted_user = _required_enterprise_tenant_id(user_id)
+            except ValueError:
+                return False
+            if str(getattr(job, "group_id", "") or "").strip() != wanted_group:
+                return False
+            if str(getattr(job, "bot_id", "") or "").strip() != wanted_bot:
+                return False
+            if str(getattr(job, "user_id", "") or "").strip() != wanted_user:
+                return False
+            return True
+        return CronController._matches_tenant(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        )
+
+    async def list_jobs(
+        self,
+        *,
+        project_id: str | None = None,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """按用户、群、机器人筛选。项目编号可以再收窄。
+
+        用户、群、机器人不传就是 ``default``。``project_id`` 不传表示这个人的全部项目。
+        传空字符串才只要默认项目。筛完后再问项目准入：项目已被隐藏或暂时不能执行的任务不出现在列表里。
+        同一个项目、同一个用户只问一次。
+        """
+        jobs = []
+        for job in await self._store.list_jobs():
+            if self._matches_list_filter(
+                job,
+                project_id=project_id,
+                user_id=user_id,
+                group_id=group_id,
+                bot_id=bot_id,
+            ):
+                jobs.append(job)
+        # project_execution_allowed 是一次跨进程询问。同项目同用户共享一次判定，
+        # 去重后并发查询，避免一次列表变成逐任务串行往返。
+        keys = list(dict.fromkeys(
+            (job.project_id, job.user_id, job.group_id, job.bot_id) for job in jobs
+        ))
         if not keys:
             return []
         verdicts = await asyncio.gather(
-            *(self._gate_allowed(pid, uid) for pid, uid in keys)
+            *(self._gate_allowed(pid, uid, group_id, bot_id) for pid, uid, group_id, bot_id in keys)
         )
         allowed = dict(zip(keys, verdicts))
         return [
             job.to_dict()
             for job in jobs
-            if allowed[(job.project_id, job.user_id)]
+            if allowed[(job.project_id, job.user_id, job.group_id, job.bot_id)]
         ]
 
     @_serialize_mutation
@@ -298,9 +422,33 @@ class CronController:
         finally:
             self._scheduler.reopen_project_admission(project_id)
 
-    async def get_job(self, job_id: str) -> dict[str, Any] | None:
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        project_id: str | None = "",
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any] | None:
+        """按编号取出一条任务，再用和列表相同的条件核对。
+
+        用户、群、机器人不传就是 ``default``。项目编号不传（这个函数的默认值）或传空字符串，
+        都表示只要默认项目。传 ``None`` 表示不按项目筛，网页上的立即执行、编辑、删除走这条。
+        对不上就当没有这条任务。这里不查项目现在能不能跑。
+        """
         job = await self._store.get_job(job_id)
-        return job.to_dict() if job else None
+        if job is None:
+            return None
+        if not self._matches_list_filter(
+            job,
+            project_id=project_id,
+            user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
+        ):
+            return None
+        return job.to_dict()
 
     @staticmethod
     def job_metadata() -> dict[str, Any]:
@@ -326,6 +474,7 @@ class CronController:
         # 登录会话 id：web handler 从创建连接上注入的服务端专有键（客户端传的
         # 会被无条件覆盖），仅用于登录免费模型的凭据绑定捕获，不落任务数据。
         auth_session = str(params.pop("_auth_session", "") or "").strip()
+        enterprise = is_enterprise()
         name = str(params.get("name") or "").strip()
         cron_expr = normalize_cron_expr(str(params.get("cron_expr") or "").strip())
         timezone = (
@@ -355,35 +504,63 @@ class CronController:
                 raise ValueError(
                     f"{PROACTIVE_JOB_ID} 是系统内置主动推荐任务的保留 id，不能手动创建"
                 )
-        model_name, model_source = resolve_cron_model(
-            params.get("model_name"),
-            zen_entries=await self._zen_entries(),
-        )
-        model_selection = params.get("model_selection")
-        if model_selection is not None:
-            from gateway.common.model_routing_registry import ModelSelectionResolver
-            from gateway.common.model_selection import ModelSelection
-            selection = ModelSelection.model_validate(model_selection)
-            ModelSelectionResolver().resolve(selection)
-            model_selection = selection.model_dump()
-        # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由
-        # user_id 与登录账号是两套独立体系，不能互相推导；没有可用登录会话就
-        # 明确拒绝（400），不留一个到点必失败的任务。自配模型（即使与登录模型
-        # 同名）不绑定，执行侧凭据注入只认绑定，不会误切到登录模型计费。
-        credential_ref = (
-            _login_credential_ref_from_session(auth_session)
-            if model_source == CRON_MODEL_SOURCE_LOGIN
-            else ""
-        )
-        # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
-        # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
-        # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
-        mcp = normalize_cron_job_mcp(params.get("mcp"))
+        if enterprise:
+            from gateway.cron.enterprise_model import (
+                resolve_enterprise_cron_model,
+            )
+
+            group_id = _required_enterprise_tenant_id(params.get("group_id"))
+            bot_id = _required_enterprise_tenant_id(params.get("bot_id"))
+            user_id = _required_enterprise_tenant_id(params.get("user_id"))
+            # 企业版核对当前身份在企业库里的对话模型，不读本机 config 占位名。
+            model_name = await resolve_enterprise_cron_model(
+                params.get("model_name"),
+                group_id=group_id,
+                bot_id=bot_id,
+                user_id=user_id,
+            )
+            model_selection = None
+            mcp = None
+            credential_ref = ""
+        else:
+            group_id = normalize_tenant_id(params.get("group_id"))
+            bot_id = normalize_tenant_id(params.get("bot_id"))
+            user_id = normalize_tenant_id(params.get("user_id"))
+            model_name, model_source = resolve_cron_model(
+                params.get("model_name"),
+                zen_entries=await self._zen_entries(),
+            )
+            model_selection = params.get("model_selection")
+            if model_selection is not None:
+                from gateway.common.model_selection import ModelSelection
+                from gateway.common.model_routing_registry import ModelSelectionResolver
+                selection = ModelSelection.model_validate(model_selection)
+                ModelSelectionResolver().resolve(selection)
+                model_selection = selection.model_dump()
+            # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由
+            # user_id 与登录账号是两套独立体系，不能互相推导；没有可用登录会话就
+            # 明确拒绝（400），不留一个到点必失败的任务。自配模型（即使与登录模型
+            # 同名）不绑定，执行侧凭据注入只认绑定，不会误切到登录模型计费。
+            credential_ref = (
+                _login_credential_ref_from_session(auth_session)
+                if model_source == CRON_MODEL_SOURCE_LOGIN
+                else ""
+            )
+            # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
+            # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
+            # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
+            mcp = normalize_cron_job_mcp(params.get("mcp"))
 
         targets = self._normalize_targets(raw_targets)
 
         self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
         description = self._normalize_description(description, name)
+        if enterprise:
+            wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
+                wake_offset_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone,
+            )
 
         routing_sid = self._routing_session_id(targets, params.get("session_id"))
         chat_type = params.get("chat_type")
@@ -431,22 +608,20 @@ class CronController:
         if work_mode not in EXECUTION_WORK_MODES:
             raise ValueError(f"cron is not supported for work_mode: {work_mode!r}")
         app_id = str(params.get("app_id") or "").strip()
-        # user_id：web 端创建定时任务时由 handler 注入 params（见 _cron_job_create），
-        # 执行时透传给 faas 的 X-Session-Context。agent 内部创建的 cron 无 user_id 即存空串。
-        user_id = str(params.get("user_id") or "").strip()
         if not await self._scheduler.project_execution_allowed(
-            resolved_project_id, user_id
+            resolved_project_id, user_id, group_id, bot_id
         ):
             raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
+        stored_wake_offset = (
+            int(wake_offset_seconds) if wake_offset_seconds is not None else None
+        )
         job = await self._store.create_job(
             job_id=str(params.get("id") or "").strip() or None,
             name=name,
             cron_expr=cron_expr,
             timezone=timezone,
             enabled=enabled,
-            wake_offset_seconds=int(wake_offset_seconds)
-            if wake_offset_seconds is not None
-            else None,
+            wake_offset_seconds=stored_wake_offset,
             description=description,
             targets=targets,
             session_id=routing_sid,
@@ -461,19 +636,39 @@ class CronController:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
             credential_ref=credential_ref,
         )
         await self._scheduler.reload()
         return job.to_dict()
 
     @_serialize_mutation
-    async def update_job(self, job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    async def update_job(
+        self,
+        job_id: str,
+        patch: dict[str, Any],
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any]:
         patch = dict(patch or {})
         allow_unresolved_project_id = bool(
             patch.pop("_agentos_project_binding_verified", False)
         )
         # 登录会话 id（服务端专有键，见 create_job）——改选登录模型时重绑凭据。
         auth_session = str(patch.pop("_auth_session", "") or "").strip()
+        # 身份只从函数参数核对，补丁改不了创建时定死的身份。
+        patch = strip_sticky_identity_fields(patch)
+        patch.pop("service_id", None)
+        patch.pop("agent_id", None)
+        existing = await self._store.get_job(job_id)
+        if existing is None or not self._owns_job(
+            existing, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
+            raise KeyError("job not found")
+        enterprise = is_enterprise()
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
             # 同 create_job：内部模式只随 proactive_cron_sync 注册，不允许把
@@ -482,7 +677,22 @@ class CronController:
                 raise ValueError(
                     "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动修改"
                 )
-        if "model_name" in patch:
+        if enterprise:
+            from gateway.cron.enterprise_model import (
+                resolve_enterprise_cron_model,
+            )
+
+            patch.pop("credential_ref", None)
+            patch.pop("model_selection", None)
+            patch.pop("mcp", None)
+            if "model_name" in patch:
+                patch["model_name"] = await resolve_enterprise_cron_model(
+                    patch.get("model_name"),
+                    group_id=str(group_id or existing.group_id or ""),
+                    bot_id=str(bot_id or existing.bot_id or ""),
+                    user_id=str(user_id or existing.user_id or ""),
+                )
+        elif "model_name" in patch:
             canonical, model_source = resolve_cron_model(
                 patch.get("model_name"),
                 zen_entries=await self._zen_entries(),
@@ -497,20 +707,32 @@ class CronController:
                 )
             else:
                 patch["credential_ref"] = ""
-        if "mcp" in patch:
+        if not enterprise and "mcp" in patch:
             # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
             patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))
         if "targets" in patch:
             patch["targets"] = self._normalize_targets(patch["targets"])
-        existing = await self._store.get_job(job_id)
-        if existing is None:
-            raise KeyError("job not found")
         if "cron_expr" in patch:
             patch["cron_expr"] = normalize_cron_expr(str(patch["cron_expr"]).strip())
         if "cron_expr" in patch or "timezone" in patch:
             cron_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()
             timezone = str(patch.get("timezone") or existing.timezone).strip()
             self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
+        if enterprise and any(
+            key in patch for key in ("wake_offset_seconds", "cron_expr", "timezone")
+        ):
+            upcoming_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()
+            upcoming_tz = str(patch.get("timezone") or existing.timezone).strip()
+            current_offset = (
+                patch["wake_offset_seconds"]
+                if "wake_offset_seconds" in patch
+                else getattr(existing, "wake_offset_seconds", 0)
+            )
+            patch["wake_offset_seconds"] = self._clamp_wake_offset_for_upcoming_run(
+                current_offset,
+                cron_expr=upcoming_expr,
+                timezone=upcoming_tz or "Asia/Shanghai",
+            )
         if "description" in patch:
             name = str(patch.get("name") or existing.name or "").strip()
             patch["description"] = self._normalize_description(
@@ -556,7 +778,10 @@ class CronController:
             key in patch for key in ("project_id", "project_dir")
         ):
             if not await self._scheduler.project_execution_allowed(
-                patch.get("project_id", existing.project_id), existing.user_id
+                patch.get("project_id", existing.project_id),
+                user_id or getattr(existing, "user_id", "") or "",
+                group_id or getattr(existing, "group_id", "") or "",
+                bot_id or getattr(existing, "bot_id", "") or "",
             ):
                 raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         job = await self._store.update_job(job_id, patch)
@@ -564,40 +789,71 @@ class CronController:
         return job.to_dict()
 
     async def delete_job(
-        self, job_id: str, *, force: bool = False, delete_sessions: bool = True
+        self,
+        job_id: str,
+        *,
+        force: bool = False,
+        delete_sessions: bool = True,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+        skip_ownership: bool = False,
     ) -> bool:
         existing = await self._store.get_job(job_id)
         if existing is None:
             return False
-        if not force and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            return await self._store.delete_job(job_id)
-        if delete_sessions:
-            if existing.enabled:
-                await self._store.update_job(job_id, {"enabled": False})
-                await self._scheduler.reload()
-            await self._scheduler.stop_job_runs(job_id)
-            await self._scheduler.delete_cron_sessions(job_id, existing.user_id)
+        if not skip_ownership and not self._owns_job(
+            existing, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
+            return False
+        if not is_enterprise():
+            if (
+                not force
+                and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick"
+            ):
+                return await self._store.delete_job(job_id)
+            if delete_sessions:
+                if existing.enabled:
+                    await self._store.update_job(job_id, {"enabled": False})
+                    await self._scheduler.reload()
+                await self._scheduler.stop_job_runs(job_id)
+                await self._scheduler.delete_cron_sessions(job_id, existing.user_id)
         deleted = await self._store.delete_job(job_id, force=force)
         if deleted:
             await self._scheduler.reload()
         return deleted
 
-    @_serialize_mutation
-    async def toggle_job(self, job_id: str, enabled: bool) -> dict[str, Any]:
-        existing = await self._store.get_job(job_id)
-        if existing is None:
-            raise KeyError("job not found")
-        if enabled and not await self._scheduler.project_execution_allowed(
-            existing.project_id, existing.user_id
-        ):
-            raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
-        job = await self._store.update_job(job_id, {"enabled": bool(enabled)})
-        await self._scheduler.reload()
-        return job.to_dict()
+    async def toggle_job(
+        self,
+        job_id: str,
+        enabled: bool,
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any]:
+        """开关走修改。打开时的项目闸门和三个身份核对都在 ``update_job`` 里。"""
+        return await self.update_job(
+            job_id,
+            {"enabled": bool(enabled)},
+            user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
+        )
 
-    async def preview_job(self, job_id: str, count: int = 5) -> list[dict[str, Any]]:
+    async def preview_job(
+        self,
+        job_id: str,
+        count: int = 5,
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> list[dict[str, Any]]:
         job = await self._store.get_job(job_id)
-        if job is None:
+        if job is None or not self._owns_job(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
             raise KeyError("job not found")
         count = max(1, min(int(count), 50))
 
@@ -621,10 +877,29 @@ class CronController:
             out.append({"wake_at": wake_dt.isoformat(), "push_at": push_dt.isoformat()})
         return out
 
-    async def run_now(self, job_id: str) -> str:
-        run_id = await self._scheduler.trigger_run_now(job_id)
-        return run_id
+    async def run_now(
+        self,
+        job_id: str,
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> str:
+        """立刻跑一次。个人版和企业版都先核对用户、群、机器人。
 
-    async def run_now_info(self, job_id: str) -> dict[str, str]:
+        没传的按 ``default``。任务不存在，或身份对不上，都当作找不到。
+        通过之后才交给调度器。这里不查项目编号。
+        """
+        job = await self._store.get_job(job_id)
+        if job is None or not self._matches_tenant(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
+            raise KeyError("job not found")
+        return await self._scheduler.trigger_run_now(job_id)
+
+    async def run_now_info(self, job_id: str) -> dict[str, Any]:
         return await self._scheduler.trigger_run_now_info(job_id)
 
+    def mark_permission_resume_succeeded(self, session_id: str) -> None:
+        """人在定时任务会话里点完允许、这一轮也写完了：把「还在等」的记号抹掉。"""
+        self._scheduler.mark_permission_resume_succeeded(session_id)

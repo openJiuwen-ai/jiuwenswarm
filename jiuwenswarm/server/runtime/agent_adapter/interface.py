@@ -28,12 +28,10 @@ from typing import Any, AsyncIterator, Callable, Tuple
 from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
+    is_team_mode as is_team_runtime_mode,
     is_team_plan_mode,
     is_web_composable_mode,
     read_request_work_mode,
-)
-from gateway.common.mode_matrix import (
-    is_team_mode as is_team_runtime_mode,
 )
 from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
@@ -540,6 +538,32 @@ async def _persist_ask_user_answer_history(
         },
         mode=params.get("mode", "unknown"),
     )
+
+
+def _resolve_final_record_timestamp(
+    *,
+    event_type: str,
+    segment_started_at: float | None,
+    extra_fields: dict[str, Any] | None,
+) -> float:
+    """chat.final 落盘用「气泡出现的时刻」，收尾时刻另存 completed_at。"""
+    completed_at = time.time()
+    if event_type in ("chat.llm_call_start", "chat.usage_metadata"):
+        # Anchor the call-start marker and the usage card to the call's start
+        # so they render before the response text (chat.final). chat.llm_call_end
+        # keeps its REAL completion timestamp.
+        if isinstance(extra_fields, dict):
+            start_ts = extra_fields.get("llm_start_ts")
+            if isinstance(start_ts, (int, float)) and 0 < start_ts <= completed_at:
+                return float(start_ts)
+        return completed_at
+    if event_type != "chat.final" or not segment_started_at:
+        return completed_at
+    if segment_started_at >= completed_at:
+        return completed_at
+    if isinstance(extra_fields, dict):
+        extra_fields.setdefault("completed_at", completed_at)
+    return segment_started_at
 
 
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
@@ -1254,6 +1278,16 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_MARKETPLACE_TOGGLE: "handle_skills_marketplace_toggle",
     ReqMethod.SKILLS_ONLINE_SEARCH: "handle_skills_online_search",
     ReqMethod.SKILLS_ONLINE_SEARCH_INSTALL: "handle_skills_online_search_install",
+    ReqMethod.SKILLS_SOURCE_PROVIDERS: "handle_skills_source_providers",
+    ReqMethod.SKILLS_SOURCE_SEARCH: "handle_skills_source_search",
+    ReqMethod.SKILLS_SOURCE_INSTALL: "handle_skills_source_install",
+    ReqMethod.SKILLS_UPDATES_CHECK: "handle_skills_updates_check",
+    ReqMethod.SKILLS_UPDATE: "handle_skills_update",
+    ReqMethod.SKILLS_ENTERPRISE_LIST: "handle_skills_enterprise_list",
+    ReqMethod.SKILLS_ENTERPRISE_INSTALL: "handle_skills_web_install",
+    ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: "handle_skills_web_uninstall",
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: "handle_skills_source_providers",
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: "handle_skills_source_search",
     ReqMethod.SKILLS_SKILLNET_SEARCH: "handle_skills_skillnet_search",
     ReqMethod.SKILLS_SKILLNET_INSTALL: "handle_skills_skillnet_install",
     ReqMethod.SKILLS_SKILLNET_INSTALL_STATUS: "handle_skills_skillnet_install_status",
@@ -3215,21 +3249,8 @@ class JiuWenSwarm:
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
-                if paused:
-                    # The persistent foreground stream survives pause, so the
-                    # gateway's stream-exit fallback never fires.  Emit the
-                    # terminal frame explicitly; shape matches the old
-                    # gateway fallback exactly.
-                    await team_manager.broadcast_event(
-                        session_id,
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                        },
-                        channel_id=request.channel_id,
-                    )
+                # Runtime retains pure observation subscriptions and broadcasts
+                # completion after the cancelled business response streams exit.
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -3308,11 +3329,17 @@ class JiuWenSwarm:
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
-        return await self._process_message(request, schedule_session=True)
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
-        return await self._process_message(request, schedule_session=False)
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=False)
 
     async def _process_message(
         self,
@@ -3775,6 +3802,16 @@ class JiuWenSwarm:
         """Inject an interaction answer into this Session's active execution."""
         if not is_interrupt_resume_payload(request.params):
             raise ValueError("control input must answer an active interaction")
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
+        with bind_request_subject(request.metadata):
+            async for chunk in self._stream_control_input(request):
+                yield chunk
+
+    async def _stream_control_input(
+        self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         session_id = self._session_manager.get_session_id(request.session_id)
         params = request.params if isinstance(request.params, dict) else {}
@@ -4063,6 +4100,16 @@ class JiuWenSwarm:
 
     async def process_message_stream(
         self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """处理流式请求，并带上本次请求的用户身份。"""
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            async for chunk in self._process_message_stream(request):
+                yield chunk
+
+    async def _process_message_stream(
+            self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求.
 
@@ -5813,9 +5860,12 @@ class JiuWenSwarm:
     ) -> dict[str, Any] | None:
         """Resolve one chat's runtime before any session-child side effects."""
         if request.req_method is not ReqMethod.CHAT_SEND:
+            # Stamp absence so deep-adapter paths can getattr safely.
+            request.trusted_runtime_binding = None
             return None
         resolver = getattr(adapter, "resolve_runtime_binding", None)
         if not callable(resolver):
+            request.trusted_runtime_binding = None
             return None
         params = request.params if isinstance(request.params, dict) else {}
         runtime_binding = resolver(session_id, params)

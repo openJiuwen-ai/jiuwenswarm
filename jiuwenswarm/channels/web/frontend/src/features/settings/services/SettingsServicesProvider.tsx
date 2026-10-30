@@ -14,6 +14,7 @@ import { SettingsSaveQueue } from './SettingsSaveQueue';
 import { SettingsUnsavedChangesRegistry } from './SettingsUnsavedChangesRegistry';
 
 export type SettingsServices = {
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
@@ -69,6 +70,7 @@ export function SettingsServicesProvider({
   const value = useMemo(
     () => ({ ...services, saveQueue: saveQueueRef.current!, unsavedChanges: changesRef.current! }),
     [
+      services.appVersion,
       services.connectionState,
       services.externalCliDetectResults,
       services.externalCliInstallStatuses,

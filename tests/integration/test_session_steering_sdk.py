@@ -32,6 +32,8 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.runtime.context import reset_runtime_context, set_runtime_context
 from jiuwenswarm.runtime.session.model import SessionExecutionState
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers._default import handle_stream, handle_unary
 
 
 class ScriptedModel:
@@ -417,9 +419,9 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
         async def dispatch(req):
             try:
                 if req.is_stream:
-                    await server._handle_stream_impl(ws, req, lock)
+                    await handle_stream(build_ws_request_context(server, ws, req, lock))
                 else:
-                    await server._handle_unary_impl(ws, req, lock)
+                    await handle_unary(build_ws_request_context(server, ws, req, lock))
             except Exception as exc:
                 await server._send_runtime_event(ws, RuntimeEvent.error(
                     request_id=req.request_id, channel_id=req.channel_id, session_id=sid, error=exc,

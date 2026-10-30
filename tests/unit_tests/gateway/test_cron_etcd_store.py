@@ -92,6 +92,7 @@ def _store(client: FakeEtcdJsonClient | None = None) -> tuple[EtcdCronJobStore, 
     [
         {},
         {"mcp": ["tool"], "credential_ref": "0123456789abcdef0123456789abcdef"},
+        {"group_id": "tenant-1030", "bot_id": "bot-1030"},
     ],
 )
 async def test_etcd_put_get_list_delete(extra_fields):
@@ -111,10 +112,14 @@ async def test_etcd_put_get_list_delete(extra_fields):
     assert fetched is not None
     assert fetched.name == "daily"
     assert fetched.user_id == "u1"
+    assert fetched.group_id == extra_fields.get("group_id", "default")
+    assert fetched.bot_id == extra_fields.get("bot_id", "default")
     assert fetched.mcp == extra_fields.get("mcp")
     assert fetched.credential_ref == extra_fields.get("credential_ref", "")
     listed = await reader.list_jobs()
     assert [job.id for job in listed] == [created.id]
+    assert listed[0].group_id == fetched.group_id
+    assert listed[0].bot_id == fetched.bot_id
     assert listed[0].mcp == fetched.mcp
     assert listed[0].credential_ref == fetched.credential_ref
     assert await store.delete_job(created.id) is True

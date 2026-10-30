@@ -1,3 +1,4 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
@@ -11,7 +12,7 @@ await build({
   platform: 'node',
   format: 'esm',
   outfile: 'node_modules/.cache/tool-group-avatar/toolGroupAvatar.mjs',
-  define: { 'import.meta.env.DEV': 'false' },
+  define: { 'import.meta.env': '{}' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   plugins: [
     {

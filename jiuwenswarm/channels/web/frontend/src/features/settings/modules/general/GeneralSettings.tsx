@@ -3,6 +3,17 @@ import { useTranslation } from 'react-i18next';
 import { Select, Tag, type TagVariant } from '../../../../components/ui';
 import { SettingRow } from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
+import { isEnterprise } from '../../../../edition';
+
+export function VersionSetting() {
+  const { t } = useTranslation();
+  const { appVersion } = useSettingsServices();
+  return (
+    <SettingRow title={<span data-testid="settings-version-label">{t('updatePanel.currentVersion')}</span>}>
+      <span data-testid="settings-version-value">{appVersion || '-'}</span>
+    </SettingRow>
+  );
+}
 
 export function ConnectionStatusSetting() {
   const { t } = useTranslation();
@@ -17,7 +28,7 @@ export function ConnectionStatusSetting() {
     connectionKey === 'connected' ? 'success' : connectionKey === 'connecting' ? 'warning' : 'danger';
   return (
     <>
-      <DesktopCloseBehaviorSetting />
+      {!isEnterprise() && <DesktopCloseBehaviorSetting />}
       <SettingRow
         title={t('settingsPanel.general.connection')}
         description={t('settingsPanel.general.connectionDescription')}

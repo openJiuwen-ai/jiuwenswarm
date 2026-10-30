@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
@@ -6,7 +6,18 @@ import { loadCallback } from './loadProductionCallback.mjs';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
+const previousWindow = globalThis.window;
+const previousDocument = globalThis.document;
+const bootstrapDom = new JSDOM('', { url: 'http://localhost' });
+globalThis.window = bootstrapDom.window;
+globalThis.document = bootstrapDom.window.document;
+after(() => {
+  globalThis.window = previousWindow;
+  globalThis.document = previousDocument;
+  bootstrapDom.window.close();
+});
+
+const {
   setTeamOrganizationUiEnabled,
   isTeamOrganizationUiEnabled,
   selectedExpertTeamId,
@@ -22,6 +33,7 @@ import {
   organizationProcessingRevision,
   organizationOwnerStateRevision,
   useOrganizationConversationKey,
+  isReachableTeamMemberStatus,
   useOrganizationEvents,
   useChatStore,
   useSessionStore,
@@ -41,7 +53,7 @@ import {
   isOrganizationOwnerStopped,
   expertProcessingSnapshot,
   MemberToolEventProjector,
-} from '../node_modules/.cache/team-organization/organization.mjs';
+} = await import('../node_modules/.cache/team-organization/organization.mjs');
 
 test('child member tools populate isolated process panels without duplicating Owner or Leader events', async () => {
   seed();
@@ -751,81 +763,6 @@ test('organization chunks group by gateway request ID and leave Owner messages u
   }
 });
 
-test('organization turn completion closes trailing Summary reasoning without ending Owner work', async () => {
-  seed();
-  const chat = useChatStore.getState();
-  chat.ensureTeamRuntime('session', 'summary');
-  chat.replaceHistoryMessages('session::summary', []);
-  chat.setProcessing('session', true);
-  chat.setThinking('session', true);
-  chat.appendReasoning('session', 'Owner is still working');
-  chat.setProcessing('session::summary', true);
-  chat.setThinking('session::summary', true);
-  const owner = chat.getRuntime('session');
-  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const listeners = new Map();
-  const original = webClient.on;
-  webClient.on = (name, handler) => {
-    listeners.set(name, handler);
-    return () => listeners.delete(name);
-  };
-  function Probe() { useOrganizationEvents(); return null; }
-  const root = createRoot(document.getElementById('root'));
-  const emit = (event, content = '', member = 'team_leader', requestId = 'summary-round') =>
-    listeners.get(event)({ payload: {
-      session_id: 'session', team_id: 'summary', source: 'org_summary_background',
-      member_name: member, request_id: requestId, content,
-    } });
-  try {
-    await act(async () => {
-      setTeamOrganizationUiEnabled(true);
-      root.render(React.createElement(Probe));
-    });
-    await act(async () => {
-      emit('chat.final', 'report');
-      emit('chat.delta', 'member draft', 'drafter');
-      emit('chat.reasoning', 'retry submission without result_uri');
-    });
-    assert.equal(chat.getRuntime('session::summary').reasoningSegments.at(-1).closed, false);
-    await act(async () => emit('org.turn_completed'));
-    const summary = chat.getRuntime('session::summary');
-    assert.equal(summary.reasoningSegments.at(-1).closed, true);
-    assert.equal(summary.isProcessing, false);
-    assert.equal(summary.isThinking, false);
-    assert.deepEqual(summary.messages.map((message) => message.content), ['report', 'member draft']);
-    assert.ok(summary.messages.every((message) => message.isStreaming === false));
-    assert.deepEqual(chat.getRuntime('session'), owner);
-    // A subsequent turn must still produce its own output normally.
-    await act(async () => {
-      emit('chat.reasoning', 'new turn');
-      emit('chat.delta', 'new report', 'team_leader', 'next-round');
-      emit('org.turn_completed', '', 'team_leader', 'next-round');
-    });
-    assert.equal(chat.getRuntime('session::summary').messages.at(-1).content, 'new report');
-    assert.equal(chat.getRuntime('session::summary').messages.at(-1).isStreaming, false);
-    await act(async () => {
-      emit('chat.reasoning', 'failed turn');
-      emit('chat.delta', 'partial report', 'team_leader', 'failed-round');
-      emit('chat.error', '', 'team_leader', 'failed-round');
-    });
-    assert.equal(chat.getRuntime('session::summary').reasoningSegments.at(-1).closed, true);
-    assert.ok(chat.getRuntime('session::summary').messages.every((message) => message.isStreaming !== true));
-    assert.deepEqual(chat.getRuntime('session'), owner);
-    await act(async () => setTeamOrganizationUiEnabled(false));
-    assert.equal(listeners.size, 0);
-  } finally {
-    await act(async () => root.unmount());
-    setTeamOrganizationUiEnabled(false);
-    webClient.on = original;
-    dom.window.close();
-    delete globalThis.window;
-    delete globalThis.document;
-  }
-});
-
 async function withOrganizationPanel(request, run, { enabled = true } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost', pretendToBeVisual: true });
   globalThis.window = dom.window;
@@ -1049,7 +986,6 @@ test('disabled organization panel issues no requests or subscriptions', async ()
     async ({ calls, listeners }) => {
       assert.equal(calls.length, 0);
       assert.equal(listeners.size, 0);
-      assert.equal(document.querySelector('[data-testid="team-area-org-info-panel"]'), null);
     },
     { enabled: false },
   );
@@ -1319,6 +1255,7 @@ test('late snapshots cannot overwrite the newly selected Team', async () => {
   await withOrganizationPanel(
     (method, params) => {
       if (method === 'team.list') return ownerList;
+      if (method === 'agent_groups.list') return { agentGroups: [] };
       if (params.team_id === 'owner')
         return new Promise((resolve) => {
           resolveOwner = resolve;
@@ -1353,7 +1290,7 @@ test('periodic refresh is deduplicated while pending and timers are removed when
       (method) =>
         method === 'team.list'
           ? ownerList
-          : new Promise((resolve) => {
+          : method === 'agent_groups.list' ? { agentGroups: [] } : new Promise((resolve) => {
               resolveSnapshot = resolve;
             }),
       async ({ calls, listeners }) => {
@@ -1410,8 +1347,13 @@ test('composer mentions follow the selected Team and discard old member chips', 
   visit(source);
   assert.equal(statements.length, 6);
   const body = ts.transpileModule(statements.join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-  const probe = new Function('useOrganizationConversationKey', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
+  const fallback = source.statements.find((node) => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some((d) => d.name.getText(source) === 'EMPTY_TEAM_MEMBERS'));
+  assert.ok(fallback, 'composer fallback must be stable before the component renders');
+  const fallbackBody = ts.transpileModule(fallback.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+  const probe = new Function('useOrganizationConversationKey', 'isReachableTeamMemberStatus', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
     const { useMemo, useRef, useEffect, useCallback } = React;
+    ${fallbackBody}
     return function Probe({ activeSessionId }) {
       const inputRef = useRef(editor);
       const setComposerSuggestion = (value) => report.closed.push(value);
@@ -1427,7 +1369,7 @@ test('composer mentions follow the selected Team and discard old member chips', 
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const editor = document.getElementById('editor');
   const report = { closed: [] };
-  const Probe = probe(useOrganizationConversationKey, useSessionStore, useChatStore, React, editor, report);
+  const Probe = probe(useOrganizationConversationKey, isReachableTeamMemberStatus, useSessionStore, useChatStore, React, editor, report);
   const root = createRoot(document.getElementById('root'));
   const originalRequest = webClient.request;
   webClient.request = async () => { throw new Error('snapshot unavailable'); };
@@ -1493,6 +1435,35 @@ test('expert member mentions retain their IDs and selected Team in chat.send', a
   } finally {
     webClient.request = originalRequest;
     setTeamOrganizationUiEnabled(false);
+  }
+});
+
+test('snapshot keeps departed members off the roster but in the departed directory', () => {
+  for (const snapshot of [
+    // 新后端：离队成员单独放在 departed_members
+    {
+      members: [
+        { member_id: 'worker', status: 'ready' },
+        { member_id: 'sleeper', status: 'dormant' },
+      ],
+      departed_members: [{ member_id: 'retired', name: 'Retired', status: 'shut_down' }],
+      tasks: [],
+    },
+    // 旧后端：离队成员混在 members 里
+    {
+      members: [
+        { member_id: 'worker', status: 'ready' },
+        { member_id: 'retired', name: 'Retired', status: 'shut_down' },
+        { member_id: 'sleeper', status: 'dormant' },
+      ],
+      tasks: [],
+    },
+  ]) {
+    seed();
+    applyTeamSnapshotToSession('session', 'expert', snapshot);
+    const runtime = useSessionStore.getState().runtimes['session::expert'];
+    assert.deepEqual(runtime.teamMembers.map((m) => m.member_id), ['worker', 'sleeper']);
+    assert.deepEqual(runtime.teamDepartedMembers.map((m) => [m.member_id, m.name]), [['retired', 'Retired']]);
   }
 });
 
@@ -1567,6 +1538,11 @@ test('disabled UI has no organization event subscriptions; disabling unsubscribe
     await act(async () => root.render(React.createElement(Probe)));
     assert.equal(subscriptions.length, 0);
     await act(async () => setTeamOrganizationUiEnabled(true));
+    assert.deepEqual(subscriptions.map((entry) => entry.name).sort(), [
+      'session.deleted', 'session.archived', 'chat.delta', 'chat.reasoning',
+      'chat.final', 'chat.error', 'chat.processing_status', 'chat.interrupt_result',
+      'org.turn_completed', 'chat.tool_call', 'chat.tool_result', 'team.task', 'team.member', 'team.model_changed',
+    ].sort());
     assert.ok(subscriptions.some((entry) => entry.name === 'chat.processing_status'));
     assert.ok(subscriptions.some((entry) => entry.name === 'org.turn_completed'));
     await act(async () => setTeamOrganizationUiEnabled(false));

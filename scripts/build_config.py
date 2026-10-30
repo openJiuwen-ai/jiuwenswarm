@@ -12,10 +12,10 @@ import json
 import logging
 import os
 import re
-import runpy
 import shlex
 import sys
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, TextIO
 
@@ -27,10 +27,16 @@ RUNTIME_CONFIG_PATH = Path("jiuwenswarm/common/_build_config.py")
 
 
 def write_build_metadata(path: Path, version: str) -> None:
-    """Compatibility entrypoint for the selected source's metadata contract."""
-    source_root = Path(os.environ.get("WORKSWARM_SOURCE_ROOT") or PROJECT_ROOT)
-    helper = runpy.run_path(str(source_root / "jiuwenswarm" / "common" / "worker_build_identity.py"))
-    helper["write_build_metadata"](path, version)
+    """Stamp an artifact once, using the release calendar date in UTC+08:00.
+
+    SOURCE_DATE_EPOCH allows reproducible builds. Never write this file into
+    the source tree: wheel build_lib and the frozen build staging area own it.
+    """
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    built_at = datetime.fromtimestamp(int(epoch), timezone.utc) if epoch else datetime.now(timezone.utc)
+    build_date = built_at.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": version, "build_date": build_date}) + "\n", encoding="utf-8")
 
 
 def _emit(message: str, stream: TextIO) -> None:

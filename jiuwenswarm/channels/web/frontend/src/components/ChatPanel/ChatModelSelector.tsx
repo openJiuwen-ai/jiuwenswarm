@@ -19,6 +19,7 @@ import {
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
+import { isEnterprise } from '../../edition';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
@@ -34,7 +35,7 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
 }
 
 export default function ChatModelSelector({
-  disabled = false,
+  disabled: disabledByParent = false,
   sessionId,
   allowModelGroups = true,
 }: {
@@ -45,6 +46,7 @@ export default function ChatModelSelector({
   sessionId?: string;
   allowModelGroups?: boolean;
 }): JSX.Element | null {
+  const disabled = disabledByParent || isEnterprise();
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
@@ -182,7 +184,7 @@ export default function ChatModelSelector({
           void persistSelection(next);
         }}
         disabled={disabled || Boolean(selectedChildTeam)}
-        onAddModel={openModelSettings}
+        onAddModel={disabled ? undefined : openModelSettings}
       />
       {selectionError ? (
         <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">

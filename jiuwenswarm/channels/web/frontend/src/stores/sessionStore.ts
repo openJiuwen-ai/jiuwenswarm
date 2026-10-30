@@ -28,12 +28,6 @@ import {
   SessionTokenUsageSnapshot,
   TeamMemberContextCompressionState,
 } from '../types';
-import {
-  createTaskProgressBaseline,
-  mergeTaskProgressBaseline,
-  registerConfirmedTaskCreation,
-  type TaskProgressBaseline,
-} from '../features/teamTaskProgressBaseline';
 import type {
   AgentGroupIdentity,
   AgentGroupSelectionIntent,
@@ -539,10 +533,6 @@ export interface TeamTaskEvent {
   content?: string;
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
-  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
-  progress_frozen?: boolean;
-  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
-  progress_frozen_at?: number;
   // Truncation observability flags — backend may set these on team.task.created/
   // updated events when the title/content exceeded the wire limit. Purely
   // passthrough: the store does not render a badge; the inline marker
@@ -575,10 +565,6 @@ export interface TeamTask {
   files?: string[];
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
-  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
-  progress_frozen?: boolean;
-  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
-  progress_frozen_at?: number;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these
@@ -681,8 +667,9 @@ export interface SessionRuntime {
   /** 子话题时间线用的任务流转事件（逐条追加，不按 task 合并）。 */
   teamTaskTimeline: TeamTaskTimelineEntry[];
   teamTasks: TeamTask[];
-  teamTaskProgressBaseline: TaskProgressBaseline;
   teamMembers: TeamMember[];
+  /** 已离队（shut_down）成员目录：不在名册上，只供任务卡片等按 member_id 查名字 / 头像。 */
+  teamDepartedMembers: TeamMember[];
   teamConnectionPresentation: TeamConnectionPresentation | null;
   teamLeaderMemberIds: string[];
   teamHumanShareCommands: HumanShareCommand[];
@@ -759,8 +746,8 @@ function createEmptyRuntime(
     teamTaskEvents: [],
     teamTaskTimeline: [],
     teamTasks: [],
-    teamTaskProgressBaseline: createTaskProgressBaseline(),
     teamMembers: [],
+    teamDepartedMembers: [],
     teamConnectionPresentation: sessionId ? loadTeamConnectionPresentation(sessionId) : null,
     teamLeaderMemberIds: [],
     teamHumanShareCommands: [],
@@ -837,11 +824,12 @@ interface SessionState {
   setTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   appendTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   setTeamTasks: (sessionId: string, tasks: TeamTask[]) => void;
-  registerConfirmedTeamTaskCreation: (sessionId: string, taskId: string) => void;
-  mergeTeamTaskProgressBaseline: (sessionId: string, baseline: TaskProgressBaseline) => void;
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
+  setTeamDepartedMembers: (sessionId: string, members: TeamMember[]) => void;
+  /** 成员离队时把它的身份记进离队目录（同 member_id 覆盖）。 */
+  rememberDepartedTeamMember: (sessionId: string, member: TeamMember) => void;
   setTeamConnectionPresentation: (sessionId: string, presentation: TeamConnectionPresentation | null) => void;
   clearTeamConnectionPresentation: (sessionId: string, memberId?: string) => void;
   setTeamLeaderMemberIds: (sessionId: string, memberIds: string[]) => void;
@@ -1345,47 +1333,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: {
             ...runtime,
             teamTasks: tasks,
-            teamTaskProgressBaseline: tasks.length === 0
-              ? createTaskProgressBaseline()
-              : runtime.teamTaskProgressBaseline,
-          },
-        },
-      };
-    });
-  },
-
-  registerConfirmedTeamTaskCreation: (sessionId, taskId) => {
-    set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (!runtime) return state;
-      const baseline = registerConfirmedTaskCreation(
-        runtime.teamTasks,
-        runtime.teamTaskProgressBaseline,
-        taskId
-      );
-      if (baseline === runtime.teamTaskProgressBaseline) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...runtime, teamTaskProgressBaseline: baseline },
-        },
-      };
-    });
-  },
-
-  mergeTeamTaskProgressBaseline: (sessionId, restoredBaseline) => {
-    set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (!runtime) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: {
-            ...runtime,
-            teamTaskProgressBaseline: mergeTaskProgressBaseline(
-              runtime.teamTaskProgressBaseline,
-              restoredBaseline
-            ),
           },
         },
       };
@@ -1402,18 +1349,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (existingIndex >= 0) {
         const existing = runtime.teamTasks[existingIndex];
         const updatedTasks = [...runtime.teamTasks];
-        // The board's visual progress is eased from `timestamp` (task start).
-        // A later status event must not restart that clock — pause → resume
-        // would otherwise drop the bar back to 10%.
-        const frozen = task.progress_frozen ?? existing.progress_frozen;
+        // `timestamp` is the task's start time; later status events keep it.
         updatedTasks[existingIndex] = {
           ...existing,
           ...task,
           timestamp: existing.timestamp ?? task.timestamp,
-          progress_frozen: frozen,
-          progress_frozen_at: frozen
-            ? (existing.progress_frozen ? existing.progress_frozen_at : task.timestamp)
-            : undefined,
           // An event without an explicit status (e.g. a content-only update)
           // must not reset the task; keep the existing status.
           status: task.status ?? existing.status,
@@ -1502,6 +1442,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamMembers: members,
             teamMemberContextCompression: nextCompression,
           },
+        },
+      };
+    });
+  },
+
+  setTeamDepartedMembers: (sessionId, members) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamDepartedMembers: members },
+        },
+      };
+    });
+  },
+
+  rememberDepartedTeamMember: (sessionId, member) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const others = (runtime.teamDepartedMembers ?? []).filter((item) => item.member_id !== member.member_id);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamDepartedMembers: [...others, member] },
         },
       };
     });

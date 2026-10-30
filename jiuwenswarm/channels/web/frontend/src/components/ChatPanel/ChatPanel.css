@@ -182,6 +182,8 @@
 }
 
 .chat-input-container--work-home .chat-input-body {
+  /* position 使下方 z-index: 2 生效：输入卡片盖在欢迎横幅之上，横幅只露出容器背景上的部分 */
+  position: relative;
   border: 1px solid var(--color-border-default);
   border-radius: 20px;
   background: var(--color-surface-card);
@@ -1550,6 +1552,12 @@
 .chat-mode-select__trigger:disabled:hover {
   border-color: transparent;
   background: transparent;
+}
+
+.chat-input-container--enterprise .chat-mode-select__trigger:disabled {
+  color: var(--color-text-primary);
+  cursor: default;
+  opacity: 1;
 }
 
 .chat-mode-select__trigger:focus-visible {
@@ -4337,7 +4345,8 @@
   right: 0;
   width: 200px;
   height: auto;
-  z-index: 9;
+  /* 夹在输入容器背景与输入卡片(z-index:2)之间：与卡片重叠的部分被卡片遮挡 */
+  z-index: 1;
   pointer-events: auto;
   cursor: pointer;
   mix-blend-mode: multiply;

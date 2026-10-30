@@ -1,4 +1,15 @@
 {
+  "enterpriseEntry": {
+    "invalidIdentity": "Identity returned no user ID.",
+    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "loadFailed": "Failed to load Agent contexts.",
+    "switchFailed": "Failed to switch context.",
+    "errorTitle": "Unable to enter workspace",
+    "loadingTitle": "Loading workspace",
+    "loading": "Loading the Agents available to this account.",
+    "retry": "Retry",
+    "login": "Go to login"
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -47,7 +58,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
-    "experiments": "Experiments",
+    "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -57,6 +68,10 @@
     "logs": "Logs",
     "update": "Updates",
     "personalContext": "Knowledge"
+  },
+  "experts": {
+    "podStarting": "Starting the expert runtime, please wait",
+    "podStartTimeout": "The expert runtime did not start in time. Try again later"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -945,38 +960,101 @@
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
       },
-      "free_search_bing_enabled": { "title": "Bing search", "description": "Enable the free Bing search source." },
-      "jina_api_key": { "title": "Jina API key" },
-      "bocha_api_key": { "title": "Bocha API key" },
-      "perplexity_api_key": { "title": "Perplexity API key" },
-      "serper_api_key": { "title": "Serper API key" },
-      "github_token": { "title": "GitHub access token" },
-      "vision_api_base": { "title": "API URL" },
-      "vision_api_key": { "title": "API key" },
-      "vision_model": { "title": "Model name" },
-      "vision_provider": { "title": "Model provider" },
-      "audio_api_base": { "title": "API URL" },
-      "audio_api_key": { "title": "API key" },
-      "audio_model": { "title": "Model name" },
-      "audio_provider": { "title": "Model provider" },
-      "video_api_base": { "title": "API URL" },
-      "video_api_key": { "title": "API key" },
-      "video_model": { "title": "Model name" },
-      "video_provider": { "title": "Model provider" },
-      "video_gen_provider": { "title": "Model provider" },
-      "video_gen_protocol": { "title": "Protocol" },
-      "video_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
-      "video_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
-      "video_gen_model": { "title": "Model name", "placeholder": "e.g. bytedance/seedance-2.0-fast" },
+      "free_search_bing_enabled": {
+        "title": "Bing search",
+        "description": "Enable the free Bing search source."
+      },
+      "jina_api_key": {
+        "title": "Jina API key"
+      },
+      "bocha_api_key": {
+        "title": "Bocha API key"
+      },
+      "perplexity_api_key": {
+        "title": "Perplexity API key"
+      },
+      "serper_api_key": {
+        "title": "Serper API key"
+      },
+      "github_token": {
+        "title": "GitHub access token"
+      },
+      "vision_api_base": {
+        "title": "API URL"
+      },
+      "vision_api_key": {
+        "title": "API key"
+      },
+      "vision_model": {
+        "title": "Model name"
+      },
+      "vision_provider": {
+        "title": "Model provider"
+      },
+      "audio_api_base": {
+        "title": "API URL"
+      },
+      "audio_api_key": {
+        "title": "API key"
+      },
+      "audio_model": {
+        "title": "Model name"
+      },
+      "audio_provider": {
+        "title": "Model provider"
+      },
+      "video_api_base": {
+        "title": "API URL"
+      },
+      "video_api_key": {
+        "title": "API key"
+      },
+      "video_model": {
+        "title": "Model name"
+      },
+      "video_provider": {
+        "title": "Model provider"
+      },
+      "video_gen_provider": {
+        "title": "Model provider"
+      },
+      "video_gen_protocol": {
+        "title": "Protocol"
+      },
+      "video_gen_api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://openrouter.ai/api/v1"
+      },
+      "video_gen_api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "video_gen_model": {
+        "title": "Model name",
+        "placeholder": "e.g. bytedance/seedance-2.0-fast"
+      },
       "video_gen_enabled": {
         "title": "Video generation",
         "description": "Enable video generation tools (text-to-video); disabling it keeps the saved model configuration."
       },
-      "visual_gen_provider": { "title": "Model provider" },
-      "visual_gen_protocol": { "title": "Protocol" },
-      "visual_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
-      "visual_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
-      "visual_gen_model": { "title": "Model name", "placeholder": "e.g. google/gemini-3.1-flash-image" },
+      "visual_gen_provider": {
+        "title": "Model provider"
+      },
+      "visual_gen_protocol": {
+        "title": "Protocol"
+      },
+      "visual_gen_api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://openrouter.ai/api/v1"
+      },
+      "visual_gen_api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "visual_gen_model": {
+        "title": "Model name",
+        "placeholder": "e.g. google/gemini-3.1-flash-image"
+      },
       "visual_gen_enabled": {
         "title": "Visual generation",
         "description": "Enable image generation tools (text-to-image); disabling it keeps the saved model configuration."
@@ -985,18 +1063,21 @@
         "title": "Global permission mode",
         "description": "Choose the shared guardrail mode for ordinary Agents and Teams."
       },
-      "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
+      "a2ui_enabled": {
+        "title": "Enable A2UI",
+        "description": "Render supported results as interactive interfaces."
+      },
       "rsi_enabled": {
         "title": "Enable RSI",
-        "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
+        "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
       },
       "team_organization_ui_enabled": {
-        "title": "Enable Team Organization",
-        "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+        "title": "Enable Team Organization UI",
+        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
@@ -1017,6 +1098,10 @@
       "team_member_messaging_enabled": {
         "title": "Enable member-to-member messaging",
         "description": "Members can message each other directly (point-to-point, multicast, broadcast) instead of routing through the Leader. Task assignment and handoffs stay with the Leader and the scheduler."
+      },
+      "team_member_subtasks_enabled": {
+        "title": "Allow members to split tasks",
+        "description": "Members can split the task they are working on into subtasks for themselves or other existing members. The task pauses until its subtasks finish, then resumes with their results. Subtasks can nest up to 2 levels."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -2087,7 +2172,26 @@
     }
   },
   "sessionSidebar": {
-    "newSession": "New session"
+    "newSession": "New session",
+    "enterpriseContext": {
+      "user": "User",
+      "userContext": "User context",
+      "modeAria": "Context mode",
+      "selectAgent": "Select agent",
+      "custom": "Custom",
+      "agentOrgLabel": "Agent | organization | cluster",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "jiuwenclawId": "jiuwenclaw_id",
+      "apply": "Apply",
+      "switching": "Switching...",
+      "logout": "Log out",
+      "switchToManager": "Open manager",
+      "customRequired": "bot_id, group_id, user_id and jiuwenclaw_id are required",
+      "noMatch": "No matches",
+      "pleaseSelect": "Select"
+    }
   },
   "offloadFiles": {
     "title": "Offload Files",
@@ -3073,6 +3177,7 @@
     "tabs": {
       "mySkills": "My Skills",
       "marketplace": "Marketplace",
+      "enterpriseSources": "Enterprise sources",
       "skillRetrieval": "Skill Retrieval",
       "skillGraph": "Skill Graph"
     },
@@ -3080,13 +3185,18 @@
       "all": "All",
       "enabled": "Enabled",
       "disabled": "Disabled",
-      "builtin": "Builtin"
+      "builtin": "Builtin",
+      "prebuilt": "Prebuilt",
+      "user": "User-installed"
     },
     "mySkillsGroups": {
       "added": "Added Skills",
+      "prebuilt": "Prebuilt Skills",
       "builtin": "Built-in Skills",
       "skillPack": "Skill Packs"
     },
+    "noPrebuiltSkills": "No prebuilt skills",
+    "noUserSkills": "No user-installed skills",
     "skillTypes": {
       "skill": "Skill Pack",
       "skillpack": "Skill Pack",
@@ -3246,6 +3356,7 @@
       "cancel": "Cancel"
     },
     "builtIn": "Built-in",
+    "enterprisePrebuilt": "Prebuilt",
     "status": {
       "installed": "Installed",
       "notInstalled": "Not installed",
@@ -3258,7 +3369,31 @@
       "clawhub": "ClawHub",
       "skillnet": "SkillNet",
       "teamskillshub": "TeamSkillsHub",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "swarmskillhub": "SwarmSkillHub",
+      "author": "Author",
+      "rating": "Rating",
+      "downloads": "Downloads",
+      "localVersion": "Local version",
+      "updatedAt": "Updated",
+      "searchPlaceholder": "Search skills",
+      "noResults": "No matching skills",
+      "noSources": "No skill sources available. Contact your administrator.",
+      "checkUpdates": "Check updates",
+      "prev": "Previous",
+      "next": "Next",
+      "replaceConfirm": "Skill {{name}} is already installed. Overwrite?",
+      "replaceConfirmTitle": "Confirm overwrite",
+      "errors": {
+        "loadFailed": "Failed to load skill sources",
+        "searchFailed": "Search failed",
+        "installFailed": "Install failed",
+        "updateFailed": "Update failed"
+      },
+      "messages": {
+        "installed": "Installed: {{name}}",
+        "updated": "Updated: {{name}}"
+      }
     },
     "sourceLabel": "Source",
     "statusLabel": "Status",
@@ -3965,7 +4100,10 @@
         "delete": "Delete",
         "saving": "Saving…"
       },
-      "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}" },
+      "card": {
+        "open": "Open {{name}} details",
+        "actions": "Actions for {{name}}"
+      },
       "states": {
         "loadError": "Unable to load the Expert Team list. Try again.",
         "detailError": "Unable to load Expert Team details. Try again.",
@@ -4400,6 +4538,9 @@
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
     "builtOn": "Built on",
+    "buildSource": "Current build source",
+    "branch": "Branch",
+    "packageVersion": "Package version",
     "latestVersion": "Latest version",
     "state": "Update state",
     "publishedAt": "Published at",
@@ -5010,8 +5151,15 @@
       "expired": "Expired"
     },
     "schedule": {
-      "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
-      "interval": { "label": "Every", "unit": "minutes, return to this session" },
+      "tab": {
+        "interval": "Interval",
+        "cron": "Cron expression",
+        "once": "Once"
+      },
+      "interval": {
+        "label": "Every",
+        "unit": "minutes, return to this session"
+      },
       "cron": {
         "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)."
       },
@@ -5127,17 +5275,17 @@
     }
   },
   "rsi": {
-    "title": "Experiments",
-    "createExperiment": "Create Experiment",
+    "title": "RSI",
+    "createExperiment": "Create RSI Task",
     "empty": {
-      "title": "No experiment tasks",
-      "hint": "We support creating Harness, paper, and program optimization experiments"
+      "title": "No RSI tasks",
+      "hint": "Create RSI tasks for Harness, paper, and program optimization"
     },
     "intro": {
       "title": "RSI · Recursive Self-Improvement",
       "lead": "Make AI stronger with use—from simply working to working better",
       "stepsTitle": "How it works",
-      "step1Title": "Step 1: Create an experiment",
+      "step1Title": "Step 1: Create an RSI task",
       "step1Body": "Choose Harness Optimization or Artifact Optimization (paper or program), fill in the required parameters, and click Create to start automatic optimization.",
       "step2Title": "Step 2: Visualize the optimization",
       "step2Body": "Track training progress and score curves in real time. Explore the RSI tree search and let the process iterate automatically without manual intervention.",
@@ -5150,15 +5298,15 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
-      "title": "RSI experiments",
+      "title": "RSI Tasks",
       "loading": "Loading…",
-      "error": "Failed to load experiments"
+      "error": "Failed to load RSI tasks"
     },
     "createDialog": {
-      "title": "Create Experiment",
-      "nameLabel": "Experiment name",
-      "namePlaceholder": "Enter experiment name",
-      "typeLabel": "Experiment type",
+      "title": "Create RSI Task",
+      "nameLabel": "Task name",
+      "namePlaceholder": "Enter task name",
+      "typeLabel": "Task type",
       "typeHarness": "Harness Optimization",
       "typeArtifact": "Artifact Optimization",
       "artifactSubtypeLabel": "Artifact subtype",
@@ -5203,7 +5351,7 @@
       "cancel": "Cancel",
       "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
       "validation": {
-        "nameRequired": "Please enter experiment name",
+        "nameRequired": "Please enter task name",
         "datasetRequired": "Please select dataset file",
         "optimizerRequired": "Please select optimizer model",
         "testerRequired": "Please select tester model",
@@ -5296,7 +5444,7 @@
       "failureReason": "Failure reason",
       "rejectionReason": "Why it was not adopted",
       "inheritFrom": "Inherited from",
-      "baselineDescription": "This is the starting version for the experiment.",
+      "baselineDescription": "This is the starting version for the optimization.",
       "noChangeSummary": "Inherited from the parent; no structured change summary is available.",
       "nodeArtifact": "Node artifact",
       "processing": "Processing…",
@@ -5304,13 +5452,13 @@
       "nodeId": "Node ID",
       "nodeType": "Lifecycle",
       "close": "Close",
-      "deleteTitle": "Delete experiment",
-      "deleteBody": "Experiment data cannot be restored after deletion. Delete this experiment?",
-      "pauseTitle": "Pause experiment",
-      "pauseBody": "The current optimization will stop. Pause this experiment?",
-      "stopTitle": "Stop task",
-      "stopBody": "Stopping will terminate the current optimization task. Stop this experiment?",
-      "queuedTitle": "This experiment is queued",
+      "deleteTitle": "Delete RSI task",
+      "deleteBody": "RSI task data cannot be restored after deletion. Delete this task?",
+      "pauseTitle": "Pause RSI task",
+      "pauseBody": "The current optimization will stop. Pause this RSI task?",
+      "stopTitle": "Stop RSI task",
+      "stopBody": "Stopping will terminate the current optimization task. Stop this RSI task?",
+      "queuedTitle": "This RSI task is queued",
       "queuedHint": "1 more task is optimizing. Please wait."
     },
     "stage": {

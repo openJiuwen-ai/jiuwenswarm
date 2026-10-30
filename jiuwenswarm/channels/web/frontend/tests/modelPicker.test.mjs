@@ -9,6 +9,14 @@ import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 import svgr from 'vite-plugin-svgr';
 
+// Transport selection reads the browser environment while modules are imported.
+const moduleDom = new JSDOM('<!doctype html>', { url: 'http://localhost/' });
+const moduleGlobals = new Map();
+for (const [name, value] of Object.entries({ window: moduleDom.window, document: moduleDom.window.document })) {
+  moduleGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+}
+
 // Use the production transform for the provider catalog's import.meta.glob and assets.
 const vite = await createServer({
   configFile: false,
@@ -39,6 +47,11 @@ try {
   ]);
 } finally {
   await vite.close();
+  for (const [name, descriptor] of moduleGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+  moduleDom.window.close();
 }
 const [
   { default: ModelPicker },
@@ -107,6 +120,7 @@ async function withFixture(run, language = 'en') {
     };
   }
   const previousGlobals = new Map();
+  dom.window.__JIUWENSWARM_EDITION__ = 'personal';
   for (const [name, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -181,6 +195,20 @@ function cronDrawer(overrides = {}) {
     ...overrides,
   });
 }
+
+test('enterprise chat model stays visible but cannot open its menu or show a dropdown arrow', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    window.__JIUWENSWARM_EDITION__ = 'enterprise';
+    await mount(createElement(ChatModelSelector));
+    const trigger = byId('chat-panel-model-selector-trigger');
+    assert.equal(trigger.disabled, true);
+    assert.match(trigger.textContent, /Configured A/);
+    assert.equal(trigger.querySelector('.chat-mode-select__chevron'), null);
+    await click(trigger);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
+  });
+});
 
 test('Team conversations keep model-group selection enabled', () => {
   const selectorSource = readFileSync(

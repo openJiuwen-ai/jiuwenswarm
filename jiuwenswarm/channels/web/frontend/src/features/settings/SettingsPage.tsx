@@ -16,6 +16,7 @@ import type { SettingsModuleTarget } from './settingsNavigation';
 
 export function SettingsPage({
   definition,
+  appVersion,
   isConnected,
   connectionState,
   request,
@@ -39,6 +40,7 @@ export function SettingsPage({
   sidebar,
 }: {
   definition: SettingsPageDefinition;
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
@@ -77,6 +79,7 @@ export function SettingsPage({
 }) {
   return (
     <SettingsServicesProvider
+      appVersion={appVersion}
       isConnected={isConnected}
       connectionState={connectionState}
       request={request}

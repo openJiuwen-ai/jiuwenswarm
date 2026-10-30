@@ -21,7 +21,6 @@ from jiuwenswarm.server.runtime.agent_adapter import (
     interface_deep as interface_deep_module,
 )
 
-
 RUNTIME_EXTRACTED = hasattr(AgentWebSocketServer, "_execution_runtime")
 
 
@@ -116,7 +115,10 @@ class CharacterizationServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_switch(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_switch
+
+        await handle_session_switch(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_session_fork_for_test(
         self,
@@ -124,7 +126,10 @@ class CharacterizationServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_fork(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.bootstrap import handle_session_fork
+
+        await handle_session_fork(build_ws_request_context(self, ws, request, send_lock))
 
 
 class RecordingAgent:

@@ -56,6 +56,8 @@ from gateway.common.config import (
     update_preferred_language_in_config,
     update_updater_in_config,
 )
+from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
+from gateway.common.model_catalog import ModelCatalog
 from gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
 )
@@ -402,8 +404,17 @@ class _DummyBus:
 
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
-    "group.create", "group.delete", "group.list", "group.get", "group.update",
-    "group.member.add", "group.history.get",
+    'group.create',
+    'group.delete',
+    'group.get',
+    'group.history.get',
+    'group.list',
+    'group.member.add',
+    'group.update',
+    'session.assets.list',
+    'session.assets.register',
+    'session.assets.rename',
+
     "initialize",
     "session.switch",
     "session.fork",
@@ -442,8 +453,24 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.marketplace.remove",
     "skills.marketplace.toggle",
     "skills.uninstall",
+    "agent_templates.list",
+    "agent_templates.show",
+    "agent_templates.file.list",
+    "agent_templates.file.read",
+    "agent_templates.install",
+    "agent_templates.uninstall",
     "skills.online_search.search",
     "skills.online_search.install",
+    "skills.source.providers",
+    "skills.source.search",
+    "skills.source.install",
+    "skills.updates.check",
+    "skills.update",
+    "skills.enterprise.list",
+    "skills.enterprise.install",
+    "skills.enterprise.uninstall",
+    "skills.enterprise.source.providers",
+    "skills.enterprise.source.search",
     "skills.skillnet.search",
     "skills.skillnet.install",
     "skills.skillnet.install_status",
@@ -482,9 +509,6 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.graph.cancel",
     "skills.experience.list",
     "skills.experience.request",
-    "session.assets.list",
-    "session.assets.register",
-    "session.assets.rename",
     "session.assets.remove",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
@@ -597,8 +621,17 @@ _FORWARD_REQ_METHODS = frozenset({
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
-    "group.create", "group.delete", "group.list", "group.get", "group.update",
-    "group.member.add", "group.history.get",
+    'group.create',
+    'group.delete',
+    'group.get',
+    'group.history.get',
+    'group.list',
+    'group.member.add',
+    'group.update',
+    'session.assets.list',
+    'session.assets.register',
+    'session.assets.rename',
+
     "initialize",
     "session.switch",
     "session.fork",
@@ -640,8 +673,24 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.marketplace.remove",
     "skills.marketplace.toggle",
     "skills.uninstall",
+    "agent_templates.list",
+    "agent_templates.show",
+    "agent_templates.file.list",
+    "agent_templates.file.read",
+    "agent_templates.install",
+    "agent_templates.uninstall",
     "skills.online_search.search",
     "skills.online_search.install",
+    "skills.source.providers",
+    "skills.source.search",
+    "skills.source.install",
+    "skills.updates.check",
+    "skills.update",
+    "skills.enterprise.list",
+    "skills.enterprise.install",
+    "skills.enterprise.uninstall",
+    "skills.enterprise.source.providers",
+    "skills.enterprise.source.search",
     "skills.skillnet.search",
     "skills.skillnet.install",
     "skills.skillnet.install_status",
@@ -680,9 +729,6 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.graph.cancel",
     "skills.experience.list",
     "skills.experience.request",
-    "session.assets.list",
-    "session.assets.register",
-    "session.assets.rename",
     "session.assets.remove",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
@@ -2197,6 +2243,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     if callable(register_disconnect):
         register_disconnect(_on_disconnect)
 
+    async def _config_get(ws, req_id, params, session_id):
+        """config.get 实现已下沉 ``common.config_panel.config_set_handlers``。"""
+        await config_set_handlers.config_get_handler(
+            channel, ws, req_id, params, session_id
+        )
+
     async def _external_cli_detect(ws, req_id, params, session_id):
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
@@ -2303,6 +2355,168 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from gateway.zen_query import request_zen_warmup
 
         await request_zen_warmup(_resolve(agent_client))
+
+    async def _config_set(ws, req_id, params, session_id):
+        """config.set 实现已下沉 ``common.config_panel.config_set_handlers``。"""
+        await config_set_handlers.config_set_handler(
+            channel, ws, req_id, params, session_id,
+            on_config_saved=on_config_saved,
+            agent_client=_resolve(agent_client),
+            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
+            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
+            on_free_models_toggled=_request_zen_warmup,
+        )
+
+    async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
+        """models/config 域实现已下沉 ``jiuwenswarm.common.config_panel.models_handlers``。"""
+        await models_handlers.config_validate_model_handler(
+            channel, ws, req_id, params, max_tokens_bounds
+        )
+
+    # ── models.* handlers ────────────────────────────────────────
+
+    async def _enterprise_models_list_payload(params: dict) -> dict:
+        """按请求 bot_id 从 Gateway 企业库解析对话模型，不下发凭据。"""
+        from types import SimpleNamespace
+
+        from jiuwenswarm.common.request_identity import (
+            apply_routing_metadata,
+            normalize_routing_identity,
+        )
+        from gateway.enterprise.config.effective.loader import (
+            load_effective_enterprise_config,
+        )
+        from gateway.enterprise.config.effective.schemas import TemplateRefSlot
+
+        identity = normalize_routing_identity(params if isinstance(params, dict) else {})
+        request = SimpleNamespace(metadata=apply_routing_metadata({}, identity))
+        enterprise = await load_effective_enterprise_config(
+            request, {TemplateRefSlot.DEFAULT_MODEL},
+        )
+        entities = (
+            enterprise.models.get(TemplateRefSlot.DEFAULT_MODEL.value, [])
+            if enterprise is not None
+            else []
+        )
+        result = []
+        for idx, entity in enumerate(entities):
+            if not isinstance(entity, dict):
+                continue
+            model_name = str(entity.get("model_id") or "").strip()
+            if not model_name:
+                continue
+            parameters = entity.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {}
+            reasoning_level = parameters.get("reasoning_level", "")
+            result.append({
+                "model_name": model_name,
+                "api_base": str(entity.get("api_base") or "").strip(),
+                "api_key": "",
+                "model_provider": str(entity.get("model_provider") or "").strip(),
+                "timeout": entity.get("timeout", 60),
+                "temperature": parameters.get("temperature", 0.95),
+                "reasoning_level": "off" if reasoning_level is False else reasoning_level,
+                "is_default": idx == 0,
+                "alias": str(entity.get("template_name") or ""),
+                "origin_index": idx,
+            })
+        return {
+            "models": result,
+            "active_model": result[0]["model_name"] if result else "",
+            "model_source": "enterprise",
+        }
+
+    async def _models_list(ws, req_id, params, session_id):
+        from gateway.enterprise import is_enterprise
+
+        if is_enterprise():
+            routing = getattr(ws, "_web_routing", None)
+            merged = dict(routing) if isinstance(routing, dict) else {}
+            if isinstance(params, dict):
+                merged.update({k: v for k, v in params.items() if v})
+            try:
+                payload = await _enterprise_models_list_payload(merged)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[models.list] enterprise %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR",
+                )
+                return
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+            return
+
+        from gateway.zen_query import fetch_zen_free_model_rows
+
+        zen_rows = await fetch_zen_free_model_rows(_resolve(agent_client))
+        await models_handlers.models_list_handler(
+            channel, ws, req_id, params, session_id, zen_rows=zen_rows,
+        )
+
+    async def _models_replace_all(ws, req_id, params, session_id):
+        """原子地用提交的列表整体替换 models.defaults（实现见下沉模块）。"""
+        await models_handlers.models_replace_all_handler(
+            channel, ws, req_id, params, session_id,
+            on_config_saved=on_config_saved,
+            agent_client=_resolve(agent_client),
+        )
+
+
+    async def _config_save_all(ws, req_id, params, session_id):
+        """config.save_all 实现已下沉 ``common.config_panel.config_set_handlers``。"""
+        await config_set_handlers.config_save_all_handler(
+            channel, ws, req_id, params, session_id,
+            on_config_saved=on_config_saved,
+            agent_client=_resolve(agent_client),
+            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
+            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
+            on_free_models_toggled=_request_zen_warmup,
+        )
+
+    async def _models_validate(ws, req_id, params, session_id):
+        """测试指定模型配置是否可用（复用 config.validate_model 逻辑）。"""
+        await _config_validate_model(ws, req_id, params, session_id)
+
+    async def _model_resource_rpc(ws, req_id, params, session_id, operation):
+        from jiuwenswarm.common.config import (
+            delete_model_resource, upsert_model_group_resource, upsert_model_resource,
+        )
+        from jiuwenswarm.common.model_errors import (
+            MODEL_SELECTION_NOT_FOUND, MODEL_SELECTION_REFERENCED, ModelSelectionError,
+        )
+        from gateway.common.model_selection import ModelSelection
+        try:
+            catalog = ModelCatalog()
+            if operation == "groups.list":
+                payload = {"groups": catalog.list_public_groups()}
+            elif operation == "models.get":
+                model_id = str((params or {}).get("model_id") or "").strip()
+                payload = {"model": catalog.get_public_model_detail(model_id)}
+            elif operation == "models.references":
+                selection = ModelSelection.model_validate(params)
+                payload = {"references": [r.__dict__ for r in catalog.find_references(selection)]}
+            elif operation in {"models.delete", "groups.delete"}:
+                resource_type = "model_group" if operation.startswith("groups") else "model"
+                key = "model_group_id" if resource_type == "model_group" else "model_id"
+                resource_id = str((params or {}).get(key) or "").strip()
+                selection = ModelSelection(type=resource_type, id=resource_id)
+                references = catalog.find_references(selection)
+                if references:
+                    raise ModelSelectionError(MODEL_SELECTION_REFERENCED, "resource is still referenced",
+                        references=[r.__dict__ for r in references])
+                if not delete_model_resource(resource_type, resource_id):
+                    raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, "resource does not exist")
+                payload = {key: resource_id, "deleted": True}
+            elif operation == "models.upsert":
+                saved = upsert_model_resource((params or {}).get("model") or {})
+                payload = {"model": ModelCatalog().get_public_model_detail(saved["model_id"])}
+            else:
+                payload = {"group": upsert_model_group_resource((params or {}).get("group") or {})}
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except ModelSelectionError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code, payload=exc.to_payload())
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
 
     async def _channel_get(ws, req_id, params, session_id):
         """返回已注册的 channel 列表."""
@@ -2767,15 +2981,43 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         AgentServer 输出与迁移前 Web fallback 投影（to_session_info）完全一致。
         """
         from openjiuwen_protocol.message import ReqMethod
-
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
         )
 
         real_client = _resolve(agent_client)
-        # A2g：legacy 本地列表删除，统一走 E2A（SESSION_LIST 由
-        # session_adapter 处理；不可达即报错，与 PR-1R 已接受语义一致）。
+        # 个人版对齐 develop A2g：统一走 E2A。企业版在 legacy 共享目录且
+        # AgentServer 未就绪时允许本地列表（server.runtime / 无 AS 场景）。
+        if (
+            is_enterprise()
+            and is_legacy_shared_directory_client(real_client)
+            and not getattr(real_client, "server_ready", True)
+        ):
+            from jiuwenswarm.server.control.responses import parse_int_param
+            from jiuwenswarm.server.runtime.session.session_info import to_session_info
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_all_sessions_metadata,
+            )
+
+            raw_params = params if isinstance(params, dict) else {}
+            limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
+            offset = parse_int_param(raw_params, "offset", 0, minimum=0, maximum=10**9)
+            sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=True,
+                payload={
+                    "sessions": [to_session_info(item) for item in sessions],
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+            return
+
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -2854,12 +3096,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _session_create(ws, req_id, params, session_id, user_id=None):
         """创建一个新 session（在 agent/sessions 下创建一个新目录）。
 
-        project_id / project_dir / work_mode 绑定规则（A3g）:
+        project_id / project_dir / work_mode 绑定规则:
           - work_mode 归一化(详见 resolve_session_work_mode_params):未传时按通道
             推断(Web→work,TUI→code);显式传非法值返回 BAD_REQUEST;
-          - project_id / project_dir 绑定在目标 AgentServer 解析（经
-            resolve_session_work_mode_params 归一后随 session.create E2A 请求
-            转发,由 server 侧按注入目录的项目表完成绑定与校验）:
+          - project_id / project_dir 绑定规则(详见 project_store.resolve_session_project_binding):
             两者皆空(或 project_id 为 "default"/"default_code" 且 path 为空)→ 默认项目;
             仅传 project_id → 按项目记录自动补齐 project_dir;
             同时传 project_id + project_dir → 校验与项目绑定路径一致,不一致报错;
@@ -2904,14 +3144,35 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
         from openjiuwen_protocol.message import ReqMethod
-
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
         )
 
         real_client = _resolve(agent_client)
-        # A2g：legacy 本地 rename 删除，统一走 E2A。
+        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 rename 回退。
+        if (
+            is_enterprise()
+            and is_legacy_shared_directory_client(real_client)
+            and not getattr(real_client, "server_ready", True)
+        ):
+            from jiuwenswarm.server.runtime.session.session_rename import (
+                apply_session_rename,
+            )
+
+            ok, payload, error, code = apply_session_rename(
+                params if isinstance(params, dict) else {},
+                session_id,
+                init_channel_id=channel.channel_id,
+            )
+            await channel.send_response(
+                ws, req_id, ok=ok, payload=payload or {},
+                error=None if ok else error or "session.rename failed",
+                code=None if ok else code,
+            )
+            return
+
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -2931,14 +3192,40 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         SESSION_PIN，AgentServer 注入目录 session_metadata）。
         """
         from openjiuwen_protocol.message import ReqMethod
-
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
         )
 
         real_client = _resolve(agent_client)
-        # A2g：legacy 本地 pin 删除，统一走 E2A。
+        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 pin 回退。
+        if (
+            is_enterprise()
+            and is_legacy_shared_directory_client(real_client)
+            and not getattr(real_client, "server_ready", True)
+        ):
+            raw_params = params if isinstance(params, dict) else {}
+            sid = raw_params.get("session_id")
+            pinned = raw_params.get("pinned")
+            if not isinstance(sid, str) or not sid.strip():
+                await channel.send_response(ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST")
+                return
+            if not isinstance(pinned, bool):
+                await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
+                return
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                set_session_pinned,
+            )
+
+            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
+            if result is None:
+                await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
+                return
+            new_pinned, new_order = result
+            await channel.send_response(ws, req_id, ok=True, payload={"pinned": new_pinned, "pin_order": new_order})
+            return
+
         await proxy_unary_request(
             channel=channel,
             agent_client=real_client,
@@ -2952,7 +3239,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _project_list(ws, req_id, params, session_id, user_id=None):
-        channel.ensure_lifecycle_watch(user_id)
+        channel.ensure_lifecycle_watch(user_id, ws)
         """获取项目列表(含统计),已排序,包含默认项目。
 
         filter: ``"all"``(默认) / ``"pinned"`` / ``"unpinned"``
@@ -2978,6 +3265,30 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             req_method=ReqMethod.PROJECT_LIST,
             label="project.list",
         )
+        return
+
+    def _to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
+        """将会话元数据投影为 SessionInfo(排除 delivery_context/channel_metadata 等内部字段)。"""
+        lum = meta.get("last_user_message_at")
+        return {
+            "session_id": str(meta.get("session_id", "")),
+            "title": str(meta.get("title", "")),
+            "created_at": meta.get("created_at", 0),
+            "last_message_at": meta.get("last_message_at", 0),
+            "message_count": int(meta.get("message_count", 0)),
+            "mode": str(meta.get("mode", "unknown")),
+            "team_name": str(meta.get("team_name", "")),
+            "pinned": bool(meta.get("pinned", False)),
+            "pin_order": int(meta.get("pin_order", 0)),
+            "project_dir": str(meta.get("project_dir", "")),
+            "project_id": str(meta.get("project_id", "")),
+            "persist_session": meta.get("persist_session") is True,
+            "cron_id": str(meta.get("cron_id", "")),
+            "last_user_message_at": lum if isinstance(lum, (int, float)) and not isinstance(lum, bool) else None,
+            "model": str(meta.get("model", "")),
+            "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
+            "history_path": str(meta.get("history_path", "")),
+        }
 
     async def _project_get_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目下的非置顶普通会话列表（目标 AgentServer 执行）。"""
@@ -3456,11 +3767,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={
-                "chrome_path": chrome_path,
-                "headless": headless,
-                **browser_decision_state(config),
-            },
+            payload={"chrome_path": chrome_path, "headless": headless, **browser_decision_state(config)},
         )
 
     async def _path_set(ws, req_id, params, session_id, user_id=None):
@@ -3796,6 +4103,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ok=True,
             payload={"accepted": True, "session_id": session_id},
         )
+
+    def _file_proxy(req_method):
+        async def handler(ws, req_id, params, session_id, user_id=None):
+            from gateway.routing.e2a_proxy import proxy_unary_request
+
+            await proxy_unary_request(
+                channel=channel, agent_client=_resolve(agent_client), ws=ws,
+                req_id=req_id, params=params, session_id=session_id, user_id=user_id,
+                req_method=req_method, label=req_method.value,
+            )
+        return handler
 
     async def _media_persist(ws, req_id, params, session_id, user_id=None):
         """浏览器上传媒体附件落盘（E2A 转发 AgentServer 注入目录 uploads）。
@@ -4710,20 +5028,97 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     def _get_cron():
         return _resolve(cron_controller)
 
-    async def _get_owned_cron_job(cc, job_id: str, user_id: str | None):
-        """Return a job only when it belongs to the authenticated Web user.
+    _default_cron_project_ids = {"default", "default_code"}
 
-        Empty ``user_id`` preserves the legacy unauthenticated single-user
-        behavior.  Authenticated connections must never access a different
-        user's job, including historical jobs whose owner is empty.
+    def _cron_requests_real_project(params) -> bool:
+        """选了具体项目才需要问 Agent。空编号和默认项目不用问。"""
+        raw = params if isinstance(params, dict) else {}
+        project_id = str(raw.get("project_id") or "").strip()
+        if project_id and project_id not in _default_cron_project_ids:
+            return True
+        project_dir = raw.get("project_dir")
+        return isinstance(project_dir, str) and bool(project_dir.strip())
 
-        ``cc.get_job`` returns a plain dict (``CronJob.to_dict()``), so the
-        owner field must be read with ``dict.get``; ``getattr`` on a dict
-        always yields the empty default and would reject every authenticated
-        access with "job not found".  Keep the object fallback for tests and
-        callers that return ``CronJob``-like objects.
+    def _cron_agent_routing_metadata(ws):
+        """把这次网页连接上的三个身份交给 Agent，用来打开对应工作区。"""
+        from jiuwenswarm.common.request_identity import apply_routing_metadata
+
+        routing = getattr(ws, "_web_routing", None)
+        if not isinstance(routing, dict):
+            return None
+        return apply_routing_metadata(None, routing)
+
+    async def _bind_cron_project_on_agent(ws, params, user_id, session_id):
+        """问 Agent 核对项目。成功时把编号和工作模式写回 params。
+
+        返回 None 表示已经核对完。返回一条响应字典表示要直接回给网页。
         """
-        job = await cc.get_job(job_id)
+        from gateway.routing.e2a_proxy import (
+            resolve_agent_cron_project_binding,
+        )
+
+        bound, binding = await resolve_agent_cron_project_binding(
+            agent_client=_resolve(agent_client),
+            params=params,
+            user_id=user_id,
+            channel_id="web",
+            session_id=session_id,
+            metadata=_cron_agent_routing_metadata(ws),
+        )
+        if not bound:
+            return {
+                "ok": False,
+                "error": str(binding.get("error") or "cron project binding failed"),
+                "code": str(binding.get("code") or "SERVICE_UNAVAILABLE"),
+            }
+        resolved_project_id = binding.get("project_id")
+        resolved_work_mode = binding.get("work_mode")
+        if (
+            not isinstance(resolved_project_id, str)
+            or not isinstance(resolved_work_mode, str)
+            or not resolved_work_mode.strip()
+        ):
+            return {
+                "ok": False,
+                "error": "invalid cron project binding",
+                "code": "BAD_REQUEST",
+            }
+        params.update({
+            "project_id": resolved_project_id,
+            "work_mode": resolved_work_mode,
+        })
+        params.pop("project_dir", None)
+        params["_agentos_project_binding_verified"] = True
+        return None
+
+    def _cron_owner_ids(user_id, params):
+        """修改、删除、开关、预览时传给控制器的三个身份。用户以连接为准。"""
+        raw = params if isinstance(params, dict) else {}
+        return {
+            "user_id": str(user_id or ""),
+            "group_id": str(raw.get("group_id") or ""),
+            "bot_id": str(raw.get("bot_id") or ""),
+        }
+
+    async def _get_owned_cron_job(cc, job_id: str, user_id: str | None, params=None):
+        """按用户、群、机器人取出一条任务。项目编号可以再收窄。
+
+        用户以这次连接为准，不采用请求参数里自报的用户。没登录时用户是空，
+        控制器会把它当成 default。群、机器人没写就是 default。
+        立即执行、编辑、停止、删除通常只带任务编号，这时不按项目筛，
+        否则绑了真实项目的任务会被当成不存在。请求里写了 project_id（含空串）才按那一个项目核对。
+
+        ``cc.get_job`` 返回的是字典。后面再对一次用户，是为了测试里的假控制器
+        即使忽略筛选参数，也不能让别的用户改这条任务。
+        """
+        raw = params if isinstance(params, dict) else {}
+        job = await cc.get_job(
+            job_id,
+            project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
+            user_id=str(user_id or ""),
+            group_id=str(raw.get("group_id") or ""),
+            bot_id=str(raw.get("bot_id") or ""),
+        )
         owner = str(user_id or "").strip()
         if job is None:
             return None
@@ -4739,13 +5134,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        # 按 web 连接 user_id 过滤:只返回该用户创建的定时任务(隔离)。
-        # 过滤在 controller 内进行,先于按属主路由的准入闸门,避免为其他
-        # 用户的沙箱冷启动/超时买单。user_id 为空(连接未带)时维持原行为
-        # (返回全部);agent 内部创建的 cron(user_id 空串)在带 user_id 的
-        # 连接下被过滤掉(对人类用户不可见)。
+        raw = params if isinstance(params, dict) else {}
+        # 总表和侧边栏不带项目编号，要这个人在每个项目下的任务。
+        # 显式带了 project_id（含空串）才按那一个项目收窄。
+        jobs = await cc.list_jobs(
+            project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
+            user_id=str(user_id or ""),
+            group_id=str(raw.get("group_id") or ""),
+            bot_id=str(raw.get("bot_id") or ""),
+        )
+        # 连接上带了用户时再对一下，避免列表里混进别的用户。
+        # 没带用户时，list_jobs 已经按 default 筛过。
         uid_str = str(user_id or "").strip()
-        jobs = await cc.list_jobs(user_id=uid_str or None)
+        if uid_str:
+            jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
         # 可选按 project_id 过滤(支持 default/default_code 虚拟项目)
         if isinstance(params, dict):
             raw_pid = params.get("project_id")
@@ -4803,7 +5205,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        job = await _get_owned_cron_job(cc, job_id, user_id)
+        job = await _get_owned_cron_job(cc, job_id, user_id, params)
         if job is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -4818,6 +5220,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         try:
+            from gateway.routing.e2a_proxy import (
+                is_legacy_shared_directory_client,
+            )
+
             if session_id:
                 params["session_id"] = session_id
             # 注入创建者 user_id（web 连接携带），执行时透传给 faas 的 X-Session-Context，
@@ -4829,12 +5235,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 体系），用后即弃、不落任务数据。
             params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
-            # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
-            # 误把任务归到默认项目；缺省时让目标 AgentServer / 显式 project_id 决定。
-            # 注意：显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
-            if "project_dir" not in params and session_id:
-                # A2g：经注入点读 metadata（AgentServer 侧写入），不再
-                # 直读 gateway 本地文件
+            # 显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
+            if (
+                is_legacy_shared_directory_client(_resolve(agent_client))
+                and "project_dir" not in params
+                and session_id
+            ):
                 try:
                     from gateway.common.external_providers import provider
 
@@ -4847,43 +5253,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                             params["project_dir"] = pd.strip()
                 except Exception:  # noqa: BLE001
                     pass
-            # A3g：项目绑定统一经目标 AgentServer 解析（legacy 单用户的本地
-            # AgentServer 同样服务 PROJECT_CRON_RESOLVE_BINDING，注入目录=共享
-            # 目录），controller 不再保留 gateway 本地 project_store 反查。
-            from gateway.routing.e2a_proxy import (
-                resolve_agent_cron_project_binding,
-            )
-
-            bound, binding = await resolve_agent_cron_project_binding(
-                agent_client=_resolve(agent_client), params=params,
-                user_id=user_id, channel_id="web", session_id=session_id,
-            )
-            if not bound:
-                await channel.send_response(
-                    ws, req_id, ok=False,
-                    error=str(binding.get("error") or "cron project binding failed"),
-                    code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
+            # A3g：项目绑定经目标 AgentServer 解析；选了具体项目时才核对，
+            # 没选项目不问，空编号由控制器当成默认项目。
+            if _cron_requests_real_project(params):
+                rejected = await _bind_cron_project_on_agent(
+                    ws, params, user_id, session_id
                 )
-                return
-            resolved_project_id = binding.get("project_id")
-            resolved_work_mode = binding.get("work_mode")
-            if (
-                not isinstance(resolved_project_id, str)
-                or not isinstance(resolved_work_mode, str)
-                or not resolved_work_mode.strip()
-            ):
-                await channel.send_response(
-                    ws, req_id, ok=False,
-                    error="invalid cron project binding",
-                    code="BAD_REQUEST",
-                )
-                return
-            params.update({
-                "project_id": resolved_project_id,
-                "work_mode": resolved_work_mode,
-            })
-            params.pop("project_dir", None)
-            params["_agentos_project_binding_verified"] = True
+                if rejected is not None:
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error=rejected["error"], code=rejected["code"],
+                    )
+                    return
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except Exception as e:  # noqa: BLE001
@@ -4906,21 +5287,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="patch must be object", code="BAD_REQUEST")
             return
         try:
-            if await _get_owned_cron_job(cc, job_id, user_id) is None:
+            if await _get_owned_cron_job(cc, job_id, user_id, params) is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
             patch = dict(patch)
-            # 仅当 patch 涉及 project 字段时才解析项目绑定（避免非项目字段的
-            # update 因用户侧项目解析失败而被整体拒绝）。A3g：解析统一经目标
-            # AgentServer（PROJECT_CRON_RESOLVE_BINDING），不再区分 AgentOS/
-            # legacy 单用户。
+            # 仅当 patch 涉及 project 字段且选了具体项目时才解析绑定（避免
+            # 只改时间、名称时被整体拒绝）。A3g：经 _bind_cron_project_on_agent
+            # 走目标 AgentServer，并带上企业路由 metadata。
             has_project_fields = "project_id" in patch or "project_dir" in patch
-            if has_project_fields:
-                from gateway.routing.e2a_proxy import (
-                    resolve_agent_cron_project_binding,
-                )
-
-                existing = await _get_owned_cron_job(cc, job_id, user_id)
+            if has_project_fields and _cron_requests_real_project(patch):
+                existing = await _get_owned_cron_job(cc, job_id, user_id, params)
                 # 与 _get_owned_cron_job 相同的 dict/object 双态读取：
                 # 真实 CronController.get_job 返回 to_dict() 的 dict。
                 existing_work_mode = str(
@@ -4935,40 +5311,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
                 binding_params = dict(patch)
                 binding_params.setdefault("work_mode", existing_work_mode)
-                bound, binding = await resolve_agent_cron_project_binding(
-                    agent_client=_resolve(agent_client), params=binding_params,
-                    user_id=user_id, channel_id="web", session_id=existing_session_id,
+                rejected = await _bind_cron_project_on_agent(
+                    ws, binding_params, user_id, existing_session_id
                 )
-                if not bound:
+                if rejected is not None:
                     await channel.send_response(
                         ws, req_id, ok=False,
-                        error=str(binding.get("error") or "cron project binding failed"),
-                        code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
-                    )
-                    return
-                resolved_project_id = binding.get("project_id")
-                resolved_work_mode = binding.get("work_mode")
-                if (
-                    not isinstance(resolved_project_id, str)
-                    or not isinstance(resolved_work_mode, str)
-                    or not resolved_work_mode.strip()
-                ):
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error="invalid cron project binding",
-                        code="BAD_REQUEST",
+                        error=rejected["error"], code=rejected["code"],
                     )
                     return
                 patch.update({
-                    "project_id": resolved_project_id,
-                    "work_mode": resolved_work_mode,
+                    "project_id": binding_params.get("project_id"),
+                    "work_mode": binding_params.get("work_mode"),
+                    "_agentos_project_binding_verified": True,
                 })
                 patch.pop("project_dir", None)
-                patch["_agentos_project_binding_verified"] = True
             # 登录会话 id（服务端专有键，见 _cron_job_create）：改选登录免费模型时
             # 重绑华为账号凭据句柄；无条件覆盖客户端传值。
             patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
-            job = await cc.update_job(job_id, patch)
+            job = await cc.update_job(job_id, patch, **_cron_owner_ids(user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -4988,7 +5349,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         # proactive.tick job 由主动推荐开关自动创建/删除，禁止面板删除。
-        existing = await _get_owned_cron_job(cc, job_id, user_id)
+        existing = await _get_owned_cron_job(cc, job_id, user_id, params)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5000,7 +5361,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            deleted = await cc.delete_job(job_id)
+            deleted = await cc.delete_job(job_id, **_cron_owner_ids(user_id, params))
         except Exception as exc:
             from gateway.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
@@ -5030,7 +5391,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
             return
         # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
-        existing = await _get_owned_cron_job(cc, job_id, user_id)
+        existing = await _get_owned_cron_job(cc, job_id, user_id, params)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5042,7 +5403,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            job = await cc.toggle_job(job_id, bool(enabled))
+            job = await cc.toggle_job(job_id, bool(enabled), **_cron_owner_ids(user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -5061,10 +5422,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         try:
-            if await _get_owned_cron_job(cc, job_id, user_id) is None:
+            if await _get_owned_cron_job(cc, job_id, user_id, params) is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
-            next_runs = await cc.preview_job(job_id, int(count) if count is not None else 5)
+            next_runs = await cc.preview_job(
+                job_id,
+                int(count) if count is not None else 5,
+                **_cron_owner_ids(user_id, params),
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"next": next_runs})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -5087,19 +5452,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 先取 job 拿 last_session_id（回退值），再触发 run_now 取 run_id
             # 对齐 chat.send 的 {accepted, session_id} 语义；首次执行 last_session_id
             # 为 None → session_id 空串（会话尚未就绪，前端轮询 cron.job.get 获取）
-            job = await _get_owned_cron_job(cc, job_id, user_id)
+            job = await _get_owned_cron_job(cc, job_id, user_id, params)
             if job is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
             run_info = await cc.run_now_info(job_id)
-            await channel.send_response(
-                ws, req_id, ok=True,
-                payload={
-                    "accepted": True,
-                    "run_id": run_info.get("run_id", ""),
-                    "session_id": run_info.get("session_id", ""),
-                },
-            )
+            payload = {
+                "accepted": True,
+                "run_id": run_info.get("run_id", ""),
+                "session_id": run_info.get("session_id", ""),
+            }
+            if run_info.get("reused_pending_session") or run_info.get("awaiting_approval"):
+                payload["awaiting_approval"] = True
+                payload["reused_pending_session"] = True
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
         except Exception as e:  # noqa: BLE001
@@ -5187,10 +5553,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
 
     async def _proxy_config_request(ws, req_id, params, session_id, user_id=None, *, req_method):
-        """Execute configuration RPCs in the target AgentServer's directories.
+        """经 E2A 在目标 AgentServer 注入目录执行配置请求（仅 AgentOS 多用户调用）。
 
-        MoA readiness always uses E2A. Other configuration methods retain their
-        shared-directory handlers through ``_register_config_proxy``.
+        单用户共享目录由 ``_register_config_proxy`` 走本地 handler（保留
+        on_config_saved 热更新与既有写回语义）；本函数只服务 AgentOS 路径。
         """
         from gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -5209,8 +5575,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     def _external_cli_install_gate(params: dict[str, Any]) -> dict[str, Any] | None:
         """外部 CLI 依赖安装门控（原 config.set 本地执行的 ensure 回调语义）。
 
-        这是前端"一键安装"的唯一触发通道（``external_cli.install`` 无前端调用
-        方），安装器与状态轮询（``external_cli.install_status``）都是 gateway
+        这是 config.set 中的依赖安装触发通道；独立安装 RPC 同时保留。
+        安装器与状态轮询（``external_cli.install_status``）都是 gateway
         本地能力，须随 A4g 保留。命中 codex/claude 相关键且依赖未就绪时启动
         安装并返回状态 payload——调用方据此短路本次 config.set（安装完成前
         不写配置，与原本地语义一致，前端装完后重发）。已就绪/未命中返回
@@ -5265,17 +5631,26 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         }
 
     def _register_config_proxy(method_name, req_method, local_handler=None):
-        # A4g：配置读写统一经目标 AgentServer 执行（ConfigAdapter 在注入目录
-        # 本地执行，自带 in-process reload / zen warmup / config_changed 标记
-        # 等后置行为），删除 legacy 单用户的 gateway 本地执行回落。
-        # 保留的唯一 gateway 侧门控：外部 CLI 依赖安装——仅共享目录单用户
-        # 触发（AgentOS 用户目录在目标沙箱，gateway 主机安装无意义，保持
-        # 既有零变化）。local_handler 参数保留为兼容签名，不再使用。
-        del local_handler
+        # A4g：个人版配置读写统一经目标 AgentServer 执行（与 develop 一致，
+        # 不因 client 缺失回落 Gateway 本地）。企业版才走 local_handler：
+        # RuntimeRouted / 无 client / legacy 共享目录（runtime HTTP 无
+        # config.get REST；企业 models.list 读 Gateway Manager 库）。
+        # legacy 共享目录的外部 CLI 依赖安装门控仍保留在 gateway。
 
         async def _handler(ws, req_id, params, session_id, user_id=None):
+            from gateway.enterprise import is_enterprise
             from gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
+            resolved_client = _resolve(agent_client)
+            # 仅企业版允许 Gateway 本地 config/models；个人版始终 E2A。
+            use_local_handler = (
+                resolved_client is None
+                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                or is_legacy_shared_directory_client(resolved_client)
+            )
+            if local_handler is not None and is_enterprise() and use_local_handler:
+                await local_handler(ws, req_id, params, session_id)
+                return
             # 登录会话 id 随请求转发（硬规则：客户端传来的键先删，只信连接属性）：
             # models.list 经目标 AgentServer 执行时无法看到 Gateway 连接，登录送的
             # 免费模型合并需要会话 id（AgentOS 既有缺口，A4g 统一后对 legacy 同样关键）。
@@ -5292,7 +5667,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 _ConfigReq.CONFIG_SET,
                 _ConfigReq.CONFIG_SAVE_ALL,
             ) and isinstance(params, dict):
-                resolved_client = _resolve(agent_client)
                 if resolved_client is not None and is_legacy_shared_directory_client(resolved_client):
                     install_payload = _external_cli_install_gate(params)
                     if install_payload is not None:
@@ -5312,24 +5686,45 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     channel.register_method("config.moa_status", _config_moa_status)
-    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET)
-    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
-    _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL)
-    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL)
-    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST)
-    _register_config_proxy("models.get", _ConfigReq.MODELS_GET)
-    _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL)
-    _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE)
-    _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT)
-    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE)
-    _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES)
-    _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST)
-    _register_config_proxy("model_groups.upsert", _ConfigReq.MODEL_GROUPS_UPSERT)
-    _register_config_proxy("model_groups.delete", _ConfigReq.MODEL_GROUPS_DELETE)
+    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
+    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
+    _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
+    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
+    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
+    _register_config_proxy("models.get", _ConfigReq.MODELS_GET,
+                           lambda ws, rid, p, sid: _model_resource_rpc(ws, rid, p, sid, "models.get"))
+    _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL, _models_replace_all)
+    _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
+    _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT,
+                           lambda *a: _model_resource_rpc(*a, "models.upsert"))
+    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE,
+                           lambda *a: _model_resource_rpc(*a, "models.delete"))
+    _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES,
+                           lambda *a: _model_resource_rpc(*a, "models.references"))
+    _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST,
+                           lambda *a: _model_resource_rpc(*a, "groups.list"))
+    _register_config_proxy("model_groups.upsert", _ConfigReq.MODEL_GROUPS_UPSERT,
+                           lambda *a: _model_resource_rpc(*a, "groups.upsert"))
+    _register_config_proxy("model_groups.delete", _ConfigReq.MODEL_GROUPS_DELETE,
+                           lambda *a: _model_resource_rpc(*a, "groups.delete"))
     _register_config_proxy("session.selection.set", _ConfigReq.SESSION_SELECTION_SET)
 
     # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
     # 直接走本地 handler。
+    async def _connection_status(ws, req_id, params, session_id):
+        """返回 Gateway / AgentServer 就绪状态，供 Web 客户端探测后端链路。"""
+        ac = _resolve(agent_client)
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload={
+                "agent_ready": ac is not None and bool(getattr(ac, "server_ready", False)),
+                "protocol_version": "1.0",
+            },
+        )
+
+    channel.register_method("connection.status", _connection_status)
     channel.register_method("vendors.list", _vendors_list)
     channel.register_method("vendors.fetch_models", _vendors_fetch_models)
     channel.register_method("channel.get", _channel_get)
@@ -5457,6 +5852,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
+    from jiuwenswarm.common.schema.message import ReqMethod as _FileReq
+
+    for file_method in (
+        _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,
+        _FileReq.WORKSPACE_USAGE, _FileReq.WORKSPACE_ENTRIES_DELETE,
+    ):
+        channel.register_method(file_method.value, _file_proxy(file_method))
     channel.register_method("media.persist", _media_persist)
     channel.register_method("media.discard", _media_discard)
     channel.register_method("document.persist", _document_persist)

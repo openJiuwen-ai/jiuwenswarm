@@ -12,6 +12,8 @@ import type {
 } from './diagnosisTypes';
 import {
   causeNodeLabel,
+  artifactCauseGroups,
+  causeReasonParts,
   evidenceNodeLabel,
   findingCounts,
   findingItems,
@@ -19,6 +21,7 @@ import {
   signalTier,
   usesLegacyFindings,
 } from './diagnosisView';
+import { MarkdownText } from '../primitives/index.ts';
 import { FoldedMarkdown, PlainText } from './DiagnosisText';
 import css from './DiagnosisSubpage.module.css';
 
@@ -147,20 +150,70 @@ function causeTopic(
   return name !== '' ? name : requirement;
 }
 
-function CauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
-  cause: RewardFailureCause;
+function subjectIdsOf(evidence: readonly { subject_id: string }[]): string[] {
+  const subjectIds: string[] = [];
+  for (const ref of evidence) {
+    if (ref.subject_id !== '' && !subjectIds.includes(ref.subject_id)) subjectIds.push(ref.subject_id);
+  }
+  return subjectIds;
+}
+
+function SubjectChips({ subjectIds, subjectLabels }: {
+  subjectIds: readonly string[];
   subjectLabels: ReadonlyMap<string, string>;
-  focused: boolean;
+}) {
+  if (subjectLabels.size <= 1) return null;
+  return subjectIds.map(subjectId => (
+    <span key={subjectId} className={css.chip} data-testid="trajectory-diagnosis-cause-agent">
+      {subjectLabels.get(subjectId) ?? subjectId}
+    </span>
+  ));
+}
+
+function CauseLocation({ causes, subjectLabels, focusedFindingId, onFocusFinding }: {
+  causes: readonly RewardFailureCause[];
+  subjectLabels: ReadonlyMap<string, string>;
+  focusedFindingId: string | null;
   onFocusFinding: (findingId: string | null) => void;
 }) {
   const { t } = useTranslation();
-  const nodes = evidenceNodeLabel(cause);
-  const subjectId = cause.evidence[0]?.subject_id ?? '';
+  const nodes = evidenceNodeLabel({ evidence: causes.flatMap(cause => cause.evidence) });
+  const focused = causes.some(cause => cause.id === focusedFindingId);
+  return (
+    <>
+      <SubjectChips
+        subjectIds={subjectIdsOf(causes.flatMap(cause => cause.evidence))}
+        subjectLabels={subjectLabels}
+      />
+      {nodes === '' ? null : (
+        <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
+          {t('trajectory.diagnosis.causeAt', { nodes })}
+        </span>
+      )}
+      <HighlightButton
+        id={causes[0].id}
+        focused={focused}
+        onFocusFinding={onFocusFinding}
+      />
+    </>
+  );
+}
+
+function CauseCard({ causes, subjectLabels, focusedFindingId, onFocusFinding }: {
+  causes: readonly RewardFailureCause[];
+  subjectLabels: ReadonlyMap<string, string>;
+  focusedFindingId: string | null;
+  onFocusFinding: (findingId: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  const cause = causes[0];
   const topic = causeTopic(cause.signal?.category, cause.dimension, (category, dimension) => (
     t('trajectory.diagnosis.causeTopic', { category, dimension })
   ));
   const comment = signalEvidenceBody(cause.signal, cause.dimension);
-  const score = cause.signal?.score;
+  const score = causes.find(item => typeof item.signal?.score === 'number')?.signal?.score;
+  const reasons = causeReasonParts(causes);
+  const hasBody = comment !== '' || reasons.length > 0;
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
       <div className={`${css.causeHead} ${css.causeHeadTop}`}>
@@ -174,19 +227,14 @@ function CauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
         {typeof score === 'number' ? (
           <span className={css.hint}>{t('trajectory.diagnosis.signalScore', { score })}</span>
         ) : null}
-        {subjectLabels.size > 1 && subjectId !== '' ? (
-          <span className={css.chip} data-testid="trajectory-diagnosis-cause-agent">
-            {subjectLabels.get(subjectId) ?? subjectId}
-          </span>
-        ) : null}
-        {nodes === '' ? null : (
-          <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
-            {t('trajectory.diagnosis.causeAt', { nodes })}
-          </span>
-        )}
-        <HighlightButton id={cause.id} focused={focused} onFocusFinding={onFocusFinding} />
+        <CauseLocation
+          causes={causes}
+          subjectLabels={subjectLabels}
+          focusedFindingId={focusedFindingId}
+          onFocusFinding={onFocusFinding}
+        />
       </div>
-      {comment === '' && cause.summary.trim() === '' ? null : (
+      {hasBody ? (
         <div className={css.itemBody}>
           {comment === '' ? null : (
             <p className={css.findingLine} data-testid="trajectory-diagnosis-cause-problem">
@@ -194,16 +242,27 @@ function CauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
               <span className={css.findingLineBody}>{comment}</span>
             </p>
           )}
-          {cause.summary.trim() === '' ? null : (
+          {reasons.length === 0 ? null : (
             <div className={css.findingLine} data-testid="trajectory-diagnosis-cause-reason">
               <span className={css.lineLabel}>{t('trajectory.diagnosis.findingReason')}</span>
               <div className={css.findingLineBody}>
-                <FoldedMarkdown text={cause.summary} />
+                {reasons.length === 1 ? <FoldedMarkdown text={reasons[0]} /> : (
+                  <div className={css.reasonList}>
+                    {reasons.map((part, index) => (
+                      <div key={index} className={css.reasonItem}>
+                        <span className={css.reasonIndex}>{index + 1}.</span>
+                        <div className={css.reasonText}>
+                          <MarkdownText text={part} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -218,7 +277,6 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
   const { t } = useTranslation();
   const skill = judge.category === 'skill';
   const nodes = evidenceNodeLabel(judge);
-  const subjectId = judge.evidence[0]?.subject_id ?? '';
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
       <div className={`${css.causeHead} ${css.causeHeadTop}`}>
@@ -231,10 +289,8 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
             {t('trajectory.diagnosis.confidence', { value: Math.round(judge.score * 100) })}
           </span>
         ) : null}
-        {subjectLabels.size > 1 && subjectId !== '' ? (
-          <span className={css.chip}>{subjectLabels.get(subjectId) ?? subjectId}</span>
-        ) : null}
         <span className={css.spacer} />
+        <SubjectChips subjectIds={subjectIdsOf(judge.evidence)} subjectLabels={subjectLabels} />
         {nodes === '' ? null : (
           <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
             {t('trajectory.diagnosis.causeAt', { nodes })}
@@ -295,13 +351,19 @@ function LegacyCauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
 }
 
 /**
- * Everything the diagnosis found: one card per deliverable failure cause. Records
- * written before the interface switch show their legacy root causes read-only.
+ * Everything the diagnosis found. Deliverable causes that answer one problem
+ * share a card: the problem once, then each reason with its own location.
+ * Records written before the interface switch show their legacy root causes
+ * read-only.
  */
 export function Findings({ record, subjectLabels, focusedFindingId, onFocusFinding }: FindingListProps) {
   const { t } = useTranslation();
   const counts = useMemo(() => findingCounts(record), [record]);
   const items = useMemo(() => findingItems(record), [record]);
+  const causeGroups = useMemo(
+    () => artifactCauseGroups(items.flatMap(item => (item.cause === undefined ? [] : [item.cause]))),
+    [items],
+  );
   const legacy = usesLegacyFindings(record) ? record.root_causes ?? [] : [];
   if (items.length === 0 && legacy.length === 0) return null;
   const causeText = counts.causes === 0
@@ -324,23 +386,24 @@ export function Findings({ record, subjectLabels, focusedFindingId, onFocusFindi
       toggleTestId="trajectory-diagnosis-findings-toggle"
     >
       <div className={css.findingList} data-testid="trajectory-diagnosis-finding-list">
-        {items.map(item => (item.cause !== undefined ? (
+        {causeGroups.map(group => (
           <CauseCard
-            key={item.id}
-            cause={item.cause}
+            key={group.id}
+            causes={group.causes}
             subjectLabels={subjectLabels}
-            focused={focusedFindingId === item.id}
+            focusedFindingId={focusedFindingId}
             onFocusFinding={onFocusFinding}
           />
-        ) : (
+        ))}
+        {items.flatMap(item => (item.judge === undefined ? [] : [
           <EvolutionFindingCard
             key={item.id}
-            judge={item.judge as EvolutionJudge}
+            judge={item.judge}
             subjectLabels={subjectLabels}
             focused={focusedFindingId === item.id}
             onFocusFinding={onFocusFinding}
-          />
-        )))}
+          />,
+        ]))}
         {legacy.map(cause => (
           <LegacyCauseCard
             key={cause.id}

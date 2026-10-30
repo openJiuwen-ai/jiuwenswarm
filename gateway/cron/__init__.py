@@ -1,7 +1,7 @@
 """Cron job scheduling for Gateway.
 
 This package provides:
-- CronJob models and persistence (local cron_jobs.json, or etcd for HA)
+- CronJob models and persistence (local cron_jobs.json, etcd, or enterprise DB)
 - An asyncio scheduler that wakes the agent before push time and pushes results to channels
 """
 

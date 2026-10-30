@@ -825,7 +825,7 @@ class TeamManager:
 
             server = AgentWebSocketServer.get_instance()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "[TeamManager] waiter-less push fallback: server unavailable: session_id=%s",
                 session_id,
                 exc_info=True,
@@ -854,6 +854,12 @@ class TeamManager:
                 session_id,
                 str(payload.get("event_type") or ""),
                 status,
+            )
+        else:
+            logger.warning(
+                "[TeamManager] waiter-less terminal event not delivered: session_id=%s event_type=%s",
+                session_id,
+                str(payload.get("event_type") or ""),
             )
 
     def _observe_interactive_round_event(
@@ -1873,6 +1879,7 @@ class TeamManager:
             if dispatch_mode != "scheduled":
                 spec.enable_task_verification = False
                 spec.enable_member_messaging = False
+                spec.max_subtask_depth = 0
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":

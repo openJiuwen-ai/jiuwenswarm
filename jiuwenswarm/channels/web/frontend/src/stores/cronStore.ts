@@ -36,6 +36,11 @@ interface CronState {
   // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由
   lastRunSessionId: Record<string, string>;
   setLastRunSessionId: (jobId: string, sessionId: string) => void;
+  // job_id → 点击「立即执行」时记下的任务原话。占位推送常在 run_now 返回前到达，
+  // 用这份原文把用户气泡排到占位上面。
+  pendingRunSeedByJobId: Record<string, string>;
+  setPendingRunSeed: (jobId: string, seed: string) => void;
+  takePendingRunSeed: (jobId: string) => string;
   // 定时任务未读状态（is_placeholder=false 的广播到达时标记，点击后清除）
   unreadCronJobs: Record<string, boolean>;
   markCronJobUnread: (jobId: string) => void;
@@ -64,6 +69,25 @@ export const useCronStore = create<CronState>((set, get) => ({
   lastRunSessionId: {},
   setLastRunSessionId: (jobId, sessionId) =>
     set((s) => ({ lastRunSessionId: { ...s.lastRunSessionId, [jobId]: sessionId } })),
+  pendingRunSeedByJobId: {},
+  setPendingRunSeed: (jobId, seed) => {
+    const text = String(seed || '').trim();
+    if (!jobId || !text) return;
+    set((s) => ({
+      pendingRunSeedByJobId: { ...s.pendingRunSeedByJobId, [jobId]: text },
+    }));
+  },
+  takePendingRunSeed: (jobId) => {
+    const text = String(get().pendingRunSeedByJobId[jobId] || '').trim();
+    if (!jobId || !text) return '';
+    set((s) => {
+      if (!(jobId in s.pendingRunSeedByJobId)) return s;
+      const next = { ...s.pendingRunSeedByJobId };
+      delete next[jobId];
+      return { pendingRunSeedByJobId: next };
+    });
+    return text;
+  },
   unreadCronJobs: (() => {
     try {
       const value = JSON.parse(localStorage.getItem('jiuwenswarm_cron_unread') || '{}');

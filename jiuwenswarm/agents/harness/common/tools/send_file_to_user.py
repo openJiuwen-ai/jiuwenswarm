@@ -106,7 +106,16 @@ class _SendFileRuntimeEnvelope:
 # Session-level dedup for send_file_to_user. Compression may drop prior tool
 # results, so the agent can re-call the same path; IM request-level dedup alone
 # cannot stop cross-turn duplicates.
-_SENT_FILE_PATHS_BY_SESSION: dict[str, set[str]] = {}
+_SENT_FILE_PATHS_BY_SESSION: dict[str | tuple[str, str], set[str]] = {}
+
+
+def _sent_files_key(session_id: str) -> str | tuple[str, str]:
+    from jiuwenswarm.enterprise import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    sid = (session_id or "").strip() or "default"
+    tenant = TenantContext.current_tenant_key() if is_enterprise() else None
+    return (tenant, sid) if tenant else sid
 
 
 def _normalize_sent_file_path(path: str) -> str:
@@ -118,7 +127,7 @@ def _partition_sent_files(
     paths: list[str],
 ) -> tuple[list[str], list[str]]:
     """Split *paths* into (new_to_send, already_sent). Does not mutate the registry."""
-    sid = (session_id or "").strip() or "default"
+    sid = _sent_files_key(session_id)
     sent = _SENT_FILE_PATHS_BY_SESSION.get(sid) or set()
     seen = set(sent)
     new_paths: list[str] = []
@@ -134,7 +143,7 @@ def _partition_sent_files(
 
 
 def _mark_files_sent(session_id: str, paths: list[str]) -> None:
-    sid = (session_id or "").strip() or "default"
+    sid = _sent_files_key(session_id)
     sent = _SENT_FILE_PATHS_BY_SESSION.setdefault(sid, set())
     for path in paths:
         sent.add(_normalize_sent_file_path(path))
@@ -142,7 +151,7 @@ def _mark_files_sent(session_id: str, paths: list[str]) -> None:
 
 def clear_sent_files_for_session(session_id: str | None) -> None:
     """Drop session dedup state when the session adapter is cleaned up."""
-    sid = (session_id or "").strip() or "default"
+    sid = _sent_files_key(session_id or "")
     _SENT_FILE_PATHS_BY_SESSION.pop(sid, None)
 
 
@@ -412,8 +421,11 @@ class SendFileToolkit:
     def _snapshot_runtime_envelope(self) -> _SendFileRuntimeEnvelope:
         """Freeze every mutable host field before the first await."""
 
-        asset_owner = self._asset_owner
-        if self._require_execution_authorization:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        enterprise = is_enterprise()
+        asset_owner = None if enterprise else self._asset_owner
+        if self._require_execution_authorization and not enterprise:
             if asset_owner is None:
                 from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
                     get_verified_download_asset_owner,
@@ -556,7 +568,9 @@ class SendFileToolkit:
                 append_history_record,
             )
 
-            if envelope.require_execution_authorization:
+            from jiuwenswarm.enterprise import is_enterprise
+
+            if envelope.require_execution_authorization and not is_enterprise():
                 if envelope.asset_owner is None:
                     raise RuntimeError("send_file_asset_owner_missing")
                 expires_at = float(int(time.time()) + _VERIFIED_ASSET_TTL_SECONDS)
@@ -569,8 +583,8 @@ class SendFileToolkit:
                     )
                     owned_assets.append(asset)
                     assets_by_path[_normalize_sent_file_path(file_path)] = asset
-            files_payload = self._build_files_payload(
-                envelope,
+            files_payload = await asyncio.to_thread(
+                self._build_files_payload, envelope,
                 valid_files=valid_files,
                 assets_by_path=assets_by_path,
             )
@@ -673,11 +687,26 @@ class SendFileToolkit:
         assets_by_path: dict[str, VerifiedDownloadAsset],
     ) -> list[dict[str, Any]]:
         files_payload: list[dict[str, Any]] = []
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.agents.harness.common.tools.obs_file_delivery import (
+                build_object_file_download_info,
+            )
+
+            return [
+                {"path": file_path,
+                 **build_object_file_download_info(
+                     Path(file_path), envelope.session_id, envelope.user_id, metadata=envelope.metadata
+                 ),
+                 "is_skill_package": looks_like_skill_package(file_path)}
+                for file_path in valid_files
+            ]
+
         if envelope.require_execution_authorization:
             from jiuwenswarm.agents.harness.common.tools.web_file_download import (
                 build_verified_asset_download_info,
             )
-
             for file_path in valid_files:
                 asset = assets_by_path[_normalize_sent_file_path(file_path)]
                 base_name = os.path.basename(file_path)

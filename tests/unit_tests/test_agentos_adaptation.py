@@ -275,7 +275,7 @@ class CodeGraphTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(adapter._code_graph_sdk_available)
 
     async def test_missing_sdk_keeps_text_search_and_status_reports_unavailable(self):
-        from jiuwenswarm.server.agent_ws_server import resolve_status_code_graph
+        from jiuwenswarm.server.handlers.commands import resolve_status_code_graph
 
         adapter = self.adapter()
         config = {"code_graph": {"profile": "graph", "agent": "root"}}

@@ -114,6 +114,20 @@ def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:
     return envelope.to_dict()
 
 
+async def _stamp_package_allowlist(envelope: E2AEnvelope) -> None:
+    """企业版用库里的名单覆盖 channel_context。个人版不读库。"""
+    from gateway.enterprise import is_enterprise
+
+    if not is_enterprise():
+        return
+    from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
+        read_package_allowlist_packages,
+    )
+    from jiuwenswarm.server.runtime.package_allowlist import apply_allowlist_to_envelope
+
+    apply_allowlist_to_envelope(envelope, await read_package_allowlist_packages())
+
+
 class WebSocketAgentServerClient(AgentServerClient):
     """
     基于 websockets 的 AgentServer WebSocket 客户端实现。
@@ -548,6 +562,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         timeout: float | None = None,
     ) -> AgentResponse:
         await self._ensure_connected_for_request()
+        await _stamp_package_allowlist(envelope)
         # 非流式 API 必须与 AgentServer 的 unary 路径一致；忽略信封上误带的 is_stream=True。
         envelope.is_stream = False
         rid = _wire_request_id_key(envelope.request_id)
@@ -612,6 +627,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
         await self._ensure_connected_for_request()
+        await _stamp_package_allowlist(envelope)
         envelope.is_stream = True
         rid = _wire_request_id_key(envelope.request_id)
         sid = str(envelope.session_id or "")

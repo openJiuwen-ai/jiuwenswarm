@@ -9,11 +9,14 @@ bound. Constructed Runtime resources have one owner, including failed startup.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from jiuwenswarm.server.worker import capabilities, runtime_backend, runtime_bootstrap, telemetry
 from jiuwenswarm.server.worker.runtime_host import WorkerRuntime
 from jiuwenswarm.server.worker.signals import RuntimeSignalSink
+
+logger = logging.getLogger(__name__)
 
 
 async def start_worker_runtime(
@@ -63,4 +66,12 @@ async def _start_worker_runtime(
     measurements.stage("observability_installed")
     await capabilities.start_optional_preparation(runtime, signals, measurements)
     measurements.stage("runtime_host_installed")
+    from jiuwenswarm.server.agent_http_server import start_http_if_enabled
+
+    try:
+        app_services = getattr(server, "app_services", None)
+        if app_services is not None:
+            await start_http_if_enabled(app_services)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AgentHTTPServer] start failed: %s", exc)
     return runtime
