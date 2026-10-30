@@ -2687,6 +2687,10 @@ class JiuWenSwarmDeepAdapter:
         self._disabled_tools_rail: DisabledToolsRail | None = None
         self._skill_rail: SkillUseRail | None = None
         self._enabled_skills: list[str] | None = None
+        # 串行化 refresh_enabled_skills_from_db 的整段执行（DB 读 → enabled 写 →
+        # rail 换装）：同轮 push、轮边界刷新与会话内安装回调可能并发进入同一
+        # adapter，换装段 unregister→register→赋值间有 await 挂起点。
+        self._skill_refresh_lock = asyncio.Lock()
         self._skill_authorization_rail: Any = None
         # 企业预置 Skill 名快照（安装账本 source_type=prebuilt），供动态授权
         # trust 判定使用；由白名单同步/热刷新/_refresh_skill_identity 维护。
@@ -3395,6 +3399,54 @@ class JiuWenSwarmDeepAdapter:
         current = self._skill_enabled_version if version is None else version
         self._session_skill_versions[session_id] = current
         self._session_skill_refresh_failures.pop(session_id, None)
+
+    async def _push_skill_refresh_to_bound_session(
+        self,
+        request: AgentRequest | None,
+    ) -> None:
+        """Refresh the session adapter bound to an install/uninstall request now.
+
+        Web/facade skill installs land on the root adapter; the bound session's
+        SkillUseRail allow-list otherwise only catches up at its next turn
+        boundary (``_refresh_session_skills_if_stale``), so a same-turn
+        ``skill_tool`` call fails with ``Skill not found``. When the request
+        carries a session id that maps to a live session adapter here, run the
+        same lazy refresh immediately under the session lock; failures fall
+        back to the lazy next-turn semantics (a failed refresh records the
+        shared 30s retry-suppression stamp, so the immediately following
+        boundary retry may be suppressed) and other sessions are untouched.
+        A session cleaned up while this push waits on the lock has its
+        orphaned lock entry dropped so ``has_session_runtime`` stays truthful.
+        """
+        session_id = str(getattr(request, "session_id", None) or "").strip()
+        if not session_id:
+            return
+        sid = self._session_adapter_key(session_id)
+        if sid not in self._session_adapters:
+            # Synthetic facade sessions (bff-*) never create a session adapter
+            # on this root; keep the lazy next-turn behavior for them.
+            return
+        lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        try:
+            adapter = None
+            async with lock:
+                adapter = self._session_adapters.get(sid)
+                if adapter is not None:
+                    await self._refresh_session_skills_if_stale(sid, adapter)
+            if adapter is None:
+                # The session was cleaned up while this push waited on the lock;
+                # drop the orphaned lock entry (same idle discipline as
+                # ``cleanup_session_adapter``) so ``has_session_runtime`` stops
+                # reporting runtime for a session that no longer exists.
+                if self._is_session_lock_idle(sid, lock):
+                    self._session_adapter_locks.pop(sid, None)
+        except Exception as exc:  # noqa: BLE001 — push 失败回退下一轮 lazy 追平
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] same-turn skill refresh push failed "
+                "(fallback to lazy next-turn refresh): session_id=%s error=%s",
+                sid,
+                exc,
+            )
 
     async def _evict_idle_session_adapters(self) -> None:
         if self._is_session_scoped_adapter:
@@ -9514,7 +9566,15 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] refresh_enabled_skills_from_db skipped: instance not ready"
             )
             return False
+        # 整段持锁串行（DB 读 → enabled 写 → rail 换装）：同轮 push（持 root
+        # 会话锁）、轮边界刷新与会话内 ``_on_installed_skills_changed`` 回调可能
+        # 并发到达同一 adapter，换装段 unregister→register→赋值间有 await 挂起点，
+        # 交错执行会挂上两个 rail 并让 ``_skill_rail`` 指向陈旧实例。
+        async with self._skill_refresh_lock:
+            return await self._refresh_enabled_skills_from_db_locked()
 
+    async def _refresh_enabled_skills_from_db_locked(self) -> bool:
+        """``refresh_enabled_skills_from_db`` 的持锁执行体（入口已持 ``_skill_refresh_lock``）。"""
         try:
             manager = self._skill_manager or SkillManager(
                 workspace_dir=self._workspace_dir,
