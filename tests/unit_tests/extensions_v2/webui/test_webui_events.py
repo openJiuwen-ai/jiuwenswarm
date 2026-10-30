@@ -262,9 +262,27 @@ async def test_valid_handler_can_replace_and_reply_and_old_revision_is_rejected(
 
 
 def test_component_event_catalog_excludes_deferred_features():
-    assert len(COMPONENT_RULES) == 18
-    assert {"FileTree", "FilePreview"} <= COMPONENT_RULES.keys()
+    assert len(COMPONENT_RULES) == 19
+    assert {"Avatar", "FileTree", "FilePreview"} <= COMPONENT_RULES.keys()
     assert {name for rule in COMPONENT_RULES.values() for name in rule.get("events", {})} <= UPSTREAM_EVENTS
+
+
+@pytest.mark.asyncio
+async def test_application_entry_ready_accepts_first_visit_reason():
+    runtime = WebUIRuntime(bus=ExtensionEventBus(), transport=AsyncMock())
+    runtime.register_events()
+    await runtime.bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
+    target = RenderTarget("", "application.entry", scope="application", connection_id="sock-1")
+    first = await runtime.dispatch(
+        UiActionInput("ui.ready", target, {"reason": "first_visit"}),
+        connection_id="sock-1",
+    )
+    assert first.accepted and first.status == "ready"
+    forged = await runtime.dispatch(
+        UiActionInput("ui.ready", target, {"reason": "other"}),
+        connection_id="sock-1",
+    )
+    assert not forged.accepted
 
 
 @pytest.mark.parametrize("root", [

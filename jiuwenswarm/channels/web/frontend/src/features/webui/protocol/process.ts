@@ -207,13 +207,22 @@ function readTarget(
   if (typeof raw.slot_id !== 'string') {
     return protocolReject('SCHEMA_ERROR', 'target.slot_id is required');
   }
-  if (!catalog.getSlot(raw.slot_id)) {
+  const slot = catalog.getSlot(raw.slot_id);
+  if (!slot) {
     return protocolReject('SCHEMA_ERROR', `slot is not allowed: ${raw.slot_id}`);
   }
   if (raw.application_id !== undefined) {
     return protocolReject('SCHEMA_ERROR', 'application targets are not supported');
   }
-  if (typeof raw.session_id !== 'string' || raw.session_id.trim().length === 0) {
+  const expectedScope = slot.scope ?? 'session';
+  if (raw.scope !== undefined && raw.scope !== expectedScope) {
+    return protocolReject('SCHEMA_ERROR', `target.scope does not match slot ${raw.slot_id}`);
+  }
+  if (expectedScope === 'application') {
+    if (raw.session_id !== undefined && raw.session_id !== '') {
+      return protocolReject('SCHEMA_ERROR', 'application slot target must not include session_id');
+    }
+  } else if (typeof raw.session_id !== 'string' || raw.session_id.trim().length === 0) {
     return protocolReject('SCHEMA_ERROR', 'target.session_id is required');
   }
   if (typeof raw.package_id !== 'string' || typeof raw.instance_key !== 'string') {
@@ -228,10 +237,11 @@ function readTarget(
     }
   }
   return protocolOk({
-    sessionId: raw.session_id,
+    sessionId: expectedScope === 'application' ? '' : (raw.session_id as string),
     slotId: raw.slot_id,
     packageId: raw.package_id,
     instanceKey: raw.instance_key,
+    ...(expectedScope === 'application' ? { scope: 'application' as const } : {}),
   });
 }
 

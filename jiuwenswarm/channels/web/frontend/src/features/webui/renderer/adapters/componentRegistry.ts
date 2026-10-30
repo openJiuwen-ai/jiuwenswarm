@@ -17,6 +17,7 @@ import { WebUIPanel } from './webuiPanel/WebUIPanel.tsx';
 import { WebUIFileTree } from './webuiFileTree/WebUIFileTree.tsx';
 import { WebUIFilePreview } from './webuiFilePreview/WebUIFilePreview.tsx';
 import { WebUIIframe } from './webuiIframe/WebUIIframe.tsx';
+import { WebUIAvatar } from './webuiAvatar/WebUIAvatar.tsx';
 
 export function createComponentRendererRegistry() {
   return createRendererRegistry({
@@ -38,6 +39,7 @@ export function createComponentRendererRegistry() {
     FileTree: WebUIFileTree,
     FilePreview: WebUIFilePreview,
     Iframe: WebUIIframe,
+    Avatar: WebUIAvatar,
   });
 }
 

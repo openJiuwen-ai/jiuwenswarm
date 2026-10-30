@@ -10,6 +10,7 @@ export const webUISlots: readonly WebUISlotRule[] = [
   { id: 'task.function', display: 'list' },
   { id: 'task.function.main', display: 'single', rootComponents: ['Iframe'] },
   { id: 'application.settings', display: 'list' },
+  { id: 'application.entry', display: 'single', scope: 'application' },
   { id: 'conversation.turn.content.after', display: 'list' },
   { id: 'conversation.turn.footer.actions', display: 'list' },
   { id: 'conversation.header.title.after', display: 'list' },

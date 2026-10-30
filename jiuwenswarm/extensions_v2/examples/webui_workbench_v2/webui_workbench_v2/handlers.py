@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import replace
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventNext
 
 from jiuwenswarm.extensions_v2.webui.models import (
+    RenderMode,
     RenderTarget,
     UiActionInput,
     UiActionOutput,
@@ -27,6 +29,7 @@ from .views import (
     TASK_INSTANCE,
     TURN_SLOTS,
     build_view,
+    welcome_page,
 )
 from .workspace import apply_file_action, load_workspace
 
@@ -56,6 +59,8 @@ class WorkbenchHandlers:
         if not isinstance(request, UiActionInput) or request.target.slot_id not in SLOTS:
             return await next_handler(event)
         target = request.target
+        if target.slot_id == "application.entry":
+            return await self._on_application_entry(request, ops, next_handler, event)
         if target.package_id not in ("", PACKAGE_ID) or not target.session_id:
             return await next_handler(event)
         if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
@@ -111,6 +116,39 @@ class WorkbenchHandlers:
             if failed_status:
                 return UiActionOutput(accepted=False, status=failed_status)
             return UiActionOutput(accepted=True, status="rendered")
+
+    async def _on_application_entry(
+        self,
+        request: UiActionInput,
+        ops: EventHandlerOps | None,
+        next_handler: EventNext,
+        event: Event,
+    ) -> UiActionOutput:
+        target = request.target
+        if target.package_id not in ("", PACKAGE_ID) or target.session_id:
+            return await next_handler(event)
+        if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
+            return await next_handler(event)
+        if ops is None:
+            return UiActionOutput(accepted=False, status="unavailable")
+        render_target = replace(target, package_id=PACKAGE_ID, instance_key=INSTANCE)
+        if request.event_type == "ui.ready":
+            if target.instance_key not in ("", INSTANCE):
+                return UiActionOutput(accepted=False, status="invalid_instance")
+            output = await ops.ui.render(UiRenderInput(target=render_target, root=welcome_page()))
+            delivered = output is not None and output.status == "delivered"
+            return UiActionOutput(accepted=delivered, status="rendered" if delivered else (output.status if output else "unavailable"))
+        if (
+            request.event_type == "ui.click"
+            and target.instance_key == INSTANCE
+            and request.payload.get("action_id") == "workbench.entry.close"
+        ):
+            output = await ops.ui.render(
+                UiRenderInput(target=render_target, mode=RenderMode.CLEAR)
+            )
+            delivered = output is not None and output.status == "delivered"
+            return UiActionOutput(accepted=delivered, status="cleared" if delivered else (output.status if output else "unavailable"))
+        return UiActionOutput(accepted=False, status="invalid")
 
     @staticmethod
     def _instances(target: RenderTarget) -> tuple[str, ...]:

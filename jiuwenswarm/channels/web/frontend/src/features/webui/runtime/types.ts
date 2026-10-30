@@ -8,7 +8,7 @@ import type { WebUIInteractionIntent, WebUIInteractionResult } from '../contract
 import type { WebUINormalizedRenderFrame, WebUINormalizedTarget } from '../contracts/normalized.ts';
 import type { WebUILimits } from '../protocol/limits.ts';
 import type { WebUIProtocol } from '../protocol/process.ts';
-import type { WebUIConnectionState, WebUITransport } from '../transport/types.ts';
+import type { WebUIConnectionState, WebUIDispatchReceipt, WebUITransport } from '../transport/types.ts';
 
 export interface WebUIInstanceError {
   code: string;
@@ -46,6 +46,7 @@ export interface WebUIScopeSnapshot {
   mounted: boolean;
   connected: boolean;
   instanceKeys: readonly string[];
+  closed?: boolean;
 }
 
 export interface WebUIMountOptions {
@@ -53,6 +54,9 @@ export interface WebUIMountOptions {
   instanceKey?: string;
   /** Limit this consumer to instances from one package. */
   packageId?: string;
+  readyPayload?: Readonly<Record<string, unknown>>;
+  readyOnce?: boolean;
+  onReadySettled?: (receipt: WebUIDispatchReceipt | null) => void;
 }
 
 export interface WebUIMountHandle {
