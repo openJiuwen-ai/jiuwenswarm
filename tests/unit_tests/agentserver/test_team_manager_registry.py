@@ -1277,6 +1277,99 @@ async def test_interact_uses_runner_only_for_active_session(
 
 
 @pytest.mark.asyncio
+async def test_purge_team_member_skill_mounts_probes_global_runner_pool(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """team_agent=None 的本地主路径必须经 GLOBAL_RUNNER 实例的 pool 枚举 leader。
+
+    误传 Runner 类时：Runner 不持有 _team_runtime_manager（那是 _RunnerImpl
+    的实例属性），helper 会新建一个空池 manager 并 setattr 到 Runner 类上
+    ——teams_for_session 恒空（purge 静默空转）且污染类属性。旧实现本用例
+    必红：捕获到的探池对象是 Runner 类而非 GLOBAL_RUNNER 实例。
+    """
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    from jiuwenswarm.agents.harness.team import team_manager as tm_mod
+
+    manager = _TeamManagerHarness()
+    monkeypatch.setattr(manager, "_resolve_session_agent_group", lambda _sid: "group-x")
+    monkeypatch.setattr(tm_mod, "_collect_team_package_skill_dirs", lambda _g: ["dir1"])
+
+    probed_runner: list[object] = []
+    purged: list[tuple[object, list[str]]] = []
+    leader = SimpleNamespace(name="leader-1")
+
+    class _FakePool:
+        async def teams_for_session(self, session_id: str):
+            assert session_id == "sess-purge"
+            return [SimpleNamespace(agent=leader)]
+
+    def fake_manager_helper(runner):
+        probed_runner.append(runner)
+        return SimpleNamespace(pool=_FakePool())
+
+    async def fake_purge(runtime, skill_dirs):
+        purged.append((runtime, skill_dirs))
+
+    monkeypatch.setattr(tm_mod, "_runner_team_runtime_manager", fake_manager_helper)
+    monkeypatch.setattr(tm_mod, "_iter_local_member_runtimes", lambda _leader: ["rt1"])
+    monkeypatch.setattr(tm_mod, "_purge_runtime_skill_mounts", fake_purge)
+
+    await manager._purge_team_member_skill_mounts("sess-purge", team_agent=None)
+
+    assert probed_runner == [GLOBAL_RUNNER], (
+        "探池必须打 GLOBAL_RUNNER 实例（不是 Runner 类——类上没有 pool 状态）"
+    )
+    assert purged == [("rt1", ["dir1"])], "枚举到的 leader 成员 runtime 必须实际被 purge"
+
+
+@pytest.mark.asyncio
+async def test_interact_bumps_user_turn_epoch_only_for_answer_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HITL 清除门的 epoch 只被「作答型载荷」推进。
+
+    InteractiveInput（桌面 HITL 作答，agent-core 侧 resume_interrupt 直解
+    挂起）与 HumanAgentMessage（swarmflow 人类成员回复，消息等待型 HITL
+    的作答）在投递成功后 bump；godview 追问文本 / team.external_event
+    外部事件只进 inbox 不解挂起，不得 bump——否则同一暂停轮晚到的
+    leader 帧误过 epoch 门清掉挂起标记，流末兜底给仍在等待作答的回合
+    补带 error 的终态帧并级联 park 收流。（旧实现无条件 bump：本用例
+    首个断言在旧实现上必红。）
+    """
+    from openjiuwen.agent_teams.interaction.payload import HumanAgentMessage
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+
+    async def fake_interact_agent_team(user_input, *, team_name, session_id):
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.interact_agent_team",
+        fake_interact_agent_team,
+    )
+
+    # godview 追问文本（裸 str）：不是作答，不推进 epoch
+    assert await manager.interact("sess-1", "先等等，我问下别的") == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 0
+
+    # team.external_event 外部事件（dict 载荷）：不是作答，不推进 epoch
+    assert await manager.interact("sess-1", {"type": "team.external_event", "data": {}}) == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 0
+
+    # swarmflow 人类成员回复：消息等待型 HITL 的作答，推进 epoch
+    reply = HumanAgentMessage(sender="user", target="corr-1", body="答案")
+    assert await manager.interact("sess-1", reply) == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 1
+
+    # InteractiveInput（桌面 HITL 作答）：推进 epoch
+    assert await manager.interact("sess-1", InteractiveInput()) == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 2
+
+
+@pytest.mark.asyncio
 async def test_interact_refreshes_active_team_model_pool_trace_before_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """专家团（team 包）入口与生命周期测试。
 
-覆盖：ExpertService 团分支分派（load 幂等/换绑先卸后装/BUSY 并集/pending/
-applied/unload 清字段）、_replay_expert_from_metadata 团跳过（防污染）、
+覆盖：ExpertService 团分支分派（load 幂等/换团拒绝/退团后再装/BUSY 并集/
+pending/applied/unload 清字段）、_replay_expert_from_metadata 团跳过（防污染）、
 chat 非 team mode 已绑团的 BAD_REQUEST 防御。
 """
 
@@ -222,7 +222,11 @@ async def test_load_team_switch_from_single_expert(
 async def test_load_team_switch_from_other_team(
         server, local_source: Path, metadata_store: dict, team_runtime
 ) -> None:
-    """团 A → 团 B：先停旧团运行时（先卸后装）。"""
+    """语义翻转：团 A → 团 B 直接换绑被拒绝（TEAM_BOUND），零状态变更。
+
+    规格：会话一旦绑定 team 资产（team DB/工作区/挂载）即固定，唯一出口是
+    unload 退团（退团即退资产）。拒绝闸在 locate/BUSY/先卸之前命中。
+    """
     metadata_store["s1"] = {
         "session_id": "s1",
         "expert_id": "other-group",
@@ -236,10 +240,53 @@ async def test_load_team_switch_from_other_team(
         asyncio.Lock(),
     )
     msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "TEAM_BOUND"
+    assert metadata_store["__writes__"] == [], "拒绝不得写 metadata"
+    assert metadata_store["s1"]["expert_id"] == "other-group"
+    assert team_runtime.stop_calls == [], "拒绝不得动 team 运行时"
+
+
+@pytest.mark.asyncio
+async def test_load_team_after_unload_succeeds(
+        server, local_source: Path, metadata_store: dict, team_runtime
+) -> None:
+    """规格全流程：绑团 A → 换团 B 被拒 → unload 退团 → 再装团 B 成功。"""
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "other-group",
+        "expert_type": "team",
+        "team_name": "expert-group-other-group-s1",
+        "team_template_id": "expert_group",
+        "mode": "team",
+    }
+    # 1) 换团被拒
+    ws = FakeWebSocket()
+    await server._handle_expert_load(
+        ws,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": GROUP_ID}),
+        asyncio.Lock(),
+    )
+    assert ws.sent[0]["payload"]["code"] == "TEAM_BOUND"
+    # 2) unload 退团（正确分流：metadata 保持 team 原样）
+    ws2 = FakeWebSocket()
+    await server._handle_expert_unload(
+        ws2, _request(ReqMethod.EXPERT_UNLOAD, {"session_id": "s1"}), asyncio.Lock()
+    )
+    assert ws2.sent[0]["ok"] is True
+    assert metadata_store["s1"]["expert_type"] == "agent"
+    # 3) 再装团 B 成功
+    ws3 = FakeWebSocket()
+    await server._handle_expert_load(
+        ws3,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": GROUP_ID}),
+        asyncio.Lock(),
+    )
+    msg = ws3.sent[0]
     assert msg["ok"] is True
-    assert msg["payload"]["previous_expert_id"] == "other-group"
-    assert any(c["reason"] == "expert.switch" for c in team_runtime.stop_calls)
+    assert msg["payload"]["type"] == "team"
     assert metadata_store["s1"]["expert_id"] == GROUP_ID
+    assert metadata_store["s1"]["expert_type"] == "team"
 
 
 @pytest.mark.asyncio
@@ -344,6 +391,119 @@ async def test_unload_team_busy(
     )
     assert ws.sent[0]["payload"]["code"] == "BUSY"
     assert metadata_store["s1"]["expert_id"] == GROUP_ID
+
+
+@pytest.mark.asyncio
+async def test_unload_team_branch_on_team_name_residue(
+        server, metadata_store: dict, team_runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """脏会话解锁链：expert_type 已被改写为 agent 但 team_name 残留（半截清理/
+    sync_team_identity_metadata 只写 mode/team_name 的形态）→ unload 仍走团分支，
+    清 team 字段 + 恢复 mode + 停运行时，且活实例上残留的单专家被热卸载
+    （否则"metadata 已退专家、实例仍是专家"状态不一致）。"""
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "expert-a",
+        "expert_type": "agent",
+        "team_name": "expert-group-x-s1",
+        "team_template_id": "expert_group",
+        "mode": "team",
+    }
+    child = SimpleNamespace(has_live_instance=lambda: True, apply_expert=AsyncMock())
+    _install_fake_adapters(monkeypatch, server, _live_root(child))
+    ws = FakeWebSocket()
+    await server._handle_expert_unload(
+        ws, _request(ReqMethod.EXPERT_UNLOAD, {"session_id": "s1"}), asyncio.Lock()
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is True
+    assert msg["payload"]["type"] == "team"
+    record = metadata_store["s1"]
+    assert record["expert_id"] == ""
+    assert record["expert_type"] == "agent"
+    assert record["team_name"] == ""
+    assert record["team_template_id"] == ""
+    assert record["mode"] == "agent"
+    assert any(c["reason"] == "expert.unload" for c in team_runtime.stop_calls)
+    # 团分支补单专家热卸载：活实例上的 expert-a 必须被卸掉
+    child.apply_expert.assert_awaited_once()
+    assert child.apply_expert.await_args.args[0] is None
+
+
+@pytest.mark.asyncio
+async def test_load_team_rejected_by_backstop_when_bound(
+        metadata_store: dict, team_runtime
+) -> None:
+    """并发兜底：入口闸与 _load_expert_team 重读之间隔着 fetch，并发交错时
+    入口闸可能放行——重读 metadata 已绑另一个团（非同团幂等）→ TEAM_BOUND，
+    不停对方 team 运行时、不写 metadata。"""
+    from jiuwenswarm.server.runtime.expert.expert_service import ExpertService
+
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "other-group",
+        "expert_type": "team",
+        "team_name": "expert-group-other-group-s1",
+        "mode": "team",
+    }
+    svc = ExpertService(agent_manager=None, adapter_resolver=lambda agent: None)
+    result = await svc._load_expert_team(
+        channel_id="desktop", session_id="s1", expert_id=GROUP_ID, warnings=[]
+    )
+    assert result.ok is False
+    assert result.payload["code"] == "TEAM_BOUND"
+    assert metadata_store["__writes__"] == []
+    assert team_runtime.stop_calls == []
+
+
+@pytest.mark.asyncio
+async def test_unload_team_branch_when_expert_id_empty(
+        server, metadata_store: dict, team_runtime
+) -> None:
+    """expert_id 已清但 team_name 残留：不得走"无专家幂等"早退（否则团队资产
+    永不清理、会话被 TEAM_BOUND 永久锁死），必须走团分支清干净。"""
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "",
+        "expert_type": "agent",
+        "team_name": "expert-group-x-s1",
+        "team_template_id": "expert_group",
+        "mode": "team",
+    }
+    ws = FakeWebSocket()
+    await server._handle_expert_unload(
+        ws, _request(ReqMethod.EXPERT_UNLOAD, {"session_id": "s1"}), asyncio.Lock()
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is True
+    assert msg["payload"]["type"] == "team"
+    record = metadata_store["s1"]
+    assert record["team_name"] == ""
+    assert record["team_template_id"] == ""
+    assert record["mode"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_unload_team_branch_on_team_canonical_mode(
+        server, metadata_store: dict, team_runtime
+) -> None:
+    """mode 族因子：expert_type/team_name 均空但 mode 是 team canonical（code.team）
+    → unload 走团分支，mode 按 work_mode 恢复单 agent canonical（code.team→code.normal）。"""
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "",
+        "expert_type": "agent",
+        "mode": "code.team",
+        "work_mode": "code",
+    }
+    ws = FakeWebSocket()
+    await server._handle_expert_unload(
+        ws, _request(ReqMethod.EXPERT_UNLOAD, {"session_id": "s1"}), asyncio.Lock()
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is True
+    assert msg["payload"]["type"] == "team"
+    assert metadata_store["s1"]["mode"] == "code.normal"
 
 
 @pytest.mark.asyncio

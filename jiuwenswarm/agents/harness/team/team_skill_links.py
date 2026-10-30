@@ -8,7 +8,6 @@ import logging
 import os
 import shutil
 import stat
-import subprocess
 import sys
 from pathlib import Path
 
@@ -158,20 +157,14 @@ def _copy_skill_directory(target_path: Path, link_path: Path) -> None:
 
 
 def _create_windows_junction(target_path: Path, link_path: Path) -> None:
-    """Create a directory junction using ``mklink /J`` on Windows."""
-    cmd_path = os.path.join(
-        os.environ.get("SystemRoot", r"C:\Windows"),
-        "System32",
-        "cmd.exe",
+    """Create a directory junction on Windows.
+
+    Delegates to agent-core's ``create_windows_junction``: ``mklink /J``
+    first, with the reparse-point API (``\\\\?\\`` extended-length paths)
+    as fallback for link paths beyond the classic 248-char directory limit.
+    """
+    from openjiuwen.core.common.utils.windows_junction import (
+        create_windows_junction,
     )
-    result = subprocess.run(
-        [cmd_path, "/c", "mklink", "/J", str(link_path), str(target_path)],
-        capture_output=True,
-        text=True,
-        encoding="gbk",
-        check=False,
-        shell=False,
-    )
-    if result.returncode != 0:
-        error_output = result.stderr.strip() or result.stdout.strip()
-        raise OSError(f"Failed to create junction {link_path} -> {target_path}: {error_output}")
+
+    create_windows_junction(str(target_path), str(link_path))

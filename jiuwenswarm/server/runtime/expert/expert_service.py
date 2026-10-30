@@ -186,8 +186,8 @@ def resolve_expert_group_template_id() -> str:
 def cleanup_expert_group_team_db(team_name: str) -> None:
     """删除专家团 team DB 目录（team_home(team_name)）。
 
-    调用时机：显式退团（expert.unload）/会话删除——**换团不调用**（换回同团
-    依赖同 team_name 的 DB 现场存活）。目录不存在时静默跳过。
+    调用时机：显式退团（expert.unload）/会话删除——退团即退资产（换团已被
+    TEAM_BOUND 拒绝，不存在"换回同团依赖 DB 现场"的路径）。目录不存在时静默跳过。
     """
     if not team_name:
         return
@@ -222,6 +222,30 @@ class ExpertOpResult:
 
     ok: bool
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+def is_team_asset_bound(metadata: dict[str, Any]) -> bool:
+    """会话是否绑定团队资产（team DB/工作区/挂载）判定唯一口径。
+
+    三因子并集，任一命中即视为团队资产会话：
+    - ``expert_type == "team"``：专家团包绑定（_load_expert_team 写入）；
+    - ``team_name`` 非空：团队运行时身份已落盘
+      （sync_team_identity_metadata 只写 mode/team_name，不写 expert_type，
+      模板团队会话与"半截清理"脏会话均为 expert_type="agent"+team_name 非空）；
+    - ``mode`` 属 team canonical 族（is_team_mode 公共判定：team / code.team /
+      design.team / team.plan——chat 成功回写 canonical mode 可能先于
+      team_name 落盘，单看前两因子会漏）。
+
+    load 拒绝闸与 unload 分流必须共用本判定：口径一旦分叉（如闸宽分流窄），
+    脏会话会被"load 拒绝 + unload 清不掉"永久锁死、team DB 泄漏。
+    """
+    from jiuwenswarm.common.mode_matrix import is_team_mode
+
+    return (
+            str(metadata.get("expert_type") or "agent") == "team"
+            or bool(str(metadata.get("team_name") or "").strip())
+            or is_team_mode(metadata.get("mode"))
+    )
 
 
 class ExpertService:
@@ -335,7 +359,36 @@ class ExpertService:
                 payload={"error": "missing session_id or expert_id", "code": "BAD_REQUEST"},
             )
 
-        # 1) 本地包解析 + 校验 + 判型（此步之前不写状态；以落盘 manifest 为准）
+        # 1) 会话旧值 + 拒绝闸（置于 fetch 之前：被拒请求不解析/不下载包，
+        #    仓库不可达时也返回 TEAM_BOUND 而非 REPO_UNAVAILABLE。metadata 可能
+        #    为空——会话不存在不在此判（保持包级错误优先：INVALID_PACKAGE 等
+        #    包级错误先于 NOT_FOUND），留 fetch 后的分支复核）
+        metadata = get_session_metadata(session_id, cache_bust=True)
+        previous_expert_id = str(metadata.get("expert_id") or "")
+        previous_expert_type = str(metadata.get("expert_type") or "agent")
+        # 装团后会话内不支持切换——会话一旦绑定 team 资产（team DB/工作区/挂载）
+        # 即固定，唯一出口是 unload 退团回默认助手（退团即退资产）。前端
+        # shouldConfirmExpertSwitch 已拦截，此处为后端防线：拒绝即零状态变更。
+        # 判定口径收拢在 is_team_asset_bound（expert_type/team_name/mode 族三因子），
+        # 与 unload 分流同一函数，防口径分叉锁死脏会话。
+        # 同团重复 load 幂等放行（判型后由 _load_expert_team 精确幂等复核）。
+        if is_team_asset_bound(metadata):
+            if not (previous_expert_id == expert_id and previous_expert_type == "team"):
+                logger.info(
+                    "[session_id=%s] [ExpertService] expert.load 拒绝换绑: 会话已绑定专家团 "
+                    "previous=%s(%s) team_name=%s，须先 unload 退团",
+                    session_id, previous_expert_id, previous_expert_type,
+                    str(metadata.get("team_name") or ""),
+                )
+                return ExpertOpResult(
+                    ok=False,
+                    payload={
+                        "error": "该会话已绑定专家团，请先退出专家团后再召唤其他专家或专家团",
+                        "code": "TEAM_BOUND",
+                    },
+                )
+
+        # 2) 本地包解析 + 校验 + 判型（此步之前不写状态；以落盘 manifest 为准）
         try:
             expert_type, package_dir, warnings = await fetch_and_classify_expert(expert_id)
         except _expert_store.ExpertNotFound as exc:
@@ -363,7 +416,9 @@ class ExpertService:
                 warnings=warnings,
             )
 
-        # 2) 旧值
+        # 3) fetch 后复核（步骤 1 的读取已过时：隔着可能秒级的 fetch 且无
+        #    per-session 锁）——会话不存在在此恢复 NOT_FOUND（包级错误优先）；
+        #    闸后并发被绑团（另一条 load 交错写入）由 TEAM_BOUND 兜底拦截
         metadata = get_session_metadata(session_id, cache_bust=True)
         if not metadata:
             logger.warning(
@@ -374,8 +429,21 @@ class ExpertService:
                 payload={"error": f"session 不存在: {session_id}", "code": "NOT_FOUND"},
             )
         previous_expert_id = str(metadata.get("expert_id") or "")
+        if is_team_asset_bound(metadata):
+            logger.info(
+                "[session_id=%s] [ExpertService] expert.load 拒绝换绑（fetch 后兜底）: "
+                "会话已绑定专家团 previous=%s team_name=%s",
+                session_id, previous_expert_id, str(metadata.get("team_name") or ""),
+            )
+            return ExpertOpResult(
+                ok=False,
+                payload={
+                    "error": "该会话已绑定专家团，请先退出专家团后再召唤其他专家或专家团",
+                    "code": "TEAM_BOUND",
+                },
+            )
 
-        # 3) 子适配器不存在 → pending（首次装配由入口 create_instance() 生效）
+        # 4) 子适配器不存在 → pending（首次装配由入口 create_instance() 生效）
         root, child = self._locate_session_adapter(
             channel_id,
             session_id,
@@ -443,11 +511,14 @@ class ExpertService:
             expert_id: str,
             warnings: list[str],
     ) -> ExpertOpResult:
-        """召唤/切换专家团：写 metadata 绑定，team 线下次 chat 冷构建生效。
+        """召唤/绑定专家团：写 metadata 绑定，team 线下次 chat 冷构建生效。
 
         与单专家的差异：不热加载到会话 DeepAgent，而是写 expert_type="team" +
-        team_name/team_template_id/mode="team" 五字段；换绑先卸后装——
-        旧团停 team 运行时、旧单专家走 apply_expert(None) 卸载。
+        team_name/team_template_id/mode="team" 五字段。换团/换单专家在
+        load_expert 入口即被 TEAM_BOUND 拒绝（team 资产与会话固定，唯一出口
+        unload 退团），本函数重读 metadata 后再以 is_team_asset_bound 并发兜底
+        一次——到达装团路径的旧绑定只可能是单专家，先经 apply_expert(None)
+        热卸载（换绑先卸后装）。
         """
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
@@ -482,6 +553,25 @@ class ExpertService:
                 },
             )
 
+        # 并发兜底：入口闸与本次重读之间隔着可能秒级的 fetch 且无 per-session
+        # 锁——并发 load 交错时入口闸可能双方都放行。此处按重读的 metadata 再拦：
+        # 已绑团队资产且非同团幂等 → TEAM_BOUND（拒绝而非替对方停旧团运行时，
+        # 避免误伤在跑的团；入口闸未拦的脏会话同样在此兜底）
+        if is_team_asset_bound(metadata):
+            logger.info(
+                "[session_id=%s] [ExpertService] expert.load(team) 拒绝换团（并发兜底）: "
+                "previous=%s(%s) team_name=%s",
+                session_id, previous_expert_id, previous_expert_type,
+                str(metadata.get("team_name") or ""),
+            )
+            return ExpertOpResult(
+                ok=False,
+                payload={
+                    "error": "该会话已绑定专家团，请先退出专家团后再召唤其他专家或专家团",
+                    "code": "TEAM_BOUND",
+                },
+            )
+
         root, child = self._locate_session_adapter(
             channel_id,
             session_id,
@@ -495,13 +585,11 @@ class ExpertService:
                 ok=False, payload={"error": _BUSY_MESSAGE, "code": "BUSY"}
             )
 
-        # 换绑先卸：旧团停运行时；旧单专家热卸载
+        # 换绑先卸：旧绑定只可能是单专家（团队资产会话已被入口闸与上方
+        # 并发兜底双重拦截）——热卸载
         try:
-            if previous_expert_id:
-                if previous_expert_type == "team" or metadata.get("team_name"):
-                    await self._stop_team_runtime(session_id, reason="expert.switch")
-                elif child is not None and child.has_live_instance():
-                    await child.apply_expert(None)
+            if previous_expert_id and child is not None and child.has_live_instance():
+                await child.apply_expert(None)
         except Exception as exc:
             logger.exception(
                 "[session_id=%s] [ExpertService] expert.load(team) 先卸失败 previous=%s: %s",
@@ -570,7 +658,16 @@ class ExpertService:
             channel_id: str,
             session_id: str,
     ) -> ExpertOpResult:
-        """退出专家：回默认身份。无专家幂等；无活实例只清 metadata。"""
+        """退出专家/专家团：回默认身份。无专家且无团队资产幂等；无活实例只清 metadata。
+
+        团队资产判定与 load 拒绝闸共用 is_team_asset_bound 同一口径
+        （expert_type / team_name / mode 属 team canonical 族三因子并集），
+        且先于"无专家幂等"早退：脏会话（expert_id 已清或 expert_type 已改写
+        但 team_name/mode 残留——sync_team_identity_metadata 只写
+        mode/team_name，模板团队会话与半截清理均为此形态）也必须走团分支，
+        清 team_name/team_template_id、恢复 mode、清理 team DB，保证
+        "拒绝 → unload 清干净 → 可再 load"规格链路对脏会话成立。
+        """
         from jiuwenswarm.server.runtime.agent_adapter.expert_capability import (
             ExpertApplyBusyError,
         )
@@ -594,19 +691,32 @@ class ExpertService:
                 payload={"error": f"session 不存在: {session_id}", "code": "NOT_FOUND"},
             )
         previous_expert_id = str(metadata.get("expert_id") or "")
-        if not previous_expert_id:
-            return ExpertOpResult(
-                ok=True,
-                payload={"type": "agent", "applied": False, "previous_expert_id": ""},
-            )
-
-        # 专家团分支：停 team 运行时 + 清四字段 + mode 回 agent
-        if str(metadata.get("expert_type") or "agent") == "team":
+        # 团队资产判定与 load 拒绝闸共用 is_team_asset_bound 同一口径，
+        # 且先于"无专家幂等"早退——expert_id 已清但 team_name/mode 残留的脏会话
+        # 也要走团分支清干净，否则 load 被拒、unload 又清不掉，会话永久锁死、
+        # team DB 泄漏
+        team_bound = is_team_asset_bound(metadata)
+        # 分流打点：误分流/脏会话 regression 的直接观测点
+        logger.info(
+            "[session_id=%s] [ExpertService] expert.unload 分流: expert_type=%s "
+            "team_name=%s previous=%s → %s 分支",
+            session_id,
+            str(metadata.get("expert_type") or "agent"),
+            str(metadata.get("team_name") or ""),
+            previous_expert_id,
+            "team" if team_bound else "agent",
+        )
+        if team_bound:
             return await self._unload_expert_team(
                 channel_id=channel_id,
                 session_id=session_id,
                 metadata=metadata,
                 previous_expert_id=previous_expert_id,
+            )
+        if not previous_expert_id:
+            return ExpertOpResult(
+                ok=True,
+                payload={"type": "agent", "applied": False, "previous_expert_id": ""},
             )
 
         root, child = self._locate_session_adapter(
@@ -669,8 +779,35 @@ class ExpertService:
             return ExpertOpResult(
                 ok=False, payload={"error": _BUSY_MESSAGE, "code": "BUSY"}
             )
+        # 分流放宽（is_team_asset_bound）后，进入本分支的会话可能仍挂着单专家
+        # 活实例（如先 load 单专家再做团队 chat 的模板团队/半截形态）——补单
+        # 专家热卸载，否则"metadata 已退专家、实例仍是专家"状态不一致
+        if previous_expert_id and child is not None and child.has_live_instance():
+            from jiuwenswarm.server.runtime.agent_adapter.expert_capability import (
+                ExpertApplyBusyError,
+            )
+
+            try:
+                await child.apply_expert(None)
+            except ExpertApplyBusyError as exc:
+                logger.info(
+                    "[session_id=%s] [ExpertService] 退团前单专家热卸载持锁复验 BUSY: %s",
+                    session_id, exc,
+                )
+                return ExpertOpResult(
+                    ok=False, payload={"error": str(exc), "code": "BUSY"}
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[session_id=%s] [ExpertService] 退团前单专家热卸载失败 previous=%s: %s",
+                    session_id, previous_expert_id, exc,
+                )
+                return ExpertOpResult(
+                    ok=False, payload={"error": str(exc), "code": "LOAD_FAILED"}
+                )
         stopped = await self._stop_team_runtime(session_id, reason="expert.unload")
-        # 显式退团：级联清理 team DB（换团不清——换回同团依赖 DB 现场存活）
+        # 显式退团：级联清理 team DB（退团即退资产；同团重复 load 走幂等分支
+        # 不到这里，不存在"换回同团依赖 DB 现场"的路径）
         cleanup_expert_group_team_db(str(metadata.get("team_name") or ""))
         # 未首发即卸团：清掉未消费的上下文交接标记，避免残留污染下次装团
         try_clear_context_handoff_marker(session_id)

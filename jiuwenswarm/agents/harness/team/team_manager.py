@@ -17,12 +17,14 @@ from typing import Any
 import functools
 import inspect
 
+from openjiuwen.agent_teams.interaction.payload import HumanAgentMessage
 from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -494,6 +496,22 @@ class TeamManager(metaclass=_TeamManagerMeta):
         # 走 solo 分支干净收口，不会误判死。
         # 详情文本供「零产出降级轮」收口时作 error 文案（空回合不得记已完成）。
         self._degraded_sessions: dict[str, str] = {}
+        # session_id → 单调用户轮次号：每个新用户请求（首问/追问/HITL 作答）
+        # +1。流内判据据此区分「同一暂停轮 ask 之后晚到的带正文 final」
+        # （轮次号未变，不得清除挂起标记）与「作答后恢复轮的 final」
+        # （轮次号已推进，应清除）。只在 delete_session_runtime 释放——
+        # fresh-start/terminate 不动（追问轮次必须跨流实例保持单调）。
+        self._user_turn_epochs: dict[str, int] = {}
+
+    def bump_user_turn_epoch(self, session_id: str) -> int:
+        """Advance and return the user-turn epoch for a session."""
+        epoch = self._user_turn_epochs.get(session_id, 0) + 1
+        self._user_turn_epochs[session_id] = epoch
+        return epoch
+
+    def user_turn_epoch(self, session_id: str) -> int:
+        """Return the current user-turn epoch (0 when no request seen yet)."""
+        return self._user_turn_epochs.get(session_id, 0)
 
     def mark_stream_round_terminal(self, session_id: str) -> None:
         """标记会话长寿命流的最近回合已终态收尾。"""
@@ -1466,6 +1484,39 @@ class TeamManager(metaclass=_TeamManagerMeta):
         )
         return None
 
+    async def _lookup_runner_pool_team_name(self, session_id: str) -> str | None:
+        """按会话从 Runner 池反查 team_name（terminate 的兜底解析）。
+
+        失同步残留形态（本地注册已清、池中条目仍 RUNNING）下
+        ``_resolve_session_team_name`` 的本地三源（active/pending/metadata）
+        全空；解析不到 team_name 时 ``_stop_runner_team_runtime`` 被跳过，
+        拆除静默空转。池条目自带 team_name（pool 以其为键），可按
+        current_session_id 反查。
+        """
+        try:
+            from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+            runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
+            pool = getattr(runtime_mgr, "pool", None)
+            teams_for_session = (
+                getattr(pool, "teams_for_session", None) if pool is not None else None
+            )
+            if not callable(teams_for_session):
+                return None
+            entries = await teams_for_session(session_id)
+            for entry in entries or []:
+                team_name = str(getattr(entry, "team_name", "") or "").strip()
+                if team_name:
+                    return team_name
+            return None
+        except Exception:
+            logger.warning(
+                "[TeamManager] runner pool team_name lookup failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+
     async def _resolve_resumable_runner_entry(self, session_id: str) -> tuple[str, Any] | None:
         """Return a same-session paused/running Runner pool entry when resumable."""
         team_name = self._lookup_session_team_name(session_id)
@@ -1704,8 +1755,17 @@ class TeamManager(metaclass=_TeamManagerMeta):
             team_agent = spec.build()
             team_agent.channel_id = channel_id  # 记录 channel，供 _destroy_other_sessions 按 channel 隔离
             self._team_agents[session_id] = team_agent
-            # After build, initialize team shared skill links.
-            self.ensure_team_shared_skills_ready_for_session(session_id, spec)
+            # After build, initialize team shared skill links. Best-effort:
+            # link failures (e.g. EDR blocking cmd.exe → junction WinError 5)
+            # must not fail team creation — members run without the shared
+            # skill view.
+            try:
+                self.ensure_team_shared_skills_ready_for_session(session_id, spec)
+            except Exception:
+                logger.exception(
+                    "[TeamManager] team shared skill links init failed; continuing without them: session_id=%s",
+                    session_id,
+                )
 
             if self._is_distributed_mode(config_base):
                 try:
@@ -1791,6 +1851,15 @@ class TeamManager(metaclass=_TeamManagerMeta):
         *,
         request_metadata: dict[str, Any] | None = None,
     ) -> tuple[bool, str | None]:
+        # 用户侧输入投递（追问/HITL 作答/人类成员回复/godview 插话）的统一
+        # 漏斗（stream follow-up 经 _interact_with_request_metadata、swarmflow
+        # 人类成员回复直调，均汇于此）。流内 HITL 挂起标记的 epoch 清除门
+        # 依赖「作答」推进轮次，但并非每种投递都是作答——见下方 bump 处注释。
+        # 注意：bump 必须在投递被 Runner 运行时确认接受之后（下方
+        # return True 前）。失败投递（not_active/runner_failed/exception）
+        # 若也推进 epoch，会话 HITL 挂起期间一次失败投递就会让 epoch !=
+        # pending_interaction_turn 成立，同轮晚到的 final/delta 随即误清
+        # 挂起标记，流末强制兜底给仍在等待作答的回合补带 error 的终态帧。
         try:
             if not self.is_runtime_active(session_id):
                 restored = await self.wait_for_resumable_runtime(session_id)
@@ -1844,6 +1913,17 @@ class TeamManager(metaclass=_TeamManagerMeta):
                     reason,
                 )
                 return False, reason
+            # 只有「能解除挂起交互」的作答型载荷才推进 epoch（HITL 清除门
+            # 判据）：InteractiveInput（桌面 HITL 作答——agent-core 侧
+            # TeamRuntimeManager.interact 用它 resume_interrupt 直解挂起）
+            # 与 HumanAgentMessage（swarmflow 人类成员回复——消息等待型
+            # HITL 的作答）。godview 追问/team.external_event 外部事件只进
+            # inbox 不解挂起：它们若也 bump，同一暂停轮晚到的 leader 帧
+            # （原生/合成 final 可能晚于 ask 到达）会误过 epoch 门清掉挂起
+            # 标记，流末兜底给仍在等待作答的回合补带 error 的终态帧并级联
+            # park 收流——把本门要消除的故障换个触发通道重现。
+            if isinstance(user_input, (InteractiveInput, HumanAgentMessage)):
+                self.bump_user_turn_epoch(session_id)
             return True, None
         except Exception as exc:
             logger.error("[TeamManager] interact failed: session_id=%s, error=%s", session_id, exc)
@@ -2274,7 +2354,9 @@ class TeamManager(metaclass=_TeamManagerMeta):
         else:
             leaders = []
             try:
-                manager = _runner_team_runtime_manager(Runner)
+                from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+                manager = _runner_team_runtime_manager(GLOBAL_RUNNER)
                 pool = getattr(manager, "pool", None)
                 if pool is not None:
                     leaders = [
@@ -2574,8 +2656,13 @@ class TeamManager(metaclass=_TeamManagerMeta):
                 or self.is_runtime_pending(session_id)
             )
             if not has_stream_task and not has_team_runtime:
-                self._clear_terminal_session_markers(session_id)
-                return False
+                from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                    _runner_pool_has_running_team,
+                )
+
+                if not await _runner_pool_has_running_team(session_id):
+                    self._clear_terminal_session_markers(session_id)
+                    return False
             logger.info(
                 "[TeamManager] %s terminate team session runtime: session_id=%s",
                 reason,
@@ -2584,6 +2671,18 @@ class TeamManager(metaclass=_TeamManagerMeta):
 
             # Resolve team_name early before cleanup, from active/pending/metadata
             team_name = self._resolve_session_team_name(session_id)
+            if not team_name:
+                # 失同步残留兜底：本地三源全空时按会话从 Runner 池反查——
+                # 解析不到 team_name 下方停池步骤会被跳过，拆除静默空转。
+                team_name = await self._lookup_runner_pool_team_name(session_id)
+                if team_name:
+                    logger.info(
+                        "[TeamManager] %s terminate resolved team_name from runner pool: "
+                        "session_id=%s team_name=%s",
+                        reason,
+                        session_id,
+                        team_name,
+                    )
 
             await kv_cache_hooks.dispatch_signal(
                 "offload",
@@ -2660,8 +2759,16 @@ class TeamManager(metaclass=_TeamManagerMeta):
                 or self.is_runtime_pending(session_id)
             )
             if not has_stream_task and not has_team_runtime:
-                self._clear_terminal_session_markers(session_id)
-                return False
+                # 同 terminate：本地注册全清不等于 Runner 池干净——失同步残留
+                # （本地已清×池中 RUNNING/PAUSING 条目）下早退会让下方按会话
+                # 反查 team_name 的停池兜底永远到不了，条目残留。
+                from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                    _runner_pool_has_running_team,
+                )
+
+                if not await _runner_pool_has_running_team(session_id):
+                    self._clear_terminal_session_markers(session_id)
+                    return False
 
             logger.info(
                 "[TeamManager] %s cancel team session runtime: session_id=%s",
@@ -2671,6 +2778,10 @@ class TeamManager(metaclass=_TeamManagerMeta):
 
             # Resolve team_name early before cleanup, from active/pending/metadata
             team_name = self._resolve_session_team_name(session_id)
+            if not team_name:
+                # 同 terminate：本地注册已清的失同步残留按会话从 Runner 池
+                # 反查 team_name，否则停池步骤被跳过、池中条目残留。
+                team_name = await self._lookup_runner_pool_team_name(session_id)
 
             # Stop Runner-owned runtime first before cancelling stream task
             # to avoid gate/teardown races and ensure pool removal
@@ -2889,6 +3000,7 @@ class TeamManager(metaclass=_TeamManagerMeta):
         """
         team_name = self._resolve_delete_session_team_name(session_id)
         self._degraded_sessions.pop(session_id, None)
+        self._user_turn_epochs.pop(session_id, None)
         await kv_cache_hooks.stop_runtime_before_terminal_delete(
             self.stop_session_runtime,
             session_id=session_id,

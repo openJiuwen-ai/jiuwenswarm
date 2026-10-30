@@ -28,8 +28,11 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.harness import DeepAgent
 
-from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
-from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
+from jiuwenswarm.agents.harness.team.team_manager import (
+    TEAM_EVENT_QUEUE_MAXSIZE,
+    TeamManager,
+    get_team_manager,
+)
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
 from jiuwenswarm.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
@@ -721,6 +724,129 @@ async def _team_session_has_runtime(team_manager: TeamManager, session_id: str) 
         or team_manager.is_runtime_pending(session_id)
         or bool(team_manager.has_stream_task(session_id))
     )
+
+
+async def _runner_pool_has_running_team(session_id: str) -> bool:
+    """探测 agent-core Runner 池：本会话是否有 RUNNING/PAUSING 状态的池条目。
+
+    jiuwenswarm 本地注册（_active_team_names 等）在流末即清，与 agent-core
+    池可能失同步——「零产出流 + 池中 RUNNING/PAUSING 条目」=
+    REJECT_RUNNING 失同步实证。
+    """
+    try:
+        from openjiuwen.agent_teams.runtime.pool import RuntimeState
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            _runner_team_runtime_manager,
+        )
+
+        manager = _runner_team_runtime_manager(GLOBAL_RUNNER)
+        pausing = getattr(RuntimeState, "PAUSING", None)
+        active_states = [RuntimeState.RUNNING]
+        if pausing is not None:
+            active_states.append(pausing)
+        pool = getattr(manager, "pool", None)
+        teams_for_session = (
+            getattr(pool, "teams_for_session", None) if pool is not None else None
+        )
+        if not callable(teams_for_session):
+            logger.warning(
+                "[TeamHelpers] runner pool probe unavailable (no pool/teams_for_session): "
+                "session_id=%s",
+                session_id,
+            )
+            return False
+        for entry in await teams_for_session(session_id):
+            if getattr(entry, "state", None) in active_states:
+                return True
+        return False
+    except Exception:
+        logger.warning(
+            "[TeamHelpers] runner pool probe failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return False
+
+
+def _schedule_stale_running_entry_teardown(team_manager: TeamManager, session_id: str) -> None:
+    """本流任务退出后拆除「池中 RUNNING 但本地注册已清」的失同步残留条目。
+
+    挂当前流任务的 done_callback——任务退出（finally 清注册）即触发，
+    零时序猜测；就地 terminate 会对当前任务自取消/自等死锁。
+    拆除后下一问走冷重建（recover_team 唤醒，fresh-start 同款实证可靠路径）。
+    """
+
+    async def _teardown() -> None:
+        try:
+            # 复核此刻仍是那条失同步残留再拆：从调度（零产出分支）到本
+            # 回调真正执行之间隔着本流 finally 的 settle 补发/强制终态/快照
+            # 广播（锁库下实测数十秒），窗口内同一 session 可能已冷重建出
+            # 健康运行时——误拆会让下一问零产出再撞一次 error，形成级联。
+            if team_manager.has_stream_task(session_id):
+                logger.info(
+                    "[TeamHelpers] stale-entry teardown skipped (new stream active): "
+                    "session_id=%s",
+                    session_id,
+                )
+                return
+            if (
+                team_manager.is_runtime_active(session_id)
+                or team_manager.is_runtime_pending(session_id)
+            ):
+                logger.info(
+                    "[TeamHelpers] stale-entry teardown skipped (runtime re-registered): "
+                    "session_id=%s",
+                    session_id,
+                )
+                return
+            if not await _runner_pool_has_running_team(session_id):
+                logger.info(
+                    "[TeamHelpers] stale-entry teardown skipped (pool entry gone/settled): "
+                    "session_id=%s",
+                    session_id,
+                )
+                return
+            terminated = await team_manager.terminate_session_runtime(
+                session_id, reason="reject_running zero-output recovery"
+            )
+            if not terminated:
+                # 探池到 terminate 之间条目已落定/拆除（terminate 早退 False）——
+                # 竞态良性，拆除目标已达成
+                logger.info(
+                    "[TeamHelpers] stale-entry teardown: entry settled concurrently: "
+                    "session_id=%s",
+                    session_id,
+                )
+                return
+            if await _runner_pool_has_running_team(session_id):
+                # terminate 报成功但池条目仍在（如 team_name 本地三源全空时
+                # 停池步骤被跳过——现 terminate 已有池反查兜底，此处是最后
+                # 观测哨）——拆除目标未达成，残留会让下一问再撞
+                # REJECT_RUNNING；告警留痕，不自旋重试（下一问的零产出分支
+                # 会再次调度本拆除）。
+                logger.warning(
+                    "[TeamHelpers] stale-entry teardown incomplete (pool entry still "
+                    "running after terminate): session_id=%s",
+                    session_id,
+                )
+        except Exception:
+            logger.warning(
+                "[TeamHelpers] stale-entry teardown failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+    def _on_stream_done(_task: asyncio.Task) -> None:
+        asyncio.create_task(_teardown(), name=f"reject-recovery-{session_id}")
+
+    current = asyncio.current_task()
+    if current is not None:
+        current.add_done_callback(_on_stream_done)
+    else:
+        # 非任务上下文（守卫正常在流任务内，不会到这里）——兜底直接起
+        asyncio.create_task(_teardown(), name=f"reject-recovery-{session_id}")
 
 
 async def query_team_human_members_for_join(
@@ -1636,6 +1762,13 @@ async def process_team_message_stream(
     channel_id = request.channel_id
 
     team_manager = get_team_manager(channel_id)
+    # 用户轮次号（HITL 挂起标记的 epoch 清除门判据）不在此处入口 bump：
+    # 入口 bump 发生在任何投递尝试之前，投递失败（not_active/runner_failed）
+    # 也会推高 epoch，同轮晚到的 final/delta 随即误清挂起标记。所有用户侧
+    # 投递通道（本函数 follow-up 经 _interact_with_request_metadata、
+    # swarmflow 人类成员回复直调）统一漏斗到 TeamManager.interact，epoch
+    # 在投递被 Runner 运行时确认接受后于 interact 内推进。首问/冷重建
+    # 新流不涉及挂起标记（流局部变量随旧流消亡），无需推进。
     language = _resolve_request_language(request)
     query = _normalize_team_query(
         inputs.get("query", ""),
@@ -1755,8 +1888,16 @@ async def process_team_message_stream(
     ensure_ready = getattr(team_manager, "ensure_team_shared_skills_ready_for_session", None)
     shared_skills_ready_prepared = False
     if is_first_request and callable(ensure_ready):
-        ensure_ready(session_id, team_spec)
-        shared_skills_ready_prepared = True
+        try:
+            ensure_ready(session_id, team_spec)
+            shared_skills_ready_prepared = True
+        except Exception:
+            # 技能共享目录链接是增强能力不是前置条件：链接失败（如 EDR 拦截
+            # cmd.exe 导致 junction 创建被拒 WinError 5）不影响整个团队流。
+            logger.exception(
+                "[TeamHelpers] team shared skill links init failed; continuing without them: session_id=%s",
+                session_id,
+            )
 
     slash_result = await _handle_team_slash_command(
         channel_id,
@@ -2019,8 +2160,15 @@ async def process_team_message_stream(
 
         if is_first_request:
             if callable(ensure_ready) and not shared_skills_ready_prepared:
-                ensure_ready(session_id, team_spec)
-                shared_skills_ready_prepared = True
+                try:
+                    ensure_ready(session_id, team_spec)
+                    shared_skills_ready_prepared = True
+                except Exception:
+                    # 技能链接初始化失败不阻塞团队流，降级为不带共享技能继续。
+                    logger.exception(
+                        "[TeamHelpers] team shared skill links init failed; continuing without them: session_id=%s",
+                        session_id,
+                    )
             # 模式切换上下文交接：装团后首个团队回合，
             # 把切换前的前情块拼进 query（消费即清标记，失败不阻塞起跑）
             from jiuwenswarm.server.runtime.agent_adapter.context_handoff import (
@@ -2534,7 +2682,9 @@ async def _team_has_unread_messages(channel_id: str | None, session_id: str) -> 
         token = set_session_id(session_id)
         try:
             await db.initialize()
-            await db.create_cur_session_tables()
+            # 读路径不前置建表 DDL（与 get_team_snapshot_from_db 同规）：
+            # 前置写锁 DDL 会挤占进程唯一写锁；表不存在 = 团队从未建立，
+            # 由下方 TeamNotEstablishedError 分支确定性收口。
             if db.message is None:
                 return None
             try:
@@ -2718,6 +2868,11 @@ async def _consume_stream_with_query(
     # chat.ask_user_question（HITL 等用户输入）时，流末不强制补终态——
     # 回合是"暂停待恢复"而非"终结"。
     saw_pending_interaction = False
+    # 挂起标记置位时的用户轮次号快照：清除点只允许「作答后」（当前轮次号
+    # 已推进）的恢复产出清标记——同一暂停轮 ask 之后晚到的带正文 final
+    # （leader 先输出正文再调提问工具时，原生/合成 final 可能晚于 ask 到达）
+    # 若误清，流末强制兜底会给挂起待作答的回合补带 error 的终态帧。
+    pending_interaction_turn = -1
     # 内容帧计数（delta/reasoning/tool_call）：静默窗作废判据——不用
     # received_chunks（usage/状态尾随帧会把窗口误作废）
     content_chunks = 0
@@ -3174,17 +3329,30 @@ async def _consume_stream_with_query(
                 # 唤醒）——清除回合终态标记，让下一条用户消息回归 follow-up 判定。
                 # 只认内容帧（delta/final/reasoning/tool_call）：终态帧与 usage 等
                 # 收尾尾随帧不清除（它们紧跟着 terminal 到达，会误清刚打的标记）。
-                if parsed.get("event_type") in ("chat.delta", "chat.reasoning", "chat.tool_call"):
+                _parsed_event_type = parsed.get("event_type")
+                if _parsed_event_type in ("chat.delta", "chat.reasoning", "chat.tool_call"):
                     content_chunks += 1
                     if tm_.is_stream_round_terminal(session_id):
                         tm_.clear_stream_round_terminal(session_id)
-                    # HITL 答案到达后的恢复产出 = 挂起已解除——清除本轮挂起
-                    # 标记（它是轮级语义：本轮暂停待恢复；流级粘性会把一次
-                    # HITL 拦死同流后续所有轮的 settle 补终态）。
-                    # 限定 leader 帧：标记语义是「leader 等用户输入」，只有
-                    # leader 产出能证明恢复——成员并行输出/晚到帧不算
-                    if is_leader:
-                        saw_pending_interaction = False
+                # HITL 答案到达后的恢复产出 = 挂起已解除——清除本轮挂起
+                # 标记（它是轮级语义：本轮暂停待恢复；流级粘性会把一次
+                # HITL 拦死同流后续所有轮的 settle 补终态）。
+                # 限定 leader 帧：标记语义是「leader 等用户输入」，只有
+                # leader 产出能证明恢复——成员并行输出/晚到帧不算。
+                # 轮次号门：只有「作答后」（epoch 已推进）的产出才算恢复
+                # 证据；同一暂停轮 ask 之后晚到的帧不得清。
+                # chat.final 也算恢复产出：恢复轮可能全程只产 final（纯文本
+                # 回合的 task_completion 合成 final 没有 delta 前导）——清除
+                # 面若不含 final，挂起标记会留成永久拦死。这与上方回合终态
+                # 标记的窄清除面不冲突：final 清 HITL 标记安全（轮次号门挡住
+                # 同轮晚到 final），但清回合终态标记不安全，故两者分列。
+                if (
+                    _parsed_event_type
+                    in ("chat.delta", "chat.reasoning", "chat.tool_call", "chat.final")
+                    and is_leader
+                    and tm_.user_turn_epoch(session_id) != pending_interaction_turn
+                ):
+                    saw_pending_interaction = False
                 # 本轮团队活动置位（dissolved 判定的本轮 scope 判据；复位在
                 # 终态发射点统一做——零产出新回合没有内容帧，不能靠帧到达复位）。
                 # 判据只认 team.member/team.task/workflow.updated（成员/任务真实
@@ -3224,6 +3392,7 @@ async def _consume_stream_with_query(
                     # leader 向用户发问 = 回合挂起等输入（HITL），
                     # 流末零终态兜底不得补终态（暂停待恢复，不是终结）
                     saw_pending_interaction = True
+                    pending_interaction_turn = tm_.user_turn_epoch(session_id)
                     logger.info(
                         "[TeamHelpers] pending interaction flagged: "
                         "channel_id=%s session_id=%s round_id=%s",
@@ -3253,13 +3422,18 @@ async def _consume_stream_with_query(
                     # 清除未恢复错误史（注意 chat.error 后补的空 chat.final 无正文，
                     # 不会误清）；同时置位本轮内容判据（降级/解散干净收口的
                     # 零产出校验用——leader_round_text 在 final 落定即重置，
-                    # 收口时点拿不到，须在此留痕）
+                    # 收口时点拿不到，须在此留痕）；并解除 HITL 挂起标记——
+                    # leader 产出了实质正文 = 已恢复在跑（覆盖「恢复轮只产
+                    # final 不产 delta」形态）。挂起标记的清除带用户轮次号门：
+                    # 同一暂停轮 ask 之后晚到的带正文 final 不是恢复证据，不得清。
                     if (
                         parsed.get("event_type") in ("chat.delta", "chat.final")
                         and str(parsed.get("content") or "").strip()
                     ):
                         round_unrecovered_error = None
                         round_had_answer_content = True
+                        if tm_.user_turn_epoch(session_id) != pending_interaction_turn:
+                            saw_pending_interaction = False
                     # 多气泡：leader 的 reasoning 打当轮泡序号——
                     # 思考先于发言到达，前端按 seq 把思考归到"紧接着的发言卡"
                     if parsed.get("event_type") == "chat.reasoning":
@@ -3593,6 +3767,36 @@ async def _consume_stream_with_query(
                 _resolve_channel_id(channel_id),
                 session_id,
             )
+            # 零产出 + Runner 池中仍有 RUNNING 条目 =
+            # REJECT_RUNNING 失同步（本地注册已清、agent-core 池在跑）——
+            # 延迟拆除残留条目，让下一问冷重建；否则 idle 超时前每问都撞 REJECT。
+            # pause 守卫（与流末强制终态兜底/settle 闸门同口径）：用户主动停止
+            # （intent=pause）或 HITL 挂起时，池条目是「挂起可热恢复」的凭据
+            # 而非失同步残留——拆了会丢暂停语义（resume_from_pause 上下文断链）。
+            if await _runner_pool_has_running_team(session_id):
+                _pause_check = getattr(tm_, "is_pause_in_progress", None)
+                _pause_in_progress = (
+                    bool(_pause_check(session_id)) if callable(_pause_check) else False
+                )
+                if saw_pending_interaction or _pause_in_progress:
+                    logger.info(
+                        "[TeamHelpers] stale-entry teardown skipped "
+                        "(pending_interaction=%s pause_in_progress=%s): "
+                        "channel_id=%s session_id=%s",
+                        saw_pending_interaction,
+                        _pause_in_progress,
+                        _resolve_channel_id(channel_id),
+                        session_id,
+                    )
+                else:
+                    logger.warning(
+                        "[TeamHelpers] zero-output stream with RUNNING pool entry "
+                        "(reject_running desync); scheduling stale-entry teardown: "
+                        "channel_id=%s session_id=%s",
+                        _resolve_channel_id(channel_id),
+                        session_id,
+                    )
+                    _schedule_stale_running_entry_teardown(tm_, session_id)
             await _broadcast_event(
                 channel_id,
                 session_id,
