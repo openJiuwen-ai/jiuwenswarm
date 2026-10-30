@@ -159,7 +159,7 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 
 ```json
 {
-  "event": "ui.press",
+  "event": "ui.click",
   "session_id": "web_xxx",
   "target": {
     "slot_id": "message.assistant.meta",
@@ -228,7 +228,8 @@ Enter 业务 Handler 只读取 `{value}`，其中 value 是按下 Enter 时的�
 - `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`
 - `tests/unit_tests/extensions_v2/webui/test_webui_events.py`
 - `tests/unit_tests/extensions_v2/webui/test_webui_input.py`
-- 前端 `npm run test:webui-dispatch`
+- `tests/unit_tests/extensions_v2/test_session_files.py`
+- 前端 `npm run test:webui-events`
 
 覆盖内容：
 
@@ -249,4 +250,4 @@ render → Handler → replace；前端测试使用 jsdom 验证页面点击产�
 - 目录随生效记录刷新、包卸载后目录失效尚未单独验证；当前用例只覆盖实例清理。
 - 本地化资源已声明和校验，但尚未参与标题解析。
 - 界面项不支持运行时禁用、灰度或按用户过滤。
-- 当前槽位为三个会话级位置及助手消息 meta 位置；新增槽位需要同时修改后端白名单和前端宿主。
+- 当前槽位为 13 个会话语境位置（含单轮与助手消息 meta 位置）；新增槽位需要同时修改后端白名单和前端宿主。

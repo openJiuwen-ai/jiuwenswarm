@@ -17,7 +17,7 @@ TURN_SLOTS = frozenset({"conversation.turn.content.after", "conversation.turn.fo
 IFRAME_PAGE_SLOTS = frozenset({"application.menu.main", "task.function.main"})
 SLOTS = (
     "application.menu", "application.menu.main", "task.function", "task.function.main",
-    "application.entry", "application.settings", "conversation.input.above", "conversation.input.below",
+    "application.settings", "conversation.input.above", "conversation.input.below",
     "conversation.panel.right", "conversation.turn.content.after", "conversation.turn.footer.actions",
     "conversation.header.title.after", "conversation.header.actions",
 )
@@ -146,19 +146,6 @@ def login_page() -> RenderNode:
     ))
 
 
-def welcome_page() -> RenderNode:
-    """Use the plugin layout and a single action to finish the application entry."""
-    return RenderNode("Box", {
-        "direction": "column", "align": "center", "justify": "center", "gap": "lg", "flex": 1,
-    }, children=(
-        RenderNode("Image", {
-            "src": "/logo.svg", "alt": "欢迎 / Welcome", "width": 64, "height": 64, "preview": False,
-        }),
-        text("欢迎使用 / Welcome", size="lg"),
-        button("开始使用 / Get started", "workbench.entry.close", variant="primary", size="md"),
-    ))
-
-
 def workspace_files(state: SessionState) -> RenderNode:
     """Combine independent file components inside the existing right contribution."""
     workspace = state.workspace
@@ -197,8 +184,6 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
         return iframe_page("工作台页面 / Workbench page", "https://example.com/?page=application.menu.main")
     if slot == "task.function.main":
         return iframe_page("任务检查页面 / Task inspection page", "https://example.com/?page=task.function.main")
-    if slot == "application.entry":
-        return welcome_page()
     if slot == "application.settings":
         return RenderNode("Box", {"direction": "row", "justify": "between", "gap": "md", "wrap": True}, children=(
             column(text("自动摘要 / Auto summary"), text("在本会话的辅助区域显示筛选摘要。 / Show filter summaries in this conversation.", secondary=True)),

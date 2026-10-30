@@ -3,7 +3,7 @@ package:
   id: webui.workbench-v2
   version: 1.0.9
   displayName: Plugin Workbench / 插件交互工作台
-  description: A plugin demo with a fullscreen welcome entry, a login page shell, workspace files and a webpage tab.
+  description: A plugin demo with workspace files, webpage tabs, and session-scoped WebUI slot contributions.
 extensions:
   - id: workbench-v2
     runtime: backend

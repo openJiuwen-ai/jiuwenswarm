@@ -16,7 +16,7 @@ from jiuwenswarm.extensions_v2.webui.models import (
 )
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
-from jiuwenswarm.extensions_v2.webui.schema import validate_root, validate_target
+from jiuwenswarm.extensions_v2.webui.schema import validate_request, validate_root, validate_target
 
 TARGET = RenderTarget("s1", "conversation.input.below", "pkg.demo", "main")
 
@@ -67,10 +67,12 @@ async def test_event_for_static_node_is_rejected_without_raising():
     RenderNode("Text", {"value": None}), RenderNode("Switch", {"checked": None}),
     RenderNode("Select", {"options": [{"value": "x", "label": "A"}, {"value": 1, "label": "B"}]}),
     RenderNode("Slider", {"step": 3}), RenderNode("Slider", {"value": float("nan")}),
+    RenderNode("Slider", {"value": 10**400}),
     RenderNode("Image", {"src": "javascript:alert(1)"}), RenderNode("Iframe", {"title": "X", "src": "///example.com"}),
     RenderNode("Button", events={"ui.change": {"id": "bad"}}),
     RenderNode("Button", events={"ui.click": {"id": "bad", "args": None}}),
     RenderNode("Button", events={"ui.click": {"id": "bad", "args": {"bad": float("inf")}}}),
+    RenderNode("Button", events={"ui.click": {"id": "bad", "args": {"bad": 10**400}}}),
     RenderNode("Button", events={"ui.click": {"id": "bad", "extra": 1}}),
     RenderNode("Text", events={"ui.click": {"id": "bad"}}), RenderNode("Button", events={}),
     RenderNode("Row", {"gap": "sm", "density": "compact"}),
@@ -86,6 +88,23 @@ async def test_event_for_static_node_is_rejected_without_raising():
 ])
 def test_tree_rejects_invalid_component_contracts(root):
     assert not validate_root(root).ok
+
+
+def test_request_enforces_slot_root_components():
+    panel = RenderNode("Panel", {"title": "Files"}, children=(RenderNode("Text", {"value": "body"}),))
+    iframe = RenderNode("Iframe", {"title": "Web", "src": "https://example.com"})
+    text = RenderNode("Text", {"value": "body"})
+    right = replace(TARGET, slot_id="conversation.panel.right")
+    menu_main = replace(TARGET, slot_id="application.menu.main")
+
+    assert validate_request(UiRenderInput(right, panel)).ok
+    assert validate_request(UiRenderInput(right, iframe)).ok
+    assert not validate_request(UiRenderInput(right, text)).ok
+    assert validate_request(UiRenderInput(menu_main, iframe)).ok
+    assert validate_request(UiRenderInput(menu_main, text)).ok
+    assert not validate_request(UiRenderInput(menu_main, panel)).ok
+    assert not validate_request(UiRenderInput(TARGET, panel)).ok
+    assert not validate_request(UiRenderInput(TARGET, iframe)).ok
 
 
 def test_tab_content_serialization_and_hidden_node_budget():

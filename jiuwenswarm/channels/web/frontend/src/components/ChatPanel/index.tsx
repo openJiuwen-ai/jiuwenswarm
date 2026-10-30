@@ -1790,8 +1790,10 @@ export const ChatPanel = React.memo(function ChatPanel({
       {shouldShowChatHeader && (
         <div className="chat-panel-header" data-testid="chat-panel-header">
           <div className="chat-panel-header__meta" data-testid="chat-panel-header-meta">
-            <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
-              {sessionTitle}
+            <div className="flex min-w-0 items-center gap-2" data-testid="chat-panel-header-title-row">
+              <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
+                {sessionTitle}
+              </div>
             </div>
             {sessionProjectName && (
               <div

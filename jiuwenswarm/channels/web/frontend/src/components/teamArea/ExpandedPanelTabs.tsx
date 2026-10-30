@@ -100,10 +100,10 @@ export function ExpandedPanelTabs({
   const tabPanelId = idPrefix ?? generatedId;
 
   return (
-    <div data-testid={`${testIdPrefix}-expanded-header`} className="single-agent-tool-tabs">
+    <div data-testid={`${testIdPrefix}-expanded-header`} className="single-agent-tool-tabs min-w-0">
       <div
         data-testid={`${testIdPrefix}-expanded-tabs`}
-        className="single-agent-tool-tabs__list"
+        className="single-agent-tool-tabs__list overflow-x-auto"
         role="tablist"
         aria-label={tabListLabel ?? t('team.toolTabs')}
       >
@@ -115,12 +115,13 @@ export function ExpandedPanelTabs({
               key={tab.key}
               data-testid={`${testIdPrefix}-tab`}
               data-variant={tab.key}
-              id={`${tabPanelId}-${tab.key}`}
+              id={`${tabPanelId}-${encodeURIComponent(tab.key)}`}
               role="tab"
               tabIndex={0}
               aria-selected={isActive}
               aria-controls={`${tabPanelId}-panel`}
-              className={`single-agent-tool-tab group ${isActive ? 'single-agent-tool-tab--active' : ''}`}
+              title={tab.label}
+              className={`single-agent-tool-tab group shrink-0 ${isActive ? 'single-agent-tool-tab--active' : ''}`}
               onClick={() => onTabChange(tab.key)}
               onKeyDown={(event) => {
                 // 仅响应标签自身聚焦时的 Enter/Space；事件若来自内部关闭按钮（会冒泡），
@@ -154,7 +155,7 @@ export function ExpandedPanelTabs({
         })}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         {onToggleFullscreen && (
           <button
             onClick={onToggleFullscreen}

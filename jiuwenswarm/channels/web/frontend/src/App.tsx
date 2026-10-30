@@ -4846,6 +4846,29 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             <ApplicationPluginOutlet contribution={activeApplicationPlugin} />
           </div>
         )}
+        {/* 任务功能区的右侧页面：会话列表保留在左，插件页面进入工作区；菜单主页面仍为独立整页 */}
+        {webUIPageSection && webUIPage?.slotId === 'task.function.main' ? (
+          <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
+            <ConversationSidebar
+              activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+              onNew={(options) => requestSessionNavigation('new', options)}
+              onSelect={requestSessionNavigation}
+              onSelectDesignSession={handleSelectDesignSession}
+              activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+              onProjectRemoved={handleProjectRemoved}
+              onOpenCron={() => handleNavigate('cron')}
+              isCronActive={false}
+              collapsed={conversationSidebarCollapsed}
+              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
+              hideCollapseButton={workspaceWorkMode === 'design' && route.kind === 'design-project'}
+            />
+            <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
+              {webUIPageSection}
+            </div>
+          </div>
+        ) : (
+          webUIPageSection
+        )}
         {FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel' && (
           <div className="app-section">
             <UpdatePanel isConnected={isConnected} request={request} />
@@ -5012,30 +5035,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         </div>
       )}
-
-        {/* 任务功能区的右侧页面：会话列表保留在左，插件页面进入工作区；菜单主页面仍为独立整页 */}
-        {webUIPageSection && webUIPage?.slotId === 'task.function.main' ? (
-          <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
-            <ConversationSidebar
-              activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
-              onNew={(options) => requestSessionNavigation('new', options)}
-              onSelect={requestSessionNavigation}
-              onSelectDesignSession={handleSelectDesignSession}
-              activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
-              onProjectRemoved={handleProjectRemoved}
-              onOpenCron={() => handleNavigate('cron')}
-              isCronActive={false}
-              collapsed={conversationSidebarCollapsed}
-              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
-              hideCollapseButton={workspaceWorkMode === 'design' && route.kind === 'design-project'}
-            />
-            <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
-              {webUIPageSection}
-            </div>
-          </div>
-        ) : (
-          webUIPageSection
-        )}
 
       {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
       <LoginDialog />

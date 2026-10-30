@@ -633,6 +633,7 @@ export function ToolPanel({
         expanded: planningExpanded,
       };
   const expandTo = (tab: TabType | SingleAgentToolTab, teamMemberId?: string) => {
+    setPluginSelection(null);
     if (isTeam) {
       setTeamAreaActiveTab(tab as TabType);
       if (tab === 'team') {
@@ -905,8 +906,15 @@ export function ToolPanel({
   }[];
 
   return (
-    <div ref={floatingPanelRef} data-testid="tool-panel-collapsed" className="bg-panel py-0 pl-6 pr-4 tool-panel-floating">
-      <div className="bg-panel flex flex-col">
+    <div
+      ref={floatingPanelRef}
+      data-testid="tool-panel-collapsed"
+      className="bg-panel py-0 tool-panel-floating pl-6 pr-4"
+    >
+      <div
+        className="tool-panel-collapsed-content bg-panel flex min-w-0 flex-col"
+        data-testid="tool-panel-collapsed-content"
+      >
         {collapsedSections.map(section => (
           <div key={section.key} data-testid={section.testId}>
             {section.render()}

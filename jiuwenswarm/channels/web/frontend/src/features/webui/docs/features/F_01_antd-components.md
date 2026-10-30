@@ -105,9 +105,8 @@ Tabs 使用 Ant Design Tabs 管理本地激活页，activeKey 优先于 defaultA
 ## 验证入口
 
 `npm run test:webui-contracts` 检查属性合法与非法输入、组件事件数据、跨属性约束、
-默认值准备以及目录登记范围。协议、运行时、传输、渲染器和存储分别由
-`test:webui-protocol`、`test:webui-runtime`、`test:webui-transport`、`test:webui-renderer`
-和 `test:webui-store` 验证。
+默认值准备以及目录登记范围。协议、运行时、传输和渲染器分别由
+`test:webui-protocol`、`test:webui-runtime`、`test:webui-transport` 和 `test:webui-renderer` 验证。
 `test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change/click、
 Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、Slider 数值变更、Tabs 页签切换与内容重建、
 宿主外观、主题继承和 Iframe 生命周期。
