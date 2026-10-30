@@ -11,7 +11,7 @@ RenderNode(
 ```
 
 这只声明视图与动作，组件是否能显示取决于宿主是否已接入对应渲染器。
-插件端校验支持 16 种非文件组件。
+插件端校验支持 18 种目录组件（含 `FileTree` 与 `FilePreview`）。
 组件列表和字段规则见 [组件规约](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
 
 浏览器统一调用 `webui.dispatch`。宿主从已显示的实例和节点补齐请求，插件不应自己生成 node_key 或 revision：
@@ -141,5 +141,5 @@ RenderNode(
 Handler 从 `payload["data"]` 读取事件数据；单个节点不再支持 action 声明。
 下行帧的 schema_version 为 1。
 
-不支持 application.entry、无会话应用目标或文件组件。请求校验与回执见
+不支持 application.entry 或无会话应用目标。文件组件与请求校验、回执见
 [F_07](../docs/features/F_07_ui-contributions.md)。

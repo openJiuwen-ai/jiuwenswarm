@@ -1,5 +1,5 @@
 import { WebUIHost, type WebUIHostProps } from './WebUIHost.tsx';
-import { useWebUISlotContext } from './WebUISlotContext.ts';
+import { useWebUISlotContext, type WebUIPageTarget } from './WebUISlotContext.ts';
 import './WebUIPageHost.css';
 
 /** Entry and page slots share package and instance identity, independently of plugin business actions. */

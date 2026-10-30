@@ -10,7 +10,7 @@ RenderNode(
 )
 ```
 
-Declaring a component does not enable its browser renderer. Plugin validation covers 16 non-file components.
+Declaring a component does not enable its browser renderer. Plugin validation covers 18 catalog components (including `FileTree` and `FilePreview`).
 See the [component contract](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md).
 
 All browser interactions use `webui.dispatch`. The host takes the node path and revision from the displayed instance:
@@ -143,5 +143,5 @@ nodes only accept catalog components, and interactions are declared through `eve
 Handlers read event data from `payload["data"]`; action declarations are no longer supported.
 Downstream frames use schema_version=1.
 
-Application entry, targets without a session, and file components are not supported.
-See [F_07](../docs/features/F_07_ui-contributions.md) for request validation and acknowledgements.
+Application entry and targets without a session are not supported.
+See [F_07](../docs/features/F_07_ui-contributions.md) for file components, request validation and acknowledgements.
