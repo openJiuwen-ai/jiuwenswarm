@@ -5,7 +5,7 @@
 | 编号 | F_26 / session-detach |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变 |
+| 后续修订 | 2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变；2026-10-31，在输入输出字段旁补充实际定义、构造、读取与返回函数 |
 | 计划与进度 | [EXTV2-21 / Server PR11](../designs/extensions-v2-development-plan.md#extv2-21-界面与主会话关联解除通知) |
 | 主责规约 | [S_15](../specs/S_15_session-detach.md) |
 
@@ -48,6 +48,58 @@ Claude 固定声明 bf2323b3021c9d3db7a31e1e7d61068c3f704497 / 2.1.277 的 sessi
 粒度是一条旧关联的一次解除；重复显式解除没有新表项可移除时 detached=False，不再发事件。传输断开、页面隐藏、归档、session.end 不自动发本事件；不结束旧会话，也不触发第二次移除。
 
 ### 3.2 输入：每个字段表达什么、由谁填写
+
+#### 输入相关定义与构造函数
+
+实际输入类型如下；这一定义中的字段名，与下方表格逐项对应。frozen=True 表示用户不能修改对象字段来改变平台事实。
+
+```python
+@dataclass(frozen=True, slots=True)
+class SessionDetachInput:
+    """Identity of the released association, distinct from its replacement."""
+
+    session_id: str
+    surface_id: str
+    attachment_id: str
+    channel_id: str
+    mode: str
+    reason: str
+    next_session_id: str | None
+```
+
+类型来源：[event_types/session_detach.py](../../event_types/session_detach.py)。
+
+下面的实际平台函数把业务事实填写进这个输入对象；其中的 value/facts 是要交给 EventBus 的通知输入，不是用户构造的任意 payload。
+
+```python
+async def _notify_detach(
+    self,
+    value: SessionAttachInput,
+    context: SessionContext,
+    *,
+    reason: str,
+    next_session_id: str | None,
+) -> None:
+    from jiuwenswarm.extensions_v2.event_types.session_detach import SessionDetachInput
+    from jiuwenswarm.server.runtime.session.detach_notifications import notify_session_detach
+
+    facts = SessionDetachInput(
+        value.session_id, value.surface_id, value.attachment_id, value.channel_id,
+        value.mode, reason, next_session_id,
+    )
+    await notify_session_detach(
+        facts, context, lambda: not self.associations.is_current(value),
+        timeout_seconds=self._timeout, tasks=self._tasks, task_done=self._task_done,
+    )
+```
+
+构造函数来源：[平台接入代码](../../../server/runtime/session/attach_notifications.py)；后续真实 trigger 保留在平台通知链中。
+
+| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
+| --- | --- | --- |
+| session_id / surface_id / attachment_id / channel_id / mode | _notify_detach 的 value 是旧 SessionAttachInput，按原字段顺序传入 | 清理旧关联，不取代当前新关联身份 |
+| reason / next_session_id | 来自平台已经确认的替换或显式解除分支 | 继续填入 SessionDetachInput 的最后两个字段 |
+| context | 由平台在移除/替换前保存的旧关联上下文 | notify_session_detach 继续绑定旧 session_id |
 
 实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_detach`，Handler 接收 frozen dataclass `SessionDetachInput`，不是任意 JSON 字典。以下是平台生成后可观察到的形状示意；用户只读，不复制这个构造器直接触发事件。
 
@@ -92,6 +144,45 @@ Event 输入是可观察的通知内容，SessionContext 是平台另行提供�
 本入口不主动采集运行模型；model 查询沿用已有保存信息读取规则，不为展示创建或激活模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
 
 ### 3.3 输出：真实通知回执、继续与失败
+
+#### 输出相关定义与默认 CORE 函数
+
+真实通知回执的字段定义：
+
+```python
+@dataclass(frozen=True, slots=True)
+class SessionDetachOutput:
+    """CORE acknowledgement of the already committed release."""
+
+    accepted: bool
+    session_id: str
+    surface_id: str
+    attachment_id: str
+```
+
+默认 CORE 在下面的 state.receipt 赋值处生成回执，再 return 返回；用户 Handler 从 next 得到这个真实回执。
+
+```python
+async def session_detach_core(
+    event: Event,
+    ops: EventHandlerOps | None,
+    next_handler: EventNext,
+) -> SessionDetachOutput:
+    """Return a real receipt for the old identity, never release it again."""
+    del next_handler
+    state = current_detach_invocation()
+    if not valid_detach_input(event.event_input):
+        raise ValueError("session.detach input cannot be changed")
+    context = ops.session_context if ops is not None else None
+    if context is None or context.session_id != state.original.session_id:
+        raise RuntimeError("session.detach requires the old bound SessionContext")
+    if state.receipt is None:
+        value = state.original
+        state.receipt = SessionDetachOutput(True, value.session_id, value.surface_id, value.attachment_id)
+    return state.receipt
+```
+
+构造器中的第一个 True 对应 accepted；后面的值依次对应上面的字段顺序。state.receipt 用于同一次有效通知内复用真实回执；它不是用户外部资源操作的成功记录，也不是整项业务的最终响应。
 
 默认 CORE 返回 `SessionDetachOutput`。正常用户 Handler 必须返回 `await next_handler(event)` 得到的真实回执内容；本通知不使用查询事件的 value/deny 封装，不返回 `{"accepted": True}` 字典，也没有用户拒绝/改写平台事实的协议。
 
@@ -202,6 +293,41 @@ def create_extension():
 
 ### 4.2 请求与响应字段：填什么、如何定位旧关联
 
+#### Server 请求字段在哪里读取、响应在哪里构造
+
+以下是已有业务请求处理函数。`request.params` 对应下表的 params 输入；成功分支的 payload 字典对应响应字段。通知事件仍由 participant.detach 内的真实移除流程触发，回执 accepted 与这里 detached 分开。
+
+```python
+async def _handle_session_detach(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+    """Release one current view identity without ending its Session."""
+    params = request.params if isinstance(request.params, dict) else {}
+    participant = getattr(self, "_session_association_participant", None)
+    if participant is None:
+        ok, payload = False, {"error": "Session associations are not ready", "code": "NOT_READY"}
+    else:
+        try:
+            detached = await participant.detach(
+                channel_id=request.channel_id,
+                session_id=params.get("session_id"),
+                view_id=params.get("view_id"),
+                attachment_id=params.get("attachment_id"),
+            )
+            ok, payload = True, {
+                "session_id": params["session_id"], "surface_id": params["view_id"],
+                "attachment_id": params["attachment_id"], "detached": detached,
+            }
+        except ValueError as exc:
+            ok, payload = False, {"error": str(exc), "code": "BAD_REQUEST"}
+        except LookupError as exc:
+            ok, payload = False, {"error": str(exc), "code": "STALE_ATTACHMENT"}
+    response = AgentResponse(
+        request_id=request.request_id, channel_id=request.channel_id, ok=ok,
+        payload=payload, metadata=request.metadata,
+    )
+    async with send_lock:
+        await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+```
+
 接入者先从自己的 attach Handler 取得关联身份，再通过原 Server 协议发请求。信封字段和 params 分开；不是向 `ops.session_context` 填资料。
 
 | 字段 | 类型 / 必填与默认 | 由谁填写 / 应填什么 | 代表什么意思 | 作用 / 怎样使用 | 权限与缺失处理 |
@@ -279,25 +405,7 @@ async def _dispatch(
 
 Event 是通知输入，独立 context 参数是可信会话资料。Core 为每个实际进入的 USER / CORE 调用 `builder.build(package_metadata, session_context)`，得到本次 Ops；USER 从现有 `ops.session_context` 只读属性读取，不通过这个属性采集资料。启动时的 ops.build BUILTIN 已经登记了共享方法，本次事件不再创建 Builder 或临时登记能力。
 
-```python
-async def session_detach_core(
-    event: Event,
-    ops: EventHandlerOps | None,
-    next_handler: EventNext,
-) -> SessionDetachOutput:
-    """Return a real receipt for the old identity, never release it again."""
-    del next_handler
-    state = current_detach_invocation()
-    if not valid_detach_input(event.event_input):
-        raise ValueError("session.detach input cannot be changed")
-    context = ops.session_context if ops is not None else None
-    if context is None or context.session_id != state.original.session_id:
-        raise RuntimeError("session.detach requires the old bound SessionContext")
-    if state.receipt is None:
-        value = state.original
-        state.receipt = SessionDetachOutput(True, value.session_id, value.surface_id, value.attachment_id)
-    return state.receipt
-```
+默认 CORE 的完整函数见第 3.3 节输出字段旁，可逐项核对回执定义和返回位置。
 
 current_detach_invocation 要求已提交解除且调用仍有效；valid_detach_input 保留旧身份；Ops 必须绑定旧 session_id。CORE 保存并返回旧身份回执，不再次移除表项、不终止会话，也不把新目标绑定进来。
 
@@ -307,6 +415,8 @@ current_detach_invocation 要求已提交解除且调用仍有效；valid_detach
 
 
 ## 6. 验收与未决问题
+
+2026-10-31 输入输出源码补充：本次只调整文档，将当前类型定义、构造/读取函数和回执返回位置放到字段表旁；代码摘录按本分支实际实现核对，省略的分支明确标注。以下历史业务验证保留原日期和范围，本次未重跑业务、模型或浏览器验收。
 
 本次 2026-10-31 仅按 F_16 的写法补齐输入/输出字段、注册示例、真实触发条件、Handler 职责和完整业务案例；运行代码与契约不变。文档核对包括 dataclass 字段与示例值、源码节选、Python/YAML/JSON 示例及相对链接。下列回归和真实服务结果均保留原运行日期与范围，不宣称本次重新执行业务或模型验收。
 
