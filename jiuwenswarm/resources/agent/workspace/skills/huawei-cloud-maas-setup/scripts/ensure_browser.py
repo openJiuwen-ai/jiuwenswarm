@@ -117,6 +117,15 @@ def _kill_browser_by_user_data_dir(user_data_dir: str) -> int:
                 result = subprocess.run(
                     [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_script],
                     capture_output=True, text=True, timeout=15,
+                    # PowerShell writes redirected output in the console output
+                    # code page (the OEM code page), which is neither the ANSI
+                    # code page nor UTF-8. `locale.getpreferredencoding()` cannot
+                    # be used here: under `PYTHONUTF8=1` (what `uv run` sets) it
+                    # reports "UTF-8", so non-ASCII paths in CommandLine would
+                    # decode to U+FFFD and the match below would never fire.
+                    # "oem" is the Windows-only alias for that code page.
+                    encoding="oem",
+                    errors="replace",
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     items = json.loads(result.stdout.strip())
@@ -142,6 +151,7 @@ def _kill_browser_by_user_data_dir(user_data_dir: str) -> int:
                 result = subprocess.run(
                     [pgrep, "-f", f"{proc_name}.*--user-data-dir={user_data_dir}"],
                     capture_output=True, text=True, timeout=10,
+                    encoding="utf-8", errors="replace",
                 )
                 if result.returncode == 0:
                     for line in result.stdout.strip().splitlines():
