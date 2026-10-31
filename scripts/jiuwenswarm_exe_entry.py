@@ -540,6 +540,41 @@ def _ensure_stdio() -> None:
             pass
 
 
+def _split_dash_c_invocation() -> tuple[str, list[str]] | None:
+    """Split ``exe [options] -c <code> [args...]`` following CPython rules.
+
+    Returns ``(code, code_args)``, or ``None`` when the invocation is not a
+    ``-c`` form. ``-c`` only counts as the code flag while scanning leading
+    interpreter options (tokens starting with ``-``); the first non-option
+    token is a script path, and arguments after it belong to that script.
+    """
+    args = sys.argv[1:]
+    for index, token in enumerate(args):
+        if not token.startswith("-"):
+            return None
+        if token == "-c" and index + 1 < len(args):
+            return args[index + 1], args[index + 2:]
+    return None
+
+
+def _run_dash_c_command(code: str, code_args: list[str]) -> None:
+    """Execute a frozen ``-c`` child command the way CPython would.
+
+    The frozen exe is not a real interpreter, so ``exe -c CODE args``
+    previously fell through to the catch-all branch and exited 0 without
+    running anything (fake success). Run the code inline with CPython's
+    ``-c`` argv contract: ``sys.argv[0] == "-c"`` and the remaining tokens
+    are visible to the code. Exceptions propagate to :func:`main`, which
+    records them and exits non-zero.
+    """
+    original_argv = sys.argv
+    sys.argv = ["-c", *code_args]
+    try:
+        exec(compile(code, "<string>", "exec"), {"__name__": "__main__"})
+    finally:
+        sys.argv = original_argv
+
+
 def _dispatch() -> int | None:
     """Resolve the requested entrypoint and return its process exit code.
 
@@ -630,14 +665,30 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.desktop.desktop_app import main as desktop_main
         desktop_main()
         return None
-    # 子进程模式：argv 有任何参数（.py 脚本或 -m 等），不检查单实例锁
+    # 子进程模式：argv 有任何参数（.py 脚本、-m、-c 等），不检查单实例锁
     if getattr(sys, "frozen", False) and len(sys.argv) >= 2:
+        # 恢复父进程设定的 cwd：模块级 chdir 到数据目录只服务于 GUI 主进程，
+        # 子进程（-c/-m/.py）依赖父进程指定的 cwd 解析相对路径。
+        # _ORIGINAL_CWD 仅在 frozen 模块级定义过，非冻结加载（测试）时缺省
+        original_cwd = globals().get("_ORIGINAL_CWD")
+        if original_cwd:
+            try:
+                os.chdir(original_cwd)
+            except OSError:
+                pass
+        # -c 分发必须先于 .py 探测：CPython 语义下 `exe -c CODE script.py`
+        # 里的 .py 是 CODE 的参数而不是待执行脚本
+        dash_c = _split_dash_c_invocation()
+        if dash_c is not None:
+            _run_dash_c_command(dash_c[0], dash_c[1])
+            return 0
+
         script_path = next((arg for arg in sys.argv[1:] if arg.endswith(".py") or arg.endswith(".pyw")), None)
         if script_path:
             import runpy
             script_abs = Path(script_path)
-            if not script_abs.is_absolute() and _ORIGINAL_CWD:
-                script_abs = (Path(_ORIGINAL_CWD) / script_path).resolve()
+            if not script_abs.is_absolute() and original_cwd:
+                script_abs = (Path(original_cwd) / script_path).resolve()
             else:
                 script_abs = script_abs.resolve()
             if script_abs.exists():
@@ -666,10 +717,13 @@ def _dispatch() -> int | None:
                 sys.argv = original_argv
             return 0
 
-        # 其他有参数的情况：直接执行，不检查单实例锁
-        # 例如 code 工具、browser tools 等
-        # 让子进程自己处理参数或报错
-        return 0
+        # 未知参数形态：显性失败。此前这里静默 return 0，导致冻结环境下
+        # 误用 sys.executable 构造的子进程命令呈现 exit_code=0 且无输出的
+        # 假成功，问题被完全掩盖。交由 main() 记录错误日志并以非零码退出
+        raise ValueError(
+            "frozen exe received unsupported child arguments "
+            f"{sys.argv!r}; nothing was executed"
+        )
 
     # 只有无参数时才检查单实例锁（双击启动桌面应用）
     if not _acquire_single_instance_lock():
