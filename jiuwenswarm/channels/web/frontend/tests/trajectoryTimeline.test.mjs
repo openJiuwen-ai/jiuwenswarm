@@ -284,6 +284,29 @@ test('prep without a shared request keeps its recorded wall-clock time', () => {
   assert.equal(context.start, 8_000);
 });
 
+test('alignPrepSpansBeforeModel keeps segment, splitFraction, and coveredIndexes', () => {
+  const turns = [turn(1, [
+    cell(0, 'message', { startedAt: 0, timeSeconds: 1, requestRecordId: 'req-seg' }),
+  ])];
+  const model = deriveTrajectoryTimeline(turns, 'actual');
+  const decorated = {
+    ...model,
+    spans: model.spans.map(span => ({
+      ...span,
+      segment: 'input',
+      splitFraction: 0.25,
+      coveredIndexes: [0, 1],
+    })),
+  };
+
+  const aligned = alignPrepSpansBeforeModel(decorated, turns);
+  assert.equal(aligned.spans[0].segment, 'input');
+  assert.equal(aligned.spans[0].splitFraction, 0.25);
+  assert.deepEqual(aligned.spans[0].coveredIndexes, [0, 1]);
+  assert.equal('groupKey' in aligned.spans[0], false);
+  assert.equal('behaviorOrder' in aligned.spans[0], false);
+});
+
 test('zoom keeps the pointed timeline time anchored and respects the minimum width', () => {
   const next = zoomTrajectoryTimelineViewport(
     { start: 0, end: 1_000 },

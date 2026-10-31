@@ -491,14 +491,13 @@ function deriveTimedTimeline(
   for (const turn of timedTurns) {
     const projected = turn.rawSpans.map((span): TrajectoryTimelineSpan => {
       const offset = removedIdleBySpan.get(span) ?? 0
+      // Drop only the internal grouping keys; keep segment / splitFraction /
+      // coveredIndexes (and any future public fields) for the overview.
+      const { groupKey: _groupKey, behaviorOrder: _behaviorOrder, ...publicSpan } = span
       return {
+        ...publicSpan,
         start: span.start - offset,
         end: (actualDuration ? span.end : span.start) - offset,
-        index: span.index,
-        isError: span.isError,
-        kind: span.kind,
-        label: span.label,
-        lane: span.lane,
       }
     })
     spans.push(...projected)
@@ -557,18 +556,10 @@ export function alignPrepSpansBeforeModel(
   placePrepSpansBeforeModel(spans)
   return {
     ...model,
-    spans: spans.map((span): TrajectoryTimelineSpan => ({
-      start: span.start,
-      end: span.end,
-      index: span.index,
-      isError: span.isError,
-      kind: span.kind,
-      label: span.label,
-      lane: span.lane,
-      ...(span.segment === undefined ? {} : { segment: span.segment }),
-      ...(span.splitFraction === undefined ? {} : { splitFraction: span.splitFraction }),
-      ...(span.coveredIndexes === undefined ? {} : { coveredIndexes: span.coveredIndexes }),
-    })),
+    spans: spans.map((span): TrajectoryTimelineSpan => {
+      const { groupKey: _groupKey, behaviorOrder: _behaviorOrder, ...publicSpan } = span
+      return publicSpan
+    }),
   }
 }
 
