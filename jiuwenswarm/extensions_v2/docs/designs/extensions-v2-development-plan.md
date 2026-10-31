@@ -260,9 +260,11 @@
 - **验收标准：** [F_13 第 6 节](../features/F_13_session-workspace-ops.md#6-验收与未决问题) 的 V-01～V-07；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
 
 - **验收标准：** [F_13 第 5 节](../features/F_13_session-workspace-ops.md#6-验收与未决问题) 的 V-01～V-07；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
+
+- **验收标准：** [F_13 cwd 验收](../features/F_13_session-workspace-ops.md#6-验收与未决问题) 和 [F_28 root 验收](../features/F_28_session-root-query.md#6-验收与未决问题)；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_ops.py`、`test_context_usage.py`；真实模型和网络联调单独记录。
 - **前端与联合交付：** 本特性不增加前端入口；Worker 内扩展包可以独立验证，不据此完成 M1～M3。
-- **特性文档：** [F_13](../features/F_13_session-workspace-ops.md)，对应 Server 开发计划 PR-01。
+- **特性文档：** [F_13 cwd](../features/F_13_session-workspace-ops.md) 与 [F_28 root](../features/F_28_session-root-query.md) 分别维护一个 Ops / Event；仍对应同一 Server PR-01 交付。
 
 ### EXTV2-14 会话主模型查询
 
@@ -297,7 +299,7 @@
 
 - **目标与独立验收：** 新增共享只读 `ops.session.turns()` 和 `ops.session.usage()`；两项派发同名查询事件，前者统计已提交原生用户输入，后者返回 context/rateLimits/可选 cost，未知数字不伪造。验证多会话、重复记录、工具/模型活动、空值与零值、历史恢复、宿主快照、用户包调用与卸载。
 - **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖追加调用作为查询前置，不新增 session.measure。
-- **代码与契约：** [F_21](../features/F_21_session-usage-ops.md)、[S_11](../specs/S_11_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
+- **代码与契约：** [F_21 usage](../features/F_21_session-usage-ops.md)、[F_29 turns](../features/F_29_session-turns-query.md)、[S_11](../specs/S_11_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
 
 ### EXTV2-18 激活实例首次输入前初始化
 
@@ -348,9 +350,11 @@
 
 ### EXTV2-22 七项只读查询事件化
 
+- **逐项特性文档：** [cwd](../features/F_13_session-workspace-ops.md)；[root](../features/F_28_session-root-query.md)；[model](../features/F_14_session-model-ops.md)；[repo](../features/F_15_session-repo-ops.md)；[messages](../features/F_23_session-messages-ops.md)；[turns](../features/F_29_session-turns-query.md)；[usage](../features/F_21_session-usage-ops.md)。每篇只维护一个 Ops 与同名 Event，共享机制和既有实施证据移到 designs/session-query-events.md。
+- **编号登记：** Extensions V2 features 作用域新增 F_28（root）与 F_29（turns），维护者刘瑜；F_27 公共说明迁入设计目录并保留历史编号，不复用。
 - **范围：** cwd/root/model/repo/messages/turns/usage 七个同名查询事件、代理与默认 CORE；字段以 Claude 为主，同步既有用户示例和详细字段文档。
 - **依赖：** 已合入的 Core Bus/Builder 和平台读取服务；不依赖未合入生命周期 PR，不增加 Front/Supervisor EventBus。
-- **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见 [F_27](../features/F_27_session-query-events.md)，协议见 [S_16](../specs/S_16_session-query-events.md)。
+- **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见 [查询公共机制与特性索引](session-query-events.md)，协议见 [S_16](../specs/S_16_session-query-events.md)。
 
 ## 3. 特性依赖关系与并行开发
 

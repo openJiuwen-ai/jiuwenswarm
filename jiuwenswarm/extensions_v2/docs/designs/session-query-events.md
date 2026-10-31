@@ -1,12 +1,25 @@
-# 会话七项只读查询事件化特性设计
+# 会话查询公共机制与七项特性索引
 
 ## 1. 范围、状态与依据
 
 本分支已实现。修订日期 2026-10-31，维护者刘瑜，开发台账 EXTV2-22。基于已合入 Server c6a07f909 / Core bdde48a8，不依赖 Core !110 或 Server !99。仅调整已开放的 cwd、root、model、repo、messages、turns、usage 七项；不改 append、files/read_file、原 Token Weather 渲染或 Front/Supervisor。
 
-用户确认以 Claude 返回格式为主，同步迁移所有本次涉及的分支案例。固定参考 Claude Code Mods 2.1.277，官方提交 80c6959d28c4c30ecd14fc1cdf172f19d9adad81。公共查询协议主责为 [S_16](../specs/S_16_session-query-events.md)，逐字段解释由 F_13/F_14/F_15/F_23/F_21 维护；不把运行 Claude 私有宿主作为已完成项。
+用户确认以 Claude 返回格式为主，同步迁移所有本次涉及的分支案例。固定参考 Claude Code Mods 2.1.277，官方提交 80c6959d28c4c30ecd14fc1cdf172f19d9adad81。公共查询协议主责为 [S_16](../specs/S_16_session-query-events.md)，逐字段解释分别由下表七篇独立特性维护；不把运行 Claude 私有宿主作为已完成项。
 
 交付 PR：[!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100)，目标分支 rsi_native_agent_os；本 PR 不修改原 Token Weather 渲染代码。
+
+
+本页由 PR !100 尚未合入的 F_27 公共说明移入 designs，保留共享实现、迁移和验收记录。F_27 编号已使用，不再复用。每个查询的使用契约、字段解释、注册示例和独立验收分别在以下七篇特性中维护；本页作为公共机制与导航。第 6 节保留事件化实现阶段的既有验证，本次文档拆分只检查内容、示例、链接和差异，不重新执行其中的业务测试。
+
+| 唯一查询 Ops | 对应 Event | 独立特性文档 |
+| --- | --- | --- |
+| ops.session.cwd() | session.cwd | [F_13](../features/F_13_session-workspace-ops.md) |
+| ops.session.root() | session.root | [F_28](../features/F_28_session-root-query.md) |
+| ops.session.model() | session.model | [F_14](../features/F_14_session-model-ops.md) |
+| ops.session.repo() | session.repo | [F_15](../features/F_15_session-repo-ops.md) |
+| ops.session.messages() | session.messages | [F_23](../features/F_23_session-messages-ops.md) |
+| ops.session.turns() | session.turns | [F_29](../features/F_29_session-turns-query.md) |
+| ops.session.usage() | session.usage | [F_21](../features/F_21_session-usage-ops.md) |
 
 ## 2. 能力说明与 Claude 对照
 
@@ -86,7 +99,7 @@ user_business_function(**parameters)
 return await next_handler(event)  # 原用量通知仍按自己的回执协议继续
 ```
 
-实际可安装包见 [session_query_audit](../../examples/session_query_audit/)。其 on_usage 复用 Token Weather 订阅的 context.usage.updated；收集函数返回七个结果，由用户自己的 on_parameters 消费。没有把参数字典冒充用量通知 CORE 的 accepted 回执，也没有进入 ui.render。独立 model/repo/usage/history 示例同步采用新返回形态。
+实际可安装包见 [session_query_audit](../../examples/session_query_audit)。其 on_usage 复用 Token Weather 订阅的 context.usage.updated；收集函数返回七个结果，由用户自己的 on_parameters 消费。没有把参数字典冒充用量通知 CORE 的 accepted 回执，也没有进入 ui.render。独立 model/repo/usage/history 示例同步采用新返回形态。
 
 ## 6. 验收与未决问题
 
@@ -111,4 +124,4 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 - [Claude OpEventOf](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts#L5529-L5624)
 - [Claude Session API](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts#L2342-L2447)
 - [Claude 查询输出](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts#L5832-L5867)
-- [S_16](../specs/S_16_session-query-events.md)、[F_13](F_13_session-workspace-ops.md)、[F_14](F_14_session-model-ops.md)、[F_15](F_15_session-repo-ops.md)、[F_23](F_23_session-messages-ops.md)、[F_21](F_21_session-usage-ops.md)
+- [S_16](../specs/S_16_session-query-events.md)；七篇独立特性的准确入口见第 1 节索引。

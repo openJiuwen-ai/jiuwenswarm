@@ -22,7 +22,7 @@ Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .
 /extension query example.session-usage-info
 ```
 
-一次有效原生用量通知后可以在宿主日志感知结果；其它已绑定可信会话的事件同样能调用，不必须先执行 notify。本例保持原通知 next；不调用 ui.render。逐字段含义、默认值、缺失语义和迁移见 [特性文档](../../docs/features/F_21_session-usage-ops.md)，统一七项返回参数示例见 [session_query_audit](../session_query_audit/)。
+一次有效原生用量通知后可以在宿主日志感知结果；其它已绑定可信会话的事件同样能调用，不必须先执行 notify。本例保持原通知 next；不调用 ui.render。逐字段含义、默认值、缺失语义和迁移见 [usage 特性](../../docs/features/F_21_session-usage-ops.md) 与 [turns 特性](../../docs/features/F_29_session-turns-query.md)，统一七项返回参数示例见 [session_query_audit](../session_query_audit/)。
 
 ## English
 

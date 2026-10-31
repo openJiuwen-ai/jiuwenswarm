@@ -1,6 +1,6 @@
 # 会话七项查询事件公共协议
 
-最近修订 2026-10-31；本分支已实现。主责模块为 event_types/session_queries.py、query_dispatch.py、handler_ops/session_queries.py、event_handlers/session_queries.py。实施记录见 [F_27](../features/F_27_session-query-events.md)。
+最近修订 2026-10-31；本分支已实现。主责模块为 event_types/session_queries.py、query_dispatch.py、handler_ops/session_queries.py、event_handlers/session_queries.py。实施记录见 [查询公共机制与特性索引](../designs/session-query-events.md)。
 
 ## 1. 能力、粒度与调用位置
 
