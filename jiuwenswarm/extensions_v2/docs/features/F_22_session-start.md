@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 | F_22 / session-start |
 | 建档日期 | 2026-10-28 |
-| 后续修订 | 2026-10-29，既有实现与验证；2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变；2026-10-31，在输入输出字段旁补充实际定义、构造、读取与返回函数 |
+| 后续修订 | 2026-10-29，既有实现与验证；2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变 |
 | 计划与进度入口 | [EXTV2-18 / Server PR06](../designs/extensions-v2-development-plan.md#extv2-18-激活实例首次输入前初始化) |
 | 主责契约 | [S_12](../specs/S_12_session-start.md) |
 
@@ -51,54 +51,6 @@ Swarm 基于 `rsi_native_agent_os` 的 `7795851916dd5ce1d34b70f5a20d6d30eafc25e3
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
-#### 输入相关定义与构造函数
-
-实际输入类型如下；这一定义中的字段名，与下方表格逐项对应。frozen=True 表示用户不能修改对象字段来改变平台事实。
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionStartInput:
-    """Host-owned activation and first-input observation facts."""
-
-    package_id: str
-    generation: int
-    session_id: str
-    request_id: str
-    channel_id: str
-    cwd: str | None
-    project_root: str | None
-    is_interactive: bool
-```
-
-类型来源：[event_types/session_start.py](../../event_types/session_start.py)。
-
-平台初始化门的输入构造节选如下；这里保留真实函数签名和字段赋值，激活实例筛选、锁、在途计数与派发在完整函数中。record 和 context 均由平台提前确定。
-
-```python
-async def ensure_started(
-    self,
-    context: SessionContext,
-    *,
-    request_id: str,
-    channel_id: str,
-    is_interactive: bool,
-) -> tuple[SessionStartOutput, ...]:
-    # Excerpt: record/context come from the host gate; locking and dispatch are omitted.
-    root = context.metadata.get("project_root")
-    value = SessionStartInput(
-        record.package_id, record.generation, context.session_id, request_id, channel_id,
-        context.cwd, root if isinstance(root, str) else None, is_interactive,
-    )
-```
-
-构造函数来源：[平台接入代码](../../management/session_start.py)；后续真实 trigger 保留在平台通知链中。
-
-| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
-| --- | --- | --- |
-| package_id / generation | SessionStartInput 的前两个位置参数来自 record.package_id / record.generation | 通知目标仍由本包公开 Handler IDs 限定 |
-| session_id / request_id / channel_id | 分别来自 context.session_id 和平台当前请求参数 | 输入对象与独立 SessionContext 保持同一会话 |
-| cwd / project_root / is_interactive | 分别来自 context.cwd、平台 metadata 中的 root 和 Adapter 能力 | 作为只读观察值进入本次初始化通知 |
-
 实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_start`，Handler 接收 frozen dataclass `SessionStartInput`，不是任意 JSON 字典。以下是平台生成后可观察到的形状示意；用户只读，不复制这个构造器直接触发事件。
 
 ```python
@@ -144,46 +96,6 @@ Event 输入是可观察的通知内容，SessionContext 是平台另行提供�
 start 还可以复用原生请求已应用的公开模型快照；不是由 start CORE 创建模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
 
 ### 3.3 输出：真实通知回执、继续与失败
-
-#### 输出相关定义与默认 CORE 函数
-
-真实通知回执的字段定义：
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionStartOutput:
-    """The actual notification receipt, not a resource initialization promise."""
-
-    accepted: bool
-    package_id: str
-    generation: int
-    session_id: str
-    request_id: str
-```
-
-默认 CORE 在下面的 state.receipt 赋值处生成回执，再 return 返回；用户 Handler 从 next 得到这个真实回执。
-
-```python
-async def session_start_core(
-    event: Event,
-    ops: EventHandlerOps | None,
-    next_handler: EventNext,
-) -> SessionStartOutput:
-    """Confirm a notification without creating resources or another input."""
-    del next_handler
-    state = current_start_invocation()
-    value = event.event_input
-    if not valid_start_input(value):
-        raise ValueError("session.start input cannot be rewritten")
-    if ops is None or ops.session_context is None or ops.session_context.session_id != value.session_id:
-        raise ValueError("session.start requires its bound session")
-    if state.receipt is None:
-        state.receipt = SessionStartOutput(True, value.package_id, value.generation,
-                                          value.session_id, value.request_id)
-    return state.receipt
-```
-
-构造器中的第一个 True 对应 accepted；后面的值依次对应上面的字段顺序。state.receipt 用于同一次有效通知内复用真实回执；它不是用户外部资源操作的成功记录，也不是整项业务的最终响应。
 
 默认 CORE 返回 `SessionStartOutput`。正常用户 Handler 必须返回 `await next_handler(event)` 得到的真实回执内容；本通知不使用查询事件的 value/deny 封装，不返回 `{"accepted": True}` 字典，也没有用户拒绝/改写平台事实的协议。
 
@@ -369,7 +281,25 @@ with bind_start_invocation(value) as invocation:
 
 Event 是通知输入，独立 context 参数是可信会话资料。Core 为每个实际进入的 USER / CORE 调用 `builder.build(package_metadata, session_context)`，得到本次 Ops；USER 从现有 `ops.session_context` 只读属性读取，不通过这个属性采集资料。启动时的 ops.build BUILTIN 已经登记了共享方法，本次事件不再创建 Builder 或临时登记能力。
 
-默认 CORE 的完整函数见第 3.3 节输出字段旁，可逐项核对回执定义和返回位置。
+```python
+async def session_start_core(
+    event: Event,
+    ops: EventHandlerOps | None,
+    next_handler: EventNext,
+) -> SessionStartOutput:
+    """Confirm a notification without creating resources or another input."""
+    del next_handler
+    state = current_start_invocation()
+    value = event.event_input
+    if not valid_start_input(value):
+        raise ValueError("session.start input cannot be rewritten")
+    if ops is None or ops.session_context is None or ops.session_context.session_id != value.session_id:
+        raise ValueError("session.start requires its bound session")
+    if state.receipt is None:
+        state.receipt = SessionStartOutput(True, value.package_id, value.generation,
+                                          value.session_id, value.request_id)
+    return state.receipt
+```
 
 current_start_invocation 要求在同一仍有效的平台调用任务中；valid_start_input 保证原输入未被改写；绑定 session_id 必须一致。首次进入 CORE 时生成并保存回执，再次 next 复用它。CORE 不创建用户资源、不触发新的模型输入。
 
@@ -379,8 +309,6 @@ current_start_invocation 要求在同一仍有效的平台调用任务中；vali
 
 
 ## 6. 验收与未决问题
-
-2026-10-31 输入输出源码补充：本次只调整文档，将当前类型定义、构造/读取函数和回执返回位置放到字段表旁；代码摘录按本分支实际实现核对，省略的分支明确标注。以下历史业务验证保留原日期和范围，本次未重跑业务、模型或浏览器验收。
 
 本次 2026-10-31 仅按 F_16 的写法补齐输入/输出字段、注册示例、真实触发条件、Handler 职责和完整业务案例；运行代码与契约不变。文档核对包括 dataclass 字段与示例值、源码节选、Python/YAML/JSON 示例及相对链接。下列回归和真实服务结果均保留原运行日期与范围，不宣称本次重新执行业务或模型验收。
 
