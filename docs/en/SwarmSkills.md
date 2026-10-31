@@ -815,9 +815,9 @@ Use `swarmskill-creator`'s CONVERT mode to transform an existing single-Agent Sk
 2. **Articulate the conversion value**: What is lost in single-Agent form? This becomes the Swarm Skill's "why"
 3. **Continue from Step 2** following the CREATE workflow
 
-### 5.4 Publishing to Team Skills Hub
+### 5.4 Publishing to Swarm Skills Hub
 
-After creation, you can share your Swarm Skill with the community to build the team skill ecosystem together:
+After creation, you can share your Swarm Skill with the community to build the team skill ecosystem together. You can publish from the WorkSwarm desktop app (recommended), from the Hub website, or from the TUI command line.
 
 **Step 1: Validate completeness**
 
@@ -834,26 +834,47 @@ python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/val
 
 Ensure exit code is 0 (compliant).
 
-**Step 2: Upload and publish**
+**Step 2: Publish from WorkSwarm**
 
-In JiuwenSwarm's "Skills" panel:
+1. Make sure the skill appears in **Skills** → **My Skills**. To add a skill from your computer, click **Create** → **Upload Skill** and select a `.zip` file that contains `SKILL.md`.
+2. Click the skill to open its detail page, then click **Publish**. The **Publish resource** panel opens and shows the target Hub under **Publish to**.
+3. Sign in to the Hub with **Sign in with GitHub** or **Sign in with GitCode** and complete the authorization in your browser. The Hub uses your GitHub or GitCode account as your publisher identity; you do not need a separate Hub account or API token.
+4. Fill in the publishing form:
 
-1. Click "Team Skills Hub"
-2. Select the Swarm Skill to publish
-3. Click "Upload"
-4. First-time use requires authentication (enter your Team Skills Hub Token)
+   | Field | Description |
+   | ----- | ----------- |
+   | **Package name** | The package identifier in the Hub. Use lowercase letters, numbers, underscores, or hyphens; maximum 64 characters |
+   | **Version** | For example `1.0.0`, or a seven-character lowercase revision such as `abcdef0` |
+   | **Display name** | The name shown on Hub cards and detail pages; maximum 128 characters |
+   | **Description** | Shown on Hub cards and detail pages. Pre-filled from `SKILL.md` after you sign in |
+   | **Tags** | Used for Hub categories, search, and discovery. Separate multiple tags with commas |
+   | **Visibility** | **Public**: "Visible in Hub after moderation approval." **Private**: "Visible only to the publishing account." |
+   | **Release notes** | Notes for this version |
+   | **Advanced settings** | **Target Hub ID (leave empty for a new resource)** updates an existing Hub resource. **Overwrite an existing version (explicit opt-in)** replaces a version that was already submitted |
 
-You can also publish via command line:
+5. Click **Check package**. WorkSwarm builds a publishing snapshot and lists it under **Package review**: **Files**, **Excluded**, **Snapshot adjustments**, **Dependencies**, **Warnings**, **Fix before publishing**, and **Technical details**.
+   - The snapshot contains a generated `plugin.yaml`, and the `SKILL.md` frontmatter in the snapshot is updated to match the form (for example `display_name` or `version`). These changes are listed under **Snapshot adjustments**. Your local skill folder is not modified.
+   - Resolve everything under **Fix before publishing** before you continue.
+   - The review is valid for a limited time (see **Review expires** under **Technical details**). If it expires, click **Check package** again.
+6. Click **Confirm publish**. When the submission succeeds, the panel shows **Submitted, pending moderation** and the **Hub asset ID**, and the skill card in **My Skills** shows **Pending review**.
+7. Track moderation on the Hub website: sign in with the same GitHub or GitCode account and open **My uploads**. A submission moves through **In screening** and **Under review** to **Published**, or ends as **Publish failed** with the reason. **Local publishing history** in the WorkSwarm panel only shows tasks started on this device; remote moderation is not polled.
 
-```
-# Publish to Team Skills Hub (requires authentication)
-/teamskills publish path/to/<swarmskill-name> --version 1.0.0 --token <TOKEN>
+> **Visibility note**: Public and Private submissions are both reviewed. After approval, a Public resource appears in the Hub marketplace, while a Private resource stays unlisted and is shown to the publisher under **My uploads**. A Hub resource is either public or private, so publish later versions of the same resource with the same **Visibility**.
 
-# To overwrite an existing version, add --force
-/teamskills publish path/to/<swarmskill-name> --version 1.0.1 --token <TOKEN> --force
-```
+**Other ways to publish**
 
-> **Authentication note**: Publish and delete operations require `--token` (user Token) or `--system-token` (system Token), and you must choose exactly one. You can pre-configure your token via `/teamskills config --token <TOKEN>` to avoid entering it manually each time.
+- **Hub website**: sign in to [Swarm Skills Hub](https://swarmskills.openjiuwen.com) with GitHub or GitCode and upload a folder that contains `SKILL.md` from the Hub's publish page. See the Hub guide [发布 SwarmSkill](https://github.com/openJiuwen-ai/skillhub/blob/develop/docs/zh/4.%20%E7%94%A8%E6%88%B7%E6%8C%87%E5%8D%97/%E5%8F%91%E5%B8%83SwarmSkill.md) (Chinese).
+- **TUI command line** (CLI path):
+
+  ```
+  # Publish to Swarm Skills Hub (requires authentication)
+  /teamskills publish path/to/<swarmskill-name> --version 1.0.0 --token <TOKEN>
+
+  # To overwrite an existing version, add --force
+  /teamskills publish path/to/<swarmskill-name> --version 1.0.1 --token <TOKEN> --force
+  ```
+
+  > **Authentication note**: Publish and delete operations require `--token` (user Token) or `--system-token` (system Token), and you must choose exactly one. You can pre-configure your token via `/teamskills config --token <TOKEN>` to avoid entering it manually each time.
 
 **Step 3: Maintain and update**
 
@@ -892,7 +913,9 @@ After publishing, you can continuously iterate:
 | Validate Swarm Skill            | `/teamskills validate <path> --type teamskills`                  |
 | Pack Swarm Skill                | `/teamskills pack <path> --output <dir>`                          |
 | Configure Hub URL and Token     | `/teamskills config --market-url <url> --token <TOKEN>`           |
-| Publish to Team Skills Hub      | `/teamskills publish <path> --version <x.y.z> --token <TOKEN>`    |
+| Publish from WorkSwarm          | **Skills** → **My Skills** → skill details → **Publish**          |
+| Check moderation status         | Hub website → **My uploads**                                      |
+| Publish from the TUI            | `/teamskills publish <path> --version <x.y.z> --token <TOKEN>`    |
 | Delete skill from Hub           | `/teamskills delete <skill_id> --version <x.y.z> --token <TOKEN>` |
 | Create with swarmskill-creator  | Use `swarmskill-creator` skill's CREATE mode                       |
 | Modify with swarmskill-creator  | Use `swarmskill-creator` skill's MODIFY mode                       |
@@ -916,12 +939,20 @@ A: Yes. Use `swarmskill-creator`'s MODIFY mode to edit the local copy. After mod
 
 A: Yes. SKILL.md, roles/, workflow\.md, bind.md, and dependencies.yaml are all required files. The validator checks that all 5 files are present. Extension directories like `examples/`, `templates/`, and `assets/` are optional.
 
-**Q: What is the default Team Skills Hub URL?**
+**Q: What is the default Swarm Skills Hub URL?**
 
-A: The default URL is `https://teamskills.openjiuwen.com`, which can be overridden via the `TEAM_SKILLS_HUB_BASE_URL` environment variable.
+A: The default URL is `https://swarmskills.openjiuwen.com`, which can be overridden via the `TEAM_SKILLS_HUB_BASE_URL` environment variable.
+
+**Q: Do I need a Hub API token to publish?**
+
+A: No. When you publish from WorkSwarm or the Hub website, you sign in with GitHub or GitCode. A token is only used by the TUI `/teamskills publish` command; see [5.4 Publishing to Swarm Skills Hub](#54-publishing-to-swarm-skills-hub).
+
+**Q: Where can I check whether my Swarm Skill has been approved?**
+
+A: On the Hub website under **My uploads**, signed in with the account you published with. **Local publishing history** in WorkSwarm shows the result known to the backend; remote moderation is not polled.
 
 ***
 
 *Document version: v2.0*
 *Target audience: JiuwenSwarm users, skill developers*
-*Last updated: 2026-07-13*
+*Last updated: 2026-10-07*
