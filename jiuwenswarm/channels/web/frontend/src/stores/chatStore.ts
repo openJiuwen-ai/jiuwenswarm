@@ -218,7 +218,7 @@ interface ChatState {
   updateMessage: (sessionId: string, id: string, updates: Partial<Message>) => void;
   appendStreamContent: (sessionId: string, content: string, streamKey?: string) => void;
   appendReasoning: (sessionId: string, content: string, options?: { atMs?: number }) => void;
-  closeReasoning: (sessionId: string, options?: { atMs?: number }) => void;
+  closeReasoning: (sessionId: string, options?: { atMs?: number; dropEmpty?: boolean }) => void;
   restoreReasoningSegments: (sessionId: string, items: { at: string; text: string }[]) => void;
   startStreaming: (sessionId: string, messageId: string, streamKey?: string) => void;
   stopStreaming: (sessionId: string, streamKey?: string) => void;
@@ -463,7 +463,6 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   },
 
   appendReasoning: (sessionId, content, options) => {
-    if (!content) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -474,7 +473,17 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ? options.atMs
           : Date.now();
       let next: ReasoningSegment[];
-      if (last && !last.closed) {
+      if (!content) {
+        // 脱敏会先把还没遇到分隔符的思考发成空帧。记下开始时间，
+        // 后面的正文接在同一段上，避免思考被排到回答下面再冒出一颗头像。
+        if (last && !last.closed) return state;
+        next = segments.concat({
+          id: createReasoningSegmentId(),
+          text: '',
+          startedAt: atMs,
+          closed: false,
+        });
+      } else if (last && !last.closed) {
         next = segments.slice(0, -1).concat({ ...last, text: last.text + content });
       } else {
         next = segments.concat({
@@ -500,6 +509,18 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const segments = runtime.reasoningSegments;
       const last = segments[segments.length - 1];
       if (!last || last.closed) return state;
+      if (!last.text.trim()) {
+        if (!options?.dropEmpty) return state;
+        return {
+          runtimes: {
+            ...state.runtimes,
+            [sessionId]: {
+              ...runtime,
+              reasoningSegments: segments.slice(0, -1),
+            },
+          },
+        };
+      }
       const atMs =
         typeof options?.atMs === 'number' && Number.isFinite(options.atMs)
           ? options.atMs

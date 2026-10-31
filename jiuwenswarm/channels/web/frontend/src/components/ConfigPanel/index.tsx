@@ -20,6 +20,7 @@ import {
 import { ConfigFieldHintLabel } from "./ConfigFieldHintLabel";
 import { PersonalContextSettingsPanel } from '../PersonalContext/SettingsPanel';
 import { PermissionsToolsEditor } from "./PermissionsToolsEditor";
+import { SensitiveMaskPanel, type SensitiveMaskHandle } from "./SensitiveMaskPanel";
 import { ModelProviderIcon } from '../ModelProviderIcon';
 
 function MultiSelectDropdown({
@@ -3601,6 +3602,11 @@ export function ConfigPanel({
   const savedTeamsRef = useRef<TeamEntry[] | null>(null);
   const [configTab, setConfigTab] = useState<ConfigMainTab>("model");
   const [saving, setSaving] = useState(false);
+  const [maskDirty, setMaskDirty] = useState(false);
+  const maskHandleRef = useRef<SensitiveMaskHandle | null>(null);
+  const onMaskDirtyChange = useCallback((dirty: boolean) => {
+    setMaskDirty(dirty);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [deleteAgentConfirm, setDeleteAgentConfirm] = useState<{ idx: number; agentName: string; references: string[] } | null>(null);
@@ -4055,7 +4061,8 @@ export function ConfigPanel({
     }
     return false;
   }, [draftAgents, draftTeams, initialAgents, initialTeams]);
-  const hasChanges = hasConfigChanges || hasModelChanges || hasAgentsTeamsChanges;
+  const hasOtherChanges = hasConfigChanges || hasModelChanges || hasAgentsTeamsChanges;
+  const hasChanges = hasOtherChanges || maskDirty;
   useEffect(() => {
     onHasChangesChange?.(hasChanges);
   }, [hasChanges, onHasChangesChange]);
@@ -4253,6 +4260,7 @@ export function ConfigPanel({
 
   const handleCancel = () => {
     if (!hasChanges) return;
+    maskHandleRef.current?.reset();
     setDraftValues(normalizedConfig);
     setDraftModels(storeAvailableModels.map((m) => ({ ...m, alias: m.alias || "" })));
     setDraftAgents(initialAgents);
@@ -4361,6 +4369,12 @@ export function ConfigPanel({
     setError(null);
     setModelError(null);
     try {
+      if (maskHandleRef.current?.dirty) {
+        await maskHandleRef.current.save();
+      }
+      if (!hasOtherChanges) {
+        return;
+      }
       if (onSaveAllConfig) {
         const payload: ConfigSaveAllPayload = {};
         if (hasConfigChanges) {
@@ -4650,6 +4664,11 @@ export function ConfigPanel({
 
               {configTab === "security" ? (
                 <div role="tabpanel" aria-labelledby="config-tab-security" className="space-y-3 pb-2">
+                  <SensitiveMaskPanel
+                    isConnected={isConnected}
+                    onDirtyChange={onMaskDirtyChange}
+                    handleRef={maskHandleRef}
+                  />
                   {securityGroups.length === 0 ? (
                     <p className="text-sm text-text-muted px-1">{t("config.tabEmpty.security")}</p>
                   ) : (
