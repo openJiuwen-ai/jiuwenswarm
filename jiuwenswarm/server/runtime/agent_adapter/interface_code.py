@@ -98,7 +98,6 @@ from jiuwenswarm.common.coding_memory_paths import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
 from jiuwenswarm.common.utils import (
-    DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
     get_agent_workspace_dir,
     get_default_project_session_workspace_dir,
 )
@@ -642,7 +641,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             workspace=workspace,
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),
-            enable_read_image_multimodal=DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
+            enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config, model),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=is_enterprise(),
             completion_timeout=config.get("completion_timeout", 3600.0),
@@ -726,6 +725,17 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_request_summary_rail", self._build_request_summary_rail),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
+            _RailBuildInfo(
+                "_multimodal_image_rail",
+                self._build_multimodal_image_rail,
+                {
+                    # 与 DeepAdapter 对齐：请求时回退到 deep_config.enable_read_image_multimodal。
+                    "enable_image_multimodal": None,
+                    "max_total_bytes": config.get("multimodal_image_budget"),
+                    "max_visual_tokens": config.get("multimodal_image_token_budget"),
+                    "max_count": config.get("multimodal_image_max_count"),
+                },
+            ),
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo(

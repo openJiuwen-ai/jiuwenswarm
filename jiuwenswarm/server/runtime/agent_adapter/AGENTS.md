@@ -134,6 +134,13 @@ stale_todo_cleanup_helpers / todo_close_text_hold 两件与铁律 5（todo 代�
    key（interface_deep.py:6814 起）。request_id 注入函数
    `_inject_request_id_into_inputs` 见 :6071（调用点 :19222 / :20039）——
    skill_turbo 等工具从 metadata 直读 `request_id`/`channel_id`，缺失即注册失败。
+9. **原生多模态开关每请求解析一次**：`_resolve_enable_read_image_multimodal`
+   按"模型条目声明 > 显式 bool > 内置能力表"三态解析并写
+   `deep_config.enable_read_image_multimodal`，是唯一真源——`_build_multimodal_image_rail`
+   与 tools 拿到的都是这同一值，**不得在 adapter 里二次推断模型能力**，也不得让
+   显式 `true` 覆盖条目声明的"不支持图片"；`_build_image_tool_fallback_notice`
+   仅在解析为 False 时提示。契约与不变量见
+   [../../../agents/harness/docs/specs/S_22_native-multimodal-image-input.md](../../../agents/harness/docs/specs/S_22_native-multimodal-image-input.md)。
 
 ## 与 session_ops 的接缝（业务归 [[S_04]]）
 

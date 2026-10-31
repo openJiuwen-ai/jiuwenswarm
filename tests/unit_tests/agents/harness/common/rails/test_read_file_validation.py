@@ -8,8 +8,12 @@ from openjiuwen.harness.tools.base_tool import ToolOutput
 
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     _looks_like_binary_payload,
+    build_native_image_tool_error,
+    build_provided_image_read_error,
+    extract_paths_from_arguments,
     is_image_file_path,
     is_non_text_file_path,
+    is_vision_tool,
     validate_read_file_result,
 )
 
@@ -120,6 +124,56 @@ def test_empty_result_still_rejected() -> None:
     ok, _error = validate_read_file_result("a.txt", "")
 
     assert ok is False
+
+
+def test_provided_image_read_error_forbids_read_file() -> None:
+    error = build_provided_image_read_error("/uploads/home.png")
+
+    assert error.startswith("[READ_FILE_ERROR]")
+    assert "read_file" in error
+    assert "/uploads/home.png" in error
+
+
+def test_provided_image_read_error_english() -> None:
+    error = build_provided_image_read_error("/uploads/home.png", language="en")
+
+    assert error.startswith("[READ_FILE_ERROR]")
+    assert "do not call read_file" in error
+
+
+def test_extract_paths_from_arguments_covers_file_paths_list() -> None:
+    paths = extract_paths_from_arguments(
+        {"file_paths": ["/uploads/a.png", "/uploads/b.png"]}
+    )
+
+    assert paths == ["/uploads/a.png", "/uploads/b.png"]
+
+
+def test_extract_paths_from_arguments_single_path() -> None:
+    assert extract_paths_from_arguments({"file_path": "/uploads/a.png"}) == [
+        "/uploads/a.png"
+    ]
+
+
+def test_is_vision_tool_recognizes_vqa_names() -> None:
+    assert is_vision_tool("visual_question_answering") is True
+    assert is_vision_tool("image_reading") is True
+    assert is_vision_tool("read_file") is False
+
+
+def test_native_image_tool_error_mentions_provided_pixels() -> None:
+    error = build_native_image_tool_error()
+
+    assert error.startswith("[VISION_TOOL_SKIPPED]")
+    assert "visual_question_answering" in error
+    assert "像素" in error
+
+
+def test_native_image_tool_error_english() -> None:
+    error = build_native_image_tool_error(language="en")
+
+    assert error.startswith("[VISION_TOOL_SKIPPED]")
+    assert "Do not call" in error
 
 
 def test_svg_is_read_as_text_not_image() -> None:

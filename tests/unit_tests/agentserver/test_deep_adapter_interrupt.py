@@ -214,11 +214,6 @@ async def test_team_stream_binds_a2a_resource_context(
         adapter, "_prepare_multimodal_image_inputs", lambda _request, inputs: inputs
     )
     monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)
-    monkeypatch.setattr(
-        adapter,
-        "_prepare_react_image_tool_prompt",
-        lambda _request, inputs, **_kwargs: inputs,
-    )
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "zh")
     monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda _session: "web")
     monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)

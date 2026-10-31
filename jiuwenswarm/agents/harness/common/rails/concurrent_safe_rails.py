@@ -62,17 +62,22 @@ class ConcurrentSafeSysOperationRail(SysOperationRail):
         lang = getattr(agent.system_prompt_builder, "language", None) or "cn"
         agent_id = getattr(getattr(agent, "card", None), "id", None)
         workspace_path = str(self.workspace.root_path) if self.workspace else None
-        enable_read_image_multimodal = self._enable_read_image_multimodal
-        if enable_read_image_multimodal is None:
-            deep_config = getattr(agent, "deep_config", None)
-            enable_read_image_multimodal = bool(
-                getattr(deep_config, "enable_read_image_multimodal", True)
-            )
+
+        def resolve_enable_read_image_multimodal() -> bool:
+            # ReadFileTool 在每次 read_file 调用时回调 resolver，跟随模型热切换；
+            # rail 构造时的 deep_config 值只是初始态，不是最终能力结论。
+            value = self._enable_read_image_multimodal
+            if value is None:
+                deep_config = getattr(agent, "deep_config", None)
+                value = getattr(deep_config, "enable_read_image_multimodal", False)
+            return bool(value)
+
         read_tool = ReadFileTool(
             self.sys_operation,
             lang,
             agent_id,
-            enable_image_multimodal=enable_read_image_multimodal,
+            enable_image_multimodal=resolve_enable_read_image_multimodal(),
+            image_multimodal_resolver=resolve_enable_read_image_multimodal,
         )
         write_tool = WriteFileTool(self.sys_operation, lang, agent_id, workspace_path=workspace_path)
         edit_tool = EditFileTool(self.sys_operation, lang, agent_id, workspace_path=workspace_path)
