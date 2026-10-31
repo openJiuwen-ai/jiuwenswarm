@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import shutil
 import time
@@ -120,6 +121,38 @@ def _create_team_binding_from_template(
     return binding
 
 
+def _bind_unique_team(
+    base_name: str,
+    *,
+    template_id: str,
+    config_base: dict[str, Any],
+) -> Any:
+    """Bind ``base_name`` to a new team, suffixing on name conflicts.
+
+    Shared by the generated path (model-produced name) and the fallback path
+    (locally derived name) so conflict handling cannot drift between them.
+    """
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError
+
+    for candidate_index in range(100):
+        suffix = "" if candidate_index == 0 else f"_{candidate_index + 1}"
+        candidate = f"{base_name[: 64 - len(suffix)]}{suffix}"
+        try:
+            return _create_team_binding_from_template(
+                team_name=candidate,
+                template_id=template_id,
+                config_base=config_base,
+            )
+        except TeamBindingStoreError as exc:
+            if exc.code != "CONFLICT":
+                raise
+
+    raise TeamBindingStoreError(
+        "unable to allocate a unique team_name",
+        code="CONFLICT",
+    )
+
+
 async def _create_generated_team_binding(
     *,
     description: str,
@@ -150,23 +183,65 @@ async def _create_generated_team_binding(
         template_id=template_id,
     )
 
-    for candidate_index in range(100):
-        suffix = "" if candidate_index == 0 else f"_{candidate_index + 1}"
-        candidate = f"{generated_name[:64 - len(suffix)]}{suffix}"
-        try:
-            binding = _create_team_binding_from_template(
-                team_name=candidate,
-                template_id=template_id,
-                config_base=config_base,
-            )
-            return binding, default_template
-        except TeamBindingStoreError as exc:
-            if exc.code != "CONFLICT":
-                raise
+    return (
+        _bind_unique_team(
+            generated_name,
+            template_id=template_id,
+            config_base=config_base,
+        ),
+        default_template,
+    )
 
-    raise TeamBindingStoreError(
-        "unable to allocate a unique team_name",
-        code="CONFLICT",
+
+def _fallback_team_name(session_id: str, *, today: str | None = None) -> str:
+    """Deterministic, storage-safe team name used when naming degraded.
+
+    * hashed, not the raw session id -- session ids must not leak into team
+      directory names;
+    * date-prefixed so a degraded team is readable and greppable in operations
+      (``team-20261020-3f2a1b`` means "naming failed on that day");
+    * deterministic per (session, day) in local time, so a retry after a failed
+      binding does not churn names. Satisfies ``TEAM_NAME_RE`` and the stricter
+      lowercase-hyphen form the generated names follow.
+    """
+    digest = hashlib.sha256(str(session_id or "").encode("utf-8")).hexdigest()[:6]
+    day = today or time.strftime("%Y%m%d")
+    return f"team-{day}-{digest}"
+
+
+def _create_fallback_team_binding(
+    *,
+    session_id: str,
+    config_base: dict[str, Any],
+) -> tuple[Any, dict[str, Any]]:
+    """Bind the session to a deterministically named team.
+
+    ``_create_generated_team_binding`` needs a live model call. When that call (or
+    the template snapshot behind it) fails there is no team to bind, and the caller
+    drops the chat before the user turn is persisted -- leaving a session that
+    reopens empty and fails identically on every later turn. This is the degraded
+    path: same default template, same binding and entity layout, name derived
+    locally.
+
+    Still raises when the template itself is unusable, so a genuinely broken team
+    config stays visible instead of being masked by a fallback name.
+    """
+    from jiuwenswarm.agents.harness.team import list_team_template_summaries
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError
+
+    templates = list_team_template_summaries(config_base)
+    if not templates:
+        raise TeamBindingStoreError("no team template configured", code="NOT_FOUND")
+
+    default_template = templates[0]
+    template_id = str(default_template.get("template_id") or "").strip()
+    return (
+        _bind_unique_team(
+            _fallback_team_name(session_id),
+            template_id=template_id,
+            config_base=config_base,
+        ),
+        default_template,
     )
 
 

@@ -50,7 +50,19 @@ _SYSTEM_PROMPT = (
 
 
 class TeamNameGenerationError(RuntimeError):
-    """Raised when TinyAgent cannot produce a valid team name."""
+    """Raised when TinyAgent cannot produce a valid team name.
+
+    ``reason`` separates a broken team configuration -- which must stay fatal so
+    the operator sees it -- from a transient generation failure, which is safe to
+    degrade to a locally derived fallback name.
+    """
+
+    REASON_CONFIG = "config"
+    REASON_GENERATION = "generation"
+
+    def __init__(self, message: str, *, reason: str = REASON_GENERATION) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def _is_generic_team_name(team_name: str) -> bool:
@@ -74,11 +86,17 @@ def _resolve_tiny_model(
     if agent_spec is None and team_spec.agents:
         agent_spec = next(iter(team_spec.agents.values()))
     if agent_spec is None or agent_spec.model is None:
-        raise TeamNameGenerationError("default team template has no usable model")
+        raise TeamNameGenerationError(
+            "default team template has no usable model",
+            reason=TeamNameGenerationError.REASON_CONFIG,
+        )
 
     model_name = str(agent_spec.model.model_request_config.model_name or "").strip()
     if not model_name:
-        raise TeamNameGenerationError("default team model_name is missing")
+        raise TeamNameGenerationError(
+            "default team model_name is missing",
+            reason=TeamNameGenerationError.REASON_CONFIG,
+        )
     return model_name, agent_spec.model
 
 

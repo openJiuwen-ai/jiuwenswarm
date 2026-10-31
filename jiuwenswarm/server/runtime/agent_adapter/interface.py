@@ -37,6 +37,8 @@ from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
     append_history_record,
     collapse_file_content_blocks,
+    mark_user_history_persisted,
+    user_history_persisted,
 )
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.session.permission_response_ledger import (
@@ -386,6 +388,212 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
             extra["files"] = files
 
     return extra or None
+
+
+_MAX_TURN_ERROR_CHARS = 500
+
+
+def _history_record_quota_precheck(
+    *,
+    content: Any,
+    extra: dict[str, Any] | None = None,
+    event_type: str | None = None,
+) -> None:
+    """Workspace quota gate for one history record.
+
+    Raises ``WorkspaceQuotaExceeded`` when the turn must not be written; any
+    other failure of the quota dependency is non-fatal (个人版无策略快照时不误伤).
+    """
+    try:
+        from jiuwenswarm.common.workspace.quota import check_workspace_write
+
+        # 粗估本条记录落盘增量（JSONL 一行）
+        approx = len(
+            json.dumps(
+                {
+                    "content": content,
+                    "extra": extra,
+                    "event_type": event_type,
+                },
+                ensure_ascii=False,
+                default=str,
+            ).encode("utf-8")
+        )
+        check_workspace_write(additional_bytes=max(64, approx))
+    except Exception as exc:
+        from jiuwenswarm.common.workspace.quota import WorkspaceQuotaExceeded
+
+        if isinstance(exc, WorkspaceQuotaExceeded):
+            raise
+        # 门禁依赖不可用时不阻断历史（避免个人版无策略快照误伤）
+        logger.debug("[workspace.quota] history precheck skipped: %s", exc)
+
+
+def _failed_turn_error_text(exc: BaseException) -> str:
+    """Single-line, bounded error text for a turn the adapter never saw.
+
+    History is user-facing and long-lived; unbounded ``str(exc)`` would persist
+    stack-ish text, absolute paths and internal identifiers forever.
+    """
+    raw = " ".join((str(exc) or type(exc).__name__).split())
+    if len(raw) <= _MAX_TURN_ERROR_CHARS:
+        return raw
+    return f"{raw[:_MAX_TURN_ERROR_CHARS]}…"
+
+
+def _pending_user_turn(
+    request: AgentRequest,
+    *,
+    sessions_root: str | Path | None,
+) -> tuple[dict[str, Any], Any, dict[str, Any] | None] | None:
+    """Build the user record for a turn the adapter never persisted.
+
+    Returns ``(shared_kwargs, content, extra)``, or ``None`` when there is
+    nothing to write: not a chat.send, suppressed turn (log_as_user=False /
+    attach_goal / proactive recommendation), already persisted by the adapter,
+    no session id, or a turn with neither text nor attachments.
+    """
+    if request.req_method != ReqMethod.CHAT_SEND:
+        return None
+    if user_history_persisted(request):
+        return None
+    params = request.params if isinstance(request.params, dict) else {}
+    if not _should_record_user_history(params):
+        return None
+    session_id = str(request.session_id or params.get("session_id") or "").strip()
+    if not session_id:
+        return None
+
+    raw_query = params.get("query")
+    content = _history_user_content(
+        params,
+        raw_query if isinstance(raw_query, str) else "",
+    )
+    extra = _history_user_extra(params)
+    if not str(content or "").strip() and not extra:
+        # 无文本且无附件：空轮不该留下一行渲染不出来的 user 记录。
+        return None
+
+    if sessions_root is None:
+        from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
+
+        sessions_root = _sessions_dir_for_request(request)
+
+    shared: dict[str, Any] = {
+        "session_id": session_id,
+        "request_id": request.request_id,
+        "channel_id": request.channel_id,
+        "timestamp": time.time(),
+        "mode": params.get("mode", "unknown"),
+        "sessions_root": sessions_root,
+    }
+    return shared, content, extra
+
+
+def _append_quota_gated(request: AgentRequest, **kwargs: Any) -> bool:
+    """Append one record, honouring the workspace quota gate.
+
+    Returns False only when the quota rejected the write; storage errors
+    propagate so the caller's best-effort wrapper can log them.
+    """
+    # Imported here (not at module top) so tests patching the storage function
+    # keep taking effect, and so the adapter module stays importable without the
+    # history stack.
+    from jiuwenswarm.common.workspace.quota import WorkspaceQuotaExceeded
+    from jiuwenswarm.server.runtime.session.session_history import (
+        append_history_record,
+    )
+
+    try:
+        _history_record_quota_precheck(
+            content=kwargs.get("content"),
+            extra=kwargs.get("extra"),
+            event_type=kwargs.get("event_type"),
+        )
+    except WorkspaceQuotaExceeded:
+        logger.info(
+            "[JiuWenSwarm] 前置失败回合未落盘：工作区配额已满 "
+            "request_id=%s session_id=%s",
+            request.request_id,
+            kwargs.get("session_id"),
+        )
+        return False
+    append_history_record(**kwargs)
+    return True
+
+
+def record_failed_turn(
+    request: AgentRequest,
+    exc: BaseException,
+    *,
+    sessions_root: str | Path | None = None,
+) -> bool:
+    """Persist ``user`` + ``chat.error`` for a turn the adapter never saw.
+
+    Pre-flight steps in ``server/pipeline.py`` run before the adapter, which is
+    the other place the user turn reaches history. Writing the same pair here
+    keeps a failed turn visible after a refresh instead of leaving the session
+    blank forever.
+
+    Returns whether records were written. Storage errors propagate; quota
+    rejection and already-persisted turns return False without writing.
+    """
+    prepared = _pending_user_turn(request, sessions_root=sessions_root)
+    if prepared is None:
+        return False
+    shared, content, extra = prepared
+
+    if not _append_quota_gated(
+        request,
+        **shared,
+        role="user",
+        content=content,
+        extra=extra,
+        channel_metadata=request.metadata,
+    ):
+        return False
+    mark_user_history_persisted(request)
+
+    # 错误记录可能与 user 记录分属两次门禁；第二次被拒时 user 记录已落盘，
+    # 只是没有错误气泡——这比整轮消失更可接受，也不产生重复。
+    _append_quota_gated(
+        request,
+        **shared,
+        role="assistant",
+        event_type="chat.error",
+        content=_failed_turn_error_text(exc),
+        extra={"error_type": type(exc).__name__},
+    )
+    return True
+
+
+def record_interrupted_turn(
+    request: AgentRequest,
+    *,
+    sessions_root: str | Path | None = None,
+) -> bool:
+    """Persist only the ``user`` record for a cancelled / disconnected turn.
+
+    Cancellation and client disconnects are not model failures, so no
+    ``chat.error`` record is written; the point is solely that the session no
+    longer reopens empty. Sync-only: the caller runs inside a cancelled task and
+    must not await anything.
+    """
+    prepared = _pending_user_turn(request, sessions_root=sessions_root)
+    if prepared is None:
+        return False
+    shared, content, extra = prepared
+    if not _append_quota_gated(
+        request,
+        **shared,
+        role="user",
+        content=content,
+        extra=extra,
+        channel_metadata=request.metadata,
+    ):
+        return False
+    mark_user_history_persisted(request)
+    return True
 
 
 def _compact_stats_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1295,29 +1503,11 @@ class JiuWenSwarm:
 
                 kwargs["sessions_root"] = _sessions_dir_for_request(request)
         # 配额门禁：会话元数据写盘前检查（§2.3）
-        try:
-            from jiuwenswarm.common.workspace.quota import check_workspace_write
-
-            # 粗估本条记录落盘增量（JSONL 一行）
-            approx = len(
-                json.dumps(
-                    {
-                        "content": kwargs.get("content"),
-                        "extra": kwargs.get("extra"),
-                        "event_type": kwargs.get("event_type"),
-                    },
-                    ensure_ascii=False,
-                    default=str,
-                ).encode("utf-8")
-            )
-            check_workspace_write(additional_bytes=max(64, approx))
-        except Exception as exc:
-            from jiuwenswarm.common.workspace.quota import WorkspaceQuotaExceeded
-
-            if isinstance(exc, WorkspaceQuotaExceeded):
-                raise
-            # 门禁依赖不可用时不阻断历史（避免个人版无策略快照误伤）
-            logger.debug("[workspace.quota] history precheck skipped: %s", exc)
+        _history_record_quota_precheck(
+            content=kwargs.get("content"),
+            extra=kwargs.get("extra"),
+            event_type=kwargs.get("event_type"),
+        )
         append_history_record(**kwargs)
 
     def _append_ask_user_answered_history(
@@ -2995,6 +3185,7 @@ class JiuWenSwarm:
                         channel_metadata=request.metadata,
                         mode=request.params.get("mode", "unknown"),
                     )
+                    mark_user_history_persisted(request)
                 else:
                     self._append_ask_user_answered_history(
                         request=request, session_id=session_id
@@ -3464,6 +3655,7 @@ class JiuWenSwarm:
                 channel_metadata=request.metadata,
                 mode=params_for_history.get("mode", "unknown"),
             )
+            mark_user_history_persisted(request)
         elif request.req_method != ReqMethod.COMMAND_GOAL:
             self._append_ask_user_answered_history(request=request, session_id=session_id)
 
