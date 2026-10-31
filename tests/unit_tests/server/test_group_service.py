@@ -1026,3 +1026,22 @@ def test_empty_group_does_not_declare_disabled_installed_clis(monkeypatch):
     )
     assemble_group_members(spec, [])
     assert spec.external_cli_agents == []
+
+
+@pytest.mark.asyncio
+async def test_delete_cleans_runs_kept_under_the_outer_team_home(service, monkeypatch):
+    from jiuwenswarm.agents.swarm.group_chat import group_runs_dir
+
+    group = await create(service)
+    runs = group_runs_dir(group["team_name"])
+    runs.mkdir(parents=True)
+    (runs / "one.json").write_text(
+        json.dumps({"team_name": "group-expert-one", "session_id": "group-run-one"})
+    )
+    (runs / "one").mkdir()
+    remove = AsyncMock(return_value=True)
+    monkeypatch.setattr(gs.Runner, "delete_agent_team", remove)
+    service.runtime.delete_session.return_value = SimpleNamespace(ok=True)
+    await service.delete(group["group_id"], user_id="owner", channel_id="web")
+    assert remove.await_args.kwargs["team_name"] == "group-expert-one"
+    assert not runs.exists()

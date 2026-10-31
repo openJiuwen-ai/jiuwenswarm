@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import logging
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -899,8 +900,15 @@ class GroupService:
                     group_id,
                     workspace_path=state.get("workspace_path"),
                 )
+                from jiuwenswarm.agents.swarm.group_chat import group_runs_dir
+
+                runs_dir = group_runs_dir(state["team_name"])
+                run_files = [
+                    *(log.history_path.parent / "team-runs").glob("*.json"),
+                    *runs_dir.glob("*.json"),
+                ]
                 removed_teams = set()
-                for path in (log.history_path.parent / "team-runs").glob("*.json"):
+                for path in run_files:
                     run = json.loads(path.read_text(encoding="utf-8"))
                     identity = (run.get("team_name"), run.get("session_id"))
                     if identity in removed_teams:
@@ -929,6 +937,8 @@ class GroupService:
                         result.error_code or "DELETE_FAILED",
                         result.error_message or "group deletion failed",
                     )
+                # Run state lives outside the history directory that the session delete removes.
+                shutil.rmtree(runs_dir, ignore_errors=True)
                 group_path(group_id).unlink(missing_ok=True)
                 return dict(group_id=group_id, deleted=True)
             except BaseException:

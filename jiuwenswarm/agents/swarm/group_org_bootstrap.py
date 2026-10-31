@@ -1477,6 +1477,18 @@ async def _sync_reused_member_role(
     )
 
 
+def _organization_record_paths(backend: Any, conversation: Any, member_name: str) -> list[Path]:
+    """The instance record's current path, then the older long-name path still read."""
+    from jiuwenswarm.agents.swarm.group_chat import RUN_PATH_HASH_LENGTH, group_runs_dir
+
+    legacy = Path(conversation.history_path).parent / "team-runs" / f"organization-{member_name}.json"
+    team_name = getattr(backend, "team_name", None)
+    if not team_name:
+        return [legacy]
+    digest = hashlib.sha256(member_name.encode("utf-8")).hexdigest()[:RUN_PATH_HASH_LENGTH]
+    return [group_runs_dir(team_name) / f"org-{digest}.json", legacy]
+
+
 async def saved_organization_instance(
     backend: Any, member_name: str, session_id: str
 ) -> dict | None:
@@ -1486,8 +1498,11 @@ async def saved_organization_instance(
         return None
     try:
         conversation = await conversation_getter()
-        path = Path(conversation.history_path).parent / "team-runs" / f"organization-{member_name}.json"
-        if not path.is_file():
+        path = next(
+            (item for item in _organization_record_paths(backend, conversation, member_name) if item.is_file()),
+            None,
+        )
+        if path is None:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError, AttributeError):
@@ -2040,11 +2055,7 @@ async def _record_team_run(
     from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
 
     conversation = await backend.group_conversation()
-    path = (
-        conversation.history_path.parent
-        / "team-runs"
-        / f"organization-{member_name}.json"
-    )
+    path = _organization_record_paths(backend, conversation, member_name)[0]
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(
         path,
