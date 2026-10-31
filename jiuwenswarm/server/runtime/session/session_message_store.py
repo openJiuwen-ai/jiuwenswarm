@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from jiuwenswarm.common.sqlite_config import normalize_journal_mode
+
 
 ACTIVE_SESSION_MESSAGE_STATUSES = frozenset(
     {"queued", "running", "waiting_user", "unknown"}
@@ -73,8 +75,9 @@ class SessionMessageRecord:
 class SessionMessageStore:
     """SQLite-backed Session mailbox with transactional claim and dedup."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, journal_mode: str = "WAL") -> None:
         self.path = Path(path)
+        self._journal_mode = normalize_journal_mode(journal_mode)
         self._schema_lock = threading.Lock()
         self._schema_ready = False
 
@@ -84,10 +87,18 @@ class SessionMessageStore:
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA synchronous=FULL")
+        try:
+            if self._journal_mode == "DELETE":
+                actual = conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+                if actual.upper() != self._journal_mode:
+                    raise sqlite3.OperationalError("could not select SQLite DELETE journal mode")
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=FULL")
+        except Exception:
+            conn.close()
+            raise
         return conn
 
     def _session(self) -> closing[sqlite3.Connection]:
@@ -107,7 +118,9 @@ class SessionMessageStore:
             if self._schema_ready:
                 return
             with self._session() as conn, conn:
-                conn.execute("PRAGMA journal_mode=WAL")
+                actual = conn.execute(f"PRAGMA journal_mode={self._journal_mode}").fetchone()[0]
+                if actual.upper() != self._journal_mode:
+                    raise sqlite3.OperationalError("could not select SQLite journal mode")
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.executescript(
                     """
