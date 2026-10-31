@@ -62,6 +62,8 @@ from openjiuwen.core.foundation.tool import (
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.core.common.exception.errors import AgentError
 from openjiuwen.core.runner import Runner
+from jiuwenswarm.common.sqlite_config import normalize_journal_mode, workspace_sqlite_journal_mode
+from jiuwenswarm.common.config import get_config
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
 from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointerProvider
@@ -1746,10 +1748,17 @@ async def ensure_persistent_checkpointer() -> None:
         try:
             PersistenceCheckpointerProvider()
             checkpoint_path = get_checkpoint_dir()
+            conf = {"db_type": "sqlite", "db_path": f"{checkpoint_path}/checkpoint"}
+            config = get_config() or {}
+            journal_mode = (config.get("checkpoint") or {}).get("sqlite_journal_mode")
+            if journal_mode is None:
+                journal_mode = workspace_sqlite_journal_mode(config)
+            if journal_mode is not None:
+                conf["db_journal_mode"] = normalize_journal_mode(journal_mode)
             checkpointer = await CheckpointerFactory.create(
                 CheckpointerConfig(
                     type="persistence",
-                    conf={"db_type": "sqlite", "db_path": f"{checkpoint_path}/checkpoint"},
+                    conf=conf,
                 ),
             )
             CheckpointerFactory.set_default_checkpointer(checkpointer)
