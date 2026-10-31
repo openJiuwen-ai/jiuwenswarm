@@ -21,6 +21,7 @@ Tools kept (card names as registered by ability_manager.add_ability):
 * vision / audio tools (image_ocr / visual_question_answering /
   audio_transcription / audio_question_answering / audio_metadata).
 * web tools (free_search / fetch_webpage / paid_search).
+* ``pcs_search`` — read-only lookup in the shared personal knowledge space.
 * base sys_operation support (list_files / glob / bash / grep / read_file —
   kept per user decision 2026-10-10; the skill rail reads SKILL.md front
   matter through the sys_operation engine).
@@ -89,6 +90,7 @@ _KEEP_TOOL_NAMES: frozenset[str] = frozenset({
     "free_search",
     "fetch_webpage",
     "paid_search",
+    "pcs_search",
     # Base sys_operation support (user decision 2026-10-10).
     "list_files",
     "glob",
