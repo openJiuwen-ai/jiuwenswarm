@@ -720,15 +720,20 @@ def _apply_cron_dow_fix(text: str) -> str:
     return fixed
 
 
+def _patch_cron_tool_value(value: Any, fix: Any) -> Any:
+    """递归对 ToolCard 值应用文本修正（str 走 fix，dict/list 递归重建）。"""
+    if isinstance(value, str):
+        return fix(value)
+    if isinstance(value, dict):
+        return {key: _patch_cron_tool_value(item, fix) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_patch_cron_tool_value(item, fix) for item in value]
+    return value
+
+
 def _patch_cron_dow_semantics(value: Any) -> Any:
     """递归修正 cron 工具描述中的 dow 编号语义（str 应用替换，dict/list 递归重建）。"""
-    if isinstance(value, str):
-        return _apply_cron_dow_fix(value)
-    if isinstance(value, dict):
-        return {key: _patch_cron_dow_semantics(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_patch_cron_dow_semantics(item) for item in value]
-    return value
+    return _patch_cron_tool_value(value, _apply_cron_dow_fix)
 
 
 def _collect_string_blob(value: Any, *, out: list[str]) -> None:
@@ -777,6 +782,116 @@ def _patch_cron_tool_cards(tools: list[Any]) -> list[Any]:
             logger.warning(
                 "[CronRuntimeBridge] openjiuwen cron 工具描述中的 dow 语义修正未完全生效，"
                 "仍残留 Quartz 声明（1=SUN...7=SAT）：tool=%s",
+                getattr(card, "name", None),
+            )
+    return tools
+
+
+# --- cron 工具描述：定时任务的「新会话执行」语义修正 ---
+# Issue #7924：定时任务到点后在**全新会话**中执行（CronScheduler._allocate_execution_session
+# 预建 cron_id 会话，description 直接作为该会话的用户消息），执行侧模型看不到创建任务的
+# 对话历史。但 openjiuwen 工具描述未声明这一点，模型会把用户原话（"提醒我…""…顺便问下
+# 某人"）原样灌进 description/payload，执行模型既不知道 task A 是什么，也拿不到人物信息
+# （见 issue 复现）。两条修正：
+#   1. 统一 cron 工具描述里 "优先使用 payload.kind=systemEvent" 的宣传句与本后端行为脱节
+#      ——_extract_legacy_params 把 systemEvent 按 agentTurn 转换执行（无独立投递通道），
+#      文本同样要自包含，按原文宣传会让模型误以为有 "系统事件" 特殊语义；
+#   2. 创建/修改类工具（cron、cron_create_job、cron_update_job）统一前置「执行环境」声明：
+#      description/payload 必须自带完整上下文、写成对执行者的直接指令，多步需求拆多个任务。
+# 与 dow 修正同款做替换失配告警：openjiuwen 改版导致宣传句锚点消失时留日志。
+_CRON_FRESH_SESSION_TOOL_NAMES: frozenset[str] = frozenset(
+    {"cron", "cron_create_job", "cron_update_job"}
+)
+
+_CRON_FRESH_SESSION_NOTICE: dict[str, str] = {
+    "cn": (
+        "【重要：定时任务执行环境】任务到点后由全新会话执行，执行模型看不到当前对话的"
+        "历史与上下文。description/payload 必须写成自带完整上下文的直接指令（涉及的人物、"
+        "文件、路径、要求都要写全），禁止把用户原话（如\"提醒我…\"\"帮我看下…\"）原样"
+        "当作任务内容。多步骤需求请拆分为多个定时任务。\n\n"
+    ),
+    "en": (
+        "[CRITICAL: Execution environment] A scheduled job runs in a FRESH session: "
+        "the executor model sees none of this conversation's history or context. "
+        "The description / payload must be a fully self-contained instruction "
+        "(people, files, paths, criteria included) addressed to the executor. "
+        "Never copy the user's request verbatim as the payload "
+        "(\"remind me to ...\", \"have a look at ...\"). "
+        "Split multi-step requests into separate cron jobs.\n\n"
+    ),
+}
+
+# systemEvent 宣传句的按后端行为修正（幂等：替换后原文消失）。
+_CRON_SYSTEM_EVENT_TRUTH_FIXES: tuple[tuple[str, str], ...] = (
+    (
+        "给当前聊天创建提醒时，优先使用 payload.kind=systemEvent 和 sessionTarget=current。",
+        (
+            "给当前聊天创建提醒时，可使用 payload.kind=systemEvent 和 sessionTarget=current；"
+            "本后端将其按 agentTurn 处理（由新会话执行一轮），文本必须自包含。"
+        ),
+    ),
+    (
+        "For reminders targeting the current chat, prefer payload.kind=systemEvent with sessionTarget=current. ",
+        (
+            "For reminders targeting the current chat, payload.kind=systemEvent with "
+            "sessionTarget=current is acceptable; on this backend it is executed as an agent "
+            "turn in a fresh session, so its text must be self-contained. "
+        ),
+    ),
+)
+
+# 旧宣传句残留检测锚点（失配告警用）。
+_CRON_SYSTEM_EVENT_LEGACY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"优先使用\s*payload\.kind=systemEvent"),
+    re.compile(r"prefer\s+payload\.kind=systemEvent"),
+)
+
+
+def _apply_cron_system_event_truth_fix(text: str) -> str:
+    """对单段文本应用 systemEvent 宣传句修正（幂等）。"""
+    fixed = str(text or "")
+    for old, new in _CRON_SYSTEM_EVENT_TRUTH_FIXES:
+        if old in fixed:
+            fixed = fixed.replace(old, new)
+    return fixed
+
+
+def _patch_cron_fresh_session_semantics(tools: list[Any], *, language: str) -> list[Any]:
+    """把「新会话执行」要求前置到创建/修改类 cron 工具描述（幂等）。"""
+    notice = (
+        _CRON_FRESH_SESSION_NOTICE.get(language)
+        or _CRON_FRESH_SESSION_NOTICE["cn"]
+    )
+    for tool in tools:
+        card = getattr(tool, "card", None)
+        if card is None:
+            continue
+        if str(getattr(card, "name", "") or "") in _CRON_FRESH_SESSION_TOOL_NAMES:
+            description = _apply_cron_system_event_truth_fix(
+                str(getattr(card, "description", None) or "")
+            )
+            if notice not in description:
+                description = notice + description
+            card.description = description
+        if getattr(card, "input_params", None) is not None:
+            card.input_params = _patch_cron_tool_value(
+                card.input_params, _apply_cron_system_event_truth_fix
+            )
+    # 残留告警：openjiuwen 改版导致宣传句锚点失配时，说明修正未完全生效。
+    for tool in tools:
+        card = getattr(tool, "card", None)
+        if card is None or str(getattr(card, "name", "") or "") not in _CRON_FRESH_SESSION_TOOL_NAMES:
+            continue
+        blob: list[str] = []
+        _collect_string_blob(getattr(card, "description", None) or "", out=blob)
+        _collect_string_blob(getattr(card, "input_params", None) or {}, out=blob)
+        if any(
+            pattern.search(text)
+            for text in blob
+            for pattern in _CRON_SYSTEM_EVENT_LEGACY_PATTERNS
+        ):
+            logger.warning(
+                "[CronRuntimeBridge] cron 工具描述中的 systemEvent 宣传句修正未完全生效：tool=%s",
                 getattr(card, "name", None),
             )
     return tools
@@ -1106,6 +1221,9 @@ class CronRuntimeBridge:
         # 修正 openjiuwen 工具描述中的 dow 编号语义（1=SUN→0=SUN，与 croniter 一致），
         # 见模块顶部 _CRON_DOW_SEMANTIC_FIXES 说明。
         tools = _patch_cron_tool_cards(tools)
+        # 前置「新会话执行」声明并修正 systemEvent 宣传句，见
+        # _CRON_FRESH_SESSION_NOTICE 说明（Issue #7924）。
+        tools = _patch_cron_fresh_session_semantics(tools, language=language)
         logger.info("[CronRuntimeBridge] Built %d cron tools (create_enabled=%s, update_enabled=%s): %s",
                     len(tools),
                     allow_create,
