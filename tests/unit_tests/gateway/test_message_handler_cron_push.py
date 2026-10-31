@@ -175,6 +175,48 @@ async def test_cron_push_create_replaces_default_tenant_with_chat_routing(
 
 
 @pytest.mark.asyncio
+async def test_cron_push_create_overwrites_forged_tenant_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """create 必须硬覆盖 LLM 幻觉的他人 group/bot，禁止跨租户落库。"""
+    controller = _CapturingCronController()
+    handler = _bare_handler(object(), controller)
+    handler._stream_metadata["req-1"] = {
+        "user_id": "u-1",
+        "routing": {
+            "group_id": "g-real",
+            "bot_id": "06b75225-753d-40be-b23c-a13de9038734",
+        },
+    }
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+
+    await handler._handle_cron_push_payload(
+        payload={
+            "action": "create",
+            "data": {
+                "name": "job",
+                "group_id": "g-other-tenant",
+                "bot_id": "b-other-tenant",
+                "user_id": "forged-tool-user",
+            },
+        },
+        request_id="req-1",
+        channel_id="web",
+        session_id="sess-1",
+        metadata=None,
+        user_id="u-1",
+    )
+
+    assert controller.create_params is not None
+    assert controller.create_params["user_id"] == "u-1"
+    assert controller.create_params["group_id"] == "g-real"
+    assert (
+        controller.create_params["bot_id"]
+        == "06b75225-753d-40be-b23c-a13de9038734"
+    )
+
+
+@pytest.mark.asyncio
 async def test_cron_push_list_fills_tenant_from_chat_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

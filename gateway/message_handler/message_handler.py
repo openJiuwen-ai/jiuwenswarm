@@ -3746,7 +3746,8 @@ class MessageHandler(ABC):
 
         # 对话里的 cron 工具（list/get/update/…）通常不带 group_id/bot_id；
         # 空值会被 controller normalize 成 default，企业版任务筛不中 → 列表空。
-        # create 路径已有 routing 回填；这里对所有 action 统一先补齐。
+        # 查询类：override=False，只补洞，保留 wire/body 已带的真实租户。
+        # create：见下方硬覆盖——必须以 chat routing 为准，防 LLM 幻觉跨租户写入。
         from jiuwenswarm.common.request_identity import (
             merge_routing_into_params,
             web_routing_identity,
@@ -3862,11 +3863,30 @@ class MessageHandler(ABC):
                 params.pop("_auth_session", None)
                 if auth_session:
                     params["_auth_session"] = auth_session
+                # create 落库的租户身份必须以 Gateway chat routing 为准。
+                # 顶部对查询类用了 override=False（参数优先补洞）；若 create 也
+                # 参数优先，LLM 幻觉/提示注入的他人 group_id/bot_id 会一路透传到
+                # create_job，形成跨租户写入。这里硬覆盖回去。
+                params = merge_routing_into_params(
+                    params,
+                    identity_meta,
+                    override=True,
+                )
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
-                # group/bot 已在上方用 chat routing 回填。
                 if owner_user_id:
                     params["user_id"] = owner_user_id
+                if is_enterprise():
+                    identity = web_routing_identity(identity_meta)
+                    for key in ("group_id", "bot_id"):
+                        routed = str(identity.get(key) or "").strip()
+                        if routed:
+                            params[key] = routed
+                            continue
+                        # 没有路由身份时丢掉占位 default，让控制器明确报缺身份，
+                        # 避免拿 bot_id=default 去企业库查出空名单再误报 Unknown model。
+                        if str(params.get(key) or "").strip() in {"", "default"}:
+                            params.pop(key, None)
                 # 从原始请求中获取 mode，覆盖 LLM 工具调用的默认值
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:
