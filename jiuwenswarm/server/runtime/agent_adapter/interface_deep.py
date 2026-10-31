@@ -8763,8 +8763,28 @@ class JiuWenSwarmDeepAdapter:
         if not self._has_valid_model_config(requested):
             # 包括默认模型还是 .env 模板占位值的情况（新装、没配过模型）。Opencode Zen 停用后
             # 没有免费模型兜底了，所以要把"登录拿免费模型"这条路也告诉用户。
-            return "model_not_configured", "还没有配置可用的模型：请在设置里配置模型，或登录获取限时免费模型"
+            return "model_not_configured", self._model_not_configured_message()
         return None
+
+    @classmethod
+    def _model_not_configured_message(cls) -> str:
+        """User-visible ``model_not_configured`` text in the configured UI language.
+
+        Some UI surfaces (and history restore) render the raw backend message
+        instead of mapping the error code, so an English UI used to show this
+        notice in Chinese (#5804).  Fall back to Chinese, the config default,
+        when the language cannot be read.
+        """
+        try:
+            language = resolve_language(cls._resolve_prompt_language())
+        except Exception:  # noqa: BLE001 — 语言读取失败不能影响预检
+            language = "cn"
+        if language == "en":
+            return (
+                "No model is configured yet: configure one in Settings, "
+                "or sign in to get the limited-time free models."
+            )
+        return "还没有配置可用的模型：请在设置里配置模型，或登录获取限时免费模型"
 
     def _request_scoped_login_model(
         self, request: AgentRequest, requested: str
