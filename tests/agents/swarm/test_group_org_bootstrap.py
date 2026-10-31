@@ -87,6 +87,8 @@ class _Launcher:
 
 
 class _OrganizationRecord:
+    organization_id = ORG
+
     def model_dump(self, **_kwargs):
         return {"organization_id": ORG}
 
@@ -163,7 +165,12 @@ def test_owner_prompt_lets_the_model_choose_an_unnamed_aggregation_mode():
     reminder = bootstrap._OWNER_START_REMINDER
     assert "The aggregation mode is not selected for you" in prompt
     assert "If the user named neither, choose one from the task" in prompt
+    assert "leave each child OPEN" in prompt
+    assert "do not call org_delegate_task unless" in prompt
+    assert "group-member:{that proxy's member_name}" in prompt
     assert "choose one from the task" in reminder
+    assert "Leave them claimable" in reminder
+    assert "group-member:{member_name}" in reminder
     assert "org_create_and_invite_expert_team" in prompt
     assert "Write only the requested deliverable" in prompt
     assert "org_create_and_invite_expert_team" in reminder
@@ -2271,6 +2278,7 @@ async def test_owner_completion_updates_the_card_without_finish(monkeypatch):
     assert result.data["posted_to_group"] is True
     assert result.data["message_id"] == "msg-1"
     assert posts[0]["client_message_id"] == "expert-result-plan-1"
+    assert posts[0]["attachments"] == []
     assert calls[-1]["status"] == "completed"
     assert calls[-1]["message_id"] == "msg-1"
     assert plan["status"] == "done"
@@ -3054,12 +3062,69 @@ async def test_result_wait_continues_until_the_round_finishes(monkeypatch):
         state["round"] = "completed"
 
     waiter = asyncio.create_task(_finish())
-    result = await asyncio.wait_for(
+    result, files = await asyncio.wait_for(
         bootstrap._await_completed_result(future, object(), "plan-1"),
         timeout=1.0,
     )
     await waiter
     assert result == "report"
+    assert files == []
+
+
+@pytest.mark.asyncio
+async def test_result_keeps_only_the_owner_final_files(monkeypatch, tmp_path):
+    from openjiuwen.agent_teams.paths import (
+        organization_workspace_dir,
+        reset_task_openjiuwen_home,
+        set_task_openjiuwen_home,
+    )
+
+    token = set_task_openjiuwen_home(tmp_path)
+    try:
+        owner_outputs = tmp_path / ".agent_teams" / "org-expert-business" / "outputs"
+        owner_outputs.mkdir(parents=True)
+        final = owner_outputs / "final.md"
+        final.write_text("final", encoding="utf-8")
+        (owner_outputs / "section_business.md").write_text("draft", encoding="utf-8")
+        summary_dir = organization_workspace_dir(ORG, SESSION) / "summary"
+        summary_dir.mkdir(parents=True)
+        (summary_dir / "report.md").write_text("summary", encoding="utf-8")
+        outside = tmp_path / "elsewhere.md"
+        outside.write_text("x", encoding="utf-8")
+
+        async def _round_state(_pool, _plan_id):
+            root = SimpleNamespace(
+                output_context=SimpleNamespace(
+                    result_uri=f".organization/{ORG}/summary/report.md"
+                ),
+                output_abstract="",
+            )
+            return "completed", [root]
+
+        monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(
+            {
+                "result": "report",
+                "attachments": [
+                    {"name": "final.md", "path": str(final)},
+                    {"name": "final.md", "path": str(final)},
+                    {"name": "elsewhere.md", "path": str(outside)},
+                    {"name": "missing.md", "path": str(owner_outputs / "missing.md")},
+                ],
+            }
+        )
+        result, files = await bootstrap._await_completed_result(
+            future, object(), "plan-1", session_id=SESSION, organization_id=ORG
+        )
+    finally:
+        reset_task_openjiuwen_home(token)
+
+    assert result == "report"
+    assert files == [
+        {"name": "final.md", "path": str(final.resolve())},
+        {"name": "report.md", "path": str((summary_dir / "report.md").resolve())},
+    ]
 
 
 @pytest.mark.asyncio
