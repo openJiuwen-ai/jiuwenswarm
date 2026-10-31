@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -333,9 +335,10 @@ async def test_invalid_deepresearch_report_type_fails_before_session_child_spawn
 
 
 @pytest.mark.asyncio
-async def test_concurrent_task_planning_rail_uses_session_api_and_preserves_terminal_todos():
+async def test_concurrent_task_planning_rail_uses_session_api_and_preserves_terminal_todos(tmp_path):
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
     from openjiuwen.harness.schema.task import TaskPlan, TodoItem, TodoStatus
+    from openjiuwen.harness.tools.todo import TodoModifyTool
     from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import (
         ConcurrentSafeTaskPlanningRail,
     )
@@ -344,9 +347,18 @@ async def test_concurrent_task_planning_rail_uses_session_api_and_preserves_term
         TodoItem(id="complete-me", content="Complete me", status=TodoStatus.IN_PROGRESS),
         TodoItem(id="cancelled", content="Stay cancelled", status=TodoStatus.CANCELLED),
     ]
-    tool = Mock()
-    tool.load_todos = AsyncMock(return_value=persisted_todos)
-    tool.save_todos = AsyncMock()
+    raw = json.dumps([todo.to_dict() for todo in persisted_todos])
+    fs = SimpleNamespace(
+        read_file=AsyncMock(return_value=SimpleNamespace(code=0, data=SimpleNamespace(
+            content=raw, exists=True, content_sha256=hashlib.sha256(raw.encode()).hexdigest(),
+        ))),
+        write_file=AsyncMock(return_value=SimpleNamespace(
+            code=0, data=SimpleNamespace(conflict=False, atomic_replace=True),
+        )),
+    )
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(tmp_path))
+    tool.read_todos = AsyncMock(wraps=tool.read_todos)
+    tool.write_todos = AsyncMock(wraps=tool.write_todos)
 
     rail = ConcurrentSafeTaskPlanningRail()
     rail._find_todo_tool = Mock(return_value=tool)  # pylint: disable=protected-access
@@ -367,10 +379,12 @@ async def test_concurrent_task_planning_rail_uses_session_api_and_preserves_term
 
     await rail._sync_todos_from_plan(ctx)  # pylint: disable=protected-access
 
-    tool.load_todos.assert_awaited_once_with("session-1")
-    tool.save_todos.assert_awaited_once_with("session-1", persisted_todos)
-    assert persisted_todos[0].status == TodoStatus.COMPLETED
-    assert persisted_todos[1].status == TodoStatus.CANCELLED
+    tool.read_todos.assert_awaited_once_with("session-1")
+    tool.write_todos.assert_awaited_once()
+    assert tool.write_todos.await_args.args[0] == "session-1"
+    fs.write_file.assert_awaited_once()
+    saved = json.loads(fs.write_file.await_args.args[1])
+    assert [todo["status"] for todo in saved["todos"]] == ["completed", "cancelled"]
 
 
 @pytest.mark.parametrize(

@@ -43,7 +43,8 @@ def flash_memory(monkeypatch):
     monkeypatch.setattr(memory_module, "get_memory_section", lambda cfg=None: (cfg or config)["memory"])
     adapter = JiuwenSwarmFlashAdapter()
     adapter._instance = RecordingAgent()
-    # Isolate built-in memory, not the existing external configuration gates.
+    # Isolate workspace context and built-in memory from the external gates.
+    monkeypatch.setattr(adapter, "_ensure_flash_context_rail", AsyncMock())
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", AsyncMock())
     external = SimpleNamespace(kind="external", _provider=SimpleNamespace(on_session_end=AsyncMock()))
     profile = SimpleNamespace(kind="profile")

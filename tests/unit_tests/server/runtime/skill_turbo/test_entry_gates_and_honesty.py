@@ -36,9 +36,10 @@ class TestTemplateBypassGate:
     @pytest.mark.asyncio
     async def test_template_field_keyword_intercepted(self):
         """固定字段名（pack_dir 等）→ 拦截（前端注入形态）。"""
-        result = await skill_turbo.invoke({"query": "pack_dir 指向用户上传的模板包"})
+        result = await skill_turbo.invoke({"query": "生成 PPT，pack_dir 指向用户上传的模板包"})
         assert isinstance(result, dict)
         assert result["success"] is False
+        assert "模板" in result["error"]
 
     @pytest.mark.asyncio
     async def test_template_mention_without_path_not_intercepted(self):
@@ -60,15 +61,33 @@ class TestRegionEditBypassGate:
     @pytest.mark.asyncio
     async def test_layout_optimization_keyword_intercepted(self):
         """布局优化（REGION_EDIT_KEYWORDS 成员）→ 拦截。"""
-        result = await skill_turbo.invoke({"query": "对选中页做布局优化"})
+        result = await skill_turbo.invoke({"query": "对选中的 PPT 页做布局优化"})
         assert isinstance(result, dict)
         assert result["success"] is False
+        assert "选区" in result["error"]
 
     @pytest.mark.asyncio
     async def test_fresh_generation_not_intercepted(self):
         """全新生成请求（无选区词）→ 不拦截。"""
         result = await skill_turbo.invoke({"query": "生成一份关于新能源汽车的 8 页 PPT"})
         assert "未初始化" in str(result.get("error", "")), "全新生成请求不得被拦截"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", [
+    "请使用 docx-craft 编辑已有 Word 文档。修改要求：把标题改为季度总结。",
+    "对 Word 文档做内容优化，保留原有格式。",
+    "请使用 xlsx-craft 填写 Excel。模板路径：C:/temp/budget.xlsx",
+    "请填写 Word 文档，模板主文件路径：C:/temp/report.docx",
+    "请对 Excel 表格做布局优化，调整列宽。",
+])
+async def test_non_ppt_tasks_reach_turbo_instead_of_ppt_bypass(query, monkeypatch):
+    from jiuwenswarm.agents.harness.common.tools import subagent_executor
+
+    monkeypatch.setattr(subagent_executor, "get_subagent_parent_session", lambda: None)
+    result = await skill_turbo.invoke({"query": query})
+    assert "未初始化" in result["error"]
+    assert "pptx-craft" not in result["error"]
 
 
 class TestWrapResultHonesty:

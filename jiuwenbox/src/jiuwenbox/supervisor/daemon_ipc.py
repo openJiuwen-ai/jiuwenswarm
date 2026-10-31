@@ -60,6 +60,7 @@ REQUEST_TYPE_SHUTDOWN = "shutdown"
 # would see.
 REQUEST_TYPE_WRITE_FILE = "write_file"
 REQUEST_TYPE_READ_FILE = "read_file"
+REQUEST_TYPE_FILE_SNAPSHOT = "file_snapshot"
 REQUEST_TYPE_LIST_DIR = "list_dir"
 REQUEST_TYPE_EXEC_BACKGROUND = "exec_background"
 REQUEST_TYPE_BG_STATUS = "bg_status"

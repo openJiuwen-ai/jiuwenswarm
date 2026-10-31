@@ -659,6 +659,7 @@ react:
       - skill_tool
       - skill_complete
       - skill_acceleration_exec
+      - office_claw_list_wishes
       - todo_create
       - todo_list
       - todo_modify
@@ -677,6 +678,7 @@ react:
       - external_memory_search
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm
+      - deepseek
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表
@@ -795,6 +797,13 @@ react:
       reasoning_preview_max_chars: 512     # 摘要里 reasoning 预览的最大字符数
       bailout_threshold: 3                 # reasoning 规则压缩次数达此值后中止
       tool_args_bailout_threshold: 2       # 工具入参规则压缩次数达此值后终止
+      # 豁免异步轮询作为断墙：image_get_run 直调与 invoke_tool 包装调用（按名豁免，脱离本段循环网，靠会话超时等兜底）
+      ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
+        - tool_name: invoke_tool
+          argument_equals:
+            tool_name: image_get_run
   # Skills 在线自演进配置
   evolution:
     enabled: true             # true = 启用在线 Skills 自演进（挂载后被动扫描始终开启）
@@ -1013,15 +1022,24 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # 策略级鉴权失败 / 凭证探测断路器（单 agent / flash）。
+  stalled_access:
+    enabled: true
+    auth_threshold: 5
+    probe_threshold: 3
+    window_seconds: 1800
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
-  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  # 不是 issue 级 OPEN/HALF_OPEN 恢复型熔断；
+  # non_retryable_tool 检测器也在此开关下；默认部署使用 agent_ras，
+  # 不消费 tool_result_contract，因此默认不会触发该检测器。
   circuit_breaker:
     enabled: false
     warning_threshold: 10
     critical_threshold: 20
     global_breaker_threshold: 30
     unknown_tool_threshold: 10
+    non_retryable_threshold: 3
 
 # Agent RAS 整体配置
 agent_ras:
@@ -1042,6 +1060,8 @@ agent_ras:
       # Match the outer tool and selected top-level arguments exactly.
       # Add rules for other polling functions without exempting the whole tool.
       ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
         - tool_name: invoke_tool
           argument_equals:
             tool_name: image_get_run

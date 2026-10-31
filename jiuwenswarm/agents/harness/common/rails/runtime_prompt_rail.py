@@ -8,6 +8,7 @@ sees the current values without needing to call any tool.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,30 @@ from jiuwenswarm.common.utils import (
 )
 
 _LANGUAGE_NAMES = {"cn": "Chinese (Simplified)", "zh": "Chinese (Simplified)", "en": "English"}
+
+_LIBRARY_LIST_MARKERS = ("运行时探测", "runtime probe")
+
+
+def _prompt_has_library_list(builder: Any) -> bool:
+    """Return True when *builder* already carries the runtime library list.
+
+    The list lives in the static identity section, which is absent for agents
+    that build their prompt elsewhere (e.g. code mode). The env section must
+    add it only in that case, otherwise the same list is injected twice.
+    """
+    get_section = getattr(builder, "get_section", None)
+    if not callable(get_section):
+        return False
+    try:
+        section = get_section("identity")
+    except Exception:  # noqa: BLE001 — 诊断能力缺失时按「没有」处理，宁可多注入一份
+        return False
+    content = getattr(section, "content", None)
+    texts = content.values() if isinstance(content, dict) else [content]
+    return any(
+        isinstance(text, str) and any(marker in text for marker in _LIBRARY_LIST_MARKERS)
+        for text in texts
+    )
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -245,6 +270,18 @@ class RuntimePromptRail(DeepAgentRail):
     def _same_path(left: str, right: str) -> bool:
         return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
+    def _read_runtime_state_sync(self) -> dict[str, Any]:
+        """Read runtime_state.yaml for this session (single small-file read)."""
+        state_path = get_runtime_state_path(self._session_id)
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning("Failed to read runtime state file %s: %s", state_path, e)
+            return {}
+
     @staticmethod
     def _configured_model_names() -> list[str]:
         """Read configured model names from config.yaml as a runtime fallback."""
@@ -346,15 +383,12 @@ class RuntimePromptRail(DeepAgentRail):
         ))
 
         # ── runtime ──
-        runtime_state: dict[str, Any] = {}
-        state_path = get_runtime_state_path(self._session_id)
-        try:
-            with open(state_path, encoding="utf-8") as f:
-                runtime_state = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning("Failed to read runtime state file %s: %s", state_path, e)
+        # Both disk reads in this section are offloaded to the default thread
+        # pool: before_model_call runs on the AgentServer event loop, and sync
+        # IO here stalled the loop on slow disks (OA.05000010, 2026-10-15).
+        runtime_state: dict[str, Any] = await asyncio.to_thread(
+            self._read_runtime_state_sync
+        )
 
         configured_models: list[str] = []
         raw_available_models = runtime_state.get("available_models") or []
@@ -364,7 +398,10 @@ class RuntimePromptRail(DeepAgentRail):
             if str(item).strip()
         ] if isinstance(raw_available_models, list) else []
         if not available_models or not runtime_state.get("model"):
-            configured_models = self._configured_model_names()
+            # Merged-config cache miss (startup first call / clear_config_cache
+            # invalidation) reloads both YAMLs (~150ms measured); keep that off
+            # the event loop as well.
+            configured_models = await asyncio.to_thread(self._configured_model_names)
         if not available_models:
             available_models = configured_models
         fallback_model = configured_models[0] if configured_models else ""
@@ -477,7 +514,13 @@ class RuntimePromptRail(DeepAgentRail):
         import platform as plat
         os_version = f"{plat.system()} {plat.release()}"
         env_language = "cn" if not self._force_english and self._language == "cn" else "en"
-        shell_env_prompt = build_shell_environment_prompt(env_language, os_type)
+        # 库清单由静态 identity 段注入；这里只在 identity 缺失时补一份，
+        # 避免同一份清单在同一 system prompt 里出现两次。
+        shell_env_prompt = build_shell_environment_prompt(
+            env_language,
+            os_type,
+            include_libraries=not _prompt_has_library_list(self.system_prompt_builder),
+        )
 
         if not self._force_english and self._language == "cn":
             env_content = (

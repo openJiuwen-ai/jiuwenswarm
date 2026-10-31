@@ -23,7 +23,6 @@ Runtime layout:
   - HEARTBEAT.md
   - USER.md
 - <root>/agent/sessions
-- <root>/agent/jiuwenclaw_workspace/agent-data.json
 - <root>/agent/.checkpoint
 - <root>/agent/.logs（gateway.log / channel.log / agent_server.log / full.log）
 
@@ -1630,7 +1629,7 @@ def prepare_workspace(
                 copy_function=copy_if_missing,
             )
 
-    # Copy DeepAgent workspace template (includes agent-data.json, memory, skills)
+    # Copy DeepAgent workspace template (includes memory, skills, etc.)
     # Ignore _ZH.md and _EN.md files - they are handled separately
     if template_agent_workspace.exists():
         with TrackCopyDiff(

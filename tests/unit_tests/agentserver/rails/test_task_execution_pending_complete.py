@@ -32,7 +32,7 @@ def _task(content: str, status: str, index: int, total: int = 3) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_pending_to_completed_emits_start_then_complete(monkeypatch) -> None:
+async def test_pending_to_completed_emits_start_then_complete() -> None:
     rail = TaskExecutionRail()
     session = _FakeSession()
     rail._todo_map_before_tool = {
@@ -47,7 +47,6 @@ async def test_pending_to_completed_emits_start_then_complete(monkeypatch) -> No
         {"id": "stage5_style", "content": "Stage 5: 风格", "status": "completed"},
         {"id": "stage6_generate", "content": "Stage 6: 生成", "status": "in_progress"},
     ]
-    monkeypatch.setattr(rail, "_load_todo_from_json", lambda _sid: after_items)
     rail._todo_started.add("stage2_outline")
     rail._active_tasks["todo:stage2_outline"] = SimpleNamespace(
         task_id="todo:stage2_outline",
@@ -58,7 +57,10 @@ async def test_pending_to_completed_emits_start_then_complete(monkeypatch) -> No
 
     ctx = SimpleNamespace(
         session=session,
-        inputs=SimpleNamespace(request_id="req-1"),
+        inputs=SimpleNamespace(
+            request_id="req-1",
+            tool_result=SimpleNamespace(todo_snapshot={"plan_id": "plan", "revision": 1, "todos": after_items}),
+        ),
     )
     await rail._sync_todo_and_emit_transitions(ctx)
 

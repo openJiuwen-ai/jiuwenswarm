@@ -2,8 +2,6 @@
   "name": "jiuwenswarm",
   "version": "1.0.0",
   "scripts": {
-    "predev": "node scripts/generate-agent-folders.js",
-    "prebuild": "node scripts/generate-agent-folders.js",
     "dev": "cd channels/web/frontend && npm run dev",
     "build": "cd channels/web/frontend && npm run build",
     "whatsapp:bridge": "node scripts/whatsapp-bridge.js"

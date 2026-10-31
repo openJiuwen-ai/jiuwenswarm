@@ -429,6 +429,98 @@ def test_load_llm_default_headers_raises_when_not_set(monkeypatch):
         os.environ.update(saved)
 
 
+def test_petal_search_headers_read_latest_staged_tip_under_seal(monkeypatch):
+    import os
+    from jiuwenswarm.common.local_env_config import (
+        bind_agent_env_ns,
+        bind_task_env_overlay,
+        build_effective_env_overlay,
+        apply_env_overrides_to_active,
+        reset_agent_env_ns,
+        reset_local_env_state_for_tests,
+        reset_task_env_overlay,
+        stage_env_overrides,
+    )
+
+    saved = dict(os.environ)
+    reset_local_env_state_for_tests()
+    try:
+        apply_env_overrides_to_active(
+            {"PETAL_SEARCH_HEADERS": '{"Authorization": "sealed"}'},
+            service_id="default",
+            agent_id="test",
+        )
+        token = bind_agent_env_ns("default", "test")
+        overlay = build_effective_env_overlay(
+            None, service_id="default", agent_id="test"
+        )
+        overlay_token = bind_task_env_overlay(overlay)
+        try:
+            stage_env_overrides(
+                {"PETAL_SEARCH_HEADERS": '{"Authorization": "latest"}'},
+                service_id="default",
+                agent_id="test",
+            )
+            from jiuwenswarm.agents.harness.common.tools.web_search.paid import (
+                _load_llm_default_headers,
+            )
+
+            assert _load_llm_default_headers() == {"Authorization": "latest"}
+        finally:
+            reset_task_env_overlay(overlay_token)
+            reset_agent_env_ns(token)
+    finally:
+        reset_local_env_state_for_tests()
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def test_petal_search_url_read_latest_staged_tip_under_seal(monkeypatch):
+    import os
+    from jiuwenswarm.common.local_env_config import (
+        bind_agent_env_ns,
+        bind_task_env_overlay,
+        build_effective_env_overlay,
+        apply_env_overrides_to_active,
+        reset_agent_env_ns,
+        reset_local_env_state_for_tests,
+        reset_task_env_overlay,
+        stage_env_overrides,
+    )
+
+    saved = dict(os.environ)
+    reset_local_env_state_for_tests()
+    try:
+        apply_env_overrides_to_active(
+            {"PETAL_SEARCH_URL": "https://petal.example.com/sealed"},
+            service_id="default",
+            agent_id="test",
+        )
+        token = bind_agent_env_ns("default", "test")
+        overlay = build_effective_env_overlay(
+            None, service_id="default", agent_id="test"
+        )
+        overlay_token = bind_task_env_overlay(overlay)
+        try:
+            stage_env_overrides(
+                {"PETAL_SEARCH_URL": "https://petal.example.com/latest"},
+                service_id="default",
+                agent_id="test",
+            )
+            from jiuwenswarm.agents.harness.common.tools.web_search.paid import (
+                _resolve_petal_search_url,
+            )
+
+            assert _resolve_petal_search_url() == "https://petal.example.com/latest"
+        finally:
+            reset_task_env_overlay(overlay_token)
+            reset_agent_env_ns(token)
+    finally:
+        reset_local_env_state_for_tests()
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def test_configured_providers_summary_returns_configured_order(monkeypatch):
     def fake_load_settings():
         from jiuwenswarm.agents.harness.common.tools.web_search.types import WebSearchSettings

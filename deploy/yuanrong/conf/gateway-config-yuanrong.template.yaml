@@ -529,6 +529,10 @@ execution_guard:
     global_breaker_threshold: 30
     # 未知/错误工具连续调用达到该次数时停止重试并中断
     unknown_tool_threshold: 10
+    # 同一工具+参数连续返回不可重试契约时中断。
+    # 仅在 circuit_breaker.enabled=true 时生效；默认部署由 agent_ras 负责循环检测，
+    # 不消费 tool_result_contract。
+    non_retryable_threshold: 3
 
 channels:
   web:

@@ -144,7 +144,7 @@ common/
 │
 ├── mcp_config.py                   # MCP 配置→SDK 转换 + 安全准入 + 请求级 worker 池（~2720 行）
 ├── mcp_server_registry.py          # 进程内 MCP 注册表 + 全局 worker 池 + remote 周期扫描
-├── mcp_call_timeout_patch.py       # 上游补丁：调用超时 + 死会话作废重连（wait_for 不变量）
+├── mcp_call_timeout_patch.py       # 上游补丁：调用超时 + owner 内清理重连（生命周期归属不变量）
 ├── mcp_tool_list_refresh_patch.py  # 上游补丁：工具列表中途刷新（修 ToolMgr/ResourceMgr 三缺陷）
 │
 ├── model_client_extensions.py      # 外部模型 client 动态装载（env 白名单 + EXTENSION_DIRS）
@@ -228,12 +228,15 @@ common/
 8. **上游 monkeypatch 唯一装配点 + 幂等**（[[S_09]]）。两个 MCP patch 只在
    `server/runtime/agent_adapter/interface_deep.py` 装配；均带 `_PATCHED` 标记防重复；
    patch 目标属性名集中为常量（上游改名一处可改）。自建 remote MCP client 必须补打
-   `_jws_call_timeout` 印章——漏打的后果是超时 patch 的内层 300s 兜底先掐断长调用。
+   `_jws_call_timeout` 印章——漏打的后果是超时 patch 的进程级默认 30s 兜底先掐断长调用。
 9. **配置缓存共享引用禁改 + 联动失效**（[[S_08]]）。`get_config()` 返回的 dict 是缓存
    共享引用，消费方禁止原地修改；`local_env_config` 的 tip 写入必须联动失效 config 的
    ns 缓存（已内置，绕过 `set_os_environ` 直写 os.environ 会破坏该联动）。
 10. **Track B 业务键永不驻留 os.environ**（[[S_08]] N5）。`export_agent_environ` 是子进程
-    环境的唯一合法出口（含加解密）；overlay 绑定即 seal（miss 即 unset，不回退 tip）。
+    环境的唯一合法出口（含加解密）；overlay 绑定后默认读取面即 seal（miss 即 unset，
+    不回退 tip）。唯一显式例外 `read_env_live` 当前仅用于 Petal search 的
+    `PETAL_SEARCH_URL` / `PETAL_SEARCH_HEADERS`；overlay 已绑定且 live tip miss 时仍
+    视为 unset，不回退 sealed overlay 或进程环境变量。
     `JIUWENCLAW_*` ↔ `JIUWENSWARM_*` 别名互换只在出口处做。
 11. **模式与身份归一的原样铁律**（[[S_08]] / [[S_13]]）。`deprecate_mode` 对 None / 空串
     原样返回（禁降级为默认值）；路由身份四字段只写一次（Gateway 入口）、读多处，

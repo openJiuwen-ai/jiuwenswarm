@@ -21,6 +21,9 @@ from typing import Any, List, Optional, Union
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
+from jiuwenswarm.agents.harness.common.tools.tool_result_contract import (
+    build_non_retryable_tool_result,
+)
 from jiuwenswarm.edition import is_enterprise
 
 
@@ -166,6 +169,29 @@ def _partition_sent_files(
     return new_paths, skipped
 
 
+def _format_skipped_file_links(skipped_files: list[str], session_id: str) -> list[str]:
+    """Best-effort download links for files already delivered in this session.
+
+    A user who reports "I did not receive the file" must still get something
+    clickable even when the duplicate guard blocks a second push.
+    """
+    lines: list[str] = []
+    for path in skipped_files:
+        name = os.path.basename(path)
+        url = ""
+        try:
+            from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+                build_file_download_info,
+            )
+
+            info = build_file_download_info(path, name, session_id)
+            url = str(info.get("download_url") or "").strip()
+        except Exception as exc:  # noqa: BLE001 - a missing link must not fail the tool
+            logger.warning("[SendFileToolkit] build download link failed: %s (%s)", path, exc)
+        lines.append(f"  - {name}: {url}" if url else f"  - {path}")
+    return lines
+
+
 def _mark_files_sent(session_id: str, paths: list[str]) -> None:
     sid = (session_id or "").strip() or "default"
     sent = _SENT_FILE_PATHS_BY_SESSION.setdefault(sid, set())
@@ -309,6 +335,7 @@ class SendFileToolkit:
         self,
         abs_file_path_list: Union[List[str], str],
         target_channels: Union[List[str], str, None] = None,
+        force: bool = False,
         **_ignored: Any,
     ) -> str:
         """Send files to user.
@@ -321,6 +348,9 @@ class SendFileToolkit:
                 Gateway auto-routes the file to all channels joined to the
                 session (team mode). When provided, the file is delivered
                 only to the specified targets.
+            force: Bypass the session-level duplicate guard. Set this only
+                when the user explicitly says they did not receive the file
+                and asks to resend it.
 
         Returns:
             Success message or error description.
@@ -365,20 +395,28 @@ class SendFileToolkit:
                 logger.warning("[SendFileToolkit] 文件不存在: %s", fp)
 
         if not valid_files:
-            msg_parts = ["发送文件失败：所有文件均不存在"]
-            for mf in missing_files:
-                msg_parts.append(f"  - {mf}")
+            error = "发送文件失败：所有文件均不存在；请先确认路径。缺失文件: " + ", ".join(
+                missing_files
+            )
             _safe_emit_audit_evt(
                 SUBMDL="file",
                 PROC="send_file_to_user",
-                MSG=msg_parts[0],
+                MSG="发送文件失败：所有文件均不存在",
                 EVT="send_file_failed",
                 session_id=route.session_id,
                 request_id=route.request_id,
             )
-            return "\n".join(msg_parts)
+            return build_non_retryable_tool_result(error, "read_file")
 
-        valid_files, skipped_files = _partition_sent_files(route.session_id, valid_files)
+        if force:
+            skipped_files: list[str] = []
+            logger.info(
+                "[SendFileToolkit] force resend requested session_id=%s files=%d",
+                route.session_id,
+                len(valid_files),
+            )
+        else:
+            valid_files, skipped_files = _partition_sent_files(route.session_id, valid_files)
         if not valid_files:
             logger.info(
                 "[SendFileToolkit] skip duplicate send session_id=%s skipped=%s missing=%s",
@@ -388,9 +426,8 @@ class SendFileToolkit:
             )
             msg_parts: list[str] = []
             if skipped_files:
-                msg_parts.append("文件已在本次会话发送过，跳过重复投递：")
-                for sf in skipped_files:
-                    msg_parts.append(f"  - {sf}")
+                msg_parts.append("文件已在本次会话发送过，跳过重复投递。可直接使用以下链接下载：")
+                msg_parts.extend(_format_skipped_file_links(skipped_files, route.session_id))
             if missing_files:
                 msg_parts.append("以下文件不存在，未发送：")
                 for mf in missing_files:
@@ -850,6 +887,7 @@ class SendFileToolkit:
                     "省略时默认投给最近发起请求的人类成员（按 session 记录的发起者）；web 发起或无人类成员时投 web。"
                     "多 app 场景定向到指定 feishu 用户时，传入该用户的 member_name（不会误投其它 app）；"
                     "跨端投递（如把文件发给飞书用户、或发给 web）时传入对应 member_name 或 'web'。"
+                    "force 可选：用户明确说没有收到文件、要求重新发送时传 true；普通首次发送不要传。"
                     "【文件命名与「AI生成」合规标记】用户指定文件名时，交付文件名必须与其要求逐字一致，"
                     "禁止自行追加「-AI生成」等任何后缀或额外标记；用户说「文件名不要带 AI生成 后缀 / 命名保持完全一致」"
                     "时仅指文件命名本身，按用户要求（重）命名后重新交付即可。"
@@ -879,6 +917,13 @@ class SendFileToolkit:
                                 "或 team 人类席位名（如 'human-player-1'）。"
                                 "省略时默认投给最近发起请求的人类成员；web 发起或无人类成员时投 web。"
                                 "定向到指定 feishu 用户传其 member_name；跨端投递传对应 member_name 或 'web'。"
+                            ),
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": (
+                                "可选：用户明确表示没有收到文件并要求重新发送时设为 true，"
+                                "跳过本会话的重复发送保护。普通首次发送不要设置。"
                             ),
                         },
                     },

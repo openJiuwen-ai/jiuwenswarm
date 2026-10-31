@@ -37,6 +37,7 @@ from jiuwenbox.supervisor.daemon_ipc import (
     recv_frame,
     send_frame,
 )
+from jiuwenbox.supervisor.sandbox_daemon import file_snapshot_operation
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -1244,6 +1245,18 @@ def _handle_one_request(  # pylint: disable=huawei-too-many-arguments
                 _handle_write_file_request(conn, header, conn)
             elif req_type == "read_file":
                 _handle_read_file_request(conn, header)
+            elif req_type == "file_snapshot":
+                size = header.get("content_size", 0)
+                if type(size) is not int or not 0 <= size <= MAX_FILE_BYTES:
+                    _send_response(conn, {"ok": False, "error": "bad_request"})
+                    return
+                content = recv_frame(conn, MAX_FILE_BYTES) if size else b""
+                if len(content) != size:
+                    raise ConnectionError("Snapshot content size mismatch")
+                response, raw = file_snapshot_operation(header, content)
+                _send_response(conn, response)
+                if response.get("ok") and header.get("operation") == "read":
+                    send_frame(conn, raw)
             elif req_type == "list_dir":
                 _handle_list_dir_request(conn, header)
             else:

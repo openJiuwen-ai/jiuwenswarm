@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.todo_snapshot import TODO_SNAPSHOT_MODE
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers import session as session_handlers
 
@@ -13,9 +15,12 @@ from jiuwenswarm.server.handlers import session as session_handlers
 class _Sink:
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.consumer_tasks = [{"id": "old"}]
 
     async def send_wire(self, wire: dict) -> bool:
         self.sent.append(wire)
+        if wire.get("payload", {}).get("event_type") == "todo.updated":
+            self.consumer_tasks = wire["payload"]["todos"]
         return True
 
 
@@ -64,7 +69,8 @@ async def test_history_first_page_emits_todo_snapshot_before_done(monkeypatch, _
     def _load(_session_id, *, todo_root, generation_token):
         captured["todo_root"] = todo_root
         captured["generation_token"] = generation_token
-        return [{"id": "t1", "status": "pending"}]
+        from jiuwenswarm.common.todo_snapshot import FrontendTodos
+        return FrontendTodos([{"id": "t1", "status": "pending"}], {"plan_id": "P", "revision": 1})
 
     monkeypatch.setattr(
         session_handlers,
@@ -110,4 +116,59 @@ async def test_history_later_page_does_not_load_todo(monkeypatch, _history):
     await session_handlers.handle_history_get_stream(ctx)
 
     assert called is False
+    assert all(item["payload"]["event_type"] != "todo.updated" for item in sink.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["legacy", "versioned"])
+@pytest.mark.parametrize("empty", [False, True])
+async def test_history_projects_real_file_using_the_consumer_mode(tmp_path, monkeypatch, _history, mode, empty):
+    path = tmp_path / "todo/web_todo_1/todo.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"plan_id": "P", "revision": 8,
+                               "todos": [] if empty else [{"id": "A", "content": "Task", "status": "completed"}]}))
+    monkeypatch.setattr(session_handlers, "_agent_workspace_dir_for_request", lambda _request: tmp_path)
+
+    async def generation(_ctx, _sid):
+        return None
+
+    monkeypatch.setattr(session_handlers, "_todo_generation_token_for_history", generation)
+    ctx, sink = _context(1)
+    token = TODO_SNAPSHOT_MODE.set(mode)
+    try:
+        await session_handlers.handle_history_get_stream(ctx)
+    finally:
+        TODO_SNAPSHOT_MODE.reset(token)
+    updates = [frame["payload"] for frame in sink.sent if frame["payload"]["event_type"] == "todo.updated"]
+    assert len(updates) == 1
+    assert isinstance(updates[0]["todos"], list)
+    if mode == "legacy":
+        assert "todo_meta" not in updates[0]
+    else:
+        assert updates[0]["todo_meta"] == {"plan_id": "P", "revision": 8}
+    if empty:
+        # Model a consumer that replaces its old list on todo.updated.
+        assert sink.consumer_tasks == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["legacy", "versioned"])
+@pytest.mark.parametrize("failure", ["missing", "corrupt"])
+async def test_history_unavailable_file_does_not_emit_a_fake_clear(tmp_path, monkeypatch, _history, mode, failure):
+    path = tmp_path / "todo/web_todo_1/todo.json"
+    path.parent.mkdir(parents=True)
+    if failure == "corrupt":
+        path.write_text("{invalid")
+    monkeypatch.setattr(session_handlers, "_agent_workspace_dir_for_request", lambda _request: tmp_path)
+
+    async def generation(_ctx, _sid):
+        return None
+
+    monkeypatch.setattr(session_handlers, "_todo_generation_token_for_history", generation)
+    ctx, sink = _context(1)
+    token = TODO_SNAPSHOT_MODE.set(mode)
+    try:
+        await session_handlers.handle_history_get_stream(ctx)
+    finally:
+        TODO_SNAPSHOT_MODE.reset(token)
     assert all(item["payload"]["event_type"] != "todo.updated" for item in sink.sent)

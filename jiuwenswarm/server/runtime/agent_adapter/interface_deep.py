@@ -136,6 +136,10 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     STATUSLINE_SETUP_AGENT_TYPE,
     build_statusline_setup_agent_config,
 )
+from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
+    RefusalTextScrub,
+    is_refusal_scrub_control,
+)
 from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
     TodoCloseTextHold,
     is_todo_close_control,
@@ -184,6 +188,12 @@ _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
 # "首个非噪声 chunk"启发式。用字面量而非 import：隔离 venv openjiuwen 版本差异。
 # 信号本身无用户可见内容，_parse_stream_chunk 对未知类型返回 None 将其吞掉。
 _RESUME_SIGNAL_CHUNK_TYPE = "__resume_signal__"
+
+# shutdown_context_session_memory 用哨兵区分"属性缺失（框架改名/异型
+# rail）"与"属性合法为 None（未配置或已关闭，框架初始即 None，仅在
+# session_memory_compressor_config.enabled=true 时创建）"——两者日志
+# 级别不同，getattr 默认值无法表达该区分（CR-5）。
+_MISSING_SESSION_MEMORY_MGR = object()
 
 
 def _is_foreign_stream_source(payload: Any) -> bool:
@@ -298,6 +308,7 @@ from jiuwenswarm.server.runtime.agent_adapter.llm_io_trace import (
 )
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    INTERRUPT_RESUME_SOURCES,
     SKILL_EVOLUTION_APPROVAL_SCHEMA,
     PermissionRailBuildOptions,
     build_permission_rail,
@@ -329,6 +340,9 @@ from jiuwenswarm.agents.harness.common.rails import (
     SymphonyOrchestrationRail,
     TaskExecutionRail,
     ContextOverflowRecoveryRail,
+)
+from jiuwenswarm.agents.harness.common.rails.eternal_conversation import (
+    EternalConversationRail,
 )
 from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import (
     DisabledToolsRail,
@@ -572,6 +586,8 @@ from jiuwenswarm.common.config import (
     resolve_string_or_list_config,
 )
 from jiuwenswarm.common.mcp_config import (
+    CONNECTOR_DISCOVERY_FAILED,
+    CONNECTOR_NO_TOOLS,
     MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     OfficeClawMcpRegistration,
     RequestScopedOfficeClawMcpTool,
@@ -1768,6 +1784,11 @@ def _parse_bool(value: Any, *, default: bool = False) -> bool:
     return default
 
 
+def _env_truthy(name: str) -> bool:
+    """True when the environment variable is explicitly enabled."""
+    return _parse_bool(os.getenv(name), default=False)
+
+
 def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
     """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
 
@@ -2533,6 +2554,7 @@ class _RequestMcpToolBuffers:
     pending_tools: list[tuple[RequestScopedOfficeClawMcpTool, bool]] = field(default_factory=list)
     research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
     research_tool_names: dict[str, list[str]] = field(default_factory=dict)
+    unavailable_connectors: dict[str, str] = field(default_factory=dict)
 
 
 _SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
@@ -2677,6 +2699,10 @@ class JiuWenSwarmDeepAdapter:
         self._disabled_tools_rail: DisabledToolsRail | None = None
         self._skill_rail: SkillUseRail | None = None
         self._enabled_skills: list[str] | None = None
+        # 串行化 refresh_enabled_skills_from_db 的整段执行（DB 读 → enabled 写 →
+        # rail 换装）：同轮 push、轮边界刷新与会话内安装回调可能并发进入同一
+        # adapter，换装段 unregister→register→赋值间有 await 挂起点。
+        self._skill_refresh_lock = asyncio.Lock()
         self._skill_authorization_rail: Any = None
         # 企业预置 Skill 名快照（安装账本 source_type=prebuilt），供动态授权
         # trust 判定使用；由白名单同步/热刷新/_refresh_skill_identity 维护。
@@ -2726,6 +2752,8 @@ class JiuWenSwarmDeepAdapter:
         self._context_assemble_rail: ContextAssembleRail | None = None
         self._context_assemble_mode: str | None = None
         self._context_processor_rail: ContextProcessorRail | None = None
+        self._eternal_conversation_rail: EternalConversationRail | None = None
+        self._eternal_conversation_enabled: bool = False
         self._runtime_prompt_rail: RuntimePromptRail | None = None
         self._response_prompt_rail: ResponsePromptRail | None = None
         self._personal_context_rail: PersonalContextRail | None = None
@@ -3383,6 +3411,54 @@ class JiuWenSwarmDeepAdapter:
         current = self._skill_enabled_version if version is None else version
         self._session_skill_versions[session_id] = current
         self._session_skill_refresh_failures.pop(session_id, None)
+
+    async def _push_skill_refresh_to_bound_session(
+        self,
+        request: AgentRequest | None,
+    ) -> None:
+        """Refresh the session adapter bound to an install/uninstall request now.
+
+        Web/facade skill installs land on the root adapter; the bound session's
+        SkillUseRail allow-list otherwise only catches up at its next turn
+        boundary (``_refresh_session_skills_if_stale``), so a same-turn
+        ``skill_tool`` call fails with ``Skill not found``. When the request
+        carries a session id that maps to a live session adapter here, run the
+        same lazy refresh immediately under the session lock; failures fall
+        back to the lazy next-turn semantics (a failed refresh records the
+        shared 30s retry-suppression stamp, so the immediately following
+        boundary retry may be suppressed) and other sessions are untouched.
+        A session cleaned up while this push waits on the lock has its
+        orphaned lock entry dropped so ``has_session_runtime`` stays truthful.
+        """
+        session_id = str(getattr(request, "session_id", None) or "").strip()
+        if not session_id:
+            return
+        sid = self._session_adapter_key(session_id)
+        if sid not in self._session_adapters:
+            # Synthetic facade sessions (bff-*) never create a session adapter
+            # on this root; keep the lazy next-turn behavior for them.
+            return
+        lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        try:
+            adapter = None
+            async with lock:
+                adapter = self._session_adapters.get(sid)
+                if adapter is not None:
+                    await self._refresh_session_skills_if_stale(sid, adapter)
+            if adapter is None:
+                # The session was cleaned up while this push waited on the lock;
+                # drop the orphaned lock entry (same idle discipline as
+                # ``cleanup_session_adapter``) so ``has_session_runtime`` stops
+                # reporting runtime for a session that no longer exists.
+                if self._is_session_lock_idle(sid, lock):
+                    self._session_adapter_locks.pop(sid, None)
+        except Exception as exc:  # noqa: BLE001 — push 失败回退下一轮 lazy 追平
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] same-turn skill refresh push failed "
+                "(fallback to lazy next-turn refresh): session_id=%s error=%s",
+                sid,
+                exc,
+            )
 
     async def _evict_idle_session_adapters(self) -> None:
         if self._is_session_scoped_adapter:
@@ -5097,7 +5173,15 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] request-scoped MCP connector discovery failed: "
                     "request_id=%s server=%s error=%s", request.request_id, server_name, exc,
                 )
+                if server_name != "office-claw":
+                    buffers.unavailable_connectors[server_name] = CONNECTOR_DISCOVERY_FAILED
                 continue
+            # Discovery reports failure as empty params; a legitimately empty
+            # connector (e.g. every tool filtered off) still returns params.
+            if server_name != "office-claw" and not tool_defs:
+                buffers.unavailable_connectors[server_name] = (
+                    CONNECTOR_NO_TOOLS if params else CONNECTOR_DISCOVERY_FAILED
+                )
             self._stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
             if tool_defs:
                 from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
@@ -5244,6 +5328,15 @@ class JiuWenSwarmDeepAdapter:
                 invocation_id = await self._append_identity_pinned_office_claw_tools(
                     request, office_claw_config, buffers, yield_to_existing=True,
                 )
+
+            if buffers.unavailable_connectors:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connectors unavailable this request: "
+                    "request_id=%s connectors=%s", request.request_id, buffers.unavailable_connectors,
+                )
+                for tool, _strict in buffers.pending_tools:
+                    if tool.server_name == "office-claw":
+                        tool.set_unavailable_connectors(buffers.unavailable_connectors)
 
             if not replace_request_scoped_mcp_registration(generation, generation):
                 logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
@@ -6444,6 +6537,7 @@ class JiuWenSwarmDeepAdapter:
                 language=self._resolve_runtime_language(),
                 vision_model_config=self._vision_model_config,
                 agent_id=agent_id,
+                operation=self._sys_operation,
             ),
             warn_label="vision tools",
         )
@@ -9502,7 +9596,15 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] refresh_enabled_skills_from_db skipped: instance not ready"
             )
             return False
+        # 整段持锁串行（DB 读 → enabled 写 → rail 换装）：同轮 push（持 root
+        # 会话锁）、轮边界刷新与会话内 ``_on_installed_skills_changed`` 回调可能
+        # 并发到达同一 adapter，换装段 unregister→register→赋值间有 await 挂起点，
+        # 交错执行会挂上两个 rail 并让 ``_skill_rail`` 指向陈旧实例。
+        async with self._skill_refresh_lock:
+            return await self._refresh_enabled_skills_from_db_locked()
 
+    async def _refresh_enabled_skills_from_db_locked(self) -> bool:
+        """``refresh_enabled_skills_from_db`` 的持锁执行体（入口已持 ``_skill_refresh_lock``）。"""
         try:
             manager = self._skill_manager or SkillManager(
                 workspace_dir=self._workspace_dir,
@@ -10249,6 +10351,10 @@ class JiuWenSwarmDeepAdapter:
             cb_cfg.get("unknown_tool_threshold", defaults.unknown_tool_threshold),
             defaults.unknown_tool_threshold,
         )
+        non_retryable = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("non_retryable_threshold", defaults.non_retryable_threshold),
+            defaults.non_retryable_threshold,
+        )
         if warning > critical:
             return None
         if critical > global_breaker:
@@ -10258,17 +10364,28 @@ class JiuWenSwarmDeepAdapter:
             critical_threshold=critical,
             global_breaker_threshold=global_breaker,
             unknown_tool_threshold=unknown,
+            non_retryable_threshold=non_retryable,
         )
 
     def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
-        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on."""
+        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on.
+
+        The non_retryable_tool detector is only mounted when
+        ``execution_guard.circuit_breaker.enabled`` is true. Default deployments
+        keep agent_ras as the loop-detection chain, which does not consume
+        ``tool_result_contract``.
+        """
         try:
             guard_cfg = (get_config() or {}).get("execution_guard") or {}
             cb_cfg = guard_cfg.get("circuit_breaker") if isinstance(guard_cfg, dict) else {}
             if not isinstance(cb_cfg, dict):
                 cb_cfg = {}
             if cb_cfg.get("enabled", False) is not True:
-                logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config")
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config; "
+                    "agent_ras is the active loop-detection chain and does not consume "
+                    "tool_result_contract (non_retryable_tool inactive)"
+                )
                 return None
             defaults = CircuitBreakerConfig()
             config = self._circuit_breaker_config_from_mapping(cb_cfg, defaults)
@@ -10282,6 +10399,79 @@ class JiuWenSwarmDeepAdapter:
             return rail
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
+            return None
+
+    def _build_stalled_access_circuit_rail(self) -> Any | None:
+        """Stop strategy-level auth/credential retry loops."""
+        if _env_truthy("JIUWEN_DISABLE_STALLED_ACCESS_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by env"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.execution_guard.stalled_access_circuit_rail import (
+                StalledAccessCircuitRail,
+            )
+
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            stalled_cfg = guard_cfg.get("stalled_access") if isinstance(guard_cfg, dict) else {}
+            if not isinstance(stalled_cfg, dict):
+                stalled_cfg = {}
+            if stalled_cfg.get("enabled", True) is False:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by config"
+                )
+                return None
+            try:
+                auth_threshold = int(stalled_cfg.get("auth_threshold", 5))
+                probe_threshold = int(stalled_cfg.get("probe_threshold", 3))
+                window_seconds = float(stalled_cfg.get("window_seconds", 1800))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail invalid thresholds; "
+                    "using defaults"
+                )
+                auth_threshold, probe_threshold, window_seconds = 5, 3, 1800.0
+
+            rail = StalledAccessCircuitRail(
+                auth_threshold=auth_threshold,
+                probe_threshold=probe_threshold,
+                window_seconds=window_seconds,
+                language=self._resolve_runtime_language(),
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create failed: %s",
+                exc,
+            )
+            return None
+
+    def _build_last_iteration_finalize_rail(self) -> Any | None:
+        """Return a partial result when the ReAct budget is exhausted."""
+        if _env_truthy("JIUWEN_DISABLE_LAST_ITERATION_FINALIZE_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail disabled by env"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.last_iteration_finalize_rail import (
+                LastIterationFinalizeRail,
+            )
+
+            rail = LastIterationFinalizeRail(language=self._resolve_runtime_language())
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create failed: %s",
+                exc,
+            )
             return None
 
     @staticmethod
@@ -10342,6 +10532,63 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] RuntimePromptRail create failed: %s", exc)
             rail = None
         return rail
+
+    @staticmethod
+    def _build_eternal_conversation_rail() -> EternalConversationRail | None:
+        """Mount an inert Rail; a Session request flag activates it later."""
+        try:
+            rail = EternalConversationRail()
+            logger.info("[JiuWenSwarmDeepAdapter] EternalConversationRail created (disabled)")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] EternalConversationRail create failed: %s", exc)
+            return None
+
+    @staticmethod
+    def shutdown_context_session_memory(context_processor_rail: ContextProcessorRail) -> bool:
+        """Stop overlapping semantic session memory through a stable Adapter API.
+
+        三态区分（CR-5），保证日志不失实：
+
+        - manager 在位：shutdown 并置 None，返回 True；
+        - 属性为 None：未配置（框架默认，仅在
+          session_memory_compressor_config.enabled=true 时创建）或已
+          关闭的合法幂等态，debug 即可，不告警；
+        - 属性缺失（agent-core 私有属性被改名 / rail 类型不符）：
+          保留 CR-2 加固的 WARNING——SessionMemoryManager 可能仍在
+          eternal conversation 旁 unnoticed 运行（双记忆后端风险）。
+
+        上游 02957a531 对两种非在位状态都是静默 False；缺失属性告警
+        是本地有意的加强。
+        """
+        session_memory_manager = getattr(
+            context_processor_rail, "_session_memory_mgr", _MISSING_SESSION_MEMORY_MGR
+        )
+        if session_memory_manager is _MISSING_SESSION_MEMORY_MGR:
+            # _session_memory_mgr is a private agent-core attribute; a renamed
+            # attribute or a wrong rail type would otherwise fail silently
+            # and leave SessionMemoryManager writing beside eternal conversation.
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory found no "
+                "_session_memory_mgr attribute on %r; the framework may have renamed "
+                "it and SessionMemoryManager may keep running beside eternal "
+                "conversation (double memory backend)",
+                type(context_processor_rail).__name__,
+            )
+            return False
+        if session_memory_manager is None:
+            # 合法幂等态：未配置或已成功关闭。上游在 None 时也静默返回
+            # False；这里只留 debug 便于排障，不打 WARNING（CR-5）。
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory: "
+                "no active SessionMemoryManager on %r (not configured or "
+                "already shut down)",
+                type(context_processor_rail).__name__,
+            )
+            return False
+        session_memory_manager.shutdown()
+        setattr(context_processor_rail, "_session_memory_mgr", None)
+        return True
 
     def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
         """Build lightweight agentic skill retrieval prompt guidance."""
@@ -10788,7 +11035,26 @@ class JiuWenSwarmDeepAdapter:
                 _build_context_processor_rail,
                 {"config": self._config_cache},
             ),
+            # 与上游 02957a531 对齐：挂到 context_processor_rail 之后，
+            # 保证 ON_USER_MESSAGE 投影替换发生在上下文初始化链路之后。
+            _RailBuildInfo(
+                "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
         ]
+
+        if not mode.startswith("team") and not mode.startswith("code"):
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_stalled_access_circuit_rail",
+                    self._build_stalled_access_circuit_rail,
+                )
+            )
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_last_iteration_finalize_rail",
+                    self._build_last_iteration_finalize_rail,
+                )
+            )
 
         # SkillEvolutionRail / TTSERail 不在冷启动时挂载，由 _update_rails_for_mode
         # 经 _reconcile_evolution_rails 按配置按需注册/注销
@@ -11587,6 +11853,7 @@ class JiuWenSwarmDeepAdapter:
                     language=self._resolve_runtime_language(),
                     vision_model_config=self._vision_model_config,
                     agent_id=agent_id,
+                    operation=self._sys_operation,
                 ):
                     registered = self._register_agent_owned_tool(tool, agent_id)
                     tool_cards.append(registered.card)
@@ -11997,6 +12264,15 @@ class JiuWenSwarmDeepAdapter:
                     await self._try_init_a2x_client(config_base)
                 agent_card = AgentCard(name=self._agent_name, id=self._runtime_agent_scope_id())
 
+                # sys_operation 必须先于 _get_tool_cards 解析：vision 等多模态工具在
+                # _get_tool_cards 里创建实例时要透传 self._sys_operation，晚于此处赋值
+                # 的话工具只能拿到 None，沙箱读图能力会静默丢失。
+                sys_operation = self._create_sys_operation()
+                if sys_operation is None:
+                    raise RuntimeError("sys_operation is not available, maybe task is not running")
+
+                self._sys_operation = sys_operation
+
                 tool_cards = await self._get_tool_cards(self._tool_owner_id())
                 self._tool_cards = tool_cards
                 logger.info("[JiuWenSwarmDeepAdapter] Agent card id: %s", agent_card.id)
@@ -12006,12 +12282,6 @@ class JiuWenSwarmDeepAdapter:
                 # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
 
                 rails_list = self._build_agent_rails(config, config_base, mode=mode)
-
-                sys_operation = self._create_sys_operation()
-                if sys_operation is None:
-                    raise RuntimeError("sys_operation is not available, maybe task is not running")
-
-                self._sys_operation = sys_operation
                 configured_subagents, should_add_general_agent = self._build_configured_subagents(
                     model, config, config_base
                 )
@@ -13378,6 +13648,8 @@ class JiuWenSwarmDeepAdapter:
         workspace: str | None = None
         project_dir: str | None = None
         supports_user_interaction: bool = True
+        eternal_conversation_enabled: bool = False
+        interaction_resume: bool = False
         interactive_ask: bool = False
         request_system_prompt: str | None = None
         # 用户上传附件（request.params["files"]）：注入 metadata 供 skill_turbo
@@ -13408,6 +13680,29 @@ class JiuWenSwarmDeepAdapter:
         params = request.params if isinstance(getattr(request, "params", None), dict) else None
         metadata = request.metadata if isinstance(getattr(request, "metadata", None), dict) else None
         return extract_interactive_ask(params, metadata)
+
+    @staticmethod
+    def _resolve_eternal_conversation_enabled(params: Any) -> bool:
+        """Resolve the V1 frontend runtime flag; absent remains disabled."""
+        if not isinstance(params, dict):
+            return False
+        value = params.get("eternal_conversation_enabled", False)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().casefold() in {"1", "true", "yes", "on", "enabled"}
+        return bool(value)
+
+    @staticmethod
+    def _is_eternal_interaction_resume(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        # Single source of truth with the HITL resume dispatch: every source the
+        # framework treats as an interrupt resume (permission/confirm/ask_user/
+        # evolution) must resume the suspended natural task instead of starting
+        # a new one, otherwise ask_user answers would split one natural task in
+        # the eternal-conversation evidence chain.
+        return str(params.get("source") or "").strip() in INTERRUPT_RESUME_SOURCES
 
     async def configure_session_runtime(
         self,
@@ -13542,6 +13837,35 @@ class JiuWenSwarmDeepAdapter:
         circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
         if circuit_breaker_rail is not None:
             circuit_breaker_rail.set_language(resolved_language)
+        for rail_name in ("_stalled_access_circuit_rail", "_last_iteration_finalize_rail"):
+            localized_rail = getattr(self, rail_name, None)
+            if localized_rail is not None:
+                localized_rail.set_language(resolved_language)
+
+        eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
+        if eternal_conversation_rail is not None:
+            self._eternal_conversation_enabled = runtime_config.eternal_conversation_enabled
+            eternal_conversation_rail.configure_runtime(
+                enabled=runtime_config.eternal_conversation_enabled,
+                session_id=runtime_config.session_id,
+                request_id=runtime_config.request_id,
+                mode=runtime_config.mode,
+                channel=resolved_channel,
+                project_dir=runtime_config.project_dir or self._project_dir,
+                model=getattr(self, "_active_request_model", None) or self._model,
+                interaction_resume=runtime_config.interaction_resume,
+            )
+            if (
+                self._eternal_conversation_enabled
+                and self._context_processor_rail is not None
+                and self.shutdown_context_session_memory(self._context_processor_rail)
+            ):
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] SessionMemoryManager disabled: "
+                    "eternal conversation owns semantic memory"
+                )
+        stage_timer.mark("eternal_conversation")
+
         if self._runtime_prompt_rail:
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
@@ -15081,6 +15405,14 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
+        if eternal_conversation_rail is not None:
+            try:
+                await eternal_conversation_rail.close()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] eternal conversation cleanup failed: %s", exc
+                )
         if not self._is_session_scoped_adapter:
             for adapter in list(self._session_adapters.values()):
                 try:
@@ -19619,6 +19951,10 @@ class JiuWenSwarmDeepAdapter:
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
+                    eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                        request.params
+                    ),
+                    interaction_resume=self._is_eternal_interaction_resume(request.params),
                     interactive_ask=self._extract_request_interactive_ask(request),
                     request_system_prompt=self._extract_request_system_prompt(request),
                     files=(
@@ -20385,6 +20721,10 @@ class JiuWenSwarmDeepAdapter:
                         supports_user_interaction=inputs.get(
                             "supports_user_interaction", True
                         ),
+                        eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                            request.params
+                        ),
+                        interaction_resume=self._is_eternal_interaction_resume(request.params),
                         interactive_ask=self._extract_request_interactive_ask(request),
                         request_system_prompt=self._extract_request_system_prompt(request),
                         files=(
@@ -20712,6 +21052,7 @@ class JiuWenSwarmDeepAdapter:
         interaction_stream = None
         interaction_stream_abort = True
         perf_summary_status = "ok"
+        emitted_chat_error = False
         hitl_pending_stream = False
         try:
             self._runtime_cron_tool_context.remember_current_binding()
@@ -20800,6 +21141,10 @@ class JiuWenSwarmDeepAdapter:
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
+                    eternal_conversation_enabled=self._resolve_eternal_conversation_enabled(
+                        request.params
+                    ),
+                    interaction_resume=self._is_eternal_interaction_resume(request.params),
                     interactive_ask=self._extract_request_interactive_ask(request),
                     request_system_prompt=self._extract_request_system_prompt(request),
                     files=(
@@ -21204,11 +21549,12 @@ class JiuWenSwarmDeepAdapter:
             runner_stream_started_at = time.monotonic()
             first_chunk_seen = False
             todo_close_hold = TodoCloseTextHold()
+            refusal_scrub = RefusalTextScrub()
 
-            def _take_todo_close_chunks() -> list[AgentResponseChunk]:
+            def _take_held_chunks(hold: Any) -> list[AgentResponseChunk]:
                 """下发挂起的外层正文。drop 过的块不在这里。"""
                 nonlocal emitted_terminal_chat_final, has_streamed_content
-                payloads = todo_close_hold.take()
+                payloads = hold.take()
                 if not payloads:
                     return []
                 chunks: list[AgentResponseChunk] = []
@@ -21268,9 +21614,11 @@ class JiuWenSwarmDeepAdapter:
                 # first token for this round. Hold/drop/release are internal
                 # and are written before the model streams, so they must not
                 # count as the first token.
-                if not first_chunk_seen and not is_todo_close_control(
-                    str(getattr(chunk, "type", "") or "")
-                ):
+                chunk_type_name = str(getattr(chunk, "type", "") or "")
+                internal_hold = is_todo_close_control(chunk_type_name) or is_refusal_scrub_control(
+                    chunk_type_name
+                )
+                if not first_chunk_seen and not internal_hold:
                     first_chunk_seen = True
                     server_logger.info(
                         "[AgentServer] runner streaming first chunk: session_id=%s request_id=%s"
@@ -21356,12 +21704,27 @@ class JiuWenSwarmDeepAdapter:
                 close_action = todo_close_hold.decide(
                     chunk_type, foreign=foreign_output,
                 )
-                if close_action == "skip":
+                scrub_content = ""
+                if chunk_type == "llm_output":
+                    payload = chunk.payload
+                    if isinstance(payload, dict):
+                        scrub_content = str(payload.get("content") or payload.get("output") or "")
+                    else:
+                        scrub_content = str(payload or "")
+                scrub_action = refusal_scrub.decide(
+                    chunk_type, foreign=foreign_output, content=scrub_content,
+                )
+                if close_action == "skip" or scrub_action == "skip":
                     continue
                 if close_action in ("flush_skip", "flush_pass"):
-                    for held_chunk in _take_todo_close_chunks():
+                    for held_chunk in _take_held_chunks(todo_close_hold):
                         yield held_chunk
                     if close_action == "flush_skip":
+                        continue
+                if scrub_action in ("flush_skip", "flush_pass"):
+                    for held_chunk in _take_held_chunks(refusal_scrub):
+                        yield held_chunk
+                    if scrub_action == "flush_skip":
                         continue
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
@@ -21446,6 +21809,9 @@ class JiuWenSwarmDeepAdapter:
                         accumulated_reasoning = ""
                     if close_action == "buffer":
                         todo_close_hold.push(delta_payload)
+                        continue
+                    if scrub_action == "buffer":
+                        refusal_scrub.push(delta_payload)
                         continue
                     has_streamed_content = True
                     boundary = self._begin_visible_chat_content(stream_is_user_originated)
@@ -21664,7 +22030,9 @@ class JiuWenSwarmDeepAdapter:
             # 轮次已正常完成/取消，flush 与合成 final 必须发出，否则前端悬挂）。
             # hitl_pending_stream 只反映"本轮出过 ask_user 卡片"，不随续跑复位。
             if not suppress_stream_after_hitl:
-                for held_chunk in _take_todo_close_chunks():
+                for held_chunk in _take_held_chunks(todo_close_hold):
+                    yield held_chunk
+                for held_chunk in _take_held_chunks(refusal_scrub):
                     yield held_chunk
             if accumulated_text and not suppress_stream_after_hitl:
                 # Same rule as _adapt_goal_intermediate_final: demote host
@@ -21888,6 +22256,8 @@ class JiuWenSwarmDeepAdapter:
                         lambda: reset_current_multimodal_image_files(image_files_token),
                     )
                 )
+            if emitted_chat_error and perf_summary_status != "cancelled":
+                perf_summary_status = "error"
             if perf_context_initialized:
                 cleanup_steps.extend(
                     (
@@ -22549,7 +22919,7 @@ class JiuWenSwarmDeepAdapter:
                 chunk_type = chunk.type
                 payload = chunk.payload
 
-                if is_todo_close_control(chunk_type):
+                if is_todo_close_control(chunk_type) or is_refusal_scrub_control(chunk_type):
                     return None
 
                 if chunk_type == "steering_consumed":
@@ -23076,7 +23446,11 @@ class JiuWenSwarmDeepAdapter:
         )
         if get_memory_mode(config) == "local":
             # 引擎门禁：memory.engine 未放行内置时，等同于禁用
-            builtin_on = is_builtin_memory_allowed(config) and is_memory_enabled(mode, config)
+            builtin_on = (
+                not getattr(self, "_eternal_conversation_enabled", False)
+                and is_builtin_memory_allowed(config)
+                and is_memory_enabled(mode, config)
+            )
             if builtin_on:
                 # 开启记忆
                 new_embed_fp = self._embedding_config_fingerprint(config)
@@ -23151,7 +23525,9 @@ class JiuWenSwarmDeepAdapter:
         )
 
         config = get_config()
-        if is_external_memory_enabled(config):
+        if is_external_memory_enabled(config) and not getattr(
+            self, "_eternal_conversation_enabled", False
+        ):
             if self._external_memory_rail_registered:
                 return
             if self._external_memory_rail is None:

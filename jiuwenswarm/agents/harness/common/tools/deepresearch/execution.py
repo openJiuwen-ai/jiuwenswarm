@@ -157,6 +157,32 @@ def _persist(
     return next_state
 
 
+def _persist_delivered_state(
+    context: Any,
+    *,
+    workflow_id: str,
+    conversation_id: str,
+    query: str = "",
+    file_name: str = "",
+    requested_report_type: str = "brief",
+) -> dict[str, Any]:
+    """构造一个 phase=completed 的只读 state 供幂等短路返回，不写 session（rail 负责）。
+
+    context/workflow_id 仅用于与 _persist 对齐调用形态，实际未使用——短路返回的
+    state 不落盘。query/file_name/requested_report_type 由调用方从交付索引与工具
+    入参取真实值传入，使 _completion_content 能输出真实报告名而非默认「研究报告」。
+    """
+    return {
+        "schema_version": _STATE_SCHEMA_VERSION,
+        "phase": "completed",
+        "query": query,
+        "file_name": file_name,
+        "conversation_id": conversation_id,
+        "requested_report_type": requested_report_type,
+        "revision": 0,
+    }
+
+
 def _result(kind: str, state: dict[str, Any], **fields: Any) -> dict[str, Any]:
     result = {
         "schema_version": EXECUTION_SCHEMA,
@@ -1248,6 +1274,10 @@ _material_execution_locks = weakref.WeakValueDictionary()
         "resumes the same SDK conversation, and directly delivers the terminal result. "
         "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
         "single-page concise reports; infer from the user's original wording. "
+        "file_name: the delivered report file name and part of the idempotency key; "
+        "the same query plus file_name as an already-delivered report returns the "
+        "delivered result without re-running, so pass a different file_name when the "
+        "user explicitly asks to regenerate a report for the same topic. "
         "upgrade_from_brief: set true only when the user confirms expanding the "
         "just-delivered brief report in the same session into a full professional "
         "report; it reuses the cached brief outline and skips intent recognition. "

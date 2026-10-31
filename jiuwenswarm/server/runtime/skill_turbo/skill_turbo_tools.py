@@ -156,12 +156,13 @@ def _render_tool_description(entries: dict[str, str]) -> str:
 
 # 静态尾部：模板排除段（临时措施，与清单无关，刷新时原样保留）
 _TEMPLATE_EXCLUSION_SUFFIX = (
-    "【临时排除】当任务需要使用自定义/指定模板时，不要调用此工具--"
+    "【临时排除】仅当 PPT 任务需要使用自定义/指定模板时，不要调用此工具--"
     "无论该模板路径是出现在当前用户消息里、引用历史会话中生成或上传的模板"
     "（如“使用刚才生成的风格模板”“用之前那个模板”等自然语言引用）、"
     "还是消息中含 模板目录路径、模板主文件路径、pack_dir 等字段名。"
     "判断“是否涉及自定义模板”应基于语义。"
-    "当前 skill 加速器暂未适配模板包功能，此类请求应改用 skill_tool 走 pptx-craft 标准流程。"
+    "当前 PPT 加速器暂未适配模板包功能，此类请求应改用 skill_tool 走 pptx-craft 标准流程。"
+    "此排除不适用于 Word / Excel，其他技能的模板处理以其支持范围为准。"
     "此排除规则为临时措施，待 skill 加速器适配模板功能后移除。"
 )
 
@@ -1292,14 +1293,17 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
     # 删除方式：搜索 [TEMP-TEMPLATE-BYPASS] 删除本标记块即可。
     import re
 
+    is_ppt_query = bool(re.search(
+        r"(?i)(?<![a-z0-9_])(?:pptx?|powerpoint)(?![a-z0-9_])|幻灯片|演示文稿", query,
+    ))
     template_path_pattern = re.compile(
         r"模板(?:目录|主文件|路径|目录路径|主文件路径)[：:\s]*"
         r"(?:[A-Za-z]:[\\/]|/|~/|\.{0,2}/)"
     )
     template_keywords = ("模板目录路径", "模板主文件路径", "pack_dir")
-    if template_path_pattern.search(query) or any(
+    if is_ppt_query and (template_path_pattern.search(query) or any(
         kw in query for kw in template_keywords
-    ):
+    )):
         logger.info(
             "[SkillTurboTool] 检测到自定义模板路径，跳过 skill 加速器，建议改用 skill_tool"
         )
@@ -1326,7 +1330,7 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
     # user message）。两层引用同一份关键词（region_edit.py），叠加降低误进概率。
     # 删除方式：待 pptx-craft 流水线支持"编辑已有 PPT"短路分支后，搜索 [REGION-EDIT-BYPASS] 删除本块。
     from jiuwenswarm.server.runtime.skill_turbo.region_edit import REGION_EDIT_KEYWORDS
-    if any(kw in query for kw in REGION_EDIT_KEYWORDS):
+    if is_ppt_query and any(kw in query for kw in REGION_EDIT_KEYWORDS):
         logger.info(
             "[SkillTurboTool] 检测到 PPT 选区/编辑已有 PPT 请求，跳过 skill 加速器，"
             "建议改用 skill_tool 走 pptx-craft 标准流程或直接编辑已有 PPT 文件"
