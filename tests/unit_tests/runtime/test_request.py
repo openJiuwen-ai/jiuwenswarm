@@ -215,6 +215,63 @@ async def test_runtime_preserves_session_mode_type_before_prepare(
         assert persisted["mode"] == expected_mode
 
 
+@pytest.mark.parametrize(
+    "stored_mode", ["agent", "agent.work.normal", "agent.code.normal", "agent.work.plan", "agent.code.plan"],
+)
+@pytest.mark.parametrize("requested_mode", ["team", "agent", None])
+def test_runtime_rejects_attach_only_subscription_for_single_agent(monkeypatch, stored_mode, requested_mode):
+    from jiuwenswarm.runtime.service import AgentRuntime
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"mode": stored_mode, "work_mode": "work"},
+    )
+    request = _chat_request(
+        "attach-agent", "existing-agent", {"mode": requested_mode, "query": "", "attach_only": True},
+    )
+
+    with pytest.raises(ValueError, match="attach_only requires a Team session"):
+        AgentRuntime._normalize_runtime_request(request)
+
+
+@pytest.mark.parametrize("stored_mode", ["team.work.normal", "team.code.normal"])
+def test_runtime_preserves_attach_only_subscription_for_team(monkeypatch, stored_mode):
+    from jiuwenswarm.runtime.service import AgentRuntime
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"mode": stored_mode, "work_mode": "work"},
+    )
+    request = _chat_request(
+        "attach-team", "existing-team", {"mode": "agent", "query": "", "attach_only": True},
+    )
+
+    normalized = AgentRuntime._normalize_runtime_request(request)
+
+    assert normalized.params["mode"] == stored_mode
+    assert normalized.params["attach_only"] is True
+    assert normalized.params["query"] == ""
+
+
+@pytest.mark.parametrize("method", [ReqMethod.CHAT_CANCEL, ReqMethod.HISTORY_GET])
+def test_runtime_does_not_treat_control_request_as_team_subscription(monkeypatch, method):
+    from jiuwenswarm.runtime.service import AgentRuntime
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"mode": "agent.work.normal", "work_mode": "work"},
+    )
+    request = AgentRequest(
+        request_id="control", channel_id="web", session_id="single-agent", req_method=method,
+        params={"mode": "team", "attach_only": True},
+    )
+
+    normalized = AgentRuntime._normalize_runtime_request(request)
+
+    assert normalized.req_method == method
+    assert normalized.params["mode"] == "agent.work.normal"
+
+
 def test_attach_only_subscription_does_not_touch_session_metadata(sessions_dir) -> None:
     _init_session("s-attach")
     _drain_writes()

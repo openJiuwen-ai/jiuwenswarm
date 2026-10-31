@@ -3511,6 +3511,14 @@ class AgentRuntime:
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
             return request
+        if (
+            request.req_method == ReqMethod.CHAT_SEND
+            and params.get(TEAM_ATTACH_ONLY_PARAM) is True
+            and is_single_agent_mode(deprecate_mode(resolved_mode))
+        ):
+            # A stale Web mode must not turn a passive Team subscription into
+            # an empty single-Agent turn when the stored mode is restored.
+            raise ValueError("attach_only requires a Team session")
         if isinstance(raw_mode, str) and raw_mode.strip():
             from jiuwenswarm.runtime.request import resolve_request_runtime_mode
 

@@ -204,14 +204,22 @@ test('timeout and disconnect reject runtime-ack requests after gateway acceptanc
   await closed;
 });
 
-test('team attachment is fire-and-forget and resets only for reconnect', async () => {
+async function confirmAttachmentMode(pending, mode) {
+  await new Promise(resolve => setImmediate(resolve));
+  const socket = FakeWebSocket.instance;
+  assert.equal(socket.lastRequest.method, 'session.get_metadata');
+  socket.receive({ type: 'res', id: socket.lastRequest.id, ok: true, payload: { mode } });
+  await pending;
+}
+
+test('team attachment is fire-and-forget after confirming the stored mode', async () => {
   await webClient.connect();
   resetTeamAttachments();
   const socket = FakeWebSocket.instance;
   const initialCount = socket.sentRequests.length;
 
-  await attachTeamSession('team-session-1', 'team.work.normal');
-  assert.equal(socket.sentRequests.length, initialCount + 1);
+  await confirmAttachmentMode(attachTeamSession('team-session-1', 'team'), 'team.work.normal');
+  assert.equal(socket.sentRequests.length, initialCount + 2);
   assert.deepEqual(socket.lastRequest.params, {
     session_id: 'team-session-1',
     query: '',
@@ -221,9 +229,37 @@ test('team attachment is fire-and-forget and resets only for reconnect', async (
   assert.equal(socket.lastRequest.is_stream, true);
 
   await attachTeamSession('team-session-1', 'team.work.normal');
-  assert.equal(socket.sentRequests.length, initialCount + 1);
+  assert.equal(socket.sentRequests.length, initialCount + 2);
 
   resetTeamAttachments();
-  await attachTeamSession('team-session-1', 'team.work.normal');
-  assert.equal(socket.sentRequests.length, initialCount + 2);
+  await confirmAttachmentMode(attachTeamSession('team-session-1', 'team'), 'team.work.normal');
+  assert.equal(socket.sentRequests.length, initialCount + 4);
+});
+
+test('stale Team mode does not submit an empty chat to a stored single Agent session', async () => {
+  resetTeamAttachments();
+  const socket = FakeWebSocket.instance;
+  const initialCount = socket.sentRequests.length;
+
+  await confirmAttachmentMode(attachTeamSession('single-session', 'team'), 'agent.work.normal');
+
+  assert.equal(socket.sentRequests.length, initialCount + 1);
+  assert.equal(socket.lastRequest.method, 'session.get_metadata');
+});
+
+test('a mode lookup from the old connection cannot attach after reconnect reset', async () => {
+  resetTeamAttachments();
+  const socket = FakeWebSocket.instance;
+  const initialCount = socket.sentRequests.length;
+  const pending = attachTeamSession('reconnected-team', 'team');
+  await new Promise(resolve => setImmediate(resolve));
+  const oldLookupId = socket.lastRequest.id;
+  resetTeamAttachments();
+  socket.receive({ type: 'res', id: oldLookupId, ok: true, payload: { mode: 'team.code.normal' } });
+  await pending;
+
+  assert.equal(socket.sentRequests.length, initialCount + 1);
+  await confirmAttachmentMode(attachTeamSession('reconnected-team', 'team'), 'team.code.normal');
+  assert.equal(socket.sentRequests.length, initialCount + 3);
+  assert.equal(socket.lastRequest.params.mode, 'team.code.normal');
 });
