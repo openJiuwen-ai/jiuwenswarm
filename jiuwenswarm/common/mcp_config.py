@@ -800,6 +800,10 @@ _office_claw_mcp_schema_inflight: dict[
 ] = {}
 _office_claw_mcp_schema_cache_lock = threading.Lock()
 _office_claw_mcp_schema_generation = 0
+# Orphaned entries (keys nobody computes anymore after a bundle upgrade) are
+# bounded by this cap instead of an invalidation signal. Realistic cardinality
+# is <20 (agent/toolset configs); clearing on overflow costs one re-discovery.
+_OFFICE_CLAW_MCP_SCHEMA_CACHE_MAX_ENTRIES = 128
 
 
 def _office_claw_mcp_schema_cache_enabled() -> bool:
@@ -809,10 +813,63 @@ def _office_claw_mcp_schema_cache_enabled() -> bool:
     )
 
 
+_OFFICE_CLAW_MCP_BUNDLE_MAX_FILES = 256
+# Node 启动参数中“取文件/模块值”的 flag:其值为启动辅助脚本(--require
+# polyfill 等),只做单文件指纹;第一个位置参数才是 MCP 入口,做目录树扫描。
+_NODE_FILE_VALUED_FLAGS = frozenset(
+    {"--require", "-r", "--import", "--experimental-loader", "--loader"}
+)
+
+
+def _fingerprint_bundle_tree(root: Path) -> list[dict[str, Any]] | None:
+    """Stat every file under ``root`` recursively, skipping node_modules and
+    source maps. Returns ``None`` when the tree exceeds the file cap so the
+    caller can refuse to cache rather than fingerprint an unbounded tree."""
+    entries: list[dict[str, Any]] = []
+    stack: list[Path] = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda item: item.name)
+        except OSError:
+            continue
+        for child in children:
+            if child.name == "node_modules":
+                continue
+            try:
+                if child.is_dir():
+                    stack.append(child)
+                    continue
+            except OSError:
+                continue
+            if child.name.endswith(".map"):
+                continue
+            if len(entries) >= _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES:
+                logger.warning(
+                    "OfficeClaw MCP bundle tree exceeded %d files under %s; "
+                    "bypassing the schema cache for this config",
+                    _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES,
+                    root,
+                )
+                return None
+            try:
+                stat = child.stat()
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "path": _normalized_path(str(child)),
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
+            )
+    return sorted(entries, key=lambda entry: entry["path"])
+
+
 def _office_claw_mcp_build_fingerprint(
     params: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    """Fingerprint the MCP bundle file(s) so a rebuild rotates the cache key.
+) -> list[dict[str, Any]] | None:
+    """Fingerprint the MCP bundle so a rebuild rotates the cache key.
 
     Relative script paths in ``command``/``args`` are resolved against
     ``params["cwd"]`` first — the stdio MCP process is spawned with that cwd,
@@ -820,6 +877,20 @@ def _office_claw_mcp_build_fingerprint(
     to the sidecar process cwd. Resolving against the process cwd alone would
     either miss the real bundle or stat the wrong file, so a bundle rebuild
     would not change the fingerprint and the cache would serve a stale schema.
+
+    The interpreter (``command``) is fingerprinted as a single file. The
+    first positional script arg (the Node entry) additionally fingerprints
+    its owning directory tree: the entry file is typically a thin shell that
+    imports the toolset modules next to it, so a rebuild that only touches
+    those imports must still rotate the key. ``node_modules`` and ``*.map``
+    files are skipped. File-valued Node flags (``--require``/``--import``
+    startup polyfills) are single-file fingerprinted instead — their owning
+    directory (e.g. a full-source ``scripts/`` checkout with hundreds of
+    files) must not trip the bundle cap and silently disable the cache.
+
+    Returns ``None`` when a bundle tree exceeds ``_OFFICE_CLAW_MCP_BUNDLE_MAX_FILES``
+    files — the caller then bypasses the cache instead of trusting a
+    fingerprint it could not fully compute.
     """
     fingerprints: list[dict[str, Any]] = []
     base_dirs: list[Path] = []
@@ -827,49 +898,119 @@ def _office_claw_mcp_build_fingerprint(
     if cwd_raw:
         base_dirs.append(Path(cwd_raw).expanduser())
     base_dirs.append(Path.cwd())
-    candidates = [params.get("command"), *(params.get("args") or [])]
-    seen: set[str] = set()
-    for candidate in candidates:
-        raw = str(candidate or "").strip()
-        if not raw:
-            continue
+    seen_paths: set[str] = set()
+    expanded_dirs: set[str] = set()
+
+    def _resolve(raw: str) -> Path | None:
         probe = Path(raw).expanduser()
-        resolved: Path | None = None
         if probe.is_absolute():
-            resolved = probe
-        else:
-            for base in base_dirs:
-                candidate_path = base / probe
-                if candidate_path.is_file():
-                    resolved = candidate_path
-                    break
-        if resolved is None:
-            try:
-                resolved = probe.resolve(strict=False)
-            except OSError:
-                continue
-        resolved_str = str(resolved)
-        if not resolved.is_file() or resolved_str in seen:
-            continue
-        seen.add(resolved_str)
+            return probe
+        for base in base_dirs:
+            candidate_path = base / probe
+            if candidate_path.is_file():
+                return candidate_path
+        try:
+            return probe.resolve(strict=False)
+        except OSError:
+            return None
+
+    def _stat_once(resolved: Path) -> None:
+        normalized = _normalized_path(str(resolved))
+        if normalized in seen_paths:
+            return
         try:
             stat = resolved.stat()
         except OSError:
-            continue
+            return
+        seen_paths.add(normalized)
         fingerprints.append(
             {
-                "path": _normalized_path(resolved_str),
+                "path": normalized,
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
             }
         )
-    return fingerprints
+
+    command_raw = str(params.get("command") or "").strip()
+    if command_raw:
+        resolved = _resolve(command_raw)
+        if resolved is not None and resolved.is_file():
+            _stat_once(resolved)
+
+    args = [str(value or "").strip() for value in params.get("args") or []]
+    entry_scanned = False
+    saw_positional = False
+    index = 0
+    while index < len(args):
+        raw = args[index]
+        index += 1
+        if not raw:
+            continue
+        if raw.startswith("-"):
+            flag, _, inline_value = raw.partition("=")
+            value_raw = inline_value or None
+            if (
+                value_raw is None
+                and flag in _NODE_FILE_VALUED_FLAGS
+                and index < len(args)
+            ):
+                value_raw = args[index]
+                index += 1
+            if value_raw is None:
+                continue
+            resolved = _resolve(value_raw)
+            if resolved is not None and resolved.is_file():
+                # --require/--import 启动辅助脚本:单文件指纹(同 #5347 基线)。
+                # 其所在目录(如完整源码的 scripts/,数百个受版本管理文件)
+                # 不做树扫描,否则会撞 _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES 把
+                # 整个缓存废掉(OpenHarmony 启动形态,见 !9045 评审复现)。
+                _stat_once(resolved)
+            continue
+        resolved = _resolve(raw)
+        resolves_to_file = resolved is not None and resolved.is_file()
+        if not saw_positional:
+            # 首个位置参数(node 入口)是唯一的 entry 候选
+            saw_positional = True
+            if resolves_to_file:
+                entry_scanned = True
+                parent_key = _normalized_path(str(resolved.parent))
+                if parent_key in expanded_dirs:
+                    _stat_once(resolved)
+                else:
+                    expanded_dirs.add(parent_key)
+                    tree = _fingerprint_bundle_tree(resolved.parent)
+                    if tree is None:
+                        return None
+                    for entry in tree:
+                        if entry["path"] in seen_paths:
+                            continue
+                        seen_paths.add(entry["path"])
+                        fingerprints.append(entry)
+            # 首个位置参数解析失败(相对路径漂移/CLI 占位符):entry 缺失,
+            # 循环结束后拒绝缓存——后续位置参数(脚本参数)不顶替 entry,
+            # 其父目录树不得进入指纹顶缺(见 !9045 CR-1)。
+            continue
+        if resolves_to_file:
+            # 入口之后的位置参数是传给脚本的参数,单文件指纹
+            _stat_once(resolved)
+    if saw_positional and not entry_scanned:
+        # 首个位置参数未解析成文件 → 真实 bundle 目录不在指纹内。基于不完整
+        # 指纹的键会让 bundle 变化永不轮换(永久 stale 且无日志),此处直接
+        # 返回 None 拒绝缓存,不依赖 command 单文件指纹形成键。
+        return None
+    return sorted(fingerprints, key=lambda entry: entry["path"])
 
 
-def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str:
+def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str | None:
     raw_excluded = str(
         (params.get("env") or {}).get("OFFICE_CLAW_MCP_EXCLUDED_TOOLS") or ""
     )
+    build_files = _office_claw_mcp_build_fingerprint(params)
+    if not build_files:
+        # No local bundle files (remote-style config), an unresolved entry
+        # positional, or an oversized bundle tree: the key could never
+        # rotate on a change, so refuse to cache.
+        return None
     payload = {
         "command": _normalized_path(str(params.get("command") or "")),
         "args": [str(value) for value in params.get("args") or []],
@@ -877,7 +1018,7 @@ def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str:
         "excluded_tools": sorted(
             {item.strip() for item in raw_excluded.split(",") if item.strip()}
         ),
-        "build_files": _office_claw_mcp_build_fingerprint(params),
+        "build_files": build_files,
     }
     return hashlib.sha256(
         json.dumps(
@@ -889,11 +1030,12 @@ def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str:
 def invalidate_office_claw_mcp_schema_cache() -> None:
     """Drop the entire OfficeClaw MCP schema cache and abort coalesced discovery.
 
-    Called when the agent catalog revision changes (Relay resync) so that a
-    rebuilt MCP bundle or changed excluded-tool set is re-discovered instead
-    of serving a stale schema. Bumping ``_office_claw_mcp_schema_generation``
-    also prevents any in-flight discovery task from writing back into a newer
-    generation.
+    Manual/test hook: production no longer calls this automatically. The
+    cache key embeds the bundle tree fingerprint, so a rebuilt bundle or a
+    changed excluded-tool set rotates the key on its own; orphaned entries
+    are bounded by the entry-count cap. Bumping
+    ``_office_claw_mcp_schema_generation`` also prevents any in-flight
+    discovery task from writing back into a newer generation.
     """
     global _office_claw_mcp_schema_generation
     with _office_claw_mcp_schema_cache_lock:
@@ -2454,6 +2596,11 @@ async def _discover_and_cache_office_claw_mcp_schema(
         frozen = copy.deepcopy(tools)
         with _office_claw_mcp_schema_cache_lock:
             if generation == _office_claw_mcp_schema_generation:
+                if (
+                    len(_office_claw_mcp_schema_cache)
+                    >= _OFFICE_CLAW_MCP_SCHEMA_CACHE_MAX_ENTRIES
+                ):
+                    _office_claw_mcp_schema_cache.clear()
                 _office_claw_mcp_schema_cache[cache_key] = frozen
         logger.info(
             "OfficeClaw MCP schema cache filled: key=%s tools=%s duration_ms=%.1f",
@@ -2484,8 +2631,10 @@ async def list_office_claw_mcp_tools(
     same event loop + generation + key are coalesced into one in-flight
     producer task; waiters are pure consumers wrapped in ``asyncio.shield``,
     so a cancelled waiter cannot abort the shared discovery or evict it from
-    the in-flight table. ``invalidate_office_claw_mcp_schema_cache`` drops
-    everything on catalog revision change. Setting the env var to
+    the in-flight table. Freshness is decided by the key itself (it embeds
+    the bundle tree fingerprint), not by any external invalidation signal;
+    orphaned entries are bounded by an entry-count cap, and configs with no
+    local bundle files (remote-style) are never cached. Setting the env var to
     ``0/false/no/off`` falls back to the uncached path.
     """
 
@@ -2493,6 +2642,10 @@ async def list_office_claw_mcp_tools(
         return await _list_office_claw_mcp_tools_uncached(params)
 
     cache_key = _office_claw_mcp_schema_cache_key(params)
+    if cache_key is None:
+        # No local bundle files (remote-style config) or an oversized bundle
+        # tree: the key could never rotate on a change, so bypass the cache.
+        return await _list_office_claw_mcp_tools_uncached(params)
     with _office_claw_mcp_schema_cache_lock:
         generation = _office_claw_mcp_schema_generation
         loop_key = (id(asyncio.get_running_loop()), generation, cache_key)
