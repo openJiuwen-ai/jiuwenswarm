@@ -47,3 +47,11 @@ have `source="session"` and `activated=None`: persistence cannot establish
 runtime activation. Missing facts return None. A model-group selector does not
 identify the physical route used for one model call. The read does not create,
 switch, or call a model, expose credentials, or render a UI.
+
+## 字段填写速查 / Field guide（2026-10-29）
+
+model() 无参数；返回 selection、model_name、provider、source、activated 五键。selection 有值时 type/id 必有，route_id 可缺省且仅组选择可用。runtime 表示当次运行摘要，activated=True；session 表示保存事实，activated=None，不猜测未激活。没有事实时整个返回 None。 用户不填写这些返回字段，不传其他会话或路径；修改返回副本不会改变平台事实。
+
+每个字段的类型、默认/缺失、合法值、来源和示例，以及完整注册/调用链见 [特性文档第 4、5 节](../../docs/features/F_14_session-model-ops.md)。本轮仅文档，历史业务验证未重跑。
+
+English: the query takes no arguments. All returned fields are host-provided facts, not caller input. Read the linked field tables for precise types, nullability, source and state combinations. Returned data does not activate a model, modify Git or render UI. This revision only clarifies documentation; historical runtime evidence retains its original date and scope.

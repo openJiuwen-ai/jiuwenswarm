@@ -257,7 +257,7 @@
 - **目标与范围：** 提供 `ops.session.cwd()`、`ops.session.root()`；在现有用量事件真实入口绑定执行目录与项目根快照，供当次 Handler 查询。
 - **责任与契约：** [S_03](../specs/S_03_session-workspace-ops.md) 为唯一契约来源；能力和 Build Handler 放在 `handler_ops/`，登记接入 bootstrap，事实采集留在回合宿主入口。
 - **开工硬前置：** 已有 EXTV2-01 的装配、EXTV2-05 的 Ops Build 接线与原生回合用量触发点，不依赖本轮管理增强项。
-- **验收标准：** [F_13 第 5 节](../features/F_13_session-workspace-ops.md#5-验证设计执行记录与结论) 的 V-01～V-07；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
+- **验收标准：** [F_13 第 6 节](../features/F_13_session-workspace-ops.md#6-验收与未决问题) 的 V-01～V-07；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_ops.py`、`test_context_usage.py`；真实模型和网络联调单独记录。
 - **前端与联合交付：** 本特性不增加前端入口；Worker 内扩展包可以独立验证，不据此完成 M1～M3。
 - **特性文档：** [F_13](../features/F_13_session-workspace-ops.md)，对应 Server 开发计划 PR-01。
@@ -275,7 +275,7 @@
 - **目标与范围：** 提供只读 `ops.session.repo()`，由可信 cwd 查询最近 Git 工作树根、当前分支、完整 HEAD 与 detached 状态，支持 linked worktree；不执行 Git 写入。
 - **责任与契约：** [S_05](../specs/S_05_session-repo-ops.md)；Ops 登记沿用 session Builder，Git 业务读取位于 `server/runtime/session/session_repo.py`。
 - **开工硬前置：** EXTV2-13 的可信 cwd 与共享 session Ops 接线；不以 EXTV2-14 的模型资料为前提。
-- **验收标准：** [F_15 第 5 节](../features/F_15_session-repo-ops.md#5-验证设计与执行记录) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
+- **验收标准：** [F_15 第 6 节](../features/F_15_session-repo-ops.md#6-验收与未决问题) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`；示例 `examples/session_repo_info/`。
 - **前端与联合交付：** 不新增查询 Event、业务 CORE 或前端入口；不据此完成 M1～M3。对应 Server PR-03。
 
@@ -400,10 +400,10 @@ flowchart LR
 | EXTV2-10 失败回滚与结果未知核对 | 完成 | 李志远 | — | 11 项真实回滚、无 Report 核对、查询及编码异常测试通过 | 2026-10-23 |
 | EXTV2-11 管理写操作串行 | 完成 | 李志远 | — | 7 项并发、取消与通知重入测试通过 | 2026-10-23 |
 | EXTV2-12 停机撤销与上下文释放 | 完成 | 李志远 | — | 6 项逆依赖、BUSY、失败保留和清理重试测试通过 | 2026-10-23 |
-| EXTV2-13 会话工作区查询 | 完成 | 刘瑜 | [!71](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/71) | V2 115 项、原生用量 3 项、无项目工作区 62 项测试通过；独立进程用户包调用链验证通过，见 F_13 | 2026-10-26 |
-| EXTV2-14 会话主模型查询 | 完成 | 刘瑜 | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) | 扩展与用量 140 项、模型兼容 116 项测试通过；独立进程 ZIP 安装、用户 Handler 调用及卸载验证通过，见 F_14 / S_04 | 2026-10-26 |
-| EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | [!81](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/81) | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05 | 2026-10-27 |
-| EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16（追加）/ F_23（查询）/ S_06；2026-10-29 仅拆分特性文档，历史验收未重跑；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径 | 2026-10-29 |
+| EXTV2-13 会话工作区查询 | 完成 | 刘瑜 | [!71](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/71) | V2 115 项、原生用量 3 项、无项目工作区 62 项测试通过；独立进程用户包调用链验证通过，见 F_13；2026-10-29 统一字段含义/填写示例与七段式文档，业务未改、历史验证未重跑 | 2026-10-29 |
+| EXTV2-14 会话主模型查询 | 完成 | 刘瑜 | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) | 扩展与用量 140 项、模型兼容 116 项测试通过；独立进程 ZIP 安装、用户 Handler 调用及卸载验证通过，见 F_14 / S_04；2026-10-29 统一字段含义/填写示例与七段式文档，业务未改、历史验证未重跑 | 2026-10-29 |
+| EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | [!81](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/81) | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05；2026-10-29 统一字段含义/填写示例与七段式文档，业务未改、历史验证未重跑 | 2026-10-29 |
+| EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16（追加）/ F_23（查询）/ S_06；2026-10-29 仅拆分特性文档，历史验收未重跑；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径；2026-10-30 合并目标分支冲突后，513 项定向回归及 1 项同 Handler 历史/统计 Ops 共存用例通过，1 项符号链接环境跳过，未重跑真实模型，见 F_16 第 6 节 | 2026-10-30 |
 | EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_21 第 6.2 节 / S_11；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。

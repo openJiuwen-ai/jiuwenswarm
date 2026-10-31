@@ -3,7 +3,7 @@
 | 项 | 值 |
 | --- | --- |
 | 编号 | S_03 / session-workspace-ops |
-| 最近修订日期 | 2026-10-26 |
+| 最近修订日期 | 2026-10-29 |
 | 主责模块 | `jiuwenswarm/extensions_v2/handler_ops/session_ops.py` |
 | 关联特性 | [F_13 会话工作区查询能力](../features/F_13_session-workspace-ops.md) |
 
@@ -53,4 +53,10 @@ async def on_usage(event, ops, next_handler):
 
 ## 6. 验证索引
 
-验收场景和实际执行记录见 [F_13 第 5 节](../features/F_13_session-workspace-ops.md#5-验证设计执行记录与结论)。
+验收场景和实际执行记录见 [F_13 第 6 节](../features/F_13_session-workspace-ops.md#6-验收与未决问题)。
+
+## 字段填写与文档同步（2026-10-29）
+
+cwd/root 都无参数，返回整体为 str/None，不是包含路径字段的包装字典；调用方不填写路径或目标会话。路径校验不代表目录存在，不展开相对路径。逐字段来源、默认、示例、错误与完整用户包见 F_13 第 4、5 节。原第 5 节验证锚点保留，当前历史记录归入新第 6 节。
+
+本轮仅文档，不改变业务代码，未重跑历史业务验证。完整说明按七段式编写指南维护，历史验收保留原日期和范围。

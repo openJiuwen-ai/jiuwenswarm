@@ -24,7 +24,7 @@ Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .
 不要求 `project_root` 等于 Git 根。独立 worktree 返回自身根；detached 时 branch 为 None；
 尚无提交时 head 为 None；无 cwd、非 Git 工作树或裸仓库返回 None。
 
-运行环境须有可执行的 Git。目录失效、Git 缺失、5 秒总超时、所有权拒绝和其它查询失败
+运行环境须有可执行的 Git。目录失效、Git 缺失、Git 命令阶段共享 5 秒时限、所有权拒绝和其它查询失败
 以 `SessionRepoError.code` 区分，异常不携带原始 Git 输出。用户可自行捕获并提供降级展示；
 示例未捕获时遵循现有 EventBus 的 USER Handler 异常隔离。
 
@@ -47,7 +47,7 @@ Place manifest.yaml and extension.py at the ZIP root, install through the existi
 A native turn with valid usage produces a host log entry.
 
 The host binds the trusted cwd. Git is queried at call time on a thread, with a
-five-second total timeout. The result contains repo_root, branch, head and detached.
+five-second shared deadline for Git commands. The result contains repo_root, branch, head and detached.
 A linked worktree returns its own root; detached HEAD has no branch; an unborn
 branch has no head. No cwd, a non-Git directory or a bare repository returns None.
 Unavailable Git/workspaces, timeout, ownership rejection and unexpected failures
@@ -57,3 +57,11 @@ The query does not initialize, fetch, check out or modify repositories, disclose
 remote URLs, or render UI. Inherited GIT_* redirects are removed; Git ownership
 checks remain enabled. Concurrent Git writes can change facts between commands.
 Handlers on other existing events can reuse this Ops when the host binds a trusted cwd.
+
+## 字段填写速查 / Field guide（2026-10-29）
+
+repo() 无参数；返回 repo_root、branch、head、detached 四键。detached 的 branch=None；unborn 的 head=None、detached=False；linked worktree 返回自身根。无 cwd/非 Git/裸仓库整个为 None，可访问性或 Git 错误另报异常。Git 命令阶段共享 5 秒，不作为用户参数。 用户不填写这些返回字段，不传其他会话或路径；修改返回副本不会改变平台事实。
+
+每个字段的类型、默认/缺失、合法值、来源和示例，以及完整注册/调用链见 [特性文档第 4、5 节](../../docs/features/F_15_session-repo-ops.md)。本轮仅文档，历史业务验证未重跑。
+
+English: the query takes no arguments. All returned fields are host-provided facts, not caller input. Read the linked field tables for precise types, nullability, source and state combinations. Returned data does not activate a model, modify Git or render UI. This revision only clarifies documentation; historical runtime evidence retains its original date and scope.

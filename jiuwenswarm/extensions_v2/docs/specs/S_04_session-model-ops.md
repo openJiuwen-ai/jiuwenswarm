@@ -3,7 +3,7 @@
 | 项 | 值 |
 | --- | --- |
 | 编号 | S_04 / session-model-ops |
-| 最近修订日期 | 2026-10-26 |
+| 最近修订日期 | 2026-10-29 |
 | 主责模块 | `handler_ops/session_ops.py` 与 `server/runtime/session/model_selection_store.py` |
 | 关联特性 | [F_14](../features/F_14_session-model-ops.md) |
 
@@ -38,3 +38,9 @@
 ## 4. 业务接入与验证
 
 原生回合复用 `context.usage.updated` 作为运行快照接入点，沿用原事件 CORE。模型查询不依赖该 CORE，也不通过该 CORE 执行。验证记录和使用示例见 F_14 与 `examples/session_model_info/`。
+
+## 字段填写与文档同步（2026-10-29）
+
+五个返回键均存在：selection/model_name/provider/source/activated。selection 有值时 type/id 必有，route_id 仅 model_group 可用，None 序列化时省略；类型和值规则见 F_14 第 4 节。runtime+True 与 session+None 是当前合法组合，不返回 False 表示未启动。session_model_info 缺失或为 None 时回读保存值；非法非 None 摘要报错，不回退。所有字段由平台返回，用户查询不填模型/会话/路径。
+
+本轮仅文档，不改变业务代码，未重跑历史业务验证。完整说明按七段式编写指南维护，历史验收保留原日期和范围。
