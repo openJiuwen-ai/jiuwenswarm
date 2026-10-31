@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, ClassVar
 
-from jiuwenswarm.enterprise import is_enterprise
-from jiuwenswarm.infrastructure.config import settings
-from jiuwenswarm.infrastructure.utils import is_already_masked, masked_with_fp
+from gateway.enterprise import is_enterprise
+from gateway.common.log_masking.infra_config import settings
+from gateway.common.log_masking.infra_utils import is_already_masked, masked_with_fp
 
 _logger = logging.getLogger(__name__)
 
@@ -403,7 +403,7 @@ class LogMaskingEngine:
         table_name: str = _LOG_MASKING_RULE_TABLE,
     ) -> list[dict[str, Any]]:
         """返回 ``enabled=true`` 的规则行（priority ASC，同优先级 updated_at DESC）。"""
-        from jiuwenswarm.enterprise.config.effective import db_queries
+        from gateway.enterprise.config.effective import db_queries
 
         rows = await db_queries.list_records(
             table_name,

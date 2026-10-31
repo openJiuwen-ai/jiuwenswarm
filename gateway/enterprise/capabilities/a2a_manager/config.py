@@ -17,7 +17,7 @@ from .models import A2AIngressConfig, A2AIngressError
 def _encrypt(name: str, text: str) -> str:
     """Prefer ``local_env_config.encrypt`` when available; otherwise store plaintext."""
     try:
-        from gateway.common.local_env_config import encrypt
+        from jiuwenswarm.common.local_env_config import encrypt
     except ImportError:
         return text
     return encrypt(name, text)
@@ -26,7 +26,7 @@ def _encrypt(name: str, text: str) -> str:
 def _decrypt(name: str, cipher: str) -> str:
     """Prefer ``local_env_config.decrypt`` when available; otherwise return as-is."""
     try:
-        from gateway.common.local_env_config import decrypt
+        from jiuwenswarm.common.local_env_config import decrypt
     except ImportError:
         return cipher
     return decrypt(name, cipher)

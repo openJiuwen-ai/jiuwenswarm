@@ -16,7 +16,7 @@ from importlib.metadata import entry_points
 from typing import Any
 
 from gateway.enterprise import is_enterprise
-from jiuwenswarm.extensions.redis.redis_client import RedisConfig
+from gateway.extensions.redis.redis_client import RedisConfig
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def _load_gateway_redis_client_class():
             )
             break
 
-    module = importlib.import_module("jiuwenswarm.extensions.redis.redis_client")
+    module = importlib.import_module("gateway.extensions.redis.redis_client")
     return getattr(module, "RedisClient")
 
 
