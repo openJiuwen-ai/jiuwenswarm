@@ -49,18 +49,12 @@ _mark_startup_import_phase("runtime_workspace_deferred")
 _mark_startup_import_phase("entry_module_ready")
 
 
-
 async def _start_supervisor(front: object, host: str, port: int) -> object:
-    """Attach the supervisor and wait until Worker IPC is up.
-
-    ``AGENT_READY`` arrives later on the IPC readiness stream. Control-plane
-    requests are already served by Front.
-    """
+    """Attach the supervisor after Front listens and wait for Worker IPC."""
     from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
-    readiness = getattr(front, "readiness", None)
     supervisor = RuntimeSupervisor(
-        readiness,
+        getattr(front, "readiness", None),
         forwarder=getattr(front, "forwarder", None),
         host=host,
         port=port,

@@ -28,6 +28,8 @@ import json
 import logging
 import threading
 import time
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from openjiuwen.core.common.logging import server_logger
@@ -73,6 +75,42 @@ _force_ever_enabled: bool = False
 # to rely on is no longer implied. Reentrant because the sync path calls the
 # shutdown path.
 _state_lock = threading.RLock()
+_plugin_trajectory_demands: set[tuple[str, str, str]] = set()
+
+
+@dataclass(frozen=True)
+class PluginTrajectoryLease:
+    """One plugin mount's process-level trajectory requirement."""
+
+    key: tuple[str, str, str]
+
+    def release(self) -> None:
+        """Release this requirement, preserving other sessions and config demands."""
+        with _state_lock:
+            if self.key not in _plugin_trajectory_demands:
+                return
+            _plugin_trajectory_demands.remove(self.key)
+            _sync_agent_observability_locked(force=False)
+
+
+def acquire_plugin_trajectory_demand(session_id: str, plugin_id: str) -> PluginTrajectoryLease:
+    """Prepare shared observability before a trajectory-backed plugin is built."""
+    lease = PluginTrajectoryLease((session_id, plugin_id, uuid.uuid4().hex))
+    with _state_lock:
+        _plugin_trajectory_demands.add(lease.key)
+        try:
+            _sync_agent_observability_locked(force=False)
+        except BaseException:
+            _plugin_trajectory_demands.discard(lease.key)
+            _sync_agent_observability_locked(force=False)
+            raise
+    return lease
+
+
+def plugin_trajectory_demand_count() -> int:
+    """Return the number of live mount requirements for diagnostics."""
+    with _state_lock:
+        return len(_plugin_trajectory_demands)
 
 # Session-id → open root span fallback table (see ``open_agent_run_span``). The
 # agent and its sub-agents run in a different asyncio task than the request
@@ -122,6 +160,7 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         get_skill_evolution_enabled(config)
         or get_symphony_evolution_enabled(config)
         or get_ttse_enabled(config)
+        or bool(_plugin_trajectory_demands)
     )
     want_enabled = (
         bool(cfg.get("enabled", False))

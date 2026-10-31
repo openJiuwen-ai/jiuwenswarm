@@ -143,9 +143,13 @@ def _apply_runtime_entry_patches() -> None:
         preload_bundled_team_descriptions,
     )
     from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
+    from jiuwenswarm.openjiuwen_fs_rwlock_patch import (
+        install_fs_rwlock_task_affinity_patch,
+    )
 
     install_native_tokenizer_cache()
     install_shell_tool_safety_hooks()
+    install_fs_rwlock_task_affinity_patch()
     apply_provider_compat_patches()
     try:
         install_team_workspace_read_guard()
