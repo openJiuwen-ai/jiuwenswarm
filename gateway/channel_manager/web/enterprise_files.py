@@ -12,7 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from jiuwenswarm.common.obs_files import (
+from gateway.common.obs_files import (
     AttachmentStore,
     MAX_FILE_BYTES,
     _obs_http_client,
