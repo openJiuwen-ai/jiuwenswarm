@@ -181,6 +181,11 @@ class TestCreateJobClamp:
         ))
         assert job["wake_offset_seconds"] == 0
 
+    @pytest.fixture
+    def personal_env(self, monkeypatch):
+        """显式锁定个人版环境，防止 CI 环境变量污染。"""
+        monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+
     @pytest.mark.asyncio
     async def test_clamp_logs_to_store_create_call(self, frozen_now) -> None:
         """截断后的值确实传给 store.create_job。"""
@@ -192,6 +197,22 @@ class TestCreateJobClamp:
         stored = cc.store.create_calls[0]
         assert isinstance(stored["wake_offset_seconds"], int)
         assert stored["wake_offset_seconds"] == 90
+
+    @pytest.mark.asyncio
+    async def test_personal_create_with_mcp_and_clamp(
+        self, personal_env, frozen_now
+    ) -> None:
+        """个人版创建：is_enterprise()=False 分支——mcp 被 normalize（非 None），clamp 仍正确执行。"""
+        cc = _make_controller()
+        job = await cc.create_job(_job_params(
+            cron_expr="*/2 * * * *",
+            wake_offset_seconds=999999,
+            mcp=["files", "files", ""],  # 个人版 normalize → ["files"]
+        ))
+        assert job["wake_offset_seconds"] == 90
+        stored = cc.store.create_calls[0]
+        # 个人版保留 mcp（非 None），与企业版 mcp=None 形成对照
+        assert stored["mcp"] == ["files"]
 
 
 # ===========================================================================
@@ -344,3 +365,271 @@ class TestUpdateJobClamp:
         assert isinstance(stored_patch["wake_offset_seconds"], int)
         # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
         assert stored_patch["wake_offset_seconds"] == 90
+
+    @pytest.fixture
+    def personal_env(self, monkeypatch):
+        """显式锁定个人版环境，防止 CI 环境变量污染。"""
+        monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_personal_update_keeps_mcp_alongside_clamp(
+        self, existing_job_id, personal_env, frozen_now
+    ) -> None:
+        """个人版更新：is_enterprise()=False 分支——mcp 保留在 patch 中（非剥离），clamp 仍正确执行。"""
+        cc = _make_controller()
+        await cc.create_job(_job_params(
+            id=existing_job_id,
+            cron_expr="*/2 * * * *",
+            wake_offset_seconds=30,
+        ))
+        await cc.update_job(existing_job_id, {
+            "wake_offset_seconds": 999999,
+            "mcp": ["files", "files", ""],  # 个人版 normalize → ["files"]
+        })
+        stored_patch = cc.store.update_calls[0][1]
+        assert stored_patch["wake_offset_seconds"] == 90
+        # 个人版保留 mcp（非剥离），与企业版 pop mcp 形成对照
+        assert stored_patch["mcp"] == ["files"]
+# ===========================================================================
+
+
+class TestEnterpriseCreateJobClamp:
+    """企业版 create_job 的 wake_offset 截断行为。
+
+    企业版与个人版的 clamp 逻辑相同，但前置路径不同：
+    - 身份校验：group_id/bot_id/user_id 必须非空（_required_enterprise_tenant_id）
+    - 模型校验：resolve_enterprise_cron_model 核对企业库
+    - 副作用：mcp=None、credential_ref=''、model_selection=None
+    需验证这些差异不阻断 clamp 的正确执行。
+    """
+
+    @pytest.fixture
+    def enterprise_env(self, monkeypatch):
+        """启用企业版并 mock 模型校验。"""
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setattr(
+            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            AsyncMock(return_value="ent-model"),
+        )
+
+    def _ent_params(self, **overrides) -> dict:
+        """构造企业版 create_job 参数（含必需身份和模型）。"""
+        params = _job_params(
+            group_id="team-1",
+            bot_id="bot-1",
+            user_id="alice",
+            model_name="ent-model",
+        )
+        params.update(overrides)
+        return params
+
+    @pytest.mark.asyncio
+    async def test_ent_clamps_large_offset(self, enterprise_env, frozen_now) -> None:
+        """企业版创建：过大 offset 被截断到 floor(delay)。"""
+        cc = _make_controller()
+        job = await cc.create_job(self._ent_params(
+            cron_expr="*/2 * * * *",
+            wake_offset_seconds=999999,
+        ))
+        # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
+        assert job["wake_offset_seconds"] == 90
+
+    @pytest.mark.asyncio
+    async def test_ent_keeps_reasonable_offset(self, enterprise_env, frozen_now) -> None:
+        """企业版创建：合理 offset 保持不变。"""
+        cc = _make_controller()
+        job = await cc.create_job(self._ent_params(
+            cron_expr="0 9 * * *",
+            wake_offset_seconds=30,
+        ))
+        assert job["wake_offset_seconds"] == 30
+
+    @pytest.mark.asyncio
+    async def test_ent_missing_identity_raises_before_clamp(self, enterprise_env) -> None:
+        """企业版创建：缺 group_id → ValueError，不执行 clamp。"""
+        cc = _make_controller()
+        with pytest.raises(ValueError, match="enterprise cron requires"):
+            await cc.create_job(self._ent_params(
+                cron_expr="*/2 * * * *",
+                wake_offset_seconds=999999,
+                group_id="   ",  # 空白 → _required_enterprise_tenant_id 抛 ValueError
+            ))
+        assert cc.store.create_calls == []
+
+    @pytest.mark.asyncio
+    async def test_ent_clamp_alongside_stripped_fields(self, enterprise_env, frozen_now) -> None:
+        """企业版创建：clamp 执行的同时，mcp=None、credential_ref=''、model_selection=None。"""
+        cc = _make_controller()
+        await cc.create_job(self._ent_params(
+            cron_expr="*/2 * * * *",
+            wake_offset_seconds=999999,
+            mcp=["files"],            # 企业版应忽略 → None
+        ))
+        stored = cc.store.create_calls[0]
+        assert stored["wake_offset_seconds"] == 90
+        assert stored["mcp"] is None
+        assert stored["credential_ref"] == ""
+        assert stored["model_selection"] is None
+
+    @pytest.mark.asyncio
+    async def test_ent_model_resolve_failure_skips_clamp(
+        self, monkeypatch, frozen_now
+    ) -> None:
+        """企业版创建：resolve_enterprise_cron_model 抛 ValueError → clamp 不执行。"""
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setattr(
+            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            AsyncMock(side_effect=ValueError("Unknown model 'bad-model'")),
+        )
+        cc = _make_controller()
+        with pytest.raises(ValueError, match="Unknown model"):
+            await cc.create_job(self._ent_params(
+                cron_expr="*/2 * * * *",
+                wake_offset_seconds=999999,
+                model_name="bad-model",
+            ))
+        assert cc.store.create_calls == []
+
+
+# ===========================================================================
+# 企业版 update_job wake_offset 截断锚定测试
+# ===========================================================================
+
+
+class TestEnterpriseUpdateJobClamp:
+    """企业版 update_job 的 wake_offset 截断行为。
+
+    企业版 update 比个人版更严格：
+    - _owns_job 要求 group_id/bot_id/user_id 全部非空且精确匹配
+    - patch 中 mcp/credential_ref/model_selection 被剥离
+    需验证身份不匹配时 clamp 不执行，身份匹配时 clamp 正常执行。
+    """
+
+    @pytest.fixture
+    def enterprise_env(self, monkeypatch):
+        """启用企业版并 mock 模型校验。"""
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setattr(
+            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            AsyncMock(return_value="ent-model"),
+        )
+
+    _ENT_ID = {"user_id": "alice", "group_id": "team-1", "bot_id": "bot-1"}
+
+    async def _create_ent_job(self, cc: CronController, **overrides) -> str:
+        """创建一条企业版任务，返回 job_id。"""
+        params = _job_params(
+            id="ent-job",
+            cron_expr="*/2 * * * *",
+            wake_offset_seconds=30,
+            group_id="team-1",
+            bot_id="bot-1",
+            user_id="alice",
+            model_name="ent-model",
+        )
+        params.update(overrides)
+        await cc.create_job(params)
+        return "ent-job"
+
+    @pytest.mark.asyncio
+    async def test_ent_update_clamps_large_offset(self, enterprise_env, frozen_now) -> None:
+        """企业版更新：过大 offset 被截断。"""
+        cc = _make_controller()
+        job_id = await self._create_ent_job(cc)
+        updated = await cc.update_job(
+            job_id,
+            {"wake_offset_seconds": 999999},
+            **self._ENT_ID,
+        )
+        # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
+        assert updated["wake_offset_seconds"] == 90
+
+    @pytest.mark.asyncio
+    async def test_ent_update_wrong_identity_raises_before_clamp(self, enterprise_env) -> None:
+        """企业版更新：身份不匹配 → KeyError，不执行 clamp。"""
+        cc = _make_controller()
+        job_id = await self._create_ent_job(cc)
+        with pytest.raises(KeyError, match="job not found"):
+            await cc.update_job(
+                job_id,
+                {"wake_offset_seconds": 999999},
+                user_id="bob",        # 不匹配
+                group_id="team-1",
+                bot_id="bot-1",
+            )
+        assert cc.store.update_calls == []
+
+    @pytest.mark.asyncio
+    async def test_ent_update_missing_identity_raises_before_clamp(self, enterprise_env) -> None:
+        """企业版更新：缺 bot_id → KeyError，不执行 clamp。"""
+        cc = _make_controller()
+        job_id = await self._create_ent_job(cc)
+        with pytest.raises(KeyError, match="job not found"):
+            await cc.update_job(
+                job_id,
+                {"wake_offset_seconds": 999999},
+                user_id="alice",
+                group_id="team-1",
+                bot_id="",            # 企业版缺身份 → _owns_job 返回 False
+            )
+        assert cc.store.update_calls == []
+
+    @pytest.mark.asyncio
+    async def test_ent_update_clamp_alongside_stripped_fields(
+        self, enterprise_env, frozen_now
+    ) -> None:
+        """企业版更新：clamp 执行的同时，patch 中 mcp/credential_ref 被剥离。"""
+        cc = _make_controller()
+        job_id = await self._create_ent_job(cc)
+        await cc.update_job(
+            job_id,
+            {
+                "wake_offset_seconds": 999999,
+                "mcp": ["files"],
+                "credential_ref": "secret",
+            },
+            **self._ENT_ID,
+        )
+        stored_patch = cc.store.update_calls[0][1]
+        assert stored_patch["wake_offset_seconds"] == 90
+        assert "mcp" not in stored_patch
+        assert "credential_ref" not in stored_patch
+
+
+# ===========================================================================
+# 个人版 vs 企业版 clamp 一致性测试
+# ===========================================================================
+
+
+class TestClampEditionConsistency:
+    """同一 cron/offset 在个人版和企业版下产生相同 clamp 结果。
+
+    clamp 逻辑（_clamp_wake_offset_for_upcoming_run）不区分版本，
+    此测试锚定该不变量，防止未来版本分支引入差异。
+    """
+
+    @pytest.mark.asyncio
+    async def test_same_clamp_across_editions(self, frozen_now, monkeypatch) -> None:
+        """个人版和企业版对同一输入产生相同 wake_offset_seconds。"""
+        # --- 个人版 ---
+        cc_personal = _make_controller()
+        job_p = await cc_personal.create_job(_job_params(
+            cron_expr="*/2 * * * *",
+            wake_offset_seconds=999999,
+        ))
+        # --- 切换到企业版 ---
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setattr(
+            "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+            AsyncMock(return_value="ent-model"),
+        )
+        cc_enterprise = _make_controller()
+        job_e = await cc_enterprise.create_job(_job_params(
+            cron_expr="*/2 * * * *",
+            wake_offset_seconds=999999,
+            group_id="team-1",
+            bot_id="bot-1",
+            user_id="alice",
+            model_name="ent-model",
+        ))
+        assert job_p["wake_offset_seconds"] == job_e["wake_offset_seconds"] == 90
