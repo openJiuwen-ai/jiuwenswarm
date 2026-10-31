@@ -16998,18 +16998,22 @@ class JiuWenSwarmDeepAdapter:
         session_id = params.get("session_id") or request.session_id or ""
         run_id = params.get("run_id")
         corr = params.get("correlation_id") or ""
+        # ``skip: true`` — the person pressed the popup's skip button; the
+        # turn is skipped now instead of hanging until the human timeout.
+        skip = bool(params.get("skip"))
         answer = params.get("answer") or ""
         logger.info(
             "[WF_DBG] chat.swarmflow_reply req channel_id=%s session_id=%s request_id=%s "
-            "run_id=%s correlation_id=%s answer_len=%d",
+            "run_id=%s correlation_id=%s skip=%s answer_len=%d",
             request.channel_id,
             session_id,
             request.request_id,
             run_id,
             corr,
+            skip,
             len(answer) if isinstance(answer, str) else 0,
         )
-        if not session_id or not corr or answer == "":
+        if not session_id or not corr or (answer == "" and not skip):
             logger.warning(
                 "[WF_DBG] chat.swarmflow_reply res ok=False session_id=%s correlation_id=%s error=missing_params",
                 session_id,
@@ -17026,8 +17030,12 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.agents.harness.team import get_team_manager
         from openjiuwen.agent_teams.constants import USER_PSEUDO_MEMBER_NAME
         from openjiuwen.agent_teams.interaction.payload import HumanAgentMessage
+        from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
 
         from openjiuwen.agent_teams.schema.events import format_swarmflow_human_reply_target
+
+        if skip:
+            answer = HUMAN_REPLY_SKIP
 
         target = format_swarmflow_human_reply_target(corr, run_id)
         msg = HumanAgentMessage(
