@@ -34,14 +34,14 @@ def _enabled_log_masking_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 async def apply_logging_config_table(ctx: TableApplyContext) -> None:
     try:
-        from gateway.common.utils import (
+        from jiuwenswarm.common.utils import (
             _logging_config_row_to_dict,
             apply_logging_config_payload,
         )
     except ImportError:
         logger.warning(
             "[ConfigPoll] logging_config apply skipped "
-            "(gateway.common.utils logging helpers not present)"
+            "(jiuwenswarm.common.utils logging helpers not present)"
         )
         return
 
