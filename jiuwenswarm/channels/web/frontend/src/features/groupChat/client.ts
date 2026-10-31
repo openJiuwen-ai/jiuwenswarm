@@ -7,6 +7,7 @@ export interface GroupMember {
   id: string;
   member_name: string;
   display_name?: string;
+  description?: string;
 }
 
 export interface GroupQuestion extends AskUserQuestionPayload {

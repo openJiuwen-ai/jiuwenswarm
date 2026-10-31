@@ -14,7 +14,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer';
 import { FilePreview } from '../../../components/ArtifactsPanel/FilePreview';
@@ -209,6 +209,42 @@ export function ColleagueWorkspacePage({
   const channelId = state.managementChannelId ?? state.selectedChannelId;
   const [board, setBoard] = useState(false);
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
+  const [recordsWidth, setRecordsWidth] = useState(368);
+  const [panelWidth, setPanelWidth] = useState(400);
+  const resizeDragRef = useRef<{ pointerId: number; side: 'records' | 'panel'; startX: number; startWidth: number } | null>(null);
+  const handleResizeStart = (side: 'records' | 'panel') => (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || resizeDragRef.current) return;
+    event.preventDefault();
+    document.body.classList.add('workspace-resize-active');
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeDragRef.current = { pointerId: event.pointerId, side, startX: event.clientX, startWidth: side === 'records' ? recordsWidth : panelWidth };
+  };
+  const handleResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const delta = event.clientX - drag.startX;
+    const next = drag.side === 'records' ? drag.startWidth + delta : drag.startWidth - delta;
+    const min = drag.side === 'records' ? 240 : 280;
+    const max = drag.side === 'records' ? 480 : 720;
+    const clamped = Math.min(max, Math.max(min, next));
+    if (drag.side === 'records') setRecordsWidth(clamped);
+    else setPanelWidth(clamped);
+  };
+  const handleResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (resizeDragRef.current?.pointerId !== event.pointerId) return;
+    resizeDragRef.current = null;
+    document.body.classList.remove('workspace-resize-active');
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+  // 卸载时兜底：拖拽中途组件被卸载时清掉全局拖拽态。
+  useEffect(() => () => {
+    if (resizeDragRef.current) {
+      resizeDragRef.current = null;
+      document.body.classList.remove('workspace-resize-active');
+    }
+  }, []);
   const [managementTab, setManagementTab] = useState<Exclude<JiuwenMateRecordTab, 'conversations'>>('channels');
   const [managementSearch, setManagementSearch] = useState('');
   const [selectedArtifact, setSelectedArtifact] = useState<JiuwenMateSharedFile | null>(null);
@@ -1239,10 +1275,11 @@ export function ColleagueWorkspacePage({
   return (
     <div
       className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}${!board && !activeGroupId && rightPanel ? ' jiuwenmate-workspace--panel-open' : ''}${activeGroupId && !board ? ' jiuwenmate-workspace--group' : ''}`}
+      style={{ display: 'flex' }}
       data-testid="jiuwenmate-colleague-workspace"
     >
       {!state.recordsCollapsed ? (
-        <aside className="jiuwenmate-records" data-testid="jiuwenmate-record-panel">
+        <aside className="jiuwenmate-records" data-testid="jiuwenmate-record-panel" style={{ width: recordsWidth }}>
           <header>
             <h2>{t('jiuwenmate.nav.messages')}</h2>
           </header>
@@ -1260,6 +1297,18 @@ export function ColleagueWorkspacePage({
           {renderRecordList()}
         </aside>
       ) : null}
+      {!state.recordsCollapsed && (
+        <div
+          className="resize-divider resize-divider--workspace touch-none select-none"
+          role="separator"
+          aria-orientation="vertical"
+          onPointerDown={handleResizeStart('records')}
+          onPointerMove={handleResizeMove}
+          onPointerUp={handleResizeEnd}
+          onPointerCancel={handleResizeEnd}
+          data-testid="jiuwenmate-resize-divider-records"
+        />
+      )}
       <main className="jiuwenmate-workspace__main">
         {state.recordsCollapsed ? (
           <button
@@ -1303,7 +1352,19 @@ export function ColleagueWorkspacePage({
         />
       ) : null}
       {!board && !activeGroupId && rightPanel ? (
-        <aside className="jiuwenmate-side-panel" data-testid={`jiuwenmate-${rightPanel}-panel`}>
+        <div
+          className="resize-divider resize-divider--workspace touch-none select-none"
+          role="separator"
+          aria-orientation="vertical"
+          onPointerDown={handleResizeStart('panel')}
+          onPointerMove={handleResizeMove}
+          onPointerUp={handleResizeEnd}
+          onPointerCancel={handleResizeEnd}
+          data-testid="jiuwenmate-resize-divider-panel"
+        />
+      ) : null}
+      {!board && !activeGroupId && rightPanel ? (
+        <aside className="jiuwenmate-side-panel" data-testid={`jiuwenmate-${rightPanel}-panel`} style={{ width: panelWidth }}>
           {rightPanel === 'management' && state.managementChannelId && selectedChannel ? (
             renderChannel(selectedChannel, true)
           ) : (
