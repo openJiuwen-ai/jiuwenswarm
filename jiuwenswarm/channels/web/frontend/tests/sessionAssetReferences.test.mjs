@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createAssetOpQueue } from '../node_modules/.cache/session-assets/assetOpQueue.mjs';
 import {
   displayFileName,
   findReferencedAssets,
@@ -121,4 +122,77 @@ test('resolves several attachments and leaves unmatched ones untouched', () => {
   assert.equal(out[0].displayName, 'serum');
   assert.equal(out[1].displayName, undefined);
   assert.equal(out[1], other);
+});
+
+// #5956：并发 RPC 的响应乱序时，旧快照会把新状态整个覆盖掉（素材凭空消失）。
+// 会话素材 store 靠这个队列把同一会话的操作串成链，下面直接验证它的时序性质。
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('queue runs same-key tasks in order even when an earlier task settles slower', async () => {
+  const queue = createAssetOpQueue();
+  const events = [];
+  queue.run('s', async () => {
+    await delay(30);
+    events.push('slow');
+  });
+  queue.run('s', async () => {
+    events.push('fast');
+  });
+  await delay(60);
+  assert.deepEqual(events, ['slow', 'fast']);
+});
+
+test('queue starts a task synchronously when its key is idle', () => {
+  const queue = createAssetOpQueue();
+  const events = [];
+  void queue.run('s', async () => {
+    events.push('started');
+  });
+  // 同步启动保证发送消息时 session.assets.register 仍先于 chat.send 发出。
+  assert.deepEqual(events, ['started']);
+});
+
+test('a rejected task rejects its own caller but never blocks the queue', async () => {
+  const queue = createAssetOpQueue();
+  const events = [];
+  const first = queue.run('s', async () => {
+    throw new Error('boom');
+  });
+  const second = queue.run('s', async () => {
+    events.push('after-failure');
+  });
+  await assert.rejects(first, /boom/);
+  await second;
+  assert.deepEqual(events, ['after-failure']);
+});
+
+test('different keys run independently of each other', async () => {
+  const queue = createAssetOpQueue();
+  const events = [];
+  queue.run('a', async () => {
+    await delay(30);
+    events.push('a');
+  });
+  await queue.run('b', async () => {
+    events.push('b');
+  });
+  assert.deepEqual(events, ['b']);
+  await delay(50);
+  assert.deepEqual(events, ['b', 'a']);
+});
+
+test('a settled queue accepts new tasks and keeps applying them in order', async () => {
+  const queue = createAssetOpQueue();
+  const events = [];
+  await queue.run('s', async () => {
+    events.push(1);
+  });
+  await delay(1);
+  await queue.run('s', async () => {
+    events.push(2);
+  });
+  await queue.run('s', async () => {
+    events.push(3);
+  });
+  assert.deepEqual(events, [1, 2, 3]);
 });
