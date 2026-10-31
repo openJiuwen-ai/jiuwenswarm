@@ -10,6 +10,9 @@ files:
   - jiuwenswarm/agents/harness/common/rsi/materializer.py
   - tests/unit_tests/rsi/test_harness_provider.py
   - tests/unit_tests/rsi/test_rsi_materialization.py
+  - pyproject.toml
+  - uv.lock
+  - tests/unit_tests/rsi/test_judge_profile_selection.py
 designs: []
 design_note: 用户已确认的连续晋级配置切换，移植到 develop；无独立设计文档。
 ---
@@ -30,6 +33,27 @@ design_note: 用户已确认的连续晋级配置切换，移植到 develop；�
 - 用户选择跳过 UT；本 develop 候选未执行单元、集成或模型端到端测试。此前另一分支、新版 agent-core 下的 55 项通过结果不能作为本候选通过证据。
 - 核对补丁无冲突，且依赖文件相对 develop 基线无差异。未运行格式化或静态检查。
 
-## 遗留与生效条件
+## 2026-10-30 初次移植的遗留与生效条件
 
-本分支仅准备双合候选，当前不能认定连续晋级可用。目标分支须先独立升级到支持 `continuous_two_stage_v2` 的 agent-core，然后重新验证配置加载、实际候选晋级、历史任务恢复和相关测试。本次不自动升级依赖，也不将这一依赖缺口改写成已通过。
+初次移植时，本分支仅准备双合候选，当时不能认定连续晋级可用。目标分支须先独立升级到支持 `continuous_two_stage_v2` 的 agent-core，然后重新验证配置加载、实际候选晋级、历史任务恢复和相关测试。本次不自动升级依赖，也不将这一依赖缺口改写成已通过。
+
+
+## 2026-10-31 PR9297 UT 与依赖兼容修复
+
+用户随后授权升级依赖并验证兼容性，本节替代上文“保持依赖不动、等待上游支持”的当前限制，保留初次验证事实。
+CI 报告共 18901 passed、100 skipped、5 failed；本地原依赖复现为 materialization 5 failed、21 passed，
+根因是 e08919883 没有 promotion / score_mode，未知配置被静默忽略。
+直接使用 release e140e79cd 虽可消除五项失败，但缺少 develop 使用的 read_agent_template_card 等接口，不能采用。
+
+配套 core 分支以 e08919883 为基线，移植已发布的运行时证据与连续两阶段晋级能力，保留模板读取和 develop API。
+Swarm 的 pyproject.toml 三处 source 及 uv.lock 统一固定到
+`https://atomgit.com/l_x_d/agent-core_mr.git` 的已提交版本 `94e389f3d3ce2e8eca3da571f46b84372af9b484`；
+这是真实可获取的远程依赖，不再依赖本地 editable 文件。core 修复合入官方 develop 后，应切回官方仓库中的对应提交。
+模型裁判测试改为验证连续分数保留 0.799 / 0.8，passed 仍由 0.8 阈值决定，不再断言 score 被二值化。
+
+兼容性测试：core RSI / DeepAgent / ReAct 定向 2434 passed、3 skipped，日志隔离及跨 Task 推进回归最终 96 passed。
+Swarm editable 联调 RSI 整组 285 passed；最终远程 pin 的普通安装来源已核对为 94e389f3d，RSI、依赖来源检查和 reload 定向复验共 329 passed。
+Swarm 本地完整回归经安装前端依赖、改用短临时目录及普通 wheel 后为 18930 passed、75 skipped、1 failed、1 error。
+失败的 Worker 退出时序用例在原始 PR d080ac46a + 原始 core e08919883 中同样以约 30 秒退出超过 5 秒断言失败，
+属于既有本机基线问题，本修复不改动或跳过该用例；teardown error 来自 Zen tokenizer 网络预热等待，单独离线复验通过（包含在上述 329 项中）。
+未执行真实模型端到端测试、静态检查或格式化；不将本地基线失败或待重跑的 CI 宣称为完整通过。

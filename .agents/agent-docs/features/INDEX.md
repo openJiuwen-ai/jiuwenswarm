@@ -23,4 +23,4 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [F_20261030_1006_rsi-continuous-promotion-develop](F_20261030_1006_rsi-continuous-promotion-develop.md) | F | Harness RSI 连续晋级配置的 develop 移植 | l_x_d | jiuwenswarm/agents/harness/common/rsi | jiuwenswarm/agents/harness/common/rsi/materializer.py, tests/unit_tests/rsi/test_harness_provider.py, tests/unit_tests/rsi/test_rsi_materialization.py | 无独立 D：用户已确认的连续晋级配置切换，移植到 develop；无独立设计文档。 |
+| [F_20261030_1006_rsi-continuous-promotion-develop](F_20261030_1006_rsi-continuous-promotion-develop.md) | F | Harness RSI 连续晋级配置的 develop 移植 | l_x_d | jiuwenswarm/agents/harness/common/rsi | jiuwenswarm/agents/harness/common/rsi/materializer.py, tests/unit_tests/rsi/test_harness_provider.py, tests/unit_tests/rsi/test_rsi_materialization.py, pyproject.toml, uv.lock, tests/unit_tests/rsi/test_judge_profile_selection.py | 无独立 D：用户已确认的连续晋级配置切换，移植到 develop；无独立设计文档。 |
