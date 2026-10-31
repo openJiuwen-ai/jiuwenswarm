@@ -538,6 +538,43 @@ async def test_history_restores_public_messages_without_starting_runtime(service
 
 
 @pytest.mark.asyncio
+async def test_history_waits_for_live_backend_database_initialization(
+    service, monkeypatch
+):
+    group = await create(service)
+    calls = []
+    backend = SimpleNamespace(
+        db=SimpleNamespace(
+            initialize=AsyncMock(side_effect=lambda: calls.append("initialize"))
+        ),
+        group_conversation=AsyncMock(return_value=object()),
+        message_manager=object(),
+    )
+
+    async def sync_history(conversation, message_manager):
+        calls.append("sync")
+        return []
+
+    monkeypatch.setattr(gs, "sync_history", sync_history)
+    service.backend_resolver.return_value = backend
+
+    result = await service.history(
+        group["group_id"], {}, user_id="owner", channel_id="web"
+    )
+
+    assert result == {
+        "group_id": group["group_id"],
+        "messages": [],
+        "total": 0,
+        "limit": 50,
+        "offset": 0,
+        "next_offset": None,
+    }
+    assert calls == ["initialize", "sync"]
+    backend.group_conversation.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_delete_cleans_private_runs_and_preserves_group_after_failure(
     service, monkeypatch
 ):
