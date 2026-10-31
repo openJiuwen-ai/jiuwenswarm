@@ -49,6 +49,7 @@ from jiuwenswarm.channels.cli.events import (
     needs_user_input,
 )
 from jiuwenswarm.channels.cli.render import HumanRenderer, JsonRenderer, JsonlRenderer
+from jiuwenswarm.common.version import get_runtime_version_label
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +339,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="jiuwenswarm chat",
         description="Chat with JiuwenSwarm from the command line.",
+    )
+    p.add_argument(
+        "--version",
+        action="version",
+        version=f"jiuwenswarm {get_runtime_version_label()}",
     )
     p.add_argument(
         "prompt", nargs="*",

@@ -1262,3 +1262,18 @@ class TestGatewayClientClose:
         client = GatewayClient("ws://127.0.0.1:19001/tui")
         # _ws is None by default
         await client.close()  # Should not raise
+
+
+def test_version_flag_prints_runtime_version_and_exits_zero(capsys) -> None:
+    with patch(
+        "jiuwenswarm.channels.cli.chat.get_runtime_version_label",
+        return_value="0.2.8.dev20261026",
+    ):
+        parser = build_parser()
+
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["--version"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "jiuwenswarm 0.2.8.dev20261026"
+    
