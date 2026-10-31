@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 class Role(Enum):
@@ -18,7 +19,7 @@ class Role(Enum):
 def test_root_and_leader_consumed_boundary_preserves_fifo_ids(role):
     chunk = SimpleNamespace(type="steering_consumed", role=role,
                             payload={"input_ids": ["first", "second", "first"]})
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) == {
+    assert _parse_stream_chunk(chunk) == {
         "event_type": "chat.steering_consumed", "input_ids": ["first", "second"],
     }
 
@@ -26,11 +27,11 @@ def test_root_and_leader_consumed_boundary_preserves_fifo_ids(role):
 @pytest.mark.parametrize("role", ["teammate", Role.TEAMMATE, "worker"])
 def test_member_consumption_cannot_divide_root_conversation(role):
     chunk = SimpleNamespace(type="steering_consumed", role=role, payload={"input_ids": ["private"]})
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+    assert _parse_stream_chunk(chunk) is None
 
 
 @pytest.mark.parametrize("payload", [None, {}, {"input_ids": []}, {"input_ids": "one"},
                                     {"input_ids": [1]}, {"input_ids": [" "]}])
 def test_invalid_consumption_metadata_never_becomes_visible_text(payload):
     chunk = SimpleNamespace(type="steering_consumed", payload=payload)
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+    assert _parse_stream_chunk(chunk) is None

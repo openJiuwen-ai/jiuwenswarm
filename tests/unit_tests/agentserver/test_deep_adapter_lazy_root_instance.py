@@ -13,6 +13,11 @@ import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep import model_factory
+from jiuwenswarm.server.runtime.agent_adapter.deep.model_factory import (
+    _build_image_gen_model_config,
+    _build_video_model_config,
+)
 
 
 def _make_adapter(session_id: str | None) -> JiuWenSwarmDeepAdapter:
@@ -283,12 +288,12 @@ def test_build_video_model_config_does_not_apply_when_yaml_incomplete(
     """Unconfigured video must not pay apply_video_from_yaml (embed/env fallback)."""
     applied: list[object] = []
     monkeypatch.setattr(
-        interface_deep_module,
+        model_factory,
         "apply_video_model_config_from_yaml",
         lambda cfg: applied.append(cfg),
     )
 
-    assert JiuWenSwarmDeepAdapter._build_video_model_config({}) is False
+    assert _build_video_model_config({}) is False
     assert applied == []
 
 
@@ -297,12 +302,12 @@ def test_build_video_model_config_applies_when_yaml_complete(
 ) -> None:
     applied: list[object] = []
     monkeypatch.setattr(
-        interface_deep_module,
+        model_factory,
         "apply_video_model_config_from_yaml",
         lambda cfg: applied.append(True),
     )
     monkeypatch.setattr(
-        interface_deep_module,
+        model_factory,
         "read_env",
         lambda key, default="": {
             "VIDEO_API_KEY": "k",
@@ -311,7 +316,7 @@ def test_build_video_model_config_applies_when_yaml_complete(
         }.get(key, default),
     )
 
-    assert JiuWenSwarmDeepAdapter._build_video_model_config(_complete_video_config()) is True
+    assert _build_video_model_config(_complete_video_config()) is True
     assert applied == [True]
 
 
@@ -321,13 +326,13 @@ def test_build_image_gen_model_config_still_applies_before_key_check(
     """image_gen keeps embed/main-API fallback: apply still runs without dedicated yaml."""
     applied: list[object] = []
     monkeypatch.setattr(
-        interface_deep_module,
+        model_factory,
         "apply_image_gen_model_config_from_yaml",
         lambda cfg: applied.append(True),
     )
-    monkeypatch.setattr(interface_deep_module, "read_env", lambda key, default="": "")
+    monkeypatch.setattr(model_factory, "read_env", lambda key, default="": "")
 
-    assert JiuWenSwarmDeepAdapter._build_image_gen_model_config({}) is False
+    assert _build_image_gen_model_config({}) is False
     assert applied == [True]
 
 

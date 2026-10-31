@@ -11,6 +11,7 @@ from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.handlers import ops as ops_handlers
 from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
 from tests.unit_tests.conftest import patch_handler_name
+from jiuwenswarm.server.runtime.agent_adapter.deep.model_factory import _models_config_fingerprint
 
 
 _OJ_MEMORY_MANAGER_MODULE = "openjiuwen.core.memory.lite.manager"
@@ -635,8 +636,8 @@ def test_deep_adapter_model_config_fingerprint_includes_legacy_react_model_field
     }
 
     assert (
-        JiuWenSwarmDeepAdapter._models_config_fingerprint(old_config)
-        != JiuWenSwarmDeepAdapter._models_config_fingerprint(new_config)
+        _models_config_fingerprint(old_config)
+        != _models_config_fingerprint(new_config)
     )
 
 

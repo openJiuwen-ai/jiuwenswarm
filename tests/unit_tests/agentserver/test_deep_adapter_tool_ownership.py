@@ -9,6 +9,9 @@ from unittest.mock import MagicMock
 import pytest
 from openjiuwen.core.foundation.tool import ToolCard
 
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+    _reset_runtime_cron_context,
+)
 from jiuwenswarm.common import tool_ownership
 from jiuwenswarm.common.tool_ownership import (
     mark_stateless,
@@ -222,7 +225,7 @@ def test_runtime_context_binds_request_route_with_adapter_tenant_ids() -> None:
             "metadata": {"request_id": "req-route"},
         }
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
     assert _get_route() == {
         "request_id": "",
@@ -257,7 +260,7 @@ def test_nested_runtime_context_reset_restores_outer_deepresearch_route() -> Non
             request_id="req-inner",
             mode="agent",
         )
-        inner._reset_runtime_cron_context(inner_tokens)
+        _reset_runtime_cron_context(inner_tokens)
         assert _get_route() == {
             "request_id": "req-outer",
             "channel_id": "web",
@@ -266,7 +269,7 @@ def test_nested_runtime_context_reset_restores_outer_deepresearch_route() -> Non
             "agent_id": "agent-outer",
         }
     finally:
-        outer._reset_runtime_cron_context(outer_tokens)
+        _reset_runtime_cron_context(outer_tokens)
 
 
 def test_skill_turbo_tool_registers_as_shared_and_is_idempotent(

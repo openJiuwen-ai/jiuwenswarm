@@ -12,10 +12,11 @@ from types import SimpleNamespace
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _apply_hitl_suppress_clear
 
 
 def _apply(chunk, suppress=True):
-    return JiuWenSwarmDeepAdapter._apply_hitl_suppress_clear(
+    return _apply_hitl_suppress_clear(
         chunk,
         suppress_stream_after_hitl=suppress,
         request_id="req-1",

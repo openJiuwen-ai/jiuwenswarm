@@ -52,7 +52,8 @@ def _adapter(monkeypatch) -> tuple[JiuWenSwarmDeepAdapter, list[str]]:
             model_config=ModelRequestConfig(model_name=mcc["model_name"]),
         )
 
-    monkeypatch.setattr(adapter, "_build_model_from_entry", _build)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._build_model_from_entry", _build)
     monkeypatch.setattr(adapter, "_register_models_json_cache_entries", lambda _counter: None)
     return adapter, built
 

@@ -31,6 +31,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _resolve_enable_task_loop
 
 
 def _span_context(*, trace_id: int, span_id: int) -> SpanContext:
@@ -492,7 +493,7 @@ def test_flash_override_keeps_task_loop_false_against_global_skill_create():
     assert react["evolution"]["review_trigger"] is False
     assert react["evolution"]["skill_evolution"] is False
     # With the overlay applied, task_loop resolves False (no force-revive).
-    assert JiuWenSwarmDeepAdapter._resolve_enable_task_loop(react, merged) is False
+    assert _resolve_enable_task_loop(react, merged) is False
 
 
 def test_flash_override_is_idempotent_across_reload():
@@ -519,6 +520,6 @@ def test_flash_override_is_idempotent_across_reload():
     assert once["react"]["enable_task_loop"] is False
     assert twice["react"]["enable_task_loop"] is False
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(twice["react"], twice)
+        _resolve_enable_task_loop(twice["react"], twice)
         is False
     )

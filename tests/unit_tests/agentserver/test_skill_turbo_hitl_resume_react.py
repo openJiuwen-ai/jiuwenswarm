@@ -127,6 +127,18 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._wants_attach_goal = lambda _params: False  # type: ignore[method-assign]
     adapter._structured_goal_op_from_request = lambda _request: None  # type: ignore[method-assign]
     adapter._should_parse_tui_goal_slash = lambda **_kwargs: False  # type: ignore[method-assign]
+    for _moved_name in (
+        "_run_cleanup_steps",
+        "_is_subagent_approval_answer",
+        "_inject_model_selection_into_inputs",
+        "_wants_attach_goal",
+        "_structured_goal_op_from_request",
+        "_should_parse_tui_goal_slash",
+    ):
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.agent_adapter.interface_deep." + _moved_name,
+            adapter.__dict__[_moved_name],
+        )
     adapter._handle_slash_command = lambda *_args, **_kwargs: _async_none()  # type: ignore[method-assign]
     captured_metadata = None
 
@@ -843,7 +855,7 @@ async def test_fix_incomplete_tool_context_keeps_neutral_stop_hint_over_hitl_pla
     ],
 )
 async def test_process_stream_applies_pending_reload_for_skill_turbo_resume(
-    params, expect_reload
+    params, expect_reload, monkeypatch
 ):
     """skill_turbo resume 请求必须先应用 pending reload（配置重载先于 resume 恢复）。
 
@@ -867,6 +879,10 @@ async def test_process_stream_applies_pending_reload_for_skill_turbo_resume(
     adapter._refresh_stale_mcp_tool_lists = lambda: _async_none()  # type: ignore[method-assign]
     adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
     adapter._is_subagent_approval_answer = lambda *_args: False  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._is_subagent_approval_answer",
+        adapter._is_subagent_approval_answer,
+    )
     adapter._has_valid_model_config = lambda _model_name: False  # type: ignore[method-assign]
 
     request = AgentRequest(
