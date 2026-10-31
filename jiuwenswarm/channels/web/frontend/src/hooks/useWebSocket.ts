@@ -2205,9 +2205,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         // @名称 -> 文件路径的引用笔记在这里统一加（不在 InputArea 提交时加）：候选既包括这个
         // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——用
-        // pendingNames 里用户自己起的名字，没改过就用文件名去掉扩展名（和后端默认命名规则一致）。
-        // 这样欢迎页发的第一条消息（这时候 session 刚建，素材注册还没来得及跑）也能正确 @ 到
-        // 这条消息自己带的附件。
+        // pendingNames 里用户自己起的名字（按 path 键，不同文件即使同名也不会串），没改过就用
+        // 文件名去掉扩展名（和后端默认命名规则一致）。这样欢迎页发的第一条消息（这时候 session
+        // 刚建，素材注册还没来得及跑）也能正确 @ 到这条消息自己带的附件。
         {
           const pendingNames = useSessionAssetsStore.getState().pendingNames;
           const freshAssets: NamedAsset[] = (outgoingMediaItems ?? []).flatMap((item) => {
@@ -2215,7 +2215,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             const filename = typeof item.filename === 'string' ? item.filename : '';
             if (!path) return [];
             const mimeType = typeof item.mime_type === 'string' ? item.mime_type : '';
-            return [{ name: pendingNames[filename] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
+            return [{ name: pendingNames[normalizePath(path)] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
           });
           const knownAssets = useSessionAssetsStore.getState().bySession[sessionId] ?? [];
           const byName = new Map<string, NamedAsset>();
@@ -2254,7 +2254,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         }
-        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里；后端按路径去重）。
+        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里——那时候还没有
+        // session_id，InputArea 的实时注册 effect 还没来得及跑）。已经存在的会话里，
+        // registerUploads 自己会跳过 InputArea 实时注册已经处理过的路径（见
+        // sessionAssets.ts 的 dispatchedUploadPaths），不会重复登记。
         if (outgoingMediaItems?.length) {
           void useSessionAssetsStore
             .getState()

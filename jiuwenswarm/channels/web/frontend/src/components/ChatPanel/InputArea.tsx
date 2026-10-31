@@ -55,7 +55,11 @@ import ChatModelSelector from './ChatModelSelector';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
-import { selectSessionAssets, useSessionAssetsStore } from '../../features/sessionAssets/sessionAssets';
+import {
+  markUploadDispatched,
+  selectSessionAssets,
+  useSessionAssetsStore,
+} from '../../features/sessionAssets/sessionAssets';
 import {
   assetKindFromMime,
   findReferencedAssets,
@@ -1277,6 +1281,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
   const sessionAssetsRef = useRef(sessionAssets);
   sessionAssetsRef.current = sessionAssets;
+  // 每个附件草稿注册后拿到的 asset_id（见下面注册 effect）：取消草稿时按 id 精确删它
+  // 自己那条素材，不再靠路径猜——同一个路径现在可以合法地背后站着好几条素材（故意再次
+  // 附上同一个文件，和重新附上一张图片一样，必须各自拿到自己的条目）。
+  const draftAssetIdRef = useRef<Map<string, string>>(new Map());
+  // 草稿被取消/清空的时刻，它的素材注册请求可能还没返回——响应到达时如果草稿已经不在了，
+  // 直接把那条刚注册出来的素材删掉，不留下没人认领的孤儿条目。
+  const canceledDraftIdsRef = useRef<Set<string>>(new Set());
   // 已经登记到后端的素材只有文件系统绝对路径，浏览器没法直接当图片 src 加载；如果这个素材
   // 恰好还挂在本地的附件卡片上（刚上传完，最常见的情况），就借它现成的本地预览图，而不是干脆
   // 不显示缩略图——不能不假思索地借团队成员那套"按 id 生成"的头像，那和文件内容毫无关系。
@@ -1357,12 +1368,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     [assetSuggestionItems, mentionableMembers, pendingAssetSuggestionItems],
   );
 
-  // 任务素材同步：进入会话时拉取；上传完成的附件、agent 产出的文件按路径登记（后端按路径去重，
-  // 没有文件的路径会被忽略，所以用 attemptedAssetPaths 避免对同一路径反复请求）。
+  // 任务素材同步：进入会话时拉取；agent 产出的文件按路径登记去重（没有"重新附上"这个概念，
+  // sessionArtifacts 每次渲染都会把同一批路径再报一遍，所以用 attemptedAssetPaths 按路径
+  // 避免重复请求）。附件草稿则按草稿 id 去重——不按路径：故意再次附上同一个文件，必须和
+  // 重新附上一张图片一样各自拿到自己的素材条目，不能被当成对同一条路径的重复请求吞掉。
+  //
+  // attemptedAssetPaths / attemptedDraftIds / draftAssetIdRef 都不按会话切换重置：草稿和
+  // 产出文件的登记状态要跨切换会话存活——composer 的附件草稿本来就是按会话各留一份
+  // （attachmentDraftsBySession），切回某个会话时 attachments 会带着同一个草稿 id 重新出现，
+  // 如果这里当成"没登记过"再走一次注册，后端现在不会再用路径去重吞掉它（故意的，见
+  // session_assets.py），就会在每次切回来的时候再生成一条新素材。这些 ref 只在组件整个
+  // 生命周期里只登记一次，跟当前停留在哪个会话无关。
   const sessionArtifacts = useSessionArtifacts();
   const attemptedAssetPaths = useRef<Set<string>>(new Set());
+  const attemptedDraftIds = useRef<Set<string>>(new Set());
   useEffect(() => {
-    attemptedAssetPaths.current = new Set();
     if (!canPersistAttachments || !activeSessionId) return;
     void useSessionAssetsStore
       .getState()
@@ -1375,23 +1395,49 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // （要等下面"切会话"那个 effect 跑完才会重置）。这一轮先跳过，避免把上一个会话还没发送的
     // 附件误登记成这个新会话的素材；下一轮渲染 attachments 跟 activeSessionId 对齐后会重新触发。
     if (attachmentSessionIdRef.current !== activeSessionId) return;
+    const sessionId = activeSessionId;
     const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string }> = [];
-    const consider = (path: string | undefined, source: 'upload' | 'generated', name?: string) => {
-      const value = path?.trim();
+    // 和 pending 严格同序：第 i 个待注册项若来自某个附件草稿，这里记它的草稿 id；
+    // 来自 agent 产出文件（没有草稿）的记 null。响应里 created[i] 对应 pending[i]，
+    // 靠这个数组把 asset_id 精确地分还给对应的草稿。
+    const pendingDraftIds: Array<string | null> = [];
+    attachments.forEach((attachment) => {
+      if (attachment.status !== 'ready' || attemptedDraftIds.current.has(attachment.id)) return;
+      const path = pickString(attachment.persistedMediaItem?.path);
+      if (!path) return;
+      attemptedDraftIds.current.add(attachment.id);
+      markUploadDispatched(sessionId, path);
+      pending.push({ path, source: 'upload', ...(attachment.assetName ? { name: attachment.assetName } : {}) });
+      pendingDraftIds.push(attachment.id);
+    });
+    sessionArtifacts.forEach((artifact) => {
+      const value = artifact.path?.trim();
       if (!value || attemptedAssetPaths.current.has(value)) return;
       attemptedAssetPaths.current.add(value);
-      pending.push({ path: value, source, ...(name ? { name } : {}) });
-    };
-    attachments.forEach((attachment) => {
-      if (attachment.status === 'ready') {
-        consider(pickString(attachment.persistedMediaItem?.path), 'upload', attachment.assetName);
-      }
+      pending.push({ path: value, source: 'generated' });
+      pendingDraftIds.push(null);
     });
-    sessionArtifacts.forEach((artifact) => consider(artifact.path, 'generated'));
     if (pending.length === 0) return;
     void useSessionAssetsStore
       .getState()
-      .register(activeSessionId, pending)
+      .register(sessionId, pending)
+      .then((response) => {
+        (response.created ?? []).forEach((asset, index) => {
+          const draftId = pendingDraftIds[index];
+          if (!draftId || !asset) return;
+          if (canceledDraftIdsRef.current.has(draftId)) {
+            // 响应回来之前这个草稿已经被取消/清空了——没人会再去删它，现在直接删，
+            // 不留孤儿素材。
+            canceledDraftIdsRef.current.delete(draftId);
+            void useSessionAssetsStore
+              .getState()
+              .remove(sessionId, asset.asset_id)
+              .catch((error) => console.error('Failed to remove orphaned session asset:', error));
+            return;
+          }
+          draftAssetIdRef.current.set(draftId, asset.asset_id);
+        });
+      })
       .catch((error) => console.error('Failed to register session assets:', error));
   }, [activeSessionId, attachments, canPersistAttachments, sessionArtifacts]);
 
@@ -1693,28 +1739,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     // A removed chip that had already been auto-registered as a session material
     // (session.assets.register fires as soon as the upload completes, well before
-    // send) must drop that material too, unless another still-attached draft needs
-    // the same path kept. Only 'upload' materials: agent-generated ('generated')
-    // ones are not tied to any composer draft and must survive regardless.
-    if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
-      const keptPaths = new Set(
-        remaining
-          .map((draft) => pickString(draft.persistedMediaItem?.path))
-          .filter((path): path is string => Boolean(path))
-          .map(normalizePath),
-      );
-      for (const draft of drafts) {
-        const path = pickString(draft.persistedMediaItem?.path);
-        if (!path || keptPaths.has(normalizePath(path))) continue;
-        const asset = sessionAssetsRef.current.find(
-          (item) => item.source === 'upload' && normalizePath(item.path) === normalizePath(path),
-        );
-        if (!asset) continue;
-        void useSessionAssetsStore
-          .getState()
-          .remove(sessionId, asset.asset_id)
-          .catch((error) => console.error('Failed to remove session asset:', error));
-      }
+    // send) must drop that material too. Each draft owns exactly the asset_id the
+    // registration effect recorded for it (draftAssetIdRef) -- never matched by
+    // path, since the same path can now legitimately back more than one asset
+    // (a deliberate re-attach of an already-registered file gets its own new
+    // entry, the same as re-attaching an image always did). Agent-generated
+    // ('generated') materials are not tied to any composer draft and are never
+    // touched here.
+    for (const draft of drafts) {
+      canceledDraftIdsRef.current.add(draft.id);
+      const assetId = draftAssetIdRef.current.get(draft.id);
+      if (!assetId) continue;
+      draftAssetIdRef.current.delete(draft.id);
+      canceledDraftIdsRef.current.delete(draft.id);
+      if (!sessionId || sessionId === NEW_CONVERSATION_ID) continue;
+      void useSessionAssetsStore
+        .getState()
+        .remove(sessionId, assetId)
+        .catch((error) => console.error('Failed to remove session asset:', error));
     }
   }, [activeSessionId, requestImageDiscard]);
 
@@ -1766,8 +1808,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       const previous = attachment.assetName ?? attachment.filename;
       if (checked.name === previous) return;
       updateAttachment(attachment.id, { assetName: checked.name });
-      useSessionAssetsStore.getState().setPendingName(attachment.filename, checked.name);
       const path = pickString(attachment.persistedMediaItem?.path);
+      if (path) useSessionAssetsStore.getState().setPendingName(path, checked.name);
       const registered = path ? sessionAssetsRef.current.find((asset) => samePath(asset.path, path)) : undefined;
       if (!registered || !activeSessionId) return;
       try {
