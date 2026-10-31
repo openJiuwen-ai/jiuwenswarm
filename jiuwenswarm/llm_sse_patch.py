@@ -35,11 +35,18 @@ def _parse_chunk(chunk_str: str) -> dict | None:
 
 
 def _extract_message_content(chunk: dict) -> tuple[str, str]:
-    """从 chunk 中提取思考内容和输出内容。"""
+    """从 chunk 中提取思考内容和输出内容（message/delta 双形态，方言/标准双字段）。"""
     if not chunk or not chunk.get("choices"):
         return "", ""
-    msg = chunk["choices"][0]["message"]
-    return msg.get("reasoning_token_text", ""), msg.get("token_text", "")
+    choice = chunk["choices"][0]
+    if not isinstance(choice, dict):
+        return "", ""
+    msg = choice.get("message") or choice.get("delta") or {}
+    if not isinstance(msg, dict):
+        return "", ""
+    reasoning = msg.get("reasoning_token_text") or msg.get("reasoning_content") or ""
+    content = msg.get("token_text") or msg.get("content") or ""
+    return str(reasoning), str(content)
 
 
 def _build_tool_calls(msg: dict) -> list | None:
@@ -70,26 +77,12 @@ def assemble_openai_response(response: str) -> Any:
 
     content = think_content = ""
     last_chunk = None
-    cache_chunk = ""
 
+    # 逐行解析每条 data: 事件：连续 data: 行（含 [DONE] 结尾）不得丢弃前一个 chunk。
     for line in response.split("\n"):
-        if not line.strip():
+        if not line.startswith("data:"):
             continue
-        if line.startswith("id:"):
-            if cache_chunk:
-                chunk = _parse_chunk(cache_chunk)
-                cache_chunk = ""
-                if chunk:
-                    think, out = _extract_message_content(chunk)
-                    think_content += think
-                    content += out
-                    last_chunk = chunk
-        elif line.startswith("data:"):
-            cache_chunk = line
-
-    # 处理最后一个 chunk
-    if cache_chunk:
-        chunk = _parse_chunk(cache_chunk)
+        chunk = _parse_chunk(line)
         if chunk:
             think, out = _extract_message_content(chunk)
             think_content += think
@@ -99,8 +92,11 @@ def assemble_openai_response(response: str) -> Any:
     # 提取并构建工具调用对象
     formatted_tool_calls = None
     if last_chunk and last_chunk.get("choices"):
-        msg = last_chunk["choices"][0]["message"]
-        formatted_tool_calls = _build_tool_calls(msg)
+        choice = last_chunk["choices"][0]
+        if isinstance(choice, dict):
+            msg = choice.get("message") or choice.get("delta") or {}
+            if isinstance(msg, dict):
+                formatted_tool_calls = _build_tool_calls(msg)
 
     # 构建 message（扩展 reasoning_content 字段存储思考内容）
     message = ChatCompletionMessage(
@@ -129,7 +125,9 @@ def assemble_openai_response(response: str) -> Any:
         finish_reason = last_chunk["choices"][0].get("finish_reason", "stop")
 
     return ChatCompletion(
-        id=last_chunk.get("id", "chatcmpl-default") if last_chunk else "chatcmpl-default",
+        id=last_chunk.get("id", "chatcmpl-default")
+        if last_chunk
+        else "chatcmpl-default",
         choices=[
             Choice(
                 index=0,
