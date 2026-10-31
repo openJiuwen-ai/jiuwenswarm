@@ -132,6 +132,16 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
     - never let ``_sync_todos_from_plan`` downgrade a completed todo
     """
 
+    # Never hand this rail instance to general-purpose subagents. A shared
+    # instance would be re-initialized by the subagent's _ensure_initialized
+    # (init_rail rebinds self.tools / _state_agent to the child), so the
+    # parent's TaskPlanningRail.before_invoke then resets the wrong tool
+    # instance's ``_created_in_invoke`` marker — the parent's executing
+    # todo_create stays "already rebuilt" for every later round, each new
+    # task list gets rejected (or appended via todo_modify instead), and
+    # stale task lists accumulate/display across rounds.
+    inherit_to_subagents = False
+
     def init(self, agent) -> None:
         from openjiuwen.harness.deep_agent import DeepAgent
         from openjiuwen.core.foundation.tool import ToolCard
