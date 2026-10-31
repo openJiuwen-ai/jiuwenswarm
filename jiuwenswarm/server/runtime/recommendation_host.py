@@ -10,6 +10,7 @@ in this process, which is allowed to import agents.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
@@ -280,7 +281,9 @@ async def _topic_starter_seed_loop(seed: Callable[[str], None]) -> None:
             await asyncio.sleep(max(0.0, (next_midnight - now).total_seconds()))
         started = True
         try:
-            seed(f"topic-starter-v6:{int(time.time())}")
+            outcome = seed(f"topic-starter-v6:{int(time.time())}")
+            if inspect.isawaitable(outcome):
+                await outcome
         except Exception as exc:  # noqa: BLE001 - isolated scheduled wake
             logger.warning("[Topic] starter seed wake failed: %s", exc)
 
@@ -356,17 +359,24 @@ class RecommendationHost:
             service.on_prepared = _on_prepared
         self._services_built = True
 
+    async def _seed_with_prune(self, run_id: str) -> None:
+        """Age the local store before a seed; retention never blocks seeding."""
+
+        try:
+            await asyncio.to_thread(self.store.prune, now=time.time())
+        except Exception:  # noqa: BLE001 - a pruning failure must not stop the seed
+            logger.warning("[Topic] recommendation store prune failed", exc_info=True)
+        _seed_topic_starter_services(
+            self.topic_prepare_service,
+            self.topic_service,
+            run_id,
+        )
+
     async def start(self) -> None:
         self.ensure_services()
         if self._seed_task is None:
             self._seed_task = asyncio.create_task(
-                _topic_starter_seed_loop(
-                    lambda run_id: _seed_topic_starter_services(
-                        self.topic_prepare_service,
-                        self.topic_service,
-                        run_id,
-                    ),
-                )
+                _topic_starter_seed_loop(self._seed_with_prune)
             )
 
     async def shutdown(self) -> None:

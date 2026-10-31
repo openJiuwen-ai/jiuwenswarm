@@ -66,6 +66,36 @@ logger = logging.getLogger(__name__)
 # recommendation.db is written by several stores; wait for the write lock like they do.
 _SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
 
+# Layered retention: dedup windows and caches age out sooner than feedback,
+# receipts and training samples. Event types not listed here are never pruned.
+_RETENTION_DAYS = {
+    "dynamic_exposure": 30,
+    "starter_slate_manifest": 45,
+    "starter_card": 45,
+    "provider_invocation": 180,
+    "external_invocation_attempt": 180,
+    "rid_summary_pair_match_attempt": 180,
+    "rid_summary_pair_match_receipt": 180,
+    "rid_decision": 180,
+    "rid_abstention": 180,
+    "rid_user_context_snapshot": 180,
+    "session_summary": 90,
+    "session_summary_coverage": 90,
+    "state_maintenance_receipt": 90,
+    "prompt_suggestion_generation": 90,
+    "not_interested": 180,
+    "topic_click": 180,
+    "session_bound": 180,
+    "conversation_depth": 180,
+    "active_expression_observation": 180,
+    "store_pruned": 30,
+}
+_SUPERSEDED_SUMMARY_KEEP = 2
+_PROFILE_SNAPSHOT_RETENTION_DAYS = 90
+_SHORT_INTENT_RETENTION_DAYS = 90
+_PRUNE_MIN_INTERVAL_SECONDS = 20 * 60 * 60
+_PRUNE_EVENT_TYPE = "store_pruned"
+
 
 @dataclass(frozen=True)
 class InterestDrift:
@@ -200,6 +230,127 @@ class TopicStarterStore:
         })
         with self._connect() as connection:
             connection.execute("VACUUM")
+
+    def prune(self, *, now: float) -> dict[str, int]:
+        """Drop aged cache, dedup and receipt rows once per retention interval.
+
+        Feedback, consent records and the training data plane are left alone:
+        their event types are not in ``_RETENTION_DAYS``.
+        """
+
+        recent = self.query_events(
+            event_type=_PRUNE_EVENT_TYPE,
+            limit=1,
+            newest_first=True,
+        )
+        if recent and float(recent[0].get("created_at") or 0.0) > (
+            now - _PRUNE_MIN_INTERVAL_SECONDS
+        ):
+            return {}
+        removed: dict[str, int] = {}
+        with self._connect() as connection:
+            for event_type, days in _RETENTION_DAYS.items():
+                cursor = connection.execute(
+                    "DELETE FROM recommendation_event "
+                    "WHERE event_type = ? AND created_at < ?",
+                    (event_type, now - days * 24 * 60 * 60),
+                )
+                if cursor.rowcount:
+                    removed[event_type] = cursor.rowcount
+            superseded = self._prune_superseded_summaries(connection)
+            if superseded:
+                removed["session_summary_superseded"] = superseded
+            snapshots = self._prune_profile_snapshots(connection, now)
+            if snapshots:
+                removed["profile_snapshot"] = snapshots
+            short_intent = self._prune_short_intent(connection, now)
+            if short_intent:
+                removed["short_intent_state"] = short_intent
+        if removed:
+            connection = self._connect()
+            try:
+                connection.isolation_level = None
+                connection.execute("VACUUM")
+            finally:
+                connection.close()
+        self.record_event({
+            "session_id": "maintenance",
+            "slate_id": "maintenance",
+            "event_type": _PRUNE_EVENT_TYPE,
+            "topic_id": f"maintenance:{int(now)}",
+            "policy_id": "recommendation-retention-v1",
+            "selection_mode": "usage_retention",
+            "propensity_reason": "not_applicable",
+            "payload": removed,
+            "created_at": now,
+        })
+        return removed
+
+    @staticmethod
+    def _prune_superseded_summaries(connection: sqlite3.Connection) -> int:
+        """Keep the newest summaries of each session; older revisions are never read."""
+
+        rows = connection.execute(
+            "SELECT event_key, payload_json FROM recommendation_event "
+            "WHERE event_type = 'session_summary' "
+            "ORDER BY json_extract(payload_json, '$.session_id'), "
+            "created_at DESC, event_key DESC"
+        ).fetchall()
+        seen: Counter[str] = Counter()
+        doomed: list[tuple[str]] = []
+        for row in rows:
+            session_id = str(
+                json.loads(row["payload_json"]).get("session_id") or ""
+            )
+            if seen[session_id] >= _SUPERSEDED_SUMMARY_KEEP:
+                doomed.append((row["event_key"],))
+            seen[session_id] += 1
+        if doomed:
+            connection.executemany(
+                "DELETE FROM recommendation_event WHERE event_key = ?",
+                doomed,
+            )
+        return len(doomed)
+
+    @staticmethod
+    def _prune_profile_snapshots(
+        connection: sqlite3.Connection,
+        now: float,
+    ) -> int:
+        cutoff = now - _PROFILE_SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
+        rows = connection.execute(
+            "SELECT version, created_at FROM profile_snapshot "
+            "ORDER BY version DESC"
+        ).fetchall()
+        # The latest two stay even when old: reads start at the newest version.
+        doomed = [
+            (int(row["version"]),)
+            for index, row in enumerate(rows)
+            if index >= 2 and float(row["created_at"]) < cutoff
+        ]
+        if doomed:
+            connection.executemany(
+                "DELETE FROM profile_snapshot WHERE version = ?",
+                doomed,
+            )
+        return len(doomed)
+
+    @staticmethod
+    def _prune_short_intent(
+        connection: sqlite3.Connection,
+        now: float,
+    ) -> int:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'short_intent_state'"
+        ).fetchone()
+        if exists is None:
+            return 0
+        cursor = connection.execute(
+            "DELETE FROM short_intent_state WHERE evaluated_at < ?",
+            (now - _SHORT_INTENT_RETENTION_DAYS * 24 * 60 * 60,),
+        )
+        return cursor.rowcount
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS)
