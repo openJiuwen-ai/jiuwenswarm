@@ -409,6 +409,32 @@ test('pasted image in a historical session restores after InputArea unmounts on 
   });
 });
 
+test('desktop local-path document attachment shows its filename on the composer card', async () => {
+  // appendLocalFilePicks is exactly what the real desktop pywebview/Electron
+  // bridge feeds into (see InputArea's acceptExternalLocalFilePicks /
+  // openAttachmentPicker -> selectLocalFiles -> appendLocalFilePicks), with a
+  // real local path attached -- the shape describe_local_file /
+  // main.cjs#describeLocalFile hand back for a non-image document.
+  await mount({}, async ({ inputAreaRef }) => {
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        {
+          kind: 'document',
+          filename: '1.json',
+          mime_type: 'application/json',
+          size: 16,
+          path: 'C:\\Users\\Administrator\\Desktop\\1.json',
+        },
+      ]);
+    });
+    const card = document.querySelector('[data-testid="chat-panel-input-attachment-card"]');
+    assert.notEqual(card, null);
+    const nameBlock = card.querySelector('[data-testid="chat-panel-input-attachment-name"]');
+    assert.notEqual(nameBlock, null);
+    assert.equal(nameBlock.querySelector('.chat-input-attachment-name-text').textContent, '1.json');
+  });
+});
+
 async function typeSlash(value) {
   await act(async () => {
     const editor = byId('chat-panel-input');

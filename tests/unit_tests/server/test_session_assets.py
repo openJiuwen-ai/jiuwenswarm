@@ -23,19 +23,41 @@ def _file(tmp_path, name: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_register_names_kinds_and_is_idempotent(manager, tmp_path):
+async def test_register_names_kinds_and_reports_created_per_item(manager, tmp_path):
     photo, clip = _file(tmp_path, "serum.png"), _file(tmp_path, "clip.mp4")
-    items = [{"path": photo}, {"path": clip, "source": "generated"}, {"path": str(tmp_path / "missing.png")}]
+    missing = str(tmp_path / "missing.png")
+    items = [{"path": photo}, {"path": clip, "source": "generated"}, {"path": missing}]
     result = await manager.handle_session_assets_register({"session_id": "s1", "items": items})
     assets = result["assets"]
     assert [(a["name"], a["kind"], a["source"]) for a in assets] == [
         ("serum", "image", "upload"),
         ("clip", "video", "generated"),
     ]  # the missing file was skipped
-    again = await manager.handle_session_assets_register({"session_id": "s1", "items": [{"path": photo}]})
-    assert len(again["assets"]) == 2  # same path is not registered twice
-    assert (await manager.handle_session_assets_list({"session_id": "s1"}))["assets"] == again["assets"]
+    # created is parallel to items: one entry per input, None for the skipped one,
+    # so a caller registering several drafts in one call can tell exactly which
+    # asset_id belongs to which of its own drafts.
+    created = result["created"]
+    assert len(created) == 3
+    assert created[0]["asset_id"] == assets[0]["asset_id"]
+    assert created[1]["asset_id"] == assets[1]["asset_id"]
+    assert created[2] is None
     assert (await manager.handle_session_assets_list({"session_id": "other"}))["assets"] == []
+
+
+@pytest.mark.asyncio
+async def test_reattaching_the_same_path_creates_a_new_asset(manager, tmp_path):
+    # A desktop document attachment reuses the original file's literal path on
+    # every attach (never re-encoded to a fresh path, unlike an image) -- but
+    # deliberately attaching it again must still behave like re-attaching an
+    # image does: a second, distinct, deduped-name asset, not a silent no-op.
+    photo = _file(tmp_path, "1.json")
+    first = await manager.handle_session_assets_register({"session_id": "s1", "items": [{"path": photo}]})
+    again = await manager.handle_session_assets_register({"session_id": "s1", "items": [{"path": photo}]})
+    assert [a["name"] for a in again["assets"]] == ["1", "1-1"]
+    assert again["assets"][0]["asset_id"] == first["assets"][0]["asset_id"]
+    assert again["assets"][1]["asset_id"] != first["assets"][0]["asset_id"]
+    assert again["created"] == [again["assets"][1]]
+    assert (await manager.handle_session_assets_list({"session_id": "s1"}))["assets"] == again["assets"]
 
 
 @pytest.mark.asyncio
@@ -44,7 +66,23 @@ async def test_default_names_are_made_unique(manager, tmp_path):
     result = await manager.handle_session_assets_register(
         {"session_id": "s1", "items": [{"path": first}, {"path": second}]}
     )
-    assert [a["name"] for a in result["assets"]] == ["fox", "fox 2"]
+    assert [a["name"] for a in result["assets"]] == ["fox", "fox-1"]
+
+
+@pytest.mark.asyncio
+async def test_renamed_away_name_is_not_recycled(manager, tmp_path):
+    # "fox" gets renamed to "cub"; a later, unrelated file that also defaults to
+    # "fox" must not silently become plain "fox" again (that would make it look
+    # like the same asset as the one now called "cub") -- it must still dedupe
+    # against "fox" having been used before, landing on "fox-1".
+    first = _file(tmp_path, "a/fox.png")
+    registered = await manager.handle_session_assets_register({"session_id": "s1", "items": [{"path": first}]})
+    asset_id = registered["assets"][0]["asset_id"]
+    await manager.handle_session_assets_rename({"session_id": "s1", "asset_id": asset_id, "name": "cub"})
+
+    second = _file(tmp_path, "b/fox.png")
+    result = await manager.handle_session_assets_register({"session_id": "s1", "items": [{"path": second}]})
+    assert [a["name"] for a in result["assets"]] == ["cub", "fox-1"]
 
 
 @pytest.mark.asyncio
