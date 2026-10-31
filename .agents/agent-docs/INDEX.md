@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 23 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 24 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -22,12 +22,13 @@ generated: true
 | [jiuwenswarm](#module-5) | 3 |
 | [jiuwenswarm/channels/web](#module-6) | 1 |
 | [jiuwenswarm/channels/web/frontend](#module-7) | 3 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-8) | 1 |
-| [jiuwenswarm/observability](#module-9) | 1 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-10) | 2 |
-| [tests/unit_tests/gateway](#module-11) | 1 |
-| [tests/unit_tests/personal_context](#module-12) | 1 |
-| [未分类](#module-13) | 12 |
+| [jiuwenswarm/common/config_panel](#module-8) | 1 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-9) | 1 |
+| [jiuwenswarm/observability](#module-10) | 1 |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-11) | 2 |
+| [tests/unit_tests/gateway](#module-12) | 1 |
+| [tests/unit_tests/personal_context](#module-13) | 1 |
+| [未分类](#module-14) | 12 |
 
 <a id="module-1"></a>
 
@@ -93,13 +94,21 @@ generated: true
 
 <a id="module-8"></a>
 
+## jiuwenswarm/common/config_panel
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261031_1515_config-validate-custom-headers](bugfix/jiuwenswarm/common/config_panel/B_20261031_1515_config-validate-custom-headers.md) | B | 配置了 custom_headers 的模型「测试连接」误报 401 | linghb | jiuwenswarm/common/config_panel | jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, tests/unit_tests/common/test_config_validate_model_mcc.py | 无独立 D：无独立 D：对现有 validate 探测行为的缺陷修复，方案在前置检视分析中与用户确认（持久化基线 + 表单覆盖）。 |
+
+<a id="module-9"></a>
+
 ## jiuwenswarm/gateway/channel_manager/web
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-9"></a>
+<a id="module-10"></a>
 
 ## jiuwenswarm/observability
 
@@ -107,7 +116,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-10"></a>
+<a id="module-11"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -116,7 +125,7 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](features/F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 
-<a id="module-11"></a>
+<a id="module-12"></a>
 
 ## tests/unit_tests/gateway
 
@@ -124,7 +133,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-12"></a>
+<a id="module-13"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -132,7 +141,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-13"></a>
+<a id="module-14"></a>
 
 ## 未分类
 
@@ -146,7 +155,7 @@ generated: true
 | [team_permission_design](designs/archive/team_permission_design.md) | D | Team 模式 Permissions 设计方案 | 待确认 | — | — | — |
 | [team_plan_design](designs/archive/team_plan_design.md) | D | Team Plan 模式设计文档 | 待确认 | — | — | — |
 | [team_worktree_isolation_agenttool_cn](designs/archive/team_worktree_isolation_agenttool_cn.md) | D | Team Teammate Worktree Isolation 设计文档 | 待确认 | — | — | — |
-| [B_20261026_1602_code-multimodal-loading](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261026_1602_code-multimodal-loading.md) | B | 配置多模态模型后，Code 未按 Work 规则加载工具 | 待确认 | — | — | 待核实 |
-| [B_20261026_1606_issue-5753-session-project-binding](bugfix/jiuwenswarm/server/runtime/session/B_20261026_1606_issue-5753-session-project-binding.md) | B | Issue #5753：普通会话发送消息后混入全局项目目录 | 待确认 | — | — | 待核实 |
-| [B_20261026_2035_gateway-contract-collection](bugfix/tests/unit_tests/common/B_20261026_2035_gateway-contract-collection.md) | B | Gateway 拆包后协议契约测试无法收集 | 待确认 | — | — | 待核实 |
-| [S_01_multimodal-tool-loading](specs/jiuwenswarm/server/runtime/agent_adapter/S_01_multimodal-tool-loading.md) | S | Work / Code 多模态工具加载契约 | 待确认 | — | — | — |
+| [B_20261026_1602_code-multimodal-loading](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261026_1602_code-multimodal-loading.md) | B | 配置多模态模型后，Code 未按 Work 规则加载工具 | ldstyle8 | — | — | 待核实 |
+| [B_20261026_1606_issue-5753-session-project-binding](bugfix/jiuwenswarm/server/runtime/session/B_20261026_1606_issue-5753-session-project-binding.md) | B | Issue #5753：普通会话发送消息后混入全局项目目录 | kdgmpw | — | — | 待核实 |
+| [B_20261026_2035_gateway-contract-collection](bugfix/tests/unit_tests/common/B_20261026_2035_gateway-contract-collection.md) | B | Gateway 拆包后协议契约测试无法收集 | ldstyle8 | — | — | 待核实 |
+| [S_01_multimodal-tool-loading](specs/jiuwenswarm/server/runtime/agent_adapter/S_01_multimodal-tool-loading.md) | S | Work / Code 多模态工具加载契约 | ldstyle8 | — | — | — |
