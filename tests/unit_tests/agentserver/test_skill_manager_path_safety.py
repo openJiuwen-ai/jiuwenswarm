@@ -1,5 +1,7 @@
 import io
 import os
+import shutil
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -8,8 +10,12 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     SkillManager,
+    _copytree_long,
+    _long_path,
+    _mkdir_long,
     _safe_child_path,
     _safe_path_name,
+    _write_bytes_long,
 )
 
 pytestmark = pytest.mark.usefixtures("allow_macos_pytest_temp_sources")
@@ -582,3 +588,152 @@ async def test_team_skills_hub_validate_rejects_missing_description(tmp_path):
 
     assert result["success"] is False
     assert "description" in result["detail"]
+
+
+def _zip_bytes(entries: dict[str, str | bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _deep_member_rel() -> str:
+    """构造解压后总长必超 Windows MAX_PATH(260) 的成员相对路径。
+
+    6 层 × 51 字符 ≈ 311 字符，叠加任意临时目录基路径后必超 260；
+    单段 51 字符同时不触 NTFS 的 255 字符单文件名上限。
+    """
+    return "/".join(f"L{i}" + "x" * 50 for i in range(6))
+
+
+def _force_normal_path_failures(monkeypatch) -> None:
+    r"""模拟 LongPathsEnabled=0 机器：普通路径 mkdir/write_bytes/copytree 必败。
+
+    开发机注册表常为 1，普通路径也能超 260，长路径用例在此类机器上兜底分支
+    根本不执行（修复退化也无法暴露）；这里让普通路径 API 直接抛错，强制
+    走 \\?\ 前缀兜底分支。带前缀的调用放行给真实实现。
+    """
+    real_write = Path.write_bytes
+    real_mkdir = Path.mkdir
+    real_copytree = shutil.copytree
+
+    def fake_write(self, data):  # noqa: ANN001
+        if not str(self).startswith("\\\\?\\"):
+            raise FileNotFoundError(2, "simulated MAX_PATH(260) failure")
+        return real_write(self, data)
+
+    def fake_mkdir(self, *args, **kwargs):  # noqa: ANN001
+        if not str(self).startswith("\\\\?\\"):
+            raise FileNotFoundError(2, "simulated MAX_PATH(260) failure")
+        return real_mkdir(self, *args, **kwargs)
+
+    def fake_copytree(src, *args, **kwargs):  # noqa: ANN001
+        # py3.11 copytree 内部递归传 DirEntry 对象（str() 是 "<DirEntry ...>" 表示
+        # 形式），取 .path 才是真实路径；同时透传 7 个位置参数
+        real_src = getattr(src, "path", src)
+        if not str(real_src).startswith("\\\\?\\"):
+            raise OSError(3, "simulated MAX_PATH(260) failure")
+        return real_copytree(src, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_bytes", fake_write)
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setattr(shutil, "copytree", fake_copytree)
+
+
+def _rel_parts(rel: str) -> tuple[str, ...]:
+    """归一成员相对路径的本地目录分隔（zip 内为 /，本地为 os.sep）。"""
+    return tuple(rel.split("/"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_mkdir_and_write_bytes_long_fallback_on_normal_path_failure(tmp_path, monkeypatch):
+    r"""模拟 LongPathsEnabled=0 机器：普通路径 mkdir/write 必败，兜底必须接管。"""
+    _force_normal_path_failures(monkeypatch)
+
+    target = tmp_path / "deep" / "nested" / "SKILL.md"
+    _mkdir_long(target.parent)
+    _write_bytes_long(target, b"long path content")
+    assert _long_path(target).read_bytes() == b"long path content"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_copytree_long_fallback_on_normal_path_failure(tmp_path, monkeypatch):
+    r"""安装链路兜底：普通 copytree 必败时，两侧 \?\ 加前缀重试须完成拷贝。
+
+    对应检视缺口：解压成功不等于安装成功——解压到 staging 后仍要 copytree
+    到 skills 目录，普通路径在 >260 时同样抛 WinError 3/206。
+    """
+    src = tmp_path / "staging"
+    deep_dir = src.joinpath(*_rel_parts(_deep_member_rel()))
+    # 源树也超 260：用被测兜底助手搭建（monkeypatch 前置会让普通 API 必败）
+    _mkdir_long(deep_dir)
+    _write_bytes_long(deep_dir / "SKILL.md", b"install me")
+    (src / "top.md").write_text("top", encoding="utf-8")
+
+    _force_normal_path_failures(monkeypatch)
+
+    dest = tmp_path / "skills" / "demo"
+    _copytree_long(src, dest, ignore=shutil.ignore_patterns("*.tmp"))
+
+    deep_local = dest.joinpath(*_rel_parts(_deep_member_rel()))
+    assert _long_path(deep_local / "SKILL.md").read_text(encoding="utf-8") == "install me"
+
+    assert _long_path(dest / "top.md").read_text(encoding="utf-8") == "top"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_extract_then_install_survives_forced_long_path_failures(tmp_path, monkeypatch):
+    r"""端到端（解压 → 安装拷贝）：普通路径 API 全程失败时整链仍须成功。
+
+    复现完整故障链：解压到 staging → copytree 到安装目录，两段任一用普通
+    路径都会在 LongPathsEnabled=0 机器上失败；修复后兜底接力完成安装。
+    """
+    _force_normal_path_failures(monkeypatch)
+
+    rel = _deep_member_rel()
+    staging = tmp_path / "staging"
+    SkillManager._safe_extract_zip_bytes_to_dir(
+        _zip_bytes({"SKILL.md": "demo", f"{rel}/SKILL.md": "deep content"}), staging
+    )
+
+    dest = tmp_path / "skills" / "demo"
+    _copytree_long(staging, dest)
+
+    assert _long_path(dest.joinpath(*_rel_parts(rel)) / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "deep content"
+    assert _long_path(dest / "SKILL.md").read_text(encoding="utf-8") == "demo"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_safe_extract_zip_bytes_to_dir_survives_long_paths(tmp_path):
+    r"""复现原故障：技能包层级深 + 文件名长时解压报 FileNotFoundError。
+
+    修复前普通 mkdir/write 超 260 直接失败且无兜底；修复后 \?\ 前缀兜底
+    让解压成功。越界校验先于落盘执行，恶意成员仍被拒绝（见 zip-slip 用例）。
+    """
+    rel = _deep_member_rel()
+    content = "deep content"
+    dest = tmp_path / "dest"
+    SkillManager._safe_extract_zip_bytes_to_dir(
+        _zip_bytes({"SKILL.md": "demo", f"{rel}/SKILL.md": content}), dest
+    )
+    # 普通路径读同样超限，用同款 \?\ 兜底断言内容落盘正确
+    assert _long_path(dest / rel / "SKILL.md").read_text(encoding="utf-8") == content
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH(260) 限制专属场景")
+def test_safe_extract_tar_to_dir_survives_long_paths(tmp_path):
+    """tar 与 zip 走同一组长路径兜底（安全解压家族两条成员落盘路径）。"""
+    rel = _deep_member_rel()
+    content = "deep content"
+    tar_path = tmp_path / "deep.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        info = tarfile.TarInfo(f"{rel}/SKILL.md")
+        data = content.encode("utf-8")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "dest"
+    SkillManager._safe_extract_tar_to_dir(tar_path, dest)
+    assert _long_path(dest / rel / "SKILL.md").read_text(encoding="utf-8") == content

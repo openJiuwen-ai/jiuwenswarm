@@ -841,6 +841,70 @@ def _log_rejected_name(operation: str, label: str, value: Any, exc: ValueError) 
     )
 
 
+def _long_path(path: Path | str) -> Path:
+    r"""返回 Windows 长路径（\\?\ 前缀）形式，绕过 MAX_PATH(260) 限制。
+
+    非 Windows 原样返回；Windows 给绝对路径加 ``\\?\`` 前缀（NTFS 支持）。
+    路径须为绝对路径（调用方保证），且分隔符统一为 ``\\``。
+    """
+    p = str(path)
+    if os.name != "nt" or p.startswith("\\\\?\\"):
+        return Path(p)
+    # G.FIO.05 不用字符串拼接构造路径。注意不能直接 os.path.join("\\\\?\\", p)：
+    # join 遇到带盘符的组件会把整个前缀重置丢弃（设备命名空间前缀只能先与盘符
+    # 合成基路径，剩余部分交给 pathlib 追加）。
+    drive, tail = os.path.splitdrive(p.replace("/", "\\"))
+    # PureWindowsPath 只是词法对象（无 mkdir/write_bytes 等文件系统方法），转回具体 Path
+    return Path(PureWindowsPath(f"\\\\?\\{drive}\\") / tail.lstrip("\\"))
+
+
+def _mkdir_long(p: Path) -> None:
+    r"""mkdir，超长路径用 \\?\ 兜底（仅 Windows）。
+
+    技能包目录层级深 + 文件名长时，普通路径可能超过 MAX_PATH(260)，
+    mkdir/write 直接报 FileNotFoundError；失败时加 \\?\ 前缀重试。
+    """
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except (FileNotFoundError, OSError):
+        if os.name != "nt":
+            raise
+        _long_path(p).mkdir(parents=True, exist_ok=True)
+
+
+def _write_bytes_long(p: Path, data: bytes) -> None:
+    r"""write_bytes，超长路径用 \\?\ 兜底（仅 Windows）。"""
+    try:
+        p.write_bytes(data)
+    except (FileNotFoundError, OSError):
+        if os.name != "nt":
+            raise
+        _long_path(p).write_bytes(data)
+
+
+def _copytree_long(src: Path, dst: Path, **kwargs: Any) -> None:
+    r"""copytree，超长路径用 \\?\ 兜底（仅 Windows）。
+
+    解压成功不等于安装成功：解压到 staging 后，安装链路还要 copytree 到
+    skills 目录，普通路径在 >260 时同样抛 WinError 3/206。先按原参数尝试
+    （保留 ignore/symlinks 等全部语义），失败且为 Windows 时两侧加 \\?\ 前缀
+    重试——copytree 内部 join 会保留前缀，遍历与元数据复制均可用。首次尝试
+    可能已部分拷贝，重试需 dirs_exist_ok 覆盖续拷。
+    """
+    try:
+        shutil.copytree(src, dst, **kwargs)
+        return
+    except OSError:
+        if os.name != "nt":
+            raise
+    shutil.copytree(
+        str(_long_path(src)),
+        str(_long_path(dst)),
+        dirs_exist_ok=True,
+        **kwargs,
+    )
+
+
 def _safe_rmtree(path: Path) -> bool:
     """安全地删除目录树，处理 Windows 上的 git 文件锁定问题."""
     if not path.exists():
@@ -856,6 +920,14 @@ def _safe_rmtree(path: Path) -> bool:
             shutil.rmtree(path)
             return True
         except OSError as exc:
+            # Windows MAX_PATH(260) 兜底：超长路径用 \\?\ 前缀重试。
+            if os.name == "nt":
+                try:
+                    shutil.rmtree(_long_path(path))
+                    return True
+                except OSError:
+                    pass
+
             logger.debug("删除目录失败（尝试 %d/%d）: %s", attempt + 1, max_retries, exc)
 
             # 最后一次尝试失败，直接返回 False
@@ -3462,7 +3534,7 @@ class SkillManager:
                         _safe_rmtree(dest)
 
                     # 复制到 skills 目录
-                    shutil.copytree(skill_dir, dest)
+                    _copytree_long(skill_dir, dest)
                     for mirror_root in self._get_mirror_skills_dirs():
                         mirror_dest = _safe_child_path(mirror_root, slug, "skill")
                         if mirror_dest.exists():
@@ -3470,7 +3542,7 @@ class SkillManager:
                                 continue
                             _safe_rmtree(mirror_dest)
                         mirror_root.mkdir(parents=True, exist_ok=True)
-                        shutil.copytree(skill_dir, mirror_dest)
+                        _copytree_long(skill_dir, mirror_dest)
 
                     # ClawHub 登记名必须与磁盘目录名（slug）一致：多个包常共用 SKILL.md
                     # frontmatter name（如都叫 weather），若按 parsed name 登记会互相覆盖
@@ -5744,7 +5816,7 @@ class SkillManager:
                 )
         else:
             try:
-                shutil.copytree(
+                _copytree_long(
                     src,
                     dest,
                     ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -5994,7 +6066,7 @@ class SkillManager:
 
         try:
             # 旁路准备新内容，不动原目录
-            shutil.copytree(
+            _copytree_long(
                 src,
                 staged,
                 ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
@@ -8537,7 +8609,7 @@ class SkillManager:
             except ValueError as exc:
                 raise RuntimeError("ZIP 路径越界") from exc
             if is_dir:
-                dest_path.mkdir(parents=True, exist_ok=True)
+                _mkdir_long(dest_path)
                 continue
             file_count += 1
             if file_count > _SKILL_ZIP_MAX_FILE_COUNT:
@@ -8556,7 +8628,8 @@ class SkillManager:
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
                 )
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            # 越界校验已在上方完成，此处仅处理超长路径的落盘兜底
+            _mkdir_long(dest_path.parent)
             with zf.open(info, "r") as src:
                 data = src.read(_SKILL_ZIP_MAX_SINGLE_FILE_BYTES + 1)
             if len(data) > _SKILL_ZIP_MAX_SINGLE_FILE_BYTES:
@@ -8570,13 +8643,13 @@ class SkillManager:
                     ERROR_SKILL_FILE_TOO_LARGE,
                     f"ZIP 解包总大小超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
                 )
-            dest_path.write_bytes(data)
+            _write_bytes_long(dest_path, data)
 
     @staticmethod
     def _safe_extract_zip_bytes_to_dir(data: bytes, dest_dir: Path) -> None:
         """将 ZIP 字节解压到 dest_dir（不落盘 staging zip，与 ClawHub extractall 语义一致）。"""
         dest_root = dest_dir.resolve()
-        dest_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_long(dest_root)
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
             SkillManager._safe_extract_zip_members_into(zf, dest_root)
 
@@ -8584,7 +8657,7 @@ class SkillManager:
     def _safe_extract_zip_to_dir(zip_path: Path, dest_dir: Path) -> None:
         """将 ZIP 文件解压到 dest_dir，拒绝 Zip Slip（..、绝对路径、写出目标目录外）。"""
         dest_root = dest_dir.resolve()
-        dest_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_long(dest_root)
         with zipfile.ZipFile(zip_path, "r") as zf:
             SkillManager._safe_extract_zip_members_into(zf, dest_root)
 
@@ -8592,7 +8665,7 @@ class SkillManager:
     def _safe_extract_tar_to_dir(tar_path: Path, dest_dir: Path) -> None:
         """Extract TAR/TAR.GZ/TGZ safely into dest_dir."""
         dest_root = dest_dir.resolve()
-        dest_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_long(dest_root)
         with tarfile.open(tar_path, "r:*") as tf:
             for member in tf.getmembers():
                 raw = (member.name or "").replace("\\", "/")
@@ -8614,14 +8687,14 @@ class SkillManager:
                 except ValueError as exc:
                     raise RuntimeError("归档路径越界") from exc
                 if member.isdir():
-                    dest_path.mkdir(parents=True, exist_ok=True)
+                    _mkdir_long(dest_path)
                     continue
                 extracted = tf.extractfile(member)
                 if extracted is None:
                     continue
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_long(dest_path.parent)
                 with extracted:
-                    dest_path.write_bytes(extracted.read())
+                    _write_bytes_long(dest_path, extracted.read())
 
     @staticmethod
     def _detect_archive_format(body: bytes) -> str:
