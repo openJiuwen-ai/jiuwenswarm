@@ -626,6 +626,12 @@ from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch 
     apply_deepagent_task_plan_binding_patch,
 )
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.common.mcp_dynamic_token_patch import (
+    _registry_token_url,
+    apply_mcp_dynamic_token_patch,
+    mark_dynamic_token_server,
+    unmark_dynamic_token_server,
+)
 from jiuwenswarm.common.mcp_tool_list_refresh_patch import (
     apply_mcp_tool_list_refresh_patch,
     refresh_registered_mcp_tool_lists,
@@ -2648,6 +2654,11 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_tool_list_refresh_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
+        # 企业 MCP 网关动态 token：替换 SDK HEADER_AND_QUERY 鉴权策略，注册时
+        # 标记 server_id，每个 MCP HTTP 请求前实时向 token 服务取凭证。
+        # 实例凭据由企业配置合并从 agent_template.data.custom_config 提取下发
+        # （apply_dispatched_credentials）；未下发时策略回退静态头。幂等。
+        apply_mcp_dynamic_token_patch()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         # 多租户：调用方（企业版 AgentManager / 个人版 TenantAgentPool）显式
@@ -4950,73 +4961,93 @@ class JiuWenSwarmDeepAdapter:
     def _extract_enabled_mcp_server_entries(config_base: dict[str, Any]) -> list[dict[str, Any]]:
         return extract_enabled_mcp_server_entries(config_base)
 
-    async def _register_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
+    async def _register_mcp_server(
+        self,
+        cfg: McpServerConfig,
+        *,
+        tag: str,
+        dynamic_token_url: str | None = None,
+    ) -> bool:
         if self._instance is None:
             return False
-        # Pre-flight reachability check for HTTP-based MCP servers. If the host
-        # is down we skip registration here instead of entering the mcp
-        # streamable-http context — otherwise openjiuwen leaks orphaned anyio
-        # background tasks on the failed initialize() and logs noisy
-        # ``aclose()``/cancel-scope RuntimeErrors.
-        reachable, reason = await preflight_mcp_server_reachable(cfg)
-        if not reachable:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] MCP server unreachable, skipping registration: "
-                "name=%s transport=%s path=%s reason=%s",
-                cfg.server_name, cfg.client_type, cfg.server_path, reason,
-            )
-            return False
-        # Remote MCP connect failures may surface as CancelledError: anyio
-        # TaskGroup cancel()+uncancel() the host task, and CancelledError is not
-        # an Exception subclass (Python 3.8+), so the bare ``except Exception``
-        # below cannot isolate it. ResourceMgr isolation that keys off
-        # connect_task.cancelled() also fails after uncancel(). Catch
-        # CancelledError here and use cancelling() to tell apart:
-        #   - cancelling()==0 → anyio-internal cancel → skip this server
-        #   - cancelling()>0  → real outer cancel (interrupt / WS drop) → re-raise
+        # 动态 token 作用域标记（refcount + 网关级 token_url，见
+        # mcp_dynamic_token_patch）：注册成功路径保持标记，TOOL_AUTH 策略按
+        # server_id 识别（call_tool 期自愈重连 / TTL 刷新重连均命中）；任何
+        # 失败出口由 finally 统一 unmark。条目未携带 dynamic_token_url 或
+        # 实例凭据未下发时 mark 是 no-op（该网关保持静态头）。
+        server_id = str(getattr(cfg, "server_id", "") or "").strip()
+        marked = mark_dynamic_token_server(server_id, dynamic_token_url)
+        ok_registered = False
         try:
-            ttl_s = self._mcp_tool_list_ttl_s()
-            # SDK rejects expiry_time <= 0; ttl==0 means "every turn" via turn hook.
-            expiry = ttl_s if ttl_s > 0 else None
-            result = await Runner.resource_mgr.add_mcp_server(
-                cfg, tag=tag, expiry_time=expiry
+            # Pre-flight reachability check for HTTP-based MCP servers. If the host
+            # is down we skip registration here instead of entering the mcp
+            # streamable-http context — otherwise openjiuwen leaks orphaned anyio
+            # background tasks on the failed initialize() and logs noisy
+            # ``aclose()``/cancel-scope RuntimeErrors.
+            reachable, reason = await preflight_mcp_server_reachable(
+                cfg, dynamic_token_url=dynamic_token_url
             )
-            ok = True
-            if result is not None:
-                is_ok = getattr(result, "is_ok", None)
-                if callable(is_ok):
-                    ok = bool(is_ok())
-                elif isinstance(result, bool):
-                    ok = result
-            if ok:
-                server_id = str(getattr(cfg, "server_id", "") or "").strip()
-                if not server_id:
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] MCP server_id missing after registration: %s", cfg
-                    )
-                    return False
-                self._instance.ability_manager.add(cfg)
-                self._registered_mcp_server_ids.add(server_id)
-                self._registered_mcp_servers[server_id] = cfg
-                return True
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] MCP server register failed: %s", cfg.server_name
-            )
-            return False
-        except asyncio.CancelledError:
-            if is_asyncio_outer_cancellation():
-                raise
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] MCP register cancelled (anyio internal), skip: "
-                "name=%s transport=%s path=%s",
-                cfg.server_name,
-                cfg.client_type,
-                cfg.server_path,
-            )
-            return False
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] MCP server register failed: %s", exc)
-            return False
+            if not reachable:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] MCP server unreachable, skipping registration: "
+                    "name=%s transport=%s path=%s reason=%s",
+                    cfg.server_name, cfg.client_type, cfg.server_path, reason,
+                )
+                return False
+            # Remote MCP connect failures may surface as CancelledError: anyio
+            # TaskGroup cancel()+uncancel() the host task, and CancelledError is not
+            # an Exception subclass (Python 3.8+), so the bare ``except Exception``
+            # below cannot isolate it. ResourceMgr isolation that keys off
+            # connect_task.cancelled() also fails after uncancel(). Catch
+            # CancelledError here and use cancelling() to tell apart:
+            #   - cancelling()==0 → anyio-internal cancel → skip this server
+            #   - cancelling()>0  → real outer cancel (interrupt / WS drop) → re-raise
+            try:
+                ttl_s = self._mcp_tool_list_ttl_s()
+                # SDK rejects expiry_time <= 0; ttl==0 means "every turn" via turn hook.
+                expiry = ttl_s if ttl_s > 0 else None
+                result = await Runner.resource_mgr.add_mcp_server(
+                    cfg, tag=tag, expiry_time=expiry
+                )
+                ok = True
+                if result is not None:
+                    is_ok = getattr(result, "is_ok", None)
+                    if callable(is_ok):
+                        ok = bool(is_ok())
+                    elif isinstance(result, bool):
+                        ok = result
+                if ok:
+                    if not server_id:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] MCP server_id missing after registration: %s", cfg
+                        )
+                        return False
+                    self._instance.ability_manager.add(cfg)
+                    self._registered_mcp_server_ids.add(server_id)
+                    self._registered_mcp_servers[server_id] = cfg
+                    ok_registered = True
+                    return True
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] MCP server register failed: %s", cfg.server_name
+                )
+                return False
+            except asyncio.CancelledError:
+                if is_asyncio_outer_cancellation():
+                    raise
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] MCP register cancelled (anyio internal), skip: "
+                    "name=%s transport=%s path=%s",
+                    cfg.server_name,
+                    cfg.client_type,
+                    cfg.server_path,
+                )
+                return False
+            except Exception as exc:
+                logger.warning("[JiuWenSwarmDeepAdapter] MCP server register failed: %s", exc)
+                return False
+        finally:
+            if marked and not ok_registered:
+                unmark_dynamic_token_server(server_id)
 
     def _mcp_tool_list_ttl_s(self) -> float:
         """Seconds between enterprise MCP tool-list refreshes (0 = every turn)."""
@@ -5077,6 +5108,7 @@ class JiuWenSwarmDeepAdapter:
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] MCP ability remove failed: %s", exc)
         self._registered_mcp_server_ids.discard(server_id)
+        unmark_dynamic_token_server(server_id)
         self._registered_mcp_servers.pop(server_id, None)
 
     @staticmethod
@@ -5685,7 +5717,11 @@ class JiuWenSwarmDeepAdapter:
                     entry.get("name", "<unknown>"),
                 )
                 continue
-            await self._register_mcp_server(cfg, tag=tag)
+            # 条目级动态 token 端点（存在 = 该网关需要动态 token，随 mark 登记）
+            dynamic_token_url = str(entry.get("dynamic_token_url") or "").strip() or None
+            await self._register_mcp_server(
+                cfg, tag=tag, dynamic_token_url=dynamic_token_url
+            )
 
     async def _sync_mcp_servers_for_runtime(
         self, config_base: dict[str, Any], *, tag: str = "agent.reload"
@@ -5728,8 +5764,20 @@ class JiuWenSwarmDeepAdapter:
             server_id = current_by_name[server_name][0]
             await self._unregister_mcp_server(server_id)
 
+        # 条目级动态 token 端点（存在 = 该网关需要动态 token，随 mark 登记）
+        dynamic_token_url_by_name: dict[str, str] = {}
+        for entry in enabled_entries:
+            name = str(entry.get("name") or "").strip()
+            url = str(entry.get("dynamic_token_url") or "").strip()
+            if name and url:
+                dynamic_token_url_by_name[name] = url
+
         for server_name in to_add:
-            await self._register_mcp_server(desired_by_name[server_name], tag=tag)
+            await self._register_mcp_server(
+                desired_by_name[server_name],
+                tag=tag,
+                dynamic_token_url=dynamic_token_url_by_name.get(server_name),
+            )
 
         for server_name in to_check:
             server_id, current_cfg = current_by_name[server_name]
@@ -5750,12 +5798,21 @@ class JiuWenSwarmDeepAdapter:
                 "auth_headers": getattr(desired_cfg, "auth_headers", None),
                 "auth_query_params": getattr(desired_cfg, "auth_query_params", None),
             }
+            # 签名一致还不够：dynamic_token_url 是条目级字段（不在
+            # McpServerConfig 上），单独热更它也必须触发重注册——否则注册表
+            # 里留旧端点，token 从错误地址获取。当前值从注册表读取。
             if json.dumps(current_sig, sort_keys=True, default=str) == json.dumps(
                 desired_sig, sort_keys=True, default=str
+            ) and _registry_token_url(server_id) == dynamic_token_url_by_name.get(
+                server_name
             ):
                 continue
             await self._unregister_mcp_server(server_id)
-            await self._register_mcp_server(desired_cfg, tag=tag)
+            await self._register_mcp_server(
+                desired_cfg,
+                tag=tag,
+                dynamic_token_url=dynamic_token_url_by_name.get(server_name),
+            )
 
     @staticmethod
     def _build_vision_model_config(
