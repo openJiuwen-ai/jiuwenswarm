@@ -794,6 +794,26 @@ def release_organization_plan_claim(session_id: str, plan_id: str, member_name: 
     _accepted_plans.discard(_acceptance_key(session_id, plan_id, member_name))
 
 
+def _organization_attempt_started(session_id: str, plan_id: str) -> bool:
+    """Whether this plan's member run or Owner background is already going."""
+    if _owner_run_active(session_id, plan_id):
+        return True
+    for (run_session, run_plan, _member), task in _member_runs.items():
+        if run_session == session_id and run_plan == plan_id and not task.done():
+            return True
+    return False
+
+
+def _close_queued_organization_plan(
+    session_id: str, plan_id: str, member_name: str, error: str
+) -> None:
+    """Fail a queue that will not start, and wake whoever is waiting on it."""
+    release_organization_plan_claim(session_id, plan_id, member_name)
+    _fail_open_organization_plan(session_id, plan_id, error)
+    _plan_event(session_id, plan_id).set()
+    release_deferred_direct(session_id, plan_id)
+
+
 def _fail_open_organization_plan(session_id: str, plan_id: str, error: str) -> None:
     """Mark a still-open plan failed. A finished plan is left as it is."""
     from jiuwenswarm.server.runtime.group_service import update_group_organization_plan
@@ -968,17 +988,29 @@ def _start_owner_queue(session_id: str, plan: dict, backend: Any | None = None) 
 
 async def _owner_queue_entry(session_id: str, plan_id: str, owner: str) -> None:
     """Wait for the Owner proxy, then start this plan after older rounds finish."""
-    while _proxy_backends.get((session_id, owner)) is None:
-        plan = _plan_record(session_id, plan_id)
-        if plan is None or str(plan.get("status") or "") not in {"pending", "running"}:
-            return
-        await asyncio.sleep(POLL_SECONDS)
-    await _join_queued_organization_plan(
-        backend=_proxy_backends[(session_id, owner)],
-        session_id=session_id,
-        member_name=owner,
-        plan_id=plan_id,
-    )
+    try:
+        while _proxy_backends.get((session_id, owner)) is None:
+            plan = _plan_record(session_id, plan_id)
+            if plan is None or str(plan.get("status") or "") not in {"pending", "running"}:
+                return
+            await asyncio.sleep(POLL_SECONDS)
+        await _join_queued_organization_plan(
+            backend=_proxy_backends[(session_id, owner)],
+            session_id=session_id,
+            member_name=owner,
+            plan_id=plan_id,
+        )
+    except asyncio.CancelledError:
+        # The round has not started. Leaving the plan pending blocks every
+        # later message that shares a member until the 62-minute expiry.
+        if not _organization_attempt_started(session_id, plan_id):
+            _close_queued_organization_plan(
+                session_id,
+                plan_id,
+                owner,
+                "queued organization wait ended before the round started",
+            )
+        raise
 
 
 async def _join_queued_organization_plan(
@@ -1019,16 +1051,16 @@ async def _join_queued_organization_plan(
                 return
             return
     except Exception as exc:
-        release_organization_plan_claim(session_id, plan_id, member_name)
         logger.exception(
             "queued group organization did not start session=%s plan=%s member=%s",
             session_id,
             plan_id,
             member_name,
         )
-        _fail_open_organization_plan(
+        _close_queued_organization_plan(
             session_id,
             plan_id,
+            member_name,
             str(exc) or "queued organization did not start",
         )
 

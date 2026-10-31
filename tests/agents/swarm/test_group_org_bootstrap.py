@@ -3167,6 +3167,64 @@ async def test_queue_task_error_marks_the_plan_failed(monkeypatch):
     )
     assert plan["status"] == "failed"
     assert "queue broke" in plan["error"]
+    assert bootstrap._plan_event(SESSION, plan["plan_id"]).is_set()
+    bootstrap._plan_events.pop((SESSION, plan["plan_id"]), None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_queue_wait_fails_the_plan_and_unblocks_the_next(monkeypatch):
+    older = _stale_plan()
+    older["status"] = "pending"
+    newer = {
+        "plan_id": "plan-2",
+        "members": ["business", "insight"],
+        "owner_member": "business",
+        "status": "pending",
+        "created_at": 1,
+        "body": "后一问",
+    }
+    _MemoryGroup(monkeypatch, organization_plans=[older, newer])
+    bootstrap._accepted_plans.add(
+        bootstrap._acceptance_key(SESSION, older["plan_id"], "business")
+    )
+    task = asyncio.create_task(
+        bootstrap._owner_queue_entry(SESSION, older["plan_id"], "business")
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert older["status"] == "failed"
+    assert older["error"] == "queued organization wait ended before the round started"
+    assert not bootstrap.organization_plan_accepted(
+        SESSION, older["plan_id"], "business"
+    )
+    assert bootstrap._plan_event(SESSION, older["plan_id"]).is_set()
+    assert bootstrap._blocking_earlier_plans(SESSION, newer) == []
+    bootstrap._plan_events.pop((SESSION, older["plan_id"]), None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_queue_leaves_a_started_plan_to_its_owner(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "running"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+    hold = asyncio.Event()
+    owner = asyncio.create_task(hold.wait())
+    bootstrap._owner_runs[(SESSION, plan["plan_id"])] = owner
+    task = asyncio.create_task(
+        bootstrap._owner_queue_entry(SESSION, plan["plan_id"], "business")
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert plan["status"] == "running"
+    hold.set()
+    await owner
+    bootstrap._owner_runs.pop((SESSION, plan["plan_id"]), None)
 
 
 @pytest.mark.asyncio
