@@ -191,6 +191,21 @@ _AGENT_NETWORK_ERROR_TEXT_TOKENS = (
     "connection reset",
 )
 
+def ws_connect_ready_timeout_seconds() -> float:
+    """Return the shared AgentServer WebSocket readiness deadline."""
+    return _WS_CONNECT_READY_TIMEOUT_SECONDS
+
+
+def ws_connect_retry_interval_seconds() -> float:
+    """Return the shared AgentServer WebSocket retry interval."""
+    return _WS_CONNECT_RETRY_INTERVAL_SECONDS
+
+
+def is_ws_connect_retryable(exc: BaseException) -> bool:
+    """Return whether an AgentServer WebSocket connection can be retried."""
+    return _is_ws_connect_retryable(exc)
+
+
 # 断连清理的有限重试：断连后先等 disconnect_cleanup_timeout_seconds，再按固定
 # 间隔最多重试几次，覆盖「chat 尾部 release / 延迟 cancel 的 interrupt 与
 # 「断连+timeout」同秒到期」等短暂竞态；超限后交回 600s idle reaper 兜底。
@@ -2557,6 +2572,10 @@ class AgentOSRouterClient(AgentServerClient):
                     "type", "enabled", "startup_mode", "url", "template_name",
                     "user", "group",
                 ))
+                if sandbox_config.get("type") == "adx-environment":
+                    deployment.update(_pick_keys(sandbox_config, (
+                        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network",
+                    )))
                 conch = sandbox_config.get("conch")
                 if isinstance(conch, dict):
                     deployment["conch"] = _pick_keys(conch, (
