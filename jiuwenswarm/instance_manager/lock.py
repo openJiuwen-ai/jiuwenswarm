@@ -316,11 +316,27 @@ def is_process_alive(pid: int) -> bool:
                 ],
                 capture_output=True,
                 text=True,
+                # Pin the codec explicitly.  With text=True the implicit encoding
+                # follows the interpreter: it becomes "utf-8" under UTF-8 mode,
+                # which ``uv run`` enables via PYTHONUTF8=1, while console tools
+                # such as tasklist/netstat still emit ANSI code page bytes.  The
+                # mismatch is raised inside subprocess' reader thread and never
+                # reaches the caller -- stdout just comes back empty.  Only ASCII
+                # tokens (the PID, LISTENING) are parsed, so a tolerant error
+                # handler is sufficient and keeps this locale-independent.
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             # tasklist returns "INFO: No tasks are running..." if not found
             return str(pid) in result.stdout and "INFO:" not in result.stdout
-        except Exception:
+        except Exception as exc:
+            # A probe failure is reported as "not alive" below, which callers
+            # cannot distinguish from a real "process is gone" result, so the
+            # cause is worth keeping.  Logged at debug to match the sibling
+            # probe in status.py::_find_pid_by_port and to avoid log spam when
+            # the tool is unavailable.
+            logger.debug("tasklist liveness probe failed for PID %d: %s", pid, exc)
             return False
     else:
         # Unix: send signal 0 to check existence
