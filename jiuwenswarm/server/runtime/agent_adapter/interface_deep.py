@@ -215,7 +215,12 @@ from jiuwenswarm.agents.harness.common.channel_runtime_context import (
     CURRENT_SESSION_ID,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
-from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records, flush_history_writes
+from jiuwenswarm.server.runtime.session.session_history import (
+    append_history_record,
+    flush_history_writes,
+    flush_history_writes_async,
+    load_history_records,
+)
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.agent_adapter.expert_capability import (
     ExpertCapabilityMixin,
@@ -7906,8 +7911,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self, session_id: str, reason: str, _presess: Any,
     ) -> None:
         """全量 history 重放降级路径（保持改动前行为不变）。"""
-        flush_history_writes()
-        records = load_history_records(session_id)
+        if not await flush_history_writes_async():
+            return
+        records = await asyncio.to_thread(load_history_records, session_id)
         rebuilt = self._build_rewind_messages_for_model(records)
         _rebuilt_roles = [getattr(m, "role", "?") for m in rebuilt]
         _rebuilt_tool_calls = sum(
@@ -8041,8 +8047,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 )
 
             # ── 第二步：用 request_id 定位历史中的增量起点 ──
-            flush_history_writes()
-            records = load_history_records(session_id)
+            if not await flush_history_writes_async():
+                return
+            records = await asyncio.to_thread(load_history_records, session_id)
             cut = self._entry_index_after_request(records, str(last_rid))
             if cut < 0:
                 logger.info(

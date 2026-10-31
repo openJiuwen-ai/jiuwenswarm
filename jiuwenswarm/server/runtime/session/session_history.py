@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime
 import hashlib
@@ -28,6 +29,7 @@ _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _HEARTBEAT_OK = "HEARTBEAT_OK"
+_HISTORY_FLUSH_ASYNC_TIMEOUT_SECONDS = 5.0
 _HISTORY_CURSOR_VERSION = 1
 _HISTORY_CURSOR_READ_BLOCK_BYTES = 64 * 1024
 _HISTORY_CURSOR_MAX_TOKEN_CHARS = 6 * 1024 * 1024
@@ -1347,6 +1349,33 @@ def flush_history_writes() -> None:
     """等待异步 history writer 队列刷盘，供错误恢复前强制同步读取历史."""
     _ensure_worker_started()
     _WRITE_QUEUE.join()
+
+
+async def flush_history_writes_async(
+    timeout: float = _HISTORY_FLUSH_ASYNC_TIMEOUT_SECONDS,
+) -> bool:
+    """在事件循环外等待历史落盘，并以有界等待避免错误恢复卡死服务。
+
+    ``Queue.join()`` 没有超时参数。错误恢复路径若在事件循环线程直接调用，
+    一旦 writer 卡住或队列计数异常，整个 AgentServer 都会停止响应。这里把
+    同步等待移入线程，并限制错误恢复愿意等待的时间；超时后跳过本轮 rewind，
+    不阻塞 ``chat.error`` 终态和其它会话。
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(flush_history_writes),
+            timeout=max(float(timeout), 0.0),
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(
+            "history writer flush timed out after %.1fs; skip synchronous rewind",
+            timeout,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("history writer flush failed; skip synchronous rewind: %s", exc)
+        return False
 
 
 def append_compact_history_records(
