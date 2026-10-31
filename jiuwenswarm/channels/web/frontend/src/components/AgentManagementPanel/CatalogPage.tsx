@@ -3,7 +3,7 @@ import { LoaderCircle } from 'lucide-react';
 
 import { useTranslation } from 'react-i18next';
 import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
-import { getAgentAvatarUrl } from '../../features/agentManagement';
+import { getAgentAvatarUrl, OTHER_CATEGORY } from '../../features/agentManagement';
 import { CategoryTabs, EmptyState, PageCard } from '../ui';
 // 深引入而非 ../ui barrel：本组件被 agent-management-layout 测试以 esbuild 独立打包
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
@@ -15,23 +15,16 @@ const CATALOG_BATCH_SIZE = 30;
 /** 触底判定余量：距滚动底部不足该像素即视为到底。 */
 const LOAD_MORE_THRESHOLD_PX = 40;
 
-const CATEGORIES = [
-  'ProductDevelopment',
-  'Marketing',
-  'Efficiency',
-  'DataAnalysis',
-  'ContentCreation',
-  'SafetyCompliance',
-  'Communication',
-  'Other',
-];
-
 type CatalogPageProps = {
   scope: 'catalog' | 'mine';
   items: AgentCatalogItem[];
   totalItems: number;
   query: string;
   category: string;
+  /** 分类页签：由父组件从已加载目录动态统计（collectTopCategories），不再使用写死枚举 */
+  categories?: readonly string[];
+  /** 目录中是否存在未进分类页签的条目（含空 category），决定是否显示"其他"页签 */
+  hasOtherCategory?: boolean;
   /** 安装态筛选（index.tsx 在进入 view model 前已按它过滤）；非 'all' 时空结果应显示"无匹配"而非"暂无专家" */
   installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
@@ -53,6 +46,8 @@ export function CatalogPage({
   totalItems,
   query,
   category,
+  categories = [],
+  hasOtherCategory = false,
   installation = 'all',
   status,
   error,
@@ -136,10 +131,18 @@ export function CatalogPage({
           <CategoryTabs
             items={[
               { value: '', label: t('agentManagement.categoryAll') },
-              ...CATEGORIES.map((item) => ({
+              ...categories.map((item) => ({
                 value: item,
                 label: t(`agentManagement.categories.${item}`, { defaultValue: item }),
               })),
+              ...(hasOtherCategory
+                ? [
+                    {
+                      value: OTHER_CATEGORY,
+                      label: t(`agentManagement.categories.${OTHER_CATEGORY}`, { defaultValue: OTHER_CATEGORY }),
+                    },
+                  ]
+                : []),
             ]}
             value={category}
             onChange={onCategoryChange}

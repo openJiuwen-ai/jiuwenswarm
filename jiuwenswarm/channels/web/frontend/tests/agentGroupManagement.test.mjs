@@ -11,7 +11,9 @@ import {
 } from '../node_modules/.cache/agent-group-management/port.js';
 import {
   buildGroupCatalogViewModel,
+  collectTopCategories,
   mergeAgentGroupDetailWithCatalog,
+  OTHER_CATEGORY,
 } from '../node_modules/.cache/agent-group-management/viewModel.js';
 import {
   normalizeAgentGroupDetail,
@@ -162,13 +164,24 @@ test('group view model separates catalog and mine scopes and excludes tags from 
     installed: false,
   }, 'zh');
   const item = normalizeAgentGroupListItem(rawGroup, 'zh');
+  // 分类页签改由已加载数据动态统计（#5902）：category 直接与后端自由字符串比对，
+  // 不再映射写死的 ProductDevelopment 等枚举别名。
+  assert.deepEqual(collectTopCategories(['engineering', 'research', 'engineering', '']), ['engineering', 'research']);
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'catalog',
-      category: 'ProductDevelopment',
+      category: 'engineering',
       query: '',
-      page: 1,
-      pageSize: 15,
+      categories: new Set(['engineering']),
+    }).totalItems,
+    1,
+  );
+  assert.equal(
+    buildGroupCatalogViewModel([item, local], {
+      scope: 'catalog',
+      category: OTHER_CATEGORY,
+      query: '',
+      categories: new Set(['research']),
     }).totalItems,
     1,
   );
@@ -177,8 +190,6 @@ test('group view model separates catalog and mine scopes and excludes tags from 
       scope: 'mine',
       category: '',
       query: '本地团队',
-      page: 1,
-      pageSize: 15,
     }).totalItems,
     1,
   );

@@ -46,6 +46,7 @@ import {
   agentManagementReducer,
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
+  collectTopCategories,
   initialAgentManagementState,
   isPreviewableFile,
   mergeAgentDetailWithCatalog,
@@ -388,16 +389,40 @@ export function AgentManagementPanel({
 
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
   const [groupInstallationFilter, setGroupInstallationFilter] = useState<InstallationFilter>('all');
+  // 分类页签从已加载目录动态统计（对齐插件广场）：后端 category 是 manifest/Hub 自由字符串，
+  // 写死枚举会导致大部分条目归不进任何页签（#5902）。
+  const topCategories = useMemo(
+    () => collectTopCategories(state.catalog.map((item) => item.category)),
+    [state.catalog],
+  );
+  const topCategorySet = useMemo(() => new Set(topCategories), [topCategories]);
+  const hasOtherCategory = useMemo(
+    () => state.catalog.some((item) => !topCategorySet.has(item.category.trim())),
+    [state.catalog, topCategorySet],
+  );
+  const groupTopCategories = useMemo(
+    () => collectTopCategories(groupCatalog.map((item) => item.category)),
+    [groupCatalog],
+  );
+  const groupTopCategorySet = useMemo(() => new Set(groupTopCategories), [groupTopCategories]);
+  const hasGroupOtherCategory = useMemo(
+    () => groupCatalog.some((item) => !groupTopCategorySet.has(item.category.trim())),
+    [groupCatalog, groupTopCategorySet],
+  );
   const catalogView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
-        scope: 'catalog',
-        category,
-        // Marketplace results are already filtered by Hub. Reapplying a
-        // client-side substring filter would discard name/tag matches.
-        query: '',
-      }),
-    [state.catalog, category, installationFilter],
+      buildCatalogViewModel(
+        state.catalog.filter((item) => matchesInstallation(item.installed, installationFilter)),
+        {
+          scope: 'catalog',
+          category,
+          // Marketplace results are already filtered by Hub. Reapplying a
+          // client-side substring filter would discard name/tag matches.
+          query: '',
+          categories: topCategorySet,
+        },
+      ),
+    [state.catalog, category, installationFilter, topCategorySet],
 
   );
   const mineView = useMemo(
@@ -410,13 +435,15 @@ export function AgentManagementPanel({
     [state.mineCatalog, mineQuery, installationFilter],
   );
   const groupCatalogView = useMemo(
-    () => buildGroupCatalogViewModel(groupCatalog, {
-      scope: 'catalog',
-      category: groupCategory,
-      query: '',
-      installation: groupInstallationFilter,
-    }),
-    [groupCatalog, groupCategory, groupInstallationFilter],
+    () =>
+      buildGroupCatalogViewModel(groupCatalog, {
+        scope: 'catalog',
+        category: groupCategory,
+        query: '',
+        installation: groupInstallationFilter,
+        categories: groupTopCategorySet,
+      }),
+    [groupCatalog, groupCategory, groupInstallationFilter, groupTopCategorySet],
   );
   const groupMineView = useMemo(
     () => buildGroupCatalogViewModel(groupMine, {
@@ -1477,15 +1504,19 @@ export function AgentManagementPanel({
               items={view === 'teams' ? groupCatalogView.items : groupMineView.items}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
+              categories={view === 'teams' ? groupTopCategories : []}
+              hasOtherCategory={view === 'teams' && hasGroupOtherCategory}
               installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
               busyIds={busyIds}
               onCategoryChange={setGroupCategory}
-              onRetry={() => void loadGroups(
-                view === 'teams' ? 'catalog' : 'mine',
-                view === 'teams' ? groupCatalogQuery.trim() : '',
-              )}
+              onRetry={() =>
+                void loadGroups(
+                  view === 'teams' ? 'catalog' : 'mine',
+                  view === 'teams' ? groupCatalogQuery.trim() : '',
+                )
+              }
               onOpen={openGroupDetail}
               onUse={handleUseGroup}
               onInstall={handleInstallGroup}
@@ -1498,9 +1529,13 @@ export function AgentManagementPanel({
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
               category={category}
+              categories={isMine ? [] : topCategories}
+              hasOtherCategory={!isMine && hasOtherCategory}
               installation={installationFilter}
               status={
-                !isMine && !state.catalogError && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
+                !isMine &&
+                !state.catalogError &&
+                catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
                   ? 'loading'
                   : state.catalogStatus
               }
