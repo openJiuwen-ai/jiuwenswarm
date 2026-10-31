@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -18,6 +19,8 @@ from urllib.parse import unquote, urlsplit
 from minio import Minio
 from minio.error import S3Error
 from urllib3 import PoolManager, Timeout
+
+logger = logging.getLogger(__name__)
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 DOWNLOAD_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -54,11 +57,24 @@ def object_prefix(group_id: str, bot_id: str, user_id: str) -> str:
     return f"uploads/{hashlib.sha256(scope).hexdigest()}/"
 
 
+_ssl_verify_warned = False
+
+
 def _obs_http_client() -> PoolManager:
     """Share the OBS-only TLS policy between SDK and presigned-URL requests."""
-    verify = os.getenv("JIUWENSWARM_SSL_VERIFY", "false").strip().lower() not in {
-        "", "0", "false", "no", "off",
+    # Default secure, aligned with gateway.auth.net / agents ssl_config; empty value
+    # falls back to the default. An explicit opt-out must warn once: this pool
+    # carries both SDK uploads and presigned-URL downloads.
+    global _ssl_verify_warned
+    verify = os.getenv("JIUWENSWARM_SSL_VERIFY", "true").strip().lower() not in {
+        "0", "false", "no", "off",
     }
+    if not verify and not _ssl_verify_warned:
+        _ssl_verify_warned = True
+        logger.warning(
+            "OBS TLS certificate verification disabled via JIUWENSWARM_SSL_VERIFY; "
+            "on-path attackers can tamper with OBS uploads/downloads"
+        )
     return PoolManager(
         timeout=Timeout(connect=5, read=60), retries=False,
         cert_reqs="CERT_REQUIRED" if verify else "CERT_NONE",
