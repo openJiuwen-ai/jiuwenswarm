@@ -763,6 +763,9 @@ if ($DoSign) {
 } else {
     Write-Host "  Skipping PE signing (unsigned local build)." -ForegroundColor Yellow
 }
+if ((-not $FrontendOnly) -and (Test-Truthy $BundleNode)) {
+    Write-NodeRuntimeManifest -DistDir $BackendDir
+}
 $TotalSize = [math]::Round((Get-ChildItem $ElectronAppDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host "  Assembled app size: $TotalSize MB" -ForegroundColor Gray
 
