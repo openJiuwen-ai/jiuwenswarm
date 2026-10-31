@@ -3755,3 +3755,46 @@ def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
             shared_entries.append(s)
     assert not shared_entries, "shared playwright_official_stdio entry must be removed"
     assert subagent_factories.count(SWARM_BROWSER_AGENT) == 1
+
+
+def test_adx_team_assembly_replaces_stale_local_tools_and_serializes(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    monkeypatch.setattr(builder, 'is_agentos_runtime', lambda: False)
+    monkeypatch.setattr(builder, '_build_adx_extra_params', lambda: {'runtime': 'conch', 'idle_timeout': 60})
+    monkeypatch.setattr(builder, 'get_sandbox_endpoint', lambda: {
+        'type': 'adx-environment', 'url': 'https://adx.example',
+    })
+    monkeypatch.setattr(builder, 'get_sandbox_runtime', lambda: {'enabled': True})
+    spec = _make_team_spec()
+    for member in spec.agents.values():
+        member.sys_operation = SysOperationSpec(id='stale-local')
+    enrich_team_spec_for_swarm(spec, session_id='old-session', mode='team')
+    first = {}
+    for role in ('leader', 'teammate'):
+        operation = spec.agents[role].sys_operation
+        assert operation.mode.value == 'sandbox'
+        assert operation.gateway_config.launcher_config.sandbox_type == 'adx-environment'
+        assert operation.gateway_config.launcher_config.extra_params['idle_timeout'] == 60
+        first[role] = operation.model_dump(mode='json')
+    restored = TeamAgentSpec.model_validate_json(spec.model_dump_json())
+    enrich_team_spec_for_swarm(restored, session_id='old-session', mode='team')
+    assert {role: restored.agents[role].sys_operation.model_dump(mode='json') for role in first} == first
+    assert first['leader']['id'] != first['teammate']['id']
+    other = _make_team_spec()
+    other.team_name = 'another_team'
+    enrich_team_spec_for_swarm(other, session_id='other', mode='team')
+    assert other.agents['teammate'].sys_operation.id != spec.agents['teammate'].sys_operation.id
+
+
+def test_disabled_adx_team_assembly_preserves_existing_tool_backend(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    monkeypatch.setattr(builder, 'get_sandbox_endpoint', lambda: {'type': 'adx-environment'})
+    monkeypatch.setattr(builder, 'get_sandbox_runtime', lambda: {'enabled': False})
+    spec = _make_team_spec()
+    spec.agents['teammate'].sys_operation = SysOperationSpec(id='configured-local')
+    enrich_team_spec_for_swarm(spec, session_id='session', mode='team')
+    assert spec.agents['teammate'].sys_operation.id == 'configured-local'
