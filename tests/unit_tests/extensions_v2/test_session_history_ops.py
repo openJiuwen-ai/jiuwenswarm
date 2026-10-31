@@ -51,9 +51,9 @@ class Extension:
             receipt = None
             if request.get("message") is not None:
                 receipt = await ops.session.append(request["message"])
-            page = await ops.session.messages(request.get("limit", 50), request.get("cursor"))
+            messages = await ops.session.messages()
             core = await next_handler(event)
-            return {"receipt": receipt, "page": page, "accepted": core.accepted if hasattr(core, "accepted") else core["accepted"]}
+            return {"receipt": receipt, "messages": messages, "accepted": core.accepted if hasattr(core, "accepted") else core["accepted"]}
         except Exception as error:
             return {"error": getattr(error, "code", type(error).__name__)}
 
@@ -80,8 +80,8 @@ class Extension:
         if body == "fake-success":
             return SessionAppendResult("persisted", "other-session", "fake")
         if body == "read-before":
-            page = await ops.session.messages()
-            return await next_handler(Event(event.event_type, self.rewrite(event, "previous=" + str(len(page["messages"])))))
+            messages = await ops.session.messages()
+            return await next_handler(Event(event.event_type, self.rewrite(event, "previous=" + str(len(messages)))))
         if body == "throw":
             raise RuntimeError("A broken user handler is not a policy rejection")
         if body.startswith(("rewrite:", "platform:")):
@@ -137,7 +137,16 @@ async def _query(history_host, *, sid="hist-a", message=None, limit=50, cursor=N
     if message is not None:
         payload["message"] = message
     event = Event("ui.ready", UiActionInput("ui.ready", RenderTarget(sid, "chat.header"), payload))
-    return await host.bus.trigger(event, SessionContext(sid))
+    result = await host.bus.trigger(event, SessionContext(sid))
+    if isinstance(result, dict) and "error" not in result:
+        # Persistence/cursor assertions use the unchanged private platform page
+        # reader. The real user package above uses the new public array Ops.
+        ops = EventHandlerOpsBuilder().build(session_context=SessionContext(sid))
+        try:
+            result["page"] = await session_messages(ops, limit, cursor)
+        except SessionHistoryError as error:
+            return {"error": error.code}
+    return result
 
 
 def _message(content="hello", identifier="note", role="assistant"):
@@ -165,9 +174,65 @@ async def test_real_user_package_rewrites_commits_and_reads_without_workspace(hi
     assert receipt["message_id"] == "note" and receipt["session_id"] == "hist-a"
     assert receipt["message"]["content"] == [{"type": "text", "text": "[checked] rewrite:审计说明"}]
     assert result["page"]["messages"][0] == receipt["history_record"]
+    assert result["messages"][-1]["text"] == receipt["history_record"]["content"]
     assert "_session_append" not in receipt["history_record"]
     assert _rows(sessions)[0]["content"] == receipt["history_record"]["content"]
     assert (sessions / "hist-a" / "metadata.json").read_bytes() == metadata
+
+
+@pytest.mark.asyncio
+async def test_history_and_statistics_ops_coexist_in_one_user_handler(history_host, tmp_path):
+    host, sessions = history_host
+    _seed(sessions, count=2)
+    rows = _rows(sessions) + [{
+        "role": "assistant", "event_type": "chat.usage_summary", "request_id": "r1",
+        "timestamp": 2, "usage": {"input_tokens": 30, "output_tokens": 12, "total_tokens": 42},
+    }]
+    (sessions / "hist-a" / "history.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8",
+    )
+
+    async def core(event, ops, next_handler):
+        return "coexist-core-receipt"
+
+    host.bus.register_event_type("test.history.statistics", lambda value, pattern: True, core)
+    source = '''
+class Reader:
+    def register(self, registrar):
+        registrar.register_event_handler("test.history.statistics", self.handle, {})
+
+    async def handle(self, event, ops, next_handler):
+        before = await ops.session.turns()
+        receipt = await ops.session.append({
+            "id": "coexist-note",
+            "message": {"type": "user", "content": [{"type": "text", "text": "rewrite:coexist"}]},
+        })
+        return {
+            "before": before, "after": await ops.session.turns(),
+            "receipt": receipt, "messages": await ops.session.messages(),
+            "usage": await ops.session.usage(),
+            "cwd": await ops.session.cwd(), "root": await ops.session.root(),
+            "model": await ops.session.model(), "repo": await ops.session.repo(),
+            "core": await next_handler(event),
+        }
+
+def create_extension():
+    return Reader()
+'''
+    package = write_package(tmp_path / "coexist", package_id="history.statistics", module_source=source)
+    assert (await host.manager.install([package]))[0].status == "SUCCESS"
+    result = await host.bus.trigger(Event("test.history.statistics", {}), SessionContext("hist-a"))
+
+    assert result["core"] == "coexist-core-receipt"
+    assert result["before"] == result["after"] == 2
+    assert result["receipt"]["status"] == "persisted"
+    assert result["receipt"]["history_record"]["content"] == "[checked] rewrite:coexist"
+    assert result["messages"][-1]["text"] == result["receipt"]["history_record"]["content"]
+    stored = _rows(sessions)[-1]
+    assert {key: value for key, value in stored.items() if key != "_session_append"} == result["receipt"]["history_record"]
+    assert result["usage"] == {"context": {}, "rateLimits": []}
+    assert all(result[key] is None for key in ("cwd", "root", "model", "repo"))
+    assert not _rows(sessions, "hist-b")
 
 
 @pytest.mark.asyncio
@@ -218,7 +283,7 @@ async def test_recursive_append_is_refused_before_a_second_write(history_host):
 
 
 @pytest.mark.asyncio
-async def test_cursor_keeps_old_snapshot_and_new_query_sees_append(history_host):
+async def test_platform_cursor_keeps_old_snapshot_and_new_query_sees_append(history_host):
     _, sessions = history_host
     _seed(sessions)
     first = (await _query(history_host, limit=1))["page"]
@@ -231,7 +296,7 @@ async def test_cursor_keeps_old_snapshot_and_new_query_sees_append(history_host)
 
 
 @pytest.mark.asyncio
-async def test_cursor_is_bound_to_session_and_replacement_invalidates_it(history_host):
+async def test_platform_cursor_is_bound_to_session_and_replacement_invalidates_it(history_host):
     _, sessions = history_host
     _seed(sessions)
     cursor = (await _query(history_host, limit=1))["page"]["next_cursor"]
@@ -272,13 +337,13 @@ async def test_invalid_user_message_is_rejected_before_writing(history_host, mes
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("limit", [0, 101, True, 2.5, "5"])
-async def test_invalid_page_limit_is_explicit(history_host, limit):
+async def test_private_platform_page_limit_is_explicit(history_host, limit):
     assert (await _query(history_host, limit=limit))["error"] == "INVALID_MESSAGE_LIMIT"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cursor", ["", "malformed", 3, True])
-async def test_invalid_cursor_is_explicit(history_host, cursor):
+async def test_private_platform_cursor_is_explicit(history_host, cursor):
     assert (await _query(history_host, cursor=cursor))["error"] == "INVALID_CURSOR"
 
 
@@ -337,8 +402,7 @@ async def test_platform_append_binds_saved_directories_without_activating_a_mode
     _save_context(sessions, "hist-a", cwd=cwd, root=root)
     facts = await _platform_facts(sessions, "hist-a", "saved-context")
     assert facts["cwd"] == cwd and facts["root"] == root and facts["source"] == "history"
-    assert facts["model"]["model_name"] == "saved-model"
-    assert facts["model"]["source"] == "session" and facts["model"]["activated"] is None
+    assert facts["model"] == "saved-model"
 
 
 @pytest.mark.asyncio
@@ -351,7 +415,7 @@ async def test_platform_append_uses_applied_runtime_snapshot_and_releases_scope(
         model.model_config.model_name = "later-change"
         facts = await _platform_facts(sessions, "hist-a", "runtime-context")
         assert facts["cwd"] == facts["root"] == str(tmp_path)
-        assert facts["model"]["model_name"] == "actual-model" and facts["model"]["source"] == "runtime"
+        assert facts["model"] == "actual-model"
     assert bound_history_context("hist-a") is None
 
 
@@ -364,7 +428,7 @@ async def test_platform_append_cannot_borrow_another_session_runtime(history_hos
         _capture_runtime("hist-a", cwd=str(tmp_path), project_root=str(tmp_path), model=_runtime_model("runtime-a"))
         facts = await _platform_facts(sessions, "hist-b", "other-session")
     assert facts["cwd"] == facts["root"] == target
-    assert facts["model"]["model_name"] == "saved-b" and facts["model"]["source"] == "session"
+    assert facts["model"] == "saved-b"
 
 
 @pytest.mark.asyncio
@@ -376,7 +440,7 @@ async def test_child_producer_model_binding_reaches_parent_history_consumer(hist
                 _capture_runtime("hist-a", cwd=str(tmp_path), project_root=str(tmp_path), model=_runtime_model("producer-model"))
         await asyncio.create_task(producer())
         facts = await _platform_facts(sessions, "hist-a", "parent-consumer")
-        assert facts["cwd"] == str(tmp_path) and facts["model"]["model_name"] == "producer-model"
+        assert facts["cwd"] == str(tmp_path) and facts["model"] == "producer-model"
     assert bound_history_context("hist-a") is None
 
 
@@ -403,13 +467,13 @@ async def test_model_and_workspace_bind_at_their_real_boundaries(history_host, t
         if model_first:
             capture_history_model("hist-a", _runtime_model("applied-model"))
             early = await _platform_facts(sessions, "hist-a", "before-workspace")
-            assert early["cwd"] == saved and early["model"]["model_name"] == "applied-model"
+            assert early["cwd"] == saved and early["model"] == "applied-model"
         capture_history_workspace("hist-a", cwd=live, project_root=live)
         if not model_first:
             capture_history_model("hist-a", _runtime_model("applied-model"))
         final = await _platform_facts(sessions, "hist-a", "after-workspace")
         assert final["cwd"] == final["root"] == live
-        assert final["model"]["model_name"] == "applied-model"
+        assert final["model"] == "applied-model"
 
 
 @pytest.mark.asyncio
@@ -442,7 +506,7 @@ async def test_concurrent_native_contexts_keep_workspace_and_model_separate(hist
     ready.set()
     facts = await asyncio.gather(*tasks)
     assert [item["cwd"] for item in facts] == [str(tmp_path / sid) for sid in ("hist-a", "hist-b")]
-    assert [item["model"]["model_name"] for item in facts] == ["hist-a", "hist-b"]
+    assert [item["model"] for item in facts] == ["hist-a", "hist-b"]
     assert bound_history_context("hist-a") is None and bound_history_context("hist-b") is None
 
 
@@ -775,4 +839,4 @@ async def test_history_rpc_uses_host_directories_instead_of_supplied_paths(histo
     facts = json.loads(_rows(sessions)[0]["content"])
     assert facts["cwd"] == facts["root"] == expected
     assert facts["source"] == "history.append_record"
-    assert facts["model"]["model_name"] == "saved-rpc-model" and facts["model"]["source"] == "session"
+    assert facts["model"] == "saved-rpc-model"

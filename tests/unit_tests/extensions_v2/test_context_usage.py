@@ -16,12 +16,14 @@ from jiuwenswarm.extensions_v2.event_types.context_usage import (
     register_context_usage_events,
 )
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_ops
+from jiuwenswarm.extensions_v2.event_types.session_queries import register_session_query_events
 
 
 @pytest.mark.asyncio
 async def test_usage_model_snapshot_is_copied_before_async_dispatch(monkeypatch) -> None:
     bus = ExtensionEventBus()
     register_context_usage_events(bus)
+    register_session_query_events(bus)
     register_session_ops(bus)
     observed = []
 
@@ -40,10 +42,7 @@ async def test_usage_model_snapshot_is_copied_before_async_dispatch(monkeypatch)
     assert task is not None
     snapshot["model_name"] = "after"
     await task
-    assert observed == [{
-        "selection": None, "model_name": "before", "provider": "OpenAI",
-        "source": "runtime", "activated": True,
-    }]
+    assert observed == ["before"]
 
 
 @pytest.mark.asyncio
@@ -76,6 +75,7 @@ async def test_core_handler_rejects_unknown_payload() -> None:
 async def test_usage_notification_binds_workspace_before_scheduling(tmp_path: Path, monkeypatch) -> None:
     bus = ExtensionEventBus()
     register_context_usage_events(bus)
+    register_session_query_events(bus)
     register_session_ops(bus)
     observed = []
 
@@ -111,6 +111,7 @@ async def test_usage_notification_binds_workspace_before_scheduling(tmp_path: Pa
 async def test_existing_usage_publishers_keep_missing_workspace_facts(monkeypatch) -> None:
     bus = ExtensionEventBus()
     register_context_usage_events(bus)
+    register_session_query_events(bus)
     register_session_ops(bus)
     observed = []
 

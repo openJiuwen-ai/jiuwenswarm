@@ -1,127 +1,69 @@
-# 会话轮次与用量查询规约
+# session.turns / session.usage 与统计查询 Ops 规约
 
-| 项 | 值 |
-| --- | --- |
-| 编号 | S_11 / session-usage-ops |
-| 最近修订 | 2026-10-29 |
-| 关联 feature | [F_21](../features/F_21_session-usage-ops.md) |
+最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，使用说明见 [F_21](../features/F_21_session-usage-ops.md)。本规约维护字段和默认语义，特性文档解释填写方式。
 
-## 1. 范围与条件
+## 1. 能力与默认来源
 
-PR05 两个无业务写入的 BUILTIN Ops，由现有 `ops.build` 的 session BUILTIN 登记。用户在宿主已绑定有效 SessionContext 的 Handler 调用，查询目标只取 `ops.session_context.session_id`，不接受会话 ID 或路径参数。`ops.session_context` 是 Core 的只读属性，不是本项新增的异步方法。包身份不改变统计范围。
+| Ops / Event | 默认来源 | 返回类型 |
+| --- | --- | --- |
+| session.turns | read_session_turns(session_id)：优先 request_id 去重，再用记录 id 和旧记录位置；排除扩展留档/自动化等。 | int 或 None |
+| session.usage | 优先绑定 session_usage_info；键存在但为 None 时保持未知，不用旧历史兜底；无该绑定键时才读取已提交用量。 | dict |
 
-不依赖 PR04 或用量通知触发，不新增查询事件和查询 CORE。功能、注册示例、完整链路和版本化验证见 [F_21](../features/F_21_session-usage-ops.md)。本次补齐字段含义、填写责任、具体取值、时间/比例单位和缺失规则，不改变实现行为。完整逐字段使用说明在 F_21 第 3.2、4.1、4.2 节，权威类型仍来自实际 Core 模型和 Server 投影。
+## 2. 输入输出字段
 
-## 2. 接口
+### session.turns：输入
 
-### 2.1 await ops.session.turns() -> int | None
+| 字段 | 类型 / 默认 | 谁填写 | 含义与边界 | 怎样填 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法参数 | 无 | 调用者不填写 | 查询已绑定会话，不接受 session_id、路径、模型名或包 ID | 直接调用 await ops.session.<方法>() |
+| Event.event_input | 空映射 {} | Ops 代理自动构造 | 查询 Handler 收到空参数对象；不是 SessionContext，也不携带可改写目标身份 | 注册时使用 match_pattern={} |
 
-统计当前主会话已提交用户输入记录的不同 request_id 数；旧记录无 request_id 时按 id，二者均无时逐条计数。不统计 assistant/tool/system、子 Agent、跨会话消息、扩展追加、压缩摘要、已有心跳标记、cron/heartbeat 渠道和带任意非空 source 的记录；当前平台将 source 用作系统来源，不给普通用户历史行设置该顶层字段，无来源标记的旧 user/human 记录按历史用户记录解释。存在但无输入为 0，未知或已删除会话为 None。读取反映当前保留的历史分支，非生命周期累计计数，也不是 AgentLoop turn_id 或 turn.start 的序号。
+### session.turns：返回值字段
 
-方法没有参数，直接在线程中读取平台已提交主历史，不触发事件，不解包事件输出。适用于显示用户输入次数或审计统计；模型重试、工具调用和流片段不会各算一次用户输入。精确排除判据包括 role 非 user/human、subagent_id、extension_message_id、跨会话 message_origin、feedback_only、is_compact_summary、mode=subagent、cron/heartbeat 渠道、非空 source 和 metadata.automation.kind=heartbeat。
+| 字段 | 类型 / 出现条件 | 谁提供 | 准确含义 | 消费方式 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法返回 / value | 非负 int 或 None | 平台统计服务 | 原生主用户输入计数；0 是已知零轮，None 是无法建立统计事实，不能混为 0 | 2；不传历史数组或会话 ID |
 
-### 2.2 await ops.session.usage(breakdown: bool = False) -> dict | None
+### session.usage：输入
 
-breakdown 默认 False，只接受 bool，字符串/数字不作替代。True 保留已存在的 context.parts，False 移除该字段；不重新计算类别、不调用模型或新事件，也不做 `{value}` 解包。适用于读取已观测窗口与最近回合消耗，不能当作实时重新测量或累计账单。
+| 字段 | 类型 / 默认 | 谁填写 | 含义与边界 | 怎样填 / 例子 |
+| --- | --- | --- | --- | --- |
+| arguments | Mapping 或 None，可省略 | 调用者可填 | 可传 Claude 风格参数对象；与命名参数二选一，不能混用 | await ops.session.usage({'breakdown':'summary','columns':80}) |
+| breakdown | summary / full，可省略 | 调用者按需填 | 省略只读状态数字；summary 返回已观察分类估计；默认 CORE 不支持 full 逐工具/文件精确计数，报 FULL_BREAKDOWN_UNAVAILABLE | breakdown='summary'；旧 True/False 参数不再接受 |
+| columns | 正 int，可省略，不接受 bool | 调用者按需填 | 沿用 Claude 网格宽度参数名称；本地默认不构建终端网格，当前值只透传给查询 Hook；不会改变 token 数 | columns=80；不是像素、token 限额或计费数量 |
+| Event.event_input | 参数映射 | Ops 代理规范化构造 | 只含实际提供的 breakdown/columns；无参数为 {}，不补 session_id/origin | {'breakdown':'summary','columns':80} |
 
-| 顶层字段 | 类型与含义 |
-| --- | --- |
-| schema_version | str，固定 session-usage.v1 |
-| session_id | str，当前可信目标会话 |
-| source | str，host 表示本次绑定宿主快照，history 表示本次读取已提交历史 |
-| context | dict 或 None，已观测主模型窗口的公开投影 |
-| turn | dict 或 None，最近可用 provider 回合汇总的公开投影 |
+### session.usage：返回值字段
 
-context 与 turn 可以独立缺失、时点和 request_id 不同；二者都缺失时整个方法返回 None，不返回全空对象。
+| 字段 | 类型 / 出现条件 | 谁提供 | 准确含义 | 消费方式 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法返回 / value | dict，必有 context/rateLimits | 平台 CORE 或查询 Handler | 使用 Claude 的顶层字段；完全未知时仍返回 {'context':{},'rateLimits':[]}，不伪造零读数 | 不是旧 schema_version/session_id/source/context/turn 存储对象 |
+| value.context | dict，必有 | 当前主上下文观测 | 只包含已知的窗口/权威输入数字和按需分类；不是本轮输入输出 token 的总和 | {} 或 {'window':1000,'tokens':120,'percent':12} |
+| context.window | 正 number，可缺省 | 观测的 limit_tokens | 模型上下文窗口容量，单位 token；不知道时省略，不能填 0 冒充未知 | 1000 |
+| context.tokens | 非负 number，可缺省 | 权威主窗口 input_tokens | 最后 API 输入侧 token；只有 authoritative_total=True 时提供，本地估计不冒充该数字 | 120；确知零为 0 |
+| context.percent | 0～100 的 int，可缺省 | 权威 tokens/window | 占窗口的整数百分比，四舍五入并限制到 100；不是 0～1 的比例 | 12 表示 12%，不是 0.12 |
+| context.breakdown | dict，可缺省 | 请求 summary 且已有分类时 | Claude 分类字段的可得子集；不为获取此对象重新数 Token | 没有 parts 时省略整个 breakdown |
+| breakdown.categories | list[dict] | 已采集的 parts 分类 | 每个有 token 估计的分类一项，不制造工具/文件级清单 | [{'name':'messages','tokens':90,'color':'promptBorder','isDeferred':False,'kind':'used'}] |
+| categories[i].name | str | 平台原分类键 | 分类标签；业务判断优先看 kind，不假定翻译后的名称 | messages / tools 等已有分类 |
+| categories[i].tokens | 非负 number | 原分类估计 | 该类估计 token；未分类数据不会为凑总数编造一项 | 90 |
+| categories[i].color | str | 默认显示主题键 | 本地默认 promptBorder；是显示建议，不是统计来源 | promptBorder |
+| categories[i].isDeferred / kind | bool / str | 本地分类投影 | 已有占用分类为 False / used；不推测 deferred 工具、free 或 buffer | False / used |
+| breakdown.totalTokens | 非负 number | 已知分类 tokens 求和 | 分类估计总和，可能不同于权威 context.tokens，不能当作计费总量 | 90 |
+| 未提供的 breakdown 字段 | 缺省 | 平台尚无事实或网格实现 | 不编造 rawMaxTokens、压缩设置、gridRows、memoryFiles/mcpTools/agents 清单；summary 是已知字段子集 | columns 当前不会生成 gridRows |
+| value.rateLimits | list[dict]，必有 | 最后 API 额度读数或用户 Hook | 没有账户窗口读数时 []；不是无限额度，也不是零消耗 | 默认 [] |
+| rateLimits[i].kind | 非空 str | 真实额度窗口类型 | 已有读数的额度窗口标识；本平台默认不生成条目 | five_hour / seven_day / spend_limit |
+| rateLimits[i].percentUsed | 非负 number | 真实额度读数 | 已用百分比，可超过 100 表示超额；不是 0～1 比例 | 23.5 |
+| rateLimits[i].resetsAt | str，可缺省 | 额度窗口重置时间 | 应为真实 ISO 8601 时间；不知道时省略，不用本地当前时间填充 | 2026-10-31T12:00:00Z |
+| value.cost | dict，可缺省 | 真实会话费用账本 | 无账本时省略，不返回 {'usd':0} 或 None 冒充价格已知 | 本平台默认省略 |
+| cost.usd | 非负 number | 会话累计已定价 API 响应 | 美元金额；不是当前轮 token 数乘一个猜测单价 | 1.25（只有真实账本才提供） |
 
-| context 字段 | 含义 |
-| --- | --- |
-| request_id / phase / timestamp / sequence | 对应模型观测的请求、阶段、源时间和序列，不改写为查询时刻 |
-| context_window.limit_tokens / input_tokens | 窗口容量与输入数值，可为 None；保留 Core 的模型语义 |
-| context_window.occupancy_rate | 比例值，如 0.2 表示 20%，不是数值 20；不额外承诺取值校验到 1 |
-| context_window.tokens_source | 输入总量来源，例如 provider_usage；未知沿用 Core 的 not_reported |
-| context_window.local_estimated_input_tokens / reconciliation_delta_tokens | 本地估算与对账差值；后者可为负或 None，不能据此累加计费 |
-| context_window.context_snapshot_id | Core 窗口关联标识，可为 None |
-| measurement.category_source / total_source / tokenizer | 类别/总量的测量来源与 tokenizer 名称，保留来源语义 |
-| measurement.estimated / authoritative_total | 类别/测量估算标记与总量是否为权威来源；分项估算和 provider 总量可同时存在 |
-| measurement.measurement_version / context_snapshot_id | Core 测量版本和关联快照标识 |
-| parts | 仅 breakdown=True 时保留的类别字典，字段见下表；不承诺每类都存在 |
+## 3. 事件、可信绑定与错误
 
-| parts 每项字段 | 含义 |
-| --- | --- |
-| category / tokens | 类别和计数 |
-| percentage_of_window / percentage_of_input | 窗口/输入比例，未知可为 None |
-| estimated / tokenizer | 本项是否估算与所用 tokenizer |
-| carrier / source / measurement_source | 承载位置和来源说明 |
-| fallback_reason / fallback_tokenizer_model | 回退原因与模型信息，可为 None |
-| order / stable_id | Core 保留的排序与稳定标识，可为 None |
+每个公开 Ops 触发同名查询 Event。USER 返回 value/deny 封装，Ops 解包；默认 CORE 调用原始服务，不经公共 Ops 再次发起同名查询。调用者不填 session_id，不从返回视图决定平台真实身份或授权根。缺失值、真实零值、读取故障不同；拒绝和重入见 S_16。查询结果不写平台数据、不自动渲染。
 
-| turn 字段 | 含义 |
-| --- | --- |
-| request_id / timestamp | 源汇总的关联请求与时间字段，旧历史可缺失，不补成查询时点 |
-| source | 固定 provider_usage |
-| input_tokens / output_tokens / total_tokens / cache_tokens | int、float 或 None；保留汇总值，不重算算式；缺失不补 0，携带的 0 保持 0 |
+## 4. 兼容迁移与差异
 
-通知与原生 summary 的 cache_tokens 字段按同一存在规则：input_tokens>0 才携带，未携带时投影为 None。窗口、measurement 和 parts 的默认字段沿用固定 Core 结构化模型，例如 local_estimated_input_tokens 和 parts.tokens 默认 0；不能仅凭这些零值推断 provider 已实测，应结合来源与 estimated。
-
-### 2.3 数据选择、复制与一致性
-
-宿主 SessionContext.metadata **包含** session_usage_info 键时，返回该绑定快照的公开副本；明确值为 None 时也直接返回 None，不回读上一轮。未包含该键才在线程中读取目标主历史，反向选择最新可用 context.usage 与 chat.usage_summary。Event payload 数字不是 Ops 的数据来源。宿主快照类型/会话身份不符报 ValueError。
-
-宿主 context 与 turn 独立校验：单个分量校验失败置 None，保留另一个有效分量；两者都不可用返回 None。历史非法 JSON、非对象记录或进入结构化校验的数据无效时仍报错；不可识别的缺失观测保持缺失语义，不伪造数据。历史用量排除外会话、子 Agent、非零 depth、父调用、成员和 Team 标记的记录。
-
-返回值为独立副本，不返回文本、凭据、模型连接或其他会话数据，修改返回值不回写平台。turns 与 usage 是分别读取的方法，不保证组合调用取得同一个原子快照；同一宿主快照也只表示捕获时的观测。
-
-## 3. 不变量与失败
-
-- SU-01：无 SessionContext 抛 RuntimeError；非法会话 ID 抛 ValueError；路径越界拒绝。
-- SU-02：未知会话和缺失事实不创建目录、不激活 Agent、不调用模型、不触发新事件。
-- SU-03：历史读取在线程内等待至多 10 秒的队列边界；超时、读取失败或结构损坏抛 SessionStatisticsError，不能返回伪造 0。
-- SU-04：主历史与原写锁串行读取；两会话隔离，无统计缓存。取消不撤销原历史队列，但查询无业务写入。
-- SU-05：通知参数只由平台提供并复制为快照；Event payload 不是 Ops 的数据来源。平台负责可信 SessionContext，用户不修改平台 Adapter。
-- SU-06：宿主上下文与历史用量可来自不同测量时刻，保留 request_id/phase，不将旧窗口描述为实时值；不重复计数模型调用或流片段。
-
-| 异常 | 触发条件与调用方处理 |
-| --- | --- |
-| RuntimeError | 未绑定 SessionContext，选择平台已有的会话绑定事件 |
-| ValueError | 会话 ID 非法、宿主快照类型或目标不匹配，不能传其他会话的资料 |
-| TypeError | breakdown 不是严格 bool |
-| SessionStatisticsError | 历史读取、格式、结构化用量或队列边界失败；按异常类型处理，本异常没有 code 字段 |
-| CancelledError | 查询等待中取消；原队列和已启动的线程读不会被回滚，本查询没有业务写入 |
-
-未捕获的方法异常仍受外层 USER Handler 故障隔离规则约束，外层继续不表示查询成功。业务读数错误不能以伪造的 0 代替。无统计缓存或第二份统计持久化文件；卸载包只撤销其 Handler，不删除平台事实或查询能力。
-
-## 4. 验证入口与限制
-
-测试和实际执行证据由 [F_21 第 6 节](../features/F_21_session-usage-ops.md#6-验收与未决问题) 维护。历史查询扫描 O(N)，宿主查询读当前副本；本项不提供实时重新测量、Team 汇总或累计计费。删除与显式截断依现有生命周期及历史事实生效；旧 JSON/JSONL 沿原读取路径使用，不新建统计存储。
-
-## 5. 复用通知的接口与边界
-
-既有 `context.usage.updated` 是本项的示例入口，不是查询事件。`ContextUsageUpdate` 字段如下，定义仍在 [context_usage.py](../../event_types/context_usage.py)：
-
-| 字段 | 已有类型、默认值与用途 |
-| --- | --- |
-| session_id / request_id | 必填 str，会话/请求关联 |
-| input_tokens / output_tokens / total_tokens / cache_tokens | int，默认 0，回合汇总计数 |
-| cache_hit_rate | str 或 None，默认 None，已有百分比文本 |
-| context_window_tokens | int 或 None，默认 None，平台取得的窗口容量 |
-| usage_percent | float 或 None，默认 None，已有平台百分值字段，不与 Ops occupancy_rate 比例值混用 |
-| model | str 或 None，默认 None，平台模型名称 |
-
-原生流式请求末尾、total_tokens>0 时调用 notify_context_usage；没有 Bus/运行事件循环时不发布。notify 捕获本次可信资料和独立校验的用量副本，调度异步 `_dispatch`，实际 `bus.trigger` 同时传 Event 与 SessionContext。用户不负责从 Adapter 收集资料。其他入口若已有有效会话绑定也能查询；新增尚未绑定上下文的平台入口需由该入口维护者接线。
-
-事件 dataclass 为 frozen；默认 CORE 仅检查输入类型，返回 `ContextUsageOutput(accepted=True, request_id=...)`，accepted 必填 bool，request_id 默认空字符串。本项未新增该事件的完整数值/输出校验或拒绝协议。示例保持输入并返回 next 的回执；改写事件不覆盖 Ops 元数据，短路也不能撤销已完成的业务。USER 异常按 Core 故障隔离，通知任务异常由遥测适配层捕获记录。
-
-matcher 按原输入的字段相等条件合取，空字典匹配全部，不在改写后重新匹配。用户通过 `registrar.register_event_handler("context.usage.updated", handler, {}, "user")` 接入；注册、包文件和完整调用链见 [F_21](../features/F_21_session-usage-ops.md)。没有新 Rail 或 Front/Supervisor 查询协议。
-
-## 6. Claude 对照依据
-
-对照锁定官方 [claude-code.d.ts](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，文件头标记 2.1.277。turns 语义相近但本项明确保留历史/过滤/None 规则且无同名查询 Hook。usage 不采用其 full/summary breakdown 参数，不提供 columns、rateLimits 或 cost；只读已有统计而不进行额外计算。现有通知也不等同其 session.measure 的测量变化语义。完整比较见 [F_21 第 2 节](../features/F_21_session-usage-ops.md#2-能力说明与-claude-对照)。
-
-## 7. 字段填写与单位补充（2026-10-29）
-
-用户只填写 usage 的严格 bool breakdown；turns 不接受参数。所有返回和通知字段由平台/Core 提供，不要求用户填统计值或传其他会话身份。F_21 将所有字段逐行列出，含 context_window、measurement、parts、turn 和 ContextUsageUpdate/Output。
-
-context.timestamp 为 Core 声明的 str，生产路径为 ISO 8601 UTC；turn.timestamp 原值透传，生产路径为 Unix 秒，旧数据未额外统一类型或格式。context.request_id 与 turn.request_id 可以不同，不能强行认定同一观测。occupancy_rate、percentage_of_window、percentage_of_input 均为比例（0.2=20%）；通知 usage_percent 是百分值（20.0=20%），cache_hit_rate 是展示文本。
-
-来源字符串不是封闭枚举；parts 缺类不补 0，缺失 turn 计数保留 None；底层模型默认 0 与实测 0 需结合来源区分。reconciliation_delta_tokens 可为负；比例不额外钳制为 [0,1]，不同来源分项不承诺齐全或总和相等。当前通知仅类型检查，不把 dataclass 声明解释为完整数值 Validator。本轮文档检查不重复历史业务验证。
+| 方法 | 迁移 | Claude 对照差异 |
+| --- | --- | --- |
+| turns | 返回类型和默认口径保持；现在会派发 session.turns。不要再把累计收到的通知数当作权威轮次。 | 语义对齐 Claude 用户 prompt 轮次；本地只统计已提交且保留历史，未知为 None。 |
+| usage | 删除 breakdown=True/False；无明细用 usage()，需要已有分类用 breakdown='summary'。旧 context.context_window.input_tokens 改成 context.tokens，limit_tokens 改成 window，occupancy_rate 改成 percent（百分比单位）。旧 turn 不再是公开结果，单轮消耗仍可从现有用量通知的输入字段获取。 | 顶层及基础数字字段对齐 Claude；未采集额度/费用不造数。summary 仅返回已观测分类子集；full 默认明确不支持，不偷偷执行计数 API；columns 当前不生成网格。未知 window 可省略，这比 Claude 常态必有 window 更保守。 |

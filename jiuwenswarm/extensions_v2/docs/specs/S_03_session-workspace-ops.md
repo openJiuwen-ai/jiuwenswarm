@@ -1,56 +1,49 @@
-# 会话工作区 Ops 规约
+# session.cwd / session.root 与会话工作区 Ops 规约
 
-| 项 | 值 |
-| --- | --- |
-| 编号 | S_03 / session-workspace-ops |
-| 最近修订日期 | 2026-10-26 |
-| 主责模块 | `jiuwenswarm/extensions_v2/handler_ops/session_ops.py` |
-| 关联特性 | [F_13 会话工作区查询能力](../features/F_13_session-workspace-ops.md) |
+最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，使用说明见 [F_13](../features/F_13_session-workspace-ops.md)。本规约维护字段和默认语义，特性文档解释填写方式。
 
-## 1. 范围与前提
+## 1. 能力与默认来源
 
-本规约定义 Worker 内扩展 Handler 的两项只读能力。宿主在现有 `Registry.init` 的注册回调中登记 session Ops Build Handler，由 Core 触发唯一一次 `ops.build`。它们不是业务事件，也不会触发事件链。
-
-宿主对当前会话的授权和目录归属负责。业务入口构造的 `SessionContext` 是本次调用的事实快照；Bus 负责规范化、冻结和按 Handler 绑定。扩展不能通过事件输入中的路径改变这两项能力的读取目标。
-
-## 2. 数据与返回规则
-
-| 能力 | 事实来源 | 返回值 |
+| Ops / Event | 默认来源 | 返回类型 |
 | --- | --- | --- |
-| `await ops.session.cwd()` | 当次 `SessionContext.cwd` | 当前会话执行工作目录的绝对路径字符串；缺失时为 `None` |
-| `await ops.session.root()` | 当次 `SessionContext.metadata["project_root"]` | 会话已绑定项目根目录的绝对路径字符串；没有绑定时为 `None` |
+| session.cwd | SessionContext.cwd；经本机绝对路径校验。 | str 或 None |
+| session.root | SessionContext.metadata['project_root']；未知为 None。 | str 或 None |
 
-cwd 可以是项目根下的子目录，也可以是无项目会话的任务工作目录。root 表达项目身份，不自动等于 cwd、内部 Agent workspace、Git 仓库根或临时任务目录。
+## 2. 输入输出字段
 
-能力签名不接收会话 ID 或目录参数。读取不会解析事件输入、读取进程当前目录、创建目录、切换目录、启动会话、访问 Git 或调用模型；不检查目录在读取时是否仍然存在。
+### session.cwd：输入
 
-## 3. 错误与隔离
+| 字段 | 类型 / 默认 | 谁填写 | 含义与边界 | 怎样填 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法参数 | 无 | 调用者不填写 | 查询已绑定会话，不接受 session_id、路径、模型名或包 ID | 直接调用 await ops.session.<方法>() |
+| Event.event_input | 空映射 {} | Ops 代理自动构造 | 查询 Handler 收到空参数对象；不是 SessionContext，也不携带可改写目标身份 | 注册时使用 match_pattern={} |
 
-- 没有 `SessionContext` 时抛出 `RuntimeError`，区分缺失会话与该会话缺少目录资料。
-- 能力函数自身的校验为：目录值为 `None` 时返回 `None`；非字符串抛出 `TypeError`；空字符串或相对路径抛出 `ValueError`。经 Bus 调用时，不合法的上下文也可能先被 Core 的输入校验拒绝。
-- 路径必须采用宿主平台的绝对路径语法。宿主在事件边界提供规范化路径，Ops 不展开 `~` 或依赖当前目录拼接相对路径。
-- 目录来自单次调用的不可变上下文，不缓存 Ops、SessionContext 或会话路径。并发和嵌套事件分别绑定自己的上下文；异常传播遵循 Core 的 Handler 层级规则。
+### session.cwd：返回值字段
 
-## 4. 当前业务接入与兼容
+| 字段 | 类型 / 出现条件 | 谁提供 | 准确含义 | 消费方式 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法返回 / value | str 或 None | 由平台 CORE 或查询 Handler 返回 | 执行目录绝对路径；None 表示这次绑定没有目录资料，不代表磁盘路径不存在 | D:/projects/demo/src；不是 {'cwd': ...} |
 
-`notify_context_usage(update, *, cwd=None, project_root=None)` 在调度前创建 `SessionContext`，将项目根写入约定的 metadata 字段。不提供新参数的调用保持原有行为，两个目录值缺失。
+### session.root：输入
 
-原生单 Agent 的回合结束入口从 Core 当前任务的 CWD 状态和已绑定项目字段提供上述参数，事件名及 `ContextUsageUpdate` 不变。其它仅传入会话 ID 的业务入口仍返回缺失值，不进行隐式目录发现。
+| 字段 | 类型 / 默认 | 谁填写 | 含义与边界 | 怎样填 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法参数 | 无 | 调用者不填写 | 查询已绑定会话，不接受 session_id、路径、模型名或包 ID | 直接调用 await ops.session.<方法>() |
+| Event.event_input | 空映射 {} | Ops 代理自动构造 | 查询 Handler 收到空参数对象；不是 SessionContext，也不携带可改写目标身份 | 注册时使用 match_pattern={} |
 
-## 5. 用户接入
+### session.root：返回值字段
 
-用户扩展按现有 manifest 和 registrar 登记普通 Handler，在 Handler 内等待两个 Ops，并继续原有事件链：
+| 字段 | 类型 / 出现条件 | 谁提供 | 准确含义 | 消费方式 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法返回 / value | str 或 None | 由平台 CORE 或查询 Handler 返回 | 用户项目绑定的绝对根目录；无绑定为 None，不用 cwd 或 Git 根兜底 | D:/projects/demo；cwd 可以是 demo/src |
 
-```python
-async def on_usage(event, ops, next_handler):
-    cwd = await ops.session.cwd()
-    project_root = await ops.session.root()
-    # Use the invocation's workspace facts; None means unavailable.
-    return await next_handler(event)
-```
+## 3. 事件、可信绑定与错误
 
-用户不登记这两个 Ops，也不需要为只读查询登记新的 Event。用户选择订阅已有事件，实际触发仍由宿主业务入口负责。
+每个公开 Ops 触发同名查询 Event。USER 返回 value/deny 封装，Ops 解包；默认 CORE 调用原始服务，不经公共 Ops 再次发起同名查询。调用者不填 session_id，不从返回视图决定平台真实身份或授权根。缺失值、真实零值、读取故障不同；拒绝和重入见 S_16。查询结果不写平台数据、不自动渲染。
 
-## 6. 验证索引
+## 4. 兼容迁移与差异
 
-验收场景和实际执行记录见 [F_13 第 5 节](../features/F_13_session-workspace-ops.md#5-验证设计执行记录与结论)。
+| 方法 | 迁移 | Claude 对照差异 |
+| --- | --- | --- |
+| cwd | 方法返回类型保持；内部现在派发 session.cwd。用户 Handler 新增拦截后可改变本次返回视图，真实执行目录不变。 | Claude 返回 string；本地在平台没有目录资料时保留 None，不伪造当前进程目录。 |
+| root | 方法返回类型保持；内部现在派发 session.root。改写查询值不会改变平台项目绑定或文件访问根。 | Claude 返回 string；本地无项目时保留 None。 |
