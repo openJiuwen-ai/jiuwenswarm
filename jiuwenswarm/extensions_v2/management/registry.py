@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
 from openjiuwen.core.common.exception.codes import StatusCode
-from openjiuwen.core.events import Event, ExtensionEventBus
+from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 from openjiuwen.core.extension import (
     ActivePackageRecord,
     ActivationReport,
@@ -32,6 +32,9 @@ from openjiuwen.core.extension.management import (
 )
 from openjiuwen.core.extension.versions import Version, parse_version
 
+from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
+from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartOutput
+
 logger = logging.getLogger(__name__)
 
 CODE_MANAGER_NOT_INITIALIZED = "EXTENSION_MANAGER_NOT_INITIALIZED"
@@ -46,6 +49,7 @@ class ExtensionManager:
         self._operation_lock = asyncio.Lock()
         self._bus: ExtensionEventBus | None = None
         self._inactive_callback: Callable[[str], Awaitable[None]] | None = None
+        self._session_start: SessionStartGate | None = None
 
     @property
     def initialized(self) -> bool:
@@ -89,6 +93,23 @@ class ExtensionManager:
                 self._registry = Registry()
                 raise
             self._bus = event_bus
+            self._session_start = SessionStartGate(event_bus, self._registry.runtime)
+
+    async def ensure_session_started(
+        self,
+        context: SessionContext,
+        *,
+        request_id: str,
+        channel_id: str,
+        is_interactive: bool,
+    ) -> tuple[SessionStartOutput, ...]:
+        """Initialize current Worker activations without holding management locks."""
+        self._require_ready()
+        gate = self._session_start
+        if gate is None:
+            raise RuntimeError("session.start gate is not initialized")
+        return await gate.ensure_started(context, request_id=request_id, channel_id=channel_id,
+                                         is_interactive=is_interactive)
 
     async def install(self, paths: Sequence[Path]) -> list[ActivationReport]:
         """Install each source through ``package.install``."""
@@ -203,6 +224,7 @@ class ExtensionManager:
             if not failed:
                 unbind_context(bus)
                 self._bus = None
+                self._session_start = None
                 self._registry = Registry()
 
         for package_id in notifications:

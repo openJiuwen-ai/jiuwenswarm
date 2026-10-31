@@ -11,6 +11,7 @@ from jiuwenswarm.extensions_v2.event_types.context_usage import register_context
 from jiuwenswarm.extensions_v2.event_types.session_history import register_session_history_events
 from jiuwenswarm.extensions_v2.event_types.session_queries import register_session_query_events
 from jiuwenswarm.extensions_v2.event_handlers.session_queries import register_session_query_handlers
+from jiuwenswarm.extensions_v2.event_types.session_start import register_session_start_event
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import SessionFileService, register_session_ops
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
     register_session_history_events(bus)
     register_session_query_events(bus)
     _register_team_event_types(bus)
+    register_session_start_event(bus)
 
 
 def register_handlers(

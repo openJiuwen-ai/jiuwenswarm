@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.session-start
+  version: 1.0.0
+  displayName: Session Start Example
+extensions:
+  - id: activation-start
+    runtime: backend
+    module: extension.py
