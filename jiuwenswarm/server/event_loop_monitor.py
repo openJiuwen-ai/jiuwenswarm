@@ -68,6 +68,8 @@ _stop_sampler = threading.Event()
 _events: "queue.SimpleQueue[tuple[float, float]]" = queue.SimpleQueue()
 #: 环形缓冲：（monotonic 时刻, 主线程栈签名）
 _ring: deque[tuple[float, str]] = deque(maxlen=_RING_SIZE)
+#: 近期停摆窗口（(monotonic 结束时刻, gap)），供 keepalive 放宽等自愈动作查询
+_stall_windows: deque[tuple[float, float]] = deque(maxlen=64)
 
 # ---------------------------------------------------------------------------
 # 停摆告警上报回调
@@ -85,6 +87,18 @@ def set_stall_reporter(reporter: Optional[Callable[[float, float], None]]) -> No
     """注册/清除停摆告警上报回调；传 ``None`` 清除。幂等。"""
     global _stall_reporter
     _stall_reporter = reporter
+
+
+def recent_stall_seconds(window_s: float = 60.0) -> float:
+    """返回最近 ``window_s`` 秒内事件循环停摆的累计秒数（0 表示窗口内无停摆）。
+
+    供 keepalive 放宽等自愈动作判断"进程是否处于停摆多发期"。只在事件循环
+    线程上读写 ``_stall_windows``（心跳协程写入、查询方也运行在循环上），
+    无需加锁。
+    """
+    now = time.monotonic()
+    cutoff = now - window_s
+    return sum(gap for end_ts, gap in _stall_windows if end_ts >= cutoff)
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +285,8 @@ async def loop_heartbeat_loop() -> None:
         last = now
         if gap < _STALL_THRESHOLD_S:
             continue
+        # 记账供 recent_stall_seconds 查询；先于限流门，反复短停摆也要全量记录
+        _stall_windows.append((now, gap))
         # 限流：同一次停摆只报告一次（阻塞期间可能欠睡多拍，恢复后全挤在一起），
         # 且相邻两次报告至少间隔 _MIN_REPORT_INTERVAL_S，反复短停摆也打不满。
         if now - last_report < _MIN_REPORT_INTERVAL_S:
@@ -433,7 +449,7 @@ def stop_event_loop_monitor() -> None:
     本函数最多阻塞约一个采样周期（0.5s）用于等待线程退出。
     """
     global _installed, _heartbeat_task, _mem_trend_task
-    global _sampler_thread, _events, _ring
+    global _sampler_thread, _events, _ring, _stall_windows
     _stop_sampler.set()
     for task in (_heartbeat_task, _mem_trend_task):
         if task is not None and not task.done():
@@ -447,4 +463,5 @@ def stop_event_loop_monitor() -> None:
     # 清空遗留的停摆事件与历史采样，保证重新挂载时从干净状态开始
     _events = queue.SimpleQueue()
     _ring = deque(maxlen=_RING_SIZE)
+    _stall_windows = deque(maxlen=64)
     _installed = False
