@@ -226,6 +226,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("permissions.file_guard.workspace.access.get", "GET", "/permissions/file-guard/workspace/access"),
     ("permissions.file_guard.workspace.access.set", "PUT", "/permissions/file-guard/workspace/access"),
     ("config.cache_clear", "POST", "/config/actions/cache-clear"),
+    ("hub.equipment.catalog", "GET", "/hub/equipment/catalog"),
     ("agent.reload_config", "POST", "/config/actions/agent-reload"),
     ("sync_agents_configs", "POST", "/config/actions/sync-agents"),
     ("agent.prewarm_sync", "POST", "/config/actions/prewarm-sync"),

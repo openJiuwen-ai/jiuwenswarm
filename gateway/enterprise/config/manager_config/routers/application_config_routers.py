@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..core.application_config.audit_log_config import AuditLogConfigService
 from ..core.application_config.cron_policy import CronPolicyService
@@ -145,11 +145,28 @@ async def delete_package_allowlist(
 
 
 @application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
-async def list_package_allowlist_catalog():
-    """本集群 Hub 目录。不做允许名单过滤，失败时 data 里带空 items 和 error。"""
-    from jiuwenswarm.server.runtime.equipment_hub_catalog import list_hub_equipment_catalog
+async def list_package_allowlist_catalog(request: Request):
+    """Query the Server via E2A, preserving the management response contract."""
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from gateway.routing.e2a_proxy import fetch_agent_unary
 
-    payload = _without_hidden_hub_items(await list_hub_equipment_catalog())
+    channel = getattr(request.app.state, "manager_agent_channel", None)
+    client = getattr(channel, "agent_client", None)
+    if callable(client):
+        client = client()
+    ok, payload = await fetch_agent_unary(
+        agent_client=client,
+        req_method=ReqMethod.HUB_EQUIPMENT_CATALOG,
+        params={},
+        session_id=None,
+        user_id=None,
+        channel_id="gateway",
+        label="package-allowlists.catalog",
+        timeout_seconds=120.0,
+    )
+    if not ok:
+        payload = {"items": [], "error": str(payload.get("error") or "AgentServer is unavailable")}
+    payload = _without_hidden_hub_items(payload)
     return ResponseModel(code=200, message="success", data=payload)
 
 
