@@ -4343,7 +4343,7 @@
 .chat-welcome__banner--bee {
   top: -152px;
   right: 0;
-  width: 200px;
+  width: 150px;
   height: auto;
   /* 夹在输入容器背景与输入卡片(z-index:2)之间：与卡片重叠的部分被卡片遮挡 */
   z-index: 1;
