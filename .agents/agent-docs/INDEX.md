@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 25 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 26 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -18,7 +18,7 @@ generated: true
 | [agent_teams](#module-1) | 1 |
 | [agent_teams/workflow](#module-2) | 3 |
 | [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
-| [gateway/channel_manager/web](#module-4) | 1 |
+| [gateway/channel_manager/web](#module-4) | 2 |
 | [gateway/enterprise](#module-5) | 1 |
 | [gateway/message_handler](#module-6) | 1 |
 | [jiuwenswarm](#module-7) | 3 |
@@ -65,6 +65,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
+| [F_20261031_1139_gateway-session-e2a](features/F_20261031_1139_gateway-session-e2a.md) | F | Web 会话管理统一经 E2A 交由 Server 执行 | ruiqiang2 | gateway/channel_manager/web | gateway/channel_manager/web/app_web_handlers.py, tests/unit_tests/gateway/test_app_web_handlers.py | 无独立 D：用户确认的 Gateway 解耦任务 4.1，沿用 develop 个人版现有链路，无独立设计编号。 |
 | [F_20261031_1721_gateway-filenamecheck](features/F_20261031_1721_gateway-filenamecheck.md) | feature | Gateway 4.2 文件名校验引用归位 | ruiqiang2 | gateway/channel_manager/web | gateway/channel_manager/web/enterprise_files.py, tests/unit_tests/gateway/test_enterprise_files.py | 无独立 D：按用户确认的 4.2 工作项收口已有共享实现，无独立设计。 |
 
 <a id="module-5"></a>
