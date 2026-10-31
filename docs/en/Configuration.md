@@ -10,6 +10,8 @@ This document details each configuration option in the JiuwenSwarm frontend pane
 
 Click **More** → **Configuration** in the left navigation bar to view and edit settings for models, third-party services, free search, and more. Click **Save** after changes; whether you need to wait for services to become ready depends on your deployment.
 
+The TUI Gateway forwards `path.get`, `path.set`, and `config.cache_clear` to the current AgentServer, which owns the user runtime configuration.
+
 ![Configuration Panel](../assets/images/current-ui-en/07-Configuration-Model-Tab.png)
 
 The configuration panel is organized into three tabs:

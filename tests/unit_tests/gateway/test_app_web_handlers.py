@@ -77,7 +77,11 @@ class FakeWebChannel:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["a4p.authorization.complete", "a4p.config.get", "a4p.config.update"])
+@pytest.mark.parametrize("method", [
+    "a4p.authorization.complete", "a4p.authorization.pending",
+    "a4p.authorization.reject", "a4p.authorization.reprepare",
+    "a4p.config.get", "a4p.config.update",
+])
 async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
     class _AgentClient:
         server_ready = True
@@ -106,17 +110,19 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
     await channel.methods[method](
         ws,
         "rpc-1",
-        {"requestId": "intent-1", "agent_ref": {"mode": "agent", "id": "untrusted"}},
+        {"requestId": "intent-1", "user_id": "untrusted",
+         "agent_ref": {"mode": "agent", "id": "untrusted"}},
         "session-1",
     )
 
     assert channel.responses[-1]["ok"] is True
+    assert agent_client.envelope.user_id == "local"
     assert agent_client.envelope.channel_context == {
         "ws_id": "ws-1",
         "app_id": "app-1",
         "agent_ref": {"mode": "team", "id": "research"},
     }
-    if method == "a4p.authorization.complete":
+    if method in {"a4p.authorization.complete", "a4p.authorization.reject"}:
         # 完成授权时把恢复 turn 的输出改绑到当前连接（当前 ws_id 覆盖授权方冻结的旧 ws）。
         assert channel.rebounds == [("session-1", "ws-1")]
     else:

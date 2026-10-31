@@ -5998,6 +5998,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             request_id=str(req_id) if req_id else "",
             channel_id="web",
             session_id=session_id,
+            user_id=route.user_id,
             req_method=req_method,
             params=dict(params) if isinstance(params, dict) else {},
             metadata=route_metadata,

@@ -2560,3 +2560,35 @@ async def test_gateway_agent_switch_rejects_missing_session_id():
     assert len(ws.sent_frames) == 1
     assert ws.sent_frames[0]["ok"] is False
     assert ws.sent_frames[0].get("code") == "BAD_REQUEST"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["path.get", "path.set", "config.cache_clear"])
+async def test_tui_forwards_existing_configuration_rpc_without_local_handler(method):
+    from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+        CliRouteBindParams, build_cli_route_binding,
+    )
+
+    server = build_server()
+    binding = build_cli_route_binding(CliRouteBindParams(path="/tui"))
+    route = server.config.routes["/tui"]
+    route.forward_methods = binding.forward_methods
+    route.forward_no_local_handler_methods = binding.forward_no_local_handler_methods
+    ws = FakeWebSocket(user_id="configuration-owner")
+    seen = []
+
+    async def on_message(message):
+        seen.append(message)
+
+    server.on_message(on_message)
+    params = {"session_id": "owner-session", "chrome_path": "/browser/chrome"}
+    await server.handle_raw_message_public(
+        ws,
+        json.dumps({"type": "req", "id": "configuration-rpc", "method": method, "params": params}),
+        path="/tui",
+    )
+    assert len(seen) == 1, ws.sent_frames
+    assert seen[0].req_method.value == method
+    assert seen[0].channel_id == "tui"
+    assert seen[0].session_id == "owner-session"
+    assert seen[0].params["chrome_path"] == "/browser/chrome"
+    assert ws.sent_frames == []
