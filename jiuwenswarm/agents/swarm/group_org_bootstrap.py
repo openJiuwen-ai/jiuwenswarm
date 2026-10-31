@@ -572,17 +572,44 @@ def release_member_turn(session_id: str, member_name: str, message_id: str) -> N
 def _defer_direct_members(
     session_id: str, message_id: str, members: list[str], body: str
 ) -> None:
-    """Hold a direct reply until an older organization that includes that proxy has posted."""
+    """Bind a direct reply's turn; the proxy handles it now, beside any live organization."""
+    del body
     for name in members:
         bind_member_turn(session_id, name, message_id)
-        if pending_organization_plan(session_id, name) is None:
-            continue
-        _deferred_direct[(session_id, str(message_id), name)] = {
-            "body": str(body or ""),
-            "member": name,
-            "message_id": str(message_id),
-            "started": False,
+
+
+def live_organizations_for_member(session_id: str, member_name: str) -> list[dict]:
+    """Running organizations this proxy has joined, as the proxy sees them."""
+    return [
+        {
+            "execution_id": organization_execution_id(session_id, str(plan["plan_id"])),
+            "task": str(plan.get("body") or ""),
+            "role": "owner" if str(plan.get("owner_member") or "") == member_name else "member",
         }
+        for plan in _collect_live_plans(session_id, member_name)
+        if organization_plan_accepted(session_id, str(plan.get("plan_id") or ""), member_name)
+    ]
+
+
+async def deliver_organization_instruction(
+    session_id: str, member_name: str, execution_id: str, instruction: str,
+) -> dict:
+    """Send a related request into this proxy's own instance of a running organization."""
+    from openjiuwen.agent_teams.interaction.payload import GodViewMessage
+    from openjiuwen.core.runner import Runner
+
+    from jiuwenswarm.server.runtime.group_service import GroupError
+
+    joined = {item["execution_id"] for item in live_organizations_for_member(session_id, member_name)}
+    if execution_id not in joined:
+        raise GroupError("NOT_FOUND", "this expert team is not in that running organization")
+    team_id = instance_team_id(session_id, member_name)
+    delivered = await Runner.interact_agent_team(
+        GodViewMessage(body=instruction), team_name=team_id, session_id=session_id,
+    )
+    if not delivered.ok:
+        raise GroupError("DELIVERY_FAILED", delivered.reason or "instruction was not accepted")
+    return {"execution_id": execution_id, "team_id": team_id, "instruction_delivered": True}
 
 
 def queued_direct_result(plan: dict) -> Any:
@@ -1050,18 +1077,22 @@ def group_reply_block_reason(
     team_id: str = "",
     message_id: str | None = None,
 ) -> str | None:
-    """Block a non-owner reply while a multi-@ organization plan is live.
+    """Block a non-owner reply to a live multi-@ organization message.
 
-    The Owner background posts the one group reply. A mentioned teammate, and
-    that teammate's expert-team instance, must not post. A direct-reply message
-    may post only after this proxy has no live organization left.
+    The Owner background posts the one group reply. A mentioned teammate must
+    not answer that message, and its expert-team instance must not post at all.
+    Without a known message the proxy is held while any organization is live.
     """
-    if (
-        direct_route_for_member(session_id, member_name, message_id)
-        and pending_organization_plan(session_id, member_name) is None
-    ):
-        return None
-    plan = pending_organization_plan(session_id, member_name)
+    if message_id:
+        # Only the reply to the organization's own message is held for the Owner.
+        # The proxy answers any other message normally while the organization runs.
+        plan = None
+        if not direct_route_for_member(session_id, member_name, message_id):
+            plan = recorded_organization_plan(session_id, member_name, message_id)
+        if plan is not None and str(plan.get("status") or "") not in {"pending", "running"}:
+            plan = None
+    else:
+        plan = pending_organization_plan(session_id, member_name)
     if plan is not None and str(plan.get("owner_member") or "") != str(member_name):
         return _REPLY_BLOCK
     team_id = str(team_id or "").strip()
@@ -1766,13 +1797,16 @@ async def _run_instance_followup(
                 client_message_id=f"expert-followup-{follow_key[:24]}",
                 mentions=[],
             )
-    except Exception:
+    except Exception as exc:
         await _fail_followup_card(session_id, execution_id)
         logger.exception(
             "group instance follow-up failed session=%s member=%s",
             session_id,
             member_name,
         )
+        from jiuwenswarm.server.runtime.group_execution import post_member_error
+
+        await post_member_error(backend, member_name, str(exc), f"expert-followup-error-{follow_key[:24]}")
     finally:
         await _stop_followup_task_monitor(task_monitor, task_monitor_worker)
         _results.pop(follow_key, None)
@@ -2921,6 +2955,9 @@ async def _run_owner_proxy(
     except Exception as exc:
         failed_error = str(exc)
         await _refresh_card(status="failed", fail_unfinished=True)
+        from jiuwenswarm.server.runtime.group_execution import post_member_error
+
+        await post_member_error(backend, backend.member_name, failed_error, f"expert-error-{plan_id}")
         raise
     finally:
         if start_watchdog is not None:

@@ -49,9 +49,11 @@ TASK_RULES = (
     "answer it yourself with group_send_message when one agent can do it, "
     "or call run_team when the expert team should do it. "
     "That run_team resumes the same instance and loads the context from its earlier child task. "
-    "When the same message mentions multiple expert teams, call run_team and do not reply. "
-    "Only the Owner posts the group reply. A teammate proxy and its expert-team instance "
-    "must not call group_send_message or send_file while that organization is in progress. "
+    "When the same message mentions multiple expert teams, call run_team and do not reply to that message. "
+    "Only the Owner posts that organization's reply; your expert-team instance never posts to the group. "
+    "While you are in an organization, decide each later message that mentions you by its meaning: "
+    "a request about the organization's task is run_team action=update with the organization's execution_id; "
+    "an unrelated task is a new run_team start; ordinary chat is a normal group_send_message reply. "
     "If important requirements are missing, ask_user before work; do not invent user preferences. "
     "For ambiguous references ask which task; do not guess."
 )
@@ -103,8 +105,6 @@ class GroupTaskTool(Tool):
             if active is None:
                 records = await store.create([self.backend.member_name], inputs.get("task"), token, defer_card=True)
                 active = records[0]
-            if active.get("background"):
-                raise GroupError("CONFLICT", "private leader owns task startup")
             result = await store.begin_task(active["execution_id"], self.backend.member_name)
             return ToolOutput(success=True, data=result)
         except (ValueError, OSError) as exc:
@@ -224,12 +224,30 @@ class GroupTaskPolicyRail(DeepAgentRail):
         if active is not None:
             if active["status"] == "queued":
                 active = await store.update(active["execution_id"], status="running", phase="executing")
-            label = "Assigned execution (use this ID; do not create another task): "
-            if active.get("background"):
-                label = "Background execution (use run_team action=update/cancel for changes): "
-            content += "\n" + label + json.dumps({
+            content += "\nAssigned execution (use this ID; do not create another task): " + json.dumps({
                 "execution_id": active["execution_id"], "task": active["task"],
             }, ensure_ascii=False)
+        running = [
+            {"execution_id": record["execution_id"], "task": record["task"], "phase": record["phase"]}
+            for record in store.background_runs(self.context.member_name)
+        ]
+        if running:
+            content += (
+                "\nBackground private-team runs in progress. They run concurrently: an unrelated new task "
+                "is a new run_team start with its own run_id (at most 5 unfinished). A continuation of a busy "
+                "private team waits for it (phase waiting_for_team). To change or stop one, call run_team "
+                "action=update or cancel with its execution_id; ask which one if unclear: "
+                + json.dumps(running, ensure_ascii=False)
+            )
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import live_organizations_for_member
+
+        organizations = live_organizations_for_member(self.context.session_id, self.context.member_name)
+        if organizations:
+            content += (
+                "\nRunning Team Organizations you are in. Send a request about one of these tasks with "
+                "run_team action=update and its execution_id; a new unrelated task is a run_team start: "
+                + json.dumps(organizations, ensure_ascii=False)
+            )
         previous = []
         for record in store.read().values():
             if record["member_name"] != self.context.member_name:
