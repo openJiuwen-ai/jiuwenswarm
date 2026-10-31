@@ -867,29 +867,6 @@ def _v6_system_prompt(stage: str, supplied_prompt: str) -> str:
     return supplied_prompt
 
 
-def _v6_reasoning_effort(stage: str, *, model: str | None = None) -> str:
-    """Reserve reasoning for semantic generation, not exact offset copying."""
-
-    if stage == "v6_evidence_extractor":
-        if model == "deepseek-v4-flash-260425":
-            return "low"
-        return "minimal"
-    if stage == "rid_interest_distiller" and model == "deepseek-v4-1-flash-260910":
-        # Minimal still reasons on v4.1 Flash and selects as low does, sooner and
-        # steadier; on v4 Flash it turned thinking off and emptied the selection.
-        return "minimal"
-    if stage == "v6_global_interest_generator" and model == "deepseek-v4-1-flash-260910":
-        return "low"
-    if stage in {
-        "v6_recent_candidate_generator",
-        "v6_project_domain_candidate_generator",
-        "v6_project_continuation_generator",
-        "v6_global_interest_generator",
-    }:
-        return "medium"
-    return "low"
-
-
 def _v6_max_tokens(stage: str) -> int | None:
     """Cap the one answer that grows with its input, a scope's summaries, above provider defaults.
 
@@ -1062,10 +1039,6 @@ def build_v6_ark_stage_invoker(
         "receipt_sink": receipt_sink,
         "response_schema_for_stage": _v6_response_schema,
         "require_response_metadata": True,
-        "reasoning_effort_for_stage": lambda stage: _v6_reasoning_effort(
-            stage,
-            model=config.model,
-        ),
         "max_tokens_for_stage": _v6_max_tokens,
         "prompt_version_for_stage": _v6_prompt_version,
         "invocation_lineage_for_stage": _v6_provider_invocation_lineage,
@@ -5394,8 +5367,8 @@ class TopicPipeline:
             if callable(close):
                 await close()
 
+    @staticmethod
     def _summary_stage_budget(
-        self,
         config: ArkBackgroundConfig,
     ) -> tuple[history.StageTokenCounter, int]:
         """Counting and limit the summarizer's batches must fit (fail closed)."""
@@ -5412,8 +5385,8 @@ class TopicPipeline:
             ) from exc
         return counter, int(config.context_window_tokens)
 
+    @staticmethod
     def _preflight_rid_inputs(
-        self,
         config: ArkBackgroundConfig,
         rid_inputs: Mapping[str, Any],
     ) -> None:
@@ -5448,10 +5421,6 @@ class TopicPipeline:
         invoke_stage: StageInvoker,
     ) -> _SessionSummaryBatch:
         provider_version = config.expected_model or config.model
-        reasoning_effort = _v6_reasoning_effort(
-            "v6_session_summarizer",
-            model=config.model,
-        )
         summary_config_version = (
             f"{SESSION_SUMMARY_CONFIG_VERSION}:"
             f"request_model={config.model}:"
@@ -5460,7 +5429,7 @@ class TopicPipeline:
             f"top_p={config.effective_top_p}:"
             f"context={config.context_window_tokens}:"
             f"base_url={config.base_url}:"
-            f"reasoning_effort={reasoning_effort}"
+            "reasoning_effort=disabled"
         )
         grouped: dict[str, list[V6SourceMessage]] = defaultdict(list)
         for message in snapshot.messages:
@@ -5484,15 +5453,16 @@ class TopicPipeline:
         }
         if set(grouped) - set(prefixes_by_session):
             raise TerminalGenerationRejection("session_completion_boundary_missing")
-        grouped = {
-            session_id: grouped[session_id]
-            for session_id in _recent_summary_sessions(
-                grouped,
-                prefixes_by_session,
-                delta_event_ids=snapshot.delta_event_ids,
-                now=self._now(),
-            )
-        }
+        selected_sessions = _recent_summary_sessions(
+            grouped,
+            prefixes_by_session,
+            delta_event_ids=snapshot.delta_event_ids,
+            now=self._now(),
+        )
+        selected_grouped: dict[str, list[V6SourceMessage]] = {}
+        for session_id in selected_sessions:
+            selected_grouped[session_id] = grouped[session_id]
+        grouped = selected_grouped
         artifacts_by_session: dict[str, SessionSummaryArtifact] = {}
         pending_sessions: list[dict[str, Any]] = []
         pending_metadata: dict[str, dict[str, Any]] = {}

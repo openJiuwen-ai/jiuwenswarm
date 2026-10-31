@@ -2273,6 +2273,55 @@ def test_a_malformed_global_interest_candidate_is_dropped_alone() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model_name", ["DeepSeek-V4.1-Flash", "doubao-seed"])
+async def test_recommendation_request_disables_thinking_for_every_model(
+    model_name: str,
+) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    class _Message:
+        content = "{}"
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = model_name
+        usage = None
+        choices = [_Choice()]
+
+    captured: list[dict] = []
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.append(kwargs)
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(api_key="test", model=model_name, expected_model=model_name),
+        client_factory=lambda **_kwargs: _Client(),
+    )
+    await invoke("v6_utility_scorer", "system", "{}")
+
+    assert captured[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in captured[0]
+
+
+@pytest.mark.asyncio
 async def test_unconsumed_validation_receipts_stay_bounded() -> None:
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
         _MAX_PENDING_VALIDATION_RECEIPTS,

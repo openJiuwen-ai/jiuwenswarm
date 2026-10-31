@@ -1560,7 +1560,13 @@ class TopicService:
         )
         if not cards:
             return empty
-        if preset_only and existing_is_preset and empty["cards"] and len(cards) <= len(empty["cards"]):
+        corpus_cannot_refill = (
+            preset_only
+            and existing_is_preset
+            and bool(empty["cards"])
+            and len(cards) <= len(empty["cards"])
+        )
+        if corpus_cannot_refill:
             # The corpus cannot fill the screen again; keep what the page has.
             return empty
         written = write_cold_start_pool(
