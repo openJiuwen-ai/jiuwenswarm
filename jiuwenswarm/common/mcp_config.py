@@ -20,7 +20,7 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from jiuwenswarm.common.config import get_mcp_server_config
 from jiuwenswarm.common.external_providers import provider
 
-_HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
+_HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http", "workswarm-oauth"})
 
 # Prewarm 是后台 fire-and-forget 任务，不阻塞任何服务路径。真正的连接
 # 失败由 probe 内部自保护（HTTP preflight 默认 10s、stdio SDK connect
@@ -223,7 +223,16 @@ def build_mcp_server_config(
     if server_id_scope and "server_id" not in payload:
         payload["server_id"] = _stable_mcp_server_id(server_id_scope, name, payload)
 
-    return McpServerConfig(**payload)
+    config = McpServerConfig(**payload)
+    if entry.get("oauth_provider"):
+        from jiuwenswarm.common.mcp_remote_oauth import supports_oauth
+        from jiuwenswarm.common.mcp_remote_oauth_transport import OAuthStreamableHttpClient
+        if entry["oauth_provider"] != "qcc" or not supports_oauth(name, entry):
+            raise ValueError("Invalid remote MCP OAuth profile")
+        config.auth_headers = {}
+        config.params["oauth_provider"] = "qcc"
+        config.client_type = OAuthStreamableHttpClient.__client_name__[0]
+    return config
 
 
 def build_enabled_mcp_server_configs(
@@ -378,7 +387,11 @@ async def preflight_mcp_server_reachable(
                 headers[TOKEN_HEADER_NAME] = TOKEN_HEADER_PREFIX + token
 
     try:
-        async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as http:
+        auth = None
+        if getattr(cfg, "params", {}).get("oauth_provider") == "qcc":
+            from jiuwenswarm.common.mcp_remote_oauth import RemoteOAuthAuth, oauth_manager
+            auth = RemoteOAuthAuth(oauth_manager(), cfg.server_name)
+        async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False, auth=auth) as http:
             if transport == "sse":
                 # Legacy SSE MCP servers handshake with GET-only (e.g.
                 # mcp-pan.baidu.com/sse answers 405 to a POSTed initialize).

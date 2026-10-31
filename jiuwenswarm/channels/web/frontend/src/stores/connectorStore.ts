@@ -11,6 +11,7 @@ import type {
 } from '../types/connector';
 import type { WebError } from '../types/websocket';
 
+const cancelledOAuthSessions = new Set<string>();
 export const CONNECTOR_ERROR_TOAST_ID = 'connector-market-action-error';
 
 // 命名/组织风格照抄 cronStore.ts：inline action、无独立 actions 对象。
@@ -85,7 +86,7 @@ interface ConnectorState {
   loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
   installPackage: (assetId: string) => Promise<ConnectorInstallResponse | null>;
   uninstallPackage: (identifier: string) => Promise<boolean>;
-  connect: (name: string) => Promise<ConnectorConnectResponse | null>;
+  connect: (name: string, authMethod?: 'oauth') => Promise<ConnectorConnectResponse | null>;
   disconnect: (name: string) => Promise<void>;
   // 2026-08-17：deleteConnector（mcp.delete_custom，彻底删除自定义 MCP）的 UI 入口一度在
   // McpDetailPage 整体移除，这个 action 当时随之删除。2026-08-19 用户明确要求恢复：详情页断联态
@@ -94,7 +95,8 @@ interface ConnectorState {
   // patch 状态字段），调用方拿到 false 表示失败，据此决定要不要继续停留在详情页。
   deleteConnector: (name: string) => Promise<boolean>;
   // 取代旧版 authComplete：一次 hold-open 请求等到最终结果，调用方（CliAuthModal）不用再自己轮询。
-  waitAuth: (name: string, stepIndex: number) => Promise<ConnectorConnectResponse | null>;
+  waitAuth: (name: string, stepIndex: number, oauthSession?: string) => Promise<ConnectorConnectResponse | null>;
+  cancelOAuth: (name: string, session: string) => Promise<void>;
   startOAuth: (name: string) => Promise<ConnectorConnectResponse | null>;
   cancelConnectAction: (name: string) => Promise<void>;
   // 插"连接中"占位卡片（同步，调用方不 await 也能立刻看到）→ 长 RPC（mcp.register_custom
@@ -418,7 +420,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     }
   },
 
-  connect: async (name: string) => {
+  connect: async (name: string, authMethod?: 'oauth') => {
     // 发请求前先翻 connecting + 置 busy，让卡片层立刻看到"连接中"占位（基于 connectionState
     // 或 busy 都能判出来，见 mcpState.ts deriveCardState）。旧版只置 busyName 且不翻 connecting，
     // 卡片层读不到中间态。失败时翻 error 让"连失败"可见（旧版静默回到原态，用户分不出没连过 vs 连失败）。
@@ -431,7 +433,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       error: null,
     }));
     try {
-      const response = await connectorApi.connect(name);
+      const response = await connectorApi.connect(name, authMethod);
       if (response.type === 'connected') {
         set((state) => ({
           ...patchConnectionAll(state, name, 'connected'),
@@ -508,14 +510,30 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     }
   },
 
-  waitAuth: async (name: string, stepIndex: number) => {
+  cancelOAuth: async (name: string, session: string) => {
+    cancelledOAuthSessions.add(session);
+    if (cancelledOAuthSessions.size > 100) cancelledOAuthSessions.delete(cancelledOAuthSessions.values().next().value!);
+    try {
+      await connectorApi.cancelOAuth(name, session);
+      set((state) => ({
+        ...patchConnectionAll(state, name, 'disconnected'),
+        busyMap: { ...state.busyMap, [name]: undefined },
+      }));
+    } catch (error) {
+      set({ error: friendlyCliError(error) });
+    }
+    scheduleQuickRefresh(get);
+  },
+
+  waitAuth: async (name: string, stepIndex: number, oauthSession?: string) => {
     // CLI OAuth 多步授权推进的续接请求，本质还是"正在连接"，busyKind 用 'connect'。
     set((state) => ({
       ...patchConnectionAll(state, name, 'connecting'),
       busyMap: { ...state.busyMap, [name]: 'connect' },
     }));
     try {
-      const response = await connectorApi.waitAuth(name, stepIndex);
+      const response = await connectorApi.waitAuth(name, stepIndex, oauthSession);
+      if (oauthSession && cancelledOAuthSessions.has(oauthSession)) return null;
       if (response.type === 'connected') {
         set((state) => ({
           ...patchConnectionAll(state, name, 'connected'),
@@ -529,6 +547,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       scheduleQuickRefresh(get);
       return response;
     } catch (error) {
+      if (oauthSession && cancelledOAuthSessions.has(oauthSession)) return null;
       set((state) => ({
         ...patchConnectionAll(state, name, 'error'),
         busyMap: { ...state.busyMap, [name]: undefined },
