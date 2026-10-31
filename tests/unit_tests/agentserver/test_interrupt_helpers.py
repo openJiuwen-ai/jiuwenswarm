@@ -1,10 +1,13 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    _is_permission_interrupt_message,
+    _resolve_interrupt_source,
     build_permission_rail,
     convert_interactions_to_ask_user_question,
 )
@@ -114,6 +117,60 @@ def test_legacy_skill_evolution_approval_metadata_is_classified():
     assert result["approval_kind"] == "evolve"
 
 
+def test_confirm_whitelist_precedes_markers_and_prefix():
+    """Confirm 工具的 marker/前缀命中不得判 permission_interrupt
+    （评审 2026-10-30 Must Fix 回归：白名单已前置到函数最顶端，
+    marker 与 **Tool ` 前缀检查不再先于白名单返回 True）。"""
+    marker_messages = (
+        "Permission denied while drafting the plan",
+        "every write requires permission from the admin",
+        "操作需要授权后才能继续",
+        "安全风险评估：删除临时目录",
+        "**Tool `read_file` 需要 `**` 前缀命中样本",
+        "**工具 `write_file` 需要确认",
+    )
+    for message in marker_messages:
+        assert _is_permission_interrupt_message(message, "exit_plan_mode") is False
+        assert _is_permission_interrupt_message(message, "switch_mode") is False
+        assert _resolve_interrupt_source("exit_plan_mode", message) == "confirm_interrupt"
+    # 非白名单工具的 marker/prefix 判定不受白名单前置影响
+    assert _is_permission_interrupt_message("安全风险评估：删除临时目录", "run_command") is True
+    assert _is_permission_interrupt_message("**工具 `write_file` 需要确认", "list_files") is True
+
+
+def test_exit_plan_mode_plan_markers_still_plan_approval():
+    """计划全文含 permission marker 时 exit_plan_mode 仍出计划审批
+    选项（评审 2026-10-30 Must Fix 行为路径回归：计划文本为任意
+    自然文本，易含 marker 子串，误判会丢「批准/拒绝」选项并触发
+    relay 自动放行）。"""
+    plan_text = (
+        "1. Fix the auth module: remove the stale `Permission denied` branch "
+        "so writes no longer require permission from admins.\n"
+        "2. Add a 安全风险评估 report for the cleanup."
+    )
+    message = (
+        "**Plan Approval**\n\n"
+        "The agent has completed a plan and is requesting your approval:\n\n"
+        f"{plan_text}\n\n"
+        "---\nChoose:\n"
+        "- **Approve**: Exit plan mode and begin implementation\n"
+        "- **Reject**: Stay in plan mode, the agent will revise the plan "
+        "based on your feedback"
+    )
+    interaction = SimpleNamespace(
+        id="call_plan_1",
+        value={"message": message, "tool_name": "exit_plan_mode"},
+    )
+
+    result = convert_interactions_to_ask_user_question([interaction])
+
+    assert result is not None
+    assert result["source"] == "confirm_interrupt"
+    assert result["plan_approval_kind"] == "plan_approval"
+    labels = {option["label"] for option in result["questions"][0]["options"]}
+    assert labels == {"Approve", "Reject"}
+
+
 def _scene_hook_input(normalized_tool_name: str, user_input):
     from openjiuwen.harness.security.host import PermissionSceneHookInput
 
@@ -216,6 +273,25 @@ def test_scene_hook_leaves_other_tools_to_engine(monkeypatch: pytest.MonkeyPatch
     outcome = asyncio.run(hook(_scene_hook_input("bash", None)))
 
     assert outcome is None
+
+
+def test_filter_init_kwargs_drops_unknown_host_fields():
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        _filter_init_kwargs,
+    )
+
+    class LegacyHost:
+        def __init__(self, persist_allow_rule=None, host=None):
+            self.persist_allow_rule = persist_allow_rule
+
+    kwargs = _filter_init_kwargs(
+        LegacyHost,
+        persist_allow_rule=lambda _permissions: True,
+        persist_session_allow_rule=lambda _permissions: True,
+        host="unused",
+    )
+    assert "persist_allow_rule" in kwargs
+    assert "persist_session_allow_rule" not in kwargs
 
 
 def test_build_multi_questions_ignores_string_options():
@@ -1019,3 +1095,24 @@ def test_apply_permission_intent_strips_rule_line_with_embedded_backticks():
     # 参数区原文（含反引号命令）保留。
     assert "echo `id -u`" in question
 
+def test_permission_host_uses_runtime_workspace_not_agent_root(tmp_path, monkeypatch):
+    """file_guard workspace 应是当前任务目录，而不是 ~/.jiuwenswarm/agent/workspace。"""
+    from openjiuwen.core.sys_operation.cwd import _cwd_state, init_cwd
+
+    agent_ws = tmp_path / "workspace"
+    project = agent_ws / "projects" / "web_xxx"
+    project.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_workspace_dir",
+        lambda: agent_ws,
+    )
+    token = _cwd_state.set(None)
+    try:
+        init_cwd(str(project), project_root=str(project), workspace=str(project))
+        rail = build_permission_rail({"permissions": {"enabled": True, "mode": "auto"}})
+        assert rail is not None
+        resolved = Path(rail._host.resolve_workspace_dir()).resolve()
+        assert resolved == project.resolve()
+        assert resolved != agent_ws.resolve()
+    finally:
+        _cwd_state.reset(token)

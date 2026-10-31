@@ -60,6 +60,8 @@ from jiuwenswarm.common.config import (
     update_kv_cache_release_enabled_in_config,
     update_skill_retrieval_in_config,
     update_symphony_in_config,
+    update_permissions_mode_in_config,
+    get_permissions_mode_from_config,
     update_setup_guide_enabled_in_config,
     update_swarmflow_enabled_in_config,
     update_updater_in_config,
@@ -1008,6 +1010,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "kv_cache_release_enabled",
     "kv_cache_affinity_enabled",
     "permissions_enabled",
+    "permissions_mode",
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
@@ -2378,8 +2381,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "true" if kv_cfg.get("enable_kv_cache_affinity", False) else "false"
             )
             perm_cfg = raw.get("permissions") or {}
-            payload["permissions_enabled"] = "true" if perm_cfg.get("enabled", False) else "false"
-            # skill_create: tip 优先，fallback to config.yaml
+            try:
+                perm_mode = get_permissions_mode_from_config()
+            except Exception:
+                if perm_cfg.get("enabled") is False:
+                    perm_mode = "full_access"
+                elif str(perm_cfg.get("permission_mode") or "").lower() == "strict":
+                    perm_mode = "strict"
+                else:
+                    perm_mode = "auto"
+            payload["permissions_mode"] = perm_mode
+            # 兼容旧前端：full_access 映射为 permissions_enabled=false
+            payload["permissions_enabled"] = "false" if perm_mode == "full_access" else "true"
+            # Skill evolution is controlled solely by the canonical nested YAML key.
             evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
             payload["evolution_enabled"] = "true" if get_evolution_enabled(raw) else "false"
             payload["ttse_enabled"] = "true" if get_ttse_enabled(raw) else "false"
@@ -2416,7 +2430,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("context_engine_enabled", "false")
             payload.setdefault("kv_cache_release_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
-            payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("permissions_enabled", "true")
+            payload.setdefault("permissions_mode", "auto")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("diagnosis_enabled", "false")
@@ -2604,6 +2619,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         for param_key in _CONFIG_YAML_KEYS:
             if param_key not in params:
                 continue
+            # permissions_mode 为权威键：双键同发（GET payload 原样回写
+            # /外部 API 手工构造）时跳过 enabled——frozenset 迭代序不定，
+            # enabled 先写会按旧 mode 投影、mode 后写覆盖，mode 先写则
+            # enabled=True 的 full_access→auto 投影回写，两种顺序终态
+            # 不同且跨进程不可复现（评审 2026-10-30）。
+            if param_key == "permissions_enabled" and "permissions_mode" in params:
+                continue
             val = params[param_key]
             parsed = _parse_config_bool(val)
             try:
@@ -2618,7 +2640,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif param_key == "kv_cache_affinity_enabled":
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
+                    # gateway access 层异步实现：企业版经 repo 持久化，
+                    # 标准版回落 common.config 的 enabled→mode 映射（检视
+                    # 2026-10-29：同步版会绕过企业仓库层）。
                     await update_permissions_enabled_in_config(parsed)
+                elif param_key == "permissions_mode":
+                    mode_value = str(val or "").strip()
+                    # 非法值拒绝而非静默归一 auto，与 TUI/RPC 校验一致（CR-7）
+                    if mode_value.lower() not in ("auto", "full_access", "strict"):
+                        raise _ConfigBadRequest(
+                            f"permissions_mode 必须是 auto/full_access/strict，收到 {mode_value!r}"
+                        )
+                    update_permissions_mode_in_config(mode_value)
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":

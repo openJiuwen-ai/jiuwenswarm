@@ -33,9 +33,9 @@ def test_agent_input_builder_reads_a2ui_client_event_from_content(monkeypatch):
         params={"content": content, "mode": "agent"},
     )
 
-    inputs, _, raw_query = interface_module.JiuWenSwarm().build_inputs(request)
+    inputs, _, user_turn = interface_module.JiuWenSwarm().build_inputs(request)
 
-    assert raw_query == content
+    assert user_turn.text == content
     assert "submit_form" in inputs["query"]
     assert "张三" in inputs["query"]
 

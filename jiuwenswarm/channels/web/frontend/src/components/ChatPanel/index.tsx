@@ -10,7 +10,7 @@ import { Activity, ArrowRight, CheckCircle2, ClipboardList, Copy, Info, Share2, 
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
-import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo, type UserAnswerStatus } from '../../types';
+import { AgentMode, MediaItem, Message, UserAnswer, type Permission, type ProjectInfo, type UserAnswerStatus } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
@@ -108,7 +108,10 @@ interface ChatPanelProps {
   onToggleTeamArea?: (expanded: boolean) => void;
   /** 打开右侧面板并切换到代码审核 Tab */
   onOpenCodeReview?: (target: CodeReviewTarget) => void;
-  permissionsEnabled: boolean;
+  /** 产品权限三态：auto / full_access / strict */
+  permissionsMode: Permission;
+  /** @deprecated 兼容旧布尔开关；优先用 permissionsMode */
+  permissionsEnabled?: boolean;
   /** 心跳面板展开状态：由 App.tsx 统一管理，跟团队/代码审核面板一样占用右侧工作区一栏 */
   heartbeatPanelOpen?: boolean;
   /** 切换心跳面板展开状态 */
@@ -683,6 +686,7 @@ export function ChatPanel({
   onOpenCodeReview,
   heartbeatPanelOpen = false,
   onToggleHeartbeatPanel,
+  permissionsMode,
   permissionsEnabled,
   onSavePermission,
   onSetGoal,
@@ -1292,6 +1296,7 @@ export function ChatPanel({
                   isProcessing={isProcessing}
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
+                  permissionsMode={permissionsMode}
                   permissionsEnabled={permissionsEnabled}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
@@ -1334,6 +1339,7 @@ export function ChatPanel({
             isProcessing={isProcessing}
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
+            permissionsMode={permissionsMode}
             permissionsEnabled={permissionsEnabled}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}

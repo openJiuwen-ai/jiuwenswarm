@@ -119,3 +119,106 @@ def test_persist_external_directory_allow_writes_file_guard(config_yaml, tmp_pat
         and str(p.get("path", "")).replace("\\", "/").rstrip("/") == parent_norm
         for p in fg["paths"]
     )
+
+
+def test_derive_user_overlay_delta_ratchets_against_disk() -> None:
+    # round-024：上游 rail 传整段合并 cfg，host 侧须 diff 出真增量——
+    # 只棘轮放大项入 user 层，全局 preset 同值项不得整段复制。
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        _derive_user_overlay_delta,
+    )
+
+    disk_global = {
+        "tools": {"bash": "ask"},
+        "file_guard": {
+            "paths": [
+                {
+                    "path": "**/.ssh/**",
+                    "match": "glob",
+                    "read": "deny",
+                    "write": "deny",
+                    "exec": "deny",
+                },
+                {"path": "C:/secret", "match": "prefix", "read": "ask", "write": "ask", "exec": "deny"},
+            ]
+        },
+    }
+    template = {
+        "file_guard": {
+            "paths": [
+                {
+                    "path": "**/.ssh/**",
+                    "match": "glob",
+                    "read": "deny",
+                    "write": "deny",
+                    "exec": "deny",
+                }
+            ]
+        }
+    }
+    user = {"allow_tools": ["todo_list"], "ask_tools": ["memory_get"]}
+    cfg = {
+        "tools": {
+            "list_files": "allow",  # 磁盘未配置 → allow 增量
+            "bash": "ask",  # 与磁盘生效同值 → 排除
+            "todo_list": "allow",  # user allow_tools 已含 → 排除
+        },
+        "file_guard": {
+            "paths": [
+                {  # preset 同值 → 排除
+                    "path": "**/.ssh/**",
+                    "match": "glob",
+                    "read": "deny",
+                    "write": "deny",
+                    "exec": "deny",
+                },
+                {  # read 轴放大 ask→allow → 入增量
+                    "path": "C:/secret",
+                    "read": "allow",
+                    "write": "ask",
+                    "exec": "deny",
+                },
+                {"path": "C:/newdir", "read": "allow", "write": "allow", "exec": "ask"},
+                {"path": "C:\\back\\dir", "read": "allow"},  # 反斜杠归一化 + 新路径
+            ]
+        },
+    }
+
+    payload = _derive_user_overlay_delta(cfg, [disk_global, template, user])
+    assert payload["_allow_tools_added"] == ["list_files"]
+    added = {e["path"].replace("\\", "/") for e in payload["_file_guard_paths_added"]}
+    assert added == {"C:/secret", "C:/newdir", "C:/back/dir"}
+    assert "**/.ssh/**" not in added
+
+    # deny 放大通道：并入 user 现值（persist 侧整表替换）
+    payload_deny = _derive_user_overlay_delta(
+        {"tools": {"legacy_tool": "deny"}},
+        [disk_global, template, user],
+    )
+    assert payload_deny["deny_tools"] == ["legacy_tool"]
+    assert "_file_guard_paths_added" not in payload_deny
+
+
+def test_derive_user_overlay_delta_excludes_composed_path_floor() -> None:
+    # round-027：_compose_effective_local 注入的敏感路径底线不落磁盘层，
+    # 同值项不得被当作增量复制进 user 层（真实部署 global/template paths
+    # 均为空时的实证场景）。
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        _derive_user_overlay_delta,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        _SENSITIVE_PATH_FLOOR,
+    )
+
+    empty_bases = [{"file_guard": {"paths": []}}, {}, {}]
+    cfg = {
+        "file_guard": {
+            "paths": [dict(entry) for entry in _SENSITIVE_PATH_FLOOR]
+            + [{"path": "C:/Users/issuser/Documents/Note", "read": "allow"}],
+        },
+    }
+
+    payload = _derive_user_overlay_delta(cfg, empty_bases)
+    added = {e["path"] for e in payload.get("_file_guard_paths_added", [])}
+    assert added == {"C:/Users/issuser/Documents/Note"}
+    assert all(e["path"] not in {f["path"] for f in _SENSITIVE_PATH_FLOOR} for e in payload.get("_file_guard_paths_added", []))

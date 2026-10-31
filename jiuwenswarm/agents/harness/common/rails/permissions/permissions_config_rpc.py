@@ -13,16 +13,9 @@ from typing import Any, Callable
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.config.permissions.access import (
-    create_permissions_rule_in_config,
-    delete_permissions_approval_override_in_config,
-    delete_permissions_rule_in_config,
-    delete_permissions_tool_in_config,
     get_permissions_body_in_config,
-    replace_permissions_tools_in_config,
     update_permissions_enabled_in_config,
     update_permissions_file_guard_workspace_rw_enabled_in_config,
-    update_permissions_rule_in_config,
-    update_permissions_tool_in_config,
 )
 from jiuwenswarm.gateway.storage.async_bridge import run_awaitable
 
@@ -47,6 +40,8 @@ _PERMISSIONS_CFG_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.PERMISSIONS_WORKSPACE_ENABLE_SET,
         ReqMethod.PERMISSIONS_WORKSPACE_ACCESS_GET,
         ReqMethod.PERMISSIONS_WORKSPACE_ACCESS_SET,
+        ReqMethod.PERMISSIONS_MODE_GET,
+        ReqMethod.PERMISSIONS_MODE_SET,
     }
 )
 
@@ -104,12 +99,6 @@ def _rpc_persist_target(request: AgentRequest) -> str | None:
     )
 
     return resolve_permissions_persist_target(_rpc_agent_id(request))
-
-
-def _validate_tools_payload(tools: Any) -> dict[str, str]:
-    from jiuwenswarm.common.config import _validate_tools_map
-
-    return _validate_tools_map(tools)
 
 
 def _normalize_rule_for_create(rule: dict[str, Any]) -> dict[str, Any]:
@@ -197,13 +186,6 @@ def _write_agent_permissions(request: AgentRequest, mutate_fn: Callable[[dict[st
         source="permissions_config_rpc",
     )
     return True
-
-
-def _permissions_tools_view(request: AgentRequest | None = None) -> dict[str, Any]:
-    tools = _permissions_body(request).get("tools")
-    if not isinstance(tools, dict):
-        return {"tools": {}}
-    return {"tools": dict(tools)}
 
 
 def _permissions_rules_view(request: AgentRequest | None = None) -> dict[str, Any]:
@@ -297,6 +279,21 @@ def dispatch_permissions_config_request(
         get_permissions_file_guard_workspace_access,
         update_permissions_file_guard_workspace_access_in_config,
     )
+    # 规则/覆盖写入走 gateway access 层：企业版经 repo 持久化，标准版回落
+    # common.config 同步实现；run_awaitable 包裹要求 awaitable（检视
+    # 2026-10-29：误接同步实现会 asyncio.run(dict) 抛 TypeError）。
+    from jiuwenswarm.gateway.config.permissions.access import (
+        create_permissions_rule_in_config,
+        delete_permissions_approval_override_in_config,
+        delete_permissions_rule_in_config,
+        update_permissions_rule_in_config,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        delete_user_tool,
+        get_user_tools_map,
+        replace_user_tools_map,
+        set_user_tool_level,
+    )
 
     m = request.req_method
     params = request.params if isinstance(request.params, dict) else {}
@@ -305,7 +302,34 @@ def dispatch_permissions_config_request(
 
     try:
         if m == ReqMethod.PERMISSIONS_ENABLED_GET:
-            enabled = bool(_permissions_body(request).get("enabled", True))
+            # 按 mode 派生，与 web/TUI 载荷对齐（CR-3）：update_permissions_mode
+            # 恒写 enabled: true，读原始键在 full_access 下返回 true，令
+            # OfficeAce relay 的 enabled 自愈机制对 full_access 失明。
+            # agent 作用域读 agents[id] 生效 body 按 mode 派生，与
+            # ENABLED_SET 的 mode 写入同一真相源（检视 2026-10-29）。
+            from jiuwenswarm.common.config import get_permissions_mode_from_config
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                normalize_permission_mode,
+            )
+
+            target = _rpc_persist_target(request)
+            if target:
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                    resolve_yaml_agent_permissions_body,
+                )
+
+                body = resolve_yaml_agent_permissions_body(target) or {}
+                mode_val = body.get("mode")
+                if isinstance(mode_val, str) and mode_val.strip():
+                    enabled = normalize_permission_mode(mode_val) != "full_access"
+                elif body.get("enabled") is False:
+                    # 兼容未迁移：enabled false ≈ full_access
+                    enabled = False
+                else:
+                    # body 未声明 mode 时与全局生效模式同源
+                    enabled = get_permissions_mode_from_config() != "full_access"
+                return _ok(request, {"enabled": enabled})
+            enabled = get_permissions_mode_from_config() != "full_access"
             return _ok(request, {"enabled": enabled})
 
         if m == ReqMethod.PERMISSIONS_ENABLED_SET:
@@ -314,12 +338,46 @@ def dispatch_permissions_config_request(
             value = params.get("enabled")
             if not isinstance(value, bool):
                 return _err(request, "enabled must be boolean")
-            if not _write_agent_permissions(request, lambda perms: perms.__setitem__("enabled", value)):
+            # enabled 是 mode 的兼容投影（False→full_access；True 且当前
+            # full_access→auto，其余保持现值）：SET 落 mode 而非裸 enabled
+            # 键，与按 mode 派生的 ENABLED_GET 同一真相源（检视 2026-10-29）。
+            target = _rpc_persist_target(request)
+            agent_mode_now: str | None = None
+            if target:
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                    resolve_yaml_agent_permissions_body,
+                )
+
+                body = resolve_yaml_agent_permissions_body(target) or {}
+                mode_val = body.get("mode")
+                if isinstance(mode_val, str) and mode_val.strip():
+                    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                        normalize_permission_mode,
+                    )
+
+                    agent_mode_now = normalize_permission_mode(mode_val)
+                elif body.get("enabled") is False:
+                    agent_mode_now = "full_access"
+                else:
+                    from jiuwenswarm.common.config import get_permissions_mode_from_config
+
+                    agent_mode_now = get_permissions_mode_from_config()
+
+            def _mutate_enabled(perms: dict[str, Any]) -> None:
+                perms["enabled"] = True
+                perms.pop("permission_mode", None)
+                if not value:
+                    perms["mode"] = "full_access"
+                elif agent_mode_now == "full_access":
+                    perms["mode"] = "auto"
+
+            if target:
+                _write_agent_permissions(request, _mutate_enabled)
+            else:
                 run_awaitable(update_permissions_enabled_in_config(value))
-            try:
-                _hot_reload_permissions_config_cache()
-            except Exception as e:
-                logger.warning("[%s] Failed to hot reload permission engine: %s", tag, e)
+            # 不做 hot reload：persist_permissions_mutate 已同步更新缓存
+            # （企业版仅内存 base，标准版写 yaml 后缓存同步）；clear 会
+            # 令企业版内存变更丢失、回落 yaml 旧值（CR-4 回归）。
             return _ok(request, {"enabled": value})
 
         if m == ReqMethod.PERMISSIONS_WORKSPACE_ENABLE_GET:
@@ -396,7 +454,13 @@ def dispatch_permissions_config_request(
             return _ok(request, updated)
 
         if m == ReqMethod.PERMISSIONS_TOOLS_GET:
-            return _ok(request, dict(_permissions_tools_view(request)))
+            # TOOLS 系列（GET/SET/UPDATE/DELETE）刻意只操作 User 层全局
+            # 名单（user_permissions.yaml），无 agent 作用域分支；agent
+            # 感知读视图走 TOOLS_LIST（_permissions_body）。当前无携带
+            # agent_id 的 TOOLS 调用路径（前端 params 不含 agent_id、
+            # 企业版 persist target 恒 None），与 ENABLED/RULES 的
+            # agent 分支不对称属有意为之（评审 2026-10-30：声明语义）。
+            return _ok(request, {"tools": get_user_tools_map()})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_LIST:
             catalog = (get_runtime_tools_catalog or (lambda: {}))()
@@ -411,11 +475,8 @@ def dispatch_permissions_config_request(
         if m == ReqMethod.PERMISSIONS_TOOLS_SET:
             if not isinstance(params, dict):
                 return _err(request, "params must be object")
-            tools = _validate_tools_payload(params.get("tools"))
-            if not _write_agent_permissions(request, lambda perms: perms.__setitem__("tools", tools)):
-                run_awaitable(replace_permissions_tools_in_config(tools))
-            _hot_reload_permissions_config_cache()
-            return _ok(request, {"ok": True})
+            tools = params.get("tools")
+            return _ok(request, {"tools": replace_user_tools_map(tools)})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_UPDATE:
             if not isinstance(params, dict):
@@ -425,24 +486,7 @@ def dispatch_permissions_config_request(
                 return _err(request, "tool is required")
             if "level" not in params:
                 return _err(request, "level is required")
-            level_map = _validate_tools_payload({tool: params.get("level")})
-            level = level_map[tool]
-
-            def _mutate_tool(perms: dict[str, Any]) -> None:
-                existing = perms.get("tools")
-                if not isinstance(existing, dict):
-                    existing = {}
-                    perms["tools"] = existing
-                existing[tool] = level
-
-            if _write_agent_permissions(request, _mutate_tool):
-                payload = {"tools": dict(_permissions_tools_view(request).get("tools") or {})}
-            else:
-                payload = run_awaitable(
-                    update_permissions_tool_in_config(tool, level)
-                )
-            _hot_reload_permissions_config_cache()
-            return _ok(request, dict(payload))
+            return _ok(request, {"tools": set_user_tool_level(tool, params.get("level"))})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_DELETE:
             if not isinstance(params, dict):
@@ -450,25 +494,10 @@ def dispatch_permissions_config_request(
             tool = str(params.get("tool") or params.get("name") or "").strip()
             if not tool:
                 return _err(request, "tool is required")
-            deleted = {"value": False}
-
-            def _mutate_del_tool(perms: dict[str, Any]) -> None:
-                tools_map = perms.get("tools")
-                if not isinstance(tools_map, dict) or tool not in tools_map:
-                    return
-                perms["tools"] = {
-                    key: value for key, value in tools_map.items() if key != tool
-                }
-                deleted["value"] = True
-
-            if _write_agent_permissions(request, _mutate_del_tool):
-                ok_del = deleted["value"]
-            else:
-                ok_del = run_awaitable(delete_permissions_tool_in_config(tool))
+            ok_del = delete_user_tool(tool)
             if not ok_del:
-                return _err(request, "tool not found in permissions.tools", code="NOT_FOUND")
-            _hot_reload_permissions_config_cache()
-            return _ok(request, dict(_permissions_tools_view(request)))
+                return _err(request, "tool not found in user permission lists", code="NOT_FOUND")
+            return _ok(request, {"tools": get_user_tools_map()})
 
         if m == ReqMethod.PERMISSIONS_RULES_GET:
             return _ok(request, dict(_permissions_rules_view(request)))
@@ -594,6 +623,53 @@ def dispatch_permissions_config_request(
                 return _err(request, "approval_override not found", code="NOT_FOUND")
             _hot_reload_permissions_config_cache()
             return _ok(request, {"ok": True})
+
+        if m == ReqMethod.PERMISSIONS_MODE_GET:
+            from jiuwenswarm.common.config import get_permissions_mode_from_config
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                get_sandbox_intent,
+            )
+
+            mode = get_permissions_mode_from_config()
+            return _ok(
+                request,
+                {
+                    "mode": mode,
+                    "sandbox_intent": get_sandbox_intent(),
+                    "options": ["full_access", "auto", "strict"],
+                },
+            )
+
+        if m == ReqMethod.PERMISSIONS_MODE_SET:
+            from jiuwenswarm.common.config import update_permissions_mode_in_config
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                _VALID_MODES,
+                get_sandbox_intent,
+                normalize_permission_mode,
+            )
+
+            if not isinstance(params, dict):
+                return _err(request, "params must be object")
+            raw_mode = params.get("mode") or params.get("value")
+            if not isinstance(raw_mode, str) or not raw_mode.strip():
+                return _err(request, "mode is required")
+            # 非法值拒绝而不是静默归一为 auto：与 TUI 严格校验一致，
+            # 避免 "Full Access" 等错值被降级成中等放行（CR-7）。
+            if normalize_permission_mode(raw_mode) != raw_mode.strip().lower():
+                return _err(
+                    request,
+                    f"mode must be one of {sorted(_VALID_MODES)}",
+                    code="BAD_REQUEST",
+                )
+            mode = update_permissions_mode_in_config(normalize_permission_mode(raw_mode))
+            return _ok(
+                request,
+                {
+                    "mode": mode,
+                    "sandbox_intent": get_sandbox_intent(),
+                    "ok": True,
+                },
+            )
 
     except ValueError as e:
         return _err(request, str(e))
