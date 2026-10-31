@@ -67,6 +67,15 @@ export function InteractionPrompt({ pending, onSubmit, legacyCardAnchors = false
   const addMessage = useChatStore((s) => s.addMessage);
   const isSwarmflowHuman = pending.source === 'swarmflow_human';
   const isSkillPackage = isSkillPackagePrompt(pending);
+  // Source prefix for swarmflow human prompts, composed from meta (i18n'd).
+  // Runs without team context (no executor) and legacy meta (field absent)
+  // keep the plain header.
+  const swarmflowPrefix = isSwarmflowHuman && pending.swarmflowMeta?.executor
+    ? t('swarmflow.executorOrchestration', {
+        name: pending.swarmflowMeta.executor,
+        workflow: pending.swarmflowMeta.workflow_name ?? '',
+      })
+    : '';
 
   const questions = useMemo<Question[]>(
     () => (pending.questions ?? []).slice(0, MAX_PAGES),
@@ -297,7 +306,7 @@ export function InteractionPrompt({ pending, onSubmit, legacyCardAnchors = false
       <div className="ix-prompt__head" data-testid="interaction-slot-ix-head">
         <div className="ix-prompt__title" data-testid="interaction-slot-ix-title">
           <FileText size={15} strokeWidth={2} className="ix-prompt__title-icon" data-testid="interaction-slot-ix-title-icon" />
-          <span data-testid="interaction-slot-ix-title-text">{current.header || t('interactionPrompt.title')}</span>
+          <span data-testid="interaction-slot-ix-title-text">{swarmflowPrefix}{current.header || t('interactionPrompt.title')}</span>
         </div>
         {total > 1 && (
           <div className="ix-prompt__pager" data-testid="interaction-slot-ix-pager">
