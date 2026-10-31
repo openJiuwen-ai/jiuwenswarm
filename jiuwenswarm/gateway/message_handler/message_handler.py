@@ -3654,6 +3654,7 @@ class MessageHandler(ABC):
         from jiuwenswarm.common.schema.message import ReqMethod
 
         while self._running:
+            msg = None
             try:
                 msg = await self.consume_user_messages(timeout=None)
                 if msg is None:
@@ -4158,6 +4159,31 @@ class MessageHandler(ABC):
                     )
             except asyncio.CancelledError:
                 break
+            except Exception as exc:
+                # 单个消息在派发前失败（例如 session.create 被拒绝）时，不能让
+                # 全局转发消费者退出；否则后续所有渠道的消息只会入队、永不出队。
+                logger.exception(
+                    "[MessageHandler] 转发消息异常，已隔离并继续消费: id=%s error=%s",
+                    getattr(msg, "id", ""),
+                    exc,
+                )
+                if msg is not None:
+                    try:
+                        from jiuwenswarm.common.schema.message import EventType
+
+                        err_msg = self._build_error_out_message(msg, exc)
+                        err_payload = dict(err_msg.payload or {})
+                        err_payload["event_type"] = EventType.CHAT_ERROR.value
+                        err_payload["is_complete"] = True
+                        err_msg.payload = err_payload
+                        err_msg.event_type = EventType.CHAT_ERROR
+                        await self.publish_robot_messages(err_msg)
+                    except Exception:
+                        logger.exception(
+                            "[MessageHandler] 转发异常终态回发失败: id=%s",
+                            getattr(msg, "id", ""),
+                        )
+                await asyncio.sleep(0)
 
     async def process_stream(
         self,

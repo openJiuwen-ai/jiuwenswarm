@@ -1046,6 +1046,78 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
 
 
 @pytest.mark.asyncio
+async def test_forward_loop_isolates_pre_dispatch_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一条 session.create 失败不能杀死全局消费者或吞掉后续任务。"""
+    handler = _TestMessageHandler.create()
+    resolved: list[str] = []
+    cancelled: list[str] = []
+
+    async def _resolve(msg):
+        resolved.append(msg.id)
+        if len(resolved) == 1:
+            raise RuntimeError("session create rejected")
+        msg.session_id = "resolved-next"
+
+    async def _cancel(msg, old_sid, **kwargs):
+        cancelled.append(msg.id)
+
+    monkeypatch.setattr(handler, "_resolve_external_channel_session", _resolve)
+    monkeypatch.setattr(handler, "_apply_channel_state", lambda _msg: None)
+    monkeypatch.setattr(handler, "_cancel_agent_work_for_session", _cancel)
+    await handler.start_forwarding()
+    try:
+        first = Message(
+            id="bad-session",
+            type="req",
+            channel_id="xiaoyi",
+            session_id="bad-conversation",
+            params={"intent": "cancel"},
+            timestamp=0.0,
+            ok=True,
+            req_method=ReqMethod.CHAT_CANCEL,
+            is_stream=False,
+            metadata={"xiaoyi_session_id": "bad-conversation", "xiaoyi_task_id": "bad-session"},
+        )
+        second = Message(
+            id="next-task",
+            type="req",
+            channel_id="xiaoyi",
+            session_id="next-conversation",
+            params={"intent": "cancel"},
+            timestamp=0.0,
+            ok=True,
+            req_method=ReqMethod.CHAT_CANCEL,
+            is_stream=False,
+            metadata={"xiaoyi_session_id": "next-conversation", "xiaoyi_task_id": "next-task"},
+        )
+        await handler.publish_user_messages(first)
+        await handler.publish_user_messages(second)
+
+        error_out = None
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while asyncio.get_running_loop().time() < deadline:
+            out = await handler.consume_robot_messages(timeout=0.05)
+            if out is not None and getattr(out.event_type, "value", out.event_type) == "chat.error":
+                error_out = out
+            if error_out is not None and cancelled:
+                break
+            await asyncio.sleep(0.01)
+
+        assert error_out is not None
+        assert error_out.id == "bad-session"
+        assert "session create rejected" in error_out.payload["error"]
+        assert error_out.payload["is_complete"] is True
+        assert error_out.event_type.value == "chat.error"
+        assert cancelled == ["next-task"]
+        assert handler._forward_task is not None
+        assert not handler._forward_task.done()
+    finally:
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
 async def test_forward_loop_supplement_forwards_new_input_to_interrupt() -> None:
     """AgentServer needs the text marker to discard a superseded ask_user round."""
     handler = _TestMessageHandler.create()
