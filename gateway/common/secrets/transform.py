@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from jiuwenswarm.common.security.base_crypto import CryptoProvider
-from jiuwenswarm.common.secrets.envelope import build_envelope, parse_envelope
-from jiuwenswarm.common.secrets.legacy import is_legacy_sensitive_key
-from jiuwenswarm.common.secrets.providers import Aes256GcmAlgorithm, BuiltinAlgorithm, DekAlgorithm
+from gateway.extensions.base_crypto import CryptoProvider
+from gateway.common.secrets.envelope import build_envelope, parse_envelope
+from gateway.common.secrets.legacy import is_legacy_sensitive_key
+from gateway.common.secrets.providers import Aes256GcmAlgorithm, BuiltinAlgorithm, DekAlgorithm
 
 if TYPE_CHECKING:
     pass

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import yaml
 
-from jiuwenswarm.common.secrets.persistence._dotted import delete_dotted, get_dotted, set_dotted
-from jiuwenswarm.common.secrets.registry import StorageLocation, infer_format_from_path, resolve_file_path
+from gateway.common.secrets.persistence._dotted import delete_dotted, get_dotted, set_dotted
+from gateway.common.secrets.registry import StorageLocation, infer_format_from_path, resolve_file_path
 
 logger = logging.getLogger(__name__)
 

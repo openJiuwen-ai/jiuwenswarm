@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.secrets.registry import StorageLocation
+from gateway.common.secrets.registry import StorageLocation
 
 
 class DbMediumAdapter:
