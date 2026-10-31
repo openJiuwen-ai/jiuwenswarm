@@ -50,53 +50,75 @@ sequenceDiagram
 
 ### 3.2 事件输入、会话上下文与字段说明
 
-| 事件输入字段 | 类型 / 默认 | 谁填写 | 准确含义与改写边界 | 填写示例 |
-| --- | --- | --- | --- | --- |
-| Event.event_input | 参数映射 | Ops 代理规范化构造 | 只含实际提供的 breakdown/columns；无参数为 {}，不补 session_id/origin | {'breakdown':'summary','columns':80} |
-| event_input.breakdown | summary / full，可缺省 | Ops 从方法参数规范化构造；USER 可构造新 Event 改写 | 省略只读数字；summary 请求已有分类；默认 full 报 FULL_BREAKDOWN_UNAVAILABLE | {'breakdown':'summary'} |
-| event_input.columns | 正 int，可缺省，不能是 bool | Ops 构造；USER 可在契约内改写 | 终端网格宽度建议，仅透传；当前默认 CORE 不生成网格，不改变 Token 数 | {'columns':80} |
+先分清谁需要填写。普通调用者只填写方法参数；返回值由平台或查询 Handler 提供，用户拿到后直接消费。
+只有在自己的查询 Handler 中短路或加工输出时，才需要按输出表构造值。所有表格分别解释“填什么、代表什么、起什么作用”，并写明缺失和错误边界。
 
-会话上下文通过 `bus.trigger(Event(...), context)` 的第二个参数传递，与 Event.event_input 分开。下面字段由平台和 Core 绑定，不能通过增加查询参数改换会话或读取目标。
-
-| 对象 / 字段 | 类型与是否必需 | 谁提供 / 表达什么 | 填写或读取示例 |
+| 数据所在位置 | 谁负责 | 用户应该做什么 | 作用 |
 | --- | --- | --- | --- |
-| ops.session_context | Core 只读属性 | 平台随外层事件传入，Core 在执行 Handler 前绑定 | 直接读属性；不是 await 方法，不收集、不组装上下文 |
-| SessionContext.session_id | 有效非空 str，必需 | 平台业务边界提供的当前会话身份 | session-a；不从 query 输入或 Hook 返回值改换目标 |
-| SessionContext.metadata["session_usage_info"] | 只读映射或 None，可缺省 | 平台绑定的用量观测；快照键存在但为 None 时保持未知，不回退到旧历史 | 没有这个绑定键时才按 session_id 读取已有用量；不重新测量 |
-| current_query_origin().package | str 或 None | Server 查询代理从原调用 Ops 的包身份记录 | 是原发起包，不是当前 Hook 所属包；无 Ops 查询域时 helper 返回 None，须先判空；不是 Core next.origin |
+| Ops 方法参数 | 普通调用者 | 调用 usage 时按需填 breakdown/columns；其他六项不传参数 | 选择本次查询选项，不选择另一个会话 |
+| Event.event_input | Ops 代理自动构造；查询 USER 可合法改写 | 按下表读选项；需要改写时构造新 Event 后 next | 让本次查询链使用合法选项，不修改可信上下文 |
+| SessionContext | 平台采集，Core 绑定 | 普通用户不补填；通过 ops.session_context 只读访问 | 确定本次查谁、使用哪些可信目录和快照 |
+| Event 输出 value/deny | 默认 CORE；或替代结果的查询 Handler | 查询 Handler 才需构造 return {value: ...} 或 return {deny: ...} | 决定这次查询的返回视图或明确拒绝 |
+| Ops 直接返回值 | 分派器校验、复制并解包 | 普通调用者消费字段即可，不需要重新填写或再次解包 value | 作为自己业务方法的参数，不自动写回平台或渲染 |
 
-`ops.session_context` 是已有只读属性。业务方法负责采集和组装，查询代理只取出它并继续传给查询事件；Bus 会规范化为只读副本，保留同一会话身份和资料，不承诺前后是同一个 Python 对象。
+事件信封与查询输入如下。event_type 不属于参数字典；event_input 与可信 SessionContext 是独立传递的两部分。
+
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Event.event_type | 固定 str | Ops 代理自动填写；不是方法参数 | "session.usage" | 进入哪一条查询处理链的类型名 | Bus 据此寻找已注册的 Matcher / Validator / Handler 链 | 用户不用填；不要在 arguments 中增加 event_type，也不要通过改类型跳到另一条查询链 |
+| Event.event_input | 只读 Mapping；无选项时 {} | Ops 代理复制并构造；查询 Handler 读取 | {"breakdown":"summary","columns":80} | 这一次查询的选项，独立于 SessionContext | 供 Matcher / 查询 Handler / CORE 读取；不承载可改写会话身份 | 仅 usage 允许下述选项；其余六项必须是空映射。不可原地改写；合法改写用新的 Event 和参数映射传 next |
+| event_input.breakdown | summary/full，可缺省 | 代理从方法选项生成；USER 可在 next 前构造合法新输入 | "summary"；需改变选项时例如 Event(event.event_type, {"breakdown":"summary"}) | 当前查询希望取得哪种分类明细 | 查询 Handler 可按它匹配或调整本次读取；匹配完成后改写不会重新匹配 Handler | 省略只读取基本数字；full 可进入事件链但未经 Hook 处理时默认 CORE 报不支持；不能补 None 或布尔值 |
+| event_input.columns | 正 int，可缺省 | 代理从方法选项生成；USER 可构造新 Event 调整 | 80 | 本次查询透传的终端网格宽度建议 | 自定义查询 Hook 可消费；当前默认 CORE 不据此构建网格 | 省略就是未提供；0、负数、字符串、bool、None 都不符合已存在键的类型要求 |
+
+平台随本次调用附带的资料如下。这些是已绑定事实，用户不需要在调用 Ops 时逐项填写；查询 Handler 也不能通过改写 Event 输入替换它们。
+
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ops.session_context | Core 只读属性，查询需要非 None | 平台把上下文随外层 Event 交给 Bus，Core 绑定到实际 Handler 的 Ops | 用户不用填，也不用 await；直接读取 ops.session_context | 本次 Handler 的可信会话资料入口 | 代理取出这份资料，随查询 Event 的独立 context 参数继续传递 | 缺少上下文时查询报错；不要把用户输入 payload 包装成平台可信上下文 |
+| SessionContext.session_id | 平台验证过的非空 str，必需 | 平台业务入口提供；用户普通调用不填写 | 平台例如绑定 session-a；查询方法和 Event 输入里都不再填 session_id | 本次绑定的是哪个会话 | 读取相应会话的历史、保存模型或用量服务；同时参与隔离和循环保护 | 缺失/非法不能查询；返回值或 Event 输入不能把目标改成另一个会话 |
+| SessionContext.metadata["session_usage_info"] | 平台只读快照或 None，可缺省 | 平台主窗口观测及已有用量整理逻辑 | 平台负责绑定快照；用户不把猜测 tokens、费用或会话 ID 当作快照传进查询 | 这次查询已绑定的用量事实，和查询参数 breakdown/columns 分开 | 有绑定键时优先消费该观测；没有键时才按 session_id 读取已有用量 | 键存在且为 None 代表明确未知，不回退旧历史；没有可得数字时返回空 context，仍保留 rateLimits=[] |
+| current_query_origin().package | str 或 None；helper 本身也可返回 None | Server 分派器从原 Ops 的包身份记录；不是用户传参 | 先 origin = current_query_origin()，非 None 时再读 origin.package | 谁发起了本次查询，而不是当前查询 Hook 属于哪个包 | 用于用户自己的审计和来源判断；它不是 Core next.origin 或授权证明 | 直接宿主触发而没有 Ops 调用域时 helper 可为 None；不要无判空访问 .package |
+
+`ops.session_context` 是只读属性，不是采集或组装上下文的 Ops 方法。平台业务方法负责收集和构造；
+查询代理只读取这份资料，再交给查询事件。Bus 会生成规范化的只读副本，保留同一会话身份和资料，不要求前后是同一个 Python 对象。
 
 ### 3.3 事件输出、允许的改写、失败与取消
 
-| 事件结果字段 | 类型 | 出现规则 | 准确含义 | 如何消费 |
-| --- | --- | --- | --- | --- |
-| value | dict | 成功时唯一顶层键 | 本次查询值；允许 None 的查询仍须包装为 {"value": None} | Ops 会取出 value；调用者不需要再访问 result["value"] |
-| deny | 去空白后非空 str，原字符串最多 512 字符 | 明确拒绝时唯一顶层键 | 公开拒绝原因；不能和 value 同时出现 | return {"deny": "QUERY_DISABLED"}；Ops 转为 SessionQueryDenied |
+先看查询 Handler 的事件输出封装。普通 Ops 调用者不用构造这层封装；查询 Handler 从 next 得到完整封装后，
+可直接返回，不要又包成 {"value": result} 形成两层 value。
 
-下面的返回字段位于事件结果的 `value` 内。方法成功返回时已经去掉外层 value 包装，因此消费示例中的对象就是方法返回值。
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| value | dict[str, object]；成功时唯一顶层键 | 默认 CORE 提供；查询 USER 短路或加工结果时按同样结构填写 | return {"value": {'context': {}, 'rateLimits': []}} | 这一次查询成功给出的值；下一张表解释它内部每个字段 | Ops 校验、独立复制并解包；普通调用者拿到的是 value 本身 | 本方法的 value 不能为 None；未知时按表返回空数组或保留必需对象。不能同时填写 deny 或增加未知顶层键；USER 无效输出会按 Core 隔离规则处理，不能靠错填来拒绝 |
+| deny | 去空白后非空 str，原字符串最多 512 字符；拒绝时唯一顶层键 | 希望明确拒绝此次查询的查询 Handler 填写 | return {"deny":"QUERY_DISABLED"}；也可使用能公开给调用者的简短原因 | 明确拒绝这一次查询，不是返回了一个未知数值或平台读取故障 | 分派器将其转换为 SessionQueryDenied，code=DENIED，reason 保留原因；调用者可按拒绝分支处理 | 正常成功不填；不能与 value 同时出现，也不能填空白、False、None 或异常对象。抛普通异常可能被隔离后继续，并不等于 deny |
 
-| 返回字段 | 类型 / 出现条件 | 谁提供 | 准确含义 | 消费方式与例子 |
-| --- | --- | --- | --- | --- |
-| 方法返回 / value | dict，必有 context/rateLimits | 平台 CORE 或查询 Handler | 使用 Claude 的顶层字段；完全未知时仍返回 {'context':{},'rateLimits':[]}，不伪造零读数 | 不是旧 schema_version/session_id/source/context/turn 存储对象 |
-| value.context | dict，必有 | 当前主上下文观测 | 只包含已知的窗口/权威输入数字和按需分类；不是本轮输入输出 token 的总和 | {} 或 {'window':1000,'tokens':120,'percent':12} |
-| context.window | 正 number，可缺省 | 观测的 limit_tokens | 模型上下文窗口容量，单位 token；不知道时省略，不能填 0 冒充未知 | 1000 |
-| context.tokens | 非负 number，可缺省 | 权威主窗口 input_tokens | 最后 API 输入侧 token；只有 authoritative_total=True 时提供，本地估计不冒充该数字 | 120；确知零为 0 |
-| context.percent | 0～100 的 int，可缺省 | 权威 tokens/window | 占窗口的整数百分比，四舍五入并限制到 100；不是 0～1 的比例 | 12 表示 12%，不是 0.12 |
-| context.breakdown | dict，可缺省 | 请求 summary 且已有分类时 | Claude 分类字段的可得子集；不为获取此对象重新数 Token | 没有 parts 时省略整个 breakdown |
-| breakdown.categories | list[dict] | 已采集的 parts 分类 | 每个有 token 估计的分类一项，不制造工具/文件级清单 | [{'name':'messages','tokens':90,'color':'promptBorder','isDeferred':False,'kind':'used'}] |
-| categories[i].name | str | 平台原分类键 | 分类标签；业务判断优先看 kind，不假定翻译后的名称 | messages / tools 等已有分类 |
-| categories[i].tokens | 非负 number | 原分类估计 | 该类估计 token；未分类数据不会为凑总数编造一项 | 90 |
-| categories[i].color | str | 默认显示主题键 | 本地默认 promptBorder；是显示建议，不是统计来源 | promptBorder |
-| categories[i].isDeferred / kind | bool / str | 本地分类投影 | 已有占用分类为 False / used；不推测 deferred 工具、free 或 buffer | False / used |
-| breakdown.totalTokens | 非负 number | 已知分类 tokens 求和 | 分类估计总和，可能不同于权威 context.tokens，不能当作计费总量 | 90 |
-| 未提供的 breakdown 字段 | 缺省 | 平台尚无事实或网格实现 | 不编造 rawMaxTokens、压缩设置、gridRows、memoryFiles/mcpTools/agents 清单；summary 是已知字段子集 | columns 当前不会生成 gridRows |
-| value.rateLimits | list[dict]，必有 | 最后 API 额度读数或用户 Hook | 没有账户窗口读数时 []；不是无限额度，也不是零消耗 | 默认 [] |
-| rateLimits[i].kind | 非空 str | 真实额度窗口类型 | 已有读数的额度窗口标识；本平台默认不生成条目 | five_hour / seven_day / spend_limit |
-| rateLimits[i].percentUsed | 非负 number | 真实额度读数 | 已用百分比，可超过 100 表示超额；不是 0～1 比例 | 23.5 |
-| rateLimits[i].resetsAt | str，可缺省 | 额度窗口重置时间 | 应为真实 ISO 8601 时间；不知道时省略，不用本地当前时间填充 | 2026-10-31T12:00:00Z |
-| value.cost | dict，可缺省 | 真实会话费用账本 | 无账本时省略，不返回 {'usd':0} 或 None 冒充价格已知 | 本平台默认省略 |
-| cost.usd | 非负 number | 会话累计已定价 API 响应 | 美元金额；不是当前轮 token 数乘一个猜测单价 | 1.25（只有真实账本才提供） |
+下面以 **Ops 直接返回值为根**解释所有公开字段；在事件输出中，它们位于 value 内。
+
+例如 context.window 由 usage["context"]["window"] 读取，事件结果中对应 value.context.window；categories[i] 中 i 是数组下标。 None/True/False 是 Python 写法，JSON 示例中分别写 null/true/false，不能加引号冒充字符串。
+
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 方法直接返回值（事件中的 value） | dict，必含 context/rateLimits，可含 cost | CORE 读取已有主窗口观测；查询 USER 可返回符合相同结构的视图 | {"context":{"tokens":120,"window":1000,"percent":12},"rateLimits":[]}；完全未知时填 {"context":{},"rateLimits":[]} | 当前可得的上下文占用、账户额度窗口和累计费用视图，不是原用量存储对象 | 把不同用量信息交给用户业务统一消费；调用不发模型请求、不重新测量 | 不能返回 None、空对象或增加 schema_version/source/turn 等旧顶层键；未知字段按下表省略 |
+| context | dict，必有；可为空 {} | 当前主会话已有上下文窗口观测 | {"tokens":120,"window":1000,"percent":12}；数字都未知时填 {} | 模型当前可得的上下文占用视图；不是 session_context 身份对象，也不是一轮输入输出相加 | 消费方从这里读取占用数字及可得分类明细 | 必须保留该键；不知道时填 {}，不要填 None 或人为补 0 |
+| context.window | 有限正 number，可缺省；不能是 bool | 平台观测的模型上下文容量 limit_tokens | 1000，单位 Token | 模型上下文窗口容量，不是本轮已花费或剩余 Token | 配合 tokens 显示“120 / 1000”，有权威读数时计算占比 | 未知省略；不能用 0、负数、字符串 "1000"、None 或无穷值代替 |
+| context.tokens | 有限非负 number，可缺省；不能是 bool | 平台主窗口权威输入 Token 读数，仅 authoritative_total=True 时默认提供 | 120；确知零占用可以填 0 | 已有权威输入侧占用，不是用户文字长度，也不是通知中 input_tokens+output_tokens 总和 | 显示已用上下文 Token；与 window 一起形成占比 | 无权威读数时省略；本地分类估计不能冒充该值，不用 0 或 None 表示未知 |
+| context.percent | 0～100 的 int，可缺省；不能是 bool | 默认 CORE 按权威 tokens/window 四舍五入并限制到 100 | 12 表示 12%；确知零为 0 | 上下文窗口占用的整数百分比，不是 0～1 的比例 | 显示占比或让用户业务选择提示阈值；使用时不要再乘 100 | 缺少必要数字时省略；不要填 0.12、"12%" 或 101，也不要用真假判断丢掉合法 0 |
+| context.breakdown | dict，可缺省 | 请求 summary 且平台已有可用分类观测时，CORE 返回已知子集 | {"categories":[{"name":"messages","tokens":90,"color":"promptBorder","isDeferred":False,"kind":"used"}],"totalTokens":90} | 已有分类的估计视图，不是新的精确 Token 测量结果 | 解释上下文主要被哪些类别占用；用户 Hook 可提供自己有事实依据的分类视图 | 未请求或没有分类时省略，不强行填 {}；默认不提供完整网格、压缩设置或逐工具/文件账本 |
+| context.breakdown.categories | list[dict]；默认有 breakdown 时包含 | 已有 parts 分类的投影 | 每类一个对象；例如 messages 90 Token、tools 30 Token | 按已有类别拆分的占用估计列表，不是原生消息数组或工具调用记录 | 分类显示、排序或汇总；不得把每项都当成权威计费数字 | 默认没有有效分类会省略整个 breakdown；用户替代视图须保持分类对象的语义 |
+| categories[i].name | str；默认分类项有此键 | 平台原分类键 | "messages"、"tools" 等实际已有标签 | 这一类占用的名称，不是会话、消息或工具调用 ID | 给分类加标题；不要假定所有平台都用同一翻译文本 | 不要用猜测的逐工具/文件名称补出平台未采集的分类 |
+| categories[i].tokens | 有限非负 number；默认分类项有此键 | 这类 parts 的已有 Token 估计 | 90，单位 Token | 该类别估计占用，不是百分比或价格 | 比较分类大小，并计算 totalTokens | 不能用 None、字符串或负数表示未知；没有读数的分类不为凑数制造一项 |
+| categories[i].color | str；默认分类项有此键 | 默认 CORE 提供主题建议键 | 当前默认 "promptBorder" | 显示颜色的主题名称；不是统计来源或严重程度 | 用户若有展示层可将主题键映射为颜色；字段不会自己渲染 | 当前不从 Token 数推算颜色，也不承诺 CSS 颜色名或十六进制值 |
+| categories[i].isDeferred | bool；默认 False | 当前已采集占用分类的投影 | 当前默认填 False | 该分类是否标记为延迟加载；默认只描述已有占用，不推测未采集状态 | 有对应业务事实时区分类别；False 不能用来推断工具一定已运行 | 不填字符串 "false"；没有延迟加载事实时不猜造 True |
+| categories[i].kind | str；默认 used | 当前已采集占用分类的投影 | 当前默认 "used" | 这项是已占用分类；不是模型类型、工具名或错误码 | 让消费者识别分类性质；默认不制造 free/buffer 等缺少事实的项 | 不要为补齐完整 Claude 图形而推算未采集的分类 |
+| context.breakdown.totalTokens | 有限非负 number；默认有 breakdown 时包含 | 已有 categories[].tokens 求和 | 90+30 得到 120，单位 Token | 已知分类估计总和，可能与权威 context.tokens 不同 | 展示分类合计；不能把两种口径强行拉齐，也不能作为累计费用 | 未知分类不补零来凑权威总量；不要误当窗口容量或美元金额 |
+| rateLimits | list[dict]，必有；默认 [] | 真实 API 额度窗口读数；平台默认没有这些窗口条目 | 没有额度读数填 []；有读数例如 [{"kind":"five_hour","percentUsed":23.5}] | 账户/网关额度窗口的已知读数，不是会话上下文容量 | 区分账户额度与当前上下文占用；不会因查询而申请或重置额度 | [] 表示无读数，不表示无限额度或零消耗；不要填 None |
+| rateLimits[i].kind | 非空 str，窗口对象必有 | 真实额度窗口类型 | "five_hour"、"seven_day" 或网关真实的 "spend_limit" | 这条额度数据对应哪一个统计窗口 | 让用户业务区分不同额度限制，不把五小时和七天数值相加 | 未知时不制造窗口条目；不要拿 session_id 或模型名替代 kind |
+| rateLimits[i].percentUsed | 有限非负 number，窗口对象必有 | 对应窗口的真实额度读数 | 23.5 表示已用 23.5%；超额时可以是 105 | 此额度窗口已用百分比；它与 context.percent 的 0～100 整数约束不同 | 显示额度使用情况或让用户业务提示超额；不要再乘 100 | 没有读数不创建条目；不能用 0、字符串或 None 冒充未知 |
+| rateLimits[i].resetsAt | 非空 str，可缺省 | 额度服务提供的真实重置时间 | 例如 2026-10-31T12:00:00Z，应表达真实 ISO 8601 时间 | 该窗口预计何时重置，不是本次查询时间或消息创建时间 | 用户可据真实时间显示重置提示；不由查询过程修改服务端窗口 | 未知省略，不填当前时间占位。当前校验器检查非空字符串，不代替 ISO 时间解析 |
+| cost | 恰含 usd 的 dict，可缺省；默认省略 | 真实会话费用账本或有相同事实依据的用户 Hook | 有账本时如 {"usd":1.25}；没有账本就不返回 cost 键 | 可得的会话累计定价结果，不是当前一轮 Token 数 | 用户有费用展示需求时消费；查询本身不计价、不补造账本 | 缺失表示没有费用事实，不等于免费；不要填 None、{} 或猜测的 0 |
+| cost.usd | 有限非负 number，有 cost 时必有 | 账本累计的已定价 API 费用 | 1.25 表示 1.25 美元；真实账本确认零费用才填 0 | 美元金额，不是积分、Token 数、百分比或其他币种 | 按美元金额显示或汇总已确认成本；不要把未知单价代入估算后冒充账本 | 无金额事实省略整个 cost；不能填 "$1.25"、None、负数或增加未知账本字段 |
+
+`breakdown` 是默认 CORE 返回的可得子集。当前验证器检查它是映射及可复制 JSON 数据，不逐项强制验证所有分类子字段；自定义 Handler 应保证表中的字段类型和统计口径。默认 CORE 不生成 rawMaxTokens、gridRows、压缩设置和逐工具/文件清单，不能把尚无事实的字段填成 0。费用、额度、上下文占用是三种口径，不能互相代替。
 
 继续默认查询使用 `await next_handler(event)`。需要短路时，可直接返回 `{"value": {'context': {}, 'rateLimits': []}}`；需要明确拒绝时返回 `{"deny": "QUERY_DISABLED"}`，下游可以不执行。加工结果必须符合本表的值类型及专项 spec；只改变本次返回视图，不改写平台真实状态、上下文或授权范围。
 
@@ -165,11 +187,14 @@ async def usage(
 ) -> dict[str, object]: ...
 ```
 
-| 方法参数 | 类型 / 默认 | 谁填写 | 准确含义 | 应该怎样填 |
-| --- | --- | --- | --- | --- |
-| arguments | Mapping 或 None，可省略 | 调用者可填 | 可传 Claude 风格参数对象；与命名参数二选一，不能混用 | await ops.session.usage({'breakdown':'summary','columns':80}) |
-| breakdown | summary / full，可省略 | 调用者按需填 | 省略只读状态数字；summary 返回已观察分类估计；默认 CORE 不支持 full 逐工具/文件精确计数，报 FULL_BREAKDOWN_UNAVAILABLE | breakdown='summary'；旧 True/False 参数不再接受 |
-| columns | 正 int，可省略，不接受 bool | 调用者按需填 | 沿用 Claude 网格宽度参数名称；本地默认不构建终端网格，当前值只透传给查询 Hook；不会改变 token 数 | columns=80；不是像素、token 限额或计费数量 |
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| arguments | Mapping 或 None，可省略；默认 None | 普通调用者二选一地提供参数对象或命名参数 | await ops.session.usage({"breakdown":"summary","columns":80})；也可不提供这个位置参数 | breakdown/columns 的参数容器，不是会话上下文或用量快照 | 便于集中传入查询选项；代理复制成事件输入映射 | 省略/None 不增加参数；对象与非 None 命名参数混用报 TypeError。不能含 session_id 或其他未知键 |
+| breakdown | summary/full 字符串，可省略；命名参数 None 等同未提供 | 普通调用者按是否需要分类明细填写 | breakdown="summary"；只查数字时不传；full 是已识别但默认 CORE 暂不支持的选项 | 决定是否请求上下文分类明细及其读取方式 | summary 让默认 CORE 投影已有分类；full 可先被 Hook 处理，否则默认 CORE 报 FULL_BREAKDOWN_UNAVAILABLE | 省略不生成明细；没有已有分类仍省略 breakdown 返回。True/False/"detail" 非法；参数对象内的值不能填 None |
+| columns | 正 int，可省略；命名参数默认 None；bool 非法 | 普通调用者按需填写终端列宽建议 | columns=80；应为整数，不填 "80"、0、负数或 True | 分类网格的终端字符列数建议，不是像素、Token 限额或输出长度 | 选项会传给查询 Hook；当前默认 CORE 不生成网格，因此不会改变数字、触发测量或产生界面 | 省略不增加该键；参数对象中 columns=None 非法。当前只传 columns 而不传 breakdown 也不会自动请求分类 |
+
+表中“无参数”就是调用括号留空，不是让用户传入空字典。只有 usage 有可选查询选项；
+平台会话身份、目录和快照不通过这些选项填写。完整参数对象和事件结果的对应例子见第 4.3 节。
 
 典型调用如下；它可写在任何满足会话前提的已注册业务 Handler 中。
 
@@ -192,6 +217,76 @@ if "percent" in context:
 ```
 
 成功返回 `dict[str, object]`，字段及缺失语义见第 3.3 节。无 SessionContext 报 RuntimeError；非法会话 ID 由平台会话校验拒绝；方法参数非法报 TypeError。活跃同名或间接循环报 QUERY_REENTRANT，深度超过 16 报 QUERY_DEPTH_EXCEEDED；不允许调用方覆盖 bus / event_type。平台读取故障保持其原有异常类型和稳定 code。Handler 未捕获 Ops 错误时，还受外层事件自身的故障隔离规则约束，不能把外层继续误认为查询成功。
+
+### 4.3 从填写输入到消费输出的完整字段例子
+
+假设平台已有 tokens=120、window=1000 的权威观测以及 messages=90、tools=30 的分类估计；未提供额度窗口或费用账本。 用户无需在查询参数中重新填写平台资料。下面的 Event 参数由方法代理自动构造：
+
+```json
+{
+  "breakdown": "summary",
+  "columns": 80
+}
+```
+
+查询 Handler 默认继续后，完整事件输出可为：
+
+```json
+{
+  "value": {
+    "context": {
+      "tokens": 120,
+      "window": 1000,
+      "percent": 12,
+      "breakdown": {
+        "categories": [
+          {
+            "name": "messages",
+            "tokens": 90,
+            "color": "promptBorder",
+            "isDeferred": false,
+            "kind": "used"
+          },
+          {
+            "name": "tools",
+            "tokens": 30,
+            "color": "promptBorder",
+            "isDeferred": false,
+            "kind": "used"
+          }
+        ],
+        "totalTokens": 120
+      }
+    },
+    "rateLimits": []
+  }
+}
+```
+
+Ops 返回的是上面 value 对应的值，不包含额外的 value 外壳。以下代码放在已绑定会话的业务 Handler 中，
+logger 沿用第 3.4 节模块中的定义。它展示字段怎样影响用户自己的消费逻辑：
+
+```python
+usage = await ops.session.usage(breakdown="summary", columns=80)
+context = usage["context"]
+if "percent" in context:
+    logger.info("context usage: %s%%", context["percent"])
+else:
+    logger.info("context percentage is unknown")
+for category in context.get("breakdown", {}).get("categories", []):
+    logger.info("category=%s tokens=%s", category["name"], category["tokens"])
+if "cost" in usage:
+    logger.info("known session cost: USD %s", usage["cost"]["usd"])
+else:
+    logger.info("no session cost ledger is available")
+```
+
+若查询 Handler 希望明确拒绝，可返回以下完整事件结果；此时普通调用方收到 SessionQueryDenied，
+而不是一个需要自行解析 deny 的成功字典：
+
+```json
+{"deny": "QUERY_DISABLED"}
+```
 
 ## 5. 接入与兼容方案
 
