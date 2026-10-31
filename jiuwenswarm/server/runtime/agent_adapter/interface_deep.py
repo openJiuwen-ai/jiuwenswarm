@@ -23050,10 +23050,13 @@ class JiuWenSwarmDeepAdapter:
                 if chunk_type == "answer":
                     if isinstance(payload, dict):
                         if payload.get("result_type") == "error":
-                            return {
+                            err = {
                                 "event_type": "chat.error",
                                 "error": payload.get("output", "未知错误"),
                             }
+                            if payload.get("soft_stop_recovery_exhausted"):
+                                err["code"] = "soft_stop_recovery_exhausted"
+                            return err
                         output = payload.get("output", {})
                         if isinstance(output, dict) and output.get("result_type") == "error":
                             logger.warning(
