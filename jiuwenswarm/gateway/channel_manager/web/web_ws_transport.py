@@ -791,8 +791,10 @@ class WebWsTransport(BaseWsChannel):
         if msg.event_type == EventType.HEARTBEAT_RELAY:
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             clients = self.clients
-            for w in clients:
-                self._enqueue_send(w, frame)
+            self._enqueue_event_frames(
+                self._client_event_frames(frame, str(getattr(msg, "id", "") or "")),
+                clients,
+            )
             logger.debug(
                 "[WebChannel] heartbeat.relay broadcast to %d client(s) id=%s",
                 len(clients), getattr(msg, "id", ""),
@@ -810,8 +812,10 @@ class WebWsTransport(BaseWsChannel):
         ):
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             clients = self.clients
-            for w in clients:
-                self._enqueue_send(w, frame)
+            self._enqueue_event_frames(
+                self._client_event_frames(frame, str(getattr(msg, "id", "") or "")),
+                clients,
+            )
             logger.debug(
                 "[WebChannel] cron push broadcast to %d client(s) id=%s run_id=%s",
                 len(clients), getattr(msg, "id", ""),
@@ -831,8 +835,10 @@ class WebWsTransport(BaseWsChannel):
         ):
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             clients = self.clients
-            for w in clients:
-                self._enqueue_send(w, frame)
+            self._enqueue_event_frames(
+                self._client_event_frames(frame, str(getattr(msg, "id", "") or "")),
+                clients,
+            )
             logger.debug(
                 "[WebChannel] proactive_notification broadcast to %d client(s) id=%s",
                 len(clients), getattr(msg, "id", ""),
@@ -924,8 +930,10 @@ class WebWsTransport(BaseWsChannel):
                             ws_set.add(w)
             if ws_set:
                 frame_data = self._serialize_frame(msg, routing_target, member_names=member_names)
-                for w in ws_set:
-                    self._enqueue_send(w, frame_data)
+                self._enqueue_event_frames(
+                    self._client_event_frames(frame_data, str(getattr(msg, "id", "") or "")),
+                    ws_set,
+                )
                 return
             # V2 精确路由未命中 —— 回退到 session_id 路由
             logger.debug(
@@ -1002,7 +1010,8 @@ class WebWsTransport(BaseWsChannel):
             "event": event_name,
             "payload": payload,
         }
-        await self._broadcast_to(frame_data, all_clients)
+        for frame in self._client_event_frames(frame_data, str(getattr(msg, "id", "") or "")):
+            await self._broadcast_to(frame, all_clients)
 
         # remote 模式下维护会话索引：chat.final 时写入最近一条助手消息预览
         if event_name == "chat.final" and msg.session_id:
@@ -1484,6 +1493,29 @@ class WebWsTransport(BaseWsChannel):
             "payload": payload,
         }
         return frame
+
+    def _client_event_frames(self, frame: dict[str, Any], request_id: str) -> list[dict[str, Any]]:
+        """网页出站帧。chat.final 先补上被挂住的尾巴，再替换本帧。个人版和企业版都走这里。"""
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+            apply_web_event_mask,
+            pop_final_tail_frames,
+        )
+
+        event_name = str(frame.get("event") or "")
+        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        if event_name.startswith("chat.") and request_id and not payload.get("request_id"):
+            payload["request_id"] = request_id
+        frames: list[dict[str, Any]] = []
+        if event_name == "chat.final":
+            frames.extend(pop_final_tail_frames(payload, request_id))
+        apply_web_event_mask(event_name, payload, request_id)
+        frames.append(frame)
+        return frames
+
+    def _enqueue_event_frames(self, frames: list[dict[str, Any]], clients: set[Any]) -> None:
+        for frame in frames:
+            for client in clients:
+                self._enqueue_send(client, frame)
 
     @staticmethod
     def _parse_req_method(method: str) -> ReqMethod | None:

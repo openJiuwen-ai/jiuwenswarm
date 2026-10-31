@@ -1454,6 +1454,19 @@
       "memberNameFormatInvalid": "Member name must start with a lowercase letter, followed by lowercase letters, digits, or hyphens",
       "referencedByTeams": "Referenced by {{count}} Team(s)"
     },
+    "sensitiveMask": {
+      "title": "Web answer masking",
+      "hint": "When off, text is shown as-is. When on, a match keeps its first 3 and last 4 characters, with four stars in the middle, and at least 4 characters stay hidden. This only changes what the web page shows.",
+      "enabled": "Enable masking",
+      "name": "Name",
+      "pattern": "Regex",
+      "add": "Add rule",
+      "remove": "Remove",
+      "save": "Save",
+      "saved": "Saved",
+      "loadFailed": "Failed to load masking settings",
+      "saveFailed": "Failed to save masking settings"
+    },
     "groups": {
       "modelDefault": { "label": "Default Model (Main Chat)", "hint": "Primary chat model service and auth" },
       "modelVideo": { "label": "Video Model", "hint": "Video understanding/generation model (optional)" },

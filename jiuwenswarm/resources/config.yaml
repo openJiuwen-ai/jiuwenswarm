@@ -9,6 +9,23 @@ config:
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
+# 网页回答脱敏。enabled 默认关闭，关闭时 rules 不生效，原文直出。
+# 只替换网页上看到的回答、思考、工具结果和历史回放，不改历史文件。
+# pattern 要能匹配敏感内容本身。命中的那一段换成等长星号。
+sensitive_mask:
+  enabled: false
+  rules:
+    - title: 邮箱
+      pattern: '\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b'
+    - title: 手机号
+      pattern: '(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)'
+    - title: 身份证号
+      pattern: '(?<!\d)\d{17}[\dXx](?!\d)'
+    - title: API Key
+      pattern: '(?:sk|rk|pk|ak)-[A-Za-z0-9]{8,}'
+    - title: Token
+      pattern: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
   enabled: true
