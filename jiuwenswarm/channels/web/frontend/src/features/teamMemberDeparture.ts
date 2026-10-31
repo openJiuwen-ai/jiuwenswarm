@@ -11,6 +11,7 @@
 interface RosterMember {
   member_id: string;
   status?: string;
+  workflow_run_id?: string;
 }
 
 function normalizedStatus(status: unknown): string {
@@ -36,6 +37,9 @@ export function isReachableTeamMemberStatus(status: unknown): boolean {
  * - snapshotMembers 是快照里的在册成员；旧后端还会把离队成员混在里面，这里一并剔除。
  * - departedIds 是快照显式列出的离队成员：断线期间漏掉的 shutdown 事件靠它收敛。
  * - changedIds 是对账请求期间收到过实时事件的成员，以实时状态为准，快照不覆盖。
+ * - 例外是镜像出来的 swarmflow worker（带 workflow_run_id）：它们只存在于前端、
+ *   不会出现在 team.db 名册里，快照缺席不代表已被移除，原样保留（删掉会把 run
+ *   的 worker 连同分组一起抹掉）。
  *
  * 返回 null 表示快照里没有任何可对账的成员，调用方应保持现状。
  */
@@ -60,7 +64,8 @@ export function reconcileSnapshotRoster<T extends RosterMember>(
     return currentMember ? [currentMember] : [];
   });
   for (const member of currentMembers) {
-    if (changedIds.has(member.member_id) && !snapshotMemberIds.has(member.member_id)) {
+    if (snapshotMemberIds.has(member.member_id)) continue;
+    if (member.workflow_run_id || changedIds.has(member.member_id)) {
       members.push(member);
     }
   }

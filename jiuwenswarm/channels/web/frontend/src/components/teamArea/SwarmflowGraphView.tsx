@@ -865,6 +865,7 @@ export function SwarmflowGraphView({
     if (agent.status === 'waiting_for_human') {
       const runId = (node.data?.runId as string) ?? '';
       const corr = agent.correlation_id ?? agent.id;
+      const run = runs.find((candidate) => candidate.id === runId);
       const payload: AskUserQuestionPayload = {
         request_id: `swarmflow:${runId}:${corr}`,
         source: 'swarmflow_human',
@@ -879,6 +880,10 @@ export function SwarmflowGraphView({
           correlation_id: corr,
           agent_id: agent.id,
           agent_name: agent.name,
+          // The attribution prefix is composed from meta at render time in
+          // InteractionPrompt (i18n); pass the data through, keep the header plain.
+          executor: run?.executor ?? null,
+          workflow_name: run?.name ?? null,
         },
       };
       useChatStore.getState().enqueuePendingQuestion(sessionId, payload);
@@ -893,7 +898,7 @@ export function SwarmflowGraphView({
       setCallRecordsSource({ sessionId, memberId: `${runId}:${agent.id}` });
       setModalState({ sections, activeKey: sections[0].key });
     }
-  }, [sessionId, t]);
+  }, [runs, sessionId, t]);
 
   return (
     <div className="w-full h-full min-h-[400px] relative" data-testid="team-area-swarmflow-graph-view">

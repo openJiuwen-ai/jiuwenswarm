@@ -5652,7 +5652,10 @@
     "sectionError": "Error",
     "charUnit": "chars",
     "clickToViewDetail": "Click to view details",
-    "runIdTooltip": "Run ID: {{id}}"
+    "runIdTooltip": "Run ID: {{id}}",
+    "executorTooltip": "currently hosted by {{name}}",
+    "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
+    "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
   "a4pSettings": {
     "title": "A4P pre-authorization",
