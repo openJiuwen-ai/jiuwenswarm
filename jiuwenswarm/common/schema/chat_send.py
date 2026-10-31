@@ -141,7 +141,7 @@ class ChatSendParams(TypedDict, total=False):
     """请求 ID（interrupt resume / 问答回复场景关联）。"""
 
     source: NotRequired[str]
-    """来源标识（如 permission_interrupt / confirm_interrupt / ask_user_interrupt / evolution_interrupt）。"""
+    """来源标识；回答中断时取 ``gateway.common.interrupt_resume.INTERRUPT_RESUME_SOURCES`` 之一。"""
 
     is_supplement: NotRequired[bool]
     """是否为补充请求（Gateway 用于判断 supplement 流程）。"""

@@ -62,7 +62,7 @@ from openjiuwen.core.single_agent import (
     ReActAgentConfig,
     create_agent_session,
 )
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, match_answers, pending_interrupts
 from openjiuwen.core.sys_operation import (
     SysOperation,
     SysOperationCard,
@@ -138,6 +138,8 @@ from openjiuwen.harness.schema.interaction import (
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
+
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
@@ -4475,13 +4477,7 @@ class JiuWenSwarmDeepAdapter:
                 state = loop_session.get_state(INTERRUPTION_KEY)
                 interrupted_tools = getattr(state, "interrupted_tools", None)
                 if isinstance(interrupted_tools, Mapping) and interrupted_tools:
-                    pending_inner_ids: set[str] = set()
-                    for entry in interrupted_tools.values():
-                        requests = getattr(entry, "interrupt_requests", None)
-                        if isinstance(requests, Mapping):
-                            pending_inner_ids.update(requests.keys())
-                    user_input_ids = set(getattr(query, "user_inputs", {}) or {})
-                    if user_input_ids and user_input_ids.intersection(pending_inner_ids):
+                    if match_answers(query, pending_interrupts(state)).answers:
                         return False
                     stale_interactive_input = True
                 else:
@@ -15497,16 +15493,7 @@ class JiuWenSwarmDeepAdapter:
         source = str(params.get("source") or "").strip()
         answers = params.get("answers")
         request_id = str(params.get("request_id") or "").strip()
-        if (
-            bool(request_id)
-            and isinstance(answers, list)
-            and source in {
-                "ask_user_interrupt",
-                "confirm_interrupt",
-                "permission_interrupt",
-                "evolution_interrupt",
-            }
-        ):
+        if bool(request_id) and isinstance(answers, list) and source in INTERRUPT_RESUME_SOURCES:
             return True
         from jiuwenswarm.runtime.evolution import (
             is_interrupt_evolution_approval_answer_payload,

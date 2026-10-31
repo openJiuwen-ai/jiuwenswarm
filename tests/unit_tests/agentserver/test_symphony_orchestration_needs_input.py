@@ -208,8 +208,10 @@ def _inner_tool_ctx(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["agent", "team"])
+@pytest.mark.parametrize("addressed_by", ["tool_call_id", "interrupt_id"])
 async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
     mode: str,
+    addressed_by: str,
 ) -> None:
     compose_calls: list[dict] = []
     skill_calls: list[dict] = []
@@ -280,9 +282,11 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
     assert first["result_type"] == "interrupt"
     assert skill_calls == [{"skill_name": "skill-a"}]
     answer = InteractiveInput()
-    answer.update(
-        "ask-1", {"answers": {"Audience": "engineering", "api_key": "secret"}}
-    )
+    value = {"answers": {"Audience": "engineering", "api_key": "secret"}}
+    if addressed_by == "interrupt_id":
+        answer.answer(first["state"][0].payload.value.interrupt_id, value)
+    else:
+        answer.update("ask-1", value)
     resumed = await agent.invoke(_inputs(answer, mode=mode))
     assert resumed["result_type"] == "answer"
     assert compose_calls[1]["candidate_skill_ids"] == ["skill-a"]

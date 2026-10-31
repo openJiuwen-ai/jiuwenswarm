@@ -12,6 +12,7 @@ from typing import Any
 from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.stream.base import OutputSchema
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 from openjiuwen.harness.resources import RuntimeSpec, read_agent_template_card
 from openjiuwen.harness_protocol import (
     HarnessCapability,
@@ -759,6 +760,9 @@ def _project_external_user_input(chunk: OutputSchema) -> dict[str, Any] | None:
         "request_id": request_id,
         "questions": _external_ask_questions(value),
         "source": "ask_user_interrupt",
+        # The harness IO adapter accepts InteractiveInput.answer() under the request id.
+        "interrupt_id": request_id,
+        "kind": InterruptKind.ASK_USER,
     }
 
 

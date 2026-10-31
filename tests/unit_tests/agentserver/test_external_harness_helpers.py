@@ -1245,3 +1245,18 @@ def test_runtime_provider_outside_the_host_allowlist_keeps_its_error(
             "odd-session",
             {"agent_template_name": "odd-expert"},
         ))
+
+
+@pytest.mark.asyncio
+async def test_external_user_input_question_carries_the_interrupt_id() -> None:
+    chunk = OutputSchema(
+        type="__interaction__",
+        index=0,
+        payload={"id": "ext-q", "value": {"kind": "user_input", "prompt": "Which?"}},
+    )
+
+    parsed = await external_harness_helpers._parse_external_chunk(chunk, has_streamed_answer=False)
+
+    assert parsed["request_id"] == "ext-q"
+    assert parsed["interrupt_id"] == "ext-q"
+    assert parsed["kind"] == "ask_user"

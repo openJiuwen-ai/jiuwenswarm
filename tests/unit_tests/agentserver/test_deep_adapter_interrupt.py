@@ -9,11 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
 
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, ToolInterruptEntry, ToolInterruptionState
 from openjiuwen.harness.schema.interaction import SendInputRequest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -170,15 +171,17 @@ def _nonpermission_core_state(
     tool_call_id: str = "call-control",
     metadata: dict | None = None,
 ) -> SimpleNamespace:
-    tool_call = SimpleNamespace(id=tool_call_id, name=tool_name)
-    request = InterruptRequest(metadata=metadata or {})
-    state = SimpleNamespace(
+    tool_call = ToolCall(id=tool_call_id, type="function", name=tool_name, arguments="{}")
+    request = InterruptRequest(interrupt_id=f"intr_{tool_call_id}", metadata=metadata or {})
+    state = ToolInterruptionState(
+        ai_message=AssistantMessage(content="", tool_calls=[tool_call]),
+        iteration=0,
         interrupted_tools={
-            tool_call_id: SimpleNamespace(
+            tool_call_id: ToolInterruptEntry(
                 tool_call=tool_call,
                 interrupt_requests={tool_call_id: request},
             )
-        }
+        },
     )
     return SimpleNamespace(
         get_session_id=MagicMock(return_value=session_id),

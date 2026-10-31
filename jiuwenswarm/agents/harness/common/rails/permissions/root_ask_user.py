@@ -9,8 +9,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-
 from jiuwenswarm.agents.harness.common.rails.ask_user_contract import (
     MAX_STRUCTURED_QUESTIONS,
 )
@@ -148,16 +146,12 @@ def ask_user_continuation(
 
 
 def prepare_ask_user_resume(
-    *, continuation: RootAskUserContinuation, user_input: Any
+    *, continuation: RootAskUserContinuation, answer: Any
 ) -> RootAskUserResume | None:
-    if not isinstance(user_input, InteractiveInput) or user_input.raw_inputs is not None:
+    """Turn the answer given to the continuation's ask_user call into clarifications."""
+    if not isinstance(answer, Mapping) or set(answer) != {"answers"}:
         return None
-    if set(user_input.user_inputs) != {continuation.tool_call_id}:
-        return None
-    payload = user_input.user_inputs[continuation.tool_call_id]
-    if not isinstance(payload, Mapping) or set(payload) != {"answers"}:
-        return None
-    answers = payload["answers"]
+    answers = answer["answers"]
     if not isinstance(answers, Mapping) or set(answers) != {
         question.question for question in continuation.questions
     }:
