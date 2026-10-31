@@ -1054,3 +1054,37 @@ def test_gateway_logger_propagates_into_jiuwenswarm_handlers(tmp_path, monkeypat
     assert "gateway.app_gateway" in captured
     assert "gateway.channel_manager.web.app_web_handlers" in captured
     del root
+
+
+class TestEnvUrl:
+    """``env_url`` must treat unset and blank environment values alike."""
+
+    def test_unset_returns_default(self, monkeypatch):
+        monkeypatch.delenv("TEST_ENV_URL_ENDPOINT", raising=False)
+        assert utils.env_url("TEST_ENV_URL_ENDPOINT", "https://default.example") == (
+            "https://default.example"
+        )
+
+    def test_set_value_is_returned(self, monkeypatch):
+        monkeypatch.setenv("TEST_ENV_URL_ENDPOINT", "https://override.example")
+        assert utils.env_url("TEST_ENV_URL_ENDPOINT", "https://default.example") == (
+            "https://override.example"
+        )
+
+    def test_empty_string_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("TEST_ENV_URL_ENDPOINT", "")
+        assert utils.env_url("TEST_ENV_URL_ENDPOINT", "https://default.example") == (
+            "https://default.example"
+        )
+
+    def test_whitespace_only_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("TEST_ENV_URL_ENDPOINT", "   ")
+        assert utils.env_url("TEST_ENV_URL_ENDPOINT", "https://default.example") == (
+            "https://default.example"
+        )
+
+    def test_surrounding_whitespace_is_stripped(self, monkeypatch):
+        monkeypatch.setenv("TEST_ENV_URL_ENDPOINT", "  https://override.example  ")
+        assert utils.env_url("TEST_ENV_URL_ENDPOINT", "https://default.example") == (
+            "https://override.example"
+        )
