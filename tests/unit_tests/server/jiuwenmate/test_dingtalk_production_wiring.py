@@ -135,6 +135,66 @@ def _requests(host, app_id="app-dingtalk"):
     return host.repository.session_requests("local", session.session_id) if session else []
 
 
+@pytest.mark.asyncio
+async def test_canonical_dingtalk_binding_uses_original_agent_without_a_connection_row(host):
+    host.connections.clear()
+    host.service.get_config = lambda namespace, agent: SimpleNamespace(agent_id=agent)
+    assert await host.inbound.handle(_event()) is InboundDisposition.HANDLED
+    await settle(lambda: _delivered(host))
+    assert len(host.contexts) == 1
+    assert host.contexts[0].execution.agent_id == "agent-dingtalk"
+    assert _requests(host)[0].record.route_snapshot.channel == "dingtalk"
+
+
+@pytest.mark.asyncio
+async def test_canonical_dingtalk_binding_rejects_a_missing_or_hidden_config(host):
+    from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+    def missing(*args):
+        raise PersistentAgentError("not found", code="NOT_FOUND")
+
+    host.connections.clear()
+    host.service.get_config = missing
+    assert await host.inbound.handle(_event()) is InboundDisposition.REJECTED
+    assert not _requests(host) and not host.contexts
+
+
+@pytest.mark.asyncio
+async def test_rebinding_cannot_overtake_a_callback_between_validation_and_queue(host, monkeypatch):
+    import threading
+    from jiuwenswarm.common.im_binding_lock import im_binding_lock
+    from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+    validated, release = threading.Event(), threading.Event()
+    resolve = host.repository.resolve_session
+
+    def gated_resolve(*args, **kwargs):
+        validated.set()
+        assert release.wait(3)
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(host.repository, "resolve_session", gated_resolve)
+    callback = asyncio.create_task(host.inbound.handle(_event()))
+    await settle(validated.is_set)
+
+    async def rebind():
+        async with im_binding_lock("dingtalk", "app-dingtalk"):
+            if _requests(host):
+                raise PersistentAgentError("legacy work still exists", code="CONFLICT")
+            host.config["channels"]["dingtalk"]["apps"][0]["persistent_agent_id"] = "canonical"
+
+    binding = asyncio.create_task(rebind())
+    try:
+        await asyncio.sleep(0.05)
+        assert not binding.done(), "Rebinding must wait until the validated callback is durably queued"
+    finally:
+        release.set()
+    assert await callback is InboundDisposition.HANDLED
+    with pytest.raises(PersistentAgentError):
+        await binding
+    assert host.config["channels"]["dingtalk"]["apps"][0]["persistent_agent_id"] == "agent-dingtalk"
+
+
 def _delivered(host):
     rows = _requests(host)
     deliveries = host.repository.result_deliveries("local", rows[0].record.request_id) if rows else []
@@ -168,7 +228,8 @@ async def test_redelivery_reuses_one_request_execution_and_outbox_send(host):
     assert host.sent[0]["robotCode"] == "robot-test"
     delivery = host.repository.result_deliveries("local", record.request_id)[0]
     assert delivery["external_message_id"] == "platform-send-test"
-    foreign = host.workspaces.ensure("local", "agent-feishu") / "output" / "foreign.txt"
+    foreign = host.workspaces.ensure_session("local", "agent-feishu", "foreign-session") / "output" / "foreign.txt"
+    foreign.parent.mkdir(parents=True, exist_ok=True)
     foreign.write_text("test other-channel output")
     scope = await host.contexts[0].ports.workspace_access.resolve_read_scope(host.contexts[0].execution)
     assert scope.workspace_root == host.workspaces.path("local", "agent-dingtalk")
@@ -458,7 +519,7 @@ async def test_only_dingtalk_binding_starts_the_existing_im_runtime(monkeypatch)
     assert await server._ensure_persistent_group_fanout() is fanout
     assert await server._ensure_persistent_group_fanout() is fanout
     factory.assert_called_once()
-    manager.recover.assert_awaited_once_with("local", channels=frozenset({"feishu", "dingtalk"}), include_unrouted=False)
+    manager.recover.assert_awaited_once_with("local", channels=frozenset({"dingtalk"}), include_unrouted=False)
     await server._close_persistent_group_fanout()
     manager.aclose.assert_awaited_once()
 

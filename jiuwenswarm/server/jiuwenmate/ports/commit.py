@@ -7,7 +7,7 @@ background; a failed ordinary write leaves a gap in the log and never delays a
 later critical event. A final or paused event also stores, in the same
 transaction, every candidate output it references that the queue has not written
 yet. A file candidate is stored only after ``WorkspaceOutputFiles`` verifies its
-request-authorized source in the Agent's shared ``output/`` directory; one that
+request-authorized source in the current Session's ``output/`` directory; one that
 cannot be verified is held for the ending, which verifies it again and is not
 recorded when that fails. An optional
 observer sees each accepted event as it is recorded, before an ordinary event is

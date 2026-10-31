@@ -73,20 +73,30 @@
       "target": "目标会话",
       "query": "查询内容",
       "queryScope": {
+        "platforms": "来源平台：{{value}}",
         "keyword": "关键词：{{value}}",
+        "contentTypes": "检索类型：{{value}}",
         "since": "开始时间：{{value}}",
         "until": "结束时间：{{value}}",
         "sender": "发送者：{{value}}",
         "cursor": "分页游标：{{value}}",
         "groupIds": "群 ID：{{value}}",
         "groupNames": "群名称：{{value}}",
-        "limit": "消息上限：{{value}}"
+        "limit": "结果上限：{{value}}"
+      },
+      "contentTypes": "授权类型",
+      "contentType": {
+        "messages": "群聊消息",
+        "files": "Session 最终文件",
+        "online_docs": "在线文档链接"
       },
       "noMessageText": "此消息无文本正文。",
       "summary": "待分享摘要",
       "groupAudience": "分享内容可能对目标群内所有成员可见。",
       "audience": "分享内容可能对目标会话内所有参与者可见。",
       "exactMessages": "展开确切消息（{{count}} 条）",
+      "exactArtifacts": "展开确切文件和文档（{{count}} 项）",
+      "fileSize": "文件大小：{{size}} 字节",
       "created": "创建时间：{{time}}",
       "createdAt": "创建时间",
       "expires": "到期时间：{{time}}",
@@ -102,7 +112,7 @@
         "rejected": "我拒绝了此跨群分享请求。"
       },
       "grantsTitle": "跨群分享长期授权",
-      "grantsNote": "每条授权限定为一个来源群 → 一个目标会话（渠道、应用及会话 ID）。撤销后将阻止继续使用该授权分享。",
+      "grantsNote": "每条授权限定为一个来源群 → 一个目标会话（渠道、应用及会话 ID）和明确的内容类型。撤销后将阻止继续使用该授权分享。",
       "noGrants": "暂无跨群分享长期授权。",
       "statusLabel": "状态",
       "actionsLabel": "操作",
@@ -305,7 +315,7 @@
       "channels": "飞书 / 钉钉",
       "clientId": "Client ID",
       "dingtalkHint": "绑定后可通过钉钉单聊分派任务，当前支持文本消息。",
-      "isolationHint": "不同渠道使用独立员工；可使用相同配置，消息和文件不会合并。",
+      "isolationHint": "Web、飞书和钉钉共用同一员工与工作空间；各会话独立，跨群分享须按授权处理。",
       "robotCode": "Robot Code（可选）",
       "robotCodePlaceholder": "按应用配置填写，留空沿用 Client ID",
       "welinkTitle": "绑定 WeLink",
@@ -5999,6 +6009,7 @@
     "waiting": "处理中..."
   },
   "groupChat": {
+    "externalRuntimeDisabled": "{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新添加成员。",
     "useTeam": "使用该专家团",
     "teamMembers": "团队成员（{{count}}人）",
     "questionFrom": "{{name}} 请求确认",

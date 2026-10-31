@@ -241,17 +241,18 @@ class AgentManager:
         self.group_chats = GroupChatRepository(sessions.db_path)
         self.group_archive = ConversationArchive(sessions.db_path.parent / "group_messages", self.group_chats)
         self.sharing_repository = GroupShareRepository(sessions.db_path)
+        self._files = files or WorkspaceOutputFiles(service.workspaces)
         self.group_sharing = GroupSharingService(
             service=service, sessions=sessions, groups=self.group_chats, archive=self.group_archive,
-            repository=self.sharing_repository, clock=clock,
+            repository=self.sharing_repository, files=self._files, clock=clock,
             verify_membership=self._verify_group_membership,
+            cli=self.cli_runtime,
         )
         if self._delivery_service is not None:
             self._delivery_service.set_mention_roster(self._delivery_mention_roster)
             self._delivery_service.set_sharing_guard(self.group_sharing.can_deliver)
         self.verify_group_membership = unavailable_membership
         self.refresh_group_messages = None
-        self._files = files or WorkspaceOutputFiles(service.workspaces)
         self._queue = CommitQueue(sessions, clock=clock)
         driver = ExecutionDriver(
             snapshots=service.snapshot,
@@ -579,6 +580,7 @@ class AgentManager:
         target_id: str,
         app_id: str | None = None,
         tool_call_id: str | None = None,
+        approver_agent_id: str | None = None,
     ) -> RequestView:
         """Accept a confirmation only from the original initiator and route, then resume its Request."""
         native = await asyncio.to_thread(self._permission_approvals.get, approval_id)
@@ -594,6 +596,7 @@ class AgentManager:
             target_id=target_id,
             app_id=app_id,
             tool_call_id=tool_call_id,
+            approver_agent_id=approver_agent_id,
             now=self._clock(),
         )
         self._schedule_permission_resume(approval)
@@ -613,7 +616,7 @@ class AgentManager:
         data = await asyncio.to_thread(
             self.sharing_repository.list_for_owner, namespace_id, config_id, owner_principal=access.principal_ref,
         )
-        await self.group_sharing.enrich_owner_view(data)
+        await self.group_sharing.enrich_owner_view(data, namespace_id)
         return {**data, "conversation_id": APPROVAL_CONVERSATION}
 
     async def decide_sharing(
@@ -698,7 +701,7 @@ class AgentManager:
                 "channel": channel, "app_id": app_id, "chat_id": target_id,
                 "source_message_id": source_message_id, "is_direct_message": is_direct_message,
                 "idempotency_key": f"sharing-wait:{source_message_id}",
-                "text": "跨群分享需要 Agent 所有者在 JiuwenSwarm 私聊中批准，当前会话的回复不能代为授权。",
+                "text": "跨群分享需要 Agent 所有者在 WorkSwarm 私聊中批准，当前会话的回复不能代为授权。",
             })
             words = text.strip().split(maxsplit=1)
             return bool(words and words[0].lower() in {"批准", "拒绝", "同意", "approve", "reject"})
@@ -806,7 +809,9 @@ class AgentManager:
                     decided_at=self._clock(),
                 ),
             )
-            approval = self._permission_approvals.create(state, event, now=self._clock(), recovered=recovered)
+            approval = self._permission_approvals.create(
+                state, event, now=self._clock(), recovered=recovered,
+            )
             if approval.route is None:
                 approval = self._permission_approvals.reject_unrouted(approval.approval_id)
                 self._schedule_permission_resume(approval)
@@ -821,9 +826,9 @@ class AgentManager:
 
     def _schedule_permission_notice(self, approval: PermissionApproval) -> None:
         business_sharing = self._link_sharing_approval(approval)
-        if approval.route is None or approval.route.channel == "web" or self._thinking_notice_sender is None:
-            return
         route = approval.route
+        if route is None or route.channel == "web" or self._thinking_notice_sender is None:
+            return
         calls = "\n".join(
             f"- {item.get('tool_call_id', 'call')}: {item.get('tool_name', 'tool')}: "
             f"{str(item.get('arguments') or '')[:500]}"
@@ -840,7 +845,7 @@ class AgentManager:
                     approval.namespace_id, approval.request_id,
                 ).record.request_input.kind == "direct_message"} if route.channel == "dingtalk" else {}),
                 "text": (
-                    "跨群分享正在等待 Agent 所有者在 JiuwenSwarm 私聊中批准。"
+                    "跨群分享正在等待 Agent 所有者在 WorkSwarm 私聊中批准。"
                     if business_sharing else
                     f"该员工需要确认一次工具操作（15 分钟内有效）：\n{calls}\n" + approval_instructions(approval)
                 ),
@@ -877,7 +882,8 @@ class AgentManager:
         # Web records the owner's decision, while the original IM runtime owns
         # platform checks, execution and delivery. The durable decision is picked
         # up by that runtime's recovery loop, including after restart.
-        channel = approval.route.channel if approval.route is not None else "web"
+        state = self._sessions.get_request(approval.namespace_id, approval.request_id)
+        channel = state.record.route_snapshot.channel if state.record.route_snapshot is not None else "web"
         if self._approval_channels is not None and channel not in self._approval_channels:
             return
         if approval.approval_id in self._permission_resume_tasks:
@@ -1031,7 +1037,9 @@ class AgentManager:
         from jiuwenswarm.common.file_download_token import build_file_download_info
 
         name = (output.file_path or "").rsplit("/", 1)[-1] or "file"
-        path = self._files.path(record.namespace_id, record.agent_id, output)
+        path = self._files.path(
+            record.namespace_id, record.agent_id, output, expected_session_id=record.session_id
+        )
         download_url = None
         if path is not None and path.is_file():
             download_url = build_file_download_info(str(path), name, record.session_id)["download_url"]

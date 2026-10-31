@@ -3,6 +3,7 @@ import { webClient, webRequest } from '../../services/webClient';
 
 export interface GroupMember {
   kind: 'agent_template' | 'agent_group';
+  cli_agent?: 'claude' | 'codex';
   id: string;
   member_name: string;
   display_name?: string;

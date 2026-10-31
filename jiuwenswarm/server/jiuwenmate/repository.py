@@ -242,6 +242,19 @@ class PersistentAgentRepository(SQLiteStore):
             rows = conn.execute(query + " ORDER BY created_at, agent_id", args).fetchall()
         return [self._connection(row) for row in rows]
 
+    def connection_has_unfinished_work(self, namespace_id: str, channel: str, connection_key: str) -> bool:
+        """Do not orphan queued, executing or paused work when replacing a legacy identity."""
+        with closing(self._connect()) as conn:
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='requests'").fetchone() is None:
+                return False
+            return conn.execute(
+                "SELECT 1 FROM colleague_connections c JOIN requests r "
+                "ON r.namespace_id=c.namespace_id AND r.agent_id=c.agent_id "
+                "WHERE c.namespace_id=? AND c.channel=? AND c.connection_key=? "
+                "AND (r.status IN ('queued','dispatched') OR (r.status='ended' AND r.outcome='paused')) LIMIT 1",
+                (namespace_id, channel, connection_key),
+            ).fetchone() is not None
+
     def default_agent_id(self, namespace_id: str) -> str | None:
         """The colleague provisioned as default, kept even after that colleague is deleted."""
         with closing(self._connect()) as conn:

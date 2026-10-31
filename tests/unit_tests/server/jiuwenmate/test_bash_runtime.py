@@ -24,7 +24,7 @@ def tool(tmp_path, agent="agent-a"):
     office.mkdir(exist_ok=True)
     session = office / "sessions" / "session-a"
     session.mkdir(parents=True, exist_ok=True)
-    (office / "output").mkdir(exist_ok=True)
+    (session / "output").mkdir(exist_ok=True)
     context = SimpleNamespace(extras={}, execution=SimpleNamespace(
         namespace_id="local", agent_id=agent, session_id="session-a", execution_id="execution-a"), language="cn")
     context.extras[PARENT_SYS_OPERATION_EXTRAS_KEY] = SysOperation(SysOperationCard(id=agent))
@@ -45,14 +45,14 @@ async def test_published_agent_can_execute_bash_in_its_office(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_bash_defaults_to_session_and_exposes_shared_output_directory(tmp_path):
+async def test_bash_defaults_to_session_and_exposes_session_output_directory(tmp_path):
     bash, session = tool(tmp_path)
     command = """python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd()); Path('draft.md').write_text('final'); Path(os.environ['JIUWENMATE_OUTPUT_DIR'], 'final.md').write_text(Path('draft.md').read_text()); Path('output.txt').write_text(os.environ['JIUWENMATE_OUTPUT_DIR'])"""
     result = await bash.invoke({"command": command})
     assert result.success, result
     assert (session / "cwd.txt").read_text() == str(session)
-    assert (session / "output.txt").read_text() == str(session.parent.parent / "output")
-    assert (session.parent.parent / "output" / "final.md").read_text() == "final"
+    assert (session / "output.txt").read_text() == str(session / "output")
+    assert (session / "output" / "final.md").read_text() == "final"
 
 
 @pytest.mark.asyncio
@@ -143,6 +143,42 @@ def test_bash_publication_includes_webpage_fetch():
     ]
     assert "fetch_webpage" in upgraded["system_prompt"]
     assert module().refresh_builtin_tools(upgraded) == upgraded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream,background", [(False, False), (True, False), (False, True)])
+async def test_original_bash_cli_read_uses_business_approval_before_any_shell(tmp_path, stream, background):
+    from unittest.mock import AsyncMock
+    from openjiuwen.harness import persistent_agent as core
+    from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
+    from openjiuwen.harness.persistent_agent.tools.group_history import GROUP_SHARE_INTERRUPT_OWNER
+
+    bash, session = tool(tmp_path)
+    execute = AsyncMock(side_effect=core.GroupContentApprovalRequired(approval_id="share-test"))
+    bash._group_cli = SimpleNamespace(execute=execute)
+    inputs = {"command": 'lark-cli im +chat-messages-list --chat-id oc_source', "run_in_background": background}
+    with pytest.raises(ToolInterruptException) as caught:
+        if stream:
+            _ = [chunk async for chunk in bash.stream(inputs)]
+        else:
+            await bash.invoke(inputs)
+    assert caught.value.request.interrupt_owner == GROUP_SHARE_INTERRUPT_OWNER
+    assert caught.value.request.metadata == {"kind": "group_share", "approval_id": "share-test",
+                                             "origin": "cli_group_read"}
+    execute.assert_awaited_once()
+    execute.side_effect = None
+    execute.return_value = {"ok": True, "data": {"messages": ["approved frozen text"]}}
+    result = await bash.invoke(inputs)
+    assert result.success and "approved frozen text" in result.data["content"]
+    assert not list(session.glob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_unsafe_matched_command_never_executes_its_prefix(tmp_path):
+    bash, session = tool(tmp_path)
+    result = await bash.invoke({"command": 'echo unsafe > marker.txt && lark-cli im +messages-mget --message-ids om_a'})
+    assert not result.success and result.data["status"] == "cli_group_read_blocked"
+    assert not (session / "marker.txt").exists()
 
 
 @pytest.mark.parametrize("level", ["#", "##"])

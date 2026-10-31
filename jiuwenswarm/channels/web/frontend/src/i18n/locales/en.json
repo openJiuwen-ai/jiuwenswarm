@@ -73,20 +73,30 @@
       "target": "Destination conversation",
       "query": "Search query",
       "queryScope": {
+        "platforms": "Source platforms: {{value}}",
         "keyword": "Keywords: {{value}}",
+        "contentTypes": "Content types: {{value}}",
         "since": "From: {{value}}",
         "until": "Until: {{value}}",
         "sender": "Sender: {{value}}",
         "cursor": "Page cursor: {{value}}",
         "groupIds": "Group IDs: {{value}}",
         "groupNames": "Group names: {{value}}",
-        "limit": "Message limit: {{value}}"
+        "limit": "Result limit: {{value}}"
+      },
+      "contentTypes": "Content types",
+      "contentType": {
+        "messages": "Group messages",
+        "files": "Final Session files",
+        "online_docs": "Online document links"
       },
       "noMessageText": "No text content is available for this message.",
       "summary": "Summary to be shared",
       "groupAudience": "The shared content may be visible to all members of the destination group.",
       "audience": "The shared content may be visible to everyone in the destination conversation.",
       "exactMessages": "Review exact messages ({{count}})",
+      "exactArtifacts": "Review exact files and documents ({{count}})",
+      "fileSize": "File size: {{size}} bytes",
       "created": "Created: {{time}}",
       "createdAt": "Created",
       "expires": "Expires: {{time}}",
@@ -102,7 +112,7 @@
         "rejected": "I rejected this cross-group sharing request."
       },
       "grantsTitle": "Long-term cross-group sharing authorizations",
-      "grantsNote": "Each authorization applies to one source group → one destination conversation (channel, application and conversation ID). Revocation blocks future sharing under that authorization.",
+      "grantsNote": "Each authorization applies to one source group → one destination conversation (channel, application and conversation ID) and explicit content types. Revocation blocks future sharing under that authorization.",
       "noGrants": "No long-term cross-group sharing authorizations.",
       "statusLabel": "Status",
       "actionsLabel": "Actions",
@@ -305,7 +315,7 @@
       "channels": "Feishu / DingTalk",
       "clientId": "Client ID",
       "dingtalkHint": "Assign tasks through DingTalk direct messages. Text messages are supported.",
-      "isolationHint": "Use a separate colleague for each channel. Configuration can be reused; messages and files stay separate.",
+      "isolationHint": "Web, Feishu and DingTalk share one colleague and workspace. Sessions stay separate; cross-group sharing requires authorization.",
       "robotCode": "Robot Code (optional)",
       "robotCodePlaceholder": "Use the app robot code; defaults to Client ID",
       "welinkTitle": "Bind WeLink",
@@ -6027,6 +6037,7 @@
     "waiting": "Processing..."
   },
   "groupChat": {
+    "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",
     "teamMembers": "Team members ({{count}})",
     "questionFrom": "{{name}} needs your input",
