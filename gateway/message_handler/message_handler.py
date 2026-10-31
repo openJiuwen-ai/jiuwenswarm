@@ -4160,8 +4160,10 @@ class MessageHandler(ABC):
         """
         if self._is_terminal_stream_chunk(chunk):
             return False
+        # getattr：部分 UT 用 object.__new__ 构造，可能未跑 __init__。
+        stream_meta = getattr(self, "_stream_metadata", None) or {}
         request_metadata = {
-            **(self._stream_metadata.get(chunk.request_id) or {}),
+            **(stream_meta.get(chunk.request_id) or {}),
             **(request_metadata or {}),
         }
         # 跳过 keepalive chunk — 仅用于 WebSocket 保活，不投递到 IM 通道

@@ -168,13 +168,16 @@ export type WatchCronExecutionOptions = {
  */
 export function watchCronExecutionSession(
   sessionId: string,
-  options?: WatchCronExecutionOptions,
+  options?: WatchCronExecutionOptions | boolean,
 ): () => void {
-  const hasCronMetadata = Boolean(options?.hasCronMetadata);
+  // 兼容旧调用：第二参传布尔 = hasCronMetadata（见 cronRunNotifications.test.mjs）
+  const opts: WatchCronExecutionOptions =
+    typeof options === 'boolean' ? { hasCronMetadata: options } : (options || {});
+  const hasCronMetadata = Boolean(opts.hasCronMetadata);
   if (getWebTransport() !== 'http' || (!hasCronMetadata && !isCronExecutionSession(sessionId))) {
     return () => undefined;
   }
-  const stopOnSettled = Boolean(options?.stopOnSettled);
+  const stopOnSettled = Boolean(opts.stopOnSettled);
   const controller = new AbortController();
   let stopped = false;
   const seenSequences = new Set<number>();
@@ -302,7 +305,9 @@ export function watchCronExecutionSessions(
   const stoppers = unique.map((id) =>
     watchCronExecutionSession(id, {
       stopOnSettled: id !== foregroundSessionId,
-      hasCronMetadata: id === foregroundSessionId ? foregroundHasCronMetadata : false,
+      // 后台会话来自 lastRun / active_session_id，已是 cron 执行会话（未必 cron_ 前缀）
+      hasCronMetadata:
+        id === foregroundSessionId ? foregroundHasCronMetadata : true,
     }),
   );
   return () => {

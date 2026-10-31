@@ -3553,6 +3553,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
           // 只有整趟终态推送才亮蓝点。企业版直播中间段 chat.final 也会带上来，
           // 见 final 就标会「会话还在跑、蓝点已经亮了」。
+          // 人正在看该执行会话时等同已读（与 cron.run.updated 一致），不要再亮蓝点。
           if (
             cronJobId &&
             shouldMarkCronUnreadFromFinal({
@@ -3560,7 +3561,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               status: cronStatus,
             })
           ) {
-            useCronStore.getState().markCronJobUnread(cronJobId);
+            const execSid =
+              typeof cronMeta.exec_session_id === 'string'
+                ? cronMeta.exec_session_id.trim()
+                : '';
+            const targetSid =
+              resolveEventSessionId(payload)
+              || execSid
+              || useCronStore.getState().lastRunSessionId[cronJobId]
+              || '';
+            const viewing =
+              Boolean(targetSid)
+              && activeSessionVisibleRef.current
+              && targetSid === activeSessionIdRef.current
+              && document.visibilityState === 'visible';
+            if (viewing) {
+              useCronStore.getState().clearCronJobUnread(cronJobId);
+            } else {
+              useCronStore.getState().markCronJobUnread(cronJobId);
+            }
           }
         }
 
@@ -4841,17 +4860,24 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               }
             }
           }
-          if (
-            !cronJobId &&
-            (sessionId.startsWith('cron_') || sessionId.startsWith('__cron__'))
-          ) {
+          if (!cronJobId) {
             const matched = useCronStore.getState().jobs.find(
-              (job) => String(job.last_session_id || '').trim() === sessionId,
+              (job) => String(job.last_session_id || '').trim() === sessionId
+                || String(job.active_session_id || '').trim() === sessionId,
             );
             if (matched) cronJobId = matched.id;
           }
           if (cronJobId) {
-            useCronStore.getState().markCronJobUnread(cronJobId);
+            // 与 cron.run.updated 一致：正在看这条会话 = 已读，不要误亮蓝点。
+            const viewing =
+              activeSessionVisibleRef.current
+              && sessionId === activeSessionIdRef.current
+              && document.visibilityState === 'visible';
+            if (viewing) {
+              useCronStore.getState().clearCronJobUnread(cronJobId);
+            } else {
+              useCronStore.getState().markCronJobUnread(cronJobId);
+            }
           }
         }
         if (!isProcessingNow) {

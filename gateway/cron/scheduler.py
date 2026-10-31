@@ -774,15 +774,22 @@ class CronSchedulerService:
         sid = str(session_id or "").strip()
         if not sid:
             return
+        finished_job_ids: set[str] = set()
         for state in list(self._runs.values()):
             if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
                 continue
             if state.status == "awaiting_approval":
                 state.status = "succeeded"
                 state.finished_at = self._now_fn()
+                job_id = str(getattr(state, "job_id", "") or "").strip()
+                if job_id:
+                    finished_job_ids.add(job_id)
                 job = self._jobs.get(state.job_id)
                 if job is not None and _is_web_cron_job(job):
                     asyncio.create_task(self._notify_web_run(job, state, phase="finished"))
+        # 审批续跑收尾：擦掉 active_session，避免多副本 list 一直当「进行中」
+        for job_id in finished_job_ids:
+            asyncio.create_task(self.clear_active_exec_session(job_id))
         self.release_permission_hold_for_session(sid)
 
     async def _sync_store_revision(self) -> None:
@@ -1520,7 +1527,9 @@ class CronSchedulerService:
                 state.exec_channel_id = "__cron__"
             state.execution_session_allocated = True
         self._runs[run_id] = state
-        if state.exec_session_id:
+        # 仅真实 session.create 过的才写 Redis；proactive.tick 的占位 cron_{ts}_{job}
+        # 不是可订 live 的执行会话，写进去会让前端永久转圈。
+        if state.execution_session_allocated and state.exec_session_id:
             await self.publish_active_exec_session(
                 job.id,
                 state.exec_session_id,
@@ -2601,8 +2610,7 @@ class CronSchedulerService:
             job_id = str(getattr(state, "job_id", "") or "").strip()
             if not job_id or not sid:
                 continue
-            if not (sid.startswith("cron_") or sid.startswith("__cron__")):
-                continue
+            # 统一会话未必带 cron_ 前缀；只要本机认定仍在跑就暴露给 list。
             out[job_id] = sid
         return out
 
