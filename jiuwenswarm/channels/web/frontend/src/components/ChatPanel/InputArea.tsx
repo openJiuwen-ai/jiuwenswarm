@@ -1674,49 +1674,50 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     });
   }, []);
 
-  const releaseUnsentUploads = useCallback((drafts: AttachmentDraft[]) => {
-    const removingIds = new Set(drafts.map((draft) => draft.id));
-    const remaining = attachmentsRef.current.filter((draft) => !removingIds.has(draft.id));
-    const registeredPaths = new Set(sessionAssetsRef.current.map((asset) => normalizePath(asset.path)));
-    const plan = planUnsentImageDiscard(
-      drafts.map(toUnsentImageDraft),
-      remaining.map(toUnsentImageDraft),
-      registeredPaths,
-      normalizePath,
-    );
-    const sessionId = activeSessionId || '';
-    for (const id of plan.pendingIds) {
-      discardedImageUploadsRef.current.set(id, sessionId);
-    }
-    for (const path of plan.paths) {
-      requestImageDiscard(sessionId, path);
-    }
-    // A removed chip that had already been auto-registered as a session material
-    // (session.assets.register fires as soon as the upload completes, well before
-    // send) must drop that material too, unless another still-attached draft needs
-    // the same path kept. Only 'upload' materials: agent-generated ('generated')
-    // ones are not tied to any composer draft and must survive regardless.
-    if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
-      const keptPaths = new Set(
-        remaining
-          .map((draft) => pickString(draft.persistedMediaItem?.path))
-          .filter((path): path is string => Boolean(path))
-          .map(normalizePath),
+  const releaseUnsentUploads = useCallback(
+    (drafts: AttachmentDraft[]) => {
+      const removingIds = new Set(drafts.map((draft) => draft.id));
+      const remaining = attachmentsRef.current.filter((draft) => !removingIds.has(draft.id));
+      const registeredPaths = new Set(sessionAssetsRef.current.map((asset) => normalizePath(asset.path)));
+      const plan = planUnsentImageDiscard(
+        drafts.map(toUnsentImageDraft),
+        remaining.map(toUnsentImageDraft),
+        registeredPaths,
+        normalizePath,
       );
-      for (const draft of drafts) {
-        const path = pickString(draft.persistedMediaItem?.path);
-        if (!path || keptPaths.has(normalizePath(path))) continue;
-        const asset = sessionAssetsRef.current.find(
-          (item) => item.source === 'upload' && normalizePath(item.path) === normalizePath(path),
-        );
-        if (!asset) continue;
-        void useSessionAssetsStore
-          .getState()
-          .remove(sessionId, asset.asset_id)
-          .catch((error) => console.error('Failed to remove session asset:', error));
+      const sessionId = activeSessionId || '';
+      for (const id of plan.pendingIds) {
+        discardedImageUploadsRef.current.set(id, sessionId);
       }
-    }
-  }, [activeSessionId, requestImageDiscard]);
+      for (const path of plan.paths) {
+        requestImageDiscard(sessionId, path);
+      }
+      // A removed chip that had already been auto-registered as a session material
+      // (session.assets.register fires as soon as the upload completes, well before
+      // send) must drop that material too, unless another still-attached draft needs
+      // the same path kept. Only 'upload' materials: agent-generated ('generated')
+      // ones are not tied to any composer draft and must survive regardless.
+      // removeUploadByPath runs inside the session's asset queue, so it also finds
+      // materials whose register round-trip is still in flight when the chip is removed.
+      if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
+        const keptPaths = new Set(
+          remaining
+            .map((draft) => pickString(draft.persistedMediaItem?.path))
+            .filter((path): path is string => Boolean(path))
+            .map(normalizePath),
+        );
+        for (const draft of drafts) {
+          const path = pickString(draft.persistedMediaItem?.path);
+          if (!path || keptPaths.has(normalizePath(path))) continue;
+          void useSessionAssetsStore
+            .getState()
+            .removeUploadByPath(sessionId, path)
+            .catch((error) => console.error('Failed to remove session asset:', error));
+        }
+      }
+    },
+    [activeSessionId, requestImageDiscard],
+  );
 
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
     if (discardedImageUploadsRef.current.has(id)) {
@@ -3020,7 +3021,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             const beforeRange = range.cloneRange();
             beforeRange.selectNodeContents(el);
             beforeRange.setEnd(range.endContainer, range.endOffset);
-            const beforeTextLength = beforeRange.toString().replace(/​/g, '').length;
+            const beforeTextLength = beforeRange.toString().replace(/\u200B/g, '').length;
             const triggerLength = trigger.query.length + 1;
             setRangeStartByTextOffset(range, el, Math.max(0, beforeTextLength - triggerLength));
             range.deleteContents();
@@ -3055,7 +3056,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             const beforeRange = range.cloneRange();
             beforeRange.selectNodeContents(el);
             beforeRange.setEnd(range.endContainer, range.endOffset);
-            const beforeTextLength = beforeRange.toString().replace(/​/g, '').length;
+            const beforeTextLength = beforeRange.toString().replace(/\u200B/g, '').length;
             const triggerLength = trigger.query.length + 1; // '/' + query
             setRangeStartByTextOffset(range, el, Math.max(0, beforeTextLength - triggerLength));
             range.deleteContents();
@@ -3088,7 +3089,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           const beforeRange = range.cloneRange();
           beforeRange.selectNodeContents(el);
           beforeRange.setEnd(range.endContainer, range.endOffset);
-          const beforeTextLength = beforeRange.toString().replace(/​/g, '').length;
+          const beforeTextLength = beforeRange.toString().replace(/\u200B/g, '').length;
           const triggerLength = trigger.query.length + 1; // '/' + query
           setRangeStartByTextOffset(range, el, Math.max(0, beforeTextLength - triggerLength));
           range.deleteContents();
