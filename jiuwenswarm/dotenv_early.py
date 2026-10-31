@@ -30,6 +30,28 @@ import os
 import sys
 from pathlib import Path
 
+# Windows consoles often keep a legacy code page (e.g. cp1252 / GBK). Logging
+# StreamHandlers then fail or mojibake Chinese messages. Force UTF-8 stdio as
+# early as possible — this module is imported before other jiuwenswarm code.
+if os.name == "nt":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONLEGACYWINDOWSSTDIO", "utf-8")
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except OSError:
+        pass
+    for _stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(_stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
 # gRPC C-core hygiene — must be set BEFORE grpc initializes (it is imported
 # lazily by the OTLP/otel exporter and chromadb). This module is the first
 # jiuwenswarm import in every entrypoint, so setting it here guarantees grpc
