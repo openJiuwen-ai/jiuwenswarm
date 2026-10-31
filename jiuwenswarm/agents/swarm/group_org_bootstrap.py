@@ -94,10 +94,13 @@ _REPLY_BLOCK = (
 
 _MEMBER_SILENCE = (
     "\n\n[SWARM GROUP ORGANIZATION MEMBER — DO NOT REPLY]\n"
-    "This Team is a member of a Team Organization, not the Owner. Do the "
-    "assigned organization child task. Do not post to the group, do not call "
-    "group_send_message, and do not send a file to the group. The Owner posts "
-    "the only group reply."
+    "This Team is a member of a Team Organization, not the Owner. Do not call "
+    "build_team and do not research or draft before an organization child is "
+    "claimed. If no OPEN child requires your group-member capability, end this "
+    "turn now; a later wake brings the task. When that child is present, claim "
+    "it with org_claim_task and do only that child. Do not post to the group, "
+    "do not call group_send_message, and do not send a file to the group. The "
+    "Owner posts the only group reply."
 )
 
 _OWNER_PROMPT_SUFFIX = (
@@ -113,10 +116,15 @@ _OWNER_PROMPT_SUFFIX = (
     "org_update_task(action='set_aggregation_mode'). If the user named "
     "SUMMARY_TEAM or HIERARCHICAL, use that mode. If the user named neither, "
     "choose one from the task. Then start the root if it is still CLAIMED. "
-    "Create clear organization child "
-    "tasks (leave them claimable or delegate them as the user requests), and "
-    "review their submissions. Put this Owner Team's own contribution in an "
-    "organization child task too. When you selected SUMMARY_TEAM, call "
+    "In that same turn, create one organization child for every mentioned "
+    "expert team, including this Owner team, and leave each child OPEN. "
+    "Do not set delegated_to_team_id and do not call org_delegate_task unless "
+    "the user asks to delegate. Set each child's required_capabilities to "
+    "exactly [\"group-member:{that proxy's member_name}\"] so the matching "
+    "team is woken and claims it with org_claim_task. Create every child "
+    "before any of them finishes, and do not start this Owner team's own "
+    "writing until the other children exist. Then review their submissions. "
+    "When you selected SUMMARY_TEAM, call "
     "org_create_summary_execution after every source task is accepted and wait "
     "until its Summary Task completes the root. When you selected HIERARCHICAL, "
     "do not create a Summary Team: after every source task is accepted, "
@@ -129,7 +137,10 @@ _OWNER_PROMPT_SUFFIX = (
     "proxy calls run_team, which resumes that member's existing instance. "
     "The text you pass to complete_team_run is the only group reply the user sees. "
     "Write only the requested deliverable. Do not mention instance pauses, "
-    "templates, rebuilding a team, or reusing an earlier draft."
+    "templates, rebuilding a team, or reusing an earlier draft. "
+    "When the final deliverable is a file, pass only that file in "
+    "complete_team_run attachments as {name, path}; do not attach child-task "
+    "drafts or intermediate files."
 )
 
 _FOLLOWUP_PROMPT_SUFFIX = (
@@ -147,8 +158,11 @@ _OWNER_START_REMINDER = (
     "aggregation mode is not selected yet, select it now with "
     "org_update_task(action='set_aggregation_mode'). Follow a mode the user "
     "named. If the user named neither SUMMARY_TEAM nor HIERARCHICAL, choose one "
-    "from the task. Then start the root if it "
-    "is still CLAIMED and create the requested organization child tasks. Do not "
+    "from the task. Then start the root if it is still CLAIMED and, in this "
+    "turn, create one OPEN child per mentioned expert. Leave them claimable: "
+    "set required_capabilities to exactly [\"group-member:{member_name}\"] and "
+    "do not delegate unless the user asks. Do not wait for one child to finish "
+    "before creating the next. Do not "
     "use swarmflow, ordinary create_task, or org_create_and_invite_expert_team, "
     "and do not answer in prose. The mentioned teams are already members. For "
     "SUMMARY_TEAM, finish through org review, org_create_summary_execution, and "
@@ -1359,7 +1373,7 @@ async def ensure_member_instance(
                 params={"key": result_key(session_id, member_name)},
             )
         ]
-    suffix = _OWNER_PROMPT_SUFFIX if is_owner else ""
+    suffix = _OWNER_PROMPT_SUFFIX if is_owner else _MEMBER_SILENCE
     if leader_prompt_suffix is not None:
         suffix = leader_prompt_suffix
     await launcher.launch(
@@ -2195,6 +2209,66 @@ def _root_output(roots: list[Any]) -> str:
     return "\n\n".join(parts)
 
 
+def _final_file_path(raw: Any, *, session_id: str, organization_id: str) -> Path | None:
+    """Resolve one Owner-delivered file, or ``None`` when it is not a readable team file."""
+    from openjiuwen.agent_teams.paths import (
+        get_agent_teams_home,
+        get_openjiuwen_home,
+        organization_workspace_dir,
+    )
+
+    text = str(raw or "").strip().removeprefix("file://")
+    if not text:
+        return None
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        prefix = f".organization/{organization_id}/"
+        normalized = text.replace("\\", "/")
+        if not organization_id or not normalized.startswith(prefix):
+            return None
+        candidate = organization_workspace_dir(organization_id, session_id) / normalized[len(prefix):]
+    try:
+        resolved = candidate.resolve(strict=True)
+        roots = [
+            get_agent_teams_home().resolve(),
+            (get_openjiuwen_home() / ".organizations").resolve(),
+        ]
+    except OSError:
+        return None
+    if not resolved.is_file() or not any(resolved.is_relative_to(root) for root in roots):
+        return None
+    return resolved
+
+
+def _owner_final_files(
+    submitted: list, roots: list[Any], *, session_id: str, organization_id: str
+) -> list[dict]:
+    """Files the Owner delivered: complete_team_run attachments and the root result_uri.
+
+    Child-task outputs are never scanned, so drafts stay out of the group post.
+    """
+    candidates = [item.get("path") for item in submitted if isinstance(item, dict)]
+    for task in roots:
+        context = getattr(task, "output_context", None)
+        candidates.append(getattr(context, "result_uri", None))
+    files: list[dict] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        path = _final_file_path(raw, session_id=session_id, organization_id=organization_id)
+        if path is None or str(path) in seen:
+            continue
+        seen.add(str(path))
+        files.append({"name": path.name, "path": str(path)})
+    return files
+
+
+def _split_submission(value: Any) -> tuple[str, list]:
+    """complete_team_run stores plain text, or a dict when it carries attachments."""
+    if isinstance(value, dict):
+        return str(value.get("result") or ""), list(value.get("attachments") or [])
+    return str(value), []
+
+
 def _status_text(value: Any) -> str:
     return str(getattr(value, "value", value) or "")
 
@@ -2481,35 +2555,49 @@ async def _await_completed_result(
     task_pool: Any,
     plan_id: str,
     on_tick: Any = None,
-) -> str:
+    *,
+    session_id: str = "",
+    organization_id: str = "",
+) -> tuple[str, list[dict]]:
     """Wait for both the Owner submission and durable root/summary completion.
 
     The wait has no time limit. It ends when the root fails, or when the
     round is complete and the Owner has submitted (or the grace fallback
-    applies).
+    applies). Returns the report and the Owner's final files.
     """
     loop = asyncio.get_running_loop()
     completed_at: float | None = None
     submitted: str | None = None
+    submitted_files: list = []
     while True:
         if on_tick is not None:
             await on_tick()
         if future.done() and not future.cancelled():
-            submitted = str(future.result())
+            submitted, submitted_files = _split_submission(future.result())
         state, roots = await _round_state(task_pool, plan_id)
         if state == "failed":
             raise RuntimeError("organization root task failed")
         if state == "completed":
             completed_at = completed_at or loop.time()
             if submitted:
-                return submitted
+                return submitted, _owner_final_files(
+                    submitted_files,
+                    roots,
+                    session_id=session_id,
+                    organization_id=organization_id,
+                )
             if loop.time() - completed_at >= RESULT_GRACE_SECONDS:
                 fallback = _root_output(roots)
                 if fallback:
                     logger.warning(
                         "owner did not submit the final report; using root output"
                     )
-                    return fallback
+                    return fallback, _owner_final_files(
+                        [],
+                        roots,
+                        session_id=session_id,
+                        organization_id=organization_id,
+                    )
                 raise RuntimeError("organization completed without a final report")
         await asyncio.sleep(POLL_SECONDS)
 
@@ -3015,13 +3103,19 @@ async def _run_owner_proxy(
                 plan_id=plan_id,
             )
         )
-        result = await _await_completed_result(
-            future, task_pool, plan_id, on_tick=_refresh_card
+        result, attachments = await _await_completed_result(
+            future,
+            task_pool,
+            plan_id,
+            on_tick=_refresh_card,
+            session_id=session_id,
+            organization_id=organization_id,
         )
         completed = True
         posted = await backend.append_group_message(
             backend.member_name,
             result,
+            attachments=attachments,
             client_message_id=f"expert-result-{plan_id}",
             mentions=[],
         )

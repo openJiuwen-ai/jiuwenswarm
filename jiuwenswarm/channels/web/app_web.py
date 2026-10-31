@@ -322,6 +322,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir()
     auto_harness_root = project_root / "auto-harness"
+    # Team-organization summaries live under <home>/.organizations, outside
+    # .agent_teams. Without this root, a delivered group attachment 403s and
+    # the chat card labels the existing file expired.
+    organizations_root = project_root / ".organizations"
     # Projectless tasks (no bound project_dir) write their generated media under
     # <Documents>/JiuwenSwarm/<date>/chat-<n>/outputs/, outside workspace_root —
     # without this, any @-referenced or inline-rendered media from a projectless
@@ -1040,6 +1044,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             or cls._is_path_under(Path(cls.agent_teams_root), target_resolved)
             or cls._is_path_under(Path(cls.logs_root), target_resolved)
             or cls._is_path_under(Path(cls.auto_harness_root), target_resolved)
+            or cls._is_path_under(Path(cls.organizations_root), target_resolved)
             or cls._is_path_under(Path(cls.projectless_tasks_root), target_resolved)
             or any(cls._is_path_under(root, target_resolved) for root in cls._registered_project_dirs())
         )
