@@ -12,6 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from gateway.common.attachment_safety import safe_upload_filename
 from gateway.common.obs_files import (
     AttachmentStore,
     MAX_FILE_BYTES,
@@ -20,7 +21,6 @@ from gateway.common.obs_files import (
 )
 from gateway.common.tenant_key import build_tenant_key
 from gateway.common.request_identity import normalize_routing_identity
-from jiuwenswarm.server.runtime.attachments.upload_storage import safe_upload_filename
 
 
 def file_routing_identity(request: Request) -> dict:
