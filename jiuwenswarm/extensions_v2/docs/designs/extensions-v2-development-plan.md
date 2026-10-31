@@ -358,6 +358,37 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 - **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、断连/归档非触发、卸载与真实 Worker 接线；证据唯一入口见 [F_24 第 6 节](../features/F_24_session-end.md#6-验收与未决问题)。
 - **独立验证：** `test_session_end.py` 及 Runtime 删除/参与者回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
 
+### EXTV2-20 界面与主会话关联建立通知
+
+- **目标与范围：** 交付 session.attach，复用现有 Web 的 view_id 和 Runtime 创建/切换提交事实，在 Worker 确认新关联后通知用户；归入 10/30 第一批会话状态，Server PR08。
+- **责任与契约：** [S_14](../specs/S_14_session-attach.md)、[F_25](../features/F_25_session-attach.md)。类型/校验/注册在 event_types，CORE 只确认关联；平台关联表和 trigger 在 Server 通知模块。Runtime 仅组合固定 foreground 观察者，不依赖 EventBus。
+- **必要前置：** 现有 Worker EventBus/Registry/Ops Build、Runtime 提交和 Web view_id；不依赖未合入 PR04/05/06/10 或 Core !110。无新增 Ops、前端请求或 Team 适配。
+- **验收标准：** 真实用户包、提交时点、两视图/切换/重放/稳定重连、输入回执保护、失效/缺失目标、超时/取消、KVC 共存、卸载与真实 Front/Supervisor/Worker；证据见 [F_25 第 6 节](../features/F_25_session-attach.md#6-验收与未决问题)。
+- **独立验证：** test_session_attach.py、test_session_attach_provisioner.py；现成包 examples/session_attach/。关联表在本 Runtime 内复用，PR08/11 原同 PR !95 开发，现随 Server !99 交付，解除文档为 F_26 / S_15，不将 ui.ready 或 Gateway 连接解释为 attach。
+
+### EXTV2-21 界面与主会话关联解除通知
+
+- **目标与范围：** 交付 session.detach；PR11 复用 PR08 关联表，原在同一 PR !95 开发，现随 Server !99 交付，特性文档保持独立。归入 10/30 第一批会话状态。
+- **责任与契约：** [S_15](../specs/S_15_session-detach.md)、[F_26](../features/F_26_session-detach.md)。平台先替换/移除一个 channel+view 的匹配关联，Worker EventBus 再通知；USER 清理自己的旧 attachment，默认 CORE 确认事实。
+- **必要前置：** EXTV2-20 的平台关联身份与旧 SessionContext；无新 Ops，不依赖 PR04/05/06/10 或 Core !110。新增 Server 显式 session.detach 请求，补现有 Web 转发表，不修改前端页面。
+- **验收标准：** 两视图隔离、切换顺序、重复/并发和过期身份、重连不误删、字段/回执保护、超时/取消、原会话/历史保持、用户卸载与真实 Front/Supervisor/Worker；结果见 F_26 第 6 节。
+- **边界：** 不将断线/隐藏推断为关闭；页面关闭接入者显式请求。不提供 surfaces Ops、session.end 联动或跨重启持久关联表。
+
+### 2026-10-31 Server 合并交付
+
+原未合入的 Server !92、!91、!93、!95 按此顺序整理到 [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)，相对当前目标分支保留四个独立提交。PR06 / PR10 / PR08 / PR11 是开发计划编号，业务与字段契约仍分别由原 feature/spec 维护；原 PR 保留为历史来源，统一撤下，不删除源分支或历史评审。
+
+| 提交顺序 | 原 PR | 交付内容 |
+| --- | --- | --- |
+| 1 | !92 | cwd/root/model/repo 的字段说明与用户接入文档 |
+| 2 | !91 | session.start、激活实例初始化门和 Core handler_ids 消费方 |
+| 3 | !93 | session.end 与主会话永久删除前的清理通知 |
+| 4 | !95 | session.attach/session.detach、关联表与固定 foreground 观察者 |
+
+**整个 Server 合并 PR 的硬前置是 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110)，先合入 Core，再合入 Server。** end/attach/detach 单项本身不需要 handler_ids；合并交付并不取消 start 的跨仓依赖。Core !110 同步合并最新目标分支，保留已合入的 EV-06/F_06 包信息能力，待合入的限定派发文档改为 EV-07/F_07。
+
+本次 Server 1744 项通过、3 项跳过；Core 587 项通过、1 项跳过。原生输入初始化等待、固定删除/foreground 观察者共存、历史与用量 Ops、模型上下文、Runtime 创建/切换/删除及 Gateway 转发在回归范围内。Gateway 断连清理的 1 项失败在未修改目标分支和本分支上独立复现，最终显式排除，未计入通过；证据与边界见 F_22 / F_24 / F_25 / F_26 第 6 节及本地 consolidate-server-prs-20261031 目录。历史真实模型证据保持原日期，本次未重跑。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -398,6 +429,9 @@ flowchart TB
     B1 --> S16
     A3 --> S19["EXTV2-19 主会话结束通知"]
     B1 --> S19
+    A3 --> S20["EXTV2-20 界面主会话关联通知"]
+    B1 --> S20
+    S20 --> S21["EXTV2-21 界面主会话关联解除通知"]
     A4 --> B3
     B3 --> C1
 
@@ -471,8 +505,10 @@ flowchart LR
 | EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16（追加）/ F_23（查询）/ S_06；2026-10-29 仅拆分特性文档，历史验收未重跑；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径；2026-10-30 合并目标分支冲突后，513 项定向回归及 1 项同 Handler 历史/统计 Ops 共存用例通过，1 项符号链接环境跳过，未重跑真实模型，见 F_16 第 6 节 | 2026-10-30 |
 | EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_21 第 6.2 节 / S_11；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
 | EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见本计划 EXTV2-22 历史验证记录 / S_08 | 2026-10-31 |
-| EXTV2-18 激活实例首次输入前初始化 | 完成 | 刘瑜 | [Server !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91) / [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) | 不依赖 PR04/05；Server 253 项、Core 568 项通过（1 项权限跳过）；补验真实 Worker 7 个模型回合、初始化/用量 USER Handler、只读 Ops 及清理全部通过，见 F_22 / S_12 | 2026-10-29 |
-| EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [!93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93) | 404 项回归、19 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker 与两个模型回合、用户资源清理、并发/重复删除、断连/归档非触发、卸载及进程端口清理通过，见 F_24 / S_13 | 2026-10-29 |
+| EXTV2-18 激活实例首次输入前初始化 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91)） / [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) | 不依赖 PR04/05；Server 253 项、Core 568 项通过（1 项权限跳过）；补验真实 Worker 7 个模型回合、初始化/用量 USER Handler、只读 Ops 及清理全部通过，见 F_22 / S_12 | 2026-10-29 |
+| EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 404 项回归、19 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker 与两个模型回合、用户资源清理、并发/重复删除、断连/归档非触发、卸载及进程端口清理通过，见 F_24 / S_13 | 2026-10-29 |
+| EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_25 / S_14 | 2026-10-29 |
+| EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_26 / S_15 | 2026-10-29 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
