@@ -74,6 +74,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     resolve_final_record_timestamp,
 )
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+from jiuwenswarm.agents.harness.team.pulse.service import MonitorNativeSource, TeamPulseService
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
@@ -1622,6 +1623,71 @@ def _monitor_handler_is_stale(handler: Any, current_monitor: TeamMonitor | None)
     return bound_agent is not None and current_agent is not None and bound_agent is not current_agent
 
 
+async def _ensure_team_pulse(
+    tm: TeamManager,
+    session_id: str,
+    team_name: str,
+    current_monitor: TeamMonitor | None,
+) -> None:
+    """Attach a dedicated TeamPulse listener. Failure does not block the team.
+
+    TeamPulse uses its own TeamMonitor so it does not share the UI event
+    queue. A pulse already bound to the current leader is left running.
+    """
+    if current_monitor is None:
+        return
+    get_pulse = getattr(tm, "get_team_pulse", None)
+    register_pulse = getattr(tm, "register_team_pulse", None)
+    pop_pulse = getattr(tm, "pop_team_pulse", None)
+    if not all(callable(fn) for fn in (get_pulse, register_pulse, pop_pulse)):
+        return
+    current_agent = monitor_team_agent(current_monitor)
+    existing = get_pulse(session_id)
+    healthy = (
+        existing is not None
+        and existing.is_running
+        and current_agent is not None
+        and existing.bound_team_agent is current_agent
+    )
+    if healthy:
+        return
+    if existing is not None:
+        try:
+            await existing.stop()
+        except Exception as exc:
+            logger.warning("[TeamHelpers] TeamPulse stop failed: %s", exc)
+        pop_pulse(session_id)
+
+    pulse_monitor = await _get_active_team_monitor(team_name, session_id)
+    if pulse_monitor is None:
+        logger.warning(
+            "[TeamHelpers] TeamPulse monitor unavailable: session_id=%s team_name=%s",
+            session_id,
+            team_name,
+        )
+        return
+    service = TeamPulseService(
+        session_id=session_id,
+        team_name=team_name,
+        source=MonitorNativeSource(pulse_monitor),
+    )
+    try:
+        await service.start(pulse_monitor)
+    except Exception as exc:
+        logger.warning("[TeamHelpers] TeamPulse start failed: %s", exc)
+        try:
+            await service.stop()
+        except Exception as stop_exc:
+            logger.warning("[TeamHelpers] TeamPulse cleanup after start failure: %s", stop_exc)
+        return
+    register_pulse(session_id, service)
+    logger.info(
+        "[TeamHelpers] TeamPulse started: session_id=%s team_name=%s",
+        session_id,
+        team_name,
+    )
+
+
 async def ensure_monitor_handlers_for_active_runtime(
     channel_id: str | None,
     session_id: str,
@@ -1683,6 +1749,8 @@ async def ensure_monitor_handlers_for_active_runtime(
                     monitor_handler.set_consumer_task(consumer_task)
             except Exception as exc:
                 logger.warning("[TeamHelpers] Monitor start failed: %s", exc)
+
+    await _ensure_team_pulse(tm, session_id, team_name, monitor)
 
     # --- WorkflowMonitorHandler (only when swarmflow is enabled) ---
     if not enable_swarmflow:
