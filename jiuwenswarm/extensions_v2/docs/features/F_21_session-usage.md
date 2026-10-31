@@ -1,4 +1,12 @@
-# ops.session.usage() / session.usage 特性设计
+# session.usage / ops.session.usage 特性设计
+
+| 项 | 值 |
+| --- | --- |
+| 编号 | F_21 / session-usage |
+| 建档日期 | 2026-10-28 |
+| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变 |
+| 关联计划 | [EXTV2-22 / 七项只读查询事件化](../designs/extensions-v2-development-plan.md#extv2-22-七项只读查询事件化) |
+| 主责规约 | [S_16 查询公共协议](../specs/S_16_session-query-events.md)、[S_11](../specs/S_11_session-usage-ops.md) |
 
 ## 1. 范围、状态与依据
 
@@ -10,21 +18,22 @@
 
 ## 2. 能力说明与 Claude 对照
 
-`await ops.session.usage()`：读取平台已有观测，返回上下文窗口占用、账户额度窗口和可得费用的统一视图，适合 Token Weather 等状态显示。默认不发模型请求、不重新计数、不触发测量事件。
-
 `session.usage` 是这一次查询调用的拦截事件。方法代理验证参数和已绑定会话后触发它；查询 Handler 接收下述参数，可继续默认处理、增加前后操作、返回合法替代视图或明确拒绝。默认 CORE 读取平台事实，结果返回原方法调用者；它不表示状态发生变化，也不自动写历史或显示到界面。
 
-| 项 | 当前默认行为 |
-| --- | --- |
-| 默认数据来源 | 优先绑定 session_usage_info；键存在但为 None 时保持未知，不用旧历史兜底；无该绑定键时才读取已提交用量。 |
-| 方法公开返回 | dict |
-| Claude 对齐与差异 | 顶层及基础数字字段对齐 Claude；未采集额度/费用不造数。summary 仅返回已观测分类子集；full 默认明确不支持，不偷偷执行计数 API；columns 当前不生成网格。未知 window 可省略，这比 Claude 常态必有 window 更保守。 |
+`await ops.session.usage()`：读取平台已有观测，返回上下文窗口占用、账户额度窗口和可得费用的统一视图，适合 Token Weather 等状态显示。默认不发模型请求、不重新计数、不触发测量事件。
+
+| 项 | 本次实现 | 与固定 Claude 定义的关系 |
+| --- | --- | --- |
+| 事件输入 | breakdown / columns 可选映射 | 以同名查询 OpEvent 为扩展点；会话身份独立绑定，不作为可改写参数 |
+| 默认数据来源 | 优先绑定 session_usage_info；键存在但为 None 时保持未知，不用旧历史兜底；无该绑定键时才读取已提交用量。 | 使用本地真实平台服务或绑定快照，不伪造 Claude 私有宿主数据 |
+| 方法公开返回 | dict | 顶层及基础数字字段对齐 Claude；未采集额度/费用不造数。summary 仅返回已观测分类子集；full 默认明确不支持，不偷偷执行计数 API；columns 当前不生成网格。未知 window 可省略，这比 Claude 常态必有 window 更保守。 |
+| 改写与拒绝 | 可 next、短路合法 value、返回合法 deny | 只影响本次查询结果，不修改平台会话事实或授权范围 |
 
 对照依据是 Claude Code Mods 2.1.277 的固定公开类型声明，提交 `80c6959d28c4c30ecd14fc1cdf172f19d9adad81`；不是运行 Claude 私有宿主的结果。
 
 ## 3. 事件契约
 
-### 3.1 触发位置、粒度与完整链路
+### 3.1 触发前后与粒度
 
 方法代理通过会话、参数及重入检查后，每次调用触发一次 `session.usage`；检查未通过时不会进入查询链。下图展示 Handler 继续默认读取的路径；合法短路或明确拒绝可以在 USER 返回，不进入 CORE。返回箭头对应同一次 await 的结果，不是额外业务通知。
 
@@ -48,7 +57,9 @@ sequenceDiagram
 
 平台业务方法先收集可信会话资料并随外层事件传入 Bus，Core 为实际 Handler 创建 Ops。现成示例是 notify_context_usage 发布 context.usage.updated；其他已由平台接好的事件也能使用本方法，前提是本次 Handler 已绑定下表所需资料。用户不需要修改 Adapter、自己创建 Bus，或先调用 notify 来取得上下文。
 
-### 3.2 事件输入、会话上下文与字段说明
+一次外层通知中调用本 Ops 两次，会发起两次查询；只订阅查询事件但无人调用 Ops，不会自动查询。本查询不会把原来的事件改成查询事件：外层 Handler 暂停等待，查询返回后继续执行原函数。同一事件有多个匹配 USER 时，只有各 Handler 调用 next 才继续后续链；短路返回合法结果后无需再进入默认 CORE。
+
+### 3.2 输入：每个字段表达什么、由谁填写
 
 先分清谁需要填写。普通调用者只填写方法参数；返回值由平台或查询 Handler 提供，用户拿到后直接消费。
 只有在自己的查询 Handler 中短路或加工输出时，才需要按输出表构造值。所有表格分别解释“填什么、代表什么、起什么作用”，并写明缺失和错误边界。
@@ -82,7 +93,7 @@ sequenceDiagram
 `ops.session_context` 是只读属性，不是采集或组装上下文的 Ops 方法。平台业务方法负责收集和构造；
 查询代理只读取这份资料，再交给查询事件。Bus 会生成规范化的只读副本，保留同一会话身份和资料，不要求前后是同一个 Python 对象。
 
-### 3.3 事件输出、允许的改写、失败与取消
+### 3.3 输出：默认值、替代结果与拒绝
 
 先看查询 Handler 的事件输出封装。普通 Ops 调用者不用构造这层封装；查询 Handler 从 next 得到完整封装后，
 可直接返回，不要又包成 {"value": result} 形成两层 value。
@@ -127,9 +138,25 @@ sequenceDiagram
 要改写查询参数，创建新 Event 并传 next，例如 `Event(event.event_type, {"breakdown": "summary"})`；不要原地修改只读输入。
 `breakdown="full"` 当前由默认 CORE 明确返回 FULL_BREAKDOWN_UNAVAILABLE 错误；一个只读查询不暗中发起新的 Token 计数请求。
 
-### 3.4 可安装用户包中的注册与调用示例
+### 3.4 注册、筛选与用户接入示例
 
 将下面代码作为扩展包的入口模块，并按[现有示例 manifest](../../examples/session_usage_info/manifest.yaml) 的形式指定入口。示例同时展示外层业务 Handler 如何调用本 Ops，以及本查询的 USER Handler 如何继续默认链。
+
+`manifest.yaml`（与下面的 `extension.py` 放在 ZIP 根目录）：
+
+```yaml
+schemaVersion: 1
+package:
+  id: example.session-usage-query
+  version: 1.0.0
+  displayName: Session Usage Query
+extensions:
+  - id: usage-query
+    runtime: backend
+    module: extension.py
+```
+
+`extension.py`：
 
 ```python
 import logging
@@ -156,11 +183,17 @@ class Extension:
         return result
 
     async def on_usage(self, event, ops, next_handler):
-        value = await ops.session.usage()
+        value = await ops.session.usage(breakdown="summary")
         # Use value in your own business code; no ui.render is required.
-        logger.info("session.usage result type: %s", type(value).__name__)
+        parameters = {"usage": value}
+        self.on_parameters(parameters)
         # Continue the original event, not the nested query event.
         return await next_handler(event)
+
+
+    def on_parameters(self, parameters):
+        # A user-owned consumer; receiving parameters proves this query returned.
+        logger.info("received parameter keys: %s", sorted(parameters))
 
 
 def create_extension():
@@ -168,6 +201,8 @@ def create_extension():
 ```
 
 查询 Hook 想取得默认值应调用 next；在自己的 `session.usage` Hook 中再次调用同名 Ops 会被循环保护拒绝。USER → BUILTIN → CORE 在各层继续时执行，结果反向返回；共享 BUILTIN 负责计时与独立副本，默认 CORE 负责实际读取。
+
+将 ZIP 通过已有 `/extension install "D:\extensions\session-usage-query.zip"` 安装；安装只发布订阅，不会立即执行查询。下一次平台真实发布外层事件并绑定会话时，示例 on_usage 才调用本方法；on_query 观察新开的 `session.usage` 链，on_parameters 收到 `usage` 参数。空 matcher `{}` 匹配该事件全部合法输入；还可按合法输入键筛选，例如 `{'breakdown': 'summary'}` 只匹配实际携带该键的查询；会话身份由独立上下文决定。
 
 ## 4. 方法契约
 
@@ -193,7 +228,7 @@ async def usage(
 | breakdown | summary/full 字符串，可省略；命名参数 None 等同未提供 | 普通调用者按是否需要分类明细填写 | breakdown="summary"；只查数字时不传；full 是已识别但默认 CORE 暂不支持的选项 | 决定是否请求上下文分类明细及其读取方式 | summary 让默认 CORE 投影已有分类；full 可先被 Hook 处理，否则默认 CORE 报 FULL_BREAKDOWN_UNAVAILABLE | 省略不生成明细；没有已有分类仍省略 breakdown 返回。True/False/"detail" 非法；参数对象内的值不能填 None |
 | columns | 正 int，可省略；命名参数默认 None；bool 非法 | 普通调用者按需填写终端列宽建议 | columns=80；应为整数，不填 "80"、0、负数或 True | 分类网格的终端字符列数建议，不是像素、Token 限额或输出长度 | 选项会传给查询 Hook；当前默认 CORE 不生成网格，因此不会改变数字、触发测量或产生界面 | 省略不增加该键；参数对象中 columns=None 非法。当前只传 columns 而不传 breakdown 也不会自动请求分类 |
 
-表中“无参数”就是调用括号留空，不是让用户传入空字典。只有 usage 有可选查询选项；
+本方法可留空括号，也可提供一个参数对象，或使用 breakdown/columns 命名参数；两种有值的输入方式不要混用。
 平台会话身份、目录和快照不通过这些选项填写。完整参数对象和事件结果的对应例子见第 4.3 节。
 
 典型调用如下；它可写在任何满足会话前提的已注册业务 Handler 中。
@@ -217,6 +252,15 @@ if "percent" in context:
 ```
 
 成功返回 `dict[str, object]`，字段及缺失语义见第 3.3 节。无 SessionContext 报 RuntimeError；非法会话 ID 由平台会话校验拒绝；方法参数非法报 TypeError。活跃同名或间接循环报 QUERY_REENTRANT，深度超过 16 报 QUERY_DEPTH_EXCEEDED；不允许调用方覆盖 bus / event_type。平台读取故障保持其原有异常类型和稳定 code。Handler 未捕获 Ops 错误时，还受外层事件自身的故障隔离规则约束，不能把外层继续误认为查询成功。
+
+| 位置 / 条件 | 调用方看到什么 | 该怎样处理 |
+| --- | --- | --- |
+| 进入查询前没有 SessionContext | RuntimeError，不触发同名查询事件 | 由平台既有入口提供上下文；用户不伪造会话或在参数里补 session_id |
+| 方法签名或事件参数不合法 | TypeError；非法会话 ID 由会话服务按其原契约拒绝 | 按第 4.1 节填写，不传 bus/event_type/目标路径 |
+| 合法查询 Hook 返回 deny | SessionQueryDenied；code=DENIED，reason 为原原因 | 需要分支时在调用 Ops 处捕获；不要把拒绝当作未知数据 |
+| 活跃同名查询循环 / 深度超过 16 | SessionQueryError：QUERY_REENTRANT / QUERY_DEPTH_EXCEEDED | 在当前查询 Hook 内用 next 取得默认结果，避免再次调用同名 Ops |
+| USER 抛普通异常或返回非法结构 | 依既有 Core 故障隔离继续原有效链或保留真实下游结果 | 不能靠异常/错填制造可靠拒绝；拒绝用合法 deny |
+| 默认 CORE 或框架读取失败 / 查询取消 | 原读取异常或 CancelledError 沿等待关系传播 | 不要转换成成功空值；外层通知是否隔离错误由外层自己的契约决定 |
 
 ### 4.3 从填写输入到消费输出的完整字段例子
 
@@ -302,11 +346,100 @@ else:
 
 删除 breakdown=True/False；无明细用 usage()，需要已有分类用 breakdown='summary'。旧 context.context_window.input_tokens 改成 context.tokens，limit_tokens 改成 window，occupancy_rate 改成 percent（百分比单位）。旧 turn 不再是公开结果，单轮消耗仍可从现有用量通知的输入字段获取。
 
-本次文档拆分不再改变上述兼容边界。执行目录、模型、Git、历史和用量事实仍由平台服务维护；对返回视图的改写不成为另一项平台操作的可信输入。
+本次文档结构与说明调整不改变上述兼容边界。执行目录、模型、Git、历史和用量事实仍由平台服务维护；对返回视图的改写不成为另一项平台操作的可信输入。
 
-### 5.3 现成案例和可观察效果
+| 旧调用 / 容易混淆的用法 | 现在怎样写 | 对使用者的影响 |
+| --- | --- | --- |
+| breakdown=True / False | 不需要明细用 usage()；已有分类用 breakdown="summary" | bool 参数非法，full 默认明确不支持 |
+| context.context_window.input_tokens / limit_tokens | 改为 context.tokens / context.window | 字段缺失保持未知，不填 0 掩盖 |
+| occupancy_rate | 改为 context.percent | 单位为 0～100 的百分数，不是 0～1 比例 |
+| 依赖公开结果 turn 子对象 | 单轮字段从既有用量通知输入按其契约读取 | 新 usage 视图不再公开 turn |
+| columns 当作 Token 限额或像素 | 仅作为分类网格列宽建议传给 Hook | 当前默认 CORE 不生成网格、不重新测量或发模型请求 |
 
-对应用户示例见 [examples/session_usage_info](../../examples/session_usage_info/)，七项联合参数返回示例见 [session_query_audit](../../examples/session_query_audit/)。联合案例中的 collect_session_parameters 是普通用户侧辅助函数，本方法可单独调用；用户业务函数收到返回参数即可验证，不依赖 ui.render。
+### 5.3 完整业务案例：为 Token Weather 收集用量参数
+
+平台已把本轮已有用量观测绑定到 SessionContext；用户要获得可供自己业务消费的窗口占用与已有分类参数。 下面说明用户为什么调用、平台查什么以及结果在哪里可观察，不要求用户改写平台入口。
+
+1. 用户安装第 3.4 节的包，发布外层 on_usage 和本查询 on_query 两个 USER；此时尚无查询结果。
+2. 平台真实业务入口收集会话资料，随外层事件交给 Worker EventBus；Core 为 on_usage 创建带包身份、会话上下文的 Ops。
+3. on_usage 执行 `await ops.session.usage(breakdown="summary")`；代理触发 `session.usage`，on_usage 在 await 处等待。
+4. on_query 先记录查询开始，再 next；查询 BUILTIN 开始计时并继续，CORE 优先读取绑定的 session_usage_info；没有该绑定键时才按 session_id 读已有历史观测。summary 只投影已经观测到的分类。
+5. CORE 的 value 封装经 BUILTIN、on_query 返回，代理校验并解包；用户取得 usage["context"] 中可得的 tokens/window/percent，并把整个 usage 对象交给自己的参数消费函数；取得参数即可验证链路，不要求介入 ui.render。
+6. 用户 on_parameters 收到 `{"usage": value}`，是本例的可观察结果；随后 on_usage 的 next 继续原来的外层事件，不再重复这次查询。
+
+没有观测时 context 可以为空，rateLimits 默认是空数组，未知 cost 省略。full 默认报 FULL_BREAKDOWN_UNAVAILABLE；columns 不触发计数或生成网格。
+
+现成七项联合示例见 [session_query_audit](../../examples/session_query_audit/)；`collect_session_parameters(ops)` 是用户普通辅助函数，分别等待七个 Ops，最终返回七键参数字典，不是新增 Ops。单项示例只调用本方法，其他六项不是前置条件。
+
+### 5.4 关键函数：Ops、SessionContext 与同名查询事件如何接上
+
+以下为现有实现的关键节选；完整校验、来源记录和重入保护以链接中的源码为准。启动时只有方法登记，业务时才绑定会话并执行查询。
+
+```python
+# Startup: contribute definitions to the Builder returned by ops.build CORE.
+builder = await next_handler(event)
+builder.add_namespace("session")
+for event_type in SESSION_QUERY_EVENTS:
+    builder.add_method(
+        "session", event_type.split(".", 1)[1],
+        session_query_method(bus, event_type),
+    )
+```
+
+Core 在实际进入 Handler 前调用 `builder.build(package_metadata, session_context)`；方法访问器再执行 `method(current_ops, *args, **kwargs)`，自动注入当前 Ops。Builder 保存全部已登记能力的定义，不预读结果，也不会在本次查询重跑 ops.build。
+
+本方法实际登记的代理函数如下。bus 与 event_type 在启动时由闭包固定；用户只填写第 4.1 节允许的参数。这里是 session_query_method 内 usage 分支。
+
+```python
+async def usage(
+    ops: EventHandlerOps,
+    arguments: Mapping[str, object] | None = None,
+    *,
+    breakdown: str | None = None,
+    columns: int | None = None,
+) -> object:
+    if arguments is not None and (breakdown is not None or columns is not None):
+        raise TypeError("use one usage argument object or keyword arguments")
+    if arguments is not None and not isinstance(arguments, Mapping):
+        raise TypeError("session.usage requires an argument mapping or keywords")
+    values = dict(arguments) if arguments is not None else {}
+    if breakdown is not None:
+        values["breakdown"] = breakdown
+    if columns is not None:
+        values["columns"] = columns
+    return await dispatch_session_query(bus, ops, event_type, values)
+```
+
+```python
+# Runtime excerpt: the full dispatcher also guards recursion and caller origin.
+context = require_query_context(ops)  # Reads the existing ops.session_context property.
+result = await bus.trigger(
+    Event(event_type, MappingProxyType(dict(arguments))),
+    context,
+)
+if not valid_query_output(event_type, result):
+    raise SessionQueryError("INVALID_QUERY_RESULT")
+if "deny" in result:
+    raise SessionQueryDenied(result["deny"])
+value = detached_copy(result["value"])  # The public Ops returns this value.
+```
+
+这里 event_type 固定为 `session.usage`；arguments 为规范化后的 breakdown/columns 选项。 context 作为 trigger 的独立参数传递，不允许用户通过 Event 输入把会话、目录或快照替换掉。Ops 属性只提供已有上下文，不采集、不组装资料。
+
+默认查询 CORE 为：
+
+```python
+async def session_query_core(event: Event, ops: EventHandlerOps | None, next_handler: EventNext) -> dict:
+    """Answer from trusted platform readers, never from another public query Ops."""
+    del next_handler
+    context = require_query_context(ops)
+    return {"value": await read_session_query(event.event_type, event.event_input, context)}
+```
+
+本特性的实际读取落点：_usage(arguments, context)；复用绑定快照/历史读取，新增公开用量视图，不发新的模型或计数请求。 默认 CORE 直接调用平台读取函数，不再调用公共同名 Ops；这与启动时创建 Builder 的 ops.build CORE 是不同函数。查询 USER 可在 next 前后执行自己的规则；共享查询 BUILTIN 只计时、记录来源并复制结果；默认 CORE 才读取平台事实。合法短路时下游不必执行。
+
+源码位置：[类型与校验](../../event_types/session_queries.py)、[Ops 登记](../../handler_ops/session_ops.py)、[封闭代理](../../handler_ops/session_queries.py)、[分派与解包](../../query_dispatch.py)、[查询 USER 示例](../../examples/session_query_audit/extension.py)、[查询 CORE / BUILTIN](../../event_handlers/session_queries.py)、[平台读取分支](../../../server/runtime/session/query_views.py)。
+
 
 ## 6. 验收与未决问题
 
@@ -324,7 +457,7 @@ else:
 
 ### 6.2 已有实施证据与本次文档调整
 
-实现验证基于本 PR 实现提交 `f313f513ee9b`、已合入 Server 基线 `c6a07f909` 与 Core `bdde48a8`，Python 3.11。扩展 632 项、相关平台 140 项及独立进程 ZIP / notify / 七项参数返回验证的实际范围、命令和限制统一保留在[公共设计第 6 节](../designs/session-query-events.md#6-验收与未决问题)。这属于查询事件化实现的既有证据；此次仅拆分文档，不声称重新执行了这些业务测试。
+实现验证基于本 PR 实现提交 `f313f513ee9b`、已合入 Server 基线 `c6a07f909` 与 Core `bdde48a8`，Python 3.11。扩展 632 项、相关平台 140 项及独立进程 ZIP / notify / 七项参数返回验证的实际范围、命令和限制统一保留在[公共设计第 6 节](../designs/session-query-events.md#6-验收与未决问题)。这属于查询事件化实现的既有证据；这些数量属于实现阶段历史运行。本次按 session.append 对齐文档的结构和说明，运行代码不变；只核对字段、示例、源码链路、链接与差异，不声称重新执行业务或真实模型测试。
 
 顶层及基础数字字段对齐 Claude；未采集额度/费用不造数。summary 仅返回已观测分类子集；full 默认明确不支持，不偷偷执行计数 API；columns 当前不生成网格。未知 window 可省略，这比 Claude 常态必有 window 更保守。 该限制属于已知支持边界；此轮未增加新的运行时待决项。未执行 Claude 私有宿主、新模型 API、浏览器或 Front/Supervisor 跨进程验收，不能由文档完整推断这些验收已完成。
 
