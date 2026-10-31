@@ -188,6 +188,9 @@ def cron_team_round_should_end(
     *,
     chunk_complete: bool = False,
 ) -> bool:
+    # Set only on the enterprise path while a question or permission card is open.
+    if state.get("waiting_user"):
+        return False
     # A leader tool call is real in-flight work: the round cannot be over while
     # one is still running (#5410 / GitHub #8675). Design mode hits this with
     # ``designer_graph_autorun``, whose six serial director-chain calls run for

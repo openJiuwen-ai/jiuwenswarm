@@ -368,27 +368,52 @@ def _stream_response(ctx: RequestContext, handler) -> StreamingResponse:
 
 
 async def _event_frames(request: Request):
-    """Gateway 长连接：先报 push_ready，再转发本进程 ``send_push`` 的 wire。
+    """Gateway 长连接：先报 push_ready，再转发本进程推送。
 
-    runtime 模式下 Gateway 没有 WebSocket，cron / 主动推送都靠这条 SSE。
+    runtime 模式下 Gateway 没有 WebSocket。cron / 主动推走 ``http_hub``；
+    企业版团队直播另走 ``fanout``。两条队列都挂上，谁先到谁先发。
     """
+    from jiuwenswarm.enterprise.edition import is_enterprise
     from jiuwenswarm.server.gateway_push.http_hub import get_http_push_hub
 
     hub = get_http_push_hub()
-    queue = hub.subscribe()
+    hub_queue = hub.subscribe()
+    team_queue = None
+    if is_enterprise():
+        from jiuwenswarm.enterprise.team.push_fanout import attach
+
+        team_queue = attach()
     try:
         yield _sse_frame({"event_type": "gateway.push_ready"})
         while True:
             if await request.is_disconnected():
                 break
-            try:
-                wire = await asyncio.wait_for(queue.get(), timeout=15.0)
-            except asyncio.TimeoutError:
+            waiters = [asyncio.create_task(hub_queue.get())]
+            if team_queue is not None:
+                waiters.append(asyncio.create_task(team_queue.get()))
+            done, pending = await asyncio.wait(
+                waiters, timeout=15.0, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not done:
                 yield ": keepalive\n\n"
                 continue
-            yield _sse_frame(wire)
+            for task in done:
+                try:
+                    item = task.result()
+                except Exception:
+                    continue
+                if isinstance(item, dict):
+                    yield _sse_frame(item)
     finally:
-        hub.unsubscribe(queue)
+        hub.unsubscribe(hub_queue)
+        if team_queue is not None:
+            from jiuwenswarm.enterprise.team.push_fanout import detach
+
+            detach(team_queue)
 
 
 def _sse_frame(payload: dict[str, Any]) -> str:

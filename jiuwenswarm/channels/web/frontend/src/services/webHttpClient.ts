@@ -31,6 +31,10 @@ export {
 
 import { hasManagerSessionCredentials, getManagerAccessToken, managerAuthenticatedFetch } from '../auth/manager/authSession';
 import { isLoginAuthSimulateEnabled } from '../auth/config';
+import { setTeamSessionLive } from './sessionLive';
+import { useChatStore } from '../stores/chatStore';
+import { useSessionStore } from '../stores/sessionStore';
+import { useWorkspaceStore } from '../stores/workspaceStore';
 
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
@@ -40,6 +44,19 @@ type StateHandler = (state: WebConnectionState) => void;
 interface RuntimeAckPending {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
+}
+
+function turnOffLiveLamp(sessionId: string): void {
+  const runtime = useChatStore.getState().getRuntime(sessionId);
+  if (!runtime?.isProcessing) return;
+  useChatStore.getState().setProcessing(sessionId, false);
+  useChatStore.getState().setThinking(sessionId, false);
+  const sessionPatch = {
+    is_processing: false,
+    updated_at: new Date().toISOString(),
+  };
+  useSessionStore.getState().updateSession(sessionId, sessionPatch);
+  useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -111,6 +128,7 @@ const ROUTES: Record<string, RouteRow> = {
     path: '/projects/{project_id}/sessions/actions/delete-archived',
     kind: 'unary',
   },
+  'session.switch': { verb: 'POST', path: '/sessions/{session_id}/actions/switch', kind: 'unary' },
   'history.get': { verb: 'GET', path: '/sessions/{session_id}/history', kind: 'history-stream' },
   'chat.send': { verb: 'POST', path: '/chat/completions', kind: 'sse' },
   'chat.interrupt': { verb: 'POST', path: '/chat/{session_id}/actions/interrupt', kind: 'unary' },
@@ -202,6 +220,12 @@ const ROUTES: Record<string, RouteRow> = {
   'im.hosting.history': { verb: 'GET', path: '/im/hosting/targets/{id}/history', kind: 'unary' },
   'im.hosting.login.start': { verb: 'POST', path: '/im/hosting/login/start', kind: 'unary' },
   'im.hosting.login.status': { verb: 'GET', path: '/im/hosting/login/status', kind: 'unary' },
+  'team.list': { verb: 'GET', path: '/teams', kind: 'unary' },
+  'team.history.get': { verb: 'GET', path: '/sessions/{session_id}/team/history', kind: 'unary' },
+  'team.snapshot': { verb: 'GET', path: '/sessions/{session_id}/team/snapshot', kind: 'unary' },
+  'team.stop': { verb: 'POST', path: '/teams/actions/stop', kind: 'unary' },
+  'team.delete': { verb: 'DELETE', path: '/teams/{team_name}', kind: 'unary' },
+  'team.quota.get': { verb: 'GET', path: '/teams/quota', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
@@ -570,6 +594,9 @@ export class WebHttpClient {
   private sseSuperseded = new Set<string>();
   /** chat.send + awaitRuntimeAccepted：等本请求 SSE 上的 runtime.accepted / chat.error。 */
   private runtimeAckPending = new Map<string, RuntimeAckPending>();
+  /** 企业版团队会话订阅。不进 sseInflight，chat.send 不会把它中止。 */
+  private sessionLiveGeneration = 0;
+  private sessionLive: { sessionId: string; controller: AbortController } | null = null;
   private connectAbort: AbortController | null = null;
   private reconnectTimer: number | null = null;
   private reconnectAttempts = 0;
@@ -667,6 +694,7 @@ export class WebHttpClient {
     this.rejectAllRuntimeAckPending(
       this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_CLOSED', undefined, true)
     );
+    this.closeSessionLive();
     this.abortInflight();
     this.connectPromise = null;
     this.updateState('closed');
@@ -749,11 +777,15 @@ export class WebHttpClient {
 
     try {
       const chatSessionId = pickHeaderString(params?.session_id);
+      const resumeSameReply = isEnterprise()
+        && method === 'chat.send'
+        && typeof params?.query === 'string'
+        && params.query.trim() === '';
       if (assembled.kind === 'sse') {
         // STEER 是注入父 execution 的短回执：Gateway 不会取消父流，正文仍从父
         // SSE 下发。若此处 abort 同 session 旧 SSE，父连接被掐掉 → 实时无输出、
         // processing_status(false) 也丢，UI 一直「执行中」（刷新 history 才有字）。
-        if (!isSteerSessionInputParams(params)) {
+        if (!isSteerSessionInputParams(params) && !resumeSameReply) {
           this.abortSseInflight({ exceptRequestId: requestId, sessionId: chatSessionId });
         }
         this.sseInflight.set(requestId, {
@@ -1166,6 +1198,83 @@ export class WebHttpClient {
       return managerAuthenticatedFetch(input, init);
     }
     return fetch(input, init);
+  }
+
+  /** 企业版团队页订上这个会话。同一会话已在订就不动。 */
+  ensureSessionLive(sessionId: string): void {
+    const current = this.sessionLive;
+    if (current && current.sessionId === sessionId && !current.controller.signal.aborted) {
+      return;
+    }
+    this.closeSessionLive();
+    const generation = ++this.sessionLiveGeneration;
+    const controller = new AbortController();
+    this.sessionLive = { sessionId, controller };
+    setTeamSessionLive(sessionId, false);
+    void this.pumpSessionLive(sessionId, controller, generation);
+  }
+
+  closeSessionLive(): void {
+    this.sessionLiveGeneration += 1;
+    this.sessionLive?.controller.abort();
+    this.sessionLive = null;
+    setTeamSessionLive('', false);
+  }
+
+  private async pumpSessionLive(
+    sessionId: string,
+    controller: AbortController,
+    generation: number,
+  ): Promise<void> {
+    const url = joinGatewayUrl(
+      getGatewayHttpBase(),
+      `/sessions/${encodeURIComponent(sessionId)}/live`,
+    );
+    while (!controller.signal.aborted && generation === this.sessionLiveGeneration) {
+      const requestId = this.generateRequestId();
+      let latestProcessing: boolean | null = null;
+      try {
+        const response = await this.authenticatedFetch(url, {
+          method: 'GET',
+          headers: {
+            ...this.identityHeaders(requestId, { session_id: sessionId }),
+            Accept: 'text/event-stream',
+          },
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || generation !== this.sessionLiveGeneration) return;
+        if (!response.ok || !response.body) {
+          throw new Error('session live failed');
+        }
+        setTeamSessionLive(sessionId, true);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!controller.signal.aborted && generation === this.sessionLiveGeneration) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const consumed = consumeSseBuffer(buffer);
+          buffer = consumed.rest;
+          for (const frame of consumed.frames) {
+            const event = sseFrameToWsEvent(frame);
+            if (!event) continue;
+            if (event.event === 'chat.processing_status') {
+              latestProcessing = event.payload?.is_processing === true;
+            }
+            this.dispatchEvent(event);
+          }
+        }
+      } catch {
+        if (controller.signal.aborted || generation !== this.sessionLiveGeneration) return;
+      }
+      if (controller.signal.aborted || generation !== this.sessionLiveGeneration) return;
+      setTeamSessionLive(sessionId, false);
+      if (latestProcessing !== false) {
+        turnOffLiveLamp(sessionId);
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
   }
 
   /** 把定时任务监听流上的帧送进现有 chat.* 处理。 */

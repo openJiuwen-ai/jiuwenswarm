@@ -48,7 +48,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
 )
 from jiuwenswarm.server.wire_truncate import (
     _HISTORY_PAGE_SIZE,
-    _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
+    history_assistant_event_is_restorable,
     _sanitize_history_record_for_wire,
     split_history_record_for_stream,
 )
@@ -147,7 +147,7 @@ def _is_restorable_history_record(record: Any) -> bool:
     event_type = record.get("event_type")
     if not event_type:
         return has_content
-    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+    return history_assistant_event_is_restorable(record)
 
 
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
@@ -390,9 +390,23 @@ async def _handle_session_lifecycle_action(
         results = []
         for sid in ids:
             try:
-                results.append(
-                    await service.session(sid, action, request.channel_id or "")
-                )
+                result = await service.session(sid, action, request.channel_id or "")
+                if (
+                    action == "delete"
+                    and isinstance(result, dict)
+                    and result.get("ok", True)
+                ):
+                    try:
+                        from jiuwenswarm.enterprise.team.session_cleanup import (
+                            purge_team_for_deleted_session,
+                        )
+
+                        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+                        await run_team_store(purge_team_for_deleted_session, session_id=sid)
+                    except Exception:
+                        logger.exception("team quota purge after session.delete failed")
+                results.append(result)
             except lc.LifecycleError as exc:
                 results.append(
                     dict(

@@ -8,6 +8,7 @@ import { webRequest } from '../../services/webClient';
 import { getArchiveErrorCode, getArchiveErrorFinishingCause } from '../../features/workspace/archivedTaskClient';
 import { useChatStore } from '../../stores/chatStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { isEnterprise } from '../../edition';
 import { toDisplaySessionTitle } from '../../utils/documentMessage';
 
 function SessionErrorIndicator({ sessionId }: { sessionId: string }) {
@@ -24,6 +25,7 @@ interface SessionsPanelProps {
   currentSessionId: string;
   isConnected: boolean;
   isProcessing: boolean;
+  mode?: string;
   onRestoreSession: (sessionId: string, mode?: string) => void | Promise<void>;
 }
 
@@ -263,6 +265,7 @@ export function SessionsPanel({
   currentSessionId,
   isConnected,
   isProcessing,
+  mode,
   onRestoreSession,
 }: SessionsPanelProps) {
   const { t } = useTranslation();
@@ -481,10 +484,11 @@ export function SessionsPanel({
   const isWebSession = Boolean(
     selectedSessionId?.startsWith('sess_') || selectedSessionId?.startsWith('web_')
   );
-  const canRestoreSelectedSession = isWebSession && isConnected && !isProcessing;
+  const restoreWhileProcessing = isEnterprise() && mode === 'team';
+  const canRestoreSelectedSession = isWebSession && isConnected && (restoreWhileProcessing || !isProcessing);
   const restoreButtonTitle = !isConnected
     ? t('sessions.restoreDisabledNotConnected')
-    : isProcessing
+    : isProcessing && !restoreWhileProcessing
       ? t('sessions.restoreDisabledProcessing')
       : !isWebSession
         ? t('sessions.restoreDisabledUnsupported')

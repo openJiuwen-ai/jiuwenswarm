@@ -45,6 +45,7 @@ _MANAGER_PATH_PREFIXES = (
     "/api/v1/instance-agent-resources",
     "/api/v1/instance-data-lifecycle",
     "/api/v1/workspace-quota/",
+    "/api/v1/team-quota/",
     "/api/v1/logging",
     "/api/v1/task-memory",
     "/api/v1/memory",

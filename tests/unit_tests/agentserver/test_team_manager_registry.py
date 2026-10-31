@@ -2147,7 +2147,11 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
         lambda _session_id, cache_bust=False: {},
     )
     monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
-    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
+    monkeypatch.setattr(
+        TeamManager,
+        "_load_team_spec",
+        staticmethod(lambda _session_id, **_kwargs: _Spec()),
+    )
     monkeypatch.setattr(
         "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
         lambda spec, **kwargs: None,

@@ -58,6 +58,7 @@
     "work": "任务",
     "agent": "专家",
     "design": "设计",
+    "teams": "团队",
     "experiments": "RSI",
     "sessions": "会话",
     "cron": "定时任务",
@@ -1362,8 +1363,47 @@
       "showTasks": "展开任务栏"
     }
   },
+  "teams": {
+    "title": "团队管理",
+    "subtitle": "查看已有团队，或停止、删除团队",
+    "teamList": "已有团队",
+    "count": "当前 {{count}} 个团队",
+    "quota": "已用 {{used}} / 上限 {{limit}}（默认 {{default}}）",
+    "orgQuota": "组织已用 {{used}} / 上限 {{limit}}",
+    "quotaUnavailable": "配额状态不可用",
+    "createUserFull": "创建失败，一个用户最多有{{limit}}个团队",
+    "createOrgFull": "创建失败，一个组织最多有{{limit}}个团队",
+    "sessionCount": "{{count}} 个会话",
+    "listLabel": "team 所在会话：{{title}}",
+    "untitledSession": "未命名会话",
+    "createdAt": "创建于 {{time}}",
+    "createdAtWithId": "创建于 {{time}} · …{{suffix}}",
+    "sessionSuffix": "…{{suffix}}",
+    "empty": "暂无团队",
+    "deleteTeam": "删除团队",
+    "deleting": "删除中...",
+    "deleteConfirm": "确认删除团队 {{team}} ?\n将删除团队运行时、关联会话及目录。",
+    "stopTeam": "停止",
+    "stopping": "停止中...",
+    "humanMembers": "{{count}} 位人类成员",
+    "status": {
+      "creating": "创建中",
+      "running": "运行中",
+      "paused": "已暂停",
+      "stopping": "停止中",
+      "stopped": "已停止",
+      "deleted": "已删除"
+    },
+    "errors": {
+      "loadTeams": "团队列表加载失败",
+      "deleteTeam": "删除团队失败：{{team}}",
+      "stopTeam": "停止团队失败"
+    }
+  },
   "team": {
     "members": "团队成员",
+    "quotaUsage": "团队 {{used}}/{{limit}}",
+    "orgQuotaUsage": "组织 {{used}}/{{limit}}",
     "membersTab": "团队",
     "statusTab": "状态",
     "filesTab": "文件",

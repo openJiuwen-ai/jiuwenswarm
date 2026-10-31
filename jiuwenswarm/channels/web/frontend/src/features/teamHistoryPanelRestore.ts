@@ -1,4 +1,6 @@
 import { webClient } from '../services/webClient';
+import { isEnterprise } from '../edition';
+import { isTeamAgentMode } from './planMode/wireMode';
 import type { Message } from '../types';
 import type {
   HumanShareCommand,
@@ -264,7 +266,9 @@ function parseJsonRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function isTeamModeRecord(record: Record<string, unknown>): boolean {
-  return typeof record.mode === 'string' && record.mode.trim().toLowerCase() === 'team';
+  const mode = typeof record.mode === 'string' ? record.mode.trim().toLowerCase() : '';
+  if (!isEnterprise()) return mode === 'team';
+  return isTeamAgentMode(mode);
 }
 
 function extractToolCallInput(record: Record<string, unknown>): {

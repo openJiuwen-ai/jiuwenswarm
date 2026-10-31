@@ -5,6 +5,7 @@
  * 组件通过 activeSessionId 读取当前会话的运行态。
  */
 
+import { foldEnterpriseStreamText } from '../features/enterpriseStreamText';
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import {
@@ -664,7 +665,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime || !runtime.currentStreamId) return state;
 
       const existingBuffer = runtime.streamBuffers.get(streamKey) || '';
-      const nextContent = existingBuffer + content;
+      const nextContent = foldEnterpriseStreamText(existingBuffer, content);
 
       return {
         runtimes: {

@@ -59,6 +59,23 @@ class PolicyUpsertRequest(BaseModel):
         return self
 
 
+class TeamQuotaPolicyUpsertRequest(BaseModel):
+    """团队配额策略投影。``max_teams_per_org`` 为 0 表示不限制组织团队总数。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    policy_id: str = Field(min_length=1, max_length=64)
+    policy_name: str = Field(default="team-quota", min_length=1, max_length=128)
+    policy_desc: str | None = Field(default=None, max_length=512)
+    match_expr: Any = None
+    priority: int = 0
+    max_teams_per_user: int = Field(default=5, ge=1, le=1000)
+    max_teammates_per_team: int = Field(default=5, ge=1, le=1000)
+    max_teams_per_org: int = Field(default=0, ge=0, le=1000)
+    source: str = Field(default="manual", max_length=32)
+    enabled: bool = True
+
+
 class UsageListQuery(BaseModel):
     """本集群用量缓存查询（只读，不访问 Agent）。"""
 

@@ -125,6 +125,13 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
     ("team.mq.publish", "POST", "/teams/mq/publish"),
     ("team.delete", "DELETE", "/teams/{team_name}"),
+    ("team.create", "POST", "/teams"),
+    ("team.get", "GET", "/teams/current"),
+    ("team.stop", "POST", "/teams/actions/stop"),
+    ("team.member.join", "POST", "/teams/members/join"),
+    ("team.member.leave", "POST", "/teams/members/leave"),
+    ("team.members.list", "GET", "/teams/members"),
+    ("team.quota.get", "GET", "/teams/quota"),
     ("skills.list", "GET", "/skills"),
     ("skills.installed", "GET", "/skills/installed"),
     ("skills.marketplace.list", "GET", "/skills/marketplace"),
@@ -307,7 +314,28 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("locale.set_conf", "PUT", "/locale"),
 )
 
-REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}
+_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
+    "team.create",
+    "team.get",
+    "team.stop",
+    "team.member.join",
+    "team.member.leave",
+    "team.members.list",
+    "team.quota.get",
+})
+
+
+def _visible_route_rows() -> tuple[tuple[str, str, str], ...]:
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        return _ROUTE_ROWS
+    return tuple(row for row in _ROUTE_ROWS if row[0] not in _ENTERPRISE_TEAM_CONTROL_METHODS)
+
+
+REST_ROUTES: dict[str, tuple[str, str]] = {
+    method: (verb, path) for method, verb, path in _visible_route_rows()
+}
 
 
 class RestAssemblyError(ValueError):

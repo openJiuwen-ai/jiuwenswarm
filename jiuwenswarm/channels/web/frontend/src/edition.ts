@@ -26,3 +26,6 @@ export const ENTERPRISE_HIDDEN_NAV_ITEMS = [
   'personalContextSettings',
   'updatepanel',
 ] as const;
+
+/** Team list is an enterprise control-plane page. Personal edition keeps in-chat team mode. */
+export const PERSONAL_HIDDEN_NAV_ITEMS = ['teams'] as const;

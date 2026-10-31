@@ -1,5 +1,6 @@
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { webRequest } from '../../services/webClient';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
@@ -81,6 +82,40 @@ type GroupMessageItem = { message: Message; event: ParsedTeamEvent };
 
 const EMPTY_TIMELINE: TeamTaskTimelineEntry[] = [];
 
+type TeamQuotaSnapshot = {
+  teams?: { used?: number; limit?: number };
+  org?: { used?: number; limit?: number };
+};
+
+function useTeamQuotaLabel(): string {
+  const { t } = useTranslation();
+  const [label, setLabel] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    void webRequest<TeamQuotaSnapshot>('team.quota.get', {})
+      .then((quota) => {
+        if (cancelled || !quota?.teams) return;
+        const teams = t('team.quotaUsage', {
+          used: quota.teams.used ?? 0,
+          limit: quota.teams.limit ?? 0,
+        });
+        const org =
+          quota.org && (quota.org.limit ?? 0) > 0
+            ? ` · ${t('team.orgQuotaUsage', {
+                used: quota.org.used ?? 0,
+                limit: quota.org.limit ?? 0,
+              })}`
+            : '';
+        setLabel(`${teams}${org}`);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+  return label;
+}
+
 function getGroupMemberIds(members: TeamMember[]): string[] {
   return members.map((member) => member.member_id).filter((memberId) => !isTeamLeaderMember(memberId));
 }
@@ -152,6 +187,7 @@ export function TeamMembersPanel({
   onDetailTabChange,
 }: TeamMembersPanelProps) {
   const { t } = useTranslation();
+  const quotaLabel = useTeamQuotaLabel();
   const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
@@ -224,6 +260,11 @@ export function TeamMembersPanel({
             <span className="text-sm font-medium text-text" data-testid="team-area-members-count">
               {t('team.members')} ({visibleMembers.length})
             </span>
+            {quotaLabel ? (
+              <span className="text-xs text-text-muted" data-testid="team-area-quota">
+                {quotaLabel}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3" data-testid="team-area-members-list">

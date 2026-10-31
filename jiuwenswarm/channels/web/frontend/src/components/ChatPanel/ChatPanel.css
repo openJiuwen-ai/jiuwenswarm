@@ -1554,6 +1554,17 @@
   background: transparent;
 }
 
+.chat-team-quota-hint {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text-muted);
+}
+
+.chat-team-quota-hint--blocked {
+  color: #b42318;
+}
+
 .chat-input-container--enterprise .chat-mode-select__trigger:disabled {
   color: var(--color-text-primary);
   cursor: default;

@@ -151,6 +151,12 @@ _TEAM_HEARTBEAT_SERVICE: ContextVar[Any | None] = ContextVar(
     "team_heartbeat_service",
     default=None,
 )
+# The team stream runs in a child task. create_task copies this context, so
+# runtime_ready can see the request that started the round.
+_TEAM_STREAM_REQUEST: ContextVar[Any | None] = ContextVar(
+    "team_stream_request",
+    default=None,
+)
 
 
 def bind_team_heartbeat_service(service: Any | None) -> Token[Any | None]:
@@ -2337,12 +2343,374 @@ def _tag_team_output_origin(parsed: dict[str, Any], team_name: str) -> dict[str,
     return parsed
 
 
+async def _current_pool_team_agent(team_name: str) -> Any | None:
+    """Return the TeamAgent currently owned by Runner for ``team_name``."""
+    try:
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            _runner_team_runtime_manager,
+        )
+
+        runtime = _runner_team_runtime_manager(GLOBAL_RUNNER)
+        entry = await runtime.pool.get(team_name)
+        return getattr(entry, "agent", None) if entry is not None else None
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] resolve pool team agent failed: team_name=%s",
+            team_name,
+            exc_info=True,
+        )
+        return None
+
+
+def _record_session_team_occupancy(
+    *,
+    request: Any | None,
+    session_id: str,
+    runtime_team_name: str,
+) -> None:
+    """Count a chat-created team against the user's team quota.
+
+    ``team.create`` already reserves a lease. A team that becomes ready from
+    the chat path only writes ``team_name`` onto the session, so the user's
+    used count would stay 0 while the team exists.
+    """
+    if request is None or not str(runtime_team_name or "").strip():
+        return
+    try:
+        from jiuwenswarm.enterprise.team.handlers import (
+            ensure_session_team_occupancy,
+            request_identity,
+        )
+        from jiuwenswarm.enterprise.team.quota import TeamQuotaExceeded
+
+        if not request_identity(request).user_id:
+            return
+        metadata = get_session_metadata(session_id)
+        template_id = str(metadata.get("team_template_id") or "").strip()
+        ensure_session_team_occupancy(
+            request,
+            session_id=session_id,
+            team_name=str(runtime_team_name).strip(),
+            template_id=template_id,
+        )
+    except TeamQuotaExceeded:
+        logger.warning(
+            "[TeamHelpers] session team exceeds quota: session_id=%s team_name=%s",
+            session_id,
+            runtime_team_name,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] session team occupancy record failed", exc_info=True)
+
+
+def _enterprise_prereserve_team_slot(
+    request: Any,
+    session_id: str,
+) -> tuple[str | None, Any]:
+    """Reserve one team slot before an enterprise chat creates a team.
+
+    Returns ``(user_message, lease)``. A message means the create must stop.
+    Personal edition never calls this. An existing session entity is left alone.
+    """
+    from jiuwenswarm.enterprise.team.handlers import request_identity
+    from jiuwenswarm.enterprise.team.quota import (
+        TeamQuotaExceeded,
+        get_team_quota_service,
+        team_quota_user_message,
+    )
+
+    identity = request_identity(request)
+    if not identity.user_id:
+        return None, None
+    try:
+        # Entity lookup and the reservation are one MySQL call.
+        lease = get_team_quota_service().reserve_team_create(
+            identity,
+            session_id,
+            on_existing="skip",
+        )
+    except TeamQuotaExceeded as exc:
+        return team_quota_user_message(exc), None
+    if getattr(lease, "noop", False):
+        return None, None
+    return None, lease
+
+
+def _release_uncommitted_team_create(lease: Any) -> None:
+    """Return a chat-path reservation that never became a committed team."""
+    if lease is None or getattr(lease, "noop", False):
+        return
+    key = str(getattr(lease, "idempotency_key", "") or "")
+    prefix = "session:"
+    if not key.startswith(prefix):
+        return
+    from jiuwenswarm.enterprise.team.quota import (
+        STATUS_RESERVED,
+        get_team_quota_service,
+    )
+
+    from jiuwenswarm.infrastructure.db.team_mysql_actor import use_team_mysql
+
+    quota = get_team_quota_service()
+    if use_team_mysql():
+        quota.release_reserved_create(key[len(prefix):])
+        return
+    row = quota.peek_team_create_lease(key[len(prefix):])
+    if row is None or row.get("status") != STATUS_RESERVED:
+        return
+    quota.release_lease(lease)
+
+
+async def _release_team_create_off_loop(lease: Any) -> None:
+    """Release a chat reservation without blocking the HTTP event loop."""
+    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+    await run_team_store(_release_uncommitted_team_create, lease)
+
+
+async def _apply_enterprise_runtime_ready_hooks(
+    *,
+    channel_id: str | None,
+    session_id: str,
+    runtime_team_name: str,
+    parsed: dict[str, Any],
+    request: Any | None = None,
+) -> None:
+    """Attach the teammate quota guard and back-fill team identity on ready."""
+    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+    await run_team_store(
+        _record_session_team_occupancy,
+        request=request,
+        session_id=session_id,
+        runtime_team_name=runtime_team_name,
+    )
+    team_agent = await _current_pool_team_agent(runtime_team_name)
+    try:
+        from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard
+
+        if team_agent is not None:
+            team_id = ""
+            owner = None
+            try:
+                from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                from jiuwenswarm.enterprise.team.control_store import get_team_control_store
+
+                def _entity_for_session() -> Any:
+                    return get_team_control_store().get_entity_by_session(session_id)
+
+                entity = await run_team_store(_entity_for_session)
+                if entity is not None:
+                    team_id = entity.team_id
+                    owner = entity.owner
+            except Exception:  # noqa: BLE001
+                team_id = ""
+            attach_teammate_limit_guard(
+                team_agent,
+                team_id=team_id,
+                owner=owner,
+                on_quota_exceeded=lambda **kwargs: _emit_teammate_quota_notice(
+                    channel_id, session_id, **kwargs
+                ),
+            )
+            if team_id:
+                try:
+                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+                    backend = getattr(team_agent, "team_backend", None)
+                    leader_name = str(getattr(backend, "leader_member_name", "") or "")
+                    names: list[str] = []
+                    if backend is not None and getattr(backend, "db", None) is not None:
+                        roster = await backend.db.member.get_member_roster(backend.team_name)
+                        names = [
+                            str(name)
+                            for name, _display, _status in roster
+                            if str(name) and str(name) != leader_name
+                        ]
+                    await run_team_store(
+                        get_team_quota_service().reconcile_local_roster,
+                        team_id,
+                        names,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("[TeamHelpers] teammate quota roster reconcile failed", exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] teammate limit guard attach failed", exc_info=True)
+
+    try:
+        from jiuwenswarm.enterprise.team.membership import materialize_pending_memberships
+
+        await materialize_pending_memberships(
+            runtime_team_name=runtime_team_name,
+            session_id=session_id,
+            channel_id=channel_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] materialize pending memberships failed", exc_info=True)
+
+    try:
+        from jiuwenswarm.enterprise.team.control_bridge import entity_payload
+        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+        entity = await run_team_store(
+            entity_payload,
+            session_id=session_id,
+            team_name=runtime_team_name,
+        )
+        if entity:
+            parsed.setdefault("team_id", entity.get("team_id"))
+            parsed.setdefault(
+                "owner",
+                {
+                    "user_id": entity.get("owner_user_id", ""),
+                    "group_id": entity.get("owner_group_id", ""),
+                    "bot_id": entity.get("owner_bot_id", ""),
+                },
+            )
+            parsed.setdefault("team_status", entity.get("status"))
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] runtime_ready entity enrich failed", exc_info=True)
+
+
+def _emit_teammate_quota_notice(
+    channel_id: str | None,
+    session_id: str,
+    *,
+    used: int,
+    limit: int,
+    member_name: str = "",
+    **_kwargs: Any,
+) -> None:
+    """Show one user-facing teammate-quota notice per round."""
+    from jiuwenswarm.enterprise.team.member_limits import teammate_quota_user_message
+
+    tm = get_team_manager(channel_id)
+    claim = getattr(tm, "claim_teammate_quota_notice", None)
+    if callable(claim) and not claim(session_id):
+        return
+    content = teammate_quota_user_message(limit)
+    event = {
+        "event_type": "chat.notice",
+        "notice_type": "team_teammate_quota",
+        "session_id": session_id,
+        "content": content,
+        "message": content,
+        "quota": {"kind": "teammate_spawn", "used": int(used), "limit": int(limit)},
+        "blocked_name": str(member_name or ""),
+    }
+    try:
+        asyncio.get_running_loop().create_task(
+            _broadcast_event(channel_id, session_id, event)
+        )
+    except RuntimeError:
+        logger.debug("[TeamHelpers] teammate quota notice has no running loop")
+    try:
+        append_history_record(
+            session_id=session_id,
+            request_id=f"team-teammate-quota-{session_id}",
+            channel_id=_resolve_channel_id(channel_id),
+            role="assistant",
+            content=content,
+            timestamp=time.time(),
+            event_type="chat.notice",
+            extra=dict(event),
+            mode="team",
+        )
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] persist teammate quota notice failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+
+
+def _persist_team_notice(
+    channel_id: str | None,
+    session_id: str,
+    *,
+    request_id: str,
+    content: str,
+    event: dict[str, Any],
+) -> None:
+    """Keep a team refusal in session history so a refresh still shows it."""
+    try:
+        append_history_record(
+            session_id=session_id,
+            request_id=request_id,
+            channel_id=_resolve_channel_id(channel_id),
+            role="assistant",
+            content=content,
+            timestamp=time.time(),
+            event_type="chat.notice",
+            extra=dict(event),
+            mode="team",
+        )
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] persist team notice failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+
+
+def _redact_teammate_quota_tool_result(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Keep the quota sentence on the notice only."""
+    if parsed.get("event_type") != "chat.tool_result":
+        return parsed
+    keys = ("result", "raw_output", "summary", "content", "error", "rendered_result")
+    blob = "\n".join(str(parsed.get(key) or "") for key in keys)
+    if "TEAM_MEMBER_QUOTA_EXCEEDED" not in blob and "人数已满" not in blob:
+        return parsed
+    redacted = dict(parsed)
+    for key in keys:
+        value = redacted.get(key)
+        if isinstance(value, str) and (
+            "TEAM_MEMBER_QUOTA_EXCEEDED" in value or "人数已满" in value
+        ):
+            redacted[key] = "TEAM_MEMBER_QUOTA_EXCEEDED"
+    return redacted
+
+
+def _explicit_team_size_refusal(
+    request: Any,
+    query_text: str,
+    config_base: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Refuse an original sentence that already states a whole-team size over the cap."""
+    text = str(query_text or "").strip()
+    if not text:
+        return None
+    from jiuwenswarm.enterprise.team.member_limits import (
+        requested_team_size_over_limit,
+        requested_team_size_user_message,
+        whole_team_member_limit,
+    )
+    from jiuwenswarm.enterprise.team.quota import KIND_REQUESTED_TEAM_SIZE
+
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    limit, default = whole_team_member_limit(request, config_base)
+    requested = requested_team_size_over_limit(text, limit, enterprise=is_enterprise())
+    if requested is None:
+        return None
+    content = requested_team_size_user_message(requested, limit)
+    return content, {
+        "kind": KIND_REQUESTED_TEAM_SIZE,
+        "used": requested,
+        "limit": limit,
+        "default": default,
+    }
+
+
 def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     """Trim large team tool result fields before forwarding them to clients."""
     if parsed.get("event_type") != "chat.tool_result":
         return parsed
 
-    next_event = dict(parsed)
+    next_event = _redact_teammate_quota_tool_result(dict(parsed))
     truncated = False
     original_size = 0
     for key in ("result", "rendered_result", "raw_output"):
@@ -2374,6 +2742,31 @@ def _is_duplicate_ask_user_question(
         return True
     emitted_request_ids.add(request_id)
     return False
+
+
+def _quiet_round_status_payload(
+    session_id: str,
+    round_id: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    """End-of-round lamp frame. Enterprise keeps the SSE open with ``idle``.
+
+    A frame without ``idle`` still means the stream itself has finished.
+    Personal payloads stay unchanged.
+    """
+    payload: dict[str, Any] = {
+        "event_type": "chat.processing_status",
+        "session_id": session_id,
+        "rid": round_id,
+        "is_processing": False,
+        "is_complete": True,
+    }
+    payload.update(extra)
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        payload["idle"] = True
+    return payload
 
 
 def _team_processing_done_chunk(
@@ -2785,6 +3178,7 @@ async def _start_team_stream_round(
     run_context: object | None = None,
     cross_session_marker: dict[str, Any] | None = None,
     interrupt_input: Any | None = None,
+    request: Any | None = None,
 ) -> asyncio.Queue | None:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -2837,17 +3231,21 @@ async def _start_team_stream_round(
     stream_kwargs["round_request_id"] = request_id
     if cross_session_marker is not None:
         stream_kwargs["cross_session_marker"] = cross_session_marker
-    stream = _consume_stream_with_query(
-        channel_id,
-        session_id,
-        team_spec,
-        query,
-        generation=generation,
-        run_context=run_context,
-        interrupt_input=interrupt_input,
-        **stream_kwargs,
-    )
-    stream_task = asyncio.create_task(stream)
+    request_token = _TEAM_STREAM_REQUEST.set(request)
+    try:
+        stream = _consume_stream_with_query(
+            channel_id,
+            session_id,
+            team_spec,
+            query,
+            generation=generation,
+            run_context=run_context,
+            interrupt_input=interrupt_input,
+            **stream_kwargs,
+        )
+        stream_task = asyncio.create_task(stream)
+    finally:
+        _TEAM_STREAM_REQUEST.reset(request_token)
     _register_team_stream_task(
         team_manager,
         session_id,
@@ -3151,6 +3549,7 @@ async def _process_team_message_stream(
     cron_user_admitted = False
     round_submitted = False
     event_stream_cancelled = False
+    enterprise_create_lease: Any = None
 
     async def _complete_user_submission(*, accepted: bool) -> None:
         nonlocal user_admitted
@@ -3322,7 +3721,89 @@ async def _process_team_message_stream(
             hide_dm = preparation.hide_dm
             debug = preparation.debug
 
+    if is_first_request:
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        # 超员拒绝只属于企业版。个人版不解析人数，也不为取上限打开配额服务。
+        if is_enterprise():
+            from jiuwenswarm.enterprise.team.quota import QUOTA_EXCEEDED
+
+            size_refusal = _explicit_team_size_refusal(request, query_text, get_config())
+        else:
+            size_refusal = None
+        if size_refusal is not None:
+            content, quota = size_refusal
+            event = {
+                "event_type": "chat.notice",
+                "notice_type": "requested_team_size",
+                "session_id": session_id,
+                "content": content,
+                "message": content,
+                "code": QUOTA_EXCEEDED,
+                "quota": quota,
+            }
+            _persist_team_notice(
+                channel_id,
+                session_id,
+                request_id=f"team-size-{rid}",
+                content=content,
+                event=event,
+            )
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload=event,
+                is_complete=True,
+            )
+            return
+
+    enterprise_create_lease = None
     try:
+        if is_first_request:
+            from jiuwenswarm.enterprise.edition import is_enterprise
+
+            if is_enterprise():
+                from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+
+                notice, enterprise_create_lease = await run_team_store(
+                    _enterprise_prereserve_team_slot,
+                    request,
+                    session_id,
+                )
+                if notice:
+                    from jiuwenswarm.enterprise.team.quota import QUOTA_EXCEEDED
+
+                    event = {
+                        "event_type": "chat.notice",
+                        "notice_type": "team_quota",
+                        "session_id": session_id,
+                        "content": notice,
+                        "message": notice,
+                        "code": QUOTA_EXCEEDED,
+                    }
+                    _persist_team_notice(
+                        channel_id,
+                        session_id,
+                        request_id=f"team-quota-{rid}",
+                        content=notice,
+                        event=event,
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=channel_id,
+                        payload=event,
+                        is_complete=True,
+                    )
+                    return
+                if isinstance(query, str) and query.strip():
+                    from jiuwenswarm.enterprise.team.member_limits import (
+                        enterprise_recruit_constraint,
+                    )
+
+                    note = enterprise_recruit_constraint(query_text or query)
+                    if note:
+                        query = f"{query.rstrip()}\n\n{note}"
+                        query_text = query
         request_metadata = dict(request.metadata or {})
         if group_input is not None:
             from jiuwenswarm.agents.swarm.group_chat import resolve_group_members
@@ -3490,9 +3971,17 @@ async def _process_team_message_stream(
         # no pre-built parent DeepAgent required.
         # 会话级 swarmflow 配置：请求 params > metadata > config.yaml；
         # worktree 跟随 project_dir（选了项目目录即隔离可用，未选即关闭）
+        # 与单 agent 使用同一份已解析配置。企业版模型在 Gateway 模板里，
+        # AgentServer 的 config.yaml 只有 ${MODEL_PROVIDER} 占位；不套用模板时
+        # 集群会把空 provider 交给 ModelClientConfig，报 181000。
+        from jiuwenswarm.enterprise.config.config_provider import resolve_agent_config
+
+        team_runtime_config = (
+            await resolve_agent_config(get_config(), request=request)
+        ).config
         swarmflow_config = _resolve_session_swarmflow_config(
             params_obj if isinstance(params_obj, dict) else None,
-            get_config(),
+            team_runtime_config,
             session_id=session_id,
             project_dir=inputs.get("project_dir") or request_metadata.get("project_dir"),
         )
@@ -3522,6 +4011,7 @@ async def _process_team_message_stream(
             dispatch_mode=team_dispatch_mode,
             bootstrap_mode=team_bootstrap_mode,
             model_selection=runtime_model_selection,
+            config_base=team_runtime_config,
         )
         if group_input is not None and request_metadata.get("group_members") is not None:
             update_session_metadata(session_id=session_id,
@@ -3668,6 +4158,7 @@ async def _process_team_message_stream(
             payload=None,
             is_complete=True,
         )
+        await _release_team_create_off_loop(enterprise_create_lease)
         return
 
     team_name = team_spec.team_name
@@ -3714,6 +4205,7 @@ async def _process_team_message_stream(
                 payload={"event_type": "chat.done"},
                 is_complete=True,
             )
+            await _release_team_create_off_loop(enterprise_create_lease)
             return
 
         prompt = str(slash_result.get("followup_prompt", "") or "").strip()
@@ -3756,6 +4248,7 @@ async def _process_team_message_stream(
                 payload=None,
                 is_complete=True,
             )
+            await _release_team_create_off_loop(enterprise_create_lease)
             return
 
     try:
@@ -3785,7 +4278,23 @@ async def _process_team_message_stream(
                     and not has_interactive_waiter(session_id)
                 )
             )
-            if is_bounded_round or needs_interactive_waiter:
+            from jiuwenswarm.enterprise.edition import is_enterprise
+            from jiuwenswarm.enterprise.team.session_live import (
+                ensure_team_session_live,
+            )
+
+            # 企业版团队正文走会话订阅。这一次 chat.send 只提交，不换等待者。
+            if (
+                is_enterprise()
+                and not is_bounded_round
+                and not is_heartbeat_request
+            ):
+                await ensure_team_session_live(
+                    team_manager,
+                    session_id,
+                    _resolve_channel_id(channel_id),
+                )
+            elif is_bounded_round or needs_interactive_waiter:
                 request_queue = _new_team_event_queue()
                 _add_team_waiter(
                     team_manager,
@@ -3796,6 +4305,12 @@ async def _process_team_message_stream(
                     generation=generation,
                 )
             if query:
+                if is_enterprise() and isinstance(query, str) and query.strip():
+                    note_new_user_content = getattr(
+                        team_manager, "note_new_user_content", None
+                    )
+                    if callable(note_new_user_content):
+                        note_new_user_content(session_id)
                 # Follow-up rounds carry their own attachments and context, so
                 # they are rendered exactly like the first one.
                 # 暂停后恢复裁决：仅把 paused run 清单前缀注入路由到 leader 的
@@ -4070,6 +4585,19 @@ async def _process_team_message_stream(
                     controller=get_background_task_controller(session_id),
                 )
                 query = turn.text if isinstance(turn.text, str) else query
+            from jiuwenswarm.enterprise.edition import is_enterprise
+            from jiuwenswarm.enterprise.team.session_live import (
+                ensure_team_session_live,
+                stop_team_session_live,
+            )
+
+            session_live_queue = None
+            if is_enterprise() and not is_bounded_round and not is_heartbeat_request:
+                session_live_queue = await ensure_team_session_live(
+                    team_manager,
+                    session_id,
+                    _resolve_channel_id(channel_id),
+                )
             try:
                 request_queue = await _start_team_stream_round(
                     channel_id=channel_id,
@@ -4083,7 +4611,11 @@ async def _process_team_message_stream(
                     debug=debug,
                     source=first_request_source,
                     exclusive_waiter=is_heartbeat_request,
-                    request_queue=request_queue,
+                    request_queue=(
+                        session_live_queue
+                        if session_live_queue is not None
+                        else request_queue
+                    ),
                     team_leader_identity=team_leader_identity,
                     generation=generation,
                     attach_waiter=(
@@ -4096,6 +4628,7 @@ async def _process_team_message_stream(
                         cross_session_marker if isinstance(cross_session_marker, dict) else None
                     ),
                     interrupt_input=interrupt_input,
+                    request=request,
                 )
             except BaseException:
                 _remove_team_waiter(
@@ -4104,11 +4637,40 @@ async def _process_team_message_stream(
                     rid,
                     generation=generation,
                 )
+                if (
+                    session_live_queue is not None
+                    and not _has_team_stream_task(
+                        team_manager,
+                        session_id,
+                        generation=generation,
+                    )
+                ):
+                    await stop_team_session_live(session_id)
                 team_manager.clear_pending_runtime(session_id)
                 await _finish_round_submission(accepted=False)
                 raise
             await startup.aclose()
             await _finish_round_submission(accepted=True)
+            if session_live_queue is not None:
+                # 提交已经进 runner。拆掉这次 HTTP 对队列的引用，
+                # finally 才不会把会话等待者一起摘掉。
+                request_queue = None
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=channel_id,
+                    payload={
+                        "event_type": "chat.processing_status_deferred",
+                        "session_id": session_id,
+                    },
+                    is_complete=False,
+                )
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=channel_id,
+                    payload=None,
+                    is_complete=True,
+                )
+                return
 
             if request_queue is None:
                 yield AgentResponseChunk(
@@ -4164,6 +4726,7 @@ async def _process_team_message_stream(
             else:
                 # while 循环：仅 first-request 使用，依赖 stream_task 生命周期。
                 # follow-up 已在上方 return，不再进入此循环。
+                # 企业版交互请求已经在上面交回短的接受结果。
                 while _has_team_stream_task(
                     team_manager,
                     session_id,
@@ -4286,6 +4849,7 @@ async def _process_team_message_stream(
         event_stream_cancelled = True
         raise
     finally:
+        await _release_team_create_off_loop(enterprise_create_lease)
         if request_queue is not None:
             _remove_team_waiter(
                 team_manager,
@@ -4833,6 +5397,13 @@ async def _consume_stream_with_query(
                         session_id,
                         source="runtime_ready",
                     )
+                    await _apply_enterprise_runtime_ready_hooks(
+                        channel_id=channel_id,
+                        session_id=session_id,
+                        runtime_team_name=ready_team_name,
+                        parsed=parsed,
+                        request=_TEAM_STREAM_REQUEST.get(),
+                    )
                     # A resumed team brings its whole roster back with it and
                     # emits no member event for anyone who is merely persisted,
                     # so announce here as well as after the roster tools.
@@ -4890,15 +5461,12 @@ async def _consume_stream_with_query(
                         round_id,
                     )
                     await _deliver(
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "rid": round_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                            "member_count": parsed.get("member_count"),
-                            "task_count": parsed.get("task_count"),
-                        },
+                        _quiet_round_status_payload(
+                            session_id,
+                            round_id,
+                            member_count=parsed.get("member_count"),
+                            task_count=parsed.get("task_count"),
+                        ),
                     )
                     terminal_broadcasted = True
                     await _finalize_org_bound_team_after_idle(
@@ -4946,14 +5514,11 @@ async def _consume_stream_with_query(
                         round_id,
                     )
                     await _deliver(
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "rid": round_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                            "member_count": parsed.get("member_count"),
-                        },
+                        _quiet_round_status_payload(
+                            session_id,
+                            round_id,
+                            member_count=parsed.get("member_count"),
+                        ),
                     )
                     terminal_broadcasted = True
                     # Do not finalize here: the leader stream stays open after

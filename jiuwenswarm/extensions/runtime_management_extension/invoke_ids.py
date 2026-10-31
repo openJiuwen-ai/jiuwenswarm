@@ -92,12 +92,26 @@ def routing_triple_from_envelope(envelope: Any) -> tuple[str, str, str]:
     return group_id, bot_id, user_id
 
 
-def apply_invoke_ids_to_envelope(envelope: Any) -> Any:
+def apply_invoke_ids_to_envelope(
+    envelope: Any,
+    *,
+    tenant_triple: tuple[str, str, str] | None = None,
+) -> Any:
     """补齐并 MD5 化信封顶层 ``service_id`` / ``agent_id`` / ``workspace_key``。
 
     非空顶层字段优先；空串视为未配置，改用权威 routing 三元组拼默认值。
+
+    ``tenant_triple`` 给定时用 Team owner 的三元组推导租户目录，信封上的
+    ``user_id`` 仍是请求者本人。
     """
     group_id, bot_id, user_id = routing_triple_from_envelope(envelope)
+    if tenant_triple is not None:
+        t_group, t_bot, t_user = (str(value or "").strip() for value in tenant_triple)
+        if t_group and t_bot and t_user:
+            group_id, bot_id, user_id = t_group, t_bot, t_user
+            envelope.service_id = None
+            envelope.agent_id = None
+            envelope.workspace_key = None
 
     service_id, agent_id, workspace_key = coalesce_invoke_ids(
         group_id=group_id,

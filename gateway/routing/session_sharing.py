@@ -450,6 +450,12 @@ class SessionDispatcher:
         if not fan_out:
             return
 
+        # 企业版团队直播按 session_id 交给浏览器订阅，不按每次 chat.send 的 ws_id
+        # 各写一遍。Web 先投一次，后面的 fan-out 不再进入 web 容器。
+        session_live = SessionDispatcher._is_session_live(msg)
+        if session_live:
+            await SessionDispatcher._deliver_session_live_once(msg, channel_manager)
+
         godview_subs = registry.lookup_member(session_id, SubRole.GODVIEW)
         # 已发送的物理容器集合，跨 intent 去重：broadcast 的 fan_out=[godview, mention_all]
         # 可能打到同一个 IM 群，godview 先发到群 G、mention_all 又发到群 G → 重复
@@ -457,6 +463,8 @@ class SessionDispatcher:
 
         for target in fan_out:
             subs = SessionDispatcher._select_subs(target, godview_subs, registry, session_id)
+            if session_live:
+                subs = [sub for sub in subs if sub.routing_key.channel_id != "web"]
             if not subs:
                 # 未认领的 LLM target 无 GodView 抄送，静默跳过（流式 chunk 高频路径）
                 continue
@@ -467,6 +475,51 @@ class SessionDispatcher:
                 await SessionDispatcher._send_to_container(
                     msg, target, group_subs, container_key, channel_manager,
                 )
+
+    @staticmethod
+    def _is_session_live(msg) -> bool:
+        metadata = getattr(msg, "metadata", None)
+        return isinstance(metadata, dict) and str(metadata.get("delivery_scope") or "") == "session_live"
+
+    @staticmethod
+    def _resolve_app_id(msg) -> str:
+        return getattr(msg, "app_id", None) or getattr(msg, "bot_id", None) or "default"
+
+    @staticmethod
+    async def _deliver_session_live_once(msg, channel_manager) -> None:
+        """把直播帧交给消息所属的 Web channel 一次。
+
+        WebChannel.send 看到 delivery_scope=session_live 后按 session_id 写入订阅，
+        不再使用 routing_target 里已经结束的 chat.send 连接号。
+        """
+        channel_id = str(getattr(msg, "channel_id", "") or "")
+        if channel_id != "web":
+            return
+        app_id = SessionDispatcher._resolve_app_id(msg)
+        channel = channel_manager.get_channel(ChannelKey(channel_id, app_id))
+        if channel is None:
+            channel = channel_manager.get_channel(channel_id)
+        if channel is None:
+            logger.debug(
+                "[dispatch] session live has no web channel: app_id=%s session_id=%s",
+                app_id,
+                getattr(msg, "session_id", ""),
+            )
+            return
+        try:
+            await asyncio.wait_for(channel.send(msg), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.error(
+                "[dispatch] session live send timed out after 10s: app_id=%s session_id=%s",
+                app_id,
+                getattr(msg, "session_id", ""),
+            )
+        except Exception:
+            logger.exception(
+                "[dispatch] session live send failed: app_id=%s session_id=%s",
+                app_id,
+                getattr(msg, "session_id", ""),
+            )
 
     @staticmethod
     def _select_subs(

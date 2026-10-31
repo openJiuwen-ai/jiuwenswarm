@@ -3269,6 +3269,12 @@ class JiuWenSwarm:
                 cancelled = await team_manager.cancel_session_runtime(
                     session_id, reason=reason, workflow_disposition=workflow_disposition
                 )
+                if workflow_disposition == "stop":
+                    from jiuwenswarm.enterprise.team.session_live import (
+                        stop_team_session_live,
+                    )
+
+                    await stop_team_session_live(session_id, drop_queued=True)
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,

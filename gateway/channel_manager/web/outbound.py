@@ -84,6 +84,9 @@ def _is_sse_end_frame(frame: dict[str, Any], req_id: str = "") -> bool:
     if ev == "chat.processing_status" and payload.get("is_processing") is False:
         if not is_enterprise():
             return False
+        # idle 只关灯。企业版回复连接留到没有 idle 的结束帧。
+        if payload.get("idle") is True:
+            return False
         # cancel-replace 时旧 rid 的 false 可能落到新 SSE；只结束本连接自己的流。
         frame_rid = str(payload.get("request_id") or "").strip()
         sse_rid = str(req_id or "").strip()
@@ -283,7 +286,26 @@ class HttpSseOutbound(_HttpOutboundBase):
 
     def __init__(self, *, maxsize: int = 256, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        self.session_live = False
         self._frames: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=maxsize)
+
+    async def iter_open_frames(
+        self,
+        *,
+        keepalive: float = 10.0,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """把帧一直送出去。灭灯、chat.final、错误都不结束这条订阅。"""
+        while True:
+            try:
+                frame = await asyncio.wait_for(self._frames.get(), timeout=keepalive)
+            except asyncio.TimeoutError:
+                if self.closed:
+                    return
+                yield {"type": "keepalive"}
+                continue
+            if frame is None:
+                return
+            yield frame
 
     def accept_frame(self, frame: dict[str, Any]) -> None:
         if self.closed:
