@@ -14074,9 +14074,17 @@ def _jws_install_subagent_runtime_patch() -> None:
     _orig_create_subagent = DeepAgent.create_subagent
 
     def _create_subagent_with_runtime_defaults(self, subagent_type, subsession_id, *args, **kwargs):
-        sub = _orig_create_subagent(self, subagent_type, subsession_id, *args, **kwargs)
-        # Core may reuse the parent's rail objects. Detach their Agent binding and
-        # native-image policy state; pause/stream bookkeeping keeps its existing semantics.
+        from jiuwenswarm.common.subagent_logging import subagent_creation
+
+        with subagent_creation(subagent_type, subsession_id) as timer:
+            sub = _orig_create_subagent(self, subagent_type, subsession_id, *args, **kwargs)
+            timer.mark("factory")
+            sub = _apply_runtime_defaults(self, sub, subagent_type)
+            timer.mark("runtime_defaults")
+            return sub
+
+    def _apply_runtime_defaults(self, sub, subagent_type):
+        # Compatibility with Core versions that still reuse the parent's rails.
         parent_rails = self.configured_rails()
         image_rails = sub.find_rails_by_type((JiuSwarmStreamEventRail, MultimodalImageRail))
         shared = [rail for rail in image_rails if rail in parent_rails]
@@ -14085,11 +14093,7 @@ def _jws_install_subagent_runtime_patch() -> None:
             for rail in image_rails:
                 detached = rail
                 if rail in shared:
-                    detached = copy.copy(rail)
-                    policy = detached._image_capability_policy
-                    if policy is not None:
-                        detached._image_capability_policy = ImageCapabilityPolicy(policy.request_source, policy.config_source)
-                    detached._deep_agent = None
+                    detached = rail.clone_for_subagent()
                 sub.add_rail(detached)
         if not sub.find_rails_by_type((JiuSwarmStreamEventRail,)):
             parents = self.find_rails_by_type((JiuSwarmStreamEventRail,))
@@ -14106,6 +14110,10 @@ def _jws_install_subagent_runtime_patch() -> None:
         # A configured DeepAgent instance may be reused across task calls.
         if not sub.find_rails_by_type((_SubagentStreamingRail,)):
             sub.add_rail(_SubagentStreamingRail())
+        from jiuwenswarm.agents.harness.common.rails.subagent_logging_rail import SubagentLoggingRail
+
+        if not sub.find_rails_by_type((SubagentLoggingRail,)):
+            sub.add_rail(SubagentLoggingRail())
         # pylint: disable=protected-access
         parent_ws = getattr(self._deep_config, "workspace", None)
         # pylint: enable=protected-access
@@ -14124,6 +14132,9 @@ def _jws_install_subagent_runtime_patch() -> None:
 
 
 _jws_install_subagent_runtime_patch()
+from jiuwenswarm.common.subagent_logging import install_task_tool_logging as _install_task_tool_logging
+
+_install_task_tool_logging()
 # === [JiuWenSwarm patch end] ================================================
 
 

@@ -360,6 +360,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._symphony_stream_handler = SymphonyToolStreamHandler()
         self._image_capability_policy = ImageCapabilityPolicy()
 
+    def clone_for_subagent(self):
+        cloned = type(self)(member_name=self._member_name, role=self._role)
+        policy = self._image_capability_policy
+        if policy is not None:
+            cloned.configure_image_capabilities(policy.request_source, policy.config_source)
+        return cloned
+
     def configure_image_capabilities(self, request_source, config_source=None) -> None:
         self._image_capability_policy.request_source = request_source
         if config_source is not None:

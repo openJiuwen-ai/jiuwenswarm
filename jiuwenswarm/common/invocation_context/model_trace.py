@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 from openjiuwen.core.foundation.llm import Model
 
+from jiuwenswarm.common.subagent_logging import model_observation
+
 from .models import InvocationContext, TraceContext
 from .runtime import get_current_invocation_context
 
@@ -87,11 +89,20 @@ class TraceAwareModel(Model):
         return kwargs
 
     async def invoke(self, *args: Any, **kwargs: Any) -> Any:
-        return await super().invoke(*args, **self._with_trace_headers(kwargs))
+        observed_kwargs = {"messages": args[0], **kwargs} if args else kwargs
+        with model_observation(self, observed_kwargs, streaming=False) as observation:
+            result = await super().invoke(*args, **self._with_trace_headers(kwargs))
+            if observation is not None:
+                observation.response(result)
+            return result
 
     async def stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
-        async for chunk in super().stream(*args, **self._with_trace_headers(kwargs)):
-            yield chunk
+        observed_kwargs = {"messages": args[0], **kwargs} if args else kwargs
+        with model_observation(self, observed_kwargs, streaming=True) as observation:
+            async for chunk in super().stream(*args, **self._with_trace_headers(kwargs)):
+                if observation is not None:
+                    observation.response(chunk)
+                yield chunk
 
 
 __all__ = [
