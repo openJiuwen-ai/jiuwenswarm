@@ -3,7 +3,7 @@
 """Management catalog traverses Gateway, routeless E2A and Server HTTP."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -32,12 +32,10 @@ async def test_catalog_full_http_chain_without_session_or_agent(monkeypatch, hub
         "error": "",
     }
     query = AsyncMock(return_value=payload)
-    monkeypatch.setattr("jiuwenswarm.server.handlers.hub_catalog.list_hub_equipment_catalog", query)
+    monkeypatch.setattr("jiuwenswarm.server.control.hub_catalog_service.list_hub_equipment_catalog", query)
 
-    def reject_agent_execution(self):
-        raise AssertionError("management catalog must not initialize Agent execution")
-
-    monkeypatch.setattr(AgentServerServices, "execution_runtime", reject_agent_execution)
+    execution_runtime = Mock(side_effect=AssertionError("must not initialize Agent execution"))
+    monkeypatch.setattr(AgentServerServices, "execution_runtime", execution_runtime)
     server = build_http_app(AppServices())
     route = SimpleNamespace(route=AsyncMock(), touch=AsyncMock())
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server)) as server_http:
@@ -55,6 +53,7 @@ async def test_catalog_full_http_chain_without_session_or_agent(monkeypatch, hub
     assert body["data"]["error"] == payload["error"]
     assert body["data"]["items"] == ([] if hub_failed else [{"kind": "agent_template", "id": "asset-a"}])
     query.assert_awaited_once_with()
+    execution_runtime.assert_not_called()
     route.route.assert_not_awaited()
     route.touch.assert_not_awaited()
 
