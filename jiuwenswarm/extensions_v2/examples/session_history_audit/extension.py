@@ -25,8 +25,10 @@ class SessionHistoryAudit:
         receipt = await ops.session.append({"id": message_id, "message": {
             "type": "assistant", "content": [{"type": "text", "text": "This turn was audited."}],
         }})
-        page = await ops.session.messages(limit=5)
-        visible = any(row.get("extension_message_id") == message_id for row in page["messages"])
+        messages = await ops.session.messages()
+        saved_text = "".join(block["text"] for block in receipt.get("message", {}).get("content", [])
+                             if block.get("type") == "text") if receipt.get("message") else None
+        visible = saved_text is not None and any(row["text"] == saved_text for row in messages[-5:])
         logger.info("session history audit: session=%s status=%s visible=%s", ops.session_context.session_id, receipt["status"], visible)
         return await next_handler(event)
 

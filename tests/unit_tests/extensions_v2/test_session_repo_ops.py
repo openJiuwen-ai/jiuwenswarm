@@ -105,8 +105,7 @@ async def test_user_package_reads_real_repo_and_existing_ops(repo_host, reposito
     before = {name: (repository / ".git" / name).read_bytes() for name in ("HEAD", "config", "index")}
     result = await repo_host.bus.trigger(_ui_event({"cwd": str(repository.parent), "repo": "forged"}), context)
     assert result == {
-        "repo": {"repo_root": str(repository.resolve()), "branch": "feature/repo-test",
-                 "head": _git(repository, "rev-parse", "HEAD"), "detached": False},
+        "repo": {"root": str(repository.resolve()), "remote": None, "internal": False, "name": None},
         "cwd": context.cwd,
         "root": context.cwd,
         "model": None,
@@ -266,8 +265,8 @@ async def test_concurrent_user_handlers_keep_their_own_worktree(repo_host, repos
     _git(repository, "worktree", "add", "-b", "second", str(linked))
     contexts = [SessionContext("repo-session", str(path)) for path in (repository, linked)]
     results = await asyncio.gather(*(repo_host.bus.trigger(_ui_event(), context) for context in contexts))
-    assert [result["repo"]["branch"] for result in results] == ["feature/repo-test", "second"]
-    assert [result["repo"]["repo_root"] for result in results] == [str(repository.resolve()), str(linked.resolve())]
+    assert [result["repo"]["root"] for result in results] == [str(repository.resolve()), str(repository.resolve())]
+    assert [result["cwd"] for result in results] == [str(repository), str(linked)]
 
 
 @pytest.mark.asyncio
@@ -275,7 +274,7 @@ async def test_user_reload_and_uninstall_leave_platform_capability(repo_host, re
     reloaded = await repo_host.manager.reload("repo.reader")
     assert reloaded.status == "SUCCESS"
     context = SessionContext("repo-session", str(repository))
-    assert (await repo_host.bus.trigger(_ui_event(), context))["repo"]["branch"] == "feature/repo-test"
+    assert (await repo_host.bus.trigger(_ui_event(), context))["repo"]["root"] == str(repository.resolve())
     removed = await repo_host.manager.uninstall("repo.reader")
     assert removed.status == "SUCCESS"
     assert (await repo_host.bus.trigger(_ui_event(), context)).status == "ready"
@@ -284,7 +283,7 @@ async def test_user_reload_and_uninstall_leave_platform_capability(repo_host, re
         return await ops.session.repo()
 
     repo_host.bus.register_event_handler("ui.ready", reader, {})
-    assert (await repo_host.bus.trigger(_ui_event(), context))["branch"] == "feature/repo-test"
+    assert (await repo_host.bus.trigger(_ui_event(), context))["root"] == str(repository.resolve())
 
 
 @pytest.mark.asyncio

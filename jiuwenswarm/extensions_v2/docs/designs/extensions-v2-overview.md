@@ -204,3 +204,8 @@ Web前端只呈现平台允许的组件、动作和样式。独立 Ops 不会自
 | 查找前提、待确认的设计内容和参考来源 | 架构[第 12.2 节](extensions-v2-architecture.md#122-未验证前提与待确认问题)、[第 12.3 节](extensions-v2-architecture.md#123-参考依据与文档分工) |
 
 包管理门面的当前契约见[门面规约](../specs/S_01_extension-management-facade.md)，包管理与 WebUI 方案见[F_02](../features/F_02_control-plane.md)至[F_08](../features/F_08_frontend-render.md)，开发计划见[特性开发计划](extensions-v2-development-plan.md)。后续按[模块规范](../../AGENTS.md)分别维护定稿契约、实施与验证证据、任务与进度；概览同步整体结论。
+
+
+## 2026-10-31 七项会话查询事件化
+
+已开放 cwd/root/model/repo/messages/turns/usage 采用 Ops→同名查询 Event→USER/BUILTIN/CORE 的路径，返回格式优先对齐 Claude。字段、兼容与逐项解释见 [S_16](../specs/S_16_session-query-events.md) 和 [F_27](../features/F_27_session-query-events.md)。仅 Worker 持有 EventBus；验证返回参数，不介入原 Token Weather 渲染。
