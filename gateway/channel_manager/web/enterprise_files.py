@@ -18,7 +18,7 @@ from gateway.common.obs_files import (
     _obs_http_client,
     object_prefix,
 )
-from jiuwenswarm.common.utils import build_tenant_key
+from gateway.common.tenant_key import build_tenant_key
 from gateway.common.request_identity import normalize_routing_identity
 from jiuwenswarm.server.runtime.attachments.upload_storage import safe_upload_filename
 
