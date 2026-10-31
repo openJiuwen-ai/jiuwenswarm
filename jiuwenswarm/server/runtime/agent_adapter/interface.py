@@ -2562,11 +2562,29 @@ class JiuWenSwarm:
             skills_changed = False
             if _enterprise_web_handler and payload.get("success") is not False:
                 if is_enterprise():
+                    _post_refresh_t0 = time.perf_counter()
                     await self.refresh_enabled_skills_from_db()
+                    if handler_name.startswith("handle_skills_web_"):
+                        logger.info(
+                            "[SkillManager] %s post_refresh rail_refresh_ms=%.1f request_id=%s",
+                            handler_name.removeprefix("handle_skills_web_"),
+                            (time.perf_counter() - _post_refresh_t0) * 1000.0,
+                            request.request_id,
+                        )
                     skills_changed = True
             elif _reload_after_skills and payload.get("success") is not False:
+                _reload_t0 = time.perf_counter()
                 await self.create_instance()
+                _reload_create_ms = (time.perf_counter() - _reload_t0) * 1000.0
+                _links_t0 = time.perf_counter()
                 self._refresh_team_shared_skill_links(request.session_id)
+                logger.info(
+                    "[SkillManager] skills reload handler=%s create_instance_ms=%.1f links_ms=%.1f request_id=%s",
+                    handler_name,
+                    _reload_create_ms,
+                    (time.perf_counter() - _links_t0) * 1000.0,
+                    request.request_id,
+                )
                 skills_changed = True
             elif handler_name == "handle_skills_uninstall" and payload.get("success"):
                 await self._refresh_skill_rails_after_change()

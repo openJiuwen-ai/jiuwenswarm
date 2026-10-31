@@ -15,6 +15,7 @@ import shutil
 import ssl
 import tarfile
 import tempfile
+import time
 import uuid
 import zipfile
 from contextlib import contextmanager
@@ -360,7 +361,6 @@ def _safe_rmtree(path: Path) -> bool:
     if not path.exists():
         return True
 
-    import time
     import stat
 
     max_retries = 3
@@ -528,6 +528,8 @@ class SkillManager:
         self._persist_skills_state = bool(persist_skills_state)
         self._service_id = str(service_id or "").strip() or None
         self._agent_id = str(agent_id or "").strip() or None
+        # 最近一次最外层状态事务的锁等待耗时（state_transaction 写入，装卸埋点读取）
+        self._last_state_lock_wait_ms: float = 0.0
         self._state: dict[str, Any] = self._load_state()
         self._source_registry = SourceRegistry()
         self._register_builtin_skill_sources()
@@ -2447,6 +2449,9 @@ class SkillManager:
         source_type: str = "user",
     ) -> dict[str, Any]:
         """Atomically replace the entity, then commit the JSON installation record."""
+        _commit_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时，同卸载侧约定，避免跨线程读被覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
         normalized_source_type = str(source_type or "user").strip() or "user"
         if normalized_source_type not in {"user", "prebuilt"}:
             raise ValueError(f"invalid source_type for source install: {source_type}")
@@ -2515,6 +2520,12 @@ class SkillManager:
                 _safe_rmtree(staging)
         if backup.exists():
             _safe_rmtree(backup)
+        logger.info(
+            "[SkillManager] source_install commit name=%s txn_ms=%.1f lock_wait_ms=%.1f",
+            skill_name,
+            (time.perf_counter() - _commit_t0) * 1000.0,
+            _lock_wait_ms,
+        )
         return self._skill_installation_dto(record)
 
     def lookup_skill_md_author(self, skill_name: str) -> str:
@@ -2675,6 +2686,11 @@ class SkillManager:
         source_id = str(params.get("source_id") or "").strip()
         skill_id = str(params.get("skill_id") or "").strip()
         version_id = str(params.get("version_id") or "").strip()
+        logger.info(
+            "[SkillManager] source_install recv source_id=%s skill_id=%s version_id=%s",
+            source_id, skill_id, version_id,
+        )
+        _t0 = time.perf_counter()
         if not source_id or not skill_id or not version_id:
             return self._source_error(
                 "missing_params", "source_id, skill_id and version_id are required"
@@ -2684,12 +2700,19 @@ class SkillManager:
         market_display_name = str(params.get("display_name") or "").strip()[:200]
         market_version = str(params.get("version") or "").strip()[:100]
         market_author = str(params.get("author") or "").strip()[:200]
+        _download_t0 = time.perf_counter()
         try:
             descriptor, body, verification = await self._fetch_verified_source_artifact(
                 source_id=source_id,
                 skill_id=skill_id,
                 version_id=version_id,
                 params=params,
+            )
+            logger.info(
+                "[SkillManager] source_install stage=download source_id=%s cost_ms=%.1f size_bytes=%d",
+                source_id,
+                (time.perf_counter() - _download_t0) * 1000.0,
+                len(body),
             )
             with tempfile.TemporaryDirectory(prefix="jiuwenswarm_source_install_") as tmpdir:
                 tmp_path = Path(tmpdir)
@@ -2756,6 +2779,12 @@ class SkillManager:
                 exc,
             )
             return self._source_error("source_install_failed", str(exc))
+        finally:
+            logger.info(
+                "[SkillManager] source_install done source_id=%s total_ms=%.1f",
+                source_id,
+                (time.perf_counter() - _t0) * 1000.0,
+            )
 
     async def handle_skills_update(self, params: dict) -> dict:
         """Update an installed SkillRef through the same verified install transaction."""
@@ -3547,11 +3576,40 @@ class SkillManager:
             origin: 可选，技能来源标识（如 ``clawhub:owner/slug``、URL）。提供时按
                 origin 精确定位目录与记录，避免重名技能误删另一个。
         """
-        return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        logger.info(
+            "[SkillManager] uninstall recv name=%s origin=%s",
+            params.get("name", ""), str(params.get("origin", "") or "").strip(),
+        )
+        _t0 = time.perf_counter()
+        try:
+            return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        finally:
+            # done = 请求端到端，与安装侧 done 同口径（含等锁与线程调度）
+            logger.info(
+                "[SkillManager] uninstall done name=%s total_ms=%.1f",
+                params.get("name", ""),
+                (time.perf_counter() - _t0) * 1000.0,
+            )
 
     @_state_transactional
     def _handle_skills_uninstall_sync(self, params: dict) -> dict:
         """Uninstall one skill while holding the workspace state transaction."""
+        _txn_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时：此刻同实例其它事务被本锁
+        # 串行化，该属性不可能被并发覆盖；跨线程在事务外读会被后续事务取值覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
+        try:
+            return self._handle_skills_uninstall_txn_body(params)
+        finally:
+            # txn 行只覆盖事务体（获锁后起计）；lock_wait_ms 单列，供「等锁 vs 真实处理」拆分
+            logger.info(
+                "[SkillManager] uninstall txn name=%s txn_ms=%.1f lock_wait_ms=%.1f",
+                params.get("name", ""),
+                (time.perf_counter() - _txn_t0) * 1000.0,
+                _lock_wait_ms,
+            )
+
+    def _handle_skills_uninstall_txn_body(self, params: dict) -> dict:
         raw_name = params.get("name", "")
         raw_origin = str(params.get("origin", "") or "").strip()
         if not raw_name:
@@ -3639,6 +3697,7 @@ class SkillManager:
                 if dest.resolve() == builtin_skill_path.resolve():
                     return {"success": False, "detail": "内置技能不允许删除"}
 
+        _stage_t0 = time.perf_counter()
         _safe_rmtree(dest)
 
         # 处理 mirror 根目录中的技能
@@ -3646,12 +3705,21 @@ class SkillManager:
             mirror_dest = _safe_child_path(mirror_root, dest.name, "skill")
             if mirror_dest.exists() and mirror_dest.is_dir():
                 _safe_rmtree(mirror_dest)
+        logger.info(
+            "[SkillManager] uninstall stage=rmtree name=%s cost_ms=%.1f",
+            raw_name, (time.perf_counter() - _stage_t0) * 1000.0,
+        )
 
         # 按身份删除记录：origin 优先，避免误删同名另一条
+        _ledger_t0 = time.perf_counter()
         self._remove_installed_plugin(raw_name, origin=raw_origin or None)
         self._remove_local_skill(raw_name, origin=raw_origin or None)
         # 卸载时一并清掉该 skill 的 enabled 配置，避免重装同名 skill 时沿用旧的禁用状态。
         self.remove_skill_config(raw_name)
+        logger.info(
+            "[SkillManager] uninstall stage=ledger name=%s cost_ms=%.1f",
+            raw_name, (time.perf_counter() - _ledger_t0) * 1000.0,
+        )
         return {"success": True}
 
     async def handle_skills_import_local(self, params: dict) -> dict:
@@ -3823,6 +3891,9 @@ class SkillManager:
         source_url: str,
     ) -> dict[str, Any]:
         """Commit the user Skill entity and ledger record in one transaction."""
+        _commit_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时，同卸载侧约定，避免跨线程读被覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
         existing = self._find_skill_installation(name=skill_name)
         if existing is not None:
             existing_type = str(existing.get("source_type") or "").strip()
@@ -3890,6 +3961,12 @@ class SkillManager:
                 "error_code": "state_write_failed",
                 "error_message": str(exc)[:500],
             }
+        logger.info(
+            "[SkillManager] enterprise_install commit name=%s txn_ms=%.1f lock_wait_ms=%.1f",
+            installed_name,
+            (time.perf_counter() - _commit_t0) * 1000.0,
+            _lock_wait_ms,
+        )
         return {
             "success": True,
             "skill": {"name": installed_name, "version": skill_version},
@@ -3897,6 +3974,21 @@ class SkillManager:
 
     async def handle_skills_web_install(self, params: dict) -> dict:
         """企业 Web 安装兼容入口：下载、校验、落盘并提交 workspace JSON。"""
+        url = str(params.get("url") or "").strip()
+        logger.info("[SkillManager] enterprise_install recv url=%s", url)
+        _t0 = time.perf_counter()
+        try:
+            return await self._handle_skills_web_install_body(params)
+        finally:
+            # done = 请求端到端（含等锁与下载），失败早退路径也打，与 source_install finally 口径一致
+            logger.info(
+                "[SkillManager] enterprise_install done url=%s total_ms=%.1f",
+                url,
+                (time.perf_counter() - _t0) * 1000.0,
+            )
+
+    async def _handle_skills_web_install_body(self, params: dict) -> dict:
+        """下载、校验、落盘并提交的实际执行体（recv/done 计时由 handler 层负责）。"""
         from jiuwenswarm.agents.harness.common.installed_skill import (
             verify_skill_download_hmac,
         )
@@ -3919,6 +4011,7 @@ class SkillManager:
                 "error_message": "service_id and agent_id are required",
             }
 
+        _download_t0 = time.perf_counter()
         try:
             content = await asyncio.to_thread(self._download_web_skill_bytes, url)
         except Exception as exc:  # noqa: BLE001
@@ -3928,6 +4021,11 @@ class SkillManager:
                 "error_code": "download_failed",
                 "error_message": str(exc)[:500],
             }
+        logger.info(
+            "[SkillManager] enterprise_install stage=download cost_ms=%.1f size_bytes=%d",
+            (time.perf_counter() - _download_t0) * 1000.0,
+            len(content),
+        )
 
         # 签名可选：有则验 HMAC；无则跳过验签直接解压安装
         if signature and not verify_skill_download_hmac(content, signature):
@@ -5911,8 +6009,12 @@ class SkillManager:
         if not is_enterprise() or not self._persist_skills_state:
             yield
             return
+        _lock_wait_t0 = time.perf_counter()
         with enterprise_skill_state_lock(self._state_file) as outermost:
             if outermost:
+                # 最近一次最外层事务的锁等待耗时（进程 RLock + 跨 Pod portalocker），
+                # 供装卸类请求埋点区分「等锁」与「真实处理」。
+                self._last_state_lock_wait_ms = (time.perf_counter() - _lock_wait_t0) * 1000.0
                 self._state = self._load_state()
             yield
 
