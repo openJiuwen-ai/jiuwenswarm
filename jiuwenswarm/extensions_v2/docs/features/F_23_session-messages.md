@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 | F_23 / session-messages |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-10-31，在输入输出字段旁补充实际定义、构造、读取与返回函数 |
+| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变 |
 | 关联计划 | [EXTV2-22 / 七项只读查询事件化](../designs/extensions-v2-development-plan.md#extv2-22-七项只读查询事件化) |
 | 主责规约 | [S_16 查询公共协议](../specs/S_16_session-query-events.md)、[S_06](../specs/S_06_session-history-ops.md) |
 
@@ -61,71 +61,6 @@ sequenceDiagram
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
-#### 输入相关函数：参数、会话与 Event 的对应位置
-
-本方法不接收业务参数，实际登记的是下面这个闭包内的 query 函数。它的 ops 由 Core 自动注入；用户仍写空括号，不把空字典作为方法参数传入。
-
-来源：[Ops 查询代理](../../handler_ops/session_queries.py)。bus 与 event_type 在平台启动登记时固定，本篇 event_type 为 `session.messages`。
-
-```python
-async def query(ops: EventHandlerOps) -> object:
-    return await dispatch_session_query(bus, ops, event_type, {})
-```
-
-代理调用下面的真实分派函数：arguments 进入 Event.event_input；独立的 context 参数来自已绑定 Ops，会话身份不在可改写查询参数中。
-
-```python
-def require_query_context(ops: EventHandlerOps | None) -> SessionContext:
-    """Require an already-bound session without consulting user Event arguments."""
-    context = None if ops is None else ops.session_context
-    if context is None:
-        raise RuntimeError("session query requires SessionContext")
-    require_session_id(context.session_id)
-    return context
-```
-
-```python
-async def dispatch_session_query(
-    bus: ExtensionEventBus,
-    ops: EventHandlerOps,
-    event_type: str,
-    arguments: Mapping[str, object],
-) -> object:
-    """Raise one query event, preserve the trusted binding, validate and unwrap."""
-    context = require_query_context(ops)
-    if not valid_query_input(event_type, arguments):
-        raise TypeError(f"invalid arguments for {event_type}")
-    frames = tuple(frame for frame in _FRAMES.get() if frame.active)
-    key = (id(bus), context.session_id, event_type)
-    if any(frame.key == key for frame in frames):
-        raise SessionQueryError("QUERY_REENTRANT")
-    if len(frames) >= MAX_QUERY_DEPTH:
-        raise SessionQueryError("QUERY_DEPTH_EXCEEDED")
-    package = ops.package_metadata
-    frame = _QueryFrame(key, SessionQueryOrigin(None if package is None else package.package_id))
-    token = _FRAMES.set((*frames, frame))
-    try:
-        result = await bus.trigger(Event(event_type, MappingProxyType(dict(arguments))), context)
-        if not valid_query_output(event_type, result):
-            raise SessionQueryError("INVALID_QUERY_RESULT")
-        if "deny" in result:
-            raise SessionQueryDenied(result["deny"])
-        return detached_copy(result["value"])
-    finally:
-        # Child tasks inherit a tuple pointing at this frame. Marking it inactive
-        # prevents an inherited, completed call from becoming a false recursion.
-        frame.active = False
-        _FRAMES.reset(token)
-```
-
-| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
-| --- | --- | --- |
-| 方法参数 / arguments | Ops 代理 query 使用 {}；usage 先规范化成 values，再传给 dispatch_session_query | Event(event_type, MappingProxyType(dict(arguments))) 的第二个参数，即 event_input |
-| ops.session_context | require_query_context 从当前 Ops 取出并验证会话 | bus.trigger 的第二个独立参数 context；不放进 Event.event_input |
-| event_type | 本代理闭包固定为 session.messages | Event 的第一个参数，选择同名查询链 |
-
-源码：[上下文校验、事件构造与派发](../../query_dispatch.py)。下面的字段表解释这些位置中的每一项。
-
 先分清谁需要填写。普通调用者只填写方法参数；返回值由平台或查询 Handler 提供，用户拿到后直接消费。
 只有在自己的查询 Handler 中短路或加工输出时，才需要按输出表构造值。所有表格分别解释“填什么、代表什么、起什么作用”，并写明缺失和错误边界。
 
@@ -157,159 +92,6 @@ async def dispatch_session_query(
 查询代理只读取这份资料，再交给查询事件。Bus 会生成规范化的只读副本，保留同一会话身份和资料，不要求前后是同一个 Python 对象。
 
 ### 3.3 输出：默认值、替代结果与拒绝
-
-#### 输出相关函数：平台值、事件封装与方法返回
-
-先看实际事件结果声明；value 的具体类型由本事件 Validator 决定，Any 不表示允许任意内容。deny 是另一种互斥结果，不与 value 同时返回。
-
-```python
-class SessionQueryValue(TypedDict):
-    """A successful event result; Ops callers receive only ``value``."""
-
-    value: Any
-```
-
-```python
-class SessionQueryDeny(TypedDict):
-    """A deliberate query refusal, distinct from an invalid Handler output."""
-
-    deny: str
-```
-
-默认 CORE 在这里构造事件结果的 value 外壳；里面的值来自下面的平台读取分支。
-
-```python
-async def session_query_core(event: Event, ops: EventHandlerOps | None, next_handler: EventNext) -> dict:
-    """Answer from trusted platform readers, never from another public query Ops."""
-    del next_handler
-    context = require_query_context(ops)
-    return {"value": await read_session_query(event.event_type, event.event_input, context)}
-```
-
-以下是 read_session_query 中本事件的源码节选，其他事件分支省略；不是完整函数的替代实现。
-
-```python
-async def read_session_query(event_type: str, arguments: Mapping[str, object], context: SessionContext) -> object:
-    # Excerpt: other event branches are omitted.
-    if event_type == "session.messages":
-        return await asyncio.to_thread(read_session_messages_view, context.session_id)
-```
-
-实际字段读取/构造函数 `_tool_use`（[源码](../../../server/runtime/session/query_messages.py)）：
-
-```python
-def _tool_use(call: Mapping[str, Any]) -> dict[str, Any] | None:
-    identifier = call.get("id") or call.get("tool_call_id") or call.get("tool_use_id")
-    function = call.get("function")
-    function = function if isinstance(function, Mapping) else call
-    name = function.get("name") or call.get("tool_name") or call.get("tool")
-    arguments = function.get("arguments", call.get("input"))
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except ValueError:
-            return None
-    if not isinstance(identifier, str) or not identifier or not isinstance(name, str) or not name:
-        return None
-    if not isinstance(arguments, Mapping):
-        return None
-    return {"tool_use_id": identifier, "tool": name, "input": copy.deepcopy(dict(arguments))}
-```
-
-实际字段读取/构造函数 `_pair_result`（[源码](../../../server/runtime/session/query_messages.py)）：
-
-```python
-def _pair_result(calls: dict, request_id: object, result: dict[str, Any]) -> None:
-    for call in calls.get((request_id, result["tool_use_id"]), []):
-        call["text"] = result["text"]
-        if "result" in result:
-            call["result"] = copy.deepcopy(result["result"])
-        if result["isError"]:
-            call["isError"] = True
-```
-
-实际字段读取/构造函数 `read_session_messages_view`（[源码](../../../server/runtime/session/query_messages.py)）：
-
-```python
-def read_session_messages_view(session_id: str) -> list[dict[str, Any]]:
-    """Read newest 4096 user/assistant messages, returned oldest first.
-
-    Tool-result rows become user messages with toolResults. Their outcomes are
-    also paired with retained assistant toolUses by request and call identity.
-    UI progress, usage, notices and child transcripts are not model messages.
-    """
-    require_session_id(session_id)
-    try:
-        records = read_committed_main_history(session_id)
-    except (OSError, ValueError, TimeoutError) as error:
-        raise SessionHistoryError("HISTORY_IO_FAILED") from error
-    if records is None:
-        return []
-    messages: list[dict[str, Any]] = []
-    calls: dict[tuple[object, str], list[dict[str, Any]]] = {}
-    for record in records:
-        if (
-            record.get("event_type") in _NON_MESSAGES or record.get("subagent_id")
-            or record.get("mode") == "subagent" or record.get("depth", 0) != 0
-            or record.get("parent_invocation_id") or record.get("member_name") or record.get("team_id")
-            or record.get("session_id") not in (None, "", session_id)
-            or record.get("role") not in ("user", "human", "assistant", "tool")
-        ):
-            continue
-        try:
-            view = message_from_record(record)
-        except (TypeError, ValueError) as error:
-            raise SessionHistoryError("INVALID_TRANSCRIPT_MESSAGE") from error
-        if view.type in ("system", "attachment"):
-            continue
-        request_id = record.get("request_id")
-        text = message_text(view)
-        if view.type == "tool":
-            identifier = view.tool_call_id
-            if not isinstance(identifier, str) or not identifier:
-                continue
-            result: dict[str, Any] = {
-                "tool_use_id": identifier, "text": text,
-                "isError": record.get("is_error") is True or record.get("isError") is True,
-            }
-            if "result" in record:
-                result["result"] = copy.deepcopy(record["result"])
-            messages.append({"role": "user", "text": "", "toolUses": [], "toolResults": [result]})
-            _pair_result(calls, request_id, result)
-            continue
-        role = "assistant" if view.type == "assistant" else "user"
-        message: dict[str, Any] = {"role": role, "text": text, "toolUses": []}
-        if role == "assistant":
-            raw_calls = [*(view.tool_calls or []), *(block for block in view.content if block.get("type") == "tool_use")]
-            seen_ids = set()
-            for raw_call in raw_calls:
-                call = _tool_use(raw_call)
-                if call is not None and call["tool_use_id"] not in seen_ids:
-                    seen_ids.add(call["tool_use_id"])
-                    message["toolUses"].append(call)
-                    calls.setdefault((request_id, call["tool_use_id"]), []).append(call)
-        else:
-            for block in view.content:
-                identifier = block.get("tool_use_id")
-                if block.get("type") != "tool_result" or not isinstance(identifier, str) or not identifier:
-                    continue
-                result = {"tool_use_id": identifier, "text": _block_text(block.get("content")),
-                          "isError": block.get("is_error") is True or block.get("isError") is True}
-                if "result" in block:
-                    result["result"] = copy.deepcopy(block["result"])
-                message.setdefault("toolResults", []).append(result)
-                _pair_result(calls, request_id, result)
-        messages.append(message)
-    return copy.deepcopy(messages[-MAX_SESSION_MESSAGES:])
-```
-
-| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
-| --- | --- | --- |
-| value[].role / text / toolUses | read_session_messages_view 中 message 字典及消息 append | 按历史顺序组成消息数组，最后复制最新 4096 条 |
-| value[].toolUses[].tool_use_id / tool / input | _tool_use 的 return 字典 | 追加到助手 message["toolUses"] |
-| value[].toolResults[].text / isError / result | 主读取函数的 result 字典；_pair_result 将可得结果配回工具调用 | 工具结果投影成用户消息，并保留对应调用 ID |
-
-事件返回到第 3.2 节的 dispatch_session_query 后，`result["value"]` 被独立复制并作为 Ops 直接返回值；合法 deny 则转换为 SessionQueryDenied。下面分别解释事件封装和解包后的结果字段。
 
 先看查询 Handler 的事件输出封装。普通 Ops 调用者不用构造这层封装；查询 Handler 从 next 得到完整封装后，
 可直接返回，不要又包成 {"value": result} 形成两层 value。
@@ -589,13 +371,38 @@ for event_type in SESSION_QUERY_EVENTS:
 
 Core 在实际进入 Handler 前调用 `builder.build(package_metadata, session_context)`；方法访问器再执行 `method(current_ops, *args, **kwargs)`，自动注入当前 Ops。Builder 保存全部已登记能力的定义，不预读结果，也不会在本次查询重跑 ops.build。
 
-本方法的实际代理函数见第 3.2 节输入字段旁；bus 与 event_type 在平台启动登记时由闭包固定。
+本方法实际登记的代理函数如下。bus 与 event_type 在启动时由闭包固定；用户只填写第 4.1 节允许的参数。这里是 session_query_method 内无参数查询分支。
 
-完整分派函数已放到第 3.2 节；其中 result 的校验、拒绝转换和 value 解包可与第 3.3 节输出表直接对照。
+```python
+async def query(ops: EventHandlerOps) -> object:
+    return await dispatch_session_query(bus, ops, event_type, {})
+```
+
+```python
+# Runtime excerpt: the full dispatcher also guards recursion and caller origin.
+context = require_query_context(ops)  # Reads the existing ops.session_context property.
+result = await bus.trigger(
+    Event(event_type, MappingProxyType(dict(arguments))),
+    context,
+)
+if not valid_query_output(event_type, result):
+    raise SessionQueryError("INVALID_QUERY_RESULT")
+if "deny" in result:
+    raise SessionQueryDenied(result["deny"])
+value = detached_copy(result["value"])  # The public Ops returns this value.
+```
 
 这里 event_type 固定为 `session.messages`；arguments 固定为空映射，用户调用括号留空。 context 作为 trigger 的独立参数传递，不允许用户通过 Event 输入把会话、目录或快照替换掉。Ops 属性只提供已有上下文，不采集、不组装资料。
 
-默认查询 CORE 及实际输出构造函数见第 3.3 节，可逐项对照 value 的字段。
+默认查询 CORE 为：
+
+```python
+async def session_query_core(event: Event, ops: EventHandlerOps | None, next_handler: EventNext) -> dict:
+    """Answer from trusted platform readers, never from another public query Ops."""
+    del next_handler
+    context = require_query_context(ops)
+    return {"value": await read_session_query(event.event_type, event.event_input, context)}
+```
 
 本特性的实际读取落点：read_session_messages_view(context.session_id)；复用已提交主历史读取，新增公开消息投影和工具配对。 默认 CORE 直接调用平台读取函数，不再调用公共同名 Ops；这与启动时创建 Builder 的 ops.build CORE 是不同函数。查询 USER 可在 next 前后执行自己的规则；共享查询 BUILTIN 只计时、记录来源并复制结果；默认 CORE 才读取平台事实。合法短路时下游不必执行。
 
@@ -603,8 +410,6 @@ Core 在实际进入 Handler 前调用 `builder.build(package_metadata, session_
 
 
 ## 6. 验收与未决问题
-
-2026-10-31 输入输出源码补充：本次只调整文档，将当前类型定义、构造/读取函数和回执返回位置放到字段表旁；代码摘录按本分支实际实现核对，省略的分支明确标注。以下历史业务验证保留原日期和范围，本次未重跑业务、模型或浏览器验收。
 
 ### 6.1 本特性的独立验收场景
 
