@@ -207,6 +207,108 @@ def resolve_model_config_obj_for_validate(
     return model_config_obj
 
 
+def resolve_persisted_mcc_for_validate(model_name: str) -> dict[str, Any]:
+    """从热更新后的配置中查找对应模型的 ``model_client_config``。
+
+    与 :func:`resolve_model_config_obj_for_validate` 同一查找口径
+    （``model_name`` 或 ``alias`` 匹配 ``models.defaults``，返回深拷贝），
+    但取条目的 mcc 段。``custom_headers`` / ``ssl_cert`` 等配置页未暴露的
+    write-only 字段只在持久化条目中存在，探测（「测试连接」）以它们为基线
+    才能与保存后的对话路径走同一份配置；找不到或读取失败时返回空 dict，
+    探测退化为仅表单字段（历史行为）。
+    """
+    import copy as _copy
+
+    try:
+        _cfg = get_config()
+        _models = get_default_models(_cfg)
+        for entry in _models:
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config")
+            if not isinstance(mcc, dict):
+                continue
+            entry_model_name = str(mcc.get("model_name", "")).strip()
+            entry_alias = str(entry.get("alias", "")).strip()
+            if entry_model_name == model_name or entry_alias == model_name:
+                logger.info(
+                    "[config.validate_model] loaded persisted model_client_config "
+                    "for '%s' (matched_by=%s)",
+                    model_name,
+                    "model_name" if entry_model_name == model_name else "alias",
+                )
+                return _copy.deepcopy(mcc)
+        logger.info(
+            "[config.validate_model] no persisted model_client_config found for '%s'",
+            model_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[config.validate_model] failed to read persisted model_client_config, "
+            "using draft fields only. %s",
+            exc,
+        )
+    return {}
+
+
+def build_probe_model_client_config(
+    model_provider: str,
+    api_key: str,
+    api_base: str,
+    *,
+    endpoint_profile: str = "",
+    verify_ssl: bool | None = None,
+    persisted_mcc: dict[str, Any] | None = None,
+) -> ModelClientConfig:
+    """构造探测用 ``ModelClientConfig``：持久化条目为基线，表单草稿值覆盖。
+
+    对话路径（``interface_deep.build_model_from_entry``）把持久化 mcc 整包传给
+    core，``custom_headers`` 等字段自然生效；探测此前只拼表单可见字段，导致
+    依赖请求头鉴权的网关「对话正常、测试 401」。此函数让探测与对话共享
+    同一份持久化配置：表单字段（用户正在编辑的草稿）始终权威覆盖，探测
+    预算（client_id / timeout / max_retries）最后固定，不被条目的
+    ``timeout: 1800`` 等运行值污染。
+
+    ``verify_ssl`` 为 None 表示表单未提交该项：保留基线值，基线也没有时
+    用 False（探测历史默认，而非 core 的 True——自签证书网关的探测结论
+    不因本次修复翻转）。基线含非法字段类型时构造失败，退化为仅表单字段
+    （历史行为）并告警，不让脏配置打断探测。
+    """
+
+    def _assemble(persisted: dict[str, Any] | None) -> ModelClientConfig:
+        probe_fields: dict[str, Any] = dict(persisted or {})
+        probe_fields.pop("model_name", None)
+        probe_fields.update(
+            {
+                "client_id": "config-validate",
+                "client_provider": model_provider,
+                "api_key": api_key,
+                "api_base": api_base,
+                "timeout": 25.0,
+                "max_retries": 0,
+            }
+        )
+        if endpoint_profile:
+            probe_fields["endpoint_profile"] = endpoint_profile
+        elif "endpoint_profile" in probe_fields:
+            del probe_fields["endpoint_profile"]
+        if verify_ssl is not None:
+            probe_fields["verify_ssl"] = verify_ssl
+        elif "verify_ssl" not in probe_fields:
+            probe_fields["verify_ssl"] = False
+        return ModelClientConfig(**probe_fields)
+
+    try:
+        return _assemble(persisted_mcc)
+    except Exception:
+        logger.warning(
+            "[config.validate_model] persisted model_client_config rejected by "
+            "ModelClientConfig (invalid field types); probing with draft fields only",
+            exc_info=True,
+        )
+        return _assemble(None)
+
+
 def _merge_models_for_replace_all(
     parsed: list[dict[str, Any]],
     raw_defaults: list[dict[str, Any]],
@@ -582,12 +684,17 @@ async def config_validate_model_handler(
         return
     api_base = api_base.rstrip("/")
 
-    verify_ssl = bool(params.get("verify_ssl", False))
+    verify_ssl: bool | None = None
+    if "verify_ssl" in params:
+        verify_ssl = bool(params.get("verify_ssl"))
     # 未显式传方言时按 api_base host 推断已知自建网关(如 vllm)，
     # 保证"测试连接"与保存后的真实运行走同一条 core 路由。
     endpoint_profile = effective_endpoint_profile(api_base, params.get("endpoint_profile"))
 
     model_config_obj = resolve_model_config_obj_for_validate(model, params)
+    # 探测以持久化条目为基线：custom_headers / ssl_cert 等配置页未暴露的
+    # write-only 字段随条目进入探测请求，与保存后的对话路径同口径。
+    persisted_mcc = resolve_persisted_mcc_for_validate(model)
 
     reasoning_mcc = {
         "client_provider": model_provider,
@@ -606,15 +713,13 @@ async def config_validate_model_handler(
         model,
         model_request_config.model_dump(),
     )
-    model_client_config = ModelClientConfig(
-        client_id="config-validate",
-        client_provider=model_provider,
+    model_client_config = build_probe_model_client_config(
+        model_provider,
+        api_key,
+        api_base,
         endpoint_profile=endpoint_profile,
-        api_key=api_key,
-        api_base=api_base,
-        timeout=25.0,
-        max_retries=0,
         verify_ssl=verify_ssl,
+        persisted_mcc=persisted_mcc,
     )
     # Anthropic-compatible endpoints that send thinking.budget_tokens
     # require max_tokens > budget. Use the actual budget core would emit
