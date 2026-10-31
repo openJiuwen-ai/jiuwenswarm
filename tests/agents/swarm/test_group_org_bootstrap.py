@@ -87,6 +87,8 @@ class _Launcher:
 
 
 class _OrganizationRecord:
+    organization_id = ORG
+
     def model_dump(self, **_kwargs):
         return {"organization_id": ORG}
 
@@ -163,7 +165,12 @@ def test_owner_prompt_lets_the_model_choose_an_unnamed_aggregation_mode():
     reminder = bootstrap._OWNER_START_REMINDER
     assert "The aggregation mode is not selected for you" in prompt
     assert "If the user named neither, choose one from the task" in prompt
+    assert "leave each child OPEN" in prompt
+    assert "do not call org_delegate_task unless" in prompt
+    assert "group-member:{that proxy's member_name}" in prompt
     assert "choose one from the task" in reminder
+    assert "Leave them claimable" in reminder
+    assert "group-member:{member_name}" in reminder
     assert "org_create_and_invite_expert_team" in prompt
     assert "Write only the requested deliverable" in prompt
     assert "org_create_and_invite_expert_team" in reminder
@@ -1587,9 +1594,29 @@ async def test_stale_plan_without_a_live_owner_run_expires(monkeypatch):
     plan = _stale_plan()
     _MemoryGroup(monkeypatch, organization_plans=[plan])
     bootstrap._owner_runs.pop((SESSION, plan["plan_id"]), None)
+    bootstrap._queued_plans.pop((SESSION, plan["plan_id"], "business"), None)
 
     assert bootstrap.pending_organization_plan(SESSION, "insight") is None
     assert plan["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_queued_plan_is_not_expired_while_an_older_round_runs(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "pending"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+    bootstrap._owner_runs.pop((SESSION, plan["plan_id"]), None)
+    hold = asyncio.Event()
+    task = asyncio.create_task(hold.wait())
+    bootstrap._queued_plans[(SESSION, plan["plan_id"], "business")] = task
+    try:
+        found = bootstrap.pending_organization_plan(SESSION, "insight")
+        assert found["plan_id"] == "plan-1"
+        assert plan["status"] == "pending"
+    finally:
+        hold.set()
+        task.cancel()
+        bootstrap._queued_plans.pop((SESSION, plan["plan_id"], "business"), None)
 
 
 @pytest.mark.asyncio
@@ -2237,6 +2264,7 @@ async def test_owner_completion_updates_the_card_without_finish(monkeypatch):
     assert result.data["posted_to_group"] is True
     assert result.data["message_id"] == "msg-1"
     assert posts[0]["client_message_id"] == "expert-result-plan-1"
+    assert posts[0]["attachments"] == []
     assert calls[-1]["status"] == "completed"
     assert calls[-1]["message_id"] == "msg-1"
     assert plan["status"] == "done"
@@ -2933,7 +2961,6 @@ async def test_a_later_message_still_uses_the_private_team(monkeypatch, tmp_path
 @pytest.mark.asyncio
 async def test_join_wait_holds_while_the_proxy_turn_is_active(monkeypatch):
     monkeypatch.setattr(bootstrap, "MEMBER_JOIN_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(bootstrap, "RESULT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(bootstrap, "_JOIN_POLL_SECONDS", 0.01)
     state = {"active": True, "bound": False}
 
@@ -2984,7 +3011,6 @@ async def test_join_wait_holds_while_the_proxy_turn_is_active(monkeypatch):
 @pytest.mark.asyncio
 async def test_join_wait_fails_after_the_proxy_turn_ends(monkeypatch):
     monkeypatch.setattr(bootstrap, "MEMBER_JOIN_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(bootstrap, "RESULT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(bootstrap, "_JOIN_POLL_SECONDS", 0.01)
 
     async def _backend(*_args, **_kwargs):
@@ -3005,6 +3031,255 @@ async def test_join_wait_fails_after_the_proxy_turn_ends(monkeypatch):
     elapsed = time.monotonic() - started
     assert missing == ["insight"]
     assert elapsed < 0.4
+
+
+@pytest.mark.asyncio
+async def test_result_wait_continues_until_the_round_finishes(monkeypatch):
+    monkeypatch.setattr(bootstrap, "POLL_SECONDS", 0.01)
+    state = {"round": "running"}
+
+    async def _round_state(_pool, _plan_id):
+        if state["round"] == "running":
+            return "running", []
+        return "completed", [SimpleNamespace(output="unused")]
+
+    monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+    future = asyncio.get_running_loop().create_future()
+
+    async def _finish():
+        await asyncio.sleep(0.05)
+        future.set_result("report")
+        state["round"] = "completed"
+
+    waiter = asyncio.create_task(_finish())
+    result, files = await asyncio.wait_for(
+        bootstrap._await_completed_result(future, object(), "plan-1"),
+        timeout=1.0,
+    )
+    await waiter
+    assert result == "report"
+    assert files == []
+
+
+@pytest.mark.asyncio
+async def test_result_keeps_only_the_owner_final_files(monkeypatch, tmp_path):
+    from openjiuwen.agent_teams.paths import (
+        organization_workspace_dir,
+        reset_task_openjiuwen_home,
+        set_task_openjiuwen_home,
+    )
+
+    token = set_task_openjiuwen_home(tmp_path)
+    try:
+        owner_outputs = tmp_path / ".agent_teams" / "org-expert-business" / "outputs"
+        owner_outputs.mkdir(parents=True)
+        final = owner_outputs / "final.md"
+        final.write_text("final", encoding="utf-8")
+        (owner_outputs / "section_business.md").write_text("draft", encoding="utf-8")
+        summary_dir = organization_workspace_dir(ORG, SESSION) / "summary"
+        summary_dir.mkdir(parents=True)
+        (summary_dir / "report.md").write_text("summary", encoding="utf-8")
+        outside = tmp_path / "elsewhere.md"
+        outside.write_text("x", encoding="utf-8")
+
+        async def _round_state(_pool, _plan_id):
+            root = SimpleNamespace(
+                output_context=SimpleNamespace(
+                    result_uri=f".organization/{ORG}/summary/report.md"
+                ),
+                output_abstract="",
+            )
+            return "completed", [root]
+
+        monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(
+            {
+                "result": "report",
+                "attachments": [
+                    {"name": "final.md", "path": str(final)},
+                    {"name": "final.md", "path": str(final)},
+                    {"name": "elsewhere.md", "path": str(outside)},
+                    {"name": "missing.md", "path": str(owner_outputs / "missing.md")},
+                ],
+            }
+        )
+        result, files = await bootstrap._await_completed_result(
+            future, object(), "plan-1", session_id=SESSION, organization_id=ORG
+        )
+    finally:
+        reset_task_openjiuwen_home(token)
+
+    assert result == "report"
+    assert files == [
+        {"name": "final.md", "path": str(final.resolve())},
+        {"name": "report.md", "path": str((summary_dir / "report.md").resolve())},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_owner_wait_marks_the_plan_failed(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "running"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+
+    async def _round(*_args, **_kwargs):
+        return "running", []
+
+    async def _empty(*_args, **_kwargs):
+        return []
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def _backend(*_args, **_kwargs):
+        return SimpleNamespace(org_task_manager=object())
+
+    cards: list[dict] = []
+
+    async def _card(**kwargs):
+        cards.append(kwargs)
+
+    monkeypatch.setattr(bootstrap, "publish_organization_card", _card)
+    monkeypatch.setattr(bootstrap, "_round_state", _round)
+    monkeypatch.setattr(bootstrap, "_wait_for_members", _empty)
+    monkeypatch.setattr(bootstrap, "_owner_primes_root_task", _noop)
+    monkeypatch.setattr(bootstrap, "_queue_owner_start_reminder", _noop)
+    monkeypatch.setattr(bootstrap, "pause_organization_instances", _noop)
+    monkeypatch.setattr(bootstrap, "dissolve_completed_swarm_organization", _noop)
+    monkeypatch.setattr(bootstrap, "_live_backend", _backend)
+    task = asyncio.create_task(
+        bootstrap._run_owner_proxy(
+            backend=SimpleNamespace(member_name="business"),
+            runtime=object(),
+            org_runtime=SimpleNamespace(),
+            session_id=SESSION,
+            plan=plan,
+            organization_id=ORG,
+            team_id="org-expert-business",
+        )
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert plan["status"] == "failed"
+    assert plan["error"] == "organization wait ended before the round finished"
+    assert cards[-1]["status"] == "failed"
+    assert cards[-1]["fail_unfinished"] is True
+
+
+@pytest.mark.asyncio
+async def test_unbound_owner_marks_the_plan_failed(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "pending"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+
+    async def _backend(*_args, **_kwargs):
+        return SimpleNamespace(org_task_manager=None)
+
+    async def _card(**_kwargs):
+        return None
+
+    monkeypatch.setattr(bootstrap, "_live_backend", _backend)
+    monkeypatch.setattr(bootstrap, "publish_organization_card", _card)
+    with pytest.raises(RuntimeError, match="not bound"):
+        await bootstrap._run_owner_proxy(
+            backend=SimpleNamespace(member_name="business"),
+            runtime=object(),
+            org_runtime=object(),
+            session_id=SESSION,
+            plan=plan,
+            organization_id=ORG,
+            team_id="org-expert-business",
+        )
+    assert plan["status"] == "failed"
+    assert "not bound" in plan["error"]
+
+
+@pytest.mark.asyncio
+async def test_queue_task_error_marks_the_plan_failed(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "pending"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+
+    async def _wait(*_args, **_kwargs):
+        return None
+
+    async def _run(**_kwargs):
+        raise RuntimeError("queue broke")
+
+    monkeypatch.setattr(bootstrap, "wait_for_earlier_organization_plans", _wait)
+    monkeypatch.setattr(
+        bootstrap, "organization_plan_for_member", lambda *_args, **_kwargs: plan
+    )
+    monkeypatch.setattr(bootstrap, "run_organization_member", _run)
+    await bootstrap._join_queued_organization_plan(
+        backend=SimpleNamespace(member_name="business"),
+        session_id=SESSION,
+        member_name="business",
+        plan_id=plan["plan_id"],
+    )
+    assert plan["status"] == "failed"
+    assert "queue broke" in plan["error"]
+    assert bootstrap._plan_event(SESSION, plan["plan_id"]).is_set()
+    bootstrap._plan_events.pop((SESSION, plan["plan_id"]), None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_queue_wait_fails_the_plan_and_unblocks_the_next(monkeypatch):
+    older = _stale_plan()
+    older["status"] = "pending"
+    newer = {
+        "plan_id": "plan-2",
+        "members": ["business", "insight"],
+        "owner_member": "business",
+        "status": "pending",
+        "created_at": 1,
+        "body": "后一问",
+    }
+    _MemoryGroup(monkeypatch, organization_plans=[older, newer])
+    bootstrap._accepted_plans.add(
+        bootstrap._acceptance_key(SESSION, older["plan_id"], "business")
+    )
+    task = asyncio.create_task(
+        bootstrap._owner_queue_entry(SESSION, older["plan_id"], "business")
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert older["status"] == "failed"
+    assert older["error"] == "queued organization wait ended before the round started"
+    assert not bootstrap.organization_plan_accepted(
+        SESSION, older["plan_id"], "business"
+    )
+    assert bootstrap._plan_event(SESSION, older["plan_id"]).is_set()
+    assert bootstrap._blocking_earlier_plans(SESSION, newer) == []
+    bootstrap._plan_events.pop((SESSION, older["plan_id"]), None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_queue_leaves_a_started_plan_to_its_owner(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "running"
+    _MemoryGroup(monkeypatch, organization_plans=[plan])
+    hold = asyncio.Event()
+    owner = asyncio.create_task(hold.wait())
+    bootstrap._owner_runs[(SESSION, plan["plan_id"])] = owner
+    task = asyncio.create_task(
+        bootstrap._owner_queue_entry(SESSION, plan["plan_id"], "business")
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert plan["status"] == "running"
+    hold.set()
+    await owner
+    bootstrap._owner_runs.pop((SESSION, plan["plan_id"]), None)
 
 
 @pytest.mark.asyncio

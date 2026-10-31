@@ -76,6 +76,7 @@ def _make_handler(tmp_path: Path, path: str, **kwargs) -> _FileApiHandlerHarness
     _FileApiHandlerHarness.agent_teams_root = (root / ".agent_teams").resolve()
     _FileApiHandlerHarness.logs_root = (root / ".logs").resolve()
     _FileApiHandlerHarness.auto_harness_root = (root / "auto-harness").resolve()
+    _FileApiHandlerHarness.organizations_root = (root / ".organizations").resolve()
     return _FileApiHandlerHarness(project_root=tmp_path, path=path, **kwargs)
 
 
