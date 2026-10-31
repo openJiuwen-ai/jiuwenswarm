@@ -156,3 +156,27 @@ async def test_team_deletion_gate_serializes_mutation_and_rejects_bind() -> None
         assert gate.begin_delete_locked("team-a") is False
         gate.finish_delete_locked("team-a")
         gate.assert_not_deleting_locked("team-a")
+
+
+@pytest.mark.asyncio
+async def test_host_delete_observer_survives_kvc_publication_and_lease_release(monkeypatch):
+    host = object()
+    registry = RuntimeParticipantRegistry(host_delete=(host,))
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime.get_kv_cache_runtime",
+        lambda: _Runtime(),
+    )
+    owner = KVCacheApplicationOwner()
+    lease = owner.attach_runtime(registry)
+    assert registry.snapshot_delete() == (host,)
+    await owner.set_enabled(True)
+    dynamic = registry.snapshot_delete()[1:]
+    assert len(dynamic) == 1
+    await owner.set_enabled(False)
+    assert registry.snapshot_delete() == (host,) + dynamic
+    await owner.suspend()
+    assert registry.snapshot_delete() == (host,)
+    await owner.set_enabled(True)
+    assert registry.snapshot_delete() == (host,) + dynamic
+    await lease.release()
+    assert registry.snapshot_delete() == (host,)
