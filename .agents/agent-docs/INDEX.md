@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 20 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 21 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -18,14 +18,15 @@ generated: true
 | [agent_teams](#module-1) | 1 |
 | [agent_teams/workflow](#module-2) | 3 |
 | [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
-| [gateway/message_handler](#module-4) | 1 |
-| [jiuwenswarm](#module-5) | 3 |
-| [jiuwenswarm/channels/web/frontend](#module-6) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-7) | 1 |
-| [jiuwenswarm/observability](#module-8) | 1 |
-| [tests/unit_tests/gateway](#module-9) | 1 |
-| [tests/unit_tests/personal_context](#module-10) | 1 |
-| [未分类](#module-11) | 12 |
+| [gateway/channel_manager/web](#module-4) | 1 |
+| [gateway/message_handler](#module-5) | 1 |
+| [jiuwenswarm](#module-6) | 3 |
+| [jiuwenswarm/channels/web/frontend](#module-7) | 1 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-8) | 1 |
+| [jiuwenswarm/observability](#module-9) | 1 |
+| [tests/unit_tests/gateway](#module-10) | 1 |
+| [tests/unit_tests/personal_context](#module-11) | 1 |
+| [未分类](#module-12) | 12 |
 
 <a id="module-1"></a>
 
@@ -55,13 +56,21 @@ generated: true
 
 <a id="module-4"></a>
 
+## gateway/channel_manager/web
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261031_1139_gateway-session-e2a](features/F_20261031_1139_gateway-session-e2a.md) | F | Web 会话管理统一经 E2A 交由 Server 执行 | ruiqiang2 | gateway/channel_manager/web | gateway/channel_manager/web/app_web_handlers.py, tests/unit_tests/gateway/test_app_web_handlers.py | 无独立 D：用户确认的 Gateway 解耦任务 4.1，沿用 develop 个人版现有链路，无独立设计编号。 |
+
+<a id="module-5"></a>
+
 ## gateway/message_handler
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261028_1445_xiaoyi-team-join-delivery](bugfix/gateway/channel_manager/im_platforms/xiaoyi/B_20261028_1445_xiaoyi-team-join-delivery.md) | B | 小艺成员加入团队后仅在通知栏收到 Team Leader 消息 | zhongxiaotian | gateway/channel_manager/im_platforms/xiaoyi, gateway/message_handler | gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_connect.py, gateway/message_handler/join_exit_handlers.py, tests/unit_tests/gateway/test_xiaoyi_team_delivery.py | 无独立 D：当前团队席位和 fan-out 契约未变化，本次仅修复小艺平台任务生命周期。 |
 
-<a id="module-5"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm
 
@@ -71,7 +80,7 @@ generated: true
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | agent_teams/workflow, jiuwenswarm | — | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | agent_teams/workflow, jiuwenswarm | — | — |
 
-<a id="module-6"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -79,7 +88,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0026](designs/proposals/SDD-0026-trajectory-observability-web-ui/design.md) | D | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | @alan_cheng | jiuwenswarm/channels/web/frontend | — | — |
 
-<a id="module-7"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -87,7 +96,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-8"></a>
+<a id="module-9"></a>
 
 ## jiuwenswarm/observability
 
@@ -95,7 +104,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-9"></a>
+<a id="module-10"></a>
 
 ## tests/unit_tests/gateway
 
@@ -103,7 +112,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-10"></a>
+<a id="module-11"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -111,7 +120,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-11"></a>
+<a id="module-12"></a>
 
 ## 未分类
 
