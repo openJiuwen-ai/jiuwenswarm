@@ -6,8 +6,8 @@ import logging
 import re
 from pathlib import Path
 
-from jiuwenswarm.common.local_env_config import set_os_environ, update_process_baseline
-from jiuwenswarm.common.secrets.registry import StorageLocation
+from gateway.common.local_env_config import set_os_environ, update_process_baseline
+from gateway.common.secrets.registry import StorageLocation
 
 logger = logging.getLogger(__name__)
 

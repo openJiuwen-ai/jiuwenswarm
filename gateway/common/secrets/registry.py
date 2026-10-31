@@ -9,7 +9,7 @@ from typing import Literal, Union
 
 import yaml
 
-from jiuwenswarm.common.utils import get_config_dir, get_workspace_dir
+from gateway.common.utils import get_config_dir, get_workspace_dir
 
 logger = logging.getLogger(__name__)
 

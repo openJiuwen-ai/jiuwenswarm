@@ -6,16 +6,16 @@ import logging
 import sys
 from pathlib import Path
 
-from jiuwenswarm.common.security.base_crypto import CryptoProvider
-from jiuwenswarm.common.secrets.persistence import (
+from gateway.extensions.base_crypto import CryptoProvider
+from gateway.common.secrets.persistence import (
     DefaultFileStorageBackend,
     EnvMediumAdapter,
     FileMediumAdapter,
     PersistenceGateway,
 )
-from jiuwenswarm.common.secrets.registry import SecretRegistry, derive_legacy_name
-from jiuwenswarm.common.secrets.transform import SecretTransform
-from jiuwenswarm.common.utils import get_config_dir, get_env_file, get_workspace_dir
+from gateway.common.secrets.registry import SecretRegistry, derive_legacy_name
+from gateway.common.secrets.transform import SecretTransform
+from gateway.common.utils import get_config_dir, get_env_file, get_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,9 @@ class SecretStore:
         self._transform.register_custom_crypto(provider)
 
     def bridge_legacy_extension_crypto(self) -> None:
-        reg_mod = sys.modules.get("jiuwenswarm.extensions.registry")
+        reg_mod = sys.modules.get(
+            "gateway.extensions.registry"
+        ) or sys.modules.get("jiuwenswarm.extensions.registry")
         if reg_mod is None or not hasattr(reg_mod, "ExtensionRegistry"):
             logger.debug("ExtensionRegistry unavailable; skip legacy crypto bridge")
             return

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.local_env_config import is_sensitive_env_name
+from gateway.common.local_env_config import is_sensitive_env_name
 
 
 def is_legacy_sensitive_key(name: str) -> bool:

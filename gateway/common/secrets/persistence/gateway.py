@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.secrets.persistence.db import DbMediumAdapter
-from jiuwenswarm.common.secrets.persistence.default_file import DefaultFileStorageBackend
-from jiuwenswarm.common.secrets.persistence.env import EnvMediumAdapter
-from jiuwenswarm.common.secrets.persistence.file import FileMediumAdapter
-from jiuwenswarm.common.secrets.registry import DefaultLocation, StorageLocation, StorageTarget
+from gateway.common.secrets.persistence.db import DbMediumAdapter
+from gateway.common.secrets.persistence.default_file import DefaultFileStorageBackend
+from gateway.common.secrets.persistence.env import EnvMediumAdapter
+from gateway.common.secrets.persistence.file import FileMediumAdapter
+from gateway.common.secrets.registry import DefaultLocation, StorageLocation, StorageTarget
 
 
 class PersistenceGateway:
