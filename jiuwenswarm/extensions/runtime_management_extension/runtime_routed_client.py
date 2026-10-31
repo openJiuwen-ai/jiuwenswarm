@@ -38,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 _ROUTE_ATTEMPTS = 3
 _TOUCH_INTERVAL_SECONDS = 20.0
+_INTERRUPT_METHODS = frozenset(
+    {
+        "chat.interrupt",
+        "chat.cancel",
+    }
+)
 _ROUTELESS_METHODS = frozenset(
     {
         "agent.reload_config",
@@ -110,6 +116,12 @@ def _is_routeless_envelope(envelope: E2AEnvelope) -> bool:
         return True
     method = str(envelope.method or "").strip().lower()
     return method in _ROUTELESS_METHODS
+
+
+def _is_interrupt_envelope(envelope: E2AEnvelope) -> bool:
+    """用户停止 / cancel：需打到真正跑任务的 AgentServer，必要时多播。"""
+    method = str(envelope.method or "").strip().lower()
+    return method in _INTERRUPT_METHODS
 
 
 def _rebind_timeout() -> float:
@@ -223,6 +235,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._rpc_origins: dict[tuple[str, str], str] = {}
         self._drop_tasks: set[asyncio.Task[None]] = set()
         self._last_rebind_warn = 0.0   # rebind 降级告警节流（滚动期旧 runtime 404 防刷屏）
+        # session_id → 当前仍在推流的 AgentServer base_url。长工具无 chunk 时
+        # Runtime 亲和可能过期；interrupt 多播时带上这里，避免杀错 Pod。
+        self._session_stream_bases: dict[str, str] = {}
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
@@ -414,6 +429,15 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(
             envelope, authorized_identity=authorized_identity,
         )
+        if _is_interrupt_envelope(envelope):
+            return await self._send_interrupt_fanout(
+                envelope,
+                session_id=session_id,
+                group_id=group_id,
+                bot_id=bot_id,
+                request_id=request_id,
+                user_id=user_id,
+            )
         base_url, route_id = await self._route_with_retry(
             session_id=session_id,
             group_id=group_id,
@@ -533,7 +557,13 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         yielded = 0
         try:
             async for chunk in self._stream_with_touch(
-                envelope, base_url=base_url, session_id=session_id, route_id=route_id
+                envelope,
+                base_url=base_url,
+                session_id=session_id,
+                route_id=route_id,
+                group_id=group_id,
+                bot_id=bot_id,
+                user_id=user_id,
             ):
                 yielded += 1
                 yield chunk
@@ -553,7 +583,13 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 user_id=user_id,
             )
             async for chunk in self._stream_with_touch(
-                envelope, base_url=base_url, session_id=session_id, route_id=route_id
+                envelope,
+                base_url=base_url,
+                session_id=session_id,
+                route_id=route_id,
+                group_id=group_id,
+                bot_id=bot_id,
+                user_id=user_id,
             ):
                 yield chunk
         finally:
@@ -566,23 +602,233 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         base_url: str,
         session_id: str,
         route_id: str,
+        group_id: str,
+        bot_id: str,
+        user_id: str | None,
     ) -> AsyncIterator[AgentResponseChunk]:
-        last_touch = time.monotonic()
+        """推流并独立保活 Runtime 亲和。
+
+        长工具（如 ``uv pip``）可能数分钟无 stream chunk；若只在收到 chunk 时
+        touch，亲和会静默过期，随后 ``chat.interrupt`` 会 route 到别的 Pod，
+        杀不到真正在跑的 bash。后台任务按 ``_touch_interval_seconds`` 周期 touch。
+        """
+        self._session_stream_bases[session_id] = base_url
+        # 可变槽：保活任务在亲和恢复后更新 route_id
+        touch_state: dict[str, str] = {"route_id": route_id}
+        keepalive_task: asyncio.Task[None] | None = None
+
+        async def _keepalive_loop() -> None:
+            interval = self._touch_interval_seconds
+            if interval <= 0:
+                return
+            consecutive_fail = 0
+            while True:
+                await asyncio.sleep(interval)
+                touched = await self._touch_quiet(session_id, touch_state["route_id"])
+                if touched is True:
+                    consecutive_fail = 0
+                    continue
+                consecutive_fail += 1
+                logger.warning(
+                    "[RuntimeRouted] stream keepalive touch miss: session=%s "
+                    "base=%s touched=%s fails=%s",
+                    session_id,
+                    base_url,
+                    touched,
+                    consecutive_fail,
+                )
+                new_route_id = await self._restore_stream_affinity(
+                    session_id=session_id,
+                    group_id=group_id,
+                    bot_id=bot_id,
+                    user_id=user_id,
+                    stream_base_url=base_url,
+                )
+                if new_route_id:
+                    touch_state["route_id"] = new_route_id
+                    consecutive_fail = 0
+
         await self._ensure_pod_push(base_url)
-        async for chunk in self._http.send_request_stream(envelope, base_url=base_url):
-            now = time.monotonic()
-            if (
-                self._touch_interval_seconds > 0
-                and now - last_touch >= self._touch_interval_seconds
+        if self._touch_interval_seconds > 0:
+            keepalive_task = asyncio.create_task(
+                _keepalive_loop(),
+                name=f"runtime-touch:{session_id[:24]}",
+            )
+        last_touch = time.monotonic()
+        try:
+            async for chunk in self._http.send_request_stream(
+                envelope, base_url=base_url
             ):
-                touched = await self._touch_quiet(session_id, route_id)
-                last_touch = now
-                if touched is False:
-                    logger.warning(
-                        "[RuntimeRouted] touch expired mid-stream: session=%s",
-                        session_id,
+                # 保留 chunk 顺带 touch：有输出时也能刷新，且覆盖 interval=0 关闭后台的情况
+                now = time.monotonic()
+                if (
+                    self._touch_interval_seconds > 0
+                    and now - last_touch >= self._touch_interval_seconds
+                ):
+                    touched = await self._touch_quiet(
+                        session_id, touch_state["route_id"]
                     )
-            yield chunk
+                    last_touch = now
+                    if touched is False:
+                        new_route_id = await self._restore_stream_affinity(
+                            session_id=session_id,
+                            group_id=group_id,
+                            bot_id=bot_id,
+                            user_id=user_id,
+                            stream_base_url=base_url,
+                        )
+                        if new_route_id:
+                            touch_state["route_id"] = new_route_id
+                yield chunk
+        finally:
+            if keepalive_task is not None:
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # noqa: BLE001 - 保活收尾不阻断推流清理
+                    logger.debug(
+                        "[RuntimeRouted] keepalive task cleanup error",
+                        exc_info=True,
+                    )
+            if self._session_stream_bases.get(session_id) == base_url:
+                self._session_stream_bases.pop(session_id, None)
+
+    async def _restore_stream_affinity(
+        self,
+        *,
+        session_id: str,
+        group_id: str,
+        bot_id: str,
+        user_id: str | None,
+        stream_base_url: str,
+    ) -> str | None:
+        """touch 失效后重新 route，尽量让亲和表重新指向当前仍在推流的 Pod。
+
+        Runtime 无「钉死指定 Pod」API 时，新 route 可能漂到别的 Pod；此时仍记录
+        警告，并依赖 ``_session_stream_bases`` + interrupt 多播杀到真正跑任务的机器。
+        返回可用于后续 touch 的 ``route_id``；失败返回 ``None``。
+        """
+        try:
+            new_base, new_route_id = await self._route_with_retry(
+                session_id=session_id,
+                group_id=group_id,
+                bot_id=bot_id,
+                request_id=uuid.uuid4().hex,
+                user_id=user_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - 亲和恢复失败不打断推流
+            logger.warning(
+                "[RuntimeRouted] affinity restore failed: session=%s stream_base=%s err=%s",
+                session_id,
+                stream_base_url,
+                exc,
+            )
+            return None
+        if new_base != stream_base_url:
+            logger.warning(
+                "[RuntimeRouted] affinity restore drifted: session=%s "
+                "stream_base=%s routed_base=%s — interrupt will fan out",
+                session_id,
+                stream_base_url,
+                new_base,
+            )
+        else:
+            logger.info(
+                "[RuntimeRouted] affinity restored to stream pod: session=%s base=%s",
+                session_id,
+                stream_base_url,
+            )
+        # 推流仍钉在原 Pod；表项供 interrupt 优先打到真正执行方
+        self._session_stream_bases[session_id] = stream_base_url
+        return new_route_id
+
+    async def _interrupt_target_bases(self, session_id: str, routed_base: str) -> list[str]:
+        """interrupt 目标顺序：推流中的 Pod → route 结果 → 本 GW 已连接的其它 Pod。"""
+        ordered: list[str] = []
+        stream_base = self._session_stream_bases.get(session_id, "")
+        for candidate in (stream_base, routed_base):
+            text = (candidate or "").strip()
+            if text and text not in ordered:
+                ordered.append(text)
+        async with self._pod_locks_guard:
+            pooled = list(self._pod_clients.keys())
+        for base in pooled:
+            if base and base not in ordered:
+                ordered.append(base)
+        return ordered
+
+    async def _send_interrupt_fanout(
+        self,
+        envelope: E2AEnvelope,
+        *,
+        session_id: str,
+        group_id: str,
+        bot_id: str,
+        request_id: str,
+        user_id: str | None,
+    ) -> AgentResponse:
+        """先按 session route 打一枪，再对其它已连接 AgentServer 多播（幂等 no-op）。"""
+        base_url, route_id = await self._route_with_retry(
+            session_id=session_id,
+            group_id=group_id,
+            bot_id=bot_id,
+            request_id=request_id,
+            user_id=user_id,
+        )
+        targets = await self._interrupt_target_bases(session_id, base_url)
+        logger.info(
+            "[RuntimeRouted] interrupt fanout: session=%s targets=%s stream_base=%s",
+            session_id,
+            targets,
+            self._session_stream_bases.get(session_id),
+        )
+        primary: AgentResponse | None = None
+        last_error: Exception | None = None
+        for target in targets:
+            try:
+                await self._ensure_pod_push(target)
+                result = await self._http.send_request(envelope, base_url=target)
+            except Exception as exc:  # noqa: BLE001 - 单 Pod 失败继续打其它
+                last_error = exc
+                logger.warning(
+                    "[RuntimeRouted] interrupt to %s failed: session=%s err=%s",
+                    target,
+                    session_id,
+                    exc,
+                )
+                continue
+            payload = result.payload if isinstance(result.payload, dict) else {}
+            logger.info(
+                "[RuntimeRouted] interrupt to %s: session=%s ok=%s killed=%s "
+                "event=%s",
+                target,
+                session_id,
+                result.ok,
+                payload.get("killed"),
+                payload.get("event_type"),
+            )
+            if primary is None:
+                primary = result
+            # 已有明确杀进程计数则不必再扫（其余 Pod 无会话会 no-op，但可省 RTT）
+            killed = payload.get("killed")
+            if isinstance(killed, int) and killed > 0:
+                break
+            cancelled_tools = payload.get("cancelled_tools")
+            if cancelled_tools:
+                break
+        await self._touch_quiet(session_id, route_id)
+        if primary is not None:
+            return primary
+        if last_error is not None:
+            raise last_error
+        return AgentResponse(
+            request_id=str(envelope.request_id or request_id),
+            channel_id=str(envelope.channel or "web"),
+            ok=True,
+            payload={"event_type": "chat.interrupt_result", "success": True},
+        )
 
     async def _route_with_retry(
         self,

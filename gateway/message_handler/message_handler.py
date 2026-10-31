@@ -1557,6 +1557,7 @@ class MessageHandler(ABC):
                     sid_for_agent,
                     "cancel",
                     success=True,
+                    metadata=cancel_metadata or None,
                 )
             return True
 
@@ -1573,6 +1574,7 @@ class MessageHandler(ABC):
                 await self._send_interrupt_result_notification(
                     msg.id, msg.channel_id, sid_for_agent, "cancel",
                     message=f"任务终止失败: {exc}", success=False,
+                    metadata=cancel_metadata or None,
                 )
             return False
 
@@ -1597,9 +1599,13 @@ class MessageHandler(ABC):
             )
             await self.publish_robot_messages(out)
             logger.info(
-                "[MessageHandler] 已转发 AgentServer 中断结果: request_id=%s ok=%s",
+                "[MessageHandler] 已转发 AgentServer 中断结果: request_id=%s ok=%s "
+                "killed=%s cancelled_tools=%s ws_id=%s",
                 resp.request_id,
                 resp.ok,
+                payload.get("killed"),
+                len(payload.get("cancelled_tools") or []),
+                (msg.metadata or {}).get("ws_id", "") if isinstance(msg.metadata, dict) else "",
             )
 
             # 发送被中断工具的 tool_result 给前端
@@ -1624,6 +1630,7 @@ class MessageHandler(ABC):
                 "cancel",
                 message=error_message,
                 success=False,
+                metadata=cancel_metadata or None,
             )
         return False
 
@@ -3491,8 +3498,26 @@ class MessageHandler(ABC):
                     rid,
                 )
                 return
+            # Agent 侧会把路由 group/bot 放进 wire metadata（与 owner user 同级），
+            # 避免仅依赖 _stream_metadata.routing（权限续跑 request_id 可能对不上）。
+            cron_payload = dict(chunk.payload)
+            body_data = cron_payload.get("data")
+            if not isinstance(body_data, dict):
+                body_data = {}
+                cron_payload["data"] = body_data
+            else:
+                body_data = dict(body_data)
+                cron_payload["data"] = body_data
+            if isinstance(wire_metadata, dict):
+                for src_key, dst_key in (
+                    ("_jiuwenswarm_cron_owner_group_id", "group_id"),
+                    ("_jiuwenswarm_cron_owner_bot_id", "bot_id"),
+                ):
+                    pushed = str(wire_metadata.get(src_key) or "").strip()
+                    if pushed and not str(body_data.get(dst_key) or "").strip():
+                        body_data[dst_key] = pushed
             await self._handle_cron_push_payload(
-                payload=dict(chunk.payload),
+                payload=cron_payload,
                 request_id=rid,
                 channel_id=chunk.channel_id,
                 session_id=session_id,
@@ -3726,6 +3751,48 @@ class MessageHandler(ABC):
         )
         owner_user_id = str(user_id or "").strip()
 
+        # 对话里的 cron 工具（list/get/update/…）通常不带 group_id/bot_id；
+        # 空值会被 controller normalize 成 default，企业版任务筛不中 → 列表空。
+        # 查询类：override=False，只补洞，保留 wire/body 已带的真实租户。
+        # create：见下方硬覆盖——必须以 chat routing 为准，防 LLM 幻觉跨租户写入。
+        from jiuwenswarm.common.request_identity import (
+            merge_routing_into_params,
+            web_routing_identity,
+        )
+        from gateway.enterprise import is_enterprise
+
+        identity_meta = (
+            request_metadata if isinstance(request_metadata, dict) else None
+        )
+        if identity_meta is None and isinstance(metadata, dict):
+            identity_meta = metadata
+        # 先保留 body/push 已带的 group/bot，再用 stream routing 补洞；
+        # 不要用空的 stream identity 把已有租户盖成 default。
+        params = merge_routing_into_params(
+            dict(params),
+            identity_meta,
+            override=False,
+        )
+        if is_enterprise():
+            identity = web_routing_identity(identity_meta)
+            for key in ("group_id", "bot_id"):
+                routed = str(identity.get(key) or "").strip()
+                current = str(params.get(key) or "").strip()
+                if routed and current in {"", "default"}:
+                    params[key] = routed
+                    continue
+                if current in {"", "default"} and not routed:
+                    params.pop(key, None)
+        tenant_group_id = str(params.get("group_id") or "")
+        tenant_bot_id = str(params.get("bot_id") or "")
+        logger.info(
+            "[MessageHandler] cron push tenant: action=%s user=%s group=%s bot=%s",
+            action,
+            owner_user_id,
+            tenant_group_id or "(empty)",
+            tenant_bot_id or "(empty)",
+        )
+
         async def _get_owned_job(job_id: str) -> dict[str, Any] | None:
             job = await cc.get_job(
                 job_id,
@@ -3735,8 +3802,8 @@ class MessageHandler(ABC):
                     else None
                 ),
                 user_id=owner_user_id,
-                group_id=str(params.get("group_id") or ""),
-                bot_id=str(params.get("bot_id") or ""),
+                group_id=tenant_group_id,
+                bot_id=tenant_bot_id,
             )
             if job is None:
                 return None
@@ -3760,9 +3827,9 @@ class MessageHandler(ABC):
                         if "project_id" in params
                         else None
                     ),
-                    user_id=str(owner_user_id or ""),
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    user_id=owner_user_id,
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
                 if owner_user_id:
                     data = [
@@ -3803,22 +3870,10 @@ class MessageHandler(ABC):
                 params.pop("_auth_session", None)
                 if auth_session:
                     params["_auth_session"] = auth_session
-                # 对话里的 cron 工具通常不带 group/bot。这里用原始 chat 请求的
-                # routing 盖回去，企业库才能按真实 bot_id 查对话模型，而不是查到
-                # 空名单或历史占位名 default。
-                from jiuwenswarm.common.request_identity import (
-                    merge_routing_into_params,
-                    web_routing_identity,
-                )
-                from gateway.enterprise import is_enterprise
-
-                identity_meta = (
-                    request_metadata
-                    if isinstance(request_metadata, dict)
-                    else None
-                )
-                if identity_meta is None and isinstance(metadata, dict):
-                    identity_meta = metadata
+                # create 落库的租户身份必须以 Gateway chat routing 为准。
+                # 顶部对查询类用了 override=False（参数优先补洞）；若 create 也
+                # 参数优先，LLM 幻觉/提示注入的他人 group_id/bot_id 会一路透传到
+                # create_job，形成跨租户写入。这里硬覆盖回去。
                 params = merge_routing_into_params(
                     params,
                     identity_meta,
@@ -3861,8 +3916,8 @@ class MessageHandler(ABC):
                     job_id,
                     patch,
                     user_id=owner_user_id,
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
             elif action == "delete":
                 job_id = str(params.get("job_id") or "")
@@ -3872,8 +3927,8 @@ class MessageHandler(ABC):
                     "deleted": await cc.delete_job(
                         job_id,
                         user_id=owner_user_id,
-                        group_id=str(params.get("group_id") or ""),
-                        bot_id=str(params.get("bot_id") or ""),
+                        group_id=tenant_group_id,
+                        bot_id=tenant_bot_id,
                     )
                 }
             elif action == "toggle":
@@ -3884,8 +3939,8 @@ class MessageHandler(ABC):
                     job_id,
                     bool(params.get("enabled")),
                     user_id=owner_user_id,
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
             elif action == "preview":
                 job_id = str(params.get("job_id") or "")
@@ -3895,8 +3950,8 @@ class MessageHandler(ABC):
                     job_id,
                     int(params.get("count", 5)),
                     user_id=owner_user_id,
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
             elif action == "run_now":
                 job_id = str(params.get("job_id") or "")
@@ -3906,8 +3961,8 @@ class MessageHandler(ABC):
                     "run_id": await cc.run_now(
                         job_id,
                         user_id=owner_user_id,
-                        group_id=str(params.get("group_id") or ""),
-                        bot_id=str(params.get("bot_id") or ""),
+                        group_id=tenant_group_id,
+                        bot_id=tenant_bot_id,
                     )
                 }
                 # P2：把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer，让
@@ -5177,12 +5232,12 @@ class MessageHandler(ABC):
                         )
 
                     elif intent == "cancel":
-                        # fire_and_forget：避免慢 cancel 阻塞 _forward_loop，
-                        # 导致后续 session.create 等请求在队列中等待、前端超时。
+                        # 必须 await AS interrupt：先推 success=True 会让 UI 以为已停，
+                        # 但亲和漂走时实际 killed=0；等真实结果再反馈（含 ws_id 寻址）。
                         await self._cancel_agent_work_for_session(
                             msg,
                             msg.session_id,
-                            agent_notify="fire_and_forget",
+                            agent_notify="await",
                         )
 
                     elif intent in ("pause", "resume"):
@@ -5967,8 +6022,13 @@ class MessageHandler(ABC):
         message: str | None = None,
         success: bool = True,
         has_active_task: bool | None = None,
+        metadata: dict | None = None,
     ) -> None:
-        """发送 interrupt_result 事件到前端（pause / resume 等）."""
+        """发送 interrupt_result 事件到前端（pause / resume / cancel 等）.
+
+        ``metadata`` 应带上发起停止的 web 连接 ``ws_id``：cron session 往往没有
+        挂着的 WebSocket，只按 session_id 投递会被 ``has no connected ws`` 丢掉。
+        """
         from openjiuwen_protocol.message import EventType, Message
 
         # 根据 has_active_task 调整 pause/resume 的消息
@@ -5997,6 +6057,7 @@ class MessageHandler(ABC):
         }
         if has_active_task is not None:
             payload_dict["has_active_task"] = has_active_task
+        notify_meta = dict(metadata) if isinstance(metadata, dict) else None
         notify_msg = Message(
             id=request_id,
             type="event",
@@ -6007,12 +6068,16 @@ class MessageHandler(ABC):
             ok=True,
             payload=payload_dict,
             event_type=EventType.CHAT_INTERRUPT_RESULT,
-            metadata=None,
+            metadata=notify_meta,
         )
         await self.publish_robot_messages(notify_msg)
         logger.info(
-            "[MessageHandler] 已发送 interrupt_result 通知: intent=%s request_id=%s",
-            intent, request_id,
+            "[MessageHandler] 已发送 interrupt_result 通知: intent=%s request_id=%s "
+            "success=%s ws_id=%s",
+            intent,
+            request_id,
+            success,
+            (notify_meta or {}).get("ws_id", ""),
         )
 
     async def _send_processing_status(
