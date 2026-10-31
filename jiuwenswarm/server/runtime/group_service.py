@@ -868,9 +868,13 @@ class GroupService:
                 state["status"] = "deleting"
                 _save(state)
             try:
+                from jiuwenswarm.agents.swarm.group_chat import cancel_waiting_runs
                 from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 
-                for execution in GroupExecutions(group_id).read().values():
+                executions = GroupExecutions(group_id).read()
+                # A queued run would otherwise start once the running one stops below.
+                await cancel_waiting_runs(list(executions))
+                for execution in executions.values():
                     child_session = execution.get("team_session_id")
                     if child_session:
                         await self.manager_factory(channel_id).stop_session_runtime(
