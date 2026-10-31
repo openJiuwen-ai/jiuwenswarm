@@ -1,12 +1,19 @@
 """解析 SDK / runner 的流式 chunk，生成对外事件、文本载荷和 HITL 相关判断。"""
 
 from __future__ import annotations
+import logging
 from typing import Any
 from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import is_refusal_scrub_control
 from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import is_todo_close_control
-from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_fast_path import RewriteFastPathResult
-from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_html_followup import RewriteHtmlFollowupResult
-from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import convert_interactions_to_ask_user_question
+from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_fast_path import (
+    RewriteFastPathResult,
+)
+from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_html_followup import (
+    RewriteHtmlFollowupResult,
+)
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    convert_interactions_to_ask_user_question,
+)
 from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import try_handle_subagent_chunk
 from jiuwenswarm.server.utils.stream_utils import (
     build_tool_result_payload,
@@ -14,13 +21,13 @@ from jiuwenswarm.server.utils.stream_utils import (
     parse_ask_user_question_payload,
 )
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
-import logging
 from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
     _extract_usage_metadata,
     _interaction_goal_updated_payload,
 )
 
 logger = logging.getLogger(__name__)
+
 
 def _propagate_stream_source_id(
     src_payload: Any, result: dict[str, Any] | None
@@ -41,6 +48,7 @@ def _propagate_stream_source_id(
     if isinstance(task_id, str) and task_id.strip():
         result["task_id"] = task_id.strip()
     return result
+
 
 def _rewrite_skill_turbo_usage_chunk(
     chunk: AgentResponseChunk,
@@ -78,6 +86,7 @@ def _rewrite_skill_turbo_usage_chunk(
         usage_meta,
     )
 
+
 def _iter_delta_for_unstreamed_final(
     *, content: str, chunk_payload: Any
 ) -> list[dict[str, Any]]:
@@ -99,6 +108,7 @@ def _iter_delta_for_unstreamed_final(
         len(text),
     )
     return [payload]
+
 
 def _drain_final_content_to_deltas(
     parsed: dict[str, Any],
@@ -148,6 +158,7 @@ def _drain_final_content_to_deltas(
         parsed["content"] = ""
     return deltas
 
+
 def _approval_chunk_from_event(event: Any) -> dict[str, Any] | None:
     parsed = _parse_stream_chunk(event)
     if not isinstance(parsed, dict) or parsed.get("event_type") != "chat.ask_user_question":
@@ -159,6 +170,7 @@ def _approval_chunk_from_event(event: Any) -> dict[str, Any] | None:
     if not isinstance(questions, list) or not questions:
         return None
     return parsed
+
 
 def _fast_path_chunks(
     result: RewriteFastPathResult,
@@ -191,6 +203,7 @@ def _fast_path_chunks(
         ),
     )
 
+
 def _rewrite_html_followup_chunks(
     result: RewriteHtmlFollowupResult,
     *,
@@ -209,6 +222,7 @@ def _rewrite_html_followup_chunks(
         ),
     )
 
+
 def _stream_text_payload(
     event_type: str,
     content: Any,
@@ -217,6 +231,7 @@ def _stream_text_payload(
     if content is None or content == "":
         return None
     return {"event_type": event_type, "content": content}
+
 
 def _is_ask_user_payload(payload: Any) -> bool:
     """HITL 暂停判定：是否为会打断外层流的 checkpoint ask_user 卡片。
@@ -232,6 +247,7 @@ def _is_ask_user_payload(payload: Any) -> bool:
         return False
     source = str(payload.get("source") or "").strip()
     return source not in {"subagent_skill_load", "subagent_tool_permission"}
+
 
 def _is_hitl_suppress_noise_chunk(chunk: Any) -> bool:
     """Metadata that may follow ask_user before the stream truly pauses.
@@ -254,6 +270,7 @@ def _is_hitl_suppress_noise_chunk(chunk: Any) -> bool:
     if ctype == "controller_output":
         return _run_failure(chunk) is None
     return False
+
 
 def _apply_hitl_suppress_clear(
     chunk: Any,
@@ -289,6 +306,7 @@ def _apply_hitl_suppress_clear(
         getattr(chunk, "type", None) or type(chunk).__name__,
     )
     return False, False
+
 
 def _run_failure(chunk) -> tuple[str, str] | None:
     """Return ``(error_type, message)`` if *chunk* is a run-level terminal failure.
@@ -351,6 +369,7 @@ def _run_failure(chunk) -> tuple[str, str] | None:
         return "answer_error", str(chunk.get("output") or "task failed")
 
     return None
+
 
 def _parse_stream_chunk(
     chunk,

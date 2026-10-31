@@ -3510,7 +3510,7 @@ class JiuWenSwarmDeepAdapter:
         session_id = str(getattr(request, "session_id", None) or "").strip()
         if not session_id:
             return
-        sid = self._session_adapter_key(session_id)
+        sid = _session_adapter_key(session_id)
         if sid not in self._session_adapters:
             # Synthetic facade sessions (bff-*) never create a session adapter
             # on this root; keep the lazy next-turn behavior for them.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hashlib
 import importlib
+import logging
 import os
 import threading
 from typing import (
@@ -27,7 +28,6 @@ from jiuwenswarm.common.mcp_config import (
     _positive_timeout_s,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _EXTRA_TOOLS_CACHE: dict[str, list[Any]] = {}
 
 _EXTRA_TOOLS_CACHE_LOCK = threading.Lock()
+
 
 def _stage_request_mcp_tools(
     request: AgentRequest,
@@ -81,6 +82,7 @@ def _stage_request_mcp_tools(
         )
         buffers.pending_tools.append((tool, strict))
 
+
 def _office_claw_thread_id_from_tools(
     tools: list[RequestScopedOfficeClawMcpTool],
 ) -> str:
@@ -96,6 +98,7 @@ def _office_claw_thread_id_from_tools(
             return thread_id
     return ""
 
+
 def _is_sandbox_bound_rail(rail: Any) -> bool:
     """动手类 rail：必须跟 deep_config / 沙箱 sysop，不能强制本地。"""
     if isinstance(rail, (SysOperationRail, SkillUseRail)):
@@ -103,8 +106,11 @@ def _is_sandbox_bound_rail(rail: Any) -> bool:
     try:
         if isinstance(rail, ConcurrentSafeSysOperationRail):
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] sandbox rail type check failed: %s",
+            exc,
+        )
     return type(rail).__name__ in {
         "SysOperationRail",
         "FileSystemRail",
@@ -112,6 +118,7 @@ def _is_sandbox_bound_rail(rail: Any) -> bool:
         "ConcurrentSafeSysOperationRail",
         "SkillUseRail",
     }
+
 
 def _set_rail_sys_operation(rail: Any, sysop: SysOperation) -> bool:
     """给单个 rail 写入 sys_operation；成功返回 True。"""
@@ -124,6 +131,7 @@ def _set_rail_sys_operation(rail: Any, sysop: SysOperation) -> bool:
         return True
     return False
 
+
 def _build_task_execution_rail() -> TaskExecutionRail | None:
     """Build TaskExecutionRail for task.start/complete/update lifecycle events."""
     try:
@@ -133,6 +141,7 @@ def _build_task_execution_rail() -> TaskExecutionRail | None:
         logger.warning("[JiuWenSwarmDeepAdapter] TaskExecutionRail create failed: %s", exc)
         task_rail = None
     return task_rail
+
 
 def _build_extension_config_debug_rail() -> Any | None:
     """Build ExtensionConfigDebugRail when explicitly enabled.
@@ -160,6 +169,7 @@ def _build_extension_config_debug_rail() -> Any | None:
         )
         rail = None
     return rail
+
 
 def _load_extra_rails_from_env() -> list[Any]:
     """Load extra DeepAgentRails from AGENT_EXTRA_RAILS env var.
@@ -204,6 +214,7 @@ def _load_extra_rails_from_env() -> list[Any]:
                 exc,
             )
     return extra_rails
+
 
 def _load_extra_tools_from_env() -> list[Any]:
     """Load extra tools from AGENT_EXTRA_TOOLS env var.
@@ -264,6 +275,7 @@ def _load_extra_tools_from_env() -> list[Any]:
             )
     return extra_tools
 
+
 def _build_heartbeat_rail() -> HeartbeatRail | None:
     """Build HeartbeatRail."""
     try:
@@ -273,6 +285,7 @@ def _build_heartbeat_rail() -> HeartbeatRail | None:
         logger.warning("[JiuWenSwarmDeepAdapter] HeartbeatRail create failed: %s", exc)
         heartbeat_rail = None
     return heartbeat_rail
+
 
 def _build_avatar_rail() -> Any | None:
     """Build AvatarPromptRail for digital avatar mode."""
@@ -285,6 +298,7 @@ def _build_avatar_rail() -> Any | None:
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] AvatarPromptRail create failed: %s", exc)
         return None
+
 
 def _build_llm_retry_rail(config_base: dict[str, Any] | None = None) -> NotifyingLLMRetryRail | None:
     try:
@@ -312,6 +326,7 @@ def _build_llm_retry_rail(config_base: dict[str, Any] | None = None) -> Notifyin
         logger.warning("[JiuWenSwarmDeepAdapter] LLMRetryRail create failed: %s", exc)
         return None
 
+
 def _build_work_plan_approval_rail() -> Any | None:
     """构建 work plan 的审批 rail（``exit_plan_mode`` 即时弹窗）。"""
     try:
@@ -326,6 +341,7 @@ def _build_work_plan_approval_rail() -> Any | None:
         )
         return None
 
+
 def _should_register_acp_runtime_tools(
     channel_id: str | None,
     request_id: str | None,
@@ -337,6 +353,7 @@ def _should_register_acp_runtime_tools(
     if not request_id or not session_id:
         return False
     return has_runtime_capability
+
 
 def _build_skill_protocol_prompt_rail() -> Any | None:
     """构建 SkillProtocolPromptRail: 注入技能执行规范提示词。"""
@@ -350,6 +367,7 @@ def _build_skill_protocol_prompt_rail() -> Any | None:
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] SkillProtocolPromptRail create failed: %s", exc)
         return None
+
 
 def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
     """临时禁用 fallback 子代理继承的权限审批 rail，返回恢复函数。
@@ -440,6 +458,7 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
             step()
 
     return restore
+
 
 def find_team_skill_rail(request_id: str, channel_id: str | None = None):
     """Find TeamSkillEvolutionRail that owns the given pending request_id."""

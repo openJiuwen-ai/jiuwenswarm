@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import operator
 import time
 from pathlib import Path
@@ -56,16 +57,17 @@ from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACK
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_user_workspace_dir
-import logging
 
 logger = logging.getLogger(__name__)
 
 # 进程内已完成卡一次性守卫：同 (session, goal) 只落盘一次；跨进程重复由磁盘检查兜底
 _GOAL_COMPLETED_PERSISTED: ClassVar[set[tuple[str, str]]] = set()
 
+
 def _session_adapter_key(session_id: str | None) -> str:
     sid = str(session_id or "").strip()
     return sid or "default"
+
 
 def _enterprise_resource_id_from_request(request: AgentRequest | None) -> str:
     """Return the authenticated Agent resource id carried by a request."""
@@ -76,6 +78,7 @@ def _enterprise_resource_id_from_request(request: AgentRequest | None) -> str:
     metadata = request.metadata if isinstance(request.metadata, dict) else None
     identity = web_routing_identity(metadata)
     return str(identity.get("bot_id") or "").strip()
+
 
 def _session_has_live_subagent_runtime(
     adapter: "JiuWenSwarmDeepAdapter",
@@ -108,14 +111,17 @@ def _session_has_live_subagent_runtime(
         )
         return True
 
+
 def _session_adapter_lock_has_waiters(lock: asyncio.Lock) -> bool:
     # asyncio.Lock has no public waiter inspection; keep the lock if a reconnect is queued on it.
     waiters = getattr(lock, "_waiters", None)
     return any(not waiter.cancelled() for waiter in list(waiters or ()))
 
+
 def _get_a2x_config(config_base: dict[str, Any]) -> dict[str, Any]:
     """Resolve A2X config from ``react.a2x_registry`` with safe defaults."""
     return resolve_a2x_config(config_base)
+
 
 def _is_related_session(target_sid: str, other_sid: str) -> bool:
     """Return True when *other_sid* belongs to the same session tree as *target_sid*.
@@ -132,6 +138,7 @@ def _is_related_session(target_sid: str, other_sid: str) -> bool:
         return True
     return other_sid.startswith(f"{target_sid}_") or target_sid.startswith(f"{other_sid}_")
 
+
 def _resolve_managed_browser_binary_from_config(
     config_base: dict[str, Any] | None = None,
 ) -> str:
@@ -142,6 +149,7 @@ def _resolve_managed_browser_binary_from_config(
 
     return resolve_managed_browser_binary(config_base)
 
+
 def _resolve_headless_from_config(
     config_base: dict[str, Any] | None = None,
 ) -> bool:
@@ -149,6 +157,7 @@ def _resolve_headless_from_config(
     from jiuwenswarm.agents.harness.common.browser_env import resolve_headless
 
     return resolve_headless(config_base)
+
 
 def _leftover_request_mcp_servers(
     request_mcp_servers: dict[str, dict[str, Any]] | None,
@@ -163,6 +172,7 @@ def _leftover_request_mcp_servers(
         name: config for name, config in request_mcp_servers.items() if name not in covered
     }
     return (leftover or None), dropped
+
 
 def _inject_request_id_into_inputs(
     request: AgentRequest, inputs: dict[str, Any]
@@ -185,6 +195,7 @@ def _inject_request_id_into_inputs(
     )
     if isinstance(run_extra, dict):
         run_extra["request_id"] = rid
+
 
 def _normalize_reload_value(value: Any) -> Any:
     """Normalize config-like values for stable hot-reload comparisons."""
@@ -217,6 +228,7 @@ def _normalize_reload_value(value: Any) -> Any:
         return _normalize_reload_value(vars(value))
     return repr(value)
 
+
 def _restore_omitted_reload_fields(
     deep_cfg: DeepAgentConfig,
     omitted_fields: dict[str, Any],
@@ -224,10 +236,12 @@ def _restore_omitted_reload_fields(
     for field_name, field_value in omitted_fields.items():
         setattr(deep_cfg, field_name, field_value)
 
+
 def _inject_attribution_to_config(config: dict) -> None:
     """Inject OpenRouter attribution headers into all model_client_config entries in-place."""
     from jiuwenswarm.common.openrouter_attribution import inject_attribution_to_config
     inject_attribution_to_config(config)
+
 
 def _sys_operation_isolation_key(sysop_card: SysOperationCard) -> str | None:
     try:
@@ -239,6 +253,7 @@ def _sys_operation_isolation_key(sysop_card: SysOperationCard) -> str | None:
             exc,
         )
         return None
+
 
 def _get_registered_sys_operation_by_isolation_key(
     isolation_key_template: str | None,
@@ -262,6 +277,7 @@ def _get_registered_sys_operation_by_isolation_key(
             exc,
         )
         return None
+
 
 def _get_active_package_config_paths() -> list[str]:
     """Read harness-packages.json to get config_path from active packages.
@@ -304,6 +320,7 @@ def _get_active_package_config_paths() -> list[str]:
 
     return config_paths
 
+
 def _resolve_skill_sleep_traces_dir() -> Path:
     """Resolve OTel file-exporter traces dir for skill sleep harvest."""
     try:
@@ -319,6 +336,7 @@ def _resolve_skill_sleep_traces_dir() -> Path:
             if raw:
                 return Path(raw).expanduser()
     return get_user_workspace_dir() / ".trace"
+
 
 async def _push_skill_sleep_published(
     *,
@@ -352,6 +370,7 @@ async def _push_skill_sleep_published(
         request_id,
     )
 
+
 async def _push_skill_sleep_suggest(
     *,
     skill_name: str,
@@ -384,6 +403,7 @@ async def _push_skill_sleep_suggest(
         request_id,
     )
 
+
 def _ttse_consult_knobs(ttse_cfg: dict[str, Any]) -> tuple[int, str]:
     """Parse live ``consult_top_k`` / ``consult_retrieve_mode`` from yaml."""
     try:
@@ -405,6 +425,7 @@ def _ttse_consult_knobs(ttse_cfg: dict[str, Any]) -> tuple[int, str]:
         ttse_cfg.get("consult_retrieve_mode")
     )
 
+
 def _coerce_circuit_breaker_threshold(value: object, default: int) -> int:
     try:
         parsed = int(value)  # type: ignore[arg-type]
@@ -413,6 +434,7 @@ def _coerce_circuit_breaker_threshold(value: object, default: int) -> int:
     if parsed <= 0:
         return default
     return parsed
+
 
 def _circuit_breaker_config_from_mapping(
     cb_cfg: dict,
@@ -449,6 +471,7 @@ def _circuit_breaker_config_from_mapping(
         unknown_tool_threshold=unknown,
         non_retryable_threshold=non_retryable,
     )
+
 
 def _resolve_enable_task_loop(
     config: dict[str, Any], config_base: dict[str, Any] | None
@@ -491,6 +514,7 @@ def _resolve_enable_task_loop(
         return True
     return configured_value
 
+
 def _reset_deepresearch_route_context(tokens: _RuntimeCronContextTokens) -> None:
     """Reset one DeepResearch route token at most once."""
     route_token = tokens.deepresearch
@@ -499,6 +523,7 @@ def _reset_deepresearch_route_context(tokens: _RuntimeCronContextTokens) -> None
     token = route_token.token
     reset_deepresearch_route(token)
     route_token.token = None
+
 
 def _run_cleanup_steps(
     steps: list[tuple[str, Callable[[], None]]],
@@ -517,6 +542,7 @@ def _run_cleanup_steps(
                 type(exc).__name__,
             )
     return first_error
+
 
 def _reset_runtime_cron_context(
     tokens: _RuntimeCronContextTokens,
@@ -577,6 +603,7 @@ def _reset_runtime_cron_context(
     if first_error is not None and not suppress_errors:
         raise first_error
 
+
 def _acp_runtime_tools_enabled(
     request_metadata: dict[str, Any] | None,
 ) -> tuple[bool, bool]:
@@ -614,6 +641,7 @@ def _acp_runtime_tools_enabled(
 
     return fs_enabled, terminal_enabled
 
+
 def _extract_request_system_prompt(request: AgentRequest | None) -> str | None:
     """Read non-empty request.params.system_prompt."""
     if request is None or not isinstance(request.params, dict):
@@ -624,6 +652,7 @@ def _extract_request_system_prompt(request: AgentRequest | None) -> str | None:
         if value:
             return value
     return None
+
 
 def _extract_request_interactive_ask(request: AgentRequest | None) -> bool:
     """Guided mode is params.interactive_ask opt-in; never infer from HITL capability."""
@@ -637,6 +666,7 @@ def _extract_request_interactive_ask(request: AgentRequest | None) -> bool:
     metadata = request.metadata if isinstance(getattr(request, "metadata", None), dict) else None
     return extract_interactive_ask(params, metadata)
 
+
 def _resolve_eternal_conversation_enabled(params: Any) -> bool:
     """Resolve the V1 frontend runtime flag; absent remains disabled."""
     if not isinstance(params, dict):
@@ -648,6 +678,7 @@ def _resolve_eternal_conversation_enabled(params: Any) -> bool:
         return value.strip().casefold() in {"1", "true", "yes", "on", "enabled"}
     return bool(value)
 
+
 def _is_eternal_interaction_resume(params: Any) -> bool:
     if not isinstance(params, dict):
         return False
@@ -657,6 +688,7 @@ def _is_eternal_interaction_resume(params: Any) -> bool:
     # a new one, otherwise ask_user answers would split one natural task in
     # the eternal-conversation evidence chain.
     return str(params.get("source") or "").strip() in INTERRUPT_RESUME_SOURCES
+
 
 def _cron_session_has_context(inner_session: Any) -> bool:
     """检测 AgentSession 的 global_state['context'] 是否已带 messages。
@@ -679,6 +711,7 @@ def _cron_session_has_context(inner_session: Any) -> bool:
         pass
     return False
 
+
 def _cron_execution_checkpointer(inner_session: Any) -> Any:
     """cron 落盘用的是 session 自己的 checkpointer，恢复必须读同一份。"""
     getter = getattr(inner_session, "checkpointer", None)
@@ -687,6 +720,7 @@ def _cron_execution_checkpointer(inner_session: Any) -> Any:
         if checkpointer is not None:
             return checkpointer
     return CheckpointerFactory.get_checkpointer()
+
 
 def _has_uploaded_file(params: dict) -> bool:
     """Whether the request params carry a user-uploaded file (new content)."""
@@ -701,9 +735,13 @@ def _has_uploaded_file(params: dict) -> bool:
             return len(files) > 0
         if isinstance(files, dict):
             return bool(files.get("files"))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] uploaded file params are not parseable: %s",
+            exc,
+        )
     return False
+
 
 def _new_usage_accumulator() -> dict[str, Any]:
     return {
@@ -715,6 +753,7 @@ def _new_usage_accumulator() -> dict[str, Any]:
         "output_cost": 0.0,
         "total_cost": 0.0,
     }
+
 
 def _extract_usage_metadata(payload: Any) -> dict[str, Any] | None:
     """Pull GLM/OpenAI usage numbers out of a SkillTurbo or adapter payload."""
@@ -732,11 +771,13 @@ def _extract_usage_metadata(payload: Any) -> dict[str, Any] | None:
         return inner if isinstance(inner, dict) else None
     return None
 
+
 def _accumulate_usage(acc: dict[str, Any], usage_meta: dict[str, Any]) -> None:
     for token in ("input_tokens", "output_tokens", "total_tokens", "cache_tokens"):
         acc[token] += usage_meta.get(token, 0) or 0
     for cost in ("input_cost", "output_cost", "total_cost"):
         acc[cost] += usage_meta.get(cost, 0.0) or 0.0
+
 
 def _extract_deepresearch_sdk_usage(
     payload: Any,
@@ -781,6 +822,7 @@ def _extract_deepresearch_sdk_usage(
         return None
     return usage_id, usage
 
+
 def _account_deepresearch_sdk_usage(
     payload: Any,
     *,
@@ -798,6 +840,7 @@ def _account_deepresearch_sdk_usage(
     _accumulate_usage(usage_accumulator, usage)
     record_deepresearch_sdk_token_usage(request_id, usage_id, usage)
     return True
+
 
 def _format_llm_usage_summary(usage_accumulator: dict[str, Any]) -> dict[str, Any]:
     summary = {
@@ -817,6 +860,7 @@ def _format_llm_usage_summary(usage_accumulator: dict[str, Any]) -> dict[str, An
     if usage_accumulator["total_cost"] > 0:
         summary["total_cost"] = round(usage_accumulator["total_cost"], 6)
     return summary
+
 
 def _skill_turbo_answers_to_confirm_payload(
     answers: list,
@@ -852,6 +896,7 @@ def _skill_turbo_answers_to_confirm_payload(
         )
     return _SkillTurboConfirmPayload(approved=True)
 
+
 def _select_registered_runtime_tool_names(
     runtime_tool_candidates: tuple[str, ...],
     ability_names: set[str],
@@ -862,8 +907,10 @@ def _select_registered_runtime_tool_names(
             selected_names.append(name)
     return selected_names
 
+
 def _resolve_interrupt_session_id(session_id: str | None) -> str:
     return (session_id or "default").strip() or "default"
+
 
 def _append_cancelled_tools_to_history(
     request: AgentRequest,
@@ -897,6 +944,7 @@ def _append_cancelled_tools_to_history(
             mode=mode,
         )
 
+
 def _approved_plan_exit_resume_tool_call_id(params: Any) -> str:
     """返回已批准 plan-exit resume 对应的工具调用 ID。
 
@@ -922,6 +970,7 @@ def _approved_plan_exit_resume_tool_call_id(params: Any) -> str:
     selected = str(options[0] or "").strip().lower()
     return tool_call_id if selected in approved_values else ""
 
+
 def _should_fill_reasoning_only_empty_final(
     parsed: dict[str, Any] | None,
     *,
@@ -938,6 +987,7 @@ def _should_fill_reasoning_only_empty_final(
     if not had_reasoning_output:
         return False
     return not visible_text_since_last_final
+
 
 def _apply_reasoning_only_empty_reply_fallback(
     *,
@@ -960,6 +1010,7 @@ def _apply_reasoning_only_empty_reply_fallback(
         return fallback_content
     return reasoning_only_fallback
 
+
 def _resolve_input_dispatch_mode(params: Any) -> InputDispatchMode | None:
     """Map host ``input_mode`` / ``runtime_mode`` onto OpenJiuwen dispatch mode.
 
@@ -977,8 +1028,10 @@ def _resolve_input_dispatch_mode(params: Any) -> InputDispatchMode | None:
         return InputDispatchMode.STEER
     return None
 
+
 def _wants_attach_goal(params: Any) -> bool:
     return isinstance(params, dict) and params.get("attach_goal") is True
+
 
 def _should_parse_tui_goal_slash(
     *,
@@ -993,6 +1046,7 @@ def _should_parse_tui_goal_slash(
     if str(channel_id or "").strip().lower() != "tui":
         return False
     return isinstance(query, str)
+
 
 def _parse_goal_slash_intent(query: str) -> dict[str, Any] | None:
     """Parse ``/goal ...`` into an action dict without touching GoalManager."""
@@ -1011,6 +1065,7 @@ def _parse_goal_slash_intent(query: str) -> dict[str, Any] | None:
         return {"action": "set", "objective": ""}
     return {"action": "set", "objective": args}
 
+
 def _is_subagent_approval_answer(request_id: str, params: Any) -> bool:
     """子代理委托审批应答：显式 source 或 request_id 前缀（兼容旧通道）。"""
     source = str(params.get("source") or "").strip() if isinstance(params, dict) else ""
@@ -1019,6 +1074,7 @@ def _is_subagent_approval_answer(request_id: str, params: Any) -> bool:
     return isinstance(request_id, str) and request_id.startswith(
         ("subagent_skill_load_", "subagent_tool_permission_")
     )
+
 
 def _resolve_subagent_approval_answer(
     request: AgentRequest,
@@ -1046,6 +1102,7 @@ def _resolve_subagent_approval_answer(
             exc_info=True,
         )
         return False
+
 
 def _is_interrupt_resume_dispatch(params: Any) -> bool:
     """HITL answers must inject into the existing interaction when possible.
@@ -1078,6 +1135,7 @@ def _is_interrupt_resume_dispatch(params: Any) -> bool:
 
     return is_interrupt_evolution_approval_answer_payload(params)
 
+
 def _structured_goal_op_from_request(
     request: AgentRequest,
 ) -> dict[str, Any] | None:
@@ -1107,6 +1165,7 @@ def _structured_goal_op_from_request(
                 op[key] = int(value.strip())
     return op
 
+
 def _is_interrupt_skill_evolution_approval_params(request_id: str, params: Any) -> bool:
     if not isinstance(params, dict):
         return False
@@ -1117,6 +1176,7 @@ def _is_interrupt_skill_evolution_approval_params(request_id: str, params: Any) 
         evolution_meta.get("approval_transport") == "interrupt"
         and _is_regular_skill_evolution_approval_params(params)
     )
+
 
 def _is_regular_skill_evolution_approval_params(params: Any) -> bool:
     if not isinstance(params, dict):
@@ -1137,6 +1197,7 @@ def _is_regular_skill_evolution_approval_params(params: Any) -> bool:
     approval_kind = evolution_meta.get("approval_kind")
     rail_kind = evolution_meta.get("rail_kind")
     return approval_kind in (None, "", "evolve") and rail_kind in (None, "", "regular")
+
 
 async def _push_team_skill_evolve_resolution_status(
     request_id: str,
@@ -1178,6 +1239,7 @@ async def _push_team_skill_evolve_resolution_status(
             exc,
         )
 
+
 def _format_approval_summary(
     *,
     skill_name: str,
@@ -1189,8 +1251,10 @@ def _format_approval_summary(
     )
     return f"已为 Skill '{skill_name}' {action_label} {len(questions)} 条待审批内容：\n{summaries}"
 
+
 def _generated_metric_id_key(skill_name: str, entry_id: str) -> str:
     return f"{skill_name}\0{entry_id}"
+
 
 def _strip_skill_md_fence(text: str) -> str:
     """Remove optional markdown code fences around a SKILL.md body."""
@@ -1203,6 +1267,7 @@ def _strip_skill_md_fence(text: str) -> str:
     if lines and lines[-1].strip() == "```":
         lines = lines[:-1]
     return "\n".join(lines).strip()
+
 
 async def _push_auto_rebuild_published_metric(
     job: AutoRebuildJob,
@@ -1260,6 +1325,7 @@ async def _push_auto_rebuild_published_metric(
             exc,
         )
 
+
 def _followup_response(action: str, followup_prompt: str, skill_name: str) -> dict[str, Any]:
     return {
         "action": action,
@@ -1267,6 +1333,7 @@ def _followup_response(action: str, followup_prompt: str, skill_name: str) -> di
         "skill_name": skill_name,
         "result_type": "followup",
     }
+
 
 def _extract_followup_prompt(slash_result: dict[str, Any] | None) -> str | None:
     """Return follow-up prompt when a slash command should continue as an agent turn."""
@@ -1280,11 +1347,13 @@ def _extract_followup_prompt(slash_result: dict[str, Any] | None) -> str | None:
     prompt = prompt.strip()
     return prompt or None
 
+
 def _goal_record_payload(record: Any | None) -> dict[str, Any] | None:
     if record is None:
         return None
     to_dict = getattr(record, "to_dict", None)
     return to_dict() if callable(to_dict) else None
+
 
 def _format_goal_control_message(action: str, goal: dict[str, Any] | None) -> str:
     if action == "get":
@@ -1296,6 +1365,7 @@ def _format_goal_control_message(action: str, goal: dict[str, Any] | None) -> st
     if action == "resume":
         return "Goal resumed." if goal is not None else "No goal in this session."
     return "Goal set." if goal is not None else "Goal was not set."
+
 
 def _record_goal_set_history_if_needed(
     request: AgentRequest,
@@ -1331,6 +1401,7 @@ def _record_goal_set_history_if_needed(
         },
     )
 
+
 def _goal_completed_history_exists(session_id: str, goal_id: str) -> bool:
     """Return True when this session already persisted a completion card for goal_id."""
     message_id = f"goal-completed-{goal_id}"
@@ -1350,6 +1421,7 @@ def _goal_completed_history_exists(session_id: str, goal_id: str) -> bool:
             exc_info=True,
         )
     return False
+
 
 def _record_goal_completed_history_if_needed(
     *,
@@ -1401,6 +1473,7 @@ def _record_goal_completed_history_if_needed(
     )
     _GOAL_COMPLETED_PERSISTED.add((sid, goal_id))
 
+
 def _interaction_goal_updated_payload(payload: Any) -> dict[str, Any]:
     """Normalize goal updates to the public Web/TUI payload shape."""
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import GOAL_UPDATED_EVENT_TYPE
@@ -1416,12 +1489,14 @@ def _interaction_goal_updated_payload(payload: Any) -> dict[str, Any]:
         "goal": payload or None,
     }
 
+
 def _valid_deepresearch_rewrite_request_id(request_id: object) -> bool:
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH
     return (
         isinstance(request_id, str)
         and 0 < len(request_id) <= _DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH
     )
+
 
 def _deepresearch_rewrite_replay_conflict() -> RewriteFastPathResult:
     return RewriteFastPathResult(
@@ -1438,6 +1513,7 @@ def _deepresearch_rewrite_replay_conflict() -> RewriteFastPathResult:
         model_calls=0,
         commit_result=None,
     )
+
 
 def _deepresearch_rewrite_publish_uncertain(
     target: RewriteHtmlTarget | None = None,
@@ -1466,6 +1542,7 @@ def _deepresearch_rewrite_publish_uncertain(
             else None
         ),
     )
+
 
 def _deepresearch_rewrite_terminal_kind(
     result: RewriteFastPathResult,
@@ -1504,6 +1581,7 @@ def _deepresearch_rewrite_terminal_kind(
         return "success"
     return None
 
+
 def _normalize_deepresearch_usage(value: object) -> dict[str, float] | None:
     keys = (
         "input_tokens",
@@ -1534,6 +1612,7 @@ def _normalize_deepresearch_usage(value: object) -> dict[str, float] | None:
             normalized[key] = operator.getitem(raw, key)
     return normalized or None
 
+
 def _deepresearch_usage_summary(
     usage: dict[str, float],
 ) -> dict[str, float | str]:
@@ -1551,6 +1630,7 @@ def _deepresearch_usage_summary(
         if usage.get(cost, 0) > 0:
             summary[cost] = round(usage[cost], 6)
     return summary
+
 
 def _is_approval_event(evt) -> bool:
     """Check whether an OutputSchema event is an approval request."""

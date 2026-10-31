@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -30,10 +31,10 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.utils import DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
-import logging
 from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _normalize_reload_value
 
 logger = logging.getLogger(__name__)
+
 
 def _mcc_looks_usable(mcc: dict) -> bool:
     """检查 model_client_config 是否包含有效的 API 凭据。"""
@@ -49,6 +50,7 @@ def _mcc_looks_usable(mcc: dict) -> bool:
     api_key = str(mcc.get("api_key", "") or "").strip()
     return bool(api_key)
 
+
 def parse_int(value: Any, default: int) -> int:
     """Parse integer-like values safely."""
     try:
@@ -57,6 +59,7 @@ def parse_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
 
 def _build_vision_model_config(
     config_base: dict[str, Any],
@@ -122,6 +125,7 @@ def _build_vision_model_config(
             max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
         )
 
+
 def _build_audio_model_config(
     config_base: dict[str, Any],
 ) -> AudioModelConfig | None:
@@ -169,6 +173,7 @@ def _build_audio_model_config(
         config_kwargs["question_answering_model"] = question_answering_model
     return AudioModelConfig(**config_kwargs)
 
+
 def _build_video_model_config(
     config_base: dict[str, Any],
 ) -> bool:
@@ -188,6 +193,7 @@ def _build_video_model_config(
         return False
     return True
 
+
 def _build_image_gen_model_config(
     config_base: dict[str, Any],
 ) -> bool:
@@ -198,6 +204,7 @@ def _build_image_gen_model_config(
         return False
     return True
 
+
 def _mask_model_secret(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -205,6 +212,7 @@ def _mask_model_secret(value: Any) -> str:
     if len(text) <= 8:
         return "***"
     return f"{text[:4]}***{text[-2:]}"
+
 
 def _inject_model_selection_into_inputs(
     request: AgentRequest, inputs: dict[str, Any]
@@ -233,6 +241,7 @@ def _inject_model_selection_into_inputs(
             "[JiuWenSwarmDeepAdapter] model_selection injected: value=%s", raw
         )
 
+
 def _inject_model_routing_into_inputs(
     request: AgentRequest, inputs: dict[str, Any]
 ) -> None:
@@ -260,10 +269,12 @@ def _inject_model_routing_into_inputs(
             "[JiuWenSwarmDeepAdapter] enable_routing injected: value=True"
         )
 
+
 def _stable_reload_fingerprint(value: Any) -> str:
     normalized = _normalize_reload_value(value)
     payload = json.dumps(normalized, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 def _model_reload_fingerprint(deep_cfg: Any | None) -> str | None:
     if deep_cfg is None:
@@ -283,6 +294,7 @@ def _model_reload_fingerprint(deep_cfg: Any | None) -> str | None:
         }
     )
 
+
 def _system_prompt_reload_fingerprint(deep_cfg: Any | None) -> str | None:
     if deep_cfg is None:
         return None
@@ -296,6 +308,7 @@ def _system_prompt_reload_fingerprint(deep_cfg: Any | None) -> str | None:
             "prompt_mode": getattr(deep_cfg, "prompt_mode", None),
         }
     )
+
 
 def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
     """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
@@ -392,6 +405,7 @@ def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
     )
     return Model(model_client_config=ModelClientConfig(**mcc_fields), model_config=m_config)
 
+
 def _models_config_fingerprint(config: dict) -> str:
     """计算模型配置段的指纹，用于判断是否需要重建模型缓存。"""
     models = config.get("models", {})
@@ -436,6 +450,7 @@ def _models_config_fingerprint(config: dict) -> str:
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+
 def _prepare_multimodal_image_inputs(
     request: AgentRequest,
     inputs: dict[str, Any],
@@ -456,6 +471,7 @@ def _prepare_multimodal_image_inputs(
         len(image_files),
     )
     return updated
+
 
 def _prepare_react_image_tool_prompt(
     request: AgentRequest,
@@ -527,6 +543,7 @@ def _prepare_react_image_tool_prompt(
     )
     return updated
 
+
 def _build_image_tool_fallback_notice(
     request: AgentRequest,
     *,
@@ -561,11 +578,13 @@ def _build_image_tool_fallback_notice(
         notice["model_name"] = model_name
     return notice
 
+
 def _resolve_enable_read_image_multimodal(config: dict[str, Any]) -> bool:
     configured = config.get("enable_read_image_multimodal")
     if isinstance(configured, bool):
         return configured
     return DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
+
 
 def _build_multimodal_image_rail(
     enable_image_multimodal: bool | None = None,
@@ -580,6 +599,7 @@ def _build_multimodal_image_rail(
         logger.warning("[JiuWenSwarmDeepAdapter] MultimodalImageRail create failed: %s", exc)
         multimodal_image_rail = None
     return multimodal_image_rail
+
 
 def _embedding_config_fingerprint(config: dict | None) -> str:
     """计算 config.yaml embed 段的配置指纹，用于检测是否变化。
@@ -602,6 +622,7 @@ def _embedding_config_fingerprint(config: dict | None) -> str:
     api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
     return f"{model}:{base_url}:{api_key_hash}"
 
+
 def _model_looks_usable(model: Model | None) -> bool:
     if model is None:
         return False
@@ -613,6 +634,7 @@ def _model_looks_usable(model: Model | None) -> bool:
         "api_base": getattr(mcc_obj, "api_base", None),
         "client_provider": getattr(mcc_obj, "client_provider", None),
     })
+
 
 def _build_messages_for_model(records: list[dict[str, Any]]) -> list[Any]:
     from openjiuwen.core.foundation.llm.schema.message import UserMessage, AssistantMessage
