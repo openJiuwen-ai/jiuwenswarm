@@ -77,8 +77,9 @@ export async function listAllActiveSessions(request: CommandContext["request"]):
       offset,
     });
     if (Array.isArray(page.sessions)) sessions.push(...page.sessions);
-    const pageCount = page.page_count ?? (Array.isArray(page.sessions) ? page.sessions.length : 0);
-    if (typeof page.total === "number" ? offset + 200 >= page.total : pageCount < 200) break;
+    // page_count is the number of upstream rows in this page, before TUI filtering.
+    const sourceRowCount = page.page_count ?? (Array.isArray(page.sessions) ? page.sessions.length : 0);
+    if (typeof page.total === "number" ? offset + 200 >= page.total : sourceRowCount < 200) break;
   }
   return sessions;
 }

@@ -57,6 +57,7 @@
 
 显式 ID 的 `session.create` 仅对 TUI 开放且保持幂等，AgentServer 会记录该兼容请求绕过预热。该逻辑在收到 `connection.ack` 后由 `app-state.ts` 的 `initializeBootSession` 放行，重连时只执行一次；普通启动、`/new` 和 `/clear` 先进入草稿，首条消息时的 `session.create` 不传 `session_id`，由 AgentServer 分配新 ID。
 若在首条消息创建会话期间按 Ctrl+C 或发送补充输入，TUI 会在创建完成后依次发送首条消息和中断/补充请求，所有帧使用服务端返回的会话 ID。
+草稿尚未落库时，`/rewind`、`/compact` 等需要已保存会话历史的命令会提示先发送消息，不会使用草稿 token 发起会话请求。
 
 **示例**：
 

@@ -4,6 +4,9 @@ import { CliPiAppState } from "../dist/app-state.js";
 import { createNewCommand } from "../dist/core/commands/builtins/new.js";
 import { createClearCommand } from "../dist/core/commands/builtins/clear.js";
 import { createRenameCommand } from "../dist/core/commands/builtins/rename.js";
+import { createRewindCommand } from "../dist/core/commands/builtins/rewind.js";
+import { createBranchCommand } from "../dist/core/commands/builtins/branch.js";
+import { createCompactCommand } from "../dist/core/commands/builtins/compact.js";
 
 class FakeClient {
   requests = [];
@@ -43,6 +46,21 @@ await createRenameCommand().action(state.getCommandContext(), "Draft title");
 assert.equal(client.requests.length, 0, "unused /new and /clear drafts must not persist");
 
 const draftId = state.getSnapshot().sessionId;
+for (const [method, params] of [
+  ["history.list_turns", { session_id: draftId }],
+  ["session.fork", { source_session_id: draftId }],
+  ["command.compact", {}],
+  ["command.btw", { question: "draft context" }],
+]) {
+  await assert.rejects(state.request(method, params), /No saved session yet; send a message first/);
+}
+await createRewindCommand().action(state.getCommandContext(), "");
+assert.match(state.getSnapshot().entries.at(-1)?.content ?? "", /send a message first/);
+await createBranchCommand().action(state.getCommandContext(), "");
+assert.match(state.getSnapshot().entries.at(-1)?.content ?? "", /No conversation to branch/);
+await createCompactCommand().action(state.getCommandContext(), "");
+assert.match(state.getSnapshot().entries.at(-1)?.content ?? "", /send a message first/);
+assert.equal(client.requests.length, 0, "draft-only commands must not send a temporary session ID");
 const requestId = state.sendMessage("hello");
 assert.ok(requestId);
 await waitFor(() => client.frames.some((frame) => frame.method === "chat.send"));

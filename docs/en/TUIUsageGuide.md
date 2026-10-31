@@ -3,6 +3,7 @@
 > Full walkthrough (CLI flags, tools, keyboard shortcuts, Code mode): Chinese [TUI 使用指南](../zh/TUI使用指南.md). Install and first run: [Quick start (TUI)](Quickstart_tui.md).
 
 When the first message creates a draft session, Ctrl+C and supplemental input wait for creation; the TUI sends the message first and then the interrupt or supplement using the assigned session ID. If another window archives or deletes an open session, its TUI receives the lifecycle event and enters a fresh draft.
+Commands that need saved conversation history, such as `/rewind` and `/compact`, ask you to send a message first while the session is still a draft.
 
 ---
 

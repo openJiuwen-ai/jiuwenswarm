@@ -44,6 +44,18 @@ assert.equal(findReusableEmptySession([{ session_id: "no-count" }], "closing-ses
 
 {
   const pages = [];
+  const sessions = await listAllActiveSessions(async (_method, params) => {
+    pages.push(params.offset);
+    return params.offset === 0
+      ? { sessions: [{ session_id: "first" }], page_count: 200 }
+      : { sessions: [{ session_id: "later" }], page_count: 1 };
+  });
+  assert.deepEqual(pages, [0, 200], "a full upstream page must advance after local filtering");
+  assert.deepEqual(sessions.map((session) => session.session_id), ["first", "later"]);
+}
+
+{
+  const pages = [];
   const sessions = await listAllArchivedSessions(async (_method, params) => {
     pages.push(params.offset);
     return params.offset === 0

@@ -37,4 +37,8 @@ design_note: Narrow repair of the TUI draft and session lifecycle behavior in PR
 
 ## 资料同步与遗留
 
-中英文 TUI 使用指南已同步发送顺序和关闭会话的窗口行为。现有 PR 中其余审查建议不属于本次两项修复。
+中英文 TUI 使用指南已同步发送顺序和关闭会话的窗口行为。
+
+## 后续复查：草稿期的会话请求
+
+草稿期执行 `/rewind`、`/compact` 等命令时，之前会把尚未落库的 create token 作为 `session_id` 传给服务端。现于请求入口拦截需要已保存会话的 RPC，并提示先发送消息；`/resume` 使用明确的目标会话 ID，继续允许从草稿切换。`tests/draft-session.test.mjs` 覆盖直接请求及三个命令入口，验证没有发出草稿 ID 请求，首次聊天仍正常建会话。对应定向测试已通过。

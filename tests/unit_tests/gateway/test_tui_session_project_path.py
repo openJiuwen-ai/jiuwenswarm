@@ -329,7 +329,8 @@ async def test_session_list_current_dir_includes_top_level_only_session(
                         },
                         {
                             "session_id": "current-sid",
-                            "channel_id": "tui",
+                            # The current TUI session can lack a channel_id in
+                            # older metadata; include_current must still expose it.
                             "project_dir": project_dir,
                             "last_message_at": 110.0,
                         },
@@ -373,4 +374,6 @@ async def test_session_list_current_dir_includes_top_level_only_session(
         "tui_old_no_channel_meta",
     ]
     assert resp["payload"]["total"] == 3
+    # The upstream page contained three rows; local filtering returned two.
+    # page_count is the upstream row count, not ceil(total / limit).
     assert resp["payload"]["page_count"] == 3

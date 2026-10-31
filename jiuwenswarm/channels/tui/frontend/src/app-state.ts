@@ -99,6 +99,24 @@ import { spawnSync } from "node:child_process";
 // observed by the gateway. Retry only this startup-specific ownership race.
 const BOOT_SESSION_IN_USE_RETRY_DELAYS_MS = [100, 200, 400, 800, 800, 800, 800];
 
+// These RPCs read or mutate the current persisted conversation. A draft token
+// is only an idempotency key for session.create and cannot serve as its ID.
+const PERSISTED_SESSION_REQUEST_METHODS = new Set([
+  "history.get",
+  "history.list_turns",
+  "session.fork",
+  "session.rewind",
+  "session.rewind_and_restore",
+  "session.restore_files",
+  "command.btw",
+  "command.compact",
+  "command.context",
+  "command.diff",
+  "command.recap",
+  "command.rewind_compact",
+  "command.session",
+]);
+
 function isTransientSessionInUseError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.toLowerCase().includes("already active in another window");
@@ -1645,6 +1663,9 @@ export class CliPiAppState {
   ): Promise<T> => {
     if (waitForBootSession && this.bootSessionCreation) {
       await this.bootSessionCreation;
+    }
+    if (this.draftSession && PERSISTED_SESSION_REQUEST_METHODS.has(method)) {
+      throw new Error("No saved session yet; send a message first");
     }
     const id = `tui_${Date.now().toString(16)}_${Math.random().toString(36).slice(2, 6)}`;
     // 记录当前命令请求 ID，以便 Ctrl+C 时能立即取消 WS 请求

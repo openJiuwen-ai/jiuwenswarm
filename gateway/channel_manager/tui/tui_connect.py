@@ -559,6 +559,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if isinstance(payload, dict)
             else []
         )
+        # Count upstream rows before local channel/project filtering. The TUI
+        # uses this to detect a full source page, not a number of pages.
         page_count = len(all_sessions)
         # 过滤掉 None/非 dict/无效 session_id，防止前端 SelectList.render() 崩溃
         normalized_sessions = []
@@ -601,13 +603,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         cli_sessions = []
         for s in all_sessions:
-            if s.get("channel_id", "") != "tui":
+            is_current_session = s.get("session_id", "") == current_sid
+            if s.get("channel_id", "") != "tui" and not (include_current and is_current_session):
                 continue
             if not tui_session_matches_project_dir(
                 s, project_dir, show_all_projects=show_all_projects
             ):
                 continue
-            if not include_current and s.get("session_id", "") == current_sid:
+            if not include_current and is_current_session:
                 continue
             cli_sessions.append(s)
         # 按 last_message_at 降序排序（最近活跃优先）
