@@ -5,13 +5,13 @@
 | 编号 | F_25 / session-attach |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 最近修订日期 | 2026-10-29 |
+| 后续修订 | 2026-10-29，既有实现与验证；2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变 |
 | 计划与进度 | [EXTV2-20 / Server PR08](../designs/extensions-v2-development-plan.md#extv2-20-界面与主会话关联建立通知) |
 | 主责规约 | [S_14](../specs/S_14_session-attach.md) |
 
 ## 1. 范围、状态与依据
 
-基于最新扩展目标 rsi_native_agent_os 的 7795851916dd5ce1d34b70f5a20d6d30eafc25e3，Core 使用 ead700d7d18a247968d64de54918cf5d201a207a。采用现有 Web view_id → Server 提交上下文 → Runtime foreground_changed 真实链路，不依赖尚未合入 PR04/05/06/10 或 Core !110。
+首次开发基于扩展目标 rsi_native_agent_os 的 7795851916dd5ce1d34b70f5a20d6d30eafc25e3，Core 使用 ead700d7d18a247968d64de54918cf5d201a207a。采用现有 Web view_id → Server 提交上下文 → Runtime foreground_changed 真实链路，不依赖尚未合入 PR04/05/06/10 或 Core !110。
 
 源码已经有 session.create/session.switch 的提交事实，缺少独立的界面与主会话关联表和扩展通知。本特性补充 Worker 平台关联表、session.attach 事件/默认 CORE、宿主 foreground 接线和用户示例。实现与定向、真实服务验证已完成，结果见第 6 节。
 
@@ -21,13 +21,105 @@ session.attach 表示一个具体视图已经进入一个有效主会话。用�
 
 Claude 固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497、声明头 2.1.277 的 session.attach 描述客户端加入会话，包含渲染面、客户端 ID 和可选 viewport，默认回显客户端身份。本地以已有 view_id 表示具体视图，另含会话/关联身份，不把 A2UI surfaceId、Gateway 连接或 ui.ready 冒充客户端关联；暂不提供 viewport 或终端隐式绑定，不承诺类型可直接互换。
 
+| 项 | 本次实现 | 与固定 Claude 定义的关系 |
+| --- | --- | --- |
+| 事件职责 | 具体视图与有效主会话提交关联后的通知 | 保留通知扩展用途；具体粒度以本地真实入口为准 |
+| 输入 | session_id, surface_id, attachment_id, channel_id, mode, previous_session_id | 使用本地平台事实和 frozen dataclass；字段逐项见第 3.2 节，不直接互换类型 |
+| 输出与改写 | 默认 CORE 的真实通知回执；全部输入只读 | 不补造目录变更、拒绝或取消已提交业务的能力 |
+| 方法能力 | 不新增用户同名 Ops；复用已有只读会话 Ops | 内部触发入口、用户调用与结果消费见第 4 节 |
+
 ## 3. 事件契约
 
-完整字段、来源和填写责任见 [S_14 第 1 节](../specs/S_14_session-attach.md#1-事件输入输出)。输入与输出均为平台 frozen dataclass。用户只注册 `session.attach` 的 USER Handler，可按 channel_id/mode 等字段等值筛选；全部字段只读，原样 `return await next_handler(event)`。
+### 3.1 触发前后与粒度
 
-create 在原响应交付后通过原后台任务提交关联，switch 在提交时走原 await 链。用户通知失败/2 秒超时不否决已经提交的关联；取消、迟到、并发更新和重放语义见 S_14。accepted 只确认默认 CORE 当时看到有效关联，不说明每个用户的展示均成功。
+沿用已有 `session.create` / `session.switch` 的真实提交点：prepare/abort 不通知；Runtime 提交后由宿主 `foreground_changed(visible=True)` 确认有效主会话，先写入平台关联表，再发通知。create 保持原响应先交付、后后台提交；switch 保持原提交 await 链。
 
-### 3.1 用户需要准备的完整包
+```text
+客户端原创建/切换请求 + 稳定 view_id → Front/Supervisor → Worker
+  → 原 Runtime prepare → commit → foreground_changed(visible=True)
+  → 确认有效主会话，构造只读上下文，提交 channel+view 的新关联
+  → 有旧关联则先通知旧 detach；再确认新关联仍有效
+  → bind_attach_invocation → await bus.trigger(Event("session.attach", input), context)
+  → USER 读取已有 Ops / 准备自己本次关联的资源 → 原样 next
+  → session_attach_core 再确认关联版本、目标和绑定会话 → 真实回执返回
+  → 原创建/切换继续；不额外聊天或切换
+```
+
+粒度是每个 channel_id+surface_id 的一次新主会话关联。同一现存关联重放不重复发；同会话的两个视图分别发；切换再切回形成新 attachment_id。单纯 ui.ready、输入意图、模型执行、断连重连不构成新关联。
+
+### 3.2 输入：每个字段表达什么、由谁填写
+
+实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_attach`，Handler 接收 frozen dataclass `SessionAttachInput`，不是任意 JSON 字典。以下是平台生成后可观察到的形状示意；用户只读，不复制这个构造器直接触发事件。
+
+```python
+from jiuwenswarm.extensions_v2.event_types.session_attach import SessionAttachInput
+
+SessionAttachInput(
+    session_id='demo-session-a',
+    surface_id='view-main',
+    attachment_id='0123456789abcdef0123456789abcdef',
+    channel_id='web',
+    mode='agent.plan',
+    previous_session_id=None,
+)
+```
+
+全部构造字段均必填、没有可省略默认；表中的 None/空串是平台明确提供的值。下表解释怎样读、代表什么、怎样使用；主责契约仍为 [S_14](../specs/S_14_session-attach.md)。
+
+| 字段 | 类型 / 必填与默认 | 由谁填写 / 应填什么 | 代表什么意思 | 作用 / 怎样使用 | 权限与缺失处理 |
+| --- | --- | --- | --- | --- | --- |
+| session_id | str，必填，无构造默认 | 平台填写真实提交并再次确认可用的主会话 ID，如 demo-session-a | 这个视图已经进入的目标主会话 | 作为本次会话 Ops 的身份；记录关联到哪个会话 | 只读；不存在、已归档/删除或禁入目标不发成功关联通知 |
+| surface_id | str，必填，无构造默认 | 来自已有提交上下文的 view_id，如 view-main；1～128 个 ASCII 字母/数字或 ._:- | 一个具体客户端视图/窗口 | 结合 channel_id 标识关联槽位；多个窗口各用稳定不同值 | 只读，不是 A2UI 卡片、渲染槽位或 Gateway 连接 ID |
+| attachment_id | str，必填，无构造默认 | 平台生成 32 位十六进制 UUID，如 0123456789abcdef0123456789abcdef | 这个视图本次进入目标会话所形成的关联身份 | 用户按它建立本次关联资源；以后 detach 用它精确清理 | 只读；同一关联重放不换 ID，离开再进入会产生新 ID |
+| channel_id | str，必填，无构造默认 | 平台填写本次提交渠道，如 web | 关联属于哪个平台渠道 | 与 surface_id 一起区分关联；可用于 matcher | 只读，不是物理设备或传输连接身份 |
+| mode | str，必填，无构造默认 | 平台填写已确认目标模式，如 agent.plan | 这个新目标原本的主会话模式 | 用户选择自己的展示或资源策略；不作为切换命令 | 只读，不能改成另一个模式要求平台执行 |
+| previous_session_id | str 或 None，必填，无构造默认 | 平台关联表的旧目标 ID；首次进入/无旧主会话关联时为 None | 同一 channel+surface 上一次关联的主会话 | 观察切换来源；不是删除目标，也不表示旧会话已经结束 | 只读，不采用请求自报值作为权威，不改成旧 attachment_id |
+
+#### 本次 Handler 的会话上下文与包身份
+
+Event 输入是可观察的通知内容，SessionContext 是平台另行提供的可信会话资料；两者不是用户填写后再相互组装的关系。平台通知函数构造 context，Bus 为每个实际 Handler 创建绑定该资料的 Ops。
+
+| 字段 | 类型 / 必填与默认 | 由谁填写 / 应填什么 | 代表什么意思 | 作用 / 怎样使用 | 权限与缺失处理 |
+| --- | --- | --- | --- | --- | --- |
+| ops.session_context | Core 只读属性，不用 await | 平台先构造，随 trigger 的独立 context 参数传入；Core 绑定给本次 Handler | 本次调用使用哪份会话资料 | 用户读取已有资料；它不负责采集或组装上下文 | 不能通过改 Event 字段替换，不是用户补填对象 |
+| session_context.session_id | 有效非空 str | 平台提供新关联的目标会话 ID；与事件输入 session_id 一致 | 可信查询目标是新关联的目标会话 | 既有会话 Ops 根据它读取对应平台服务 | 只读；不得拿 next_session_id/previous_session_id 代替当前绑定 |
+| session_context.cwd | str 或 None | start 使用已绑定运行目录；其他三种通知未确认 cwd，保持 None | 可得的真实执行目录观察值 | 已有 cwd 查询可以使用；None 表示该入口未收集到 | 不以进程默认目录或项目根伪造 cwd |
+| session_context.metadata.project_root | str 或 None | start 使用已绑定项目根；其余通知只接受目标保存的绝对 project_dir | 已确认的用户项目根资料 | 已有 root 查询读取这个字段；不是自动推断的 Git 根 | 不可信/缺失时为 None；不为通知创建项目或模型 |
+| ops.package_metadata | Core 绑定的当前 Handler 包身份 | 来自已注册 Handler 的真实包元信息；CORE 没有用户包身份 | 当前正在执行的 USER 属于哪个扩展包 | 管理自己包的资源和日志；与被观察会话是两个维度 | 用户不从 payload 指定或冒充其他包 |
+
+本入口不主动采集运行模型；model 查询沿用已有保存信息读取规则，不为展示创建或激活模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
+
+### 3.3 输出：真实通知回执、继续与失败
+
+默认 CORE 返回 `SessionAttachOutput`。正常用户 Handler 必须返回 `await next_handler(event)` 得到的真实回执内容；本通知不使用查询事件的 value/deny 封装，不返回 `{"accepted": True}` 字典，也没有用户拒绝/改写平台事实的协议。
+
+下面仅展示回执形状，**不让用户自行构造并返回假成功**；字段由 CORE 填写：
+
+```python
+from jiuwenswarm.extensions_v2.event_types.session_attach import SessionAttachOutput
+
+SessionAttachOutput(
+    accepted=True,
+    session_id='demo-session-a',
+    surface_id='view-main',
+    attachment_id='0123456789abcdef0123456789abcdef',
+)
+```
+
+| 字段 | 类型 / 必填与默认 | 由谁填写 / 应填什么 | 代表什么意思 | 作用 / 怎样使用 | 权限与缺失处理 |
+| --- | --- | --- | --- | --- | --- |
+| accepted | bool，CORE 实际填严格 True | CORE 在当前关联及目标可用性再次检查后生成 | 检查时这次关联仍然有效 | 可以用来确认本次通知的有效版本 | 不证明所有 USER 展示成功，也不保证返回后永远不会再切换 |
+| session_id | str，必有 | CORE 回显已绑定新目标主会话 | 被确认的目标会话 | 与输入和当前 Ops 的会话核对 | 只读，不通过回执执行切换 |
+| surface_id | str，必有 | CORE 回显本次具体视图 | 被确认的视图 | 结合 attachment_id 保存自己的资源键 | 只读，不替换成另一个视图 |
+| attachment_id | str，必有 | CORE 回显这次当前关联的 UUID | 检查时仍有效的关联版本 | 为日志、用户幂等及后续解除定位提供身份 | 只读，不能拿旧 ID 声称新关联也已确认 |
+
+所有输入只读、没有可改写字段。空 matcher 匹配本次候选中的该事件；可用第 3.2 节字段等值筛选，字段不匹配不会替用户延后重放。 正常 next 继续当前通知链；提前短路伪造成功、修改输入、后置改写回执均不构成合法平台操作，按既有 Core USER 故障隔离处理。
+
+CORE 在当前可信调用作用域内核对原始输入和绑定会话，再记录真实回执；同次调用重复 next 复用该回执，不重复业务操作。用户抛普通异常可能被 Core 隔离后继续默认处理；不能把抛错当作取消平台业务的机制。
+
+通知失败或超时不会恢复已经提交的关联事实；原调用取消仍传播，不把已发生的变更伪装成未发生。 单次通知等待预算默认 2 秒，从通知任务启动计；超时使作用域失效并请求取消，忽略取消的任务可能晚退出，但不能再产生迟到有效 CORE 回执。包在途计数直到任务退出才释放。 accepted 只说明默认通知被确认，用户自有资源操作是否成功应由自己的代码记录；外部副作用不自动补偿。 本事件不是跨重启的 exactly-once。
+
+### 3.4 注册、筛选与用户接入示例
 
 以下两个文件放在 ZIP 根目录，经既有扩展管理入口安装。用户不注册平台事件类型/CORE，不构造 SessionContext。示例只日志；用户需要前端展示时另接自己的渲染消费链。
 
@@ -74,11 +166,21 @@ def create_extension():
 
 ## 4. 方法契约
 
+### 4.1 用户侧：复用已有 Ops，不新增同名方法
+
 不新增 Ops。平台将已确认的 session_id/保存项目根绑定到 SessionContext，Core 为 Handler 创建本次 Ops。cwd 未确认可为 None；root/model 直接使用各自既有只读规则，不要求先调用 notify_context_usage，不创建模型。用户不提交“收集好的上下文”或修改平台 Adapter。
 
 现成用户包见 [session_attach](../../examples/session_attach/README.md)，注册 on_attach、记录关联及项目根，不自动写历史或渲染页面。
 
+本项没有 `ops.session.attach()`。用户订阅的是通知事件，不能把无可信平台调用作用域的 Event 当作原业务请求替代品；复用已有 Ops 也不会重新触发本生命周期事件。
+
+### 4.2 平台内部入口与结果消费
+
+Runtime 在原创建/切换提交后调用宿主 `foreground_changed(event)`；event 为真实 SessionForegroundEvent，平台确认并提交关联后再通知，返回 None。它不是用户填写任意 session_id 就能调的远程方法；原创建/切换结果沿原请求返回。 通知输入和上下文由第 3.1 节真实边界收集；没有要求用户自己创建 Bus、注册 CORE 或改平台 Adapter。
+
 ## 5. 接入与兼容方案
+
+### 5.1 两阶段完整调用链
 
 ```text
 启动 Worker → bootstrap 注册 session.attach、Validator 和默认 CORE
@@ -95,13 +197,88 @@ def create_extension():
   → 通知结束，原业务流程继续；不会新增聊天
 ```
 
+### 5.2 目录、生命周期与取舍
+
 类型/校验/注册在 event_types，CORE 在 event_handlers；实际 trigger 和关联表在 Server 平台通知模块。RuntimeParticipantRegistry 提供固定宿主 foreground 注册（register_host_foreground/snapshot_foreground），与 KVC 动态发布相加；Runtime 仍不知道 EventBus。其他 activity 和输入意图的参与者列表不改变；KVC 关闭时仍保留原有 disabled 语义。此入口已经有真实 view_id 提交事实，因此不新增前端请求、特殊 IPC 或 Gateway attach 解释。
 
 本轮同 PR 增补 PR11：替换旧关联时先提交新事实，再通知旧 detach，之后仅对仍有效的新关联发 attach；显式移除和旧上下文保留见 S_15。一次切换可能包含两个分别限时的通知。
 
 不直接使用 ui.ready，它是包槽位挂载；不使用 session.input.intent，它是输入意图；不在第一次模型调用时猜测关联。没有用量也能发 attach，没有用户包也保留真实关联和原业务。
 
+### 5.3 完整业务案例：切到会话后准备这个视图的工作区摘要
+
+视图 view-main 通过已有 session.create 或 session.switch 进入 demo-session-a，用户扩展希望得到该视图和会话的真实关联身份及可得项目根，用于自己的摘要参数或关联日志；不要求先聊天产生用量。
+
+1. Web 沿原协议携带稳定 view_id；Front/Supervisor 路由原请求到 Worker。prepare 只准备，不触发本事件。
+2. 原 Runtime 提交成功后发布 foreground_changed(visible=True)。平台再次确认主会话可用，按 channel_id+view_id 提交新的关联，生成 attachment_id 并保存本次上下文。
+3. 若替换旧关联，平台先通知旧 detach；然后仅在新关联仍有效时触发新 session.attach。事件字段的 surface_id 就是这里的 view_id。
+4. 用户 on_attach 读取 root 等已有 Ops，将会话、视图、关联 ID 和返回值交给自己的业务；不需要手工 notify 或修改 Adapter。
+5. 用户 next 后，session_attach_core 校验当前平台调用、绑定会话、关联版本和目标可用性，返回真实 accepted=True / session_id / surface_id / attachment_id。
+6. 示例记录摘要参数和回执即可观察效果。要显示到产品界面，用户另接自己的消费链；本事件不负责渲染，也不再次切换或发聊天。
+
+同一关联重放不再通知；另一视图进入同一会话会有独立 attachment_id。安装用户包不补发已存在的关联；要验证新 Handler，应使用后续真实的新关联提交。
+
+### 5.4 关键函数：平台触发、Ops 绑定与默认 CORE
+
+以下为当前平台派发和默认 CORE 的源码节选；包在途计数、超时、去重等外层编排保留在 [平台通知模块](../../../server/runtime/session/attach_notifications.py)，不是让用户直接调用内部函数。event_types 只维护定义、校验作用域、Matcher 和注册。
+
+```python
+async def _dispatch(
+    bus: ExtensionEventBus,
+    manager: ExtensionManager,
+    state: AttachInvocation,
+    context: SessionContext,
+) -> None:
+    runtime = manager.registry.runtime
+    packages = tuple(record.package_id for record in runtime.active_packages())
+    runtime.begin_calls(packages)
+    try:
+        with bind_attach_invocation(state):
+            result = await bus.trigger(Event(SESSION_ATTACH_EVENT, state.original), context)
+            if (
+                not state.is_current() or state.receipt is None or result != state.receipt
+                or not await state.validate_target() or not state.is_current()
+            ):
+                raise RuntimeError("session.attach requires the actual current CORE receipt")
+    finally:
+        runtime.end_calls(packages)
+```
+
+Event 是通知输入，独立 context 参数是可信会话资料。Core 为每个实际进入的 USER / CORE 调用 `builder.build(package_metadata, session_context)`，得到本次 Ops；USER 从现有 `ops.session_context` 只读属性读取，不通过这个属性采集资料。启动时的 ops.build BUILTIN 已经登记了共享方法，本次事件不再创建 Builder 或临时登记能力。
+
+```python
+async def session_attach_core(
+    event: Event,
+    ops: EventHandlerOps | None,
+    next_handler: EventNext,
+) -> SessionAttachOutput:
+    """Confirm only the current target and return its actual receipt."""
+    del next_handler
+    state = current_attach_invocation()
+    if not valid_attach_input(event.event_input):
+        raise ValueError("session.attach input cannot be changed")
+    context = ops.session_context if ops is not None else None
+    if context is None or context.session_id != state.original.session_id:
+        raise RuntimeError("session.attach requires its bound SessionContext")
+    if not await state.validate_target():
+        raise RuntimeError("session.attach target is no longer available")
+    state = current_attach_invocation()
+    if state.receipt is None:
+        value = state.original
+        state.receipt = SessionAttachOutput(True, value.session_id, value.surface_id, value.attachment_id)
+    return state.receipt
+```
+
+current_attach_invocation 先确认关联仍是当前表项；valid_attach_input 保留原始字段；随后核对上下文并 await validate_target 再检查关联版本，防止检查期间切换后的迟到确认。CORE 不建立关联、不切换会话。
+
+本事件没有新增业务 BUILTIN；实际通知链是匹配 USER → 默认 CORE，结果反向返回。若有多个匹配 USER，各自原样 next 才继续；已有 ops.build 的 BUILTIN 只属于启动能力登记，不能混同为本次通知的业务处理层。
+
+类型与校验见 [session_attach.py](../../event_types/session_attach.py)，CORE 见 [event_handlers/session_attach.py](../../event_handlers/session_attach.py)。
+
+
 ## 6. 验收与未决问题
+
+本次 2026-10-31 仅按 F_16 的写法补齐输入/输出字段、注册示例、真实触发条件、Handler 职责和完整业务案例；运行代码与契约不变。文档核对包括 dataclass 字段与示例值、源码节选、Python/YAML/JSON 示例及相对链接。下列回归和真实服务结果均保留原运行日期与范围，不宣称本次重新执行业务或模型验收。
 
 2026-10-31 合并交付验证：本特性与会话查询文档、session.start、session.end、session.attach/session.detach 一起整理到 [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)，保留四个提交和各自特性文档。合并 PR 中的 session.start 依赖 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) 的公开 handler_ids；必须先合入 Core !110，再合入 Server。Core 文档因与目标分支重号改为 EV-07 / F_07，接口语义不变。
 
