@@ -84,6 +84,43 @@ def test_propagate_skips_blank_task_id() -> None:
     assert "task_id" not in out
 
 
+_SOFT_STOP_MSG = "思考循环恢复失败，请重试或简化任务。"
+
+
+def test_answer_soft_stop_exhausted_sets_error_code() -> None:
+    chunk = SimpleNamespace(
+        type="answer",
+        payload={
+            "output": _SOFT_STOP_MSG,
+            "result_type": "error",
+            "finish_reason": "null",
+            "soft_stop_recovery_exhausted": True,
+        },
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": _SOFT_STOP_MSG,
+        "code": "soft_stop_recovery_exhausted",
+    }
+
+
+def test_answer_error_without_soft_stop_has_no_code() -> None:
+    chunk = SimpleNamespace(
+        type="answer",
+        payload={
+            "output": "模型未返回有效内容（空响应），请重试或检查上下文。",
+            "result_type": "error",
+        },
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": "模型未返回有效内容（空响应），请重试或检查上下文。",
+    }
+    assert "code" not in parsed
+
+
 def test_parse_llm_output_forwards_task_id() -> None:
     chunk = SimpleNamespace(
         type="llm_output",
