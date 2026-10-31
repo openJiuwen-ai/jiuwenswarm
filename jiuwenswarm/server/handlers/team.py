@@ -656,6 +656,15 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                         metadata=request.metadata,
                     )
                 else:
+                    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+                        release_team_owned_sandbox,
+                    )
+
+                    # 无任何 session ⇒ 该 team 在本进程没有运行态 team，也就没有
+                    # session-scoped 自持沙箱。此处仍传 base 名：``build_session_
+                    # scoped_team_name`` 在 session_id 为空时原样返回 base_name，
+                    # 那种情况下记账表的键**就是** base 名，精确查表能命中。
+                    release_team_owned_sandbox(team_name)
                     entity_store.delete_team_directory(team_name)
                     binding_store.delete(team_name)
                     resp = AgentResponse(
@@ -780,6 +789,18 @@ async def handle_team_delete(ctx: RequestContext) -> None:
                         else:
                             # agent-core normally removes team_home; retry here because it logs and
                             # suppresses filesystem cleanup failures.
+                            from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+                                release_team_owned_sandbox,
+                            )
+
+                            # 按**运行态全名**逐个释放：记账表以 session-scoped 名
+                            # 为键（``build_session_scoped_team_name`` 产出
+                            # ``{base}_{suffix}``），传 base 名精确查表必然落空。
+                            # 上面 ``runtime_sessions`` 已按运行态名归并，逐个释放
+                            # 既不多也不少——前缀反推会连带摘掉名为
+                            # ``{base}_xxx`` 的另一个 team 的沙箱。
+                            for runtime_team_name in runtime_sessions:
+                                release_team_owned_sandbox(runtime_team_name)
                             entity_store.delete_team_directory(team_name)
                             binding_store.delete(team_name)
                             resp = AgentResponse(

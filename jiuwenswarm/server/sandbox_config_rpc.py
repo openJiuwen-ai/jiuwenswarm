@@ -96,6 +96,12 @@ def _teardown_registered_sandbox_sysops() -> int:
     沙箱 sysop → 关了开关照样进沙箱. 关闭开关时主动遍历已注册 sysop, 移除沙箱类型
     (isolation_key_template 非空) 的, local 类型保留.
 
+    **判据用 mode 而不是只看 isolation_key_template**: team 成员的借用别名
+    (``_BorrowedSandboxHandle``) 刻意声明 ``isolation_key_template = None``(否则成员
+    dispose 会连带 pop 掉主 agent 的 key 归属, 见 sysop_builder), 单看 key 会把它当
+    local 留下 → 关开关后仍能经无参兜底命中沙箱实例。故判据是"mode 是 SANDBOX 或
+    有非空 key", 两者取或。
+
     返回移除的沙箱 sysop 数.
     """
     try:
@@ -122,10 +128,13 @@ def _teardown_registered_sandbox_sysops() -> int:
             continue
         try:
             iso_key = getattr(sysop, "isolation_key_template", None)
+            op_mode = getattr(sysop, "mode", None)
         except Exception:  # noqa: BLE001
             iso_key = None
-        if not iso_key:
-            # local sysop (isolation_key_template 为 None), 不动.
+            op_mode = None
+        mode_name = getattr(op_mode, "value", op_mode)
+        if not iso_key and mode_name != "sandbox":
+            # local sysop (isolation_key_template 为 None 且 mode 非 SANDBOX), 不动.
             continue
         op_id = getattr(sysop, "id", None)
         try:

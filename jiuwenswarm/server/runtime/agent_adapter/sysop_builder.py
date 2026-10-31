@@ -6,14 +6,17 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Literal
 
+from openjiuwen.agent_teams.schema.deep_agent_spec import SysOperationSpec
 from openjiuwen.core.sys_operation import (
     LocalWorkConfig,
     OperationMode,
     SandboxGatewayConfig,
+    SysOperation,
     SysOperationCard,
 )
 from openjiuwen.core.sys_operation.config import (
@@ -589,6 +592,20 @@ def build_filesystem_policy(
     if resolved_workspace is not None:
         _mount_rw_dir(resolved_workspace)
 
+    # Team 成员 workspace 落在 ~/.jiuwenswarm/.agent_teams/<team>/workspaces/<member>/，
+    # 是 agent/ 挂载根的兄弟目录、不在其下；挂父目录使 team 派生时才建的子目录
+    # 随建随可见可写，绕开"沙箱先于 team 派生"的时间线。单 agent 沙箱也挂（空目录
+    # 无害），保证后续 team 复用同一项目级容器时挂载已就位。get_agent_teams_home()
+    # 随 app 对 openjiuwen home 的重定向而 tenant-correct。
+    try:
+        from openjiuwen.agent_teams.paths import get_agent_teams_home
+        agent_teams_home = get_agent_teams_home()
+        if agent_teams_home is not None:
+            agent_teams_home.mkdir(parents=True, exist_ok=True)
+            _mount_rw_dir(agent_teams_home.resolve())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sysop_builder] mount .agent_teams rw failed: %s", exc)
+
     resolved_project = _resolve_project_dir(project_dir)
     if resolved_project is not None:
         _mount_rw_dir(resolved_project)
@@ -697,6 +714,34 @@ def build_process_policy() -> dict[str, Any]:
         "run_as_group": groupname,
     }
     return process_policy
+
+
+def resolve_sandbox_endpoint() -> tuple[str | None, str | None]:
+    """解析当前生效的沙箱类型与 base url，与主 agent ``_resolve_sys_operation`` 同源。
+
+    读 ``get_sandbox_endpoint()``；jiuwenbox 时用 ``JiuwenBoxRunner`` 本轮存活端口
+    覆盖 config url（端口会进 isolation key，必须与主 agent 取同一来源，否则 team
+    成员与主 agent 的 isolation key 不一致 → 各起独立沙箱）。runner 未 spawn /
+    进程死亡时返回 None，回落 config url。
+
+    Returns:
+        ``(sandbox_type, sandbox_url)``，任一不可得时对应元素为 None。
+    """
+    endpoint = get_sandbox_endpoint()
+    sandbox_type = endpoint.get("type") or None
+    sandbox_url = endpoint.get("url") or None
+    if (sandbox_type or "").strip().lower() == "jiuwenbox":
+        try:
+            from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+            owned = JiuwenBoxRunner.instance().get_owned_endpoint()
+            if owned is not None:
+                sandbox_url = f"http://{owned[0]}:{owned[1]}"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[sysop_builder] resolve live sandbox endpoint failed, "
+                "fall back to config url: %s", exc,
+            )
+    return sandbox_type, sandbox_url
 
 
 def create_sandbox_sysop_card(
@@ -852,6 +897,750 @@ def create_sandbox_sysop_card(
             (time.monotonic() - _t0) * 1000,
         )
         return None
+
+
+def sandbox_isolation_key_of(sysop_card: SysOperationCard) -> str | None:
+    """由 card 算出 isolation key template；无注册副作用。
+
+    ⚠️ 全仓唯一计算 isolation key 的入口。key 的全部输入
+    （``container_scope`` / ``launcher_type`` / ``sandbox_type`` / ``custom_id``）
+    由本模块 ``create_sandbox_sysop_card`` 与 ``_sandbox_isolation_custom_id``
+    决定；其他模块一律调用本函数，**不要**自行构 ``SysOperation`` 推导——
+    那会让 key 的定义散落到多处，上游一旦调整组成方式必然漏改。
+
+    零副作用依据：``SysOperation.__init__`` 只赋值 ``id`` / ``mode`` /
+    ``_run_config`` / ``_instances``（``sys_operation.py:170-185``），
+    ``isolation_key_template`` 是只读 property（``:197-202``），故此探针不触碰
+    ``Runner`` / ``ResourceMgr`` 任何状态。
+
+    Args:
+        sysop_card: 任意 ``SysOperationCard``。注意 key **与 card.id 无关**，
+            只取决于 ``mode`` + ``gateway_config``——这正是借用句柄可以与
+            注册 id 解耦的前提。
+
+    Returns:
+        isolation key template；构造失败时返回 ``None``。
+    """
+    try:
+        from openjiuwen.core.sys_operation.sys_operation import SysOperation
+
+        return SysOperation(sysop_card).isolation_key_template
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[sysop_builder] compute sandbox isolation key failed: %s", exc)
+        return None
+
+
+def registered_sandbox_owner_by_key(
+    isolation_key_template: str | None,
+) -> "SysOperation | None":  # type: ignore[name-defined]
+    """返回持有该 isolation key 且仍注册着的 SANDBOX ``SysOperation`` 实例。
+
+    ⚠️ 全仓唯一触碰 ``Runner.resource_mgr._resource_registry.sys_operation()
+    ._sandbox_key_owner_map`` 的地方——那是 openjiuwen 的**私有 API**，没有
+    public 出口。上游一旦提供 public 查询，本函数应整体删除。
+
+    存在的理由：库 ``SysOperationMgr``（``sys_operation_manager.py:38-49``）
+    强制"一个 isolation key template 只属于一个 sysop id"：同 key 异 id 的
+    ``add_sys_operation`` 抛 ``ValueError``，且被 ``_inner_add_resource`` 的
+    try/except 吞成 ``Error`` 返回（``resource_manager.py:1449``）——而库
+    ``SysOperationSpec.resolve``（``deep_agent_spec.py:259``）**不检查该 Result**
+    就丢弃，260 行再 get 只拿到 ``None``，harness factory 随即兜底出 LOCAL sysop
+    （成员工具落宿主机）。本函数给出唯一合规出口：按 owner map 查已注册实例直接
+    复用，零 add 零冲突。
+
+    查不到（owner map 与 registry 失配 / 指向非沙箱 / 私有 API 变更）一律返回
+    ``None``，由调用方决定降级。**失败一律 warning 级**——私有 API 一旦失效必须
+    响亮，否则又退化成无声的隔离降级。
+    """
+    if not isolation_key_template:
+        return None
+    try:
+        from openjiuwen.core.runner.runner import Runner
+
+        registry = getattr(Runner.resource_mgr, "_resource_registry", None)
+        if registry is None:
+            logger.warning(
+                "[sysop_builder] Runner.resource_mgr._resource_registry 不可达，"
+                "无法按 isolation key 复用已注册沙箱：key=%s",
+                isolation_key_template,
+            )
+            return None
+        owner_map = getattr(registry.sys_operation(), "_sandbox_key_owner_map", {})
+        owner_id = owner_map.get(isolation_key_template)
+        if not owner_id:
+            return None
+        owner = Runner.resource_mgr.get_sys_operation(owner_id)
+        if owner is None or getattr(owner, "mode", None) != OperationMode.SANDBOX:
+            # owner map 与 registry 失配，或指向非沙箱实例：不可用。
+            logger.warning(
+                "[sysop_builder] isolation key owner 失配：key=%s owner_id=%s mode=%s",
+                isolation_key_template,
+                owner_id,
+                getattr(owner, "mode", None),
+            )
+            return None
+        return owner
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sysop_builder] lookup registered sandbox owner failed: %s", exc)
+        return None
+
+
+# 自持沙箱（team owner 未命中时注册）**与借用句柄别名**的记账表：
+# ``运行态(session-scoped) team 名 -> 该 team 名下的注册 id 集合``。
+# 成员 dispose 只摘自己那条别名（keyless，不动 owner 行），本表是 team 生命周期
+# 结束时把两类注册一并回收的兜底：``team_sandbox_owned_<team_id>``（自持，拥有
+# isolation key）与 ``team_sandbox_ref_<team_id>``（别名，keyless，成员崩溃未走
+# dispose 时会残留）。
+#
+# ⚠️ 必须按**运行态全名精确查表**，不能靠"``team_sandbox_owned_<name>`` 前缀反推
+# 归属"：运行态名是 ``{base}_{session_suffix}``，而 team 名几乎无约束
+# （``team_binding_store.TEAM_NAME_RE`` 不排除下划线），base 名与运行态名互相是
+# 前缀的情形完全合法——``abc`` 与 ``abc_sess1`` 并存时，按前缀释放 ``abc`` 会连带
+# 摘掉 ``abc_sess1`` 的沙箱；反向（传运行态名 ``abc_sess1``）同样会误伤名为
+# ``abc_sess1_sess2`` 的 team。**两个方向都会越界**，记全名是唯一无歧义的做法。
+_TEAM_OWNED_SYSOP_IDS: dict[str, set[str]] = {}
+_TEAM_OWNED_SYSOP_IDS_LOCK = threading.Lock()
+
+
+def release_team_owned_sandbox(team_name: str) -> None:
+    """释放该 team 名下自持的沙箱（**按运行态全名精确查表**）。
+
+    运行时 team 名是 session-scoped 的（``team_manager.build_session_scoped_team_name``
+    产出 ``{base}_{suffix}``），而 ``create_sandbox_sysop_spec`` 记账时用的
+    ``team_id`` 正是这个运行态名（``assembly`` 在 ``_apply_session_scoped_team_name``
+    之后才调 enrich）。故调用方必须传**同一个运行态名**才能命中。
+
+    传 base 名会查不到——这是**有意**的：漏释放只是容器多留一会儿（下次
+    ``destroy_team`` 仍会兜底），误杀则是把另一个 team 正在用的沙箱连同其
+    isolation key 一起摘掉，无法自愈。
+
+    Args:
+        team_name: session-scoped 运行态名，如 ``abc_sess1``。
+    """
+    name = str(team_name or "").strip()
+    if not name:
+        return
+    with _TEAM_OWNED_SYSOP_IDS_LOCK:
+        targets = _TEAM_OWNED_SYSOP_IDS.pop(name, None)
+    if not targets:
+        return
+    try:
+        from openjiuwen.core.runner.runner import Runner
+
+        for owned_id in targets:
+            try:
+                if Runner.resource_mgr.get_sys_operation(owned_id) is not None:
+                    Runner.resource_mgr.remove_sys_operation(owned_id)
+                    logger.info("[sysop_builder] team 自持沙箱已释放：id=%s", owned_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[sysop_builder] team 自持沙箱释放失败：id=%s err=%s", owned_id, exc
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sysop_builder] release team owned sandbox failed: %s", exc)
+
+
+class _BorrowedSandboxHandle(SysOperation):
+    """借用句柄视图：``.id`` 指向本 team 的**句柄别名 id**，其余全部委托真实实例。
+
+    库在成员销毁时（``team_harness.py:215`` → ``native_harness.dispose``）读
+    ``config.sys_operation`` 的 ``.id`` 决定是否注销。而 ``config.sys_operation``
+    是 ``resolve()`` 的**返回值**（``deep_agent_spec.py:587`` 把 spec 整个换成了
+    实例，``factory.py:391`` 原样塞进 DeepAgentConfig）——``spec.id`` 在那一刻
+    就被丢弃了，从未进入任何注销判定。故别名 id 必须落在**实例的 ``.id``** 上。
+
+    **别名必须"不拥有 isolation key"**（见 :attr:`isolation_key_template`）：这是
+    dispose 不伤及 owner 的唯一机制。库那句判定是
+    ``if get_sys_operation(id) is not None: remove_sys_operation(id)``，
+    而 ``SysOperationMgr.remove_sys_operation`` 会**无条件 pop 掉该实例所声明
+    isolation key 的 owner 行**（``sys_operation_manager.py:67-68``）——若句柄声明
+    真实 key，成员 dispose 就会把 owner 无主化，下次成员按 key 查 owner 落空即
+    自持新容器（静默易主）。
+
+    刻意**不**改真实实例的 ``.id``：``config.sys_operation`` 与
+    ``get_sys_operation(owner_id)`` 上游是**同一个对象**，就地改会污染主 agent 的
+    注册簿（owner map 仍指向旧 id 而实例已改名）。
+
+    **必须**继承 ``SysOperation``：``factory.py:337`` 用
+    ``isinstance(sys_operation, SysOperation)`` 区分"库已 resolve 的实例"与"未
+    设置"，判定失败会把本句柄当 ``None`` 丢弃并重建 LOCAL。
+
+    依赖（上游一旦改动即为失效点，届时需重新审计）：``SysOperationRail.init`` 的
+    工具 id 形如 ``write_file_<agent_id>``，与 SysOperation 实例无关
+    （``sys_operation_rail.py:52, 87-91`` 的注释明写），工具直接持**引用**调
+    ``sysop.fs() / .shell() / .code()``。故别名 id 只影响两处：dispose 摘的那一行，
+    以及"按 id 回查注册表"的消费方（``deep_agent.py:879`` →
+    ``react_agent.py:646`` 的 ContextEngine、``skill_manager.py:66/178``）。
+    """
+
+    def __init__(self, source: SysOperation, handle_id: str) -> None:
+        """构造句柄视图。
+
+        绕开 ``super().__init__``：那会重新校验 gateway_config 并重算 isolation
+        key（``sys_operation.py:170-185``），既无必要也可能与真实实例产生偏差。
+
+        Args:
+            source: 真实已注册的 SANDBOX 实例（owner 复用的或 team 自持的）。
+            handle_id: 借用句柄名（``team_sandbox_ref_<team>``）。它会作为**别名
+                id** 被登记（见 :func:`_register_borrowed_sandbox_handle`），但
+                该登记不拥有任何 isolation key。
+        """
+        self.id = handle_id
+        self.mode = source.mode
+        # 共享而非复制：_run_config 承载 isolation key 与 gateway，_instances 是
+        # fs/shell/code 子操作的 memo（``sys_operation.py:228-238``）——复制会各建
+        # 一套容器连接。共享保证句柄与真实实例操作同一个容器。
+        self._run_config = source._run_config
+        self._instances = source._instances
+
+    @property
+    def isolation_key_template(self) -> str | None:  # type: ignore[override]
+        """恒为 ``None``：句柄别名**不拥有** isolation key。
+
+        这是 ``SysOperationMgr`` 的 add / remove 两处分支的开关
+        （``sys_operation_manager.py:38-49`` 与 ``:67-68``）：
+
+        - add：空 key 直接跳过冲突校验与 owner 行写入，故别名能与 owner 共存
+          （不抢 owner 行，也不被"一个 key 一个 owner"挡下）；
+        - remove：空 key 不 pop owner 行，故成员 dispose 摘别名时不会把 owner
+          无主化。
+
+        基类实现读 ``self._run_config.isolation_key_template``——那正是真实 key，
+        必须在此切断，否则上述两条保护全部失效。
+        """
+        return None
+
+
+def release_borrowed_sandbox_aliases_of(source: SysOperation) -> int:
+    """摘掉委托给 *source* 的所有借用别名（owner 注销时联动，供清理路径调用）。
+
+    **为什么需要**：别名登记不知道 owner 的生命周期——owner（主 agent 沙箱 /
+    team 自持沙箱）被 adapter cleanup 注销时，别名那条登记还挂着。悬空别名**不是**
+    "消费方拿到 None"的回归：句柄共享的是 ``_run_config``/``_instances`` 的
+    Python 对象，解引用依然有效（注销只摘注册簿条目，不拆容器）。真正的问题是
+    残留注册——``Runner.resource_mgr.get_sys_operation()`` 无参兜底仍能命中一个
+    已无人认领的沙箱条目。
+
+    调用时机：owner 从注册簿摘除**之后**，传入刚被摘的实例（不是 id——要用它的
+    ``_run_config`` 做同一性判定）。幂等：无别名时返回 0。
+
+    Args:
+        source: 刚被注销的 owner 实例。
+
+    Returns:
+        被摘掉的别名条数。
+    """
+    if source is None:
+        return 0
+    try:
+        from openjiuwen.core.runner.runner import Runner
+
+        resource_mgr = Runner.resource_mgr
+        registered = resource_mgr.get_sys_operation()
+    except Exception as exc:  # noqa: BLE001 — 清理路径失败只降级
+        logger.debug("[sysop_builder] 别名联动清理跳过（注册表不可达）：%r", exc)
+        return 0
+    if registered is None:
+        return 0
+    if not isinstance(registered, list):
+        registered = [registered]
+
+    removed = 0
+    for entry in registered:
+        if not isinstance(entry, _BorrowedSandboxHandle):
+            continue
+        if entry._run_config is not source._run_config:
+            continue
+        try:
+            if resource_mgr.get_sys_operation(entry.id) is not None:
+                resource_mgr.remove_sys_operation(entry.id)
+                removed += 1
+                logger.info(
+                    "[sysop_builder] owner 已注销，联动摘掉借用别名：id=%s", entry.id
+                )
+        except Exception as exc:  # noqa: BLE001 — 清理路径失败只降级
+            logger.warning(
+                "[sysop_builder] 借用别名联动清理失败：id=%s err=%s", entry.id, exc
+            )
+    return removed
+
+
+def _register_borrowed_sandbox_handle(
+    handle: "_BorrowedSandboxHandle",
+    *,
+    team_id: str,
+    card: SysOperationCard,
+) -> None:
+    """把句柄以自己的别名 id 登记进 ``Runner.resource_mgr``（幂等）。
+
+    **为什么必须登记**：库有多条"按 id 回查注册表"的消费方，句柄不登记就全部拿到
+    ``None``——``deep_agent.py:879`` 把 ``cfg.sys_operation.id`` 写进
+    ``ReActAgentConfig.sys_operation_id``，``react_agent.py:646`` 据此
+    ``get_sys_operation`` 并用它构造 ``ContextEngine``；``skill_util/base.py:135``
+    再把同一个 id 灌给 ``SkillManager``。句柄未登记时成员的 ContextEngine 拿到
+    ``None``：offload 写退化成宿主 ``open()``（绕沙箱）而读恒返回 ``[]``
+    （``message_buffer.py:124``），``SkillManager`` 则 ``None.fs()`` 抛
+    AttributeError。
+
+    **登记方式**：不能用 ``ResourceMgr.add_sys_operation(card)``——它强制
+    ``SysOperation(card)`` 新建实例，拿不到与 owner 共享的 ``_run_config``。这里直接
+    走 ``SysOperationMgr.add_sys_operation(id, handle)``（句柄 keyless，故跳过
+    冲突校验），再补 ``ResourceMgr`` 的 tag 盖章——``_inner_get_resources`` 要求
+    ``_tag_mgr.has_resource(id)`` 才 dispatch（``resource_manager.py:171``），
+    只写 ``_sys_operations`` 是隐形的。
+
+    刻意**不**走 ``ResourceMgr.add_sys_operation`` 的工具自动注册：句柄 id 下再挂
+    一套 ``handle_id.*`` 的 16 个 op 工具纯属冗余——成员真正对外暴露的 fs/shell/
+    code 工具由 ``SysOperationRail`` 按 agent id 注册并持引用，与 sysop id 无关。
+
+    **刷新语义**：owner 换人（重注册出新的 ``_run_config``）时旧别名是**陈旧**的，
+    会让 ContextEngine 继续写旧容器。故检测到 ``_run_config`` 不同就先摘旧再登记新。
+    摘与登之间**没有可观察的窗口**：整段（get → remove → add → tag）同步执行、
+    无 await 边界，单线程 asyncio 下其他协程（包括重建中的成员）不可能插入观察到
+    半登记状态；且旧值本就指向已废弃的容器，先摘后登不存在"更差"的中间态。
+    owner 未变时是纯 no-op，不制造"登记抖动"。已构建成员仍持旧句柄对象，指向
+    旧容器直到自身重建——这是别名无法回填的固有滞后，非本函数可解。
+
+    登记 id 记入 :data:`_TEAM_OWNED_SYSOP_IDS`，成员崩溃未走 dispose 时由
+    :func:`release_team_owned_sandbox` 兜底回收。
+
+    Args:
+        handle: 待登记的借用句柄。
+        team_id: 运行态 team 全名，记账表键（句柄 id 的后缀）。
+        card: 句柄对应的 card（``build_card()`` 的结果），仅用于在 ``_id_to_card``
+            留档；不据它新建实例，故不影响与 owner 共享的 ``_run_config``。
+
+    登记失败只告警——拿不到别名登记只是退回"未登记"这一旧行为（fs/shell/code 工具
+    仍持引用正常工作），不该连带打挂成员构建。
+    """
+    handle_id = handle.id
+    try:
+        from openjiuwen.core.runner.resources_manager.base import GLOBAL
+        from openjiuwen.core.runner.runner import Runner
+
+        resource_mgr = Runner.resource_mgr
+        existing = resource_mgr.get_sys_operation(handle_id)
+        if existing is not None:
+            if getattr(existing, "_run_config", None) is handle._run_config:
+                return
+            # owner 换过容器：旧别名已陈旧，摘掉重登记（keyless，不会动 owner 行）
+            resource_mgr.remove_sys_operation(handle_id)
+
+        resource_mgr._resource_registry.sys_operation().add_sys_operation(handle_id, handle)
+        resource_mgr._tag_mgr.tag_resource(handle_id, GLOBAL)
+        resource_mgr._id_to_card[handle_id] = card
+    except Exception as exc:  # noqa: BLE001 — 登记失败只降级，不打挂成员构建
+        logger.warning(
+            "[sysop_builder] 借用句柄别名登记失败：id=%s err=%s", handle_id, exc
+        )
+        return
+
+    if team_id:
+        with _TEAM_OWNED_SYSOP_IDS_LOCK:
+            _TEAM_OWNED_SYSOP_IDS.setdefault(team_id, set()).add(handle_id)
+    logger.info(
+        "[sysop_builder] 借用句柄已按别名登记（不拥有 isolation key，dispose 只摘自己）：id=%s",
+        handle_id,
+    )
+
+
+class TeamSharedSandboxSpec(SysOperationSpec):
+    """team 成员**借用**已注册沙箱的句柄；自身不拥有任何 isolation key。
+
+    ``id`` 是借用句柄名（``team_sandbox_ref_<team>``），经 :class:`_BorrowedSandboxHandle`
+    成为 ``resolve()`` 返回实例的 ``.id``——这是 dispose 唯一读到的 id。该 id 会作为
+    **别名**登记进 ``Runner.resource_mgr``（使"按 id 回查"的库消费方能命中，见
+    :func:`_register_borrowed_sandbox_handle`），但别名**不拥有** isolation key，
+    因此既不参与"一个 key 一个 owner"的冲突判定，也不会在 dispose 时把 owner 行摘掉。
+
+    对齐 owner id 来"零 add 命中"是**错的**：那样 dispose 会连带注销 owner 的
+    沙箱（并释放其 isolation key），下次 owner 重新 add 出新 uuid 即重新易主，
+    构成又一次静默回落 LOCAL。
+
+    ``resolve()`` 分三级：复用 owner → 自持 team 专属沙箱 → ``None``（成员维持
+    LOCAL，即本特性上线前的既有行为，零回归）。第二级不可省：分布式 bootstrap
+    下 owner 侧的 project_dir 与成员侧不同源，key 必然不匹配，此时若不
+    自持就直接把成员丢回宿主机——比"多一个容器"糟得多。
+
+    **前两级都包一层借用句柄**：成员 dispose 读到的是包出来的实例，其 ``.id`` 是
+    别名 id ⇒ 库只摘别名那条（keyless，不 pop owner 行）⇒ 既不会摘掉别人的沙箱，
+    也不会摘掉本 team 的自持沙箱（自持沙箱全队共用，由
+    :func:`release_team_owned_sandbox` 在 team 生命周期结束时统一回收；别名 id
+    也一并记入同一张表作崩溃兜底）。
+
+    **别名按 team 一把、刻意不做 agent 维度**（已知取舍）：全队共用一个别名 id，
+    成员 A 的 dispose 会摘掉别名，B 在"A 退出后、B 自身重建前"按 id 回查落空。
+    影响有界：B 的 ContextEngine 持**句柄对象**不受影响；B 重建时 ``resolve()``
+    会重新登记（先 resolve 再 ``apply_deep_agent_parts`` 的顺序保证）；唯一暴露面
+    是 A 退出后、B 重建前的按 id 回查（如 ``SkillManager``）。改成
+    ``team_sandbox_ref_<team>_<agent>`` 可以让 dispose 只摘自己，但 ``team_id``
+    只能从 id 后缀反解（子类字段不进 dump），team 名本身允许 ``_``/``__``
+    （``TEAM_NAME_RE`` 只排路径分隔符），拆分无歧义锚点——需要一套编码约定
+    （如 team 名 hex 化）并审计全部四条边界，属后续决策，未做。
+
+    **owner 先亡的联动**：别名注册不知道 owner 生命周期，owner 被 adapter cleanup
+    注销时别名会悬空（非 None 但无人认领）。联动清理见
+    :func:`release_borrowed_sandbox_aliases_of`（``interface_deep`` 的
+    ``_release_sys_operations`` 在摘 owner 后调用）。
+
+    ``team_id`` 只用于推导自持 id 与记账表键，不进 ``build_card()``
+    （key 与 id 无关）。
+    """
+
+    team_id: str = ""
+
+    def resolve(self) -> "SysOperation | None":  # type: ignore[name-defined]
+        """复用 owner；无 owner 时自持；均不可用则返回 None（成员维持 LOCAL）。
+
+        返回的一律是 :class:`_BorrowedSandboxHandle` 句柄视图，并**在返回前**按别名
+        id 登记——登记必须早于 ``apply_deep_agent_parts``，因为库随后会用
+        ``deep_config.sys_operation.id`` 回查注册表去构造 ContextEngine
+        （``deep_agent.py:879`` → ``react_agent.py:646``）。
+        """
+        card = self.build_card()
+        key = sandbox_isolation_key_of(card)
+        owner = registered_sandbox_owner_by_key(key)
+        if owner is None:
+            owner = self._ensure_team_owned_sandbox(card, key)
+        if owner is None:
+            logger.warning(
+                "[sysop_builder] team sandbox 不可用，成员回落 LOCAL；ref_id=%s key=%s",
+                self.id,
+                key,
+            )
+            return None
+        handle = _BorrowedSandboxHandle(owner, self.id)
+        _register_borrowed_sandbox_handle(handle, team_id=self.team_id, card=card)
+        return handle
+
+    def _ensure_team_owned_sandbox(
+        self,
+        card: SysOperationCard,
+        key: str | None,
+    ) -> "SysOperation | None":  # type: ignore[name-defined]
+        """owner 未命中时，为本 team 注册一个自持沙箱。
+
+        注册 id 与借用句柄 ``self.id`` **刻意不同**：前者是我们真正持有的资源
+        （拥有 isolation key），后者是借用的别名 id（keyless，由
+        :func:`_register_borrowed_sandbox_handle` 登记）。回收由
+        :func:`release_team_owned_sandbox` 在 team 生命周期结束时统一执行。
+
+        ⚠️ "id 解耦 ⇒ 成员 dispose 碰不到自持沙箱" 这条推理**不成立**：库 dispose
+        读的是 ``resolve()`` 返回**实例**的 ``.id``（``deep_agent_spec.py:587``
+        起 spec 已被丢弃）。真正兜住的是 :meth:`TeamSharedSandboxSpec.resolve` 把
+        返回值包成 :class:`_BorrowedSandboxHandle`——dispose 摘的是那个 keyless 别名，
+        而别名删除时不会 pop owner 行，故 ``team_sandbox_owned_*`` 那条纹丝不动。
+        **本函数不得被绕过 ``resolve()`` 直接使用。**
+
+        Args:
+            card: 借用句柄对应的 card；会复制出 ``id`` 为自持 id 的新 card。
+            key: 已算出的 isolation key，仅用于日志与排障。
+
+        Returns:
+            自持的 SANDBOX 实例；无 team_id 或注册失败时返回 ``None``。
+        """
+        if not self.team_id:
+            return None
+        owned_id = f"team_sandbox_owned_{self.team_id}"
+        try:
+            from openjiuwen.core.runner.runner import Runner
+
+            with _TEAM_OWNED_SYSOP_IDS_LOCK:
+                existing = Runner.resource_mgr.get_sys_operation(owned_id)
+                if existing is not None:
+                    return existing
+                result = Runner.resource_mgr.add_sys_operation(
+                    card.model_copy(update={"id": owned_id})
+                )
+                # 必须检查 Result：库 SysOperationSpec.resolve（deep_agent_spec.py:259）
+                # 恰恰漏了这一步，同 key 冲突被静默吞成 None 后回落 LOCAL。
+                if result.is_err():
+                    logger.warning(
+                        "[sysop_builder] team 自持沙箱注册失败：id=%s key=%s err=%s",
+                        owned_id,
+                        key,
+                        result.msg(),
+                    )
+                    return None
+                _TEAM_OWNED_SYSOP_IDS.setdefault(self.team_id, set()).add(owned_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[sysop_builder] ensure team owned sandbox failed: id=%s err=%s",
+                owned_id,
+                exc,
+            )
+            return None
+        logger.info(
+            "[sysop_builder] team 自持沙箱已注册（owner 未命中）：id=%s key=%s",
+            owned_id,
+            key,
+        )
+        return Runner.resource_mgr.get_sys_operation(owned_id)
+
+
+def create_sandbox_sysop_spec(
+    sandbox_url: str,
+    sandbox_type: str,
+    *,
+    team_id: str,
+    files_runtime: dict[str, Any] | None = None,
+    excluded_commands: list[str] | None = None,
+    idle_ttl_seconds: int | None = None,
+    idle_check_interval: int | None = None,
+    fallback_on_failure: bool = False,
+    project_dir: str | Path | None = None,
+    is_code_agent: bool = False,
+    startup_mode: str | None = None,
+    shared_dir: str | Path | None = None,
+) -> "SysOperationSpec | None":  # type: ignore[name-defined]
+    """构建 team 成员共享的 SANDBOX ``SysOperationSpec``。
+
+    复用 :func:`create_sandbox_sysop_card` 的 ``gateway_config``（同 policy、
+    同 isolation key 输入），保证成员与主 agent 命中同一项目级沙箱容器。spec
+    形态供 ``agent_configurator`` 的 ``agent_spec.sys_operation or LOCAL`` override
+    命中——成员 spec 设此项后，``DeepAgentSpec.build()`` 会 ``.resolve()`` 成
+    SANDBOX ``SysOperation`` 实例，成员的 fs/shell/code 工具随之走沙箱。
+
+    id 策略：``team_sandbox_ref_<team_id>`` 是**借用句柄名**。库 ``resolve()`` 只按
+    id get-or-create，若此 id 恰好等于已注册的 owner id 固然能零 add 命中，但成员
+    销毁时 ``native_harness.dispose()`` 会按同一 id 执行 ``remove_sys_operation``，
+    连带摘掉主 agent 的沙箱并释放其 isolation key——下次主 agent 重新 add 出新
+    uuid 即重新易主，又构成一次静默回落 LOCAL。故 id 刻意与 owner 解耦，由
+    ``TeamSharedSandboxSpec.resolve()`` 在 harness 构建期按 owner map 复用实例，
+    并把复用到的实例包成 :class:`_BorrowedSandboxHandle`——**只有包了它，dispose
+    才只看到 keyless 的别名 id**，摘的也只是别名那条，不会动 owner 行与 owner 行
+    的 key 归属。别名会登记进注册表（否则库里"按 id 回查"的消费方——ContextEngine
+    与 SkillManager——全部拿到 None），但不拥有任何 isolation key。
+
+    无 owner 且自持也失败时 ``resolve()`` 返回 ``None``，库 factory 兜底出 LOCAL sysop
+    ——即本特性上线前的既有行为，零回归。本版复用主 agent 的项目级沙箱；同一
+    isolation key 下不存在第二个**拥有者**（库强制一 key 一 owner），别名登记不占
+    key，见 :func:`_register_borrowed_sandbox_handle`。
+
+    Args:
+        team_id: 借用句柄名后缀（用 ``spec.team_name``）。全队共用一个 spec 对象，
+            即全队共用一个别名 id——故 ``resolve()`` 内的登记是幂等的（同一
+            ``_run_config`` 下直接 no-op），成员间不存在 add/dispose 争用。
+    """
+    card = create_sandbox_sysop_card(
+        sandbox_url,
+        sandbox_type,
+        files_runtime=files_runtime,
+        excluded_commands=excluded_commands,
+        idle_ttl_seconds=idle_ttl_seconds,
+        idle_check_interval=idle_check_interval,
+        fallback_on_failure=fallback_on_failure,
+        project_dir=project_dir,
+        is_code_agent=is_code_agent,
+        startup_mode=startup_mode,
+        shared_dir=shared_dir,
+    )
+    if card is None or card.gateway_config is None:
+        return None
+    stable_id = (
+        f"team_sandbox_ref_{team_id}"
+        if team_id
+        else f"team_sandbox_ref_{_sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir, sandbox_url=sandbox_url)}"
+    )
+    return TeamSharedSandboxSpec(
+        id=stable_id,
+        mode=OperationMode.SANDBOX,
+        work_config=LocalWorkConfig(shell_allowlist=None),
+        gateway_config=card.gateway_config,
+        team_id=str(team_id or ""),
+    )
+
+
+#: 成员 spec 上 team 沙箱 spec 的 id 前缀。与 :func:`create_sandbox_sysop_spec`
+#: 生成的借用句柄名严格一致，是"该字段曾经被本模块写过"的唯一可判据。
+_TEAM_SANDBOX_REF_ID_PREFIX = "team_sandbox_ref_"
+
+
+def rebind_team_sandbox_specs(spec: Any) -> int:
+    """把序列化往返中被压平的成员 sys_operation spec 换回 :class:`TeamSharedSandboxSpec`。
+
+    **为什么需要**：``TeamAgentSpec.agents`` 是 ``dict[str, DeepAgentSpec]``，而
+    ``DeepAgentSpec.sys_operation`` 的声明类型是 ``Optional[SysOperationSpec]``。
+    pydantic 按**字段声明类型**序列化/反序列化，故 ``model_dump()`` 这一步就
+    已经把子类压平成基类：``team_id`` 作为子类字段不进入 dump（顶层单独 dump
+    ``DeepAgentSpec`` 同样丢），随后 ``model_validate()`` 只能拿到基类形状，
+    ``resolve()`` 退回库实现。库实现是纯 get-or-create，会把
+    ``team_sandbox_ref_<team>`` **真正注册**进 ``Runner.resource_mgr``——于是
+    ① 借用句柄变成真资源，② 该注册不在 :data:`_TEAM_OWNED_SYSOP_IDS` 里，
+    ``release_team_owned_sandbox`` 永远收不到（跨会话泄漏），③ 成员 dispose 照摘
+    不误，容器反复重建。
+
+    更糟的是这条路径**不报错**：成员与主 agent 同 isolation key 时，
+    ``add_sys_operation`` 抛的 "already registered" 被 ``_inner_add_resource``
+    吞成 ``Error``（``resource_manager.py:1449``），``SysOperationSpec.resolve()``
+    不检查 Result 直接返回 ``None``，``factory.py:337`` 再兜一个 LOCAL——成员静默
+    跑在宿主机上。
+
+    ``team_id`` 从句柄 id 的后缀反解——``create_sandbox_sysop_spec`` 构造的 id 形如
+    ``team_sandbox_ref_<team_id>``，team_id 本身就是运行态全名，不含前缀，故
+    ``id[len(prefix):]`` 精确还原。不依赖任何被丢弃的字段。
+
+    **契约与边界**：后缀即运行态 team 全名，这是 ``create_sandbox_sysop_spec`` 的
+    调用约定（jiuwenswarm 唯一调用方 ``assembly`` 恒传非空的 ``spec.team_name``）。
+    若 team_id 为空，``create_sandbox_sysop_spec`` 会退回用 isolation custom id 拼后缀
+    ——此时反解出的是"伪 team_id"（语义漂移），且 :func:`_register_borrowed_sandbox_handle`
+    的 ``if team_id:`` 让这种别名不入账、team 生命周期收不到；回收只能靠沙箱开关
+    teardown（mode==SANDBOX 分支仍会摘它）。故 assembly 不得传空 team_id；
+    前缀本身（空后缀）在此直接跳过。
+
+    **递归换回 ``member_spec.subagents``**：``resolve_parts`` 里 subagents 先构建
+    （``deep_agent_spec.py:577-585``，每个 ``SubAgentSpec.build():406`` 就地
+    ``resolve()``），成员自身 ``:587`` 才轮到——**顺序与直觉相反**。若只换回成员层，
+    第一个构建的成员其压平的子代理 spec 会先走库基类 get-or-create：别名还没登记，
+    add 又撞同 key 冲突被吞成 None → factory 兜 LOCAL → 子代理跑宿主机；第二个成员
+    起才"自愈"（此时别名已被前一个成员登记）。递归换回让子代理也走
+    :meth:`TeamSharedSandboxSpec.resolve` 的 owner-lookup 路径，与遍历顺序无关。
+    ``SubAgentSpec`` 没有 ``subagents`` 字段，一层即到底。
+
+    Args:
+        spec: ``TeamAgentSpec``（或任何带 ``.agents`` 映射的对象）。就地修改。
+
+    Returns:
+        被换回子类的 spec 总数（成员与其 subagents 分别计数）；0 表示无需修复或
+        已全部是子类。
+    """
+    agents = getattr(spec, "agents", None)
+    if not isinstance(agents, dict):
+        return 0
+    rebound = 0
+    for key, member_spec in list(agents.items()):
+        current = getattr(member_spec, "sys_operation", None)
+        if current is None or isinstance(current, TeamSharedSandboxSpec):
+            continue
+        raw_id = str(getattr(current, "id", "") or "")
+        if not raw_id.startswith(_TEAM_SANDBOX_REF_ID_PREFIX):
+            continue
+        if raw_id == _TEAM_SANDBOX_REF_ID_PREFIX:
+            # 空后缀反解不出 team_id，换回去也只是个永远查不到 owner 的空壳
+            logger.warning(
+                "[sysop_builder] team sandbox spec 的句柄 id 缺少 team 后缀，跳过换回：member=%s",
+                key,
+            )
+            continue
+        restored = TeamSharedSandboxSpec(
+            id=raw_id,
+            mode=current.mode,
+            work_config=current.work_config,
+            gateway_config=current.gateway_config,
+            team_id=raw_id[len(_TEAM_SANDBOX_REF_ID_PREFIX):],
+        )
+        # model_copy 与库的 agent_configurator（agent_configurator.py:473-480）用
+        # 同一个手法：不重跑校验，故不会把 DeepAgentSpec 子类压平。
+        agents[key] = member_spec.model_copy(update={"sys_operation": restored})
+        rebound += 1
+        logger.info(
+            "[sysop_builder] team sandbox spec 已从压平的 %s 换回 TeamSharedSandboxSpec："
+            "member=%s ref_id=%s",
+            type(current).__name__,
+            key,
+            raw_id,
+        )
+        rebound += _rebind_subagent_specs(agents[key], label=key)
+    return rebound
+
+
+def _rebind_subagent_specs(member_spec: Any, *, label: str) -> int:
+    """换回 ``member_spec.subagents`` 里被压平的 team 沙箱 spec（一层，就地修改）。
+
+    ``SubAgentSpec.sys_operation`` 的声明类型同样是基类（``deep_agent_spec.py:366``），
+    嵌套往返同样压平。换回后子代理构建期走 :meth:`TeamSharedSandboxSpec.resolve`
+    的 owner-lookup，而不是库基类的 get-or-create——后者在"subagents 先于成员自身
+    resolve"的真实顺序下，第一个成员必然撞 key 冲突拿 None。
+    """
+    subagents = getattr(member_spec, "subagents", None)
+    if not isinstance(subagents, list):
+        return 0
+    rebound = 0
+    for index, sub_spec in enumerate(subagents):
+        current = getattr(sub_spec, "sys_operation", None)
+        if current is None or isinstance(current, TeamSharedSandboxSpec):
+            continue
+        raw_id = str(getattr(current, "id", "") or "")
+        if not raw_id.startswith(_TEAM_SANDBOX_REF_ID_PREFIX) or raw_id == _TEAM_SANDBOX_REF_ID_PREFIX:
+            continue
+        restored = TeamSharedSandboxSpec(
+            id=raw_id,
+            mode=current.mode,
+            work_config=current.work_config,
+            gateway_config=current.gateway_config,
+            team_id=raw_id[len(_TEAM_SANDBOX_REF_ID_PREFIX):],
+        )
+        subagents[index] = sub_spec.model_copy(update={"sys_operation": restored})
+        rebound += 1
+        logger.info(
+            "[sysop_builder] subagent 的 team sandbox spec 已换回 TeamSharedSandboxSpec："
+            "member=%s subagent=%s ref_id=%s",
+            label,
+            index,
+            raw_id,
+        )
+    return rebound
+
+
+#: ``TeamAgentSpec.model_validate`` 是否已被本模块包装（进程级幂等标记）。
+_TEAM_SPEC_REBIND_INSTALLED = False
+#: 安装互斥：adapter 构造可并发，裸标志会叠出多层包装。
+_TEAM_SPEC_REBIND_LOCK = threading.Lock()
+
+
+def install_team_sandbox_spec_rebind() -> None:
+    """把 :func:`rebind_team_sandbox_specs` 前移到 ``TeamAgentSpec.model_validate`` 出口。
+
+    **为什么只能挂在这里**：库的三条序列化边界
+    （``from_spawn_payload`` / ``recover_from_session`` /
+    ``spawn.child_process._run_spawned_agent``）都是 ``model_validate`` 与
+    ``configure`` **背靠背同步**（``team_agent.py:988`` / ``:1006``），中间没有插销。
+    而 ``configure`` 内 ``AgentConfigurator.setup_agent`` 立刻 ``model_copy`` 出
+    ``build_spec``（``agent_configurator.py:473``）并交给 ``TeamHarness.build`` →
+    ``NativeHarness.__init__`` → ``DeepAgentSpec.resolve_parts`` →
+    ``sys_operation.resolve()``（``native_harness.py:170`` /
+    ``deep_agent_spec.py:587``），``apply_deep_agent_parts`` 随即把**解析后的实例**
+    写进 ``deep_config.sys_operation``（``factory.py:391``）。成员 dispose 读的正是
+    该实例的 ``.id``（``native_harness.py`` 的 dispose），harness 后续重建也仍用同一份
+    ``build_spec``——**构造之后再改 spec 对象一律无效**。
+
+    ``model_validate`` 的返回值即 ``configure`` 的入参，是唯一既早于 configure、
+    又不依赖库内部调用顺序的缝。包装它一次即覆盖全部边界；把 rebind 写在调用点
+    之后必然迟到（且会打出"已换回子类"的 INFO 成功日志而实际毫无作用）。
+
+    幂等：重复调用只生效一次；无须修复的 spec 由
+    :func:`rebind_team_sandbox_specs` 返回 0，不产生任何副作用。
+
+    Returns:
+        None。仅在进程内首次调用时真正改写 ``TeamAgentSpec.model_validate``。
+    """
+    global _TEAM_SPEC_REBIND_INSTALLED
+    with _TEAM_SPEC_REBIND_LOCK:
+        if _TEAM_SPEC_REBIND_INSTALLED:
+            return
+
+        from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+        original_validate = TeamAgentSpec.model_validate
+
+        def _validate_then_rebind(obj: Any, *args: Any, **kwargs: Any) -> Any:
+            spec = original_validate(obj, *args, **kwargs)
+            try:
+                rebind_team_sandbox_specs(spec)
+            except Exception as exc:  # noqa: BLE001 — 修补失败不得连带打挂反序列化
+                logger.warning(
+                    "[sysop_builder] team sandbox spec rebind after validate failed: %r", exc
+                )
+            return spec
+
+        # setattr（而非直接赋值）：重绑类上的 pydantic classmethod 直接赋值是 mypy
+        # [assignment] 错误，setattr 保持 lint 干净（同 mcp_call_timeout_patch 口径）。
+        setattr(TeamAgentSpec, "model_validate", staticmethod(_validate_then_rebind))
+        _TEAM_SPEC_REBIND_INSTALLED = True
+    logger.info(
+        "[sysop_builder] TeamAgentSpec.model_validate 已包装：序列化边界出口即换回 "
+        "TeamSharedSandboxSpec（早于 configure/harness 构建）"
+    )
 
 
 def create_local_sysop_card(work_dir: str | None = None) -> SysOperationCard:
@@ -1146,15 +1935,23 @@ def find_auto_managed_match(
 
 __all__ = [
     "PreserveFileSharingMode",
+    "TeamSharedSandboxSpec",
     "build_filesystem_policy",
     "build_process_policy",
     "build_yuanrong_sandbox_status_view",
     "create_sandbox_sysop_card",
+    "create_sandbox_sysop_spec",
     "create_local_sysop_card",
     "effective_files_from_policy",
     "find_auto_managed_match",
     "find_nested_files_conflict",
+    "install_team_sandbox_spec_rebind",
     "list_auto_managed_sandbox_paths",
     "list_effective_sandbox_files",
+    "registered_sandbox_owner_by_key",
+    "rebind_team_sandbox_specs",
+    "release_team_owned_sandbox",
+    "resolve_sandbox_endpoint",
+    "sandbox_isolation_key_of",
     "validate_sandbox_files_runtime",
 ]

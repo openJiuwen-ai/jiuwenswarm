@@ -25,6 +25,10 @@ import types
 import uuid
 from typing import Any, NamedTuple
 
+from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+    install_team_sandbox_spec_rebind,
+)
+
 logger = logging.getLogger(__name__)
 
 # team.metadata.jiuwen_remote_member_names: str | list[str]
@@ -2538,6 +2542,16 @@ async def _ensure_dynamic_member_execution_loop(
             leader_member_name,
         )
         await _stop_dynamic_member_agent(sid, member)
+        # 成员 spec 的 sys_operation 在 dump 时已按**字段声明类型**压平成基类
+        # （TeamSharedSandboxSpec 的 team_id 作为子类字段一并丢失），库在
+        # from_spawn_payload 内 validate → configure 背靠背同步、中间不留缝，而
+        # configure 内 TeamHarness 构造期就 resolve() 掉了 spec 并把解析后的实例
+        # 写进 deep_config（成员 dispose 只读该实例的 .id）——事后修 spec 对象无效。
+        # 故 rebind 必须前移到反序列化的出口：install_team_sandbox_spec_rebind()
+        # 让 TeamAgentSpec.model_validate 的返回值即为已换回子类的 spec，对
+        # from_spawn_payload / recover_from_session / child_process 三条边界同时
+        # 生效（进程级幂等，重复调用无副作用）。
+        install_team_sandbox_spec_rebind()
         teammate_agent = await TeamAgent.from_spawn_payload(payload)
         _DYNAMIC_MEMBER_AGENTS[(sid, member)] = teammate_agent
         await _initialize_team_agent_db(

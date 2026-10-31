@@ -386,7 +386,6 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
-from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
     setup_permission_context,
@@ -570,7 +569,6 @@ from jiuwenswarm.common.config import (
     get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_evolution_enabled,
-    get_sandbox_endpoint,
     get_sandbox_runtime,
     get_sandbox_startup_mode,
     get_skill_create_enabled,
@@ -649,6 +647,9 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     create_local_sysop_card,
     create_sandbox_sysop_card,
+    registered_sandbox_owner_by_key,
+    resolve_sandbox_endpoint,
+    sandbox_isolation_key_of,
 )
 from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
 from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
@@ -2640,6 +2641,17 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_tool_list_refresh_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
+        # team 成员共享沙箱 spec 的序列化边界修补：库在 model_validate → configure
+        # 之间不留缝，而 configure 内 harness 构造期就 resolve() 掉 spec，故只能在
+        # 反序列化出口换回子类（写在调用点之后必然迟到且无效）。一次安装即覆盖
+        # from_spawn_payload / recover_from_session / child_process 三条边界。
+        # 幂等（_TEAM_SPEC_REBIND_INSTALLED）。局部 import：sysop_builder 会拉起
+        # 沙箱配置链，不必让整个 adapter 模块为它付出导入期依赖。
+        from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+            install_team_sandbox_spec_rebind,
+        )
+
+        install_team_sandbox_spec_rebind()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         # 多租户：调用方（企业版 AgentManager / 个人版 TenantAgentPool）显式
@@ -7769,42 +7781,6 @@ class JiuWenSwarmDeepAdapter:
                 return str(value)
         return None
 
-    @staticmethod
-    def _sys_operation_isolation_key(sysop_card: SysOperationCard) -> str | None:
-        try:
-            sys_operation = SysOperation(sysop_card)
-            return sys_operation.isolation_key_template
-        except Exception as exc:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] failed to resolve sys_operation isolation key: %s",
-                exc,
-            )
-            return None
-
-    @staticmethod
-    def _get_registered_sys_operation_by_isolation_key(
-        isolation_key_template: str | None,
-    ) -> SysOperation | None:
-        if not isolation_key_template:
-            return None
-
-        try:
-            resource_registry = getattr(Runner.resource_mgr, "_resource_registry", None)
-            if resource_registry is None:
-                return None
-            sys_operation_mgr = resource_registry.sys_operation()
-            owner_map = getattr(sys_operation_mgr, "_sandbox_key_owner_map", {})
-            existing_op_id = owner_map.get(isolation_key_template)
-            if not existing_op_id:
-                return None
-            return Runner.resource_mgr.get_sys_operation(existing_op_id)
-        except Exception as exc:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] failed to get registered sys_operation: %s",
-                exc,
-            )
-            return None
-
     def _create_sys_operation(self) -> SysOperation | None:
         """Resolve this adapter's sys operation and take a reference on it.
 
@@ -7919,9 +7895,17 @@ class JiuWenSwarmDeepAdapter:
                 # Quiet idempotence: only remove what is still registered, so a
                 # second cleanup (or one after Runner.stop cleared everything) is
                 # a no-op rather than an error.
-                if Runner.resource_mgr.get_sys_operation(sys_operation_id) is None:
+                held_instance = Runner.resource_mgr.get_sys_operation(sys_operation_id)
+                if held_instance is None:
                     continue
                 Runner.resource_mgr.remove_sys_operation(sys_operation_id)
+                # team 成员的借用别名共享这份实例（keyless 别名，见 sysop_builder）；
+                # owner 被注销时联动摘掉别名，避免残留一个无人认领的沙箱注册。
+                from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+                    release_borrowed_sandbox_aliases_of,
+                )
+
+                release_borrowed_sandbox_aliases_of(held_instance)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] sys_operation released: %s",
                     sys_operation_id,
@@ -7958,25 +7942,11 @@ class JiuWenSwarmDeepAdapter:
         供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。
         """
         try:
-            endpoint = get_sandbox_endpoint()
-            sandbox_type = endpoint.get("type") or None
-            # box-server 端口运行时分配且可变, 优先取 runner 本轮存活的 endpoint,
-            # 避免陈旧 url 钉进 isolation key 与 card base_url; 端口进 key 后,
-            # 端口变 → 新 key → 新 card, 不被 registry 去重复用旧端口。
-            # 仅 jiuwenbox 覆盖: get_owned_endpoint 与 sandbox.type 无关, 对其它
-            # type 会误用 jiuwenbox 端点污染其 isolation key。runner 未 spawn
-            # (冷启动窗口) / 进程死亡 / 非本 runner 拥有时返回 None, 回落 config。
-            sandbox_url = endpoint.get("url") or None
-            if sandbox_type == "jiuwenbox":
-                try:
-                    owned = JiuwenBoxRunner.instance().get_owned_endpoint()
-                    if owned is not None:
-                        sandbox_url = f"http://{owned[0]}:{owned[1]}"
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[sandbox_lifecycle] resolve live sandbox endpoint from runner "
-                        "failed, fall back to config/holder url: %s", exc,
-                    )
+            # box-server 端口运行时分配且可变，jiuwenbox 时优先取 runner 本轮存活
+            # 端口；端口进 isolation key，故必须与 team 成员注入路径取同一来源
+            # （见 sysop_builder.resolve_sandbox_endpoint），否则成员与主 agent 各起
+            # 独立沙箱。runner 未 spawn / 进程死亡时回落 config url。
+            sandbox_type, sandbox_url = resolve_sandbox_endpoint()
             runtime = get_sandbox_runtime()
             sysop_card: SysOperationCard | None
             if runtime.get("enabled") and sandbox_url and sandbox_type:
@@ -7997,11 +7967,9 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: sysop_card is None")
                 return None
             self._sys_operation_card = sysop_card
-            isolation_key_template = JiuWenSwarmDeepAdapter._sys_operation_isolation_key(sysop_card)
-            registered_sys_operation = (
-                JiuWenSwarmDeepAdapter._get_registered_sys_operation_by_isolation_key(
-                    isolation_key_template
-                )
+            isolation_key_template = sandbox_isolation_key_of(sysop_card)
+            registered_sys_operation = registered_sandbox_owner_by_key(
+                isolation_key_template
             )
             if registered_sys_operation is not None:
                 logger.info(
@@ -8012,10 +7980,8 @@ class JiuWenSwarmDeepAdapter:
 
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
             if result.is_err():
-                registered_sys_operation = (
-                    JiuWenSwarmDeepAdapter._get_registered_sys_operation_by_isolation_key(
-                        isolation_key_template
-                    )
+                registered_sys_operation = registered_sandbox_owner_by_key(
+                    isolation_key_template
                 )
                 if registered_sys_operation is not None:
                     logger.info(
@@ -8092,11 +8058,9 @@ class JiuWenSwarmDeepAdapter:
                     (time.monotonic() - _t0) * 1000,
                 )
                 return None
-            isolation_key = self._sys_operation_isolation_key(sysop_card)
+            isolation_key = sandbox_isolation_key_of(sysop_card)
             if isolation_key:
-                registered = self._get_registered_sys_operation_by_isolation_key(
-                    isolation_key
-                )
+                registered = registered_sandbox_owner_by_key(isolation_key)
                 if registered is not None:
                     self._retain_sys_operation(str(registered.id))
                     self._local_sys_operation = registered
@@ -8110,7 +8074,7 @@ class JiuWenSwarmDeepAdapter:
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
             if result.is_err():
                 registered = (
-                    self._get_registered_sys_operation_by_isolation_key(isolation_key)
+                    registered_sandbox_owner_by_key(isolation_key)
                     if isolation_key
                     else None
                 )
@@ -8495,7 +8459,7 @@ class JiuWenSwarmDeepAdapter:
                     )
                     return
                 try:
-                    isolation_key = self._sys_operation_isolation_key(card)
+                    isolation_key = sandbox_isolation_key_of(card)
                     shared_key = (
                         build_yuanrong_shared_scope_key(
                             str(launcher.base_url), str(isolation_key)
