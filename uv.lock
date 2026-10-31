@@ -2230,6 +2230,7 @@ dependencies = [
     { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
+    { name = "security-mask" },
     { name = "skillnet-ai" },
     { name = "slack-bolt" },
     { name = "sqlite-vec" },
@@ -2445,6 +2446,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
+    { name = "security-mask", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop" },
     { name = "skillnet-ai", specifier = "==0.0.16" },
     { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
     { name = "slack-bolt", specifier = ">=1.30.0" },
@@ -5449,6 +5451,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl", hash = "sha256:0ce65888c0725fcb2c5bc0fdb8e5438eece02c523557ea40ce0703c266248137", size = 15554, upload-time = "2025-11-23T19:02:51.545Z" },
 ]
+
+[[package]]
+name = "security-mask"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop#bf7c307928e518f03d30ba04dc53549e551d2861" }
 
 [[package]]
 name = "setuptools"

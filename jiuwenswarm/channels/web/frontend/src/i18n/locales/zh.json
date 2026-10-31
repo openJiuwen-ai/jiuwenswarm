@@ -1443,6 +1443,19 @@
       "memberNameFormatInvalid": "成员名称必须以小写字母开头，后跟小写字母、数字或连字符",
       "referencedByTeams": "被 {{count}} 个 Team 引用"
     },
+    "sensitiveMask": {
+      "title": "网页回答脱敏",
+      "hint": "关闭时原文直出。打开后，命中片段留前 3 后 4 个字符，中间换成四个星号，至少藏住 4 个字符。只影响网页展示，不改历史文件。",
+      "enabled": "启用脱敏",
+      "name": "名称",
+      "pattern": "正则",
+      "add": "添加规则",
+      "remove": "删除",
+      "save": "保存",
+      "saved": "已保存",
+      "loadFailed": "读取脱敏配置失败",
+      "saveFailed": "保存脱敏配置失败"
+    },
     "groups": {
       "modelDefault": { "label": "默认模型（主对话）", "hint": "主对话模型服务与鉴权参数" },
       "modelVideo": { "label": "视频模型", "hint": "视频理解（可选）" },
