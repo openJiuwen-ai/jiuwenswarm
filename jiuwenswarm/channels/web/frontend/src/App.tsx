@@ -34,7 +34,7 @@ import {
 } from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
-import { watchCronExecutionSession, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import { watchCronExecutionSessions, watchCronRunUpdates } from './features/cron/cronSessionLive';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -847,13 +847,19 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
-  // 企业版「立即执行」打开的是执行会话。结果不走长连接，改由这条监听写进页面。
+  // 企业版 cron 结果不走长连接，改订 /sessions/{id}/live。
+  // 当前打开的会话要盯（含带 cron_id 的统一会话）；切走后也要后台盯到结束，
+  // 否则 isProcessing 停不掉（一直转圈）、也收不到终稿标蓝点。
   const activeCronId = useSessionStore((state) =>
     state.currentSession?.session_id === sessionId
       ? state.currentSession.cron_id
       : state.sessions.find((session) => session.session_id === sessionId)?.cron_id,
   );
-  useEffect(() => watchCronExecutionSession(sessionId, Boolean(activeCronId)), [sessionId, activeCronId]);
+  const cronLastRunSessionId = useCronStore((s) => s.lastRunSessionId);
+  useEffect(() => {
+    const ids = [sessionId, ...Object.values(cronLastRunSessionId)];
+    return watchCronExecutionSessions(ids, sessionId, Boolean(activeCronId));
+  }, [sessionId, cronLastRunSessionId, activeCronId]);
 
   const {
     setCurrentSession,

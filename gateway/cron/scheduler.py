@@ -774,15 +774,22 @@ class CronSchedulerService:
         sid = str(session_id or "").strip()
         if not sid:
             return
+        finished_job_ids: set[str] = set()
         for state in list(self._runs.values()):
             if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
                 continue
             if state.status == "awaiting_approval":
                 state.status = "succeeded"
                 state.finished_at = self._now_fn()
+                job_id = str(getattr(state, "job_id", "") or "").strip()
+                if job_id:
+                    finished_job_ids.add(job_id)
                 job = self._jobs.get(state.job_id)
                 if job is not None and _is_web_cron_job(job):
                     asyncio.create_task(self._notify_web_run(job, state, phase="finished"))
+        # 审批续跑收尾：擦掉 active_session，避免多副本 list 一直当「进行中」
+        for job_id in finished_job_ids:
+            asyncio.create_task(self.clear_active_exec_session(job_id))
         self.release_permission_hold_for_session(sid)
 
     async def _sync_store_revision(self) -> None:
@@ -1520,6 +1527,14 @@ class CronSchedulerService:
                 state.exec_channel_id = "__cron__"
             state.execution_session_allocated = True
         self._runs[run_id] = state
+        # 仅真实 session.create 过的才写 Redis；proactive.tick 的占位 cron_{ts}_{job}
+        # 不是可订 live 的执行会话，写进去会让前端永久转圈。
+        if state.execution_session_allocated and state.exec_session_id:
+            await self.publish_active_exec_session(
+                job.id,
+                state.exec_session_id,
+                ttl_seconds=int(max(60, resolve_cron_job_timeout_seconds(job))),
+            )
         self._schedule_event(wake_dt, "wake", job.id, run_id)
         self._schedule_event(push_dt, "push", job.id, run_id)
         self._reload_event.set()
@@ -2285,6 +2300,12 @@ class CronSchedulerService:
                         state.exec_channel_id = "__cron__"
                     state.exec_session_id = exec_session_id
                     state.execution_session_allocated = True
+                if state.exec_session_id:
+                    await self.publish_active_exec_session(
+                        job.id,
+                        state.exec_session_id,
+                        ttl_seconds=int(max(60, resolve_cron_job_timeout_seconds(job))),
+                    )
                 channel_id = state.exec_channel_id or channel_id
                 await self._notify_web_run(job, state, phase="started")
                 cron_meta = {
@@ -2439,6 +2460,8 @@ class CronSchedulerService:
             finally:
                 if state.status != "awaiting_approval":
                     state.finished_at = self._now_fn()
+                    # 审批暂停仍算「进行中」，保留 active_session_id 给前端订 live
+                    await self.clear_active_exec_session(job.id)
                 cancelled_lifecycle = is_cancelled_ghost or is_cancelled_run
                 # Ensure failed runs also produce result_text so push logic can deliver it.
                 # Cancelled lifecycle runs and removed jobs stay silent: neither
@@ -2566,6 +2589,150 @@ class CronSchedulerService:
             logger.warning(
                 "[Cron] update last_session_id failed job=%s: %s", job.id, lsid_exc,
             )
+
+    _ACTIVE_EXEC_STATUSES = frozenset({"pending", "running", "awaiting_approval"})
+
+    def list_active_exec_sessions(self) -> dict[str, str]:
+        """本进程里还在跑的 cron 执行会话：job_id → exec_session_id。
+
+        仅企业版使用；个人版靠 WebSocket 推送，不需要这张表。
+        """
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return {}
+        out: dict[str, str] = {}
+        for state in self._runs.values():
+            status = str(getattr(state, "status", "") or "").strip()
+            if status and status not in self._ACTIVE_EXEC_STATUSES:
+                continue
+            sid = str(getattr(state, "exec_session_id", "") or "").strip()
+            job_id = str(getattr(state, "job_id", "") or "").strip()
+            if not job_id or not sid:
+                continue
+            # 统一会话未必带 cron_ 前缀；只要本机认定仍在跑就暴露给 list。
+            out[job_id] = sid
+        return out
+
+    async def publish_active_exec_session(
+        self, job_id: str, exec_session_id: str, *, ttl_seconds: int = 0,
+    ) -> None:
+        """把「正在跑」的会话号写进 Redis，多副本 list 才能被前端发现。
+
+        每个 job 独立 String key + 独立 TTL，避免短超时任务 EXPIRE 整表把长任务刷掉。
+        仅企业版；个人版不写 Redis。
+        """
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return
+        jid = str(job_id or "").strip()
+        sid = str(exec_session_id or "").strip()
+        if not jid or not sid:
+            return
+        try:
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_active_session_rel,
+                cron_active_sessions_hash_rel,
+            )
+            from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return
+            expire_s = int(ttl_seconds) if int(ttl_seconds or 0) > 0 else 3600
+            await client.set(
+                cron_active_session_rel(jid),
+                sid,
+                ttl_seconds=max(60, expire_s),
+            )
+            # 清理旧版整表 Hash 字段，避免双写期读到过期脏数据
+            try:
+                await client.hdel(cron_active_sessions_hash_rel(), jid)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[Cron] publish active_session failed job=%s session=%s",
+                jid, sid, exc_info=True,
+            )
+
+    async def clear_active_exec_session(self, job_id: str) -> None:
+        """执行收尾（非审批暂停）后擦掉 active 标记。仅企业版。"""
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        try:
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_active_session_rel,
+                cron_active_sessions_hash_rel,
+            )
+            from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return
+            await client.delete(cron_active_session_rel(jid))
+            try:
+                await client.hdel(cron_active_sessions_hash_rel(), jid)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            logger.debug("[Cron] clear active_session failed job=%s", jid, exc_info=True)
+
+    async def collect_active_exec_sessions(self) -> dict[str, str]:
+        """本机 _runs ∪ Redis，给 list 接口挂 active_session_id。仅企业版。"""
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return {}
+        out = self.list_active_exec_sessions()
+        try:
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_active_session_scan_rel,
+                cron_active_sessions_hash_rel,
+            )
+            from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return out
+            prefix = "gateway:cron_active_session:"
+            keys = await client.scan_iter(cron_active_session_scan_rel())
+            if keys:
+                values = await client.mget(list(keys))
+                for key, value in zip(keys, values):
+                    rel = str(key or "").strip()
+                    if not rel.startswith(prefix):
+                        continue
+                    job_id = rel[len(prefix):].strip()
+                    if isinstance(value, (bytes, bytearray)):
+                        sid = bytes(value).decode("utf-8", errors="replace").strip()
+                    else:
+                        sid = str(value or "").strip()
+                    if job_id and sid:
+                        out[job_id] = sid
+            # 双写过渡：仍兼容旧整表 Hash（若尚未迁完）
+            raw = await client.hgetall(cron_active_sessions_hash_rel())
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    if isinstance(key, (bytes, bytearray)):
+                        job_id = bytes(key).decode("utf-8", errors="replace").strip()
+                    else:
+                        job_id = str(key or "").strip()
+                    if isinstance(value, (bytes, bytearray)):
+                        sid = bytes(value).decode("utf-8", errors="replace").strip()
+                    else:
+                        sid = str(value or "").strip()
+                    if job_id and sid and job_id not in out:
+                        out[job_id] = sid
+        except Exception:  # noqa: BLE001
+            logger.debug("[Cron] collect active_sessions from redis failed", exc_info=True)
+        return out
 
     async def _cancel_cron_team_agent_session(
         self,

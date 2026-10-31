@@ -387,11 +387,24 @@ class CronController:
             *(self._gate_allowed(pid, uid, group_id, bot_id) for pid, uid, group_id, bot_id in keys)
         )
         allowed = dict(zip(keys, verdicts))
-        return [
-            job.to_dict()
-            for job in jobs
-            if allowed[(job.project_id, job.user_id, job.group_id, job.bot_id)]
-        ]
+        # 仅企业版：HTTP 无常驻 WS，list 挂 active_session_id 供前端订 live。
+        # 个人版仍走 WebSocket 推送，不挂这个字段。
+        active: dict[str, str] = {}
+        if is_enterprise():
+            try:
+                active = await self._scheduler.collect_active_exec_sessions()
+            except Exception:  # noqa: BLE001
+                active = {}
+        out: list[dict] = []
+        for job in jobs:
+            if not allowed[(job.project_id, job.user_id, job.group_id, job.bot_id)]:
+                continue
+            item = job.to_dict()
+            sid = str(active.get(job.id) or "").strip()
+            if sid:
+                item["active_session_id"] = sid
+            out.append(item)
+        return out
 
     @_serialize_mutation
     async def hide_project_jobs(self, project_id: str, *, commit=None) -> dict:

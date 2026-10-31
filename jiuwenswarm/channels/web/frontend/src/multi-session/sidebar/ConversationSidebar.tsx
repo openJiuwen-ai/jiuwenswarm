@@ -13,6 +13,7 @@ import {
   filterJobsForProject,
   type SidebarCronJob,
 } from '../../stores';
+import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
   getProjectNewLabel,
@@ -830,6 +831,24 @@ export function ConversationSidebar({
   useEffect(() => {
     if (peek) return;
     void loadCronJobs();
+  }, [peek, loadCronJobs]);
+
+  // 企业 HTTP：轻量轮询 list，只为发现 active_session_id（到点跑起来），
+  // 再交给后台 live；不在这里根据 last_session_id 标未读。
+  useEffect(() => {
+    if (peek || !shouldDiscoverCronActiveSessions()) return;
+    const reload = () => {
+      void loadCronJobs();
+    };
+    const intervalId = window.setInterval(reload, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [peek, loadCronJobs]);
 
   // 监听 agent 工具调用结果：当 cron 相关工具执行后刷新侧边栏定时任务
