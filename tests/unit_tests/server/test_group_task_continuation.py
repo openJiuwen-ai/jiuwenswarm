@@ -895,3 +895,51 @@ async def test_idle_without_any_leader_reply_still_fails(private_run, monkeypatc
     assert (await wait_worker(run, accepted))["status"] == "failed"
     assert posted_errors(run) == ["执行失败：expert team became idle without submitting a result"]
 
+
+
+@pytest.mark.asyncio
+async def test_update_racing_the_queued_runs_start_is_not_lost(private_run, monkeypatch):
+    run = private_run
+    release = asyncio.Event()
+    queries = []
+
+    async def stream(child, inputs, *, session):
+        queries.append(inputs["query"])
+        if inputs["query"] == "Implement":
+            await release.wait()
+        await submit_private(child)
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    first = await run.proxy.invoke({"run_id": "one", "task": "Analyse"})
+    await wait_worker(run, first)
+    source = first.data["execution_id"]
+    running = await run.proxy.invoke({"action": "continue", "run_id": "two", "content": "Implement", "execution_id": source})
+    queued = await run.proxy.invoke({"action": "continue", "run_id": "three", "content": "Test", "execution_id": source})
+
+    # Hold the queued update between its "still waiting" check and its write.
+    writing, gate = asyncio.Event(), asyncio.Event()
+    original = GroupExecutions.update
+
+    async def slow_update(self, execution_id, **changes):
+        if any(not item["delivered"] for item in changes.get("adjustments", [])):
+            writing.set()
+            await gate.wait()
+        return await original(self, execution_id, **changes)
+
+    monkeypatch.setattr(GroupExecutions, "update", slow_update)
+    update = asyncio.create_task(run.proxy.invoke({
+        "action": "update", "execution_id": queued.data["execution_id"], "content": "Cover edge cases",
+    }))
+    await asyncio.wait_for(writing.wait(), 2)
+    release.set()
+    assert (await wait_worker(run, running))["status"] == "completed"
+    await asyncio.sleep(0.05)
+    gate.set()
+    assert (await update).data["queued"]
+    for _ in range(100):
+        if len(queries) == 3:
+            break
+        await asyncio.sleep(0.01)
+    assert queries[2] == "Test\n\nAdditional instructions:\n- Cover edge cases"

@@ -715,15 +715,20 @@ class RunTeam(_GroupTool):
             if after is not None:
                 # asyncio.wait, unlike gather, does not cancel the earlier run when this one is cancelled.
                 await asyncio.wait({after})
-                manager.register_stream_task(child_session, asyncio.current_task())
-                _waiting_runs.discard(execution_id)
-                current = store.get(execution_id)
-                pending = [item["instruction"] for item in current.get("adjustments", []) if not item["delivered"]]
-                if pending:
-                    query = task + "\n\nAdditional instructions:\n" + "\n".join(f"- {item}" for item in pending)
-                    await store.update(execution_id, adjustments=[
-                        {**item, "delivered": True} for item in current["adjustments"]
-                    ])
+                from jiuwenswarm.server.runtime.group_service import group_lock
+
+                # The lock _adjust holds: an update to a queued run is either saved before this
+                # read and sent with the task, or sees the run as started and is delivered live.
+                async with group_lock(f"group-adjust-{execution['private_team_key']}"):
+                    manager.register_stream_task(child_session, asyncio.current_task())
+                    _waiting_runs.discard(execution_id)
+                    current = store.get(execution_id)
+                    pending = [item["instruction"] for item in current.get("adjustments", []) if not item["delivered"]]
+                    if pending:
+                        query = task + "\n\nAdditional instructions:\n" + "\n".join(f"- {item}" for item in pending)
+                        await store.update(execution_id, adjustments=[
+                            {**item, "delivered": True} for item in current["adjustments"]
+                        ])
             await self._run(key, task, execution=execution, query=query)
         except asyncio.CancelledError:
             group = read_group(self.context.session_id)
