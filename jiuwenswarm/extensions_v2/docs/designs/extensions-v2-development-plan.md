@@ -471,7 +471,7 @@ flowchart LR
 | EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 404 项回归、19 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker 与两个模型回合、用户资源清理、并发/重复删除、断连/归档非触发、卸载及进程端口清理通过，见 F_24 / S_13 | 2026-10-29 |
 | EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_25 / S_14 | 2026-10-29 |
 | EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_26 / S_15 | 2026-10-29 |
-| EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | — | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见 F_27 / S_16 | 2026-10-31 |
+| EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见 F_27 / S_16 | 2026-10-31 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 

@@ -6,6 +6,8 @@
 
 用户确认以 Claude 返回格式为主，同步迁移所有本次涉及的分支案例。固定参考 Claude Code Mods 2.1.277，官方提交 80c6959d28c4c30ecd14fc1cdf172f19d9adad81。公共查询协议主责为 [S_16](../specs/S_16_session-query-events.md)，逐字段解释由 F_13/F_14/F_15/F_23/F_21 维护；不把运行 Claude 私有宿主作为已完成项。
 
+交付 PR：[!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100)，目标分支 rsi_native_agent_os；本 PR 不修改原 Token Weather 渲染代码。
+
 ## 2. 能力说明与 Claude 对照
 
 公开 Ops 现在派发同名查询 Event，USER 可继续、增加前后操作、返回类型兼容的值或拒绝，BUILTIN 计时，CORE 读平台真实默认数据；Ops 验证并解包。只读描述默认数据访问不写业务数据，不排除可拦截查询。
