@@ -55,6 +55,36 @@ def attribute_session_project(
     )
 
 
+def cron_session_project_matches(
+    session: dict[str, Any],
+    project_id: str,
+    visible_project_ids: set[str],
+    removed_project_ids: set[str],
+    *,
+    cron_id: str,
+) -> bool:
+    """Match one cron session against the project the task list queried.
+
+    A task created without a project keeps ``project_id=""`` (documented as
+    "default project"), while its execution session is materialized as
+    ``default`` or ``default_code`` by work_mode.  The Web panel therefore
+    queries the work default (``default``) even for code-mode runs.  With a
+    ``cron_id`` present the job identity is already unique, so both virtual
+    default projects are treated as the same bucket.  Removed projects keep
+    returning ``""`` and stay excluded.
+    """
+    actual = attribute_session_project(
+        session, visible_project_ids, removed_project_ids,
+    )
+    if actual == project_id:
+        return True
+    return (
+        bool(cron_id)
+        and is_default_project_id(project_id)
+        and actual in {DEFAULT_PROJECT_ID_WORK, DEFAULT_PROJECT_ID_CODE}
+    )
+
+
 def project_info_payload(
     project: Any | None,
     *,
@@ -329,9 +359,10 @@ def load_project_cron_sessions(
         if name_matched:
             # 已有项目归属必须继续参与过滤；回写只补空值，不能将其他项目
             # 的会话临时列出后又在下一次查询中隐藏。只有未绑定项目才迁移。
-            if str(session.get("project_id") or "").strip() and attribute_session_project(
-                session, visible_project_ids, removed_project_ids
-            ) != project_id:
+            if str(session.get("project_id") or "").strip() and not cron_session_project_matches(
+                session, project_id, visible_project_ids, removed_project_ids,
+                cron_id=cron_id,
+            ):
                 continue
             try:
                 sync_session_request_metadata(
@@ -352,9 +383,10 @@ def load_project_cron_sessions(
             continue
         if cron_id and session.get("cron_id") != cron_id:
             continue
-        if not name_matched and attribute_session_project(
-            session, visible_project_ids, removed_project_ids
-        ) != project_id:
+        if not name_matched and not cron_session_project_matches(
+            session, project_id, visible_project_ids, removed_project_ids,
+            cron_id=cron_id,
+        ):
             continue
         matched.append(session)
     matched.sort(key=_last_user_message_ts, reverse=True)

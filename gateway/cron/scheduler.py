@@ -1453,6 +1453,15 @@ class CronSchedulerService:
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
+        # Reject before allocating a session: the wake handler drops disabled
+        # jobs, so accepting here would leave an empty execution session behind.
+        # The Web panel already disables these buttons; the API/TUI callers need
+        # the same contract.  proactive.tick stays runnable manually (its enable
+        # switch is owned by settings, not by the task list).
+        if job.expired:
+            raise ValueError("任务已过期，无法执行")
+        if not job.enabled and normalize_cron_job_mode(job.mode) != "proactive.tick":
+            raise ValueError("任务已暂停，无法执行")
         if not is_scheduled_task_supported(job.targets):
             raise ValueError(
                 f"scheduled tasks are not supported for target: {job.targets}"
@@ -1604,7 +1613,12 @@ class CronSchedulerService:
             "status": state.status,
             "phase": phase,
             "notify": notify,
-            "error": state.error if state.status == "failed" else None,
+            # Interrupt failures (ask_user / approval pause) carry their reason
+            # in result_text, not state.error; surface it so the task list can
+            # show why the last run failed instead of an empty tooltip.
+            "error": (
+                state.error or state.result_text
+            ) if state.status == "failed" else None,
             "mode": state.exec_mode or job.mode,
             "project_id": job.project_id,
             "user_id": str(job.user_id or "").strip(),
