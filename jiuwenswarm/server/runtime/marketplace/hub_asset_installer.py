@@ -34,6 +34,10 @@ from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
 PackageNameValidator = Callable[[str], str]
 PackageValidator = Callable[[Path, str], None]
 PackageConflictValidator = Callable[[str], None]
+# Hub keeps every publisher's asset under its own asset_id, so two of them may
+# carry the same package name; local packages are keyed by directory name. The
+# resolver maps (Hub package name, asset id) to the id that will be installed.
+PackageIdResolver = Callable[[str, str], str]
 PackageCommittedHook = Callable[[HubInstallRecord], None]
 PackageRollbackHook = Callable[[str], None]
 
@@ -90,6 +94,7 @@ async def install_hub_asset_package(
     state_store: HubInstallStateStore,
     package_name_validator: PackageNameValidator,
     package_validator: PackageValidator,
+    package_id_resolver: PackageIdResolver | None = None,
     conflict_validator: PackageConflictValidator | None = None,
     on_committed: PackageCommittedHook | None = None,
     on_rollback: PackageRollbackHook | None = None,
@@ -110,6 +115,14 @@ async def install_hub_asset_package(
             f"got {detail.asset_id!r}"
         )
     package_id = package_name_validator(detail.package_name)
+    # Aliased installs keep the Hub package name in the artifact and only rename
+    # the local directory id, so the artifact check below must compare against
+    # the Hub name rather than the resolved id.
+    hub_package_id = package_id
+    if package_id_resolver is not None:
+        package_id = package_name_validator(
+            package_id_resolver(hub_package_id, asset)
+        )
     if conflict_validator is not None:
         conflict_validator(package_id)
     owner = state_store.get_by_package_id(package_id)
@@ -134,10 +147,17 @@ async def install_hub_asset_package(
             f"{detail.version!r}, got {artifact.version!r}"
         )
     if artifact.package_name != package_id:
-        raise ValueError(
-            f"Hub {kind} artifact package name mismatch: expected "
-            f"{package_id!r}, got {artifact.package_name!r}"
+        # An aliased install still ships the Hub package name inside the archive;
+        # any other mismatch means the Hub served another package.
+        aliased = (
+            package_id != hub_package_id
+            and artifact.package_name == hub_package_id
         )
+        if not aliased:
+            raise ValueError(
+                f"Hub {kind} artifact package name mismatch: expected "
+                f"{package_id!r}, got {artifact.package_name!r}"
+            )
 
     destination_root.mkdir(parents=True, exist_ok=True)
     destination = destination_root / package_id
