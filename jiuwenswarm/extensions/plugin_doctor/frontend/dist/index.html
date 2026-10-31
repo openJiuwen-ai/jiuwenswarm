@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>插件体检 · Plugin Doctor</title>
+<style>
+  :root {
+    --pd-bg: var(--color-bg, #f7f8fa);
+    --pd-card: var(--color-surface, #ffffff);
+    --pd-border: var(--color-border, #e3e6eb);
+    --pd-text: var(--color-text, #1f2329);
+    --pd-muted: var(--color-text-secondary, #6b7280);
+    --pd-accent: var(--color-accent, #2563eb);
+    --pd-error: var(--color-error, #d92d20);
+    --pd-warning: var(--color-warn, #b54708);
+    --pd-info: var(--color-text-secondary, #6b7280);
+    --pd-ok: var(--color-success, #067647);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--pd-bg); color: var(--pd-text);
+    font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 13px; margin: 18px 0 8px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .between { justify-content: space-between; }
+  .card {
+    background: var(--pd-card); border: 1px solid var(--pd-border);
+    border-radius: 8px; padding: 12px; margin-bottom: 12px;
+  }
+  .muted { color: var(--pd-muted); }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .badge { border-radius: 999px; padding: 1px 8px; font-size: 12px; border: 1px solid var(--pd-border); }
+  .badge.ok { color: var(--pd-ok); border-color: var(--pd-ok); }
+  .badge.bad { color: var(--pd-error); border-color: var(--pd-error); }
+  .badge.warn { color: var(--pd-warning); border-color: var(--pd-warning); }
+  button {
+    font: inherit; padding: 4px 10px; border-radius: 6px;
+    border: 1px solid var(--pd-border); background: var(--pd-card); color: var(--pd-text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--pd-accent); color: var(--pd-accent); }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
+  input, select {
+    font: inherit; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid var(--pd-border); background: var(--pd-card); color: var(--pd-text);
+  }
+  input { min-width: 320px; flex: 1; }
+  .score { font-size: 26px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--pd-border); vertical-align: top; }
+  th { font-weight: 600; color: var(--pd-muted); white-space: nowrap; }
+  ul { margin: 0; padding-left: 18px; }
+  li { margin: 2px 0; }
+  .sev { font-weight: 600; white-space: nowrap; }
+  .sev.error { color: var(--pd-error); }
+  .sev.warning { color: var(--pd-warning); }
+  .sev.info { color: var(--pd-info); }
+  #toast {
+    position: fixed; right: 16px; bottom: 16px; max-width: 60%;
+    background: var(--pd-error); color: #fff; padding: 8px 12px;
+    border-radius: 6px; display: none;
+  }
+  .empty { color: var(--pd-muted); padding: 6px 0; }
+</style>
+</head>
+<body>
+<main data-testid="plugin-doctor-root">
+  <div class="row between">
+    <div>
+      <h1>插件体检 · Plugin Doctor</h1>
+      <div class="muted" data-testid="plugin-doctor-subtitle">
+        按宿主真实加载语义静态体检扩展目录：只读扫描，不导入被测插件、不执行命令、不联网。
+      </div>
+    </div>
+    <div class="row">
+      <span class="badge" id="conn" data-testid="plugin-doctor-conn">连接中…</span>
+      <button id="refresh" data-testid="plugin-doctor-refresh-btn">重新体检</button>
+    </div>
+  </div>
+
+  <section class="card row" style="gap:20px; margin-top:12px">
+    <div>
+      <div class="score" id="score" data-testid="plugin-doctor-score">--</div>
+      <div class="muted">健康分</div>
+    </div>
+    <div>
+      <div class="score sev error" id="n-error" data-testid="plugin-doctor-summary-errors">0</div>
+      <div class="muted">错误</div>
+    </div>
+    <div>
+      <div class="score sev warning" id="n-warning" data-testid="plugin-doctor-summary-warnings">0</div>
+      <div class="muted">警告</div>
+    </div>
+    <div>
+      <div class="score sev info" id="n-info" data-testid="plugin-doctor-summary-infos">0</div>
+      <div class="muted">提示</div>
+    </div>
+    <div style="flex:1">
+      <div class="muted" id="meta" data-testid="plugin-doctor-generated-at"></div>
+      <div class="muted mono" id="paths" data-testid="plugin-doctor-search-paths"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>插件（<span id="n-plugin" data-testid="plugin-doctor-plugin-count">0</span>）</h2>
+    <table>
+      <thead>
+        <tr><th>插件</th><th>类型</th><th>状态</th><th>分数</th><th>错误</th><th>警告</th><th>提示</th></tr>
+      </thead>
+      <tbody id="plugins" data-testid="plugin-doctor-plugin-list"></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2 class="row between" style="display:flex">
+      <span>结论明细</span>
+      <span class="row">
+        <label class="muted" for="sev">级别</label>
+        <select id="sev" data-testid="plugin-doctor-severity-filter">
+          <option value="all">全部</option>
+          <option value="error">仅错误</option>
+          <option value="warning">仅警告</option>
+          <option value="info">仅提示</option>
+        </select>
+      </span>
+    </h2>
+    <table>
+      <thead>
+        <tr><th>级别</th><th>规则</th><th>目标</th><th>说明</th><th>建议</th><th>宿主依据</th></tr>
+      </thead>
+      <tbody id="findings" data-testid="plugin-doctor-finding-list"></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>单目录体检</h2>
+    <div class="row">
+      <input id="inspect-path" data-testid="plugin-doctor-inspect-input"
+             placeholder="扩展目录（相对路径按用户插件目录解析，仅允许搜索目录之内）" />
+      <button id="inspect" data-testid="plugin-doctor-inspect-btn">体检该目录</button>
+    </div>
+    <div id="inspect-result" data-testid="plugin-doctor-inspect-result"></div>
+  </section>
+
+  <section class="card">
+    <div class="row between">
+      <h2 style="margin:0">规则目录（<span id="n-rule" data-testid="plugin-doctor-rule-count">0</span>）</h2>
+      <span class="row">
+        <button id="export-json" data-testid="plugin-doctor-export-json-btn">导出 JSON</button>
+        <button id="export-md" data-testid="plugin-doctor-export-md-btn">导出 Markdown</button>
+      </span>
+    </div>
+    <table>
+      <thead><tr><th>规则</th><th>级别</th><th>说明</th><th>宿主依据</th></tr></thead>
+      <tbody id="rules" data-testid="plugin-doctor-rule-list"></tbody>
+    </table>
+  </section>
+</main>
+
+<div id="toast" data-testid="plugin-doctor-toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  var PREFIX = 'plugin.doctor.';
+  var state = { ws: null, seq: 0, pending: new Map(), report: null, rules: [], filter: 'all' };
+
+  function $(id) { return document.getElementById(id); }
+
+  function toast(message) {
+    var box = $('toast');
+    box.textContent = String(message);
+    box.style.display = 'block';
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { box.style.display = 'none'; }, 6000);
+  }
+
+  function setConn(text, kind) {
+    var badge = $('conn');
+    badge.textContent = text;
+    badge.className = 'badge' + (kind ? ' ' + kind : '');
+  }
+
+  function wsUrl() {
+    var scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return scheme + '//' + location.host + '/ws';
+  }
+
+  function connect() {
+    var ws = new WebSocket(wsUrl());
+    state.ws = ws;
+    ws.onopen = function () {
+      setConn('已连接', 'ok');
+      loadPaths();
+      refresh(true);
+    };
+    ws.onclose = function () {
+      setConn('已断开，重连中…', 'bad');
+      setTimeout(connect, 2000);
+    };
+    ws.onerror = function () { setConn('连接错误', 'bad'); };
+    ws.onmessage = function (event) {
+      var msg;
+      try { msg = JSON.parse(event.data); } catch (err) { return; }
+      if (msg && msg.type === 'res') { settle(msg); }
+    };
+  }
+
+  function settle(msg) {
+    var pending = state.pending.get(msg.id);
+    if (!pending) { return; }
+    clearTimeout(pending.timer);
+    state.pending.delete(msg.id);
+    if (msg.ok) { pending.resolve(msg.payload); return; }
+    var error = new Error(msg.error || '请求失败');
+    error.code = msg.code;
+    pending.reject(error);
+  }
+
+  function call(name, params, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket 未连接'));
+        return;
+      }
+      var id = 'pd_' + (++state.seq) + '_' + Date.now().toString(36);
+      var timer = setTimeout(function () {
+        state.pending.delete(id);
+        reject(new Error('请求超时：' + name));
+      }, timeoutMs || 20000);
+      state.pending.set(id, { resolve: resolve, reject: reject, timer: timer });
+      state.ws.send(JSON.stringify({
+        type: 'req', id: id, method: PREFIX + name, params: params || {}
+      }));
+    });
+  }
+
+  function cell(row, text, className) {
+    var td = document.createElement('td');
+    if (className) { td.className = className; }
+    td.textContent = text === null || text === undefined ? '-' : String(text);
+    row.appendChild(td);
+    return td;
+  }
+
+  function loadPaths() {
+    call('paths').then(function (payload) {
+      var box = $('paths');
+      if (state.report) { return; }
+      box.textContent = '用户插件目录：' + payload.user_plugin_dir
+        + ' · 默认内置目录：' + payload.default_extension_dir
+        + (payload.running_version ? ' · 宿主版本 ' + payload.running_version : '');
+    }).catch(function () { /* 连接建立后 report 会给同样的信息 */ });
+  }
+
+  function refresh(force) {
+    var button = $('refresh');
+    button.disabled = true;
+    call('report', { refresh: !!force }).then(function (payload) {
+      state.report = payload;
+      render();
+    }).catch(function (err) {
+      toast('体检失败：' + err.message + (err.code ? '（' + err.code + '）' : ''));
+    }).then(function () { button.disabled = false; });
+  }
+
+  function render() {
+    var report = state.report;
+    if (!report) { return; }
+    $('score').textContent = String(report.score);
+    $('n-error').textContent = String(report.errors);
+    $('n-warning').textContent = String(report.warnings);
+    $('n-info').textContent = String(report.infos);
+    $('n-plugin').textContent = String(report.scanned);
+    $('meta').textContent = '宿主版本：' + (report.running_version || '未知')
+      + ' · 生成于 ' + report.generated_at
+      + (report.cached ? '（缓存）' : '（本次扫描）');
+    $('paths').textContent = '搜索目录：' + (report.search_paths || []).join('  |  ')
+      + (report.missing_paths && report.missing_paths.length
+        ? '  |  不存在：' + report.missing_paths.join(', ') : '');
+
+    var body = $('plugins');
+    body.textContent = '';
+    (report.plugins || []).forEach(function (plugin) {
+      var row = document.createElement('tr');
+      row.setAttribute('data-testid', 'plugin-doctor-plugin-item');
+      row.setAttribute('data-variant', plugin.plugin_id || plugin.root);
+      row.setAttribute('data-status', plugin.status);
+      cell(row, plugin.plugin_id || '(未知)', 'mono');
+      cell(row, plugin.kind);
+      cell(row, plugin.status);
+      cell(row, plugin.score);
+      cell(row, plugin.errors, 'sev error');
+      cell(row, plugin.warnings, 'sev warning');
+      cell(row, plugin.infos, 'sev info');
+      body.appendChild(row);
+    });
+    if (!body.children.length) {
+      var empty = document.createElement('tr');
+      cell(empty, '未发现任何扩展目录', 'empty');
+      body.appendChild(empty);
+    }
+    renderFindings();
+  }
+
+  function allFindings() {
+    var report = state.report;
+    if (!report) { return []; }
+    var items = [];
+    (report.scan_findings || []).forEach(function (item) { items.push(item); });
+    (report.plugins || []).forEach(function (plugin) {
+      (plugin.findings || []).forEach(function (item) { items.push(item); });
+    });
+    return items;
+  }
+
+  function renderFindings() {
+    var body = $('findings');
+    body.textContent = '';
+    var items = allFindings().filter(function (item) {
+      return state.filter === 'all' || item.severity === state.filter;
+    });
+    items.forEach(function (item) {
+      var row = document.createElement('tr');
+      row.setAttribute('data-testid', 'plugin-doctor-finding-item');
+      row.setAttribute('data-variant', item.rule_id);
+      row.setAttribute('data-severity', item.severity);
+      cell(row, item.severity, 'sev ' + item.severity);
+      cell(row, item.rule_id + ' ' + (item.title || ''), 'mono');
+      cell(row, item.target, 'mono');
+      cell(row, item.message);
+      cell(row, item.hint);
+      cell(row, item.evidence, 'mono');
+      body.appendChild(row);
+    });
+    if (!body.children.length) {
+      var empty = document.createElement('tr');
+      cell(empty, state.report && state.report.scanned ? '该级别没有问题' : '暂无结论', 'empty');
+      body.appendChild(empty);
+    }
+  }
+
+  function loadRules() {
+    return call('rules').then(function (payload) {
+      state.rules = (payload && payload.rules) || [];
+      $('n-rule').textContent = String(state.rules.length);
+      var body = $('rules');
+      body.textContent = '';
+      state.rules.forEach(function (rule) {
+        var row = document.createElement('tr');
+        row.setAttribute('data-testid', 'plugin-doctor-rule-item');
+        row.setAttribute('data-variant', rule.rule_id);
+        cell(row, rule.rule_id, 'mono');
+        cell(row, rule.severity, 'sev ' + rule.severity);
+        var td = cell(row, rule.title);
+        var hint = document.createElement('div');
+        hint.className = 'muted';
+        hint.textContent = rule.rationale;
+        td.appendChild(hint);
+        cell(row, rule.evidence, 'mono');
+        body.appendChild(row);
+      });
+    }).catch(function (err) { toast('规则目录加载失败：' + err.message); });
+  }
+
+  function inspect() {
+    var value = $('inspect-path').value.trim();
+    var box = $('inspect-result');
+    box.textContent = '';
+    if (!value) { toast('先填一个扩展目录'); return; }
+    call('inspect', { path: value }).then(function (report) {
+      var line = document.createElement('div');
+      line.className = 'mono';
+      line.textContent = '插件 ' + (report.plugin_id || '(未知)')
+        + ' · ' + report.kind + ' · ' + report.status + ' · 分数 ' + report.score;
+      box.appendChild(line);
+      var list = document.createElement('ul');
+      (report.findings || []).forEach(function (item) {
+        var li = document.createElement('li');
+        li.textContent = '[' + item.severity + '] ' + item.rule_id + ' ' + item.message;
+        list.appendChild(li);
+      });
+      if (!list.children.length) {
+        var li = document.createElement('li');
+        li.textContent = '未发现问题';
+        list.appendChild(li);
+      }
+      box.appendChild(list);
+    }).catch(function (err) {
+      var line = document.createElement('div');
+      line.className = 'sev error';
+      line.textContent = '体检失败：' + err.message + (err.code ? '（' + err.code + '）' : '');
+      box.appendChild(line);
+    });
+  }
+
+  function download(format) {
+    call('export', { format: format }).then(function (payload) {
+      var blob = new Blob([payload.content], { type: payload.mime || 'text/plain' });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = payload.filename || ('plugin-doctor-report.' + format);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+    }).catch(function (err) { toast('导出失败：' + err.message); });
+  }
+
+  $('refresh').addEventListener('click', function () { refresh(true); });
+  $('sev').addEventListener('change', function (event) {
+    state.filter = event.target.value;
+    renderFindings();
+  });
+  $('inspect').addEventListener('click', inspect);
+  $('inspect-path').addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') { inspect(); }
+  });
+  $('export-json').addEventListener('click', function () { download('json'); });
+  $('export-md').addEventListener('click', function () { download('markdown'); });
+
+  connect();
+  loadRules();
+})();
+</script>
+</body>
+</html>

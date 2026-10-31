@@ -189,6 +189,9 @@ namespaces = false
 jiuwenswarm = [
     "channels/process_cli/protocol/schema.json",
     "channels/web/frontend/dist/**/*",
+    # 应用插件的前端页面（extension.yaml 里 iframe 的入口）也必须随包发布
+    "extensions/**/frontend/dist/**/*",
+    "extensions/**/frontend/dist/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",
     # config / env 模板放在 resources 目录
