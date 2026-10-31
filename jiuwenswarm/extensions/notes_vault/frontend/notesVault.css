@@ -1,0 +1,55 @@
+/* Notes Vault plugin styles. Colours come exclusively from the shared
+ * semantic theme tokens, so the panel follows light/dark themes without
+ * plugin-specific overrides. */
+
+.notes-vault { display: flex; flex-direction: column; gap: 12px; padding: 16px; height: 100%; overflow: hidden; }
+.notes-vault-header, .notes-vault-actions, .notes-vault-editor-actions { display: flex; align-items: center; gap: 8px; }
+.notes-vault-header { justify-content: space-between; flex-wrap: wrap; }
+.notes-vault-header h2 { margin: 0; font-size: 16px; font-weight: 600; color: var(--color-text-primary); }
+
+.notes-vault-actions input, .notes-vault-editor input, .notes-vault-editor textarea,
+.notes-vault-actions button, .notes-vault-editor-actions button {
+  padding: 6px 10px; border: 1px solid var(--color-border); border-radius: 6px;
+  background: var(--color-bg-elevated); color: var(--color-text-primary);
+  font-size: 13px; font-family: inherit;
+}
+
+.notes-vault-actions button, .notes-vault-editor-actions button { cursor: pointer; }
+.notes-vault-actions button:disabled, .notes-vault-editor-actions button:disabled { opacity: 0.6; cursor: default; }
+.notes-vault-stats { margin: 0; font-size: 12px; color: var(--color-text-secondary); }
+
+.notes-vault-error {
+  margin: 0; padding: 8px 12px; border: 1px solid var(--color-danger);
+  border-radius: 6px; color: var(--color-danger); font-size: 13px;
+}
+
+.notes-vault-body {
+  display: grid; grid-template-columns: minmax(200px, 280px) 1fr;
+  gap: 16px; min-height: 0; flex: 1;
+}
+
+.notes-vault-list {
+  list-style: none; margin: 0; padding: 0; overflow-y: auto;
+  border: 1px solid var(--color-border); border-radius: 6px;
+}
+
+.notes-vault-list li + li { border-top: 1px solid var(--color-border); }
+
+.notes-vault-list button {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 8px 10px;
+  border: 0; background: transparent; color: var(--color-text-primary);
+  text-align: left; cursor: pointer;
+}
+
+.notes-vault-list button.is-selected { background: var(--color-bg-subtle); }
+.notes-vault-item-title { font-size: 13px; font-weight: 500; }
+.notes-vault-item-meta, .notes-vault-empty { font-size: 11px; color: var(--color-text-secondary); }
+.notes-vault-empty { padding: 10px; }
+
+.notes-vault-editor { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; }
+.notes-vault-editor label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--color-text-secondary);
+}
+.notes-vault-editor textarea { resize: vertical; min-height: 120px; }
+.notes-vault-pin { flex-direction: row !important; align-items: center; gap: 6px !important; }
