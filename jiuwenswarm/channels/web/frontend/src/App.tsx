@@ -88,11 +88,10 @@ import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
-import { useBrowserAgentActivity } from './features/browserAgentActivity';
+import { useDesktopBrowserAutoOpen } from './features/desktopBrowserFile';
 import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,
-  useDesktopBrowserHeadless,
 } from './features/desktopBrowserDisplay';
 import {
   AgentMode,
@@ -957,8 +956,6 @@ function AppContent({
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
-  const browserAgentActive = useBrowserAgentActivity(sessionId);
-  const browserHeadless = useDesktopBrowserHeadless();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -1003,31 +1000,25 @@ function AppContent({
     setSingleAgentPanelExpanded(expanded);
   }, [mode, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, teamAreaActiveTab]);
 
-  const browserAutoExpandedSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (browserHeadless) {
-      browserAutoExpandedSessionRef.current = null;
-      return;
-    }
-    if (!window.jiuwenDesktop?.isElectron || !browserAgentActive) return;
-    // Electron 内置浏览器页签只在浏览器 Agent 真正被调用后出现；每个会话只自动
-    // 展开一次，之后尊重用户手动收起的选择。team 模式不抢 tab，等回到单 agent
-    // 模式再展开。
-    if (mode === 'team') return;
-    if (browserAutoExpandedSessionRef.current === sessionId) return;
-    browserAutoExpandedSessionRef.current = sessionId;
+  const handleBrowserTaskOpen = useCallback(() => {
+    setHeartbeatPanelOpen(false);
     setToolPanelHidden(false);
-    setSingleAgentPanelActiveTab('browser');
-    setSingleAgentPanelExpanded(true);
+    if (mode === 'team') {
+      setTeamAreaActiveTab('browser');
+      setTeamAreaExpanded(true);
+    } else {
+      setSingleAgentPanelActiveTab('browser');
+      setSingleAgentPanelExpanded(true);
+    }
   }, [
-    browserAgentActive,
-    browserHeadless,
     mode,
-    sessionId,
     setSingleAgentPanelActiveTab,
     setSingleAgentPanelExpanded,
+    setTeamAreaActiveTab,
+    setTeamAreaExpanded,
     setToolPanelHidden,
   ]);
+  useDesktopBrowserAutoOpen(sessionId, handleBrowserTaskOpen);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
     setHeartbeatPanelOpen(false);

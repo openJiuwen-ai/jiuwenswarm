@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getApiBase } from '../utils/env';
 import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { openSingleAgentPanel } from './singleAgentPanelState';
 import { openTeamPanel } from './teamPanelState';
-import { isDesktopBrowserHeadless } from './desktopBrowserDisplay';
+import { isDesktopBrowserHeadless, useDesktopBrowserHeadless } from './desktopBrowserDisplay';
+import type { ElectronBrowserState } from '../types/electron';
 
 const DESKTOP_BROWSER_TAB_EVENT = 'jiuwenclaw-desktop-browser-tab-change';
 const DESKTOP_BROWSER_TAB_FLAGS_KEY = 'jiuwenclaw_desktop_browser_tab_flags';
@@ -13,10 +14,17 @@ const DESKTOP_BROWSER_FILE_EXTENSIONS = new Set(['html', 'htm', 'md', 'markdown'
 
 /** browser 页签的出现/关闭标志，按会话隔离避免跨会话互相污染。 */
 interface DesktopBrowserTabFlags {
-  /** 本会话用内置浏览器打开过聊天文件 */
+  /** A file preview or live browser task requested this session's pane. */
   requested: boolean;
   /** 用户点关闭按钮显式关掉了 browser 页签 */
   closed: boolean;
+}
+
+interface DesktopBrowserSessionActivity {
+  /** Unknown after a failed read until the first observation establishes a baseline. */
+  busy: Set<string> | null;
+  /** Distinct busy snapshots received before the initial IPC reply. */
+  pending: Set<string>[] | null;
 }
 
 const EMPTY_TAB_FLAGS: DesktopBrowserTabFlags = { requested: false, closed: false };
@@ -109,9 +117,125 @@ export function closeDesktopBrowserTab(): void {
   persistDesktopBrowserTabFlags(activeSessionId(), { closed: true });
 }
 
+/** Reopen on a new MCP task binding, not on retained subagent history or navigation. */
+export function useDesktopBrowserAutoOpen(sessionId: string, onOpen: () => void): void {
+  const desktop = window.jiuwenDesktop;
+  const headless = useDesktopBrowserHeadless();
+  const current = useRef({ sessionId, onOpen });
+  current.current = { sessionId, onOpen };
+  const sessions = useRef(new Map<string, DesktopBrowserSessionActivity>());
+  const pendingSessions = useRef(new Map<string, Set<string>>());
+
+  const revealPending = useCallback(() => {
+    const currentSession = current.current.sessionId;
+    if (isDesktopBrowserHeadless() || !pendingSessions.current.has(currentSession)) return;
+    pendingSessions.current.delete(currentSession);
+    persistDesktopBrowserTabFlags(currentSession, { requested: true, closed: false });
+    current.current.onOpen();
+  }, []);
+
+  const observe = useCallback((owner: string, nextBusy: Set<string>) => {
+    const state = sessions.current.get(owner);
+    if (!state) return;
+    if (state.pending) {
+      const previous = state.pending.at(-1);
+      // Navigation/title updates do not add observations while the IPC read is pending.
+      if (!previous || previous.size !== nextBusy.size || [...nextBusy].some((id) => !previous.has(id))) {
+        state.pending.push(nextBusy);
+      }
+      return;
+    }
+    const previous = state.busy;
+    const pending = pendingSessions.current.get(owner) ?? new Set<string>();
+    if (previous) {
+      for (const id of nextBusy) {
+        if (!previous.has(id)) pending.add(id);
+      }
+    }
+    for (const id of pending) {
+      if (!nextBusy.has(id)) pending.delete(id);
+    }
+    if (pending.size) pendingSessions.current.set(owner, pending);
+    else pendingSessions.current.delete(owner);
+    state.busy = nextBusy;
+  }, []);
+
+  const ensureBaseline = useCallback((owner: string) => {
+    if (!desktop?.isElectron || sessions.current.has(owner)) return;
+    const state: DesktopBrowserSessionActivity = { busy: null, pending: [] };
+    sessions.current.set(owner, state);
+    const finish = (panels?: ElectronBrowserState[]) => {
+      if (sessions.current.get(owner) !== state || !state.pending) return;
+      if (panels) {
+        state.busy = new Set(panels.filter((panel) => panel.sessionId === owner && panel.busy)
+          .map((panel) => panel.panelId));
+      }
+      const pending = state.pending ?? [];
+      state.pending = null;
+      for (const nextBusy of pending) observe(owner, nextBusy);
+      // Reveal only the final live state, never a task that already finished during the read.
+      revealPending();
+    };
+    void desktop.browser.listPanels(owner).then(finish).catch((error) => {
+      if (sessions.current.get(owner) !== state) return;
+      console.warn('[desktop.browser] activity baseline failed:', error);
+      // With no snapshot, the first observed state is a baseline, not a new task.
+      finish();
+    });
+  }, [desktop, observe, revealPending]);
+
+  useEffect(() => {
+    if (!desktop?.isElectron) return;
+    const acknowledgeClose = () => {
+      const owner = activeSessionId();
+      if (!loadDesktopBrowserTabFlags(owner).closed) return;
+      pendingSessions.current.delete(owner);
+      const state = sessions.current.get(owner);
+      const latest = state?.pending?.at(-1);
+      if (state && latest) {
+        // A manual close acknowledges events already seen, even before the IPC reply.
+        state.busy = latest;
+        state.pending = null;
+      }
+    };
+    window.addEventListener(DESKTOP_BROWSER_TAB_EVENT, acknowledgeClose);
+    const unsubscribe = desktop.browser.onPanelsChanged((panels) => {
+      const bySession = new Map<string, Set<string>>();
+      for (const owner of sessions.current.keys()) bySession.set(owner, new Set());
+      for (const panel of panels) {
+        let busy = bySession.get(panel.sessionId);
+        if (!busy) {
+          busy = new Set();
+          bySession.set(panel.sessionId, busy);
+        }
+        if (panel.busy) busy.add(panel.panelId);
+      }
+      for (const [owner, busy] of bySession) {
+        ensureBaseline(owner);
+        observe(owner, busy);
+      }
+      revealPending();
+    });
+    return () => {
+      unsubscribe();
+      window.removeEventListener(DESKTOP_BROWSER_TAB_EVENT, acknowledgeClose);
+      sessions.current.clear();
+      pendingSessions.current.clear();
+    };
+  }, [desktop, ensureBaseline, observe, revealPending]);
+
+  useEffect(() => {
+    ensureBaseline(sessionId);
+  }, [sessionId, ensureBaseline]);
+
+  useEffect(() => {
+    revealPending();
+  }, [headless, sessionId, revealPending]);
+}
+
 /**
- * browser 页签可见性标志：文件打开请求过即保持可见，显式关闭后隐藏；
- * 状态持久化，ToolPanel 卸载重建（面板隐藏/切换会话）后仍能恢复。
+ * Persist visibility across ToolPanel remounts. An explicit close hides the
+ * tab until a new headed task or file preview requests it again.
  */
 export function useDesktopBrowserTabFlags(sessionId: string): DesktopBrowserTabFlags {
   const [flags, setFlags] = useState<DesktopBrowserTabFlags>(() => loadDesktopBrowserTabFlags(sessionId));

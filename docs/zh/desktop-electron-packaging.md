@@ -204,13 +204,19 @@ CDP 端点仅回环但**无认证**，本机任意进程理论上可连接并控
 - preload 暴露 `window.jiuwenDesktop`（browser.* / desktop.* IPC，全部 `trustedSender` 校验），同时保留 `window.pywebview.api` 兼容层
 - `DesktopBrowserPane`（`src/components/DesktopBrowserPane/`）：工具栏 + 地址栏 + 视口；`ResizeObserver` + `zoom-changed` 重算 bounds，主进程按 `zoomFactor` 换算 CSS px → DIP 后 setBounds
 - **模态遮挡规避**：原生 WebContentsView 永远盖在页面 DOM 之上（z-index 无效）；pane 监听到 `role="dialog"[aria-modal="true"]` 弹窗挂载时临时隐藏视图，关闭后恢复显示（`browser:set-visible` 的 focus=false 不抢主窗口焦点）
-- **tab 显示条件**（重要）：`isElectron && (useBrowserAgentActivity(sessionId) || useDesktopBrowserTabFlags(sessionId).requested) && !closed`
+- **tab 显示条件**（重要）：`isElectron && !headless && (useBrowserAgentActivity(sessionId) || useDesktopBrowserTabFlags(sessionId).requested) && !closed`
   - 单 agent 模式：subagentStore 中出现 `subagent_type === 'browser_agent'` 的子代理（spawn 即算，含历史恢复）
-  - team 模式：`teamMemberExecutionEvents` 中出现过 `browser_*` 工具调用（team 的浏览器子代理挂在成员内部，不进主会话 subagentStore）
+  - team 模式：Electron 实际创建过当前会话的成员面板；外部 Chrome 工具事件不生成内置空白面板
   - 或本会话点开过 .html/.md 聊天文件（`openFileInDesktopBrowser`，按会话持久化于 localStorage）；页签右上 close.svg 显式关闭后隐藏（`closeDesktopBrowserTab`）
   - 信号实现在 `src/features/browserAgentActivity.ts` 与 `src/features/desktopBrowserFile.ts`；web 端短路，走原逻辑
-- **每会话隔离**：browser.* IPC 全部携带 sessionId，主进程按会话维护独立 WebContentsView（独立 partition）；状态广播带 sessionId，pane 只响应当前会话
-- 自动展开：每会话仅一次（`App.tsx` 的 ref 门控），用户手动收起后不再强制弹回；team 模式不抢 tab
+- **每会话隔离**：browser.* IPC 携带会话或成员 panelId，主进程维护独立 WebContentsView；使用共享 `persist:jiuwenswarm-browser` partition 保留登录态，页面导航和显示独立
+- **关闭与新任务**：关闭只隐藏页签和原生视图，不关闭页面或 MCP。新的 MCP 任务绑定使面板从 idle 变为 busy 时，`useDesktopBrowserAutoOpen` 清除当前会话的 `closed`，并展开、选中 Browser 页签（单 Agent 和团队模式均适用）。同一 busy 状态的重复通知、导航和历史恢复不会反复弹出；后台会话不抢当前会话的面板
+- **初始化与异常**：按会话读取一次 busy 基线；IPC 返回前仅暂存不同的忙闲状态，再与基线对照，其他会话的事件不会使本会话基线失效。晚到响应不能覆盖用户刚执行的关闭；期间已完成的新任务不展开。活动基线读取失败时，首次观察仅作基线，后续新任务仍可触发展开；面板自身列表读取失败则告警并回退到默认会话页面，不永久留白，也不覆盖较新事件选中的成员页面
+- **无头模式**：不展示页签、也不自动展开。无头启动且仍在运行的任务切回前台后可以显示；已经结束的隐藏任务不会事后弹出
+- **页面复用**：面板挂载先读取已有页面，优先显示活跃成员；不先创建空白主页面。用户已选定页面后，普通通知不抢选中页；恢复显示不触发浏览器/MCP 重启、刷新或清理 Cookie
+- English: Closing a pane hides it without closing its page or MCP connection. A new headed task reopens the current conversation's Browser tab and expands its panel. Repeated busy notifications do not undo a manual close; background conversations do not steal the active panel. Headless tasks remain hidden. Reopening selects an existing active page and preserves page state and login data without restarting the browser or MCP
+- English: Each session establishes its own activity baseline before classifying buffered busy transitions. Late replies cannot undo a manual close or reveal a task that already finished. A failed activity read uses the first observation as its baseline; a failed pane-list read logs a warning and falls back to the session page unless a newer event already selected a member page
+- 回归：前端 `npm run test:browser-reopen`；真实 Electron/MCP 测试 `tests/electron/browser_integration.cjs` 使用独立临时 profile 和本地测试网页，不访问用户登录资料
 - tab 状态持久化：`singleAgentPanelState.ts` 与 `teamPanelStateNormalize.ts` 的合法 tab 集合均已含 `'browser'`
 - Electron 下前端跳过 IAM 鉴权探测（`AppWithAuth` 直接 `noIam`）
 - 地址栏导航非法 URL → 主进程 reject → 前端 catch 后恢复地址栏
