@@ -5844,15 +5844,14 @@ class TopicPipeline:
         for item in snapshot.messages:
             if item.session_id in session_ids:
                 grouped_messages[item.session_id].append(item)
-        pending = {
-            session_id
-            for session_id, session_messages in grouped_messages.items()
+        pending: set[str] = set()
+        for session_id, session_messages in grouped_messages.items():
             if _summary_lags(
                 latest.get(session_id),
                 boundaries[session_id].completed_at,
                 _summary_coverage_ids(session_messages),
-            )
-        }
+            ):
+                pending.add(session_id)
         if not pending:
             return ""
         snapshot = replace(
