@@ -110,25 +110,42 @@ export function SensitiveMaskPanel({ isConnected, onDirtyChange, handleRef }: Se
       className="rounded-xl border border-border bg-card/70 overflow-hidden shadow-sm"
       data-testid="config-sensitive-mask"
     >
-      <div className="px-4 py-3 bg-secondary/30 border-b border-border">
+      <div className="px-4 py-3 bg-secondary/30">
         <span className="text-sm font-medium text-text-strong">{t('config.sensitiveMask.title')}</span>
         <span className="block text-xs text-text-muted mt-0.5">{t('config.sensitiveMask.hint')}</span>
       </div>
-      <div className="p-4 space-y-3">
-        <label className="flex items-center gap-2 text-sm text-text-strong">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={!isConnected}
-            data-testid="config-sensitive-mask-enabled"
-            onChange={(event) => setEnabled(event.target.checked)}
-          />
-          {t('config.sensitiveMask.enabled')}
-        </label>
+      <table className="w-full text-sm border-t border-border">
+        <tbody>
+          <tr>
+            <td className="px-4 py-2.5 align-middle text-xs text-text-muted w-[32%]">
+              {t('config.sensitiveMask.enabled')}
+            </td>
+            <td className="px-4 py-2.5 align-middle">
+              <div className="h-[calc(1.25rem+16px)] flex items-center">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={enabled}
+                  aria-label={t('config.sensitiveMask.enabled')}
+                  disabled={!isConnected}
+                  data-testid="config-sensitive-mask-enabled"
+                  onClick={() => setEnabled((current) => !current)}
+                  className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${enabled ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'}`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--color-control-thumb)] shadow ${enabled ? 'translate-x-4' : 'translate-x-0'}`}
+                  />
+                </button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div className="p-4 space-y-3 border-t border-border">
         {rules.map((rule, index) => (
-          <div key={index} className="grid grid-cols-[8rem_1fr_auto] gap-2">
+          <div key={index} className="grid grid-cols-[8rem_1fr_auto] gap-2 items-center">
             <input
-              className="rounded-md border border-border bg-card px-2 py-1 text-sm text-text-strong"
+              className="rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text-strong outline-none focus:border-accent"
               value={rule.title}
               disabled={!isConnected}
               placeholder={t('config.sensitiveMask.name')}
@@ -136,7 +153,7 @@ export function SensitiveMaskPanel({ isConnected, onDirtyChange, handleRef }: Se
               onChange={(event) => updateRule(index, { title: event.target.value })}
             />
             <input
-              className="rounded-md border border-border bg-card px-2 py-1 text-sm text-text-strong"
+              className="rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text-strong outline-none focus:border-accent"
               value={rule.pattern}
               disabled={!isConnected}
               placeholder={t('config.sensitiveMask.pattern')}
@@ -145,7 +162,7 @@ export function SensitiveMaskPanel({ isConnected, onDirtyChange, handleRef }: Se
             />
             <button
               type="button"
-              className="text-sm text-text-muted px-2"
+              className="text-danger hover:underline disabled:opacity-50 text-[11px] px-2"
               disabled={!isConnected}
               data-testid={`config-sensitive-mask-remove-${index}`}
               onClick={() => setRules((current) => current.filter((_, itemIndex) => itemIndex !== index))}
@@ -157,14 +174,14 @@ export function SensitiveMaskPanel({ isConnected, onDirtyChange, handleRef }: Se
         <div className="flex items-center gap-3">
           <button
             type="button"
-            className="text-sm text-text-link"
+            className="btn !px-3 !py-1.5 text-xs disabled:opacity-50"
             disabled={!isConnected}
             data-testid="config-sensitive-mask-add"
             onClick={() => setRules((current) => [...current, { title: '', pattern: '' }])}
           >
             {t('config.sensitiveMask.add')}
           </button>
-          {loadError ? <span className="text-xs text-text-muted">{loadError}</span> : null}
+          {loadError ? <span className="text-xs text-danger">{loadError}</span> : null}
         </div>
       </div>
     </div>
