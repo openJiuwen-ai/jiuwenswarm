@@ -30,9 +30,7 @@ class Reader:
     async def handle(self, event, ops, next_handler):
         first = await ops.session.model()
         if event.event_input.get("mutate") and first:
-            first["model_name"] = "user-change"
-            if first.get("selection"):
-                first["selection"]["id"] = "user-change"
+            first = "user-change"
         await asyncio.sleep(0)
         return {
             "session_id": ops.session_context.session_id,
@@ -94,14 +92,14 @@ async def test_user_package_reads_bound_runtime_model_without_resolving_or_readi
     def unexpected_read(session_id):
         pytest.fail("runtime model query must not read saved selections")
 
-    from jiuwenswarm.extensions_v2.handler_ops import session_ops
-    monkeypatch.setattr(session_ops, "get_session_model_info", unexpected_read)
+    from jiuwenswarm.server.runtime.session import query_views
+    monkeypatch.setattr(query_views, "get_session_model_info", unexpected_read)
     snapshot = {**_runtime("actual-model"), "api_key": "discard-secret", "client_options": {"token": "discard"}}
     context = SessionContext("s1", str(tmp_path), {
         store.SESSION_MODEL_INFO_KEY: snapshot, "project_root": str(tmp_path),
     })
     result = await model_host.bus.trigger(Event("test.model", {"model": "spoof"}), context)
-    assert result["model"] == result["again"] == _runtime("actual-model")
+    assert result["model"] == result["again"] == "actual-model"
     assert result["cwd"] == result["root"] == str(tmp_path)
     assert result["ui_available"] and result["package_id"] == "model.reader"
     assert result["receipt"] == {"accepted": True}
@@ -115,7 +113,7 @@ async def test_two_concurrent_sessions_keep_their_runtime_models(model_host) -> 
     results = await asyncio.gather(*(
         model_host.bus.trigger(Event("test.model", {}), context) for context in contexts
     ))
-    assert [r["model"]["model_name"] for r in results] == ["model-0", "model-1"]
+    assert [r["model"] for r in results] == ["model-0", "model-1"]
     assert [r["session_id"] for r in results] == ["s0", "s1"]
 
 
@@ -129,10 +127,8 @@ async def test_saved_stable_selection_has_unknown_activation_and_does_not_use_st
     })
     before = path.read_bytes()
     result = await model_host.bus.trigger(Event("test.model", {"session_id": "other"}), SessionContext("saved"))
-    assert result["model"] == {
-        "selection": {"type": "model_group", "id": "group-a", "route_id": "route-b"},
-        "model_name": None, "provider": None, "source": "session", "activated": None,
-    }
+    assert result["model"] is None
+    assert store.get_session_model_info("saved")["selection"]["id"] == "group-a"
     assert result["model"] == result["again"]
     assert "secret" not in json.dumps(result)
     assert path.read_bytes() == before
@@ -144,7 +140,7 @@ async def test_runtime_override_does_not_report_saved_model(model_host, tmp_path
     result = await model_host.bus.trigger(Event("test.model", {}), SessionContext("override", metadata={
         store.SESSION_MODEL_INFO_KEY: _runtime("request-override"),
     }))
-    assert result["model"] == _runtime("request-override")
+    assert result["model"] == "request-override"
 
 
 @pytest.mark.asyncio
@@ -152,10 +148,7 @@ async def test_legacy_selection_and_no_facts_are_distinct(model_host, tmp_path: 
     _save(tmp_path, "legacy", {"model": "old-display-name"})
     selected = await model_host.bus.trigger(Event("test.model", {}), SessionContext("legacy"))
     missing = await model_host.bus.trigger(Event("test.model", {"model": "spoof"}), SessionContext("missing"))
-    assert selected["model"] == {
-        "selection": None, "model_name": "old-display-name", "provider": None,
-        "source": "session", "activated": None,
-    }
+    assert selected["model"] == "old-display-name"
     assert missing["model"] is None and missing["again"] is None
     assert not (tmp_path / "sessions" / "missing").exists()
 
@@ -167,19 +160,20 @@ async def test_returned_data_cannot_mutate_runtime_or_saved_facts(model_host, tm
     runtime = await model_host.bus.trigger(Event("test.model", {"mutate": True}), SessionContext("runtime", metadata={
         store.SESSION_MODEL_INFO_KEY: _runtime("unchanged"),
     }))
-    assert saved["again"]["selection"]["id"] == "unchanged"
-    assert runtime["again"]["model_name"] == "unchanged"
+    assert saved["again"] is None
+    assert store.get_session_model_info("saved")["selection"]["id"] == "unchanged"
+    assert runtime["again"] == "unchanged"
 
 
 @pytest.mark.asyncio
 async def test_reload_and_unload_keep_platform_model_query_available(model_host, tmp_path: Path) -> None:
     _save(tmp_path, "saved", {"model": "before"})
     before = await model_host.bus.trigger(Event("test.model", {}), SessionContext("saved"))
-    assert before["model"]["model_name"] == "before"
+    assert before["model"] == "before"
     assert (await model_host.manager.reload("model.reader")).status == "SUCCESS"
     _save(tmp_path, "saved", {"model": "after"})
     after = await model_host.bus.trigger(Event("test.model", {}), SessionContext("saved"))
-    assert after["model"]["model_name"] == "after"
+    assert after["model"] == "after"
     assert (await model_host.manager.uninstall("model.reader")).status == "SUCCESS"
     assert await model_host.bus.trigger(Event("test.model", {}), SessionContext("saved")) == {"accepted": True}
     ops = EventHandlerOpsBuilder().build(session_context=SessionContext("saved"))

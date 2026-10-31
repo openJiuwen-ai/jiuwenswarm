@@ -30,13 +30,14 @@ class Reader:
         registrar.register_event_handler("context.usage.updated", self.handle, {})
 
     async def handle(self, event, ops, next_handler):
-        usage = await ops.session.usage(breakdown=True)
+        usage = await ops.session.usage(breakdown="summary")
         compact = await ops.session.usage()
         turns = await ops.session.turns()
-        if usage and usage["context"]:
-            usage["context"]["context_window"]["input_tokens"] = 999999
-        again = await ops.session.usage(breakdown=True)
+        if "tokens" in usage["context"]:
+            usage["context"]["tokens"] = 999999
+        again = await ops.session.usage(breakdown="summary")
         return {"turns": turns, "usage": again, "compact": compact,
+                "bound_usage": ops.session_context.metadata.get("session_usage_info"),
                 "cwd": await ops.session.cwd(), "root": await ops.session.root(),
                 "model": await ops.session.model(), "ui": callable(ops.ui.render),
                 "package": ops.package_metadata.package_id,
@@ -293,7 +294,8 @@ async def test_real_user_package_uses_shared_ops_on_other_event_and_isolates_ses
         for index in (1, 2)
     ))
     assert [r["turns"] for r in results] == [1, 2]
-    assert [r["usage"]["turn"]["total_tokens"] for r in results] == [500, 1000]
+    assert [r["usage"]["context"]["tokens"] for r in results] == [100, 200]
+    assert [stats.read_session_usage(f"s{index}")["turn"]["total_tokens"] for index in (1, 2)] == [500, 1000]
     assert all(r["receipt"] == "core-receipt" and r["ui"] for r in results)
     assert all(r["cwd"] is None and r["root"] is None and r["model"] is None for r in results)
     assert all(r["package"] == "statistics.reader" for r in results)
@@ -323,9 +325,9 @@ async def test_notify_binds_current_facts_before_summary_is_durable(host, sessio
     await task
     result = seen[-1]
     assert result["turns"] == 1
-    assert result["usage"]["turn"]["total_tokens"] == 20
-    assert result["usage"]["turn"]["request_id"] == "r2"
-    assert result["usage"]["context"]["context_window"]["input_tokens"] == 120
+    assert result["bound_usage"]["turn"]["total_tokens"] == 20
+    assert result["bound_usage"]["turn"]["request_id"] == "r2"
+    assert result["bound_usage"]["context"]["context_window"]["input_tokens"] == 120
     assert result["receipt"].accepted
 
 
@@ -356,10 +358,10 @@ async def test_invalid_window_keeps_current_turn_instead_of_reading_old_history(
         window["parts"]["messages"]["category"] = "unsupported-category"
     result = await _notify_query(host, monkeypatch,
         context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=20, total_tokens=20), window)
-    assert result["usage"]["source"] == "host"
-    assert result["usage"]["context"] is None
-    assert result["usage"]["turn"]["request_id"] == "current-request"
-    assert result["usage"]["turn"]["total_tokens"] == 20
+    assert result["bound_usage"]["source"] == "host"
+    assert result["bound_usage"]["context"] is None
+    assert result["bound_usage"]["turn"]["request_id"] == "current-request"
+    assert result["bound_usage"]["turn"]["total_tokens"] == 20
     assert result["receipt"].accepted
 
 
@@ -370,8 +372,8 @@ async def test_invalid_turn_keeps_valid_context_snapshot(host, sessions, monkeyp
     result = await _notify_query(host, monkeypatch,
         context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=invalid_input, total_tokens=20),
         _window(request="current-window"))
-    assert result["usage"]["source"] == "host" and result["usage"]["turn"] is None
-    assert result["usage"]["context"]["request_id"] == "current-window"
+    assert result["bound_usage"]["source"] == "host" and result["bound_usage"]["turn"] is None
+    assert result["bound_usage"]["context"]["request_id"] == "current-window"
     assert result["receipt"].accepted
 
 
@@ -382,7 +384,8 @@ async def test_invalid_host_components_do_not_fall_back_to_a_previous_turn(host,
     window.pop("request_id")
     result = await _notify_query(host, monkeypatch,
         context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=-1, total_tokens=-1), window)
-    assert result["usage"] is None and result["compact"] is None
+    assert result["bound_usage"] is None
+    assert result["usage"] == result["compact"] == {"context": {}, "rateLimits": []}
     assert result["receipt"].accepted
 
 
@@ -395,14 +398,14 @@ async def test_cache_presence_matches_current_notification_and_committed_summary
     update = context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=input_tokens,
         output_tokens=20, total_tokens=input_tokens + 20, cache_tokens=cache_tokens)
     result = await _notify_query(host, monkeypatch, update, _window(request="current-window"))
-    assert result["usage"]["turn"]["cache_tokens"] == expected
+    assert result["bound_usage"]["turn"]["cache_tokens"] == expected
     summary = {"input_tokens": input_tokens, "output_tokens": 20, "total_tokens": input_tokens + 20}
     if input_tokens > 0:
         summary["cache_tokens"] = cache_tokens
     _save(sessions, "s1", [{"role": "assistant", "event_type": "chat.usage_summary",
                             "request_id": "current-request", "timestamp": 12, "usage": summary}])
     restored = stats.read_session_usage("s1")
-    assert restored["turn"]["cache_tokens"] == result["usage"]["turn"]["cache_tokens"]
+    assert restored["turn"]["cache_tokens"] == result["bound_usage"]["turn"]["cache_tokens"]
 
 
 @pytest.mark.parametrize("marker", [

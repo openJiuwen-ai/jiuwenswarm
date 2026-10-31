@@ -13,6 +13,7 @@ import jiuwenswarm.extensions_v2.assembly as assembly
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_ops
+from jiuwenswarm.extensions_v2.event_types.session_queries import register_session_query_events
 from jiuwenswarm.extensions_v2.webui import constants
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.webui.call_context import current_connection
@@ -46,6 +47,7 @@ async def build_runtime() -> tuple[WebUIRuntime, Push]:
     push = Push()
     runtime = WebUIRuntime(bus=bus, transport=RenderTransport(push=push))
     runtime.register_events()
+    register_session_query_events(bus)
     register_session_ops(bus)
     await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
     return runtime, push
