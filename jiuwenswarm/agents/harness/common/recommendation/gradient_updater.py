@@ -8,6 +8,7 @@ Unified update flow: new feedback + existing gradients → updated gradients.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import re
@@ -16,6 +17,10 @@ import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# add 操作的 gid 序号：进程内单调递增，配合毫秒时间戳保证唯一
+# （旧算法用 len(gradient_map) 做后缀，同毫秒内 add→drop→add 会碰撞）。
+_GID_SEQ = itertools.count()
 
 
 # ── Gradient Update Prompt ──────────────────────────────────────────
@@ -177,6 +182,8 @@ def _render_gradients(gradients: list[dict]) -> str:
 
     lines = []
     for g in gradients:
+        if not isinstance(g, dict):
+            continue  # 持久化脏数据：跳过而非崩溃（本函数在 async 流程的 try 之外被调用）
         gid = g.get("gradient_id", "unknown")
         category = g.get("category", "unknown")
         rule = g.get("rule", "")
@@ -226,6 +233,23 @@ def _extract_json_from_response(text: str) -> str:
 
 # ── Core functions ──────────────────────────────────────────────────
 
+
+def _parse_operations(data: Any) -> list[dict]:
+    """从 LLM JSON 载荷中提取操作列表，畸形载荷返回空列表。
+
+    json.loads 成功不代表载荷是预期的 {"operations": [...]}——LLM 可能返回
+    数组、字符串或 operations 非列表；直接 data.get 会 AttributeError，
+    连累整批反馈被丢弃（外层 except 吞掉后反馈 buffer 已被消费）。
+    非 dict 的操作项同样过滤：apply_operations 对其 op.get 会崩。
+    """
+    if not isinstance(data, dict):
+        return []
+    ops = data.get("operations")
+    if not isinstance(ops, list):
+        return []
+    return [op for op in ops if isinstance(op, dict)]
+
+
 def apply_operations(gradients: list[dict], operations: list[dict]) -> list[dict]:
     """Apply operations to gradients, return updated list.
 
@@ -233,43 +257,84 @@ def apply_operations(gradients: list[dict], operations: list[dict]) -> list[dict
     - add: create new gradient
     - revise: modify existing gradient
     - drop: remove existing gradient
+
+    容错契约（LLM 产物 + 持久化脏数据不可信）：
+    - 单条畸形操作只跳过自身，不连累同批合法操作（外层 async 流程一旦抛异常，
+      整批反馈会随 buffer 消费一起丢失）；
+    - 存量梯度缺 gradient_id / 非 dict：保留原样返回，不参与操作也不静默删除；
+    - revise 的 rule/category 非有效字符串时保持原值（LLM 返回 null 会把合法
+      规则覆盖成 None，渲染成 "- [target] None" 注入 prompt）。
     """
-    gradient_map = {g["gradient_id"]: g for g in gradients}
+    gradient_map: dict[str, dict] = {}
+    malformed: list = []  # 无 gradient_id / 非 dict 的存量梯度：保底不丢
+    for g in gradients:
+        if isinstance(g, dict) and g.get("gradient_id"):
+            gradient_map[g["gradient_id"]] = g
+        else:
+            malformed.append(g)
 
     for op in operations:
+        if not isinstance(op, dict):
+            continue
         action = op.get("action")
 
         if action == "add":
-            # 过滤空 rule：LLM 可能返回 {"action":"add","rule":"","category":"target"}，
-            # 空规则会被 render 成 "- [target] " 注入 prompt，浪费 context 且可能误导。
-            rule_text = (op.get("rule", "") or "").strip()
-            if not rule_text:
-                logger.debug("[GradientUpdater] add op with empty rule, skipped")
+            # 过滤无效 rule：LLM 可能返回 {"action":"add","rule":"","category":"target"}
+            # 或 rule 非字符串（null/数字）。空/非字符串规则会被 render 成
+            # "- [target] " 注入 prompt，浪费 context 且可能误导。
+            raw_rule = op.get("rule")
+            if not isinstance(raw_rule, str) or not raw_rule.strip():
+                logger.debug(
+                    "[GradientUpdater] add op with empty/invalid rule, skipped"
+                )
                 continue
-            gid = f"g_{int(time.time() * 1000)}_{len(gradient_map)}"
+            # gid 用进程内单调序号保证唯一：同批 add→drop→add 在同一毫秒内
+            # len(gradient_map) 会重复，旧算法会碰撞并静默覆盖前一条新规则。
+            gid = f"g_{int(time.time() * 1000)}_{next(_GID_SEQ)}"
             gradient_map[gid] = {
                 "gradient_id": gid,
-                "rule": rule_text,
+                "rule": raw_rule.strip(),
                 "category": op.get("category", "tone"),
             }
 
         elif action == "revise":
             gid = op.get("gradient_id")
-            if gid and gid in gradient_map:
-                # revise 后挪到末尾：dict 删原 key 再重新插入 = 插入序里排到最后。
-                # 这样"最近被新反馈更新过的规则"反映新近度——配合存储/喂 LLM 截断留
-                # 最新（[-N:]），被 revise 的规则不会被"留最早"逻辑误淘汰，且优先被喂。
-                revised = gradient_map.pop(gid)
-                revised["rule"] = op.get("rule", revised["rule"])
-                revised["category"] = op.get("category", revised["category"])
-                gradient_map[gid] = revised
+            if not (gid and gid in gradient_map):
+                logger.debug(
+                    "[GradientUpdater] revise op with unknown gradient_id %r, skipped",
+                    gid,
+                )
+                continue
+            new_rule = op.get("rule")
+            new_category = op.get("category")
+            has_rule = isinstance(new_rule, str) and bool(new_rule.strip())
+            has_category = isinstance(new_category, str) and bool(new_category.strip())
+            if not (has_rule or has_category):
+                logger.debug(
+                    "[GradientUpdater] revise op without valid rule/category, skipped"
+                )
+                continue
+            # revise 后挪到末尾：dict 删原 key 再重新插入 = 插入序里排到最后。
+            # 这样"最近被新反馈更新过的规则"反映新近度——配合存储/喂 LLM 截断留
+            # 最新（[-N:]），被 revise 的规则不会被"留最早"逻辑误淘汰，且优先被喂。
+            revised = gradient_map.pop(gid)
+            if has_rule:
+                revised["rule"] = new_rule.strip()
+            if has_category:
+                revised["category"] = new_category
+            gradient_map[gid] = revised
 
         elif action == "drop":
             gid = op.get("gradient_id")
             if gid and gid in gradient_map:
                 del gradient_map[gid]
+            else:
+                logger.debug(
+                    "[GradientUpdater] drop op with unknown gradient_id %r, skipped",
+                    gid,
+                )
 
-    return list(gradient_map.values())
+    return list(gradient_map.values()) + malformed
 
 
 async def update_gradients(
@@ -320,7 +385,9 @@ async def _update_gradients_from_explicit_feedback(
     """从显式反馈生成 target 类型规则。"""
     from jiuwenswarm.common.config import get_config
 
-    feedbacks_text = _render_feedbacks(feedbacks, language=get_config().get("preferred_language", "zh"))
+    feedbacks_text = _render_feedbacks(
+        feedbacks, language=get_config().get("preferred_language", "zh")
+    )
     existing_text = _render_gradients(existing_gradients)
 
     if get_config().get("preferred_language", "zh") == "en":
@@ -423,36 +490,50 @@ If nothing needs updating, return {{"operations": []}}.
 
     conv_id = f"gradient_update_explicit_{int(time.time() * 1000)}"
     try:
-        result = await proactive_agent.invoke({
-            "query": prompt,
-            "conversation_id": conv_id,
-        })
+        result = await proactive_agent.invoke(
+            {
+                "query": prompt,
+                "conversation_id": conv_id,
+            }
+        )
         content = _extract_output_text(result)
         json_str = _extract_json_from_response(content)
         if not json_str:
-            logger.warning("[GradientUpdater] no JSON in response for explicit feedback")
+            logger.warning(
+                "[GradientUpdater] no JSON in response for explicit feedback"
+            )
             return existing_gradients
 
         data = json.loads(json_str)
-        operations = data.get("operations", [])
+        operations = _parse_operations(data)
 
         # 强制过滤：只保留 target 类型的操作
-        operations = [op for op in operations if op.get("category") == "target" or op.get("action") == "drop"]
+        operations = [
+            op
+            for op in operations
+            if op.get("category") == "target" or op.get("action") == "drop"
+        ]
 
         if not operations:
             logger.info("[GradientUpdater] no target operations from explicit feedback")
             return existing_gradients
 
         updated = apply_operations(existing_gradients, operations)
-        logger.info("[GradientUpdater] applied %d operations from explicit feedback", len(operations))
+        logger.info(
+            "[GradientUpdater] applied %d operations from explicit feedback",
+            len(operations),
+        )
         return updated
 
     except Exception as exc:
-        logger.warning("[GradientUpdater] explicit feedback update failed: %s", exc, exc_info=True)
+        logger.warning(
+            "[GradientUpdater] explicit feedback update failed: %s", exc, exc_info=True
+        )
         return existing_gradients
     finally:
         try:
             from openjiuwen.core.session.checkpointer import CheckpointerFactory
+
             await CheckpointerFactory.get_checkpointer().release(conv_id)
         except Exception as exc:
             # 释放 checkpointer 是清理动作，失败本就该静默——裸 pass 被 lint 拦，
@@ -468,7 +549,9 @@ async def _update_gradients_from_implicit_feedback(
     """从隐式反馈生成任意类型规则。"""
     from jiuwenswarm.common.config import get_config
 
-    feedbacks_text = _render_feedbacks(feedbacks, language=get_config().get("preferred_language", "zh"))
+    feedbacks_text = _render_feedbacks(
+        feedbacks, language=get_config().get("preferred_language", "zh")
+    )
     existing_text = _render_gradients(existing_gradients)
 
     # 隐式反馈专用 prompt，可以生成任意类型规则。
@@ -578,33 +661,43 @@ If nothing needs updating, return {{"operations": []}}.
 
     conv_id = f"gradient_update_implicit_{int(time.time() * 1000)}"
     try:
-        result = await proactive_agent.invoke({
-            "query": prompt,
-            "conversation_id": conv_id,
-        })
+        result = await proactive_agent.invoke(
+            {
+                "query": prompt,
+                "conversation_id": conv_id,
+            }
+        )
         content = _extract_output_text(result)
         json_str = _extract_json_from_response(content)
         if not json_str:
-            logger.warning("[GradientUpdater] no JSON in response for implicit feedback")
+            logger.warning(
+                "[GradientUpdater] no JSON in response for implicit feedback"
+            )
             return existing_gradients
 
         data = json.loads(json_str)
-        operations = data.get("operations", [])
+        operations = _parse_operations(data)
 
         if not operations:
             logger.info("[GradientUpdater] no operations from implicit feedback")
             return existing_gradients
 
         updated = apply_operations(existing_gradients, operations)
-        logger.info("[GradientUpdater] applied %d operations from implicit feedback", len(operations))
+        logger.info(
+            "[GradientUpdater] applied %d operations from implicit feedback",
+            len(operations),
+        )
         return updated
 
     except Exception as exc:
-        logger.warning("[GradientUpdater] implicit feedback update failed: %s", exc, exc_info=True)
+        logger.warning(
+            "[GradientUpdater] implicit feedback update failed: %s", exc, exc_info=True
+        )
         return existing_gradients
     finally:
         try:
             from openjiuwen.core.session.checkpointer import CheckpointerFactory
+
             await CheckpointerFactory.get_checkpointer().release(conv_id)
         except Exception as exc:
             # 释放 checkpointer 是清理动作，失败本就该静默——裸 pass 被 lint 拦，
@@ -631,6 +724,8 @@ def attribute_gradients(gradients: list[dict]) -> tuple[list[dict], list[dict]]:
     style_gradients = []
 
     for g in gradients:
+        if not isinstance(g, dict):
+            continue  # 持久化脏数据：跳过而非崩溃
         category = g.get("category", "")
         if category in DECISION_CATEGORIES:
             decision_gradients.append(g)
