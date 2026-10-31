@@ -197,11 +197,12 @@ instance_manager/
 
 ## 测试
 
-pytest.ini 的 addopts 含全仓 coverage，日常跑请清掉（`-o addopts=""`）：
+pytest.ini 的 addopts 含全仓 coverage 与 `-v`，日常跑请覆盖为仅保留 asyncio 模式
+（`-o addopts="--asyncio-mode=auto"`；**不能整个清空**——清空会让 async 用例全部报错）：
 
 ```powershell
 # 模块主测试文件（19 个测试类：名称校验/端口分配/端口可用性/PID/锁/回退/env 覆盖/...）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/test_instance_manager.py -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/test_instance_manager.py -o addopts="--asyncio-mode=auto"
 ```
 
 - 测试路径：`tests/unit_tests/test_instance_manager.py`（直接位于 unit_tests 根，不在
