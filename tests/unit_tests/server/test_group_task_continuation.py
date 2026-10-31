@@ -64,6 +64,10 @@ async def wait_worker(run, accepted):
     return run.store.get(accepted.data["execution_id"])
 
 
+def posted_errors(run):
+    return [call.args[1] for call in run.backend.append_group_message.await_args_list]
+
+
 async def submit_private(child, *, task=False):
     key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
     execution_id = gc._private_runs[key]["execution_id"]
@@ -256,7 +260,11 @@ async def test_background_failure_and_pause_failure_are_not_success(private_run,
     monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
     accepted = await run.proxy.invoke({"run_id": "one", "task": "First"})
     assert (await wait_worker(run, accepted))["status"] == "failed"
-    run.backend.append_group_message.assert_not_awaited()
+    # The proxy reports the failure in the group instead of going silent.
+    assert posted_errors(run) == ["执行失败：expert-team execution failed"]
+    assert run.backend.append_group_message.await_args.kwargs["client_message_id"] == (
+        f"execution-error-{accepted.data['execution_id']}"
+    )
 
     async def success(child, inputs, *, session):
         await submit_private(child)
@@ -267,7 +275,8 @@ async def test_background_failure_and_pause_failure_are_not_success(private_run,
     monkeypatch.setattr(gc.Runner, "pause_agent_team", AsyncMock(return_value=False))
     second = await run.proxy.invoke({"run_id": "two", "task": "Second"})
     assert (await wait_worker(run, second))["status"] == "failed"
-    run.backend.append_group_message.assert_not_awaited()
+    assert posted_errors(run)[-1] == "执行失败：private team could not be paused"
+    assert all(text.startswith("执行失败") for text in posted_errors(run))
 
 
 @pytest.mark.asyncio
@@ -884,5 +893,5 @@ async def test_idle_without_any_leader_reply_still_fails(private_run, monkeypatc
     monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
     accepted = await run.proxy.invoke({"run_id": "one", "task": "Research"})
     assert (await wait_worker(run, accepted))["status"] == "failed"
-    run.backend.append_group_message.assert_not_awaited()
+    assert posted_errors(run) == ["执行失败：expert team became idle without submitting a result"]
 

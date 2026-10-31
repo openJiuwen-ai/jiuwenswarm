@@ -2614,8 +2614,10 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
     async def _backend(*_args, **_kwargs):
         return SimpleNamespace(org_task_manager=_Pool())
 
-    async def _post(*_args, **_kwargs):
-        raise AssertionError("a failed organization must not post")
+    posts = []
+
+    async def _post(sender, content, **kwargs):
+        posts.append((sender, content, kwargs["client_message_id"]))
 
     monkeypatch.setattr(bootstrap, "publish_organization_card", _publish)
     monkeypatch.setattr(bootstrap, "_round_state", _round)
@@ -2638,6 +2640,8 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
     assert calls[-1]["fail_unfinished"] is True
     assert plan["status"] == "failed"
     assert plan.get("error") == "organization root task failed"
+    # The Owner tells the group the organization failed instead of going silent.
+    assert posts == [("business", "执行失败：organization root task failed", f"expert-error-{plan['plan_id']}")]
     assert released == ["running", "pool_dissolve"]
     assert "organization_id" not in group.state
     assert group.state["organization_teams"] == []

@@ -730,13 +730,18 @@ class RunTeam(_GroupTool):
             if group is not None and group["status"] != "deleting":
                 await store.update(execution["execution_id"], status="cancelled", phase="cancelled")
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Private group execution failed execution=%s", execution["execution_id"])
             group = read_group(self.context.session_id)
             if group is not None and group["status"] != "deleting":
                 current = store.get(execution["execution_id"])
                 if current["phase"] != "publishing":
                     await store.update(execution["execution_id"], status="failed", phase="failed")
+                    from jiuwenswarm.server.runtime.group_execution import post_member_error
+
+                    await post_member_error(
+                        self.backend, self.backend.member_name, str(exc), f"execution-error-{execution_id}",
+                    )
         finally:
             current_task = asyncio.current_task()
             if manager.get_stream_task(child_session) is current_task:

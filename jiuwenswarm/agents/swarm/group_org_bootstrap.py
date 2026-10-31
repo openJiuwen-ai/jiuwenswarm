@@ -1797,13 +1797,16 @@ async def _run_instance_followup(
                 client_message_id=f"expert-followup-{follow_key[:24]}",
                 mentions=[],
             )
-    except Exception:
+    except Exception as exc:
         await _fail_followup_card(session_id, execution_id)
         logger.exception(
             "group instance follow-up failed session=%s member=%s",
             session_id,
             member_name,
         )
+        from jiuwenswarm.server.runtime.group_execution import post_member_error
+
+        await post_member_error(backend, member_name, str(exc), f"expert-followup-error-{follow_key[:24]}")
     finally:
         await _stop_followup_task_monitor(task_monitor, task_monitor_worker)
         _results.pop(follow_key, None)
@@ -2952,6 +2955,9 @@ async def _run_owner_proxy(
     except Exception as exc:
         failed_error = str(exc)
         await _refresh_card(status="failed", fail_unfinished=True)
+        from jiuwenswarm.server.runtime.group_execution import post_member_error
+
+        await post_member_error(backend, backend.member_name, failed_error, f"expert-error-{plan_id}")
         raise
     finally:
         if start_watchdog is not None:

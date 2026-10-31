@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 
 from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
 
@@ -462,6 +463,55 @@ class GroupExecutions:
         await self.publish(result, "updated")
 
 
+def member_error_text(detail: str | None) -> str:
+    """Group-facing text for a member's failed work, with the cause kept short."""
+    detail = " ".join(str(detail or "").split())[:500]
+    return f"执行失败：{detail}" if detail else "执行失败，请稍后重试。"
+
+
+async def post_member_error(backend, member_name: str, detail: str | None, client_message_id: str) -> None:
+    """Tell the group, as the member whose work failed, that it failed.
+
+    A failure must never pass silently in the group. Posting is best effort:
+    the failure is already recorded, so a posting error is only logged.
+    """
+    try:
+        await backend.append_group_message(
+            member_name, member_error_text(detail), client_message_id=client_message_id, mentions=[],
+        )
+    except Exception:
+        logger.warning("Group member error was not posted member=%s", member_name, exc_info=True)
+
+
+def _external_failure(row) -> dict | None:
+    """The ``external_runtime_failed`` payload a CLI member sent the leader, if this is one."""
+    if getattr(row, "protocol", None) != "json" or not getattr(row, "content", None):
+        return None
+    try:
+        data = json.loads(row.content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("type") != "external_runtime_failed":
+        return None
+    return data
+
+
+async def _post_roster_member_error(session_id: str, group: dict, member_name, detail, client_message_id) -> None:
+    from openjiuwen.agent_teams.context import set_session_id, reset_session_id
+    from jiuwenswarm.server.runtime.group_service import resolve_group_backend
+
+    if member_name not in {member["member_name"] for member in group["members"]}:
+        return
+    backend = await resolve_group_backend(group)
+    if backend is None:
+        return
+    token = set_session_id(session_id)
+    try:
+        await post_member_error(backend, member_name, detail, client_message_id)
+    finally:
+        reset_session_id(token)
+
+
 def public_execution(record: dict) -> dict:
     internal_fields = {
         "request_key", "request_members", "run_key", "owner", "private_team_key",
@@ -515,6 +565,12 @@ async def project_group_stream_event(session_id: str, event: dict) -> dict | Non
             active = store.active(inner.get("member_id"))
             if active is not None and not active.get("background"):
                 await store.update(active["execution_id"], status=status, phase=status)
+            if status != "cancelled":
+                # core reports no cause here; the details stay in the server log.
+                detail = "处理超时" if status == "timed_out" else "处理消息时出错，详情见服务日志"
+                await _post_roster_member_error(
+                    session_id, group, inner.get("member_id"), detail, f"member-error-{uuid.uuid4().hex}",
+                )
         return event
     if event_type == "team.task":
         inner = event.get("event") or {}
@@ -541,6 +597,14 @@ async def project_group_stream_event(session_id: str, event: dict) -> dict | Non
     token = set_session_id(session_id)
     try:
         row = await backend.db.message.get_message(message_id)
+        failure = _external_failure(row) if row is not None else None
+        if failure is not None:
+            reason = (failure.get("reason") or {}).get("message") or failure.get("summary")
+            await _post_roster_member_error(
+                session_id, group, failure.get("member_name"), reason,
+                f"member-error-{failure.get('failure_id') or message_id}",
+            )
+            return None
         if row is None or not group_metadata(row):
             return None
         message = conversation_message(row, session_id).model_dump(mode="json")
