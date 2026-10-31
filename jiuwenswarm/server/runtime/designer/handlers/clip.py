@@ -606,10 +606,13 @@ async def generate_clip_video(
     audio: bool | None = None,
     model: str | None = None,
     force_reference_mode: bool = False,
+    node_label: str = "",
 ) -> dict[str, Any]:
     """Call the Settings > Agent video model and wait for the clip. Tests monkeypatch this function.
 
     ``aspect_ratio`` / ``resolution`` are the canvas video settings (``media_settings``).
+    ``node_label`` names the node in the per-node Settings-gap warning, so a
+    blocked clip is traceable in the log for first runs and regenerates alike.
     """
     from jiuwenswarm.common.utils import get_env_file
     from jiuwenswarm.dotenv_early import load_dotenv_runtime
@@ -619,6 +622,8 @@ async def generate_clip_video(
         load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
     except Exception:
         logger.debug("Failed to reload video generation env before generation", exc_info=True)
+
+    media_generation.note_generation_problem("video", node_label or "clip")
 
     from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import clamp_clip_duration
 
@@ -794,6 +799,7 @@ class ClipNodeHandler:
                 audio=True if want_audio else False,
                 model=None,
                 force_reference_mode=overrides["force_reference_mode"],
+                node_label=f"designer_clip_{ctx.run_id}_{ctx.node_id}",
             )
             path = Path(str(result["video_path"]))
             message = f"clip {clip_index} generated" + (" (with audio)" if want_audio else "")

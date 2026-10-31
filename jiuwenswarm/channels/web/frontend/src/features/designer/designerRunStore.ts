@@ -4,6 +4,7 @@ import { isDesignerPreviewGraph } from './designerBootstrapGraph';
 import { designerGraphClient } from './designerGraphClient';
 import { useDesignerStore } from './designerStore';
 import { derivePrimaryAction, type DesignerRunPrimaryAction } from './designerLayerRun';
+import { findDesignRunProblem } from './designModelsReadiness';
 import { isActiveDesignerRun, designerRunFailureMessage } from './designerRunView';
 import {
   DESIGNER_LEADER_NODE_ID,
@@ -222,6 +223,14 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   advance: async (graph) => {
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
+    // Run / Continue / Retry drive every node, so a generation slot this graph
+    // actually uses being off or incomplete can only fail the round: report it
+    // on the canvas instead of dispatching (#5266).
+    const problem = await findDesignRunProblem(graph.nodes);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
     await persistBeforeRun();
     const run = state.run?.graph_id === graph.graph_id ? state.run : null;
     const nodeStates = run ? state.nodeStates : {};
@@ -260,6 +269,15 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   rerunNode: async (graph, nodeId) => {
     if (get().isRunning || !nodeId) return;
+    // No model, no run: regenerating an image / video node with its Settings
+    // slot off or incomplete can only fail, so report the same reason the
+    // landing page uses instead of dispatching a doomed job (#5266).
+    const node = graph.nodes.find((item) => item.id === nodeId);
+    const problem = await findDesignRunProblem([node]);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
@@ -281,6 +299,13 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   restart: async (graph) => {
     if (get().isRunning || graph.nodes.length === 0) return;
+    // Rerun workflow starts over from the first node, so it needs the same
+    // models a fresh run does (#5266).
+    const problem = await findDesignRunProblem(graph.nodes);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {

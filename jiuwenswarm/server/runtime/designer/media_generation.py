@@ -123,6 +123,21 @@ def generation_problem(kind: Kind) -> str | None:
     return None
 
 
+def note_generation_problem(kind: Kind, where: str) -> str | None:
+    """Log the Settings gap against the node it blocks, then report it.
+
+    Every media node (first run and regenerate alike) calls this before it
+    starts generating, so the operator log names the exact node instead of
+    only the final, sanitized node error (#5266). The text is the same one
+    ``generation_problem`` returns, so callers can put it straight into the
+    node error.
+    """
+    problem = generation_problem(kind)
+    if problem:
+        logger.warning("Designer %s generation blocked at %s: %s", kind, where, problem)
+    return problem
+
+
 def _local_path(value: str) -> Path | None:
     if value.startswith("file:"):
         local = unquote(urlparse(value).path)
