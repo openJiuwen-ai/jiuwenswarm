@@ -43,6 +43,14 @@ RUN_PATH_HASH_LENGTH = 12
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _results: dict[str, asyncio.Future] = {}
 _private_runs: dict[str, dict] = {}
+# Unfinished background private-team runs one expert-team proxy may hold, queued runs included.
+MAX_PRIVATE_RUNS_PER_PROXY = 5
+# execution_id -> its background worker, running or waiting for its private session.
+_execution_workers: dict[str, asyncio.Task] = {}
+# Executions whose worker still waits for an earlier run on the same private session.
+_waiting_runs: set[str] = set()
+# private session -> latest scheduled worker; a continuation queues behind it.
+_session_tails: dict[str, asyncio.Task] = {}
 PRIVATE_TASK_POLICY = "swarm.group_private_task_policy"
 BEGIN_TEAM_TASK = "swarm.group_begin_team_task"
 
@@ -247,6 +255,32 @@ def run_workspace_path(runs_dir: Path, team_key: str) -> Path:
     return runs_dir / team_key[:RUN_PATH_HASH_LENGTH] / "workspace"
 
 
+def track_leader_reply(chunk, reply: list[str]) -> None:
+    """Keep the private leader's latest model text; a tool call starts a new reply."""
+    role = getattr(chunk, "role", None)
+    if getattr(role, "value", role) != TeamRole.LEADER.value:
+        return
+    chunk_type, payload = getattr(chunk, "type", None), chunk.payload
+    if chunk_type in {"tool_call", "tool_result"}:
+        reply.clear()
+    elif chunk_type == "llm_output" and not payload.get("retrying"):
+        content = payload.get("content")
+        if isinstance(content, str):
+            reply.append(content)
+
+
+async def cancel_waiting_runs(execution_ids) -> None:
+    """Cancel runs still waiting for their private session, before a group is deleted."""
+    workers = [
+        _execution_workers[execution_id] for execution_id in execution_ids
+        if execution_id in _waiting_runs and execution_id in _execution_workers
+    ]
+    for worker in workers:
+        worker.cancel()
+    if workers:
+        await asyncio.wait(workers)
+
+
 class _GroupTool(Tool):
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
@@ -372,7 +406,6 @@ class RunTeam(_GroupTool):
             peek_member_turn,
             consume_member_turn,
             bind_member_turn_front,
-            queued_direct_result,
             run_instance_followup,
             run_organization_member,
             saved_organization_instance,
@@ -392,35 +425,30 @@ class RunTeam(_GroupTool):
             session, self.backend.member_name, message_plan_id
         )
         live = pending_organization_plan(session, self.backend.member_name)
+        recorded = (
+            recorded_organization_plan(session, self.backend.member_name, message_plan_id)
+            if message_plan_id and not direct
+            else None
+        )
         plan = None
-        if (
-            direct
-            and live is not None
-            and not organization_plan_accepted(
-                session, str(live.get("plan_id") or ""), self.backend.member_name
+        if recorded is not None:
+            # This call answers the multi-@ message that opened an organization.
+            if str(recorded.get("status") or "") not in {"pending", "running"}:
+                return closed_organization_plan_result(recorded)
+            plan = organization_plan_for_member(
+                session, self.backend.member_name, message_plan_id
             )
+        elif live is not None and not organization_plan_accepted(
+            session, str(live.get("plan_id") or ""), self.backend.member_name
         ):
+            # The proxy still owes its join to an older organization message.
             if message_plan_id:
                 bind_member_turn_front(
                     session, self.backend.member_name, message_plan_id
                 )
             plan = live
-        elif direct and live is not None:
-            return queued_direct_result(live)
-        elif not direct and message_plan_id:
-            recorded = recorded_organization_plan(
-                session, self.backend.member_name, message_plan_id
-            )
-            if recorded is not None and str(recorded.get("status") or "") not in {
-                "pending",
-                "running",
-            }:
-                return closed_organization_plan_result(recorded)
-            plan = organization_plan_for_member(
-                session, self.backend.member_name, message_plan_id
-            )
-        elif not direct:
-            plan = pending_organization_plan(session, self.backend.member_name)
+        # Any other message is outside the organization: the proxy chose this run by
+        # meaning. An organization-related request is run_team update on its card.
         if plan is not None:
             action, plan = route_live_organization_plan(
                 session, self.backend.member_name, plan
@@ -441,7 +469,8 @@ class RunTeam(_GroupTool):
                     session, str(plan.get("plan_id") or ""), self.backend.member_name
                 )
             return result
-        if not direct:
+        # While its organization runs, the proxy's instance is busy; a new task opens a private team.
+        if not direct and live is None:
             instance = await saved_organization_instance(
                 self.backend, self.backend.member_name, session
             )
@@ -467,6 +496,7 @@ class RunTeam(_GroupTool):
         managed = read_group(session) is not None
         lock_key = key
         if managed:
+            # Serializes only binding a run to an execution; the runs execute concurrently.
             lock_key = json.dumps([session, self.backend.team_name, self.backend.member_name])
         lock = _locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
@@ -497,20 +527,23 @@ class RunTeam(_GroupTool):
                         execution = record
                         break
                 if execution is None:
-                    execution = store.active(self.backend.member_name)
+                    # Bind a task the user assigned to this member, if this run carries it out.
+                    assigned = store.active(self.backend.member_name)
+                    if assigned is not None and not assigned.get("run_key") and assigned["task"] == task:
+                        execution = assigned
                 if execution is None:
-                    if previous is not None:
-                        previous_worker = manager.get_stream_task(previous["team_session_id"])
-                        if previous_worker is not None and not previous_worker.done():
-                            return ToolOutput(success=False, error=
-                            "private team is busy or still finishing its last run")
-                    execution = (await store.create([self.backend.member_name], task, key, defer_card=True))[0]
+                    running = len(store.background_runs(self.backend.member_name))
+                    if running >= MAX_PRIVATE_RUNS_PER_PROXY:
+                        return ToolOutput(success=False, error=(
+                            f"this expert team already has {running} unfinished tasks, the limit; "
+                            "wait for one to finish or cancel one before starting another"
+                        ))
+                    # Each new run gets its own private team, so runs of one proxy proceed concurrently.
+                    execution = (await store.create(
+                        [self.backend.member_name], task, key, defer_card=True, concurrent=True,
+                    ))[0]
                 if execution["task"] != task:
-                    return ToolOutput(success=False, error="run_team task must match the assigned execution")
-                if execution.get("run_key") and execution["run_key"] != key:
-                    return ToolOutput(
-                        success=False, error="member has another run; use its run_id to retry or adjust it",
-                    )
+                    return ToolOutput(success=False, error="run_id was already used for a different task")
                 if execution.get("run_key") and execution.get("previous_execution_id") != previous_id:
                     return ToolOutput(success=False, error="run_id was used with another continuation")
                 if execution["status"] in TERMINAL:
@@ -524,18 +557,24 @@ class RunTeam(_GroupTool):
                 from jiuwenswarm.server.runtime.group_service import group_lock
 
                 async with group_lock(f"group-adjust-{team_key}"):
-                    existing_worker = manager.get_stream_task(child_session)
-                    if existing_worker is not None and not existing_worker.done():
-                        if execution.get("run_key") == key:
-                            return ToolOutput(success=True, data={
-                                "execution_id": execution["execution_id"], "accepted": True,
-                            })
-                        return ToolOutput(success=False, error="private team is busy")
+                    scheduled = _execution_workers.get(execution["execution_id"])
+                    if scheduled is not None and not scheduled.done():
+                        return ToolOutput(success=True, data={
+                            "execution_id": execution["execution_id"], "accepted": True,
+                            "queued": execution["execution_id"] in _waiting_runs,
+                        })
+                    # A continuation reuses its private session, so it waits for the run already there.
+                    predecessor = _session_tails.get(child_session)
+                    if predecessor is None or predecessor.done():
+                        predecessor = manager.get_stream_task(child_session)
+                    if predecessor is not None and predecessor.done():
+                        predecessor = None
+                    waiting = {"phase": "waiting_for_team"} if predecessor is not None else {}
                     execution = await store.update(
                         execution["execution_id"], run_key=key, execution_kind="team", background=True,
                         private_team_key=team_key, team_session_id=child_session,
                         previous_execution_id=previous_id,
-                        team_id=f"group-expert-{team_key[:24]}",
+                        team_id=f"group-expert-{team_key[:24]}", **waiting,
                     )
                     from jiuwenswarm.server.runtime.session import lifecycle
 
@@ -544,11 +583,18 @@ class RunTeam(_GroupTool):
                         if current_group is None or current_group["status"] == "deleting":
                             return ToolOutput(success=False, error="group is unavailable")
                         lifecycle.guard(session)
-                        worker = asyncio.create_task(self._execute_background(key, task, execution, manager))
-                        manager.register_stream_task(child_session, worker)
+                        worker = asyncio.create_task(
+                            self._execute_background(key, task, execution, manager, after=predecessor),
+                        )
+                        _execution_workers[execution["execution_id"]] = worker
+                        _session_tails[child_session] = worker
+                        if predecessor is None:
+                            manager.register_stream_task(child_session, worker)
+                        else:
+                            _waiting_runs.add(execution["execution_id"])
                     return ToolOutput(success=True, data={
                         "execution_id": execution["execution_id"], "accepted": True,
-                        "posted_to_group": False,
+                        "queued": predecessor is not None, "posted_to_group": False,
                     })
             try:
                 return await self._run(key, task, execution=execution)
@@ -580,6 +626,8 @@ class RunTeam(_GroupTool):
             if action not in {"update", "cancel"}:
                 raise GroupError("BAD_REQUEST", "action must be update or cancel")
             record = store.get(inputs.get("execution_id"))
+            if record.get("execution_kind") == "organization":
+                return await self._adjust_organization(record, action, inputs)
             if record["member_name"] != self.backend.member_name:
                 raise GroupError("NOT_FOUND", "execution not found")
             if record["status"] in TERMINAL:
@@ -593,14 +641,21 @@ class RunTeam(_GroupTool):
                 if record["status"] in TERMINAL:
                     raise GroupError("CONFLICT", "execution has already ended")
                 manager = get_team_manager(self.context.channel_id)
-                worker = manager.get_stream_task(child_session)
+                worker = _execution_workers.get(record["execution_id"])
                 if worker is None or worker.done():
                     raise GroupError("NOT_RUNNING", "private-team worker is not running on this server")
+                waiting = record["execution_id"] in _waiting_runs
                 if action == "cancel":
                     reason = inputs.get("reason", "user_cancelled")
                     if not isinstance(reason, str):
                         raise GroupError("BAD_REQUEST", "reason must be text")
                     await store.update(record["execution_id"], phase="cancelling", cancellation_reason=reason)
+                    if waiting:
+                        # Not started yet: the private session keeps serving the run ahead of it.
+                        worker.cancel()
+                        await asyncio.wait({worker})
+                        result = await store.update(record["execution_id"], status="cancelled", phase="cancelled")
+                        return ToolOutput(success=True, data=result)
                     await manager.stop_session_runtime(child_session, reason="group.execution.cancel")
                     current = store.get(record["execution_id"])
                     if current["status"] in TERMINAL and current["status"] != "cancelled":
@@ -612,6 +667,11 @@ class RunTeam(_GroupTool):
                     raise GroupError("BAD_REQUEST", "instruction must be nonempty text")
                 if len(instruction) > 20000:
                     raise GroupError("BAD_REQUEST", "instruction exceeds 20000 characters")
+                if waiting:
+                    # Delivered with the task once the private session is free.
+                    adjustments = [*record.get("adjustments", []), {"instruction": instruction, "delivered": False}]
+                    result = await store.update(record["execution_id"], adjustments=adjustments)
+                    return ToolOutput(success=True, data={**result, "instruction_delivered": False, "queued": True})
                 delivered = await Runner.interact_agent_team(
                     GodViewMessage(body=instruction), team_name=record["team_id"], session_id=child_session,
                 )
@@ -624,13 +684,47 @@ class RunTeam(_GroupTool):
         except (ValueError, OSError, RuntimeError) as exc:
             return ToolOutput(success=False, error=str(exc))
 
-    async def _execute_background(self, key: str, task: str, execution: dict, manager) -> None:
+    async def _adjust_organization(self, record: dict, action: str, inputs) -> ToolOutput:
+        """Pass a related request to this proxy's instance in a running organization."""
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import deliver_organization_instruction
+        from jiuwenswarm.server.runtime.group_service import GroupError
+
+        if action == "cancel":
+            raise GroupError("UNSUPPORTED_RUNTIME", "one expert team cannot cancel a Team Organization")
+        instruction = inputs.get("content") or inputs.get("instruction")
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise GroupError("BAD_REQUEST", "instruction must be nonempty text")
+        if len(instruction) > 20000:
+            raise GroupError("BAD_REQUEST", "instruction exceeds 20000 characters")
+        delivered = await deliver_organization_instruction(
+            self.context.session_id, self.backend.member_name, record["execution_id"], instruction,
+        )
+        return ToolOutput(success=True, data=delivered)
+
+    async def _execute_background(
+        self, key: str, task: str, execution: dict, manager, *, after: asyncio.Task | None = None,
+    ) -> None:
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
         from jiuwenswarm.server.runtime.group_service import read_group
 
         store = GroupExecutions(self.context.session_id)
+        execution_id = execution["execution_id"]
+        child_session = execution["team_session_id"]
         try:
-            await self._run(key, task, execution=execution)
+            query = task
+            if after is not None:
+                # asyncio.wait, unlike gather, does not cancel the earlier run when this one is cancelled.
+                await asyncio.wait({after})
+                manager.register_stream_task(child_session, asyncio.current_task())
+                _waiting_runs.discard(execution_id)
+                current = store.get(execution_id)
+                pending = [item["instruction"] for item in current.get("adjustments", []) if not item["delivered"]]
+                if pending:
+                    query = task + "\n\nAdditional instructions:\n" + "\n".join(f"- {item}" for item in pending)
+                    await store.update(execution_id, adjustments=[
+                        {**item, "delivered": True} for item in current["adjustments"]
+                    ])
+            await self._run(key, task, execution=execution, query=query)
         except asyncio.CancelledError:
             group = read_group(self.context.session_id)
             if group is not None and group["status"] != "deleting":
@@ -644,11 +738,16 @@ class RunTeam(_GroupTool):
                 if current["phase"] != "publishing":
                     await store.update(execution["execution_id"], status="failed", phase="failed")
         finally:
-            child_session = execution["team_session_id"]
-            if manager.get_stream_task(child_session) is asyncio.current_task():
+            current_task = asyncio.current_task()
+            if manager.get_stream_task(child_session) is current_task:
                 manager.pop_stream_task(child_session)
+            if _execution_workers.get(execution_id) is current_task:
+                del _execution_workers[execution_id]
+            if _session_tails.get(child_session) is current_task:
+                del _session_tails[child_session]
+            _waiting_runs.discard(execution_id)
 
-    async def _run(self, key: str, task: str, *, execution=None):
+    async def _run(self, key: str, task: str, *, execution=None, query: str | None = None):
         from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
         from jiuwenswarm.agents.swarm.assembly import enrich_team_spec_for_swarm
 
@@ -743,6 +842,16 @@ class RunTeam(_GroupTool):
 
                 handler = None
                 progress_worker = None
+                leader_reply: list[str] = []
+
+                def settle_with_leader_reply() -> bool:
+                    # A leader that answered in plain text has answered; its words are the result.
+                    text = "".join(leader_reply).strip()
+                    if not text or future.done():
+                        return False
+                    logger.info("Private team finished without complete_team_run; using its last reply")
+                    future.set_result(text)
+                    return True
 
                 async def record_progress(event):
                     await GroupExecutions(self.context.session_id).task_event(execution["execution_id"], event)
@@ -753,11 +862,12 @@ class RunTeam(_GroupTool):
 
                 try:
                     async for chunk in Runner.run_agent_team_streaming(
-                        child, {"query": task}, session=child_session,
+                        child, {"query": query or task}, session=child_session,
                     ):
                         payload = getattr(chunk, "payload", None)
                         if not isinstance(payload, dict):
                             continue
+                        track_leader_reply(chunk, leader_reply)
                         event_type = payload.get("event_type")
                         if execution is not None:
                             await record_progress(payload)
@@ -783,7 +893,10 @@ class RunTeam(_GroupTool):
                                 waiting = any(item["execution_id"] == execution["execution_id"] for item in pending)
                                 if waiting:
                                     continue
+                            if settle_with_leader_reply():
+                                return
                             raise RuntimeError("expert team became idle without submitting a result")
+                    settle_with_leader_reply()
                 finally:
                     if progress_worker is not None:
                         progress_worker.cancel()

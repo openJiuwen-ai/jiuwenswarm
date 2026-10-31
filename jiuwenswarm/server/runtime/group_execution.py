@@ -55,14 +55,30 @@ class GroupExecutions:
         return copy.deepcopy(record)
 
     def active(self, member_name: str | None) -> dict | None:
+        """Return the member's own unfinished execution, if any.
+
+        A member works on one execution of its own at a time. Background
+        private-team runs are excluded: a proxy may run several concurrently
+        (see ``background_runs``) while staying free for its own work.
+        """
         for record in self.read().values():
             # An organization card has no member slot. It must not block a proxy
             # or be treated as the outer group leader's active execution.
-            if record.get("execution_kind") == "organization":
+            if record.get("execution_kind") == "organization" or record.get("background"):
                 continue
             if record.get("member_name") == member_name and record["status"] not in TERMINAL:
                 return copy.deepcopy(record)
         return None
+
+    def background_runs(self, member_name: str) -> list[dict]:
+        """Return the member's unfinished private-team runs, oldest first."""
+        records = [
+            record for record in self.read().values()
+            if record.get("background") and record.get("member_name") == member_name
+            and record["status"] not in TERMINAL
+        ]
+        records.sort(key=lambda item: (item["created_at"], item["execution_id"]))
+        return copy.deepcopy(records)
 
     async def upsert_organization_card(
         self,
@@ -189,7 +205,8 @@ class GroupExecutions:
             records = self.read()
             for execution_id in execution_ids:
                 record = records.get(execution_id)
-                if record is None or record["status"] != "queued":
+                # A background run waiting for its private session is not an undelivered message.
+                if record is None or record["status"] != "queued" or record.get("background"):
                     continue
                 if record.get("delivery_status") == "accepted" and not include_accepted:
                     continue
@@ -235,6 +252,7 @@ class GroupExecutions:
 
     async def create(
         self, members: list[str], task: str, token: str, *, defer_card: bool = False,
+        concurrent: bool = False,
     ) -> list[dict]:
         if not isinstance(task, str) or not task.strip():
             raise GroupError("BAD_REQUEST", "task must be nonempty text")
@@ -277,7 +295,8 @@ class GroupExecutions:
                         raise GroupError("CONFLICT", "request ID was used for another task")
                     result.append(copy.deepcopy(existing))
                     continue
-                if self.active(name) is not None:
+                # A concurrent private-team run does not occupy the member's own slot.
+                if not concurrent and self.active(name) is not None:
                     raise GroupError("MEMBER_BUSY", "member already has an active execution")
                 now = time.time()
                 record = {

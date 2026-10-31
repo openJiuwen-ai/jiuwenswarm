@@ -46,13 +46,13 @@ sequenceDiagram
     end
     Group->>Proxy: Wake only the mentioned proxies
     Proxy->>Proxy: run_team
-    alt This message is a direct reply and this proxy is still in a live organization
-        Proxy-->>Proxy: Wait until that organization posts its result
-        Owner->>User: Owner writes the expert-result group message
-        Proxy->>User: Then the single-team path writes execution-result, without a new organization
+    alt Not an organization message (single @ or direct reply) while the proxy is in a live organization
+        Proxy->>Proxy: Decide by meaning
+        Proxy->>Org: About the organization's task: run_team update into its own organization instance
+        Proxy->>User: An unrelated task: a new concurrent private run that writes execution-result
     else This message is a direct reply
         Proxy->>User: Single-team finish writes execution-result, or a single expert replies itself
-    else This proxy belongs to a live plan
+    else This message is the organization message this proxy belongs to
         Proxy->>Org: Launch or reuse the instance and join the organization
         Proxy-->>Proxy: Return immediately that the organization is running
         Owner->>Org: Create the root and one child per member, then claim each child
@@ -87,9 +87,9 @@ The woken model is the group proxy. After it calls `run_team`, the organization 
 
 ## 4. The run_team fork
 
-`RunTeam.invoke` handles `update` and `cancel` first. For `start` and `continue`, it takes the oldest message this proxy still owes. When that message is an organization that has not posted, this call joins it. When it is a direct reply and this proxy is still in a live organization, the call only returns a wait and does not start a single team. After that organization posts, the direct reply uses the ordinary single-team run. Any other message uses its own plan, or, when it has none, the oldest `pending` or `running` plan that includes this proxy.
+`RunTeam.invoke` handles `update` and `cancel` first. For `start` and `continue`, it takes the oldest message this proxy still owes. When that message is an organization that has not posted, this call joins it. Only a message that is itself a recorded organization plan takes the organization path. Any other message (single @ or direct reply) is no longer folded into a live organization: the proxy decides by meaning. A request about the organization's task is `run_team action=update` with the organization card's `execution_id`, delivered to the proxy's own organization instance (`org-expert-…`, in the group session). An unrelated task is `run_team start`, a new concurrent private run. One proxy cannot cancel the organization card.
 
-A matching plan calls `run_organization_member` and does not create a `GroupExecutions` record. With no match, a managed group uses the existing single-team background run. `GroupExecutions.finish` then posts `execution-result-{execution_id}`. A single expert and a single expert team stay on that path. A direct reply does not resume the organization instance. While the organization is still running, the expert-team proxies it names still cannot post to the group. They may post for the direct reply only after that result is in the group. A single expert who is not in the organization is not held by that wait.
+A matching plan calls `run_organization_member` and does not create a `GroupExecutions` record. With no match, a managed group uses the existing single-team background run. `GroupExecutions.finish` then posts `execution-result-{execution_id}`. A single expert and a single expert team stay on that path. A direct reply does not resume the organization instance and is no longer deferred until the organization posts. While an organization runs, each proxy turn lists the organizations it has joined (card `execution_id`, task, Owner or member). The proxy's organization instance is busy then, so a new task does not take the after-organization follow-up path into that instance.
 
 Overlapping `run_team` calls from one proxy share one instance-setup task. Each plan has one Owner background wait.
 
@@ -126,7 +126,7 @@ Expert work, review, summary, and final submission stay inside the instances. Th
 | Organization completion | `expert-result-{plan_id}` | Owner proxy | After the Owner background confirms completion |
 | Single-team completion | `execution-result-{execution_id}` | The proxy that ran it | When single-team `finish` succeeds |
 
-During the organization the panel can stay empty. The organization path creates no execution card. A mentioned proxy that is not the Owner cannot post: `group_send_message` and `send_file` are rejected. That proxy's expert-team instance also loses those tools, so it cannot reply to the group. Only the Owner background posts `expert-result-` after the organization finishes. A message whose id starts with `execution-result-` came from the single-team auto-post, not from the Owner organization report.
+During the organization the panel can stay empty. The organization path creates no execution card. A mentioned proxy that is not the Owner cannot reply to that organization message: `group_send_message` and `send_file` are rejected. It replies to other messages normally. That proxy's expert-team instance also loses those tools, so it cannot reply to the group. Only the Owner background posts `expert-result-` after the organization finishes. A message whose id starts with `execution-result-` came from the single-team auto-post, not from the Owner organization report.
 
 On completion—success or failure/timeout—the background pauses the expert-team instances, then dissolves the organization on the SwarmChat side: release membership, erase this organization's task-pool rows (including task and output records), and stop only that organization's summary team. It does not call the runtime dissolve that would stop expert-team instances. Those instances and their conversation context stay. On success it posts `expert-result-` and marks the plan `done`. On failure or timeout it marks the plan `failed`, propagates the error, and does not post. The next multi-@ round always gets a new organization id; the Owner is the first @-mentioned expert for that round. Group deletion still uses the full dissolve and stops these instances.
 
@@ -144,7 +144,7 @@ Plans live in `organization_plans` on the group's `group.json`. Instance binding
 | `failed` | Setup failed, or the result wait ended before the organization finished. |
 | `expired` | No Owner background is alive and the plan is older than 62 minutes. |
 
-A repeated `run_team` for the same user message joins that message's plan. If this proxy has not joined an older live plan yet, this `run_team` joins that older plan first and does not skip it just because a newer mention is already in the history. Recording a later multi-@ plan that shares a member with an unfinished plan schedules that plan's Owner immediately. A proxy that is not in the older plan is queued as well and does not bind instances that the older plan still holds. A failed early attempt leaves the plan queued. Once the older plan has been accepted, another multi-@ call also returns queued. The Owner background starts the new plan after the older one finishes. A single @ while an organization is still live stays on that organization path and does not open a private team. When that same multi-@ message's plan is already `failed`, `expired`, or `done`, this `run_team` stops: it does not join the organization, does not create a single-team execution, and does not post to the group. A different message that is not this plan still follows the single-team path, a follow-up, or a new multi-@ plan.
+A repeated `run_team` for the same user message joins that message's plan. If this proxy has not joined an older live plan yet, this `run_team` joins that older plan first and does not skip it just because a newer mention is already in the history. Recording a later multi-@ plan that shares a member with an unfinished plan schedules that plan's Owner immediately. A proxy that is not in the older plan is queued as well and does not bind instances that the older plan still holds. A failed early attempt leaves the plan queued. Once the older plan has been accepted, another multi-@ call also returns queued. The Owner background starts the new plan after the older one finishes. A single @ while an organization is still live no longer stays on that organization path; the proxy chooses an organization update or a new private run. When that same multi-@ message's plan is already `failed`, `expired`, or `done`, this `run_team` stops: it does not join the organization, does not create a single-team execution, and does not post to the group. A different message that is not this plan still follows the single-team path, a follow-up, or a new multi-@ plan.
 
 ## 8. Code map
 
@@ -162,7 +162,8 @@ Tests are in `tests/agents/swarm/test_group_org_bootstrap.py`. The single-team t
 
 ## 9. Current boundaries
 
-- A repeated `run_team` stays on the organization path while that run is live. After that same multi-@ message's plan has ended, another `run_team` does not open a single-team execution and does not post to the group. A different message still uses the single-team path or a follow-up.
+- A repeated `run_team` for the same multi-@ message stays on the organization path while that run is live. After that plan has ended, another `run_team` does not open a single-team execution and does not post to the group. A different message is routed by the proxy: an organization update, a new private run, or a follow-up.
+- Whether a message belongs to the organization is the model's judgement, with no rule behind it. A wrong call turns an organization addition into a new task, or sends an unrelated task into the organization instance.
 - The Owner background waits at most 3600 seconds. On timeout the plan becomes `failed` and no `expert-result-` message is written.
 - Member join keeps waiting while a proxy is still handling the message, up to the 3600-second result wait. If that turn has ended without `run_team`, or the proxy status cannot be read, the round fails at 120 seconds instead of starting short-handed.
 - The panel shows the organization execution card after the organization is created, with one row per expert team. The behavior is in the next section.
