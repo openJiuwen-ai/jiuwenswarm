@@ -148,6 +148,8 @@ def _frame_fingerprint(frame: dict[str, Any]) -> str:
     """
     event = str(frame.get("event") or "")
     payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    if event == "cron.run.updated" and payload.get("event_id"):
+        return f"{event}|{payload['event_id']}"
     rid = str(payload.get("request_id") or "")
     proc = payload.get("is_processing")
     proc_part = "" if proc is None else f"|p={proc}"

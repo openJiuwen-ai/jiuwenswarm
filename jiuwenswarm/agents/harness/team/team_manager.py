@@ -392,6 +392,8 @@ class TeamManager:
         # describes the single actual round admitted for a Session and owns
         # its admission release until terminal/cancel cleanup.
         self._active_rounds: dict[str, _ActiveTeamRound] = {}
+        self._stopping_requests: set[str] = set()
+        self._request_stop_events: dict[str, asyncio.Event] = {}
         # session_id → cron team round completion state. Lifetime-coupled to
         # _pending_waiters: set by _try_finish_cron_team_stream, popped by the
         # finisher coroutines once the cron stream ends.
@@ -1096,6 +1098,85 @@ class TeamManager:
     def get_cron_completion(self, session_id: str) -> dict[str, Any] | None:
         """Return the cron team round completion state for the session, if any."""
         return self._cron_team_completion.get(session_id)
+
+    def cron_completion_is_current(self, session_id: str, completion: dict[str, Any]) -> bool:
+        """Fence a delayed cron callback against a new round or producer."""
+        if self.get_cron_completion(session_id) is not completion:
+            return False
+        if not self.generation_matches(session_id, completion.get("generation")):
+            return False
+        current = self._active_rounds.get(session_id)
+        request_id = completion.get("request_id")
+        if current is not None and current.request_id != request_id:
+            return False
+        if any(rid != request_id for rid in self._inflight_requests.get(session_id, ())):
+            return False
+        return self._stream_tasks.get(session_id) is completion.get("stream_task")
+
+    def cron_completion_owner(self, session_id: str, request_id: str) -> dict[str, Any]:
+        """Capture immutable callback ownership, rather than looking it up later."""
+        return {
+            "request_id": request_id,
+            "generation": self._session_generations.get(session_id),
+            "stream_task": self._stream_tasks.get(session_id),
+        }
+
+    async def finish_cron_stream(self, session_id: str, completion: dict[str, Any], round_id: Any) -> None:
+        """Close only the producer captured by this cron round."""
+        task: asyncio.Task | None = None
+        async with self._get_lifecycle_lock(session_id):
+            if not self.cron_completion_is_current(session_id, completion):
+                if self.get_cron_completion(session_id) is completion:
+                    self.pop_cron_completion(session_id)
+                return
+            # The marker keeps a new round from starting while the producer is
+            # being handed off, so awaiting it below cannot admit a stale round.
+            self._begin_request_stop(session_id)
+            task = self.pop_stream_task(session_id, generation=completion.get("generation"))
+            if task is not None and not task.done():
+                task.cancel()
+        try:
+            # Await the producer outside the lifecycle lock. Its cleanup may
+            # enter lifecycle operations, and holding the lock over an
+            # unbounded wait would stall every other stop/pause/delete for the
+            # session (for all sessions in distributed mode, where the lock is
+            # shared).  A cancelled producer only raises CancelledError here,
+            # so an unexpected failure is surfaced to the caller's log.
+            if task is not None and not task.done():
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+            await self.broadcast_event(session_id, {
+                "event_type": "chat.processing_status", "session_id": session_id,
+                "request_id": completion.get("request_id"), "rid": round_id,
+                "is_processing": False, "is_complete": True,
+            }, channel_id=completion.get("channel_id"))
+        finally:
+            # Registry markers are plain per-session mappings, so they are
+            # released even when the awaiting caller is cancelled; taking the
+            # lifecycle lock here would reintroduce an await in the cancel path.
+            if self.get_cron_completion(session_id) is completion:
+                self.pop_cron_completion(session_id)
+            self._end_request_stop(session_id)
+
+    def _begin_request_stop(self, session_id: str) -> None:
+        self._stopping_requests.add(session_id)
+        self._request_stop_events.setdefault(session_id, asyncio.Event())
+
+    def _end_request_stop(self, session_id: str) -> None:
+        self._stopping_requests.discard(session_id)
+        event = self._request_stop_events.pop(session_id, None)
+        if event is not None:
+            event.set()
+
+    async def wait_for_request_stop(self, session_id: str) -> None:
+        """Queue new input until the previous producer has finished teardown."""
+        while session_id in self._request_stop_events:
+            await self._request_stop_events[session_id].wait()
+        self._assert_session_not_deleting(session_id)
 
     def setdefault_cron_completion(
         self, session_id: str, default: dict[str, Any]
@@ -2557,6 +2638,8 @@ class TeamManager:
         """Reject execution admission after permanent-delete quiesce starts."""
         if session_id in self._terminal_delete_sessions:
             raise RuntimeError(f"session is being permanently deleted: {session_id}")
+        if session_id in self._stopping_requests:
+            raise RuntimeError(f"session is stopping its previous request: {session_id}")
 
     async def _cancel_team_evolution_watcher(self, session_id: str) -> None:
         watcher_task = self._team_evolution_watchers.pop(session_id, None)
@@ -3419,6 +3502,7 @@ class TeamManager:
         *,
         stop_runner: bool = True,
         generation: int | None = None,
+        expected_request_id: str | None = None,
     ) -> bool:
         """Stop local runtime resources and, by default, the Runner runtime.
 
@@ -3429,75 +3513,92 @@ class TeamManager:
         if not self.generation_matches(session_id, generation):
             return False
         async with self._get_lifecycle_lock(session_id):
-            has_stream_task = session_id in self._stream_tasks
-            has_local_team_runtime = self._has_local_team_runtime(session_id)
-            has_team_runtime = (
-                has_local_team_runtime
-                or session_id in self._runner_team_agents
-                or session_id in self._team_monitors
-                or self.is_runtime_active(session_id)
-                or self.is_runtime_pending(session_id)
-            )
-            if (
-                not has_stream_task
-                and not has_team_runtime
-                and not self.has_swarmflow_runs(session_id)
-            ):
+            if expected_request_id:
+                current = self._active_rounds.get(session_id)
+                inflight = self._inflight_requests.get(session_id, set())
+                if current is not None:
+                    if current.request_id != expected_request_id:
+                        return False
+                elif expected_request_id not in inflight:
+                    return False
+                if any(rid != expected_request_id for rid in inflight):
+                    return False
+            if expected_request_id:
+                self._begin_request_stop(session_id)
+            try:
+                has_stream_task = session_id in self._stream_tasks
+                has_local_team_runtime = self._has_local_team_runtime(session_id)
+                has_team_runtime = (
+                    has_local_team_runtime
+                    or session_id in self._runner_team_agents
+                    or session_id in self._team_monitors
+                    or self.is_runtime_active(session_id)
+                    or self.is_runtime_pending(session_id)
+                )
+                if (
+                    not has_stream_task
+                    and not has_team_runtime
+                    and not self.has_swarmflow_runs(session_id)
+                ):
+                    await self.release_current_round(session_id)
+                    self._clear_terminal_session_markers(session_id)
+                    return False
+
+                logger.info(
+                    "[TeamManager] %s stop team session runtime: session_id=%s",
+                    reason,
+                    session_id,
+                )
+                # Drive the swarmflow controller BEFORE the teardown below drops
+                # it: without a controller-driven stop the run dies as a plain
+                # cancel — no abort reason, no seal record (same ordering
+                # rationale as the cancel path).
+                await self._dispatch_swarmflow_controller(session_id, action="stop")
+                team_agent = self._team_agents.pop(session_id, None) if has_local_team_runtime else None
+                await self._cleanup_runtime_locals(session_id)
+
+                stopped = False
+                if has_local_team_runtime and team_agent is not None:
+                    stopped = await self._stop_local_team_runtime(session_id, team_agent)
+
+                team_name = self._resolve_session_team_name(session_id)
+
+                if team_name and stop_runner:
+                    try:
+                        runner_stopped = await Runner.stop_agent_team(team_name=team_name, session_id=session_id)
+                        stopped = runner_stopped or stopped
+                    except Exception as exc:
+                        logger.warning(
+                            "[TeamManager] runner stop failed: session_id=%s team_name=%s error=%s",
+                            session_id,
+                            team_name,
+                            exc,
+                        )
+                if not has_local_team_runtime:
+                    try:
+                        team_agent = self._runner_team_agents.get(session_id)
+                        await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
+                    except Exception as exc:
+                        logger.warning(
+                            "[TeamManager] release A2X reservations failed: session_id=%s error=%s",
+                            session_id,
+                            exc,
+                        )
+                    if stop_runner:
+                        await self._stop_runner_team_agent_transport(session_id)
+                    else:
+                        # Runner.delete_agent_team(force=True) still owns the
+                        # actual TeamAgent stop; drop only Jiuwenswarm's mirror.
+                        self._runner_team_agents.pop(session_id, None)
+
+                self.clear_active_runtime(session_id)
+                self.clear_pending_runtime(session_id)
                 await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
-                return False
 
-            logger.info(
-                "[TeamManager] %s stop team session runtime: session_id=%s",
-                reason,
-                session_id,
-            )
-            # Drive the swarmflow controller BEFORE the teardown below drops
-            # it: without a controller-driven stop the run dies as a plain
-            # cancel — no abort reason, no seal record (same ordering
-            # rationale as the cancel path).
-            await self._dispatch_swarmflow_controller(session_id, action="stop")
-            team_agent = self._team_agents.pop(session_id, None) if has_local_team_runtime else None
-            await self._cleanup_runtime_locals(session_id)
-
-            stopped = False
-            if has_local_team_runtime and team_agent is not None:
-                stopped = await self._stop_local_team_runtime(session_id, team_agent)
-
-            team_name = self._resolve_session_team_name(session_id)
-
-            if team_name and stop_runner:
-                try:
-                    runner_stopped = await Runner.stop_agent_team(team_name=team_name, session_id=session_id)
-                    stopped = runner_stopped or stopped
-                except Exception as exc:
-                    logger.warning(
-                        "[TeamManager] runner stop failed: session_id=%s team_name=%s error=%s",
-                        session_id,
-                        team_name,
-                        exc,
-                    )
-            if not has_local_team_runtime:
-                try:
-                    team_agent = self._runner_team_agents.get(session_id)
-                    await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
-                except Exception as exc:
-                    logger.warning(
-                        "[TeamManager] release A2X reservations failed: session_id=%s error=%s",
-                        session_id,
-                        exc,
-                    )
-                if stop_runner:
-                    await self._stop_runner_team_agent_transport(session_id)
-                else:
-                    # Runner.delete_agent_team(force=True) still owns the
-                    # actual TeamAgent stop; drop only Jiuwenswarm's mirror.
-                    self._runner_team_agents.pop(session_id, None)
-
-            self.clear_active_runtime(session_id)
-            self.clear_pending_runtime(session_id)
-            await self.release_current_round(session_id)
-            self._clear_terminal_session_markers(session_id)
+            finally:
+                if expected_request_id:
+                    self._end_request_stop(session_id)
 
         logger.info(
             "[TeamManager] %steam session stopped: session_id=%s stopped=%s",

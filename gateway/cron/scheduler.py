@@ -17,6 +17,7 @@ from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
 from gateway.common.scheduled_task_policy import is_scheduled_task_supported
 from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.cron_events import CRON_RUN_UPDATED_EVENT, CRON_SESSION_STREAM_KEY, cron_notification_scope
 from gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
     resolve_dingtalk_push_metadata,
@@ -50,7 +51,7 @@ def _cron_routing_metadata(
     routing 里。不写进聊天内容本身。
     """
     return apply_routing_metadata(
-        metadata,
+        {**(metadata or {}), "app_id": _execution_app_id(job)},
         {
             "user_id": str(job.user_id or "").strip(),
             "group_id": str(job.group_id or "").strip(),
@@ -75,6 +76,15 @@ def _cron_lifecycle_source(store: object) -> Path:
     from gateway.common.paths import get_cron_jobs_path
 
     return get_cron_jobs_path()
+
+
+def _is_web_cron_job(job: CronJob) -> bool:
+    """Only ordinary Web jobs use the shared chat lifecycle."""
+    return str(job.targets or "").strip() == "web" and job.mode != "proactive.tick"
+
+
+def _execution_app_id(job: CronJob) -> str:
+    return job.app_id or ("default" if _is_web_cron_job(job) else "")
 
 # 需要用户作答才能继续的中断事件。cron 执行会话是无人值守的（``common/cron_session.py``
 # 明确 cron 运行"另一端没有操作者"），这类事件一旦出现就没有人能回答，本轮不可能
@@ -103,7 +113,9 @@ _CRON_LIVE_FORWARD_EVENTS = frozenset({
     "chat.ask_user_question",
     "chat.usage_summary",
 })
-_CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({"chat.final"})
+_CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({
+    "chat.final", "chat.error", CRON_RUN_UPDATED_EVENT,
+})
 
 
 def _is_cron_interrupt_event(event_type: str) -> bool:
@@ -768,6 +780,9 @@ class CronSchedulerService:
             if state.status == "awaiting_approval":
                 state.status = "succeeded"
                 state.finished_at = self._now_fn()
+                job = self._jobs.get(state.job_id)
+                if job is not None and _is_web_cron_job(job):
+                    asyncio.create_task(self._notify_web_run(job, state, phase="finished"))
         self.release_permission_hold_for_session(sid)
 
     async def _sync_store_revision(self) -> None:
@@ -885,6 +900,11 @@ class CronSchedulerService:
             "session_id": target_session_id,
             "cron": {"job_id": state.job_id, "run_id": state.run_id},
         }
+        if channel_id == "web" and reason in {"timeout", "interrupt"}:
+            cancel_params["target_request_id"] = state.exec_request_id or f"cron-{state.run_id}"
+            cancel_params["request_id"] = cancel_params["target_request_id"]
+            if state.exec_execution_id:
+                cancel_params["expected_execution_id"] = state.exec_execution_id
         if strict:
             cancel_params["wait_for_stop"] = True
         if project_id:
@@ -901,14 +921,22 @@ class CronSchedulerService:
                 is_stream=False,
                 timestamp=self._now_fn(),
                 user_id=user_id or None,
+                metadata=apply_routing_metadata(
+                    {"app_id": state.exec_app_id or getattr(job, "app_id", "") or ""},
+                    {"user_id": user_id, "group_id": state.exec_group_id or getattr(job, "group_id", ""),
+                     "bot_id": state.exec_bot_id or getattr(job, "bot_id", "")},
+                ),
             )
             response = (
                 await self._agent_client.send_request(interrupt_env, timeout=30)
                 if strict else await self._agent_client.send_request(interrupt_env)
             )
-            if strict:
-                payload = response.payload if isinstance(response.payload, dict) else {}
-                if not response.ok or payload.get("success") is not True:
+            payload = response.payload if isinstance(response.payload, dict) else {}
+            if strict or payload.get("stop_confirmed") is False:
+                if (
+                    not response.ok or payload.get("success") is not True
+                    or payload.get("stop_confirmed") is False
+                ):
                     raise RuntimeError(payload.get("error") or payload.get("message") or "cron stop was not confirmed")
             logger.info(
                 "[Cron] AgentServer interrupt sent (%s): "
@@ -1451,6 +1479,9 @@ class CronSchedulerService:
             exec_channel_id=channel_id,
             exec_session_id=exec_session_id,
             exec_user_id=str(job.user_id or "").strip() or None,
+            exec_app_id=_execution_app_id(job) or None,
+            exec_group_id=job.group_id or None,
+            exec_bot_id=job.bot_id or None,
             exec_work_mode=job.work_mode or DEFAULT_WEB_WORK_MODE,
             exec_project_id=job.project_id or None,
             manually_triggered=True,
@@ -1476,7 +1507,7 @@ class CronSchedulerService:
                 mode=mode,
                 run_id=run_id,
             )
-            if not is_team_cron_mode(mode):
+            if not is_team_cron_mode(mode) and not _is_web_cron_job(job):
                 # team 的流式事件按 targets 渠道回传（SwarmFlow 直播到 Web/TUI），
                 # 执行渠道路由保留 targets；单 agent 恒走内部 ``__cron__`` 渠道。
                 state.exec_channel_id = "__cron__"
@@ -1490,6 +1521,8 @@ class CronSchedulerService:
     def _make_execution_context(self, job: CronJob) -> tuple[str, str]:
         ts = format(int(time.time() * 1000), "x")
         mode = normalize_cron_job_mode(job.mode)
+        if _is_web_cron_job(job):
+            return "web", f"cron_{ts}_{job.id}"
         if is_team_cron_mode(mode):
             return _resolve_cron_execution_context(
                 job,
@@ -1506,9 +1539,11 @@ class CronSchedulerService:
         run_id: str,
     ) -> str:
         cron_user_id = str(job.user_id or "").strip()
+        if (job.model_selection or {}).get("type") == "model_group":
+            raise ValueError("Scheduled tasks only support a single model")
         env = e2a_from_agent_fields(
             request_id=f"cron-session-create-{run_id}",
-            channel_id="__cron__",
+            channel_id="web" if _is_web_cron_job(job) else "__cron__",
             req_method=ReqMethod.SESSION_CREATE,
             params={
                 "create_token": f"cron:{run_id}",
@@ -1541,6 +1576,71 @@ class CronSchedulerService:
         if not session_id:
             raise RuntimeError("cron session.create returned empty session_id")
         return session_id
+
+    async def _notify_web_run(
+        self, job: CronJob, state: CronRunState, *, phase: str, notify: bool = False,
+    ) -> None:
+        """Publish an online hint without creating or replacing chat content."""
+        if not _is_web_cron_job(job):
+            return
+        state.notification_revision += 1
+        payload = {
+            "event_type": CRON_RUN_UPDATED_EVENT,
+            "event_id": f"{state.run_id}:{state.notification_revision}",
+            "revision": state.notification_revision,
+            "job_id": job.id,
+            "job_name": job.name,
+            "run_id": state.run_id,
+            "session_id": state.exec_session_id if state.execution_session_allocated else None,
+            "request_id": state.exec_request_id,
+            "execution_id": state.exec_execution_id,
+            "status": state.status,
+            "phase": phase,
+            "notify": notify,
+            "error": state.error if state.status == "failed" else None,
+            "mode": state.exec_mode or job.mode,
+            "project_id": job.project_id,
+            "user_id": str(job.user_id or "").strip(),
+            "timestamp": self._now_fn(),
+        }
+        try:
+            self._publish_cron_execution_live(state, CRON_RUN_UPDATED_EVENT, payload)
+            from gateway.cron.live_bus import cron_live_bus
+
+            cron_live_bus.publish(cron_notification_scope(
+                user_id=job.user_id, group_id=job.group_id, bot_id=job.bot_id,
+                app_id=_execution_app_id(job),
+            ), {"event": CRON_RUN_UPDATED_EVENT, "payload": payload})
+            await self._message_handler.publish_robot_messages(Message(
+                id=payload["event_id"], type="event", channel_id="web",
+                session_id=None, params={}, timestamp=payload["timestamp"],
+                ok=True, payload=payload, event_type=None, app_id=_execution_app_id(job) or None,
+                metadata=_cron_routing_metadata(job),
+            ))
+        except Exception:
+            logger.warning("[Cron] Web run notification failed run_id=%s phase=%s", state.run_id, phase, exc_info=True)
+
+    async def _publish_web_chunk(self, chunk: Any, state: CronRunState) -> bool:
+        """Forward one accepted execution event while retaining its identity."""
+        payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+        if payload.get("execution_id") and not state.exec_execution_id:
+            state.exec_execution_id = str(payload["execution_id"])
+        if payload.get("event_type") == "chat.error" and not payload.get("output_phase_id"):
+            if self._message_handler.background_stream_has_other_work(
+                state.exec_request_id or chunk.request_id, state.exec_session_id,
+            ):
+                chunk.payload = {**payload, "output_suppressed": True}
+        published = await self._message_handler.publish_stream_chunk(
+            chunk, session_id=state.exec_session_id,
+            request_metadata=apply_routing_metadata(
+                {CRON_SESSION_STREAM_KEY: True, "app_id": state.exec_app_id or ""},
+                {"user_id": state.exec_user_id or "", "group_id": state.exec_group_id or "",
+                 "bot_id": state.exec_bot_id or ""},
+            ),
+        )
+        if published and str(payload.get("event_type") or "") in {"chat.error", "runtime.error"}:
+            state.stream_error_seen = True
+        return published
 
     def _schedule_event(self, at_dt: datetime, kind: str, job_id: str, run_id: str) -> None:
         at_ts = float(at_dt.timestamp())
@@ -2109,16 +2209,22 @@ class CronSchedulerService:
         state.exec_mode = mode
         state.exec_project_id = job.project_id or None
         state.exec_user_id = str(job.user_id or "").strip() or None
+        state.exec_app_id = _execution_app_id(job) or None
+        state.exec_group_id = job.group_id or None
+        state.exec_bot_id = job.bot_id or None
 
         async def _run_agent() -> None:
             state.status = "running"
             state.started_at = self._now_fn()
             ok = False
             is_cancelled_ghost = False
+            is_cancelled_run = False
             mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
             channel_id = ""
             exec_session_id = ""
             envelope = None
+            registered_stream = False
+            state.exec_request_id = f"cron-{run_id}"
             try:
                 if state.exec_channel_id and state.exec_session_id:
                     channel_id = state.exec_channel_id
@@ -2146,12 +2252,14 @@ class CronSchedulerService:
                         mode=mode,
                         run_id=run_id,
                     )
-                    if not is_team_cron_mode(mode):
+                    if not is_team_cron_mode(mode) and not _is_web_cron_job(job):
                         # team 的流式事件按 targets 渠道回传，保留渠道路由；
                         # 单 agent 恒走内部 ``__cron__`` 渠道。
                         state.exec_channel_id = "__cron__"
                     state.exec_session_id = exec_session_id
                     state.execution_session_allocated = True
+                channel_id = state.exec_channel_id or channel_id
+                await self._notify_web_run(job, state, phase="started")
                 cron_meta = {
                     "job_id": job.id,
                     "job_name": job.name,
@@ -2206,6 +2314,7 @@ class CronSchedulerService:
                     metadata=_cron_routing_metadata(
                         job,
                         {
+                            CRON_SESSION_STREAM_KEY: _is_web_cron_job(job),
                             "cron": {
                                 "job_id": job.id,
                                 "run_id": run_id,
@@ -2221,6 +2330,9 @@ class CronSchedulerService:
                     ),
                     user_id=job.user_id or None,
                 )
+                if _is_web_cron_job(job):
+                    await self._message_handler.register_background_stream(envelope, exec_session_id)
+                    registered_stream = True
                 if not str(job.user_id or "").strip():
                     logger.warning(
                         "[Cron] job has no user_id, faas X-Session-Context will be omitted: "
@@ -2278,11 +2390,13 @@ class CronSchedulerService:
             except asyncio.CancelledError:
                 state.status = "failed"
                 state.error = "cancelled"
-                is_cancelled_ghost = True
-                # Ghost task: cancelled by reload because job no longer in store.
-                # Do NOT schedule push_update — the user has removed this job and
-                # should not see any result from it. Raising CancelledError here
-                # so the finally block can skip push_update scheduling.
+                is_cancelled_ghost = await self._store.get_job(job.id) is None
+                # Gateway shutdown, project archive/hide and job deletion cancel
+                # this task. That is lifecycle teardown, not a model or tool
+                # failure: do not persist a chat error, schedule a reminder, or
+                # push a result. The in-memory run hint still reports that the
+                # run stopped. A removed job stays fully silent as before.
+                is_cancelled_run = True
                 raise
             except Exception as exc:  # noqa: BLE001
                 state.status = "failed"
@@ -2298,17 +2412,17 @@ class CronSchedulerService:
             finally:
                 if state.status != "awaiting_approval":
                     state.finished_at = self._now_fn()
+                cancelled_lifecycle = is_cancelled_ghost or is_cancelled_run
                 # Ensure failed runs also produce result_text so push logic can deliver it.
-                # But for cancelled ghost tasks, skip — no result should be pushed for
-                # a job the user has removed.
-                if (
-                    state.status == "failed"
-                    and not state.result_text
-                    and not is_cancelled_ghost
-                ):
+                # Cancelled lifecycle runs and removed jobs stay silent: neither
+                # should append a fake failure answer to the Session.
+                if state.status == "failed" and not state.result_text and not cancelled_lifecycle:
                     state.error = str(state.error or "").strip() or "未知错误"
                     state.result_text = f"[cron] 任务执行失败: {state.error}"
-                if state.result_text and not ok and not is_cancelled_ghost:
+                should_append_failure = (
+                    bool(state.result_text) and not ok and not cancelled_lifecycle
+                )
+                if should_append_failure and state.execution_session_allocated:
                     await self._append_failure_history_on_agentserver(
                         job=job,
                         session_id=exec_session_id,
@@ -2317,7 +2431,37 @@ class CronSchedulerService:
                         content=state.result_text,
                         mode=mode,
                     )
-                if not state.pushed_final and state.result_text and not is_cancelled_ghost:
+                    if (
+                        _is_web_cron_job(job) and not state.stream_error_seen
+                        and not self._message_handler.background_stream_has_other_work(
+                            state.exec_request_id, exec_session_id,
+                        )
+                    ):
+                        failure_payload = {
+                            "event_type": "chat.error", "request_id": state.exec_request_id,
+                            "execution_id": state.exec_execution_id,
+                            "error": state.result_text, "is_complete": True,
+                            CRON_SESSION_STREAM_KEY: True,
+                        }
+                        self._publish_cron_execution_live(state, "chat.error", failure_payload)
+                        await self._message_handler.publish_robot_messages(Message(
+                            id=f"cron-failure-{state.exec_request_id}", type="event",
+                            channel_id="web", session_id=exec_session_id, params={},
+                            timestamp=self._now_fn(), ok=False, event_type=EventType.CHAT_ERROR,
+                            app_id=_execution_app_id(job) or None,
+                            metadata=_cron_routing_metadata(job, {CRON_SESSION_STREAM_KEY: True}),
+                            payload=failure_payload,
+                        ))
+                if registered_stream:
+                    try:
+                        await self._message_handler.finish_background_stream(envelope, exec_session_id)
+                    except Exception:
+                        logger.warning("[Cron] background stream cleanup failed: run_id=%s", run_id, exc_info=True)
+                if not is_cancelled_ghost:
+                    await self._notify_web_run(
+                        job, state, phase="paused" if state.status == "awaiting_approval" else "finished",
+                    )
+                if not state.pushed_final and state.result_text and not cancelled_lifecycle:
                     logger.info(
                         "[Cron] scheduling push_update after agent finished "
                         "job=%s run_id=%s text_len=%d",
@@ -2356,7 +2500,8 @@ class CronSchedulerService:
                 "request_id": request_id,
                 "channel_id": channel_id,
                 "role": "assistant",
-                "event_type": "chat.final",
+                "event_type": "chat.error" if _is_web_cron_job(job) else "chat.final",
+                "cron_failure_record": _is_web_cron_job(job),
                 "content": content,
                 "timestamp": self._now_fn(),
                 "mode": mode,
@@ -2368,6 +2513,7 @@ class CronSchedulerService:
             is_stream=False,
             timestamp=self._now_fn(),
             user_id=str(job.user_id or "").strip() or None,
+            metadata=_cron_routing_metadata(job),
         )
         try:
             response = await self._agent_client.send_request(envelope)
@@ -2400,8 +2546,28 @@ class CronSchedulerService:
         envelope: Any,
         exec_session_id: str,
         mode: str = "team",
+        expected_execution_id: str | None = None,
     ) -> None:
         """Stop lingering AgentServer team work after cron stream ends or times out."""
+        if str(getattr(envelope, "channel", "") or "") == "web":
+            params = {
+                "intent": "cancel", "mode": mode, "session_id": exec_session_id,
+                "target_request_id": envelope.request_id, "request_id": envelope.request_id,
+            }
+            if expected_execution_id:
+                params["expected_execution_id"] = expected_execution_id
+            response = e2a_from_agent_fields(
+                request_id=f"cron-cancel-{envelope.request_id}", channel_id="web",
+                session_id=exec_session_id, req_method=ReqMethod.CHAT_CANCEL,
+                params=params,
+                is_stream=False, timestamp=self._now_fn(), user_id=envelope.user_id,
+                metadata=dict(envelope.channel_context or {}),
+            )
+            try:
+                await self._agent_client.send_request(response)
+            except Exception:
+                logger.warning("[Cron] team cancellation failed: request_id=%s", envelope.request_id, exc_info=True)
+            return
         cancel_fn = getattr(self._message_handler, "_cancel_agent_work_for_session", None)
         if not callable(cancel_fn):
             logger.warning(
@@ -2539,13 +2705,15 @@ class CronSchedulerService:
             )
             try:
                 async for chunk in stream_gen:
+                    if state.exec_channel_id == "web":
+                        await self._publish_web_chunk(chunk, state)
                     # Terminal markers can have no payload; EOF alone is insufficient.
                     saw_complete = saw_complete or bool(chunk.is_complete)
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     if not payload:
                         continue
                     event_type = str(payload.get("event_type") or "").strip()
-                    if event_type in _CRON_LIVE_MIRROR_EVENTS:
+                    if event_type in _CRON_LIVE_MIRROR_EVENTS or event_type.startswith(("team.", "workflow.")):
                         self._publish_cron_execution_live(state, event_type, payload)
                     text = _extract_text_from_stream_payload(payload)
                     if event_type == "chat.error":
@@ -2691,7 +2859,9 @@ class CronSchedulerService:
             try:
                 async for chunk in stream_gen:
                     published = True
-                    if callable(publish_chunk):
+                    if state is not None and state.exec_channel_id == "web":
+                        published = await self._publish_web_chunk(chunk, state)
+                    elif callable(publish_chunk):
                         published = await publish_chunk(
                             chunk,
                             session_id=exec_session_id,
@@ -2699,7 +2869,9 @@ class CronSchedulerService:
                         )
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     event_type = str((payload or {}).get("event_type") or "").strip()
-                    if state is not None and event_type in _CRON_LIVE_MIRROR_EVENTS:
+                    if state is not None and (
+                        event_type in _CRON_LIVE_MIRROR_EVENTS or event_type.startswith(("team.", "workflow."))
+                    ):
                         self._publish_cron_execution_live(state, event_type, payload)
                     note_seen_event(event_type)
                     auto_accepts = getattr(
@@ -2827,6 +2999,7 @@ class CronSchedulerService:
                     envelope=envelope,
                     exec_session_id=exec_session_id,
                     mode=mode,
+                    expected_execution_id=state.exec_execution_id if state is not None else None,
                 )
             return text, ok
         except asyncio.TimeoutError:
@@ -2842,6 +3015,7 @@ class CronSchedulerService:
                 envelope=envelope,
                 exec_session_id=exec_session_id,
                 mode=mode,
+                expected_execution_id=state.exec_execution_id if state is not None else None,
             )
             timeout_min = max(1, int(timeout_seconds // 60))
             return _resolve_cron_team_timeout_result(
@@ -2863,6 +3037,7 @@ class CronSchedulerService:
                 envelope=envelope,
                 exec_session_id=exec_session_id,
                 mode=mode,
+                expected_execution_id=state.exec_execution_id if state is not None else None,
             )
             raise
 
@@ -2945,6 +3120,10 @@ class CronSchedulerService:
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
+        if _is_web_cron_job(job):
+            if not is_placeholder:
+                await self._notify_web_run(job, state, phase="reminder", notify=True)
+            return
         if not is_scheduled_task_supported(job.targets):
             logger.info(
                 "[Cron] push skipped: unsupported target job=%s target=%s",
@@ -3251,10 +3430,14 @@ class CronSchedulerService:
         终稿已经放过时，后面的推送不再放第二遍。
         """
         name = str(event_name or "").strip()
-        if name not in _CRON_LIVE_MIRROR_EVENTS or not isinstance(payload, dict):
+        if not isinstance(payload, dict) or (
+            name not in _CRON_LIVE_MIRROR_EVENTS and not name.startswith(("team.", "workflow."))
+        ):
             return
         sid = str(getattr(state, "exec_session_id", "") or "").strip()
-        if not sid.startswith("cron_") and not sid.startswith("__cron__"):
+        if not sid or (
+            state.exec_channel_id != "web" and not sid.startswith(("cron_", "__cron__"))
+        ):
             return
         cron_meta = payload.get("cron")
         if isinstance(cron_meta, dict) and cron_meta.get("is_placeholder"):
@@ -3266,6 +3449,8 @@ class CronSchedulerService:
         body["session_id"] = sid
         body["event_type"] = name
         body["live_seq"] = state.live_seq
+        if state.exec_channel_id == "web":
+            body[CRON_SESSION_STREAM_KEY] = True
         if name == "chat.final":
             state.live_final_forwarded = True
         from gateway.cron.live_bus import cron_live_bus

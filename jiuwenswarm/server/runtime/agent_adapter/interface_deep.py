@@ -741,6 +741,28 @@ _REQUIRED_AGENT_RAIL_ATTR_NAMES = frozenset(
 )
 
 
+def resolve_cron_execution_flag(
+    *,
+    channel_id: str | None,
+    is_session_scoped: bool,
+    config: dict[str, Any] | None,
+) -> bool:
+    """Whether one adapter instance serves an unattended cron execution.
+
+    Ordinary Web cron runs on the Web identity, so the persisted channel no
+    longer identifies it. Only the session-scoped child that received
+    ``config["cron_execution"]`` for this turn is a cron execution; the root
+    Web adapter stays an ordinary router.
+    """
+    if str(channel_id or "").strip() == "__cron__":
+        return True
+    return bool(
+        isinstance(config, dict)
+        and is_session_scoped
+        and config.get("cron_execution")
+    )
+
+
 def _resolve_agent_composition_scope(mode: str, sub_mode: str | None) -> str:
     """Classify Smart eligibility without restricting ordinary agent modes."""
     normalized_mode = str(mode or "").strip().lower()
@@ -3675,6 +3697,7 @@ class JiuWenSwarmDeepAdapter:
                 request.session_id,
                 history_before_request_id=request.request_id,
                 reserve_activity=reserve_activity,
+                execution_request=request,
                 external_harness_binding=external_harness_binding,
             )
 
@@ -3696,6 +3719,7 @@ class JiuWenSwarmDeepAdapter:
                 request.session_id,
                 history_before_request_id=request.request_id,
                 reserve_activity=reserve_activity,
+                execution_request=request,
                 external_harness_binding=external_harness_binding,
                 **(
                     {"model_selection": request.params["model_selection"]}
@@ -3716,6 +3740,7 @@ class JiuWenSwarmDeepAdapter:
                 history_before_request_id=request.request_id,
                 reserve_activity=reserve_activity,
                 host_external_input=True,
+                execution_request=request,
                 external_harness_binding=external_harness_binding,
                 **(
                     {"model_selection": request.params["model_selection"]}
@@ -3789,6 +3814,23 @@ class JiuWenSwarmDeepAdapter:
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
+            cron_execution = getattr(self, "_channel_id", None) == "__cron__" or bool(
+                execution_request is not None and (execution_request.metadata or {}).get("cron")
+            )
+            if existing is not None and execution_request is not None:
+                # A same-class child owns its execution and permission lifetime;
+                # replace it only when it is idle and the execution recipe
+                # (ordinary vs cron) actually changed.
+                if (
+                    existing._is_cron_execution != cron_execution  # pylint: disable=protected-access
+                    and not existing._is_session_live(sid)  # pylint: disable=protected-access
+                    and not existing._has_live_root_permission_owner(sid)  # pylint: disable=protected-access
+                ):
+                    # Preserve the ordinary Web follow-up recipe after unattended work.
+                    # The session lock prevents publishing two writable children.
+                    await existing.cleanup()
+                    self._drop_session_adapter_cache_entry(sid, remove_lock=False, remove_runtime_state=False)
+                    existing = None
             if external_harness_binding is None and existing is None:
                 external_harness_binding = await load_persisted_external_harness_binding(sid)
 
@@ -3856,6 +3898,8 @@ class JiuWenSwarmDeepAdapter:
                 elif raw_selection is None:
                     raw_selection = metadata.get("model_selection")
                 selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
+                if selection is not None and selection.type == "model_group" and self._is_cron_execution_session(sid):
+                    raise ValueError("Scheduled task sessions only support a single model")
                 mode = self._session_instance_mode
                 moa_snapshot = None
                 moa_fingerprint = None
@@ -4124,7 +4168,7 @@ class JiuWenSwarmDeepAdapter:
             create_started_at = time.monotonic()
             if permission_project_dir is not None:
                 config = {**(config or {}), "project_dir": permission_project_dir}
-            config = {**(config or {}), "moa_enabled": effective_moa,
+            config = {**(config or {}), "cron_execution": cron_execution, "moa_enabled": effective_moa,
                       "moa_model_selection": selection.model_dump() if selection is not None else None}
             if moa_snapshot is not None:
                 config["moa_config_snapshot"] = moa_snapshot
@@ -12836,7 +12880,11 @@ class JiuWenSwarmDeepAdapter:
             (config or {}).get("channel_id") if isinstance(config, dict) else ""
             or ""
         ).strip() or getattr(self, "_channel_id", "")
-        self._is_cron_execution = self._channel_id == "__cron__"
+        self._is_cron_execution = resolve_cron_execution_flag(
+            channel_id=self._channel_id,
+            is_session_scoped=self._is_session_scoped_adapter,
+            config=config,
+        )
         composition_scope = _resolve_agent_composition_scope(mode, sub_mode)
 
         await self.set_checkpoint()
@@ -15772,6 +15820,8 @@ class JiuWenSwarmDeepAdapter:
     ) -> bool:
         """Check whether the first Web follow-up can refresh an idle cron context."""
         if send_without_output or request.channel_id != "web":
+            return False
+        if (request.metadata or {}).get("cron"):
             return False
         if not request.session_id or getattr(self, "_cron_web_context_refreshed", False):
             return False

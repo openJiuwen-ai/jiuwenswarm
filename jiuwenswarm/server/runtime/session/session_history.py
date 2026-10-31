@@ -1312,12 +1312,38 @@ def _write_item(
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id)
             records = _read_history(target_path)
+            if _is_error_record(item) and _has_request_error(records, item):
+                return
             records.append(item)
             _write_records_to_path(target_path, records)
             return
 
         target_path = _ensure_jsonl_bootstrap(session_id)
+        if _is_error_record(item) and _has_request_error(_read_history_jsonl(target_path), item):
+            return
         _append_record_jsonl(target_path, item)
+
+
+def _is_error_record(item: dict[str, Any]) -> bool:
+    return bool(item.get("cron_failure_record")) or item.get("event_type") in {
+        "chat.error", "execution.error", "team.error",
+    }
+
+
+def _has_request_error(records: list[dict[str, Any]], item: dict[str, Any]) -> bool:
+    """Deduplicate cron fallback and primary error regardless of write order."""
+    if not item.get("request_id") or item.get("role") != "assistant":
+        return False
+    # The legacy JSON reader returns its array verbatim, so a corrupted file can
+    # carry non-object entries; they must not fail the write.
+    return any(
+        record.get("request_id") == item.get("request_id")
+        and record.get("role") == "assistant"
+        and _is_error_record(record)
+        and (item.get("cron_failure_record") or record.get("cron_failure_record"))
+        for record in records
+        if isinstance(record, dict)
+    )
 
 
 def _ensure_worker_started() -> None:

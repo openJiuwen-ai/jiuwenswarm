@@ -712,6 +712,9 @@ class CronRunState:
     # Tenant route captured with the executing request.  A removed persisted
     # job must not make ghost/timeout cancellation fall back to the default user.
     exec_user_id: str | None = None
+    exec_app_id: str | None = None
+    exec_group_id: str | None = None
+    exec_bot_id: str | None = None
     # Remaining AgentManager cache identity captured by the executing request.
     # These values survive removal of the persisted job so ghost/timeout
     # cancellation can still target the exact Runtime agent.
@@ -727,3 +730,7 @@ class CronRunState:
     live_final_forwarded: bool = False
     # 直播帧序号。浏览器若短暂连了两次，用它丢掉来晚的旧帧。
     live_seq: int = 0
+    exec_request_id: str | None = None
+    exec_execution_id: str | None = None
+    notification_revision: int = 0
+    stream_error_seen: bool = False

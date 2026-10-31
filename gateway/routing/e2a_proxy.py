@@ -161,6 +161,10 @@ async def proxy_unary_request(
     if user_id:
         proxy_params.pop("user_id", None)
 
+    # An empty app_id from a hand-crafted connection URL must resolve the
+    # same way as cron creation and execution (app_web_handlers), so the
+    # restore request matches the session's actual execution identity.
+    ws_app_id = getattr(ws, "_jiuwen_app_id", None)
     env = e2a_from_agent_fields(
         request_id=req_id,
         channel_id=channel.channel_id,
@@ -170,9 +174,10 @@ async def proxy_unary_request(
         is_stream=False,
         timestamp=time.time(),
         user_id=user_id or None,
-        metadata=(
-            apply_routing_metadata(None, getattr(ws, "_web_routing"))
-            if isinstance(getattr(ws, "_web_routing", None), dict) else None
+        metadata=apply_routing_metadata(
+            {"app_id": str(ws_app_id) or "default"}
+            if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None else None,
+            getattr(ws, "_web_routing", None),
         ),
     )
     try:

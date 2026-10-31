@@ -2514,6 +2514,14 @@
     }
   },
   "cron": {
+    "execution": {
+      "pending": "Waiting to run",
+      "running": "Executing",
+      "awaiting_approval": "Awaiting approval",
+      "succeeded": "Last run completed",
+      "failed": "Last run failed",
+      "startFailed": "Scheduled task “{{name}}” could not start: {{reason}}"
+    },
     "title": "Scheduled Task Management",
     "subtitle": "Manage scheduled tasks with cron expressions, including creating, enabling, and deleting tasks",
     "create": "Create",
@@ -2783,6 +2791,7 @@
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
+      "sessionOpenFailed": "The task was triggered, but its session could not be opened. Open it from the task's session list.",
       "expiredCannotRunNow": "Task has expired and cannot be run",
       "disabledCannotRunNow": "Task is stopped and cannot be run",
       "expiredCannotEnable": "Task has expired and cannot be enabled",

@@ -133,6 +133,7 @@ def cancel_request(message: dict[str, Any]) -> AgentRequest:
         session_id=str(session_id) if session_id else None,
         req_method=ReqMethod.CHAT_CANCEL,
         params={
+            **params,
             "session_id": session_id or "",
             "request_id": params.get("request_id") or "",
         },
