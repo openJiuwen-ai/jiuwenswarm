@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import re
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -27,6 +28,7 @@ from jiuwenswarm.common.local_env_config import bind_task_env_overlay, reset_tas
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep, interface_flash
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
 from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools, turbo_package_loader
+from jiuwenswarm.server.runtime.skill_turbo.rails import skill_prompt_rail
 
 TURBO_TOOL_NAME = "skill_acceleration_exec"
 PPT_QUERIES = (
@@ -208,10 +210,12 @@ async def test_relay_empty_prewarm_refreshes_before_first_real_model_call(
             system_text = "\n".join(str(message.content) for message in messages if message.role == "system")
             assert "## 技能加速通道" in system_text
             assert "todo_modify" not in system_text
-            assert f"当前支持：{external}" in system_text
-            assert "对当前支持范围内的任务，第一个工具调用必须是 skill_acceleration_exec" in system_text
-            assert "第一个工具调用必须是 skill_acceleration_exec" in system_text
-            assert "这条规则不依赖技能检索开关" in system_text
+            assert f"当前：{external}" in system_text
+            assert "当用户意图匹配 `skill_acceleration_exec`" in system_text
+            assert "第一个工具调用必须是 `skill_acceleration_exec`" in system_text
+            assert "对应技能正文" in system_text
+            assert "todo(action=create)" in system_text
+            assert "todo(action=modify, modify_action=update)" in system_text
             assert "__skill_turbo_hitl__" in system_text
             assert any(message.content == query for message in messages if message.role == "user")
             tool_names = [tool.name for tool in tools]
@@ -409,20 +413,29 @@ async def test_flash_guide_preserves_priority_and_cleans_up(monkeypatch, skill_r
     assert rail.system_prompt_builder is None
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("language,scope,restriction", [
-    ("cn", "新建 PPT、Word 文档和 Excel 工作簿", "以下排除仅适用于 PPT"),
-    ("en", "new PPT presentations, Word documents and Excel workbooks", "exclusions apply ONLY to PPT"),
+    ("cn", "当用户意图匹配", "仅适用于 PPT 类任务"),
+    ("en", "When the user's intent matches", "PPT tasks only"),
 ])
-def test_flash_office_guide_scopes_ppt_exclusions(language, scope, restriction):
-    from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import (
-        FlashTurboPromptRail,
-    )
+async def test_flash_office_guide_scopes_ppt_exclusions(monkeypatch, language, scope, restriction):
+    from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import FlashTurboPromptRail
 
-    text = FlashTurboPromptRail()._build_guide_text(language, ["docx-craft", "xlsx-craft"])
+    monkeypatch.setattr(skill_turbo_tools, "refresh_skill_acceleration_description",
+                        lambda: ["docx-craft", "xlsx-craft"])
+    builder = SystemPromptBuilder(language=language)
+    agent = SimpleNamespace(system_prompt_builder=builder)
+    rail = FlashTurboPromptRail()
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(
+        agent=agent, inputs=SimpleNamespace(tools=[skill_turbo_tools.skill_turbo.card]),
+    ))
+    text = builder.get_section("skill_turbo_guide").render(language)
     assert scope in text
     assert restriction in text
     assert "docx-craft" in text and "xlsx-craft" in text
     assert "__skill_turbo_hitl__" in text
+    rail.uninit(agent)
 
 
 @pytest.mark.asyncio
@@ -453,7 +466,7 @@ async def test_disabled_office_turbo_is_absent_from_flash_guide(monkeypatch, ski
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_stage", ["import", "refresh", "guide", "priority", "add_section"])
+@pytest.mark.parametrize("failure_stage", ["import", "refresh", "guide", "priority", "add_section", "adapt"])
 async def test_flash_guide_runtime_failure_cleans_up_and_recovers(monkeypatch, failure_stage):
     from jiuwenswarm.agents.harness.flash.rails import flash_turbo_prompt_rail
 
@@ -472,6 +485,7 @@ async def test_flash_guide_runtime_failure_cleans_up_and_recovers(monkeypatch, f
     )
     warning = Mock()
     monkeypatch.setattr(flash_turbo_prompt_rail.logger, "warning", warning)
+    monkeypatch.setattr(skill_prompt_rail.logger, "warning", warning)
     with monkeypatch.context() as faults:
         if failure_stage == "import":
             original_import = builtins.__import__
@@ -485,7 +499,9 @@ async def test_flash_guide_runtime_failure_cleans_up_and_recovers(monkeypatch, f
         elif failure_stage == "refresh":
             faults.setattr(skill_turbo_tools, "refresh_skill_acceleration_description", Mock(side_effect=error))
         elif failure_stage == "guide":
-            faults.setattr(flash_turbo_prompt_rail, "region_edit_keyword_summary", Mock(side_effect=error))
+            faults.setattr(skill_prompt_rail, "_build_skill_turbo_guide_text", Mock(side_effect=error))
+        elif failure_stage == "adapt":
+            faults.setattr(rail, "_adapt_todo_calls", Mock(side_effect=error))
         elif failure_stage == "priority":
             faults.setattr(rail, "_resolve_priority", Mock(side_effect=error))
         else:
@@ -494,8 +510,104 @@ async def test_flash_guide_runtime_failure_cleans_up_and_recovers(monkeypatch, f
         await rail.before_model_call(ctx)
     assert builder.get_section("skill_turbo_guide") is None
     assert builder.get_section("unrelated").content == {"cn": "keep"}
-    message = "refresh description" if failure_stage in ("import", "refresh") else "build skill_turbo_guide section"
-    warning.assert_called_once_with(f"[FlashTurboPromptRail] {message} failed: %s", error)
+    assert warning.call_count == 1
+    warning_text = warning.call_args.args[0] % warning.call_args.args[1:]
+    assert "skill_turbo_guide" in warning_text or "refresh description" in warning_text
+    assert str(error) in warning_text
     await rail.before_model_call(ctx)
     assert "pptx-craft" in builder.get_section("skill_turbo_guide").content["cn"]
     assert warning.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["cn", "en"])
+async def test_flash_reuses_shared_rules_and_adapts_real_todo_calls(monkeypatch, tmp_path, language):
+    from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+    from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import FlashTurboPromptRail
+    from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
+
+    # 模拟公共规则和技能清单继续扩展，Flash 应直接继承，不能复制固定正文。
+    original = skill_prompt_rail._build_skill_turbo_guide_text
+    marker = "Shared rule for newly supported skills."
+    monkeypatch.setattr(skill_prompt_rail, "_build_skill_turbo_guide_text",
+                        lambda lang, names: original(lang, names) + marker)
+    monkeypatch.setattr(skill_turbo_tools, "refresh_skill_acceleration_description",
+                        lambda: ["pptx-craft", "docx-craft", "xlsx-craft", "future-export"])
+    monkeypatch.setattr("openjiuwen.harness.deep_agent.schedule_image_support_probe", lambda *_: None)
+    rail = FlashTurboPromptRail()
+    todo_rail = FlashTodoRail()
+    await Runner.start()
+    core = create_deep_agent(
+        model=_Model(), tools=[], rails=[todo_rail, rail], system_prompt="Test",
+        enable_task_loop=False, workspace=str(tmp_path),
+    )
+    session = Session(session_id=f"flash-todo-guide-{uuid4().hex}", card=core.card)
+    sessions_root = tmp_path / "sessions"
+    # 待办引擎校验宿主会话生命周期，测试也使用真实元数据初始化。
+    init_session_metadata(session_id=session.get_session_id(), sessions_root=sessions_root, new_todo_object=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.flash.rails.flash_todo_rail.get_agent_sessions_dir", lambda: sessions_root,
+    )
+    try:
+        await core._ensure_initialized()
+        builder = core.system_prompt_builder
+        builder.language = language
+        await session.pre_run(inputs={"query": "生成两份文档"})
+        await todo_rail.before_invoke(SimpleNamespace(session=session))
+        await rail.before_model_call(SimpleNamespace(
+            agent=core, inputs=SimpleNamespace(tools=[skill_turbo_tools.skill_turbo.card]),
+        ))
+        text = builder.get_section("skill_turbo_guide").render(language)
+        assert marker in text and "future-export" in text
+        assert "todo_create" not in text and "todo_modify" not in text
+        assert "（action=update）" not in text and "(action=update)" not in text
+        # 从最终提示词提取参数，交给真实统一工具及原生待办引擎执行。
+        calls = re.findall(r"`todo\(([^)]+)\)`", text)
+        arguments = [dict(pair.strip().split("=", 1) for pair in call.split(",")) for call in calls]
+        create = next(args for args in arguments if args.get("action") == "create")
+        modify = next(args for args in arguments if args.get("action") == "modify")
+        tool = todo_rail._tools[0]
+        result = await tool.invoke({**create, "tasks": [{"id": "doc-1", "content": "第一份"},
+                                                       {"id": "doc-2", "content": "第二份"}]}, session=session)
+        assert result.get("message")
+        result = await tool.invoke({**modify, "todos": [{"id": "doc-1", "status": "completed"},
+                                                        {"id": "doc-2", "status": "in_progress"}]}, session=session)
+        assert result.get("message")
+        todos = await todo_rail.engines["list"].load_todos(session.get_session_id())
+        assert {item.id: item.status.value for item in todos} == {"doc-1": "completed", "doc-2": "in_progress"}
+        result = await tool.invoke({**modify, "todos": [{"id": "doc-2", "status": "completed"}]}, session=session)
+        assert result.get("message")
+        todos = await todo_rail.engines["list"].load_todos(session.get_session_id())
+        assert {item.id: item.status.value for item in todos} == {"doc-1": "completed", "doc-2": "completed"}
+        await session.post_run()
+    finally:
+        await core.stop()
+
+
+@pytest.mark.asyncio
+async def test_adaptation_preserves_parent_section_attributes_and_other_sections(monkeypatch):
+    from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import FlashTurboPromptRail
+
+    rail = FlashTurboPromptRail()
+    builder = SystemPromptBuilder(language="en")
+    other = PromptSection(name="unrelated", content={"en": "todo_create stays unchanged"})
+    builder.add_section(other)
+    parent_section = PromptSection(
+        name="skill_turbo_guide", content={"en": "Use `todo_create` then `todo_modify` (action=update)."},
+        priority=321,
+    )
+    parent_section.category = "skills"
+
+    async def inject(_rail, _ctx):
+        builder.add_section(parent_section)
+
+    monkeypatch.setattr(skill_prompt_rail.SkillTurboPromptRail, "before_model_call", inject)
+    await rail.before_model_call(SimpleNamespace(
+        agent=SimpleNamespace(system_prompt_builder=builder),
+        inputs=SimpleNamespace(tools=[skill_turbo_tools.skill_turbo.card]),
+    ))
+    section = builder.get_section("skill_turbo_guide")
+    assert section.priority == 321 and section.category == "skills"
+    assert section.content["en"] == "Use `todo(action=create)` then `todo(action=modify, modify_action=update)`."
+    assert parent_section.content["en"] == "Use `todo_create` then `todo_modify` (action=update)."
+    assert builder.get_section("unrelated") is other

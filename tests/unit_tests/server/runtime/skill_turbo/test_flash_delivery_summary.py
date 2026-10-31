@@ -46,6 +46,7 @@ from openjiuwen.harness import create_deep_agent
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.flash.rails.flash_delivery_summary_rail import FlashDeliverySummaryRail
+from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import FlashTurboPromptRail
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep, interface_flash
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
 from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools as turbo_tools
@@ -542,6 +543,8 @@ async def _real_delivery_agent(assemble_flash, monkeypatch, tmp_path, replies, e
     _, rails = assemble_flash()
     rails = [r for r in rails if isinstance(r, (JiuSwarmStreamEventRail, SkillTurboDeliverySummaryRail))]
     rails.extend(extra_rails)
+    rails.append(FlashTurboPromptRail())
+    monkeypatch.setattr(turbo_tools, "refresh_skill_acceleration_description", lambda: ["pptx-craft", "docx-craft"])
     tool = _DeliveryTool("ok")
     model = _ScriptedDeliveryModel(tool, replies)
     await Runner.start()
@@ -602,6 +605,11 @@ async def test_same_batch_approval_is_saved_with_delivered_summary(
         assert sum(m.content == _SUMMARY for m in model.calls[-1]) == 1
         tool_messages = [m for m in model.calls[-1] if m.role == "tool"]
         assert {m.tool_call_id for m in tool_messages} == {"ppt-1", "approval-1"}
+        for messages in model.calls:
+            system_text = "\n".join(str(m.content) for m in messages if m.role == "system")
+            assert "docx-craft" in system_text
+            assert "__skill_turbo_hitl__" in system_text
+            assert "todo_modify" not in system_text
 
 
 @pytest.mark.asyncio
