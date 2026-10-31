@@ -222,7 +222,7 @@ await run_history_io(
 
 该异步入口收到原生 BaseMessage 时，在过滤/提交之前适配为公开消息，同时将原生 JSON 快照留在 native_message 中。工具关联、metadata、工具参数由宿主保留，允许的 content 改写合并回待存快照，原调用者的 BaseMessage 实例不被就地修改。原有产品流式事件入口继续适配，不要求把全系统历史迁移为 BaseMessage 存储。
 
-启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 append 等共享方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；[历史查询的同名事件链](F_23_session-messages-ops.md#51-平台装配和业务调用链) 独立说明。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
+启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 append 等共享方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；[历史查询的同名事件链](F_23_session-messages-ops.md#51-启动登记上下文绑定与-core-分工) 独立说明。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
 
 生命周期预检在 Hook 前捕获 generation，提交锁内复验；不持文件/队列锁执行 USER。文件关闭后才成功回执，同一次调用的重复 next 复用真实结果；回执深拷贝，后置篡改不改变已经保存的事实。写入开始后取消先排空，再传播 CancelledError。写入与元数据仍非跨存储原子事务，不承诺 fsync 断电耐久。
 

@@ -17,4 +17,4 @@
 
 `current_query_origin()` 是 Server 提供的只读来源辅助函数；其中 package 是发起查询的包，不是当前 Handler 所属包。当前 Core 未提供 Claude 的 next.origin / 跳过调用 Hook，本实现以查询调用域拒绝循环。
 
-详细字段、拒绝与改写示例见 [F_27](../../docs/features/F_27_session-query-events.md) 及其链接的专项特性文档。
+详细字段、拒绝与改写示例见 [查询公共机制与特性索引](../../docs/designs/session-query-events.md) 及其链接的专项特性文档。
