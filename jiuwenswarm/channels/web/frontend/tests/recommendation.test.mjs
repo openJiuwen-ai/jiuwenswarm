@@ -186,7 +186,7 @@ describe('recommendation settings page', () => {
     last_failure: null,
     provider_refused: false,
     enabled: false,
-    selected_model: 'follow_main',
+    selected_model: 'mdl_flash',
     model_options: [
       { model_id: 'mdl_flash', name: 'deepseek-v4-1-flash-260910', disabled_reason: null },
       { model_id: 'mdl_pro', name: 'deepseek-v4-1-pro', disabled_reason: null },
@@ -396,12 +396,12 @@ describe('recommendation settings page', () => {
   test('choosing a model sends only its ID and shows it as chosen', async (t) => {
     const ui = await mount(t);
     await click(modelSelect());
-    await click(modelOptions()[2]);
+    await click(modelOptions()[1]);
     assert.deepEqual(ui.selections(), [{ model: 'mdl_pro' }]);
     assert.equal(modelSelect()?.textContent, 'deepseek-v4-1-pro');
 
     await click(modelSelect());
-    await click(modelOptions()[3]);
+    await click(modelOptions()[2]);
     assert.equal(ui.selections().length, 1);
   });
 
@@ -717,14 +717,6 @@ async function setPageVisibility(state) {
 }
 
 
-function noticeText() {
-  return dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice-text"]')?.textContent ?? null;
-}
-
-function noticeButtons() {
-  return [...dom.window.document.querySelectorAll('[data-testid="chat-panel-topic-starter-dismiss-notice"] button')].map(button => button.textContent);
-}
-
 function scopeParams(request) {
   const { visit_id, manual_retry, ...scope } = request.params;
   assert.match(visit_id, /^topic-visit-/);
@@ -864,7 +856,7 @@ test('not interested keeps the card until the server confirms it was recorded', 
     });
     await react.act(settle);
     assert.equal(visibleSuggestionTitles().length, 4);
-    assert.equal(dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]') === null, true);
+    assert.equal(dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]'), null);
 
     starterEventResponses.set('not_interested', true);
     await react.act(async () => {
@@ -892,7 +884,7 @@ test('a confirmed dismissal keeps the remaining cards on screen while the pool b
       liveSocket.reply(starterRequests()[0].id, dynamicSlateResponse('sess-backfill', 'BACKFILL', 4));
     });
     await react.act(settle);
-    starterEventResponses.set('not_interested', { recorded: true, pausable: true });
+    starterEventResponses.set('not_interested', { recorded: true });
 
     const dismissButton = dom.window.document.querySelector('.chat-suggestion-card__dismiss');
     assert.ok(dismissButton);
@@ -905,15 +897,8 @@ test('a confirmed dismissal keeps the remaining cards on screen while the pool b
     // The page re-reads the pool after the dismissal; until it answers the other three stay.
     assert.equal(starterRequests().length, 2);
     assert.deepEqual(visibleSuggestionTitles(), ['BACKFILL-title-1', 'BACKFILL-title-2', 'BACKFILL-title-3']);
-    const notice = () => dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]');
-    assert.equal(['Skipped for now', '这条先不看了'].includes(noticeText()), true);
-    assert.equal(
-      JSON.stringify(noticeButtons()) === JSON.stringify(['Show this less for a week', 'Undo'])
-        || JSON.stringify(noticeButtons()) === JSON.stringify(['这类先藏一周', '撤销']),
-      true,
-    );
-    const heading = dom.window.document.querySelector('[data-testid="chat-panel-welcome-recommendation-label"]');
-    assert.equal(heading?.nextElementSibling?.getAttribute('data-testid'), 'chat-panel-topic-starter-dismiss-notice');
+    // A dismissal no longer opens an undo or interest-pause notice.
+    assert.equal(dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]'), null);
 
     await react.act(async () => {
       liveSocket.reply(starterRequests()[1].id, dynamicSlateResponse('sess-backfill', 'REFILL', 4));
@@ -921,14 +906,7 @@ test('a confirmed dismissal keeps the remaining cards on screen while the pool b
     await react.act(settle);
     assert.deepEqual(visibleSuggestionTitles(), ['REFILL-title-0', 'REFILL-title-1', 'REFILL-title-2', 'REFILL-title-3']);
     assert.equal(starterEvents('dynamic_exposure').filter(frame => frame.params.slate_id === 'slate-REFILL').length, 1);
-    assert.equal(['Skipped for now', '这条先不看了'].includes(noticeText()), true);
-
-    // The notice stays eight seconds so its buttons can be used, then leaves the page; the cards stay.
-    await react.act(async () => { await new Promise(resolve => setTimeout(resolve, 4100)); });
-    assert.equal(['Skipped for now', '这条先不看了'].includes(noticeText()), true);
-    await react.act(async () => { await new Promise(resolve => setTimeout(resolve, 4000)); });
-    assert.equal(notice() === null, true);
-    assert.deepEqual(visibleSuggestionTitles(), ['REFILL-title-0', 'REFILL-title-1', 'REFILL-title-2', 'REFILL-title-3']);
+    assert.equal(dom.window.document.querySelector('[data-testid="chat-panel-topic-starter-dismiss-notice"]'), null);
   } finally {
     await panel.unmount();
   }

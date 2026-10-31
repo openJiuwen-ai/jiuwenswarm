@@ -15,7 +15,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable
 
-_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
+# One extra_body for every model. Qwen ignores thinking.type and reads enable_thinking.
+# reasoning_effort stays off this request; Doubao rejects it together with thinking disabled.
+_THINKING_DISABLED_EXTRA_BODY = {
+    "thinking": {"type": "disabled"},
+    "enable_thinking": False,
+}
+
 # A result whose consumer fails before record_validation keeps its receipt here; bound how many
 # such unconsumed results stay referenced, since a caller is not obliged to call aclose().
 _MAX_PENDING_VALIDATION_RECEIPTS = 64
@@ -193,7 +199,6 @@ def build_ark_stage_invoker(
     response_schema_for_stage: Callable[[str, str], Mapping[str, Any] | None] | None = None,
     require_response_metadata: bool = False,
     receipt_sink: Callable[[dict[str, Any]], None] | None = None,
-    reasoning_effort_for_stage: Callable[[str], str | None] | None = None,
     max_tokens_for_stage: Callable[[str], int | None] | None = None,
     prompt_version_for_stage: Callable[[str], str | None] | None = None,
     invocation_lineage_for_stage: Callable[[str, str, Any], Mapping[str, Any] | None]
@@ -224,13 +229,6 @@ def build_ark_stage_invoker(
                     "schema": dict(schema),
                 },
             }
-        reasoning_effort = (
-            reasoning_effort_for_stage(stage)
-            if reasoning_effort_for_stage is not None
-            else None
-        )
-        if reasoning_effort is not None and reasoning_effort not in _REASONING_EFFORTS:
-            raise ValueError("unsupported Ark reasoning effort")
         max_tokens = max_tokens_for_stage(stage) if max_tokens_for_stage is not None else None
         started_at = time.perf_counter()
         request: dict[str, Any] = {
@@ -245,14 +243,8 @@ def build_ark_stage_invoker(
         }
         if max_tokens is not None:
             request["max_tokens"] = max_tokens
-        # 推荐链的后台调用不消费推理预算：GLM 系兼容端点认 thinking.type=disabled。
-        # 必须经 SDK 的 extra_body 传入——thinking 不是 create() 的类型化参数，
-        # 直接放顶层会在 OpenAI SDK 校验时抛 TypeError（请求不出网即失败）。
-        # 不发 enable_thinking/chat_template_kwargs——DashScope 代理会对"始终思考"的
-        # 模型以 400 拒绝 enable_thinking=false（litellm: 请使用 low、high 或 max）。
-        # 阶段的 reasoning_effort 也不发：豆包对 thinking=disabled 同时带 low、medium、
-        # high 返回 400；它只记在回执里，作为该阶段的策略身份。
-        request["extra_body"] = {"thinking": {"type": "disabled"}}
+        # thinking 和 enable_thinking 都不是 create() 的类型化参数，放顶层会在 SDK 校验时 TypeError。
+        request["extra_body"] = dict(_THINKING_DISABLED_EXTRA_BODY)
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
@@ -270,8 +262,6 @@ def build_ark_stage_invoker(
                 "json_schema_strict" if schema is not None else "json_object"
             ),
         }
-        if reasoning_effort is not None:
-            receipt["reasoning_effort"] = reasoning_effort
         prompt_version = (
             prompt_version_for_stage(stage)
             if prompt_version_for_stage is not None

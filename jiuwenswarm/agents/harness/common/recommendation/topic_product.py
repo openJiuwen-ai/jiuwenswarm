@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from functools import cached_property
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 from urllib.parse import urlparse
 
 from jiuwenswarm.agents.harness.common.recommendation.topic_audit import (
@@ -4954,6 +4954,7 @@ def build_cold_start_cards(
     hot_list_pull: HotListPull | None = None,
     feedback: InterestFeedback | None = None,
     target_count: int = FIRST_SCREEN_CARD_TARGET,
+    exclude: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Packaged corpus cards, plus a cached hot-list card when one is still wanted."""
 
@@ -4971,6 +4972,8 @@ def build_cold_start_cards(
                 entry, hot_list_pull, rank=1, batch_id=batch_id, trigger_key=trigger_key, now=now,
             )
             if news is None:
+                continue
+            if exclude is not None and exclude(news):
                 continue
             if feedback is not None and not feedback.still_wanted(news):
                 continue
@@ -4991,6 +4994,8 @@ def build_cold_start_cards(
             starter, rank=len(cards) + 1, batch_id=batch_id, trigger_key=trigger_key, now=now,
         )
         if card is None:
+            return False
+        if exclude is not None and exclude(card):
             return False
         if feedback is not None and not feedback.still_wanted(card):
             return False
@@ -5317,9 +5322,16 @@ def _select_exposure(
                     break
                 if card in selected or (context_scope == GLOBAL_NEW_CHAT_SCOPE and card_is_news(card)):
                     continue
-                if context_scope == GLOBAL_NEW_CHAT_SCOPE and not card.get("interest_summary_id"):
-                    continue
-                direction = str(card.get("direction") or card.get("interest_summary_id") or "")
+                if context_scope == GLOBAL_NEW_CHAT_SCOPE:
+                    interest_id = str(card.get("interest_summary_id") or "")
+                    starter_id = str(card.get("source_starter_id") or "")
+                    if not interest_id and not starter_id and not card.get("cold_start"):
+                        continue
+                    direction = str(
+                        card.get("direction") or interest_id or starter_id or card.get("card_id") or ""
+                    )
+                else:
+                    direction = str(card.get("direction") or card.get("interest_summary_id") or "")
                 if mode == "spread" and direction in selected_directions:
                     continue
                 if str(card["card_revision_id"]) in reduced_revision_ids:
