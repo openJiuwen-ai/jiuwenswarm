@@ -81,7 +81,7 @@ def _build_http_ext(
 
 def resolve_http_routing_identity(headers: Any, client_host: str | None) -> dict[str, str]:
     """Resolve notification scope through the same trusted headers as RPC ingress."""
-    from jiuwenswarm.common.request_identity import normalize_routing_identity
+    from gateway.common.request_identity import normalize_routing_identity
 
     hdrs = _header_map(headers)
     if not _trust_client_tenant_headers(client_host):
