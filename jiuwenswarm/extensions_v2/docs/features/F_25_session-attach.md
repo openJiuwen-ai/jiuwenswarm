@@ -5,7 +5,7 @@
 | 编号 | F_25 / session-attach |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-29，既有实现与验证；2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变；2026-10-31，在输入输出字段旁补充实际定义、构造、读取与返回函数 |
+| 后续修订 | 2026-10-29，既有实现与验证；2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变 |
 | 计划与进度 | [EXTV2-20 / Server PR08](../designs/extensions-v2-development-plan.md#extv2-20-界面与主会话关联建立通知) |
 | 主责规约 | [S_14](../specs/S_14_session-attach.md) |
 
@@ -49,53 +49,6 @@ Claude 固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497、声明头 2.1.277
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
-#### 输入相关定义与构造函数
-
-实际输入类型如下；这一定义中的字段名，与下方表格逐项对应。frozen=True 表示用户不能修改对象字段来改变平台事实。
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAttachInput:
-    """A concrete view's association, committed by the platform."""
-
-    session_id: str
-    surface_id: str
-    attachment_id: str
-    channel_id: str
-    mode: str
-    previous_session_id: str | None
-```
-
-类型来源：[event_types/session_attach.py](../../event_types/session_attach.py)。
-
-下面的实际平台函数把业务事实填写进这个输入对象；其中的 value/facts 是要交给 EventBus 的通知输入，不是用户构造的任意 payload。
-
-```python
-def commit(self, event: SessionForegroundEvent, context: SessionContext | None = None) -> SessionAttachInput | None:
-    """Commit a confirmed main-Session view change, ignoring exact replays."""
-    target = event.target.descriptor
-    key = (target.channel_id, event.view_id)
-    previous = self._views.get(key)
-    if previous is not None and previous.session_id == target.session_id:
-        return None
-    value = SessionAttachInput(
-        session_id=target.session_id, surface_id=event.view_id, attachment_id=uuid.uuid4().hex,
-        channel_id=target.channel_id, mode=target.mode,
-        previous_session_id=previous.session_id if previous is not None else None,
-    )
-    self._views[key] = value
-    self._contexts[key] = context if context is not None else SessionContext(target.session_id)
-    return value
-```
-
-构造函数来源：[平台接入代码](../../../server/runtime/session/attach_notifications.py)；后续真实 trigger 保留在平台通知链中。
-
-| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
-| --- | --- | --- |
-| session_id / channel_id / mode | commit 从真实 event.target.descriptor 读取 | 构成已经提交的新主会话关联事实 |
-| surface_id / attachment_id | event.view_id 与平台 uuid.uuid4().hex | 具体视图与本次关联身份分开 |
-| previous_session_id | 平台已有 _views 表中的 previous.session_id，缺失为 None | 不是请求自报的旧目标；新 context 另存于 _contexts |
-
 实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_attach`，Handler 接收 frozen dataclass `SessionAttachInput`，不是任意 JSON 字典。以下是平台生成后可观察到的形状示意；用户只读，不复制这个构造器直接触发事件。
 
 ```python
@@ -137,48 +90,6 @@ Event 输入是可观察的通知内容，SessionContext 是平台另行提供�
 本入口不主动采集运行模型；model 查询沿用已有保存信息读取规则，不为展示创建或激活模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
 
 ### 3.3 输出：真实通知回执、继续与失败
-
-#### 输出相关定义与默认 CORE 函数
-
-真实通知回执的字段定义：
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAttachOutput:
-    """Actual CORE acknowledgement while this association is still current."""
-
-    accepted: bool
-    session_id: str
-    surface_id: str
-    attachment_id: str
-```
-
-默认 CORE 在下面的 state.receipt 赋值处生成回执，再 return 返回；用户 Handler 从 next 得到这个真实回执。
-
-```python
-async def session_attach_core(
-    event: Event,
-    ops: EventHandlerOps | None,
-    next_handler: EventNext,
-) -> SessionAttachOutput:
-    """Confirm only the current target and return its actual receipt."""
-    del next_handler
-    state = current_attach_invocation()
-    if not valid_attach_input(event.event_input):
-        raise ValueError("session.attach input cannot be changed")
-    context = ops.session_context if ops is not None else None
-    if context is None or context.session_id != state.original.session_id:
-        raise RuntimeError("session.attach requires its bound SessionContext")
-    if not await state.validate_target():
-        raise RuntimeError("session.attach target is no longer available")
-    state = current_attach_invocation()
-    if state.receipt is None:
-        value = state.original
-        state.receipt = SessionAttachOutput(True, value.session_id, value.surface_id, value.attachment_id)
-    return state.receipt
-```
-
-构造器中的第一个 True 对应 accepted；后面的值依次对应上面的字段顺序。state.receipt 用于同一次有效通知内复用真实回执；它不是用户外部资源操作的成功记录，也不是整项业务的最终响应。
 
 默认 CORE 返回 `SessionAttachOutput`。正常用户 Handler 必须返回 `await next_handler(event)` 得到的真实回执内容；本通知不使用查询事件的 value/deny 封装，不返回 `{"accepted": True}` 字典，也没有用户拒绝/改写平台事实的协议。
 
@@ -335,7 +246,28 @@ async def _dispatch(
 
 Event 是通知输入，独立 context 参数是可信会话资料。Core 为每个实际进入的 USER / CORE 调用 `builder.build(package_metadata, session_context)`，得到本次 Ops；USER 从现有 `ops.session_context` 只读属性读取，不通过这个属性采集资料。启动时的 ops.build BUILTIN 已经登记了共享方法，本次事件不再创建 Builder 或临时登记能力。
 
-默认 CORE 的完整函数见第 3.3 节输出字段旁，可逐项核对回执定义和返回位置。
+```python
+async def session_attach_core(
+    event: Event,
+    ops: EventHandlerOps | None,
+    next_handler: EventNext,
+) -> SessionAttachOutput:
+    """Confirm only the current target and return its actual receipt."""
+    del next_handler
+    state = current_attach_invocation()
+    if not valid_attach_input(event.event_input):
+        raise ValueError("session.attach input cannot be changed")
+    context = ops.session_context if ops is not None else None
+    if context is None or context.session_id != state.original.session_id:
+        raise RuntimeError("session.attach requires its bound SessionContext")
+    if not await state.validate_target():
+        raise RuntimeError("session.attach target is no longer available")
+    state = current_attach_invocation()
+    if state.receipt is None:
+        value = state.original
+        state.receipt = SessionAttachOutput(True, value.session_id, value.surface_id, value.attachment_id)
+    return state.receipt
+```
 
 current_attach_invocation 先确认关联仍是当前表项；valid_attach_input 保留原始字段；随后核对上下文并 await validate_target 再检查关联版本，防止检查期间切换后的迟到确认。CORE 不建立关联、不切换会话。
 
@@ -345,8 +277,6 @@ current_attach_invocation 先确认关联仍是当前表项；valid_attach_input
 
 
 ## 6. 验收与未决问题
-
-2026-10-31 输入输出源码补充：本次只调整文档，将当前类型定义、构造/读取函数和回执返回位置放到字段表旁；代码摘录按本分支实际实现核对，省略的分支明确标注。以下历史业务验证保留原日期和范围，本次未重跑业务、模型或浏览器验收。
 
 本次 2026-10-31 仅按 F_16 的写法补齐输入/输出字段、注册示例、真实触发条件、Handler 职责和完整业务案例；运行代码与契约不变。文档核对包括 dataclass 字段与示例值、源码节选、Python/YAML/JSON 示例及相对链接。下列回归和真实服务结果均保留原运行日期与范围，不宣称本次重新执行业务或模型验收。
 
