@@ -1238,6 +1238,37 @@ def test_workflow_paused_marks_running_agents_paused():
     assert state.phases[0].agents[0].completed_at is None
 
 
+def test_resume_relaunch_started_flips_paused_back_to_running():
+    """A resume relaunch re-enters the engine, so WORKFLOW_STARTED arrives with
+    relaunch_kind="resume" and flips the run status back to running
+    unconditionally; the kept-tree semantics preserve finished agents. The
+    paused phase/agent cards reactivate as the replayed agent_started frames
+    arrive (same agent_id → _reuse_existing → _switch_to_phase sets the phase
+    running). There is no separate resume event; STARTED + the replayed
+    milestones carry the flip."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="a1"))
+    state.apply(_make_progress("agent_completed", phase="Phase 1", label="agent-a", agent_id="a1", outcome="done"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-b", agent_id="b1"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.phases[0].agents[1].status == "paused"
+
+    delta = state.apply(_make_progress("workflow_started", relaunch_kind="resume"))
+    assert state.status == "running"
+    assert delta is not None
+    assert delta["status"] == "running"
+
+    # The replayed agent_started (same agent_id) reactivates the paused node
+    # and its phase without appending duplicates.
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-b", agent_id="b1"))
+    assert state.phases[0].status == "running"
+    assert state.phases[0].agents[0].status == "completed"
+    assert state.phases[0].agents[1].status == "running"
+    assert state.agent_count == 2
+
+
 def test_workflow_stopped_marks_terminal_without_error():
     """workflow_stopped is terminal (control outcome) — no error/result text."""
     state = WorkflowRunState()
@@ -1533,6 +1564,72 @@ def test_pause_if_running_returns_false_when_already_paused():
     changed = state.pause_if_running()
     assert changed is False
     assert state.status == "paused"
+
+
+def test_pause_if_running_reparks_stray_running_phase_of_paused_run():
+    """A parked run whose phase was left running is healed by a re-park.
+
+    The restore-time park used to flip only the run-level status, leaving
+    run=paused / phase=running on disk (mixed UI state); the re-scan heals
+    the stray phase, and a park that changes nothing still returns False.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="P"))
+    state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="k1"))
+    state.apply(_make_progress("agent_completed", phase="P", label="a", agent_id="k1", outcome="ok"))
+    # disk shape written by the old run-level-only park: run paused, phase running
+    state.status = "paused"
+    state.phases[0].status = "running"
+    changed = state.pause_if_running()
+    assert changed is True
+    assert state.status == "paused"
+    assert state.phases[0].status == "paused"
+    # an already-consistent park changes nothing
+    assert state.pause_if_running() is False
+
+
+def test_agent_started_after_pause_does_not_resurrect_phase():
+    """A stale agent event after the run was parked must not re-run its phase.
+
+    A paused run card with a running phase reads as a mixed state; phase cards
+    may only enter running while the run itself is live.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="P"))
+    state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="k1"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.phases[0].status == "paused"
+    # stale in-flight event landing after the pause
+    state.apply(_make_progress("agent_started", phase="P", label="b", agent_id="k2"))
+    assert state.status == "paused"
+    assert state.phases[0].status == "paused"
+    # a stale event for an unknown phase creates that card parked, not running
+    state.apply(_make_progress("agent_started", phase="Q", label="c", agent_id="k3"))
+    q_phase = next(p for p in state.phases if p.name == "Q")
+    assert q_phase.status == "paused"
+
+
+def test_resume_started_then_agent_event_reactivates_phase():
+    """A resume re-emits workflow_started first, so phases may run again.
+
+    The parked-run guard must not break the pause→resume path: the started
+    re-emission flips the run back to running before any phase/agent event.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="P"))
+    state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="k1"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.phases[0].status == "paused"
+    # resume: started re-emitted (same run_id), then the cached-prefix replay
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.status == "running"
+    state.apply(_make_progress("agent_started", phase="P", label="a", agent_id="k1"))
+    assert state.phases[0].status == "running"
+    assert state.phases[0].agents[0].status == "running"
     assert state.is_terminal is False
 
 
@@ -1985,3 +2082,81 @@ def test_agent_activity_unresolved_node_returns_none():
         activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
     ))
     assert delta is None
+
+
+# ---------------------------------------------------------------------------
+# executor — run attribution (the member currently hosting the run)
+# ---------------------------------------------------------------------------
+
+def test_workflow_started_stamps_executor():
+    """workflow_started stamps the run's executor and the started delta carries it."""
+    state = WorkflowRunState()
+    delta = state.apply(_make_progress(
+        "workflow_started", workflow_name="t", executor="alice",
+    ))
+    assert state.executor == "alice"
+    assert delta["executor"] == "alice"
+
+
+def test_workflow_started_without_executor_is_none():
+    """Legacy events carry no executor — the run stays None (no badge)."""
+    state = WorkflowRunState()
+    delta = state.apply(_make_progress("workflow_started", workflow_name="t"))
+    assert state.executor is None
+    assert delta["executor"] is None
+
+
+def test_snapshot_carries_executor():
+    """to_workflow_run_dict surfaces the executor for command.workflows."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t", executor="bob"))
+    snapshot = state.to_workflow_run_dict()
+    assert snapshot["executor"] == "bob"
+
+
+def test_resume_restarted_run_keeps_executor():
+    """A pause→resume re-emits workflow_started under the same run_id — the
+    executor re-stamps to the same value and the delta still carries it."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t", executor="alice"))
+    state.apply(_make_progress("workflow_paused"))
+    delta = state.apply(_make_progress(
+        "workflow_started", workflow_name="t", relaunch_kind="resume", executor="alice",
+    ))
+    assert state.executor == "alice"
+    assert delta["executor"] == "alice"
+
+
+def test_leader_recovery_relaunch_updates_executor_to_leader():
+    """A cold-start recovery relaunch is driven by the leader's harness, so
+    the started event names the leader — the run card follows the latest host
+    and a later advisory hands the resume back to it."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t", executor="alice"))
+    state.apply(_make_progress("workflow_paused"))
+    delta = state.apply(_make_progress(
+        "workflow_started", workflow_name="t", relaunch_kind="resume", executor="team-leader",
+    ))
+    assert state.executor == "team-leader"
+    assert delta["executor"] == "team-leader"
+
+
+def test_relaunch_without_executor_keeps_prior():
+    """An unattributed relaunch (no team context) never wipes the prior host."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t", executor="alice"))
+    state.apply(_make_progress("workflow_paused"))
+    delta = state.apply(_make_progress(
+        "workflow_started", workflow_name="t", relaunch_kind="resume",
+    ))
+    assert state.executor == "alice"
+    assert delta["executor"] == "alice"
+
+
+def test_phase_delta_omits_executor():
+    """Only the top-level (started/paused) delta carries the executor; phase
+    deltas omit it and the frontend's merge keeps the previously stored value."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t", executor="alice"))
+    delta = state.apply(_make_progress("agent_started", phase="p", label="x", agent_id="a1"))
+    assert "executor" not in delta
