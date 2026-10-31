@@ -1816,8 +1816,8 @@ const webTarget = `http://127.0.0.1:${webPort}`
 const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
 export default defineConfig({
-  // 用户面挂在 Manager 的 /chat/ 下。绝对 base '/' 会让浏览器去拉
-  // Manager 自己的 /assets，登录后白屏。相对 './' 在 /chat/ 与直连用户面都能解析。
+  // Keep assets relative for the Manager /chat/ mount. On nested SPA routes,
+  // app_web.py and nginx map prefixed assets URLs back to the dist assets directory.
   base: './',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   build: {

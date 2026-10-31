@@ -62,6 +62,8 @@ After successful startup, the terminal will display a service port banner:
 
 When you see similar output, the service is ready. Open `http://localhost:5173` in your browser to use.
 
+Session links such as `/chat/new` and `/chat/<session_id>` support direct navigation and refresh. The built-in Python Web server and nginx deployment map `assets/` requests under nested routes to the frontend build assets; missing static resources such as JS and CSS return 404. The same relative-path build also supports access through the Manager's `/chat/` proxy prefix.
+
 ### Find the application version and build date
 
 The update page shows the full current version with a secondary “Built on YYYY-MM-DD” label. WHL, Windows EXE, and macOS DMG packages use UTC+08:00 for the packaging date. Installing, starting, or checking for updates does not change it. Older packages and source checkouts without a build date show only the version.

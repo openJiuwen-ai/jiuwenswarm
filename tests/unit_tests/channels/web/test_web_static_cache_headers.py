@@ -10,11 +10,12 @@
 from __future__ import annotations
 
 import http.client
+import re
 import threading
 from functools import partial
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import pytest
 
@@ -100,6 +101,50 @@ def test_conditional_request_for_asset_returns_304_with_immutable(static_server:
         "/assets/index-Byh9IHKO.js",
         {"If-Modified-Since": last_modified},
     )
+    assert status == 304
+    assert body == b""
+    assert headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+@pytest.mark.parametrize("route", ["/", "/chat/", "/chat/new", "/chat/web_probe", "/design/project/session/"])
+def test_cold_load_resolves_relative_assets(static_server: str, tmp_path: Path, route: str) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" src="./assets/index-Byh9IHKO.js"></script>'
+        '<link rel="stylesheet" href="./assets/index-DbwWYrAX.css">',
+        encoding="utf-8",
+    )
+    status, headers, body = _request(static_server, route)
+    assert status == 200
+    assert headers["content-type"].startswith("text/html")
+    references = re.findall(r'(?:src|href)="([^"]+)"', body.decode())
+    for reference, expected_type in zip(references, ["text/javascript", "text/css"], strict=True):
+        asset_path = urlsplit(urljoin(static_server + route, reference)).path
+        status, headers, body = _request(static_server, asset_path + "?v=1")
+        assert status == 200
+        assert headers["content-type"].startswith(expected_type)
+        assert headers["cache-control"] == "public, max-age=31536000, immutable"
+        assert b"<script" not in body
+
+
+@pytest.mark.parametrize("path", ["/assets/missing.js", "/chat/assets/missing.css", "/missing.svg", "/chat/missing.js"])
+def test_missing_static_resource_returns_404(static_server: str, path: str) -> None:
+    status, _, body = _request(static_server, path)
+    assert status == 404
+    assert body != b"<html>app</html>"
+
+
+def test_prefixed_asset_cannot_escape_assets_directory(static_server: str) -> None:
+    status, _, body = _request(static_server, "/chat/assets/%2e%2e/logo.svg")
+    assert status == 404
+    assert body != b"<svg/>"
+
+
+def test_prefixed_asset_conditional_request(static_server: str) -> None:
+    path = "/chat/assets/spreadsheetPreview.worker-CK4ZsbC3.js"
+    status, headers, body = _request(static_server, path)
+    assert status == 200
+    assert body == b"w()"
+    status, headers, body = _request(static_server, path, {"If-Modified-Since": headers["last-modified"]})
     assert status == 304
     assert body == b""
     assert headers["cache-control"] == "public, max-age=31536000, immutable"
