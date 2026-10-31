@@ -5,7 +5,7 @@
 | 编号 | F_24 / session-end |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变 |
+| 后续修订 | 2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变；2026-10-31，在输入输出字段旁补充实际定义、构造、读取与返回函数 |
 | 计划与进度 | [EXTV2-19 / Server PR10](../designs/extensions-v2-development-plan.md#extv2-19-主会话结束通知与用户资源清理) |
 | 主责规约 | [S_13](../specs/S_13_session-end.md) |
 
@@ -50,6 +50,81 @@ PR06 的 session.start 按包激活实例首次输入前初始化；本事件按
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
+#### 输入相关定义与构造函数
+
+实际输入类型如下；这一定义中的字段名，与下方表格逐项对应。frozen=True 表示用户不能修改对象字段来改变平台事实。
+
+```python
+@dataclass(frozen=True, slots=True)
+class SessionEndInput:
+    """Immutable target and reason supplied by the Runtime delete boundary."""
+
+    session_id: str
+    end_id: str
+    reason: str
+    channel_id: str
+    mode: str
+```
+
+类型来源：[event_types/session_end.py](../../event_types/session_end.py)。
+
+下面的实际平台函数把业务事实填写进这个输入对象；其中的 value/facts 是要交给 EventBus 的通知输入，不是用户构造的任意 payload。
+
+```python
+async def release_resources(self, target: SessionLifecycleTarget) -> None:
+    """Await bounded user cleanup before the original platform release."""
+    from jiuwenswarm.extensions_v2.assembly import get_extension_bus, get_extension_manager
+
+    if target.kind is not SessionKind.AGENT:
+        return
+    descriptor = target.descriptor
+    session_id = descriptor.session_id
+    if not is_valid_session_id(session_id):
+        raise ValueError("session.end requires a valid session_id")
+    if session_id in self._attempted:
+        return
+    bus, manager = get_extension_bus(), get_extension_manager()
+    if bus is None or manager is None or not manager.initialized:
+        return
+    value = SessionEndInput(
+        session_id=session_id, end_id=uuid.uuid4().hex, reason="session_deleted",
+        channel_id=descriptor.channel_id, mode=descriptor.mode,
+    )
+    root = descriptor.project_dir
+    project_root = root if root and Path(root).is_absolute() else None
+    context = SessionContext(session_id, metadata={"project_root": project_root})
+    state = EndInvocation(value)
+    self._attempted.add(session_id)
+    task = asyncio.create_task(self._dispatch(bus, manager, state, context), name="extension-session-end")
+    self._tasks.add(task)
+    task.add_done_callback(self._task_done)
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=self._timeout)
+    except BaseException:
+        state.active = False
+        task.cancel()
+        raise
+    if not done:
+        state.active = False
+        task.cancel()
+        logger.warning("[ExtensionsV2] session.end timed out; deletion continues: session_id=%s", session_id)
+        return
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logger.warning("[ExtensionsV2] session.end handler cancelled; deletion continues: session_id=%s", session_id)
+    except Exception:
+        logger.warning("[ExtensionsV2] session.end failed; deletion continues: session_id=%s", session_id, exc_info=True)
+```
+
+构造函数来源：[平台接入代码](../../../server/runtime/session/end_notifications.py)；后续真实 trigger 保留在平台通知链中。
+
+| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
+| --- | --- | --- |
+| session_id / channel_id / mode | release_resources 从 target.descriptor 读取 | 构造 SessionEndInput，不从用户 Handler 选择删除目标 |
+| end_id / reason | uuid.uuid4().hex 与固定 session_deleted | 标识本次通知及原删除收尾原因 |
+| SessionContext | SessionContext(session_id, metadata={"project_root": project_root}) | 独立随 trigger 传入；cwd 未确认，保持 None |
+
 实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_end`，Handler 接收 frozen dataclass `SessionEndInput`，不是任意 JSON 字典。以下是平台生成后可观察到的形状示意；用户只读，不复制这个构造器直接触发事件。
 
 ```python
@@ -89,6 +164,43 @@ Event 输入是可观察的通知内容，SessionContext 是平台另行提供�
 本入口不主动采集运行模型；model 查询沿用已有保存信息读取规则，不为展示创建或激活模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
 
 ### 3.3 输出：真实通知回执、继续与失败
+
+#### 输出相关定义与默认 CORE 函数
+
+真实通知回执的字段定义：
+
+```python
+@dataclass(frozen=True, slots=True)
+class SessionEndOutput:
+    """Actual notification receipt, independent of the final delete result."""
+
+    accepted: bool
+    session_id: str
+    end_id: str
+```
+
+默认 CORE 在下面的 state.receipt 赋值处生成回执，再 return 返回；用户 Handler 从 next 得到这个真实回执。
+
+```python
+async def session_end_core(
+    event: Event,
+    ops: EventHandlerOps | None,
+    next_handler: EventNext,
+) -> SessionEndOutput:
+    """Acknowledge the real target without invoking deletion a second time."""
+    del next_handler
+    state = current_end_invocation()
+    if not valid_end_input(event.event_input):
+        raise ValueError("session.end input cannot be changed")
+    context = ops.session_context if ops is not None else None
+    if context is None or context.session_id != state.original.session_id:
+        raise RuntimeError("session.end requires its bound SessionContext")
+    if state.receipt is None:
+        state.receipt = SessionEndOutput(True, state.original.session_id, state.original.end_id)
+    return state.receipt
+```
+
+构造器中的第一个 True 对应 accepted；后面的值依次对应上面的字段顺序。state.receipt 用于同一次有效通知内复用真实回执；它不是用户外部资源操作的成功记录，也不是整项业务的最终响应。
 
 默认 CORE 返回 `SessionEndOutput`。正常用户 Handler 必须返回 `await next_handler(event)` 得到的真实回执内容；本通知不使用查询事件的 value/deny 封装，不返回 `{"accepted": True}` 字典，也没有用户拒绝/改写平台事实的协议。
 
@@ -252,24 +364,7 @@ async def _dispatch(
 
 Event 是通知输入，独立 context 参数是可信会话资料。Core 为每个实际进入的 USER / CORE 调用 `builder.build(package_metadata, session_context)`，得到本次 Ops；USER 从现有 `ops.session_context` 只读属性读取，不通过这个属性采集资料。启动时的 ops.build BUILTIN 已经登记了共享方法，本次事件不再创建 Builder 或临时登记能力。
 
-```python
-async def session_end_core(
-    event: Event,
-    ops: EventHandlerOps | None,
-    next_handler: EventNext,
-) -> SessionEndOutput:
-    """Acknowledge the real target without invoking deletion a second time."""
-    del next_handler
-    state = current_end_invocation()
-    if not valid_end_input(event.event_input):
-        raise ValueError("session.end input cannot be changed")
-    context = ops.session_context if ops is not None else None
-    if context is None or context.session_id != state.original.session_id:
-        raise RuntimeError("session.end requires its bound SessionContext")
-    if state.receipt is None:
-        state.receipt = SessionEndOutput(True, state.original.session_id, state.original.end_id)
-    return state.receipt
-```
+默认 CORE 的完整函数见第 3.3 节输出字段旁，可逐项核对回执定义和返回位置。
 
 current_end_invocation 要求仍有效的平台调用任务；valid_end_input 保留 Runtime 原始删除目标；绑定会话必须一致。CORE 保存并返回通知回执，不删除文件、不释放 Runner，也不撤销或再次启动原删除。
 
@@ -279,6 +374,8 @@ current_end_invocation 要求仍有效的平台调用任务；valid_end_input �
 
 
 ## 6. 验收与未决问题
+
+2026-10-31 输入输出源码补充：本次只调整文档，将当前类型定义、构造/读取函数和回执返回位置放到字段表旁；代码摘录按本分支实际实现核对，省略的分支明确标注。以下历史业务验证保留原日期和范围，本次未重跑业务、模型或浏览器验收。
 
 本次 2026-10-31 仅按 F_16 的写法补齐输入/输出字段、注册示例、真实触发条件、Handler 职责和完整业务案例；运行代码与契约不变。文档核对包括 dataclass 字段与示例值、源码节选、Python/YAML/JSON 示例及相对链接。下列回归和真实服务结果均保留原运行日期与范围，不宣称本次重新执行业务或模型验收。
 
