@@ -350,6 +350,14 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 - **验收：** 多包/新包/重载/卸载重装、并发首输入、失败/取消/重入、防伪、原始 Ops 上下文、原生输入前调用顺序、实际 ZIP 与真实 Worker/模型链路。
 - **范围：** 无新 Ops、Team/Harness 入口、额外 Agent 输入或前端；保留现有进度编号，新增 EXTV2-18 对应 Server PR06。
 
+### EXTV2-19 主会话结束通知与用户资源清理
+
+- **目标与范围：** 交付 `session.end`，在主会话明确的永久删除收尾阶段通知 USER 清理自己的资源；普通断连、归档和临时 Worker 回收不触发。归入 10/30 第一批会话状态，Server PR10。
+- **责任与契约：** [S_13](../specs/S_13_session-end.md)、[F_24](../features/F_24_session-end.md)。event_types 只定义/校验/注册，event_handlers 默认 CORE 确认通知，Server 平台参与者实际 trigger；原 Runtime 继续唯一执行原资源释放和删除。
+- **必要前置：** 现有 Worker EventBus/Registry/Ops Build 与 Runtime 删除参与者协议；不依赖未合入 PR04/05/06 或 Core !110。不与 session.start 按包激活实例一一配对。
+- **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、断连/归档非触发、卸载与真实 Worker 接线；证据唯一入口见 [F_24 第 6 节](../features/F_24_session-end.md#6-验收与未决问题)。
+- **独立验证：** `test_session_end.py` 及 Runtime 删除/参与者回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -388,6 +396,8 @@ flowchart TB
     S13 --> S15["EXTV2-15 会话 Git 仓库 Ops"]
     A1 --> S16["EXTV2-16 会话历史与追加 Hook"]
     B1 --> S16
+    A3 --> S19["EXTV2-19 主会话结束通知"]
+    B1 --> S19
     A4 --> B3
     B3 --> C1
 
@@ -462,6 +472,7 @@ flowchart LR
 | EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_21 第 6.2 节 / S_11；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
 | EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见本计划 EXTV2-22 历史验证记录 / S_08 | 2026-10-31 |
 | EXTV2-18 激活实例首次输入前初始化 | 完成 | 刘瑜 | [Server !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91) / [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) | 不依赖 PR04/05；Server 253 项、Core 568 项通过（1 项权限跳过）；补验真实 Worker 7 个模型回合、初始化/用量 USER Handler、只读 Ops 及清理全部通过，见 F_22 / S_12 | 2026-10-29 |
+| EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [!93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93) | 404 项回归、19 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker 与两个模型回合、用户资源清理、并发/重复删除、断连/归档非触发、卸载及进程端口清理通过，见 F_24 / S_13 | 2026-10-29 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 

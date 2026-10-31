@@ -129,9 +129,16 @@ class SessionDeleteParticipant(Protocol):
 
 
 class RuntimeParticipantRegistry:
-    """No-fail in-memory participant publication for one AgentRuntime."""
+    """Compose fixed host deletion observers with replaceable derived ones.
 
-    def __init__(self) -> None:
+    Args:
+        host_delete: Runtime-lifetime observers unaffected by dynamic provider
+            publication, suspension or lease release. They run before the
+            replaceable delete participants.
+    """
+
+    def __init__(self, *, host_delete: tuple[SessionDeleteParticipant, ...] = ()) -> None:
+        self._host_delete = tuple(host_delete)
         self._activity: tuple[SessionActivityParticipant, ...] = ()
         self._delete: tuple[SessionDeleteParticipant, ...] = ()
         self._targets: dict[str, SessionLifecycleTarget] = {}
@@ -149,7 +156,7 @@ class RuntimeParticipantRegistry:
         return self._activity
 
     def snapshot_delete(self) -> tuple[SessionDeleteParticipant, ...]:
-        return self._delete
+        return self._host_delete + self._delete
 
     def remember_target(self, target: SessionLifecycleTarget) -> None:
         self._targets[target.descriptor.session_id] = target
