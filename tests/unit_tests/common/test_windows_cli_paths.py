@@ -195,14 +195,17 @@ $script:registry | Add-Member ScriptMethod Dispose { }
     report = tmp_path / "report.json"
     path_result = tmp_path / "user-path.txt"
 
-    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing", data_dir=None):
+    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing", data_dir=None, progress_path=None):
         env = os.environ.copy()
         env.pop("PSModulePath", None)
         env["JIUWENSWARM_DATA_DIR"] = str(data_dir or data)
         env["TEST_ORIGINAL_PATH"] = original_path
         env["TEST_PATH_RESULT"] = str(path_result)
+        arguments = [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script), "-InstallDir", str(app), "-Mode", mode, "-ReportPath", str(report)]
+        if progress_path is not None:
+            arguments += ["-ProgressPath", str(progress_path)]
         completed = subprocess.run(
-            [str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script), "-InstallDir", str(app), "-Mode", mode, "-ReportPath", str(report)],
+            arguments,
             env=env, capture_output=True, text=True, errors="replace", timeout=60,
         )
         return completed, report, data / "runtime" / "npm", path_result
@@ -230,6 +233,34 @@ def _prefix(app, layout="runtime/node-runtime"):
     )
     (prefix / "unknown-user-file").write_text("must not be dropped")
     return prefix
+
+
+@pytest.mark.parametrize("mode", ["Preserve", "Initialize"])
+def test_preservation_progress_does_not_change_verified_result(tmp_path, preservation_runner, mode):
+    app = tmp_path / "app"
+    source = _prefix(app)
+    progress = tmp_path / "progress.txt"
+    result, report, root, _ = preservation_runner(app, mode=mode, progress_path=progress)
+    assert result.returncode == 0, result.stderr
+    record = json.loads(report.read_text(encoding="utf-8"))
+    retained = Path(record["mappings"][0]["backup"]) if mode == "Preserve" else root / "global"
+    assert progress.read_text(encoding="utf-8").splitlines()[:2] == ["100", "CLI environment ready."]
+    assert (retained / "unknown-user-file").read_bytes() == (source / "unknown-user-file").read_bytes()
+    assert not progress.with_suffix(".txt.new").exists()
+
+
+def test_progress_write_failure_does_not_skip_backup_verification(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = _prefix(app)
+    progress = tmp_path / "missing-directory" / "progress.txt"
+    result, report, _, _ = preservation_runner(app, progress_path=progress)
+    assert result.returncode == 0, result.stderr
+    backup = Path(json.loads(report.read_text(encoding="utf-8"))["mappings"][0]["backup"])
+    (backup / "unknown-user-file").write_text("corrupted backup")
+    result, report, _, _ = preservation_runner(app, progress_path=progress)
+    assert result.returncode != 0
+    assert "incomplete or changed" in report.read_text(encoding="utf-8")
+    assert (source / "unknown-user-file").read_text() == "must not be dropped"
 
 
 @pytest.mark.parametrize("layout", ["runtime/external-cli", "resources/backend/runtime/external-cli"])
@@ -683,9 +714,11 @@ def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tm
     source = _prefix(app)
     shutil.copyfile(node, source / "node.exe")
     (source / "node_modules/npm/bin/npm-cli.js").write_text("require('fs').writeFileSync(process.env.TEST_NPM_RESULT,JSON.stringify({prefix:process.env.NPM_CONFIG_PREFIX,node:process.execPath}))")
+    migrated, report, _, _ = preservation_runner(app)
+    assert migrated.returncode == 0, report.read_text(encoding="utf-8")
+    target = Path(json.loads(report.read_text(encoding="utf-8"))["mappings"][0]["target"])
     result, report, root, _ = preservation_runner(app, mode="Initialize")
     assert result.returncode == 0, report.read_text(encoding="utf-8")
-    target = Path(json.loads(report.read_text(encoding="utf-8"))["mappings"][0]["target"])
     # Delete only this test's synthetic installation, after checking containment.
     assert app.resolve().is_relative_to(tmp_path.resolve())
     shutil.rmtree(app)
@@ -755,3 +788,221 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert list((tmp_path / "compiled").glob("*.exe"))
+
+
+@pytest.mark.parametrize("mode", ["Preserve", "Initialize"])
+def test_absent_runtime_skips_file_inventory(tmp_path, preservation_runner, mode):
+    script = preservation_runner.script
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        "function Inventory([string]$Root) {", "function Inventory([string]$Root) { throw 'unexpected inventory'"
+    ), encoding="utf-8")
+    result, report, _, path_result = preservation_runner(tmp_path / "empty-app", mode=mode)
+    assert result.returncode == 0, result.stderr + report.read_text()
+    assert not path_result.exists()
+
+
+def test_bundled_node_only_initialization_uses_verified_digest(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = app / "runtime/node-runtime"
+    (source / "node_modules/npm/bin").mkdir(parents=True)
+    for name in ("node.exe", "node_modules/npm/bin/npm-cli.js", "node_modules/npm/bin/npx-cli.js"):
+        (source / name).write_bytes(name.encode())
+    script = preservation_runner.script
+    trace = tmp_path / "inventory.txt"
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        "function Inventory([string]$Root) {",
+        "function Inventory([string]$Root) {\n[IO.File]::AppendAllText('" + str(trace) + "',$Root+[Environment]::NewLine)"
+    ), encoding="utf-8")
+    result, report, root, _ = preservation_runner(app, mode="Initialize")
+    assert result.returncode == 0, result.stderr + report.read_text()
+    for file in source.rglob("*"):
+        if file.is_file():
+            assert (root / "global" / file.relative_to(source)).read_bytes() == file.read_bytes()
+    scans = trace.read_text().splitlines()
+    # The global copy is checked against the previously verified identity;
+    # no extra read of the published backup is needed for this comparison.
+    assert not any(str(root / "preserved") in scan and ".pending-" not in scan for scan in scans)
+
+
+def test_global_copy_corruption_is_rejected_against_original_digest(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = _prefix(app)
+    script = preservation_runner.script
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        "Copy-Tree $selected.source $stage",
+        "Copy-Tree $selected.source $stage\n[IO.File]::WriteAllText((Join-Path $stage 'node.exe'),'corrupt')"
+    ), encoding="utf-8")
+    result, report, root, path_result = preservation_runner(app, mode="Initialize")
+    assert result.returncode != 0
+    assert "Managed npm prefix verification failed" in report.read_text()
+    assert not (root / "global").exists()
+    assert not path_result.exists()
+    assert (source / "node.exe").read_bytes() == b"fixture node"
+
+
+def _stock_prefix(app):
+    source = app / "resources/backend/runtime/node-runtime"
+    (source / "node_modules/npm/bin").mkdir(parents=True)
+    for name in ("node.exe", "node_modules/npm/bin/npm-cli.js", "node_modules/npm/bin/npx-cli.js"):
+        (source / name).write_bytes(name.encode())
+    return source
+
+
+def _describe_bundle(source, runner):
+    result, report, _, _ = runner(source, mode="DescribeBundle")
+    assert result.returncode == 0, result.stderr
+    manifest = Path(str(source) + ".manifest.json")
+    shutil.copyfile(report, manifest)
+    return manifest
+
+
+def test_stock_upgrade_skips_recovery_copies_and_reuses_user_environment(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = _stock_prefix(app)
+    _describe_bundle(source, preservation_runner)
+    result, report, root, _ = preservation_runner(app, mode="Initialize")
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    user_cli = root / "global/node_modules/my-cli/index.js"
+    user_cli.parent.mkdir(parents=True)
+    user_cli.write_bytes(b"user self-update")
+    # The next pre-install pass may check the replaceable source, but must not
+    # inventory any independently mutable user runtime or recovery directory.
+    script = preservation_runner.script
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        "function Inventory([string]$Root) {",
+        "function Inventory([string]$Root) {\nif ($Root -ne '" + str(source) + "') { throw 'unexpected user environment inventory' }"
+    ), encoding="utf-8")
+    result, report, _, _ = preservation_runner(app)
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    record = json.loads(report.read_text(encoding="utf-8"))
+    assert record["mappings"] == [] and len(record["unchanged_bundles"]) == 1
+    assert not list((root / "preserved").glob("*/manifest.json"))
+    assert not (root / "installed").exists()
+    # Existing managed npm initialization must not scan any file tree at all.
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        "function Inventory([string]$Root) {", "function Inventory([string]$Root) { throw 'unexpected initialization inventory'"
+    ), encoding="utf-8")
+    result, report, _, _ = preservation_runner(app, mode="Initialize")
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    assert user_cli.read_bytes() == b"user self-update"
+
+
+@pytest.mark.parametrize("change", ["extra-cli", "same-size-edit", "missing-baseline", "corrupt-baseline"])
+def test_stock_fast_path_falls_back_without_losing_user_files(tmp_path, preservation_runner, change):
+    app = tmp_path / "app"
+    source = _stock_prefix(app)
+    _describe_bundle(source, preservation_runner)
+    result, report, root, _ = preservation_runner(app, mode="Initialize")
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    baseline = next((root / "bundled-node").glob("*.json"))
+    if change == "extra-cli":
+        (source / "manual-cli.cmd").write_bytes(b"manually installed CLI")
+    elif change == "same-size-edit":
+        node = source / "node.exe"
+        old_stat = node.stat()
+        node.write_bytes(b"X" * old_stat.st_size)
+        os.utime(node, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+    elif change == "missing-baseline":
+        baseline.unlink()
+    else:
+        baseline.write_text('{"schema":1,"digest":"invalid"}')
+    result, report, _, _ = preservation_runner(app)
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    mapping = json.loads(report.read_text(encoding="utf-8"))["mappings"][0]
+    for original in source.rglob("*"):
+        if original.is_file():
+            for destination in (mapping["backup"], mapping["target"]):
+                assert (Path(destination) / original.relative_to(source)).read_bytes() == original.read_bytes()
+
+
+def test_stock_fast_path_rechecks_late_user_changes_before_cleanup(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = _stock_prefix(app)
+    _describe_bundle(source, preservation_runner)
+    result, report, _, _ = preservation_runner(app, mode="Initialize")
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    script = preservation_runner.script
+    script.write_text(script.read_text(encoding="utf-8").replace(
+        "$bundledChecks += $mapping", "$bundledChecks += $mapping\n[IO.File]::WriteAllText((Join-Path $mapping.source 'late-cli'),'user data')"
+    ), encoding="utf-8")
+    result, report, _, path_result = preservation_runner(app)
+    assert result.returncode != 0 and "Source changed before cleanup" in report.read_text(encoding="utf-8")
+    assert (source / "late-cli").read_text(encoding="utf-8") == "user data"
+
+
+def test_initialize_rejects_changed_bundle_and_keeps_source(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = _stock_prefix(app)
+    _describe_bundle(source, preservation_runner)
+    (source / "user-file").write_text("must remain")
+    result, report, root, path_result = preservation_runner(app, mode="Initialize")
+    assert result.returncode != 0 and "differs from its package manifest" in report.read_text(encoding="utf-8")
+    assert (source / "user-file").read_text(encoding="utf-8") == "must remain"
+    assert not (root / "global").exists() and not path_result.exists()
+
+
+def test_initialize_leaves_migrated_sdk_and_recovery_files_untouched(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = _stock_prefix(app)
+    _describe_bundle(source, preservation_runner)
+    result, report, root, _ = preservation_runner(app, mode="Initialize")
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    sdk = root.parent / "external-cli/agent/site-packages/custom.py"
+    sdk.parent.mkdir(parents=True)
+    sdk.write_text("user SDK")
+    recovery = root.parent / "external-cli-preserved/saved/prefix/custom.py"
+    recovery.parent.mkdir(parents=True)
+    recovery.write_text("original recovery")
+    result, report, _, _ = preservation_runner(app, mode="Initialize")
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    assert sdk.read_text(encoding="utf-8") == "user SDK" and recovery.read_text(encoding="utf-8") == "original recovery"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
+@pytest.mark.parametrize("mutate_payload", [False, True])
+def test_runtime_bundle_build_emits_identity_for_only_distributed_files(tmp_path, preservation_runner, mutate_payload):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("requires a real Node executable")
+    source = tmp_path / "tool-cache"
+    (source / "node_modules/npm/bin").mkdir(parents=True)
+    shutil.copyfile(node, source / "node.exe")
+    for name in ("npm.cmd", "npx.cmd", "node_modules/npm/bin/npm-cli.js", "node_modules/npm/bin/npx-cli.js"):
+        (source / name).write_text("fixture")
+    (source / "do-not-bundle.txt").write_text("cache-local data")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    module = ROOT / "scripts/build-runtimes.psm1"
+    command = "Import-Module '" + str(module) + "'; Copy-NodeRuntime -SourceDir '" + str(source) + "' -DistDir '" + str(dist) + "'"
+    powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    result = subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], capture_output=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    bundled = dist / "runtime/node-runtime"
+    assert not Path(str(bundled) + ".manifest.json").exists()
+    result, report, _, _ = preservation_runner(bundled, mode="DescribeBundle")
+    assert result.returncode == 0, result.stderr
+    before = json.loads(report.read_text(encoding="utf-8"))
+    if mutate_payload:
+        # Signing changes PE bytes after copying; no certificate is needed to
+        # exercise the identity boundary with an equivalent byte mutation.
+        with (bundled / "node.exe").open("ab") as payload:
+            payload.write(b"post-copy-signature-fixture")
+    command = "Import-Module '" + str(module) + "'; Write-NodeRuntimeManifest -DistDir '" + str(dist) + "'"
+    result = subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], capture_output=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    identity = json.loads(Path(str(bundled) + ".manifest.json").read_text(encoding="utf-8"))
+    assert (identity != before) == mutate_payload
+    assert not (bundled / "do-not-bundle.txt").exists()
+    result, report, _, _ = preservation_runner(bundled, mode="DescribeBundle")
+    assert result.returncode == 0, result.stderr
+    assert identity == json.loads(report.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("entrypoint,dist", [("build-exe.ps1", "$FrozenDir"), ("build-electron-exe.ps1", "$BackendDir")])
+def test_bundle_identity_is_finalized_after_signed_and_unsigned_payloads(entrypoint, dist):
+    script = (ROOT / "scripts" / entrypoint).read_text(encoding="utf-8")
+    finalizer = script.index("Write-NodeRuntimeManifest -DistDir " + dist)
+    signing = script.index("    Invoke-CodeSigning", script.index("Copy-NodeRuntime -SourceDir"))
+    unsigned_branch = script.index("Skipping PE signing (unsigned local build).", signing)
+    assert signing < unsigned_branch < finalizer < script.index("Building installer (Inno Setup)", finalizer)
+    assert "}\n" in script[unsigned_branch:finalizer]

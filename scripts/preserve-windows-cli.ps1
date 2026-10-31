@@ -4,14 +4,32 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$InstallDir,
-    [ValidateSet('Preserve','Initialize','PreserveConfig')][string]$Mode = 'Preserve',
-    [Parameter(Mandatory=$true)][string]$ReportPath
+    [ValidateSet('Preserve','Initialize','PreserveConfig','DescribeBundle')][string]$Mode = 'Preserve',
+    [Parameter(Mandatory=$true)][string]$ReportPath,
+    [string]$ProgressPath = ''
 )
 $ErrorActionPreference = 'Stop'
 # Use this interpreter's built-in modules even when Setup was launched from pwsh.
 $env:PSModulePath=Join-Path $PSHOME 'Modules'
 $utf8 = New-Object Text.UTF8Encoding($false)
 $safeRoot=$false
+$script:progressValue=0
+$script:progressWritten=[DateTime]::MinValue
+
+# A separate, atomically replaced progress file keeps UI polling independent of
+# the recovery report. Progress is advisory: failures must never weaken backup.
+function Report-Progress([int]$Percent, [string]$Status, [string]$Detail = '', [switch]$Force) {
+    if (-not $ProgressPath) { return }
+    $script:progressValue=[Math]::Max($script:progressValue,[Math]::Min(100,$Percent))
+    if (-not $Force -and ([DateTime]::UtcNow-$script:progressWritten).TotalMilliseconds -lt 200) { return }
+    try {
+        $stage=$ProgressPath+'.new'
+        [IO.File]::WriteAllText($stage,([string]$script:progressValue+"`n"+$Status+"`n"+$Detail),$utf8)
+        if ([IO.File]::Exists($ProgressPath)) { [IO.File]::Replace($stage,$ProgressPath,[NullString]::Value) }
+        else { [IO.File]::Move($stage,$ProgressPath) }
+        $script:progressWritten=[DateTime]::UtcNow
+    } catch { } # Installation success is determined by the recovery report/exit code.
+}
 
 function Full-Path([string]$Path) {
     [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)).TrimEnd('\')
@@ -44,6 +62,7 @@ function Check-Parents([string]$Path) {
     }
 }
 function Tree-Files([string]$Root) {
+    Report-Progress $script:progressValue 'Scanning CLI environment...' 'Discovering files; total size is not yet known.'
     foreach ($entry in [IO.Directory]::GetFileSystemEntries((Long-Path $Root))) {
         $attributes=[IO.File]::GetAttributes($entry)
         if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked content requires manual preservation: $entry" }
@@ -64,7 +83,12 @@ function Bytes-Hash([byte[]]$Value) {
 }
 function Text-Hash([string]$Value) { Bytes-Hash ($utf8.GetBytes($Value)) }
 function Inventory([string]$Root) {
-    $rows=@(foreach ($file in @(Tree-Files $Root | Sort-Object FullName)) {
+    # Bundle identities cross machines; do not depend on the installing user's locale.
+    $files=@(Tree-Files $Root | Sort-Object FullName -Culture en-US)
+    $completed=0
+    $rows=@(foreach ($file in $files) {
+        Report-Progress $script:progressValue 'Verifying CLI files...' ("{0} / {1} files" -f $completed,$files.Count)
+        $completed++
         [pscustomobject]@{path=$file.FullName.Substring($Root.Length+1); length=$file.Length; sha256=(File-Hash $file.FullName)}
     })
     ConvertTo-Json -InputObject $rows -Depth 4 -Compress
@@ -72,6 +96,38 @@ function Inventory([string]$Root) {
 function Write-Json([string]$Path, $Value) {
     [IO.File]::WriteAllText((Long-Path $Path),(ConvertTo-Json -InputObject $Value -Depth 8),$utf8)
 }
+function Read-BundleDigest([string]$Path) {
+    Check-Parents $Path
+    if (-not [IO.File]::Exists((Long-Path $Path))) { return $null }
+    try {
+        $record=[IO.File]::ReadAllText((Long-Path $Path)) | ConvertFrom-Json
+        if ($record.schema -eq 1 -and $record.digest -cmatch '^[0-9a-f]{64}$') { return [string]$record.digest }
+    } catch { }
+    return $null
+}
+function Bundle-RecordPath([string]$Source) {
+    Join-Path (Join-Path $npmRoot 'bundled-node') ((Text-Hash $Source.ToLowerInvariant())+'.json')
+}
+function Is-UnmodifiedBundle([string]$Source, [string]$Digest) {
+    $path=Bundle-RecordPath $Source
+    Check-Parents $path
+    if (-not [IO.File]::Exists((Long-Path $path))) { return $false }
+    try {
+        $record=[IO.File]::ReadAllText((Long-Path $path)) | ConvertFrom-Json
+        return ($record.schema -eq 1 -and $record.source -ceq $Source -and
+            $record.digest -cmatch '^[0-9a-f]{64}$' -and $record.digest -ceq $Digest)
+    } catch { return $false } # Unknown identity must take the full preservation path.
+}
+function Register-Bundle([string]$Source, [string]$Digest) {
+    $path=Bundle-RecordPath $Source
+    Check-Parents $path
+    [IO.Directory]::CreateDirectory((Long-Path ([IO.Path]::GetDirectoryName($path)))) | Out-Null
+    $pending=$path+'.'+[guid]::NewGuid().ToString('N')+'.pending'
+    Write-Json $pending @{schema=1; source=$Source; digest=$Digest}
+    if ([IO.File]::Exists((Long-Path $path))) { [IO.File]::Replace((Long-Path $pending),(Long-Path $path),[NullString]::Value) }
+    else { [IO.File]::Move((Long-Path $pending),(Long-Path $path)) }
+}
+
 function Preserve-UpgradeConfig() {
     # Legacy uninstallers reset agent configuration. Keep a user-bound encrypted
     # snapshot only around that uninstall; normal upgrades/uninstalls do not use it.
@@ -99,6 +155,7 @@ function Preserve-UpgradeConfig() {
     else { [IO.File]::Move((Long-Path $stage),(Long-Path $pending)) }
 }
 function Copy-Tree([string]$Source, [string]$Target) {
+    Report-Progress $script:progressValue 'Backing up CLI environment...' 'Copying files to the user data directory.'
     [IO.Directory]::CreateDirectory((Long-Path $Target)) | Out-Null
     foreach ($entry in [IO.Directory]::GetFileSystemEntries((Long-Path $Source))) {
         $attributes=[IO.File]::GetAttributes($entry)
@@ -128,7 +185,13 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
     if (-not ($attributes -band [IO.FileAttributes]::Directory)) { throw "Expected a runtime directory: $Source" }
     Check-Parents $Source
     Assert-PrefixIdle $Source
+    Report-Progress 5 'Scanning CLI environment...' 'Checking the existing environment before replacement.' -Force
     $before=Inventory $Source
+    if (-not $RuntimeName -and (Is-UnmodifiedBundle $Source (Text-Hash $before))) {
+        Report-Progress 55 'Bundled runtime unchanged.' 'Keeping your existing CLI environment.' -Force
+        return [pscustomobject]@{source=$Source; digest=(Text-Hash $before); bundle_only=$true}
+    }
+    Report-Progress 15 'Backing up CLI environment...' 'Preparing a verified recovery copy.' -Force
     $digest=Text-Hash $before
     $id=(Text-Hash $Source.ToLowerInvariant()).Substring(0,8)+'-'+$digest.Substring(0,16)
     $sdk=[bool]$RuntimeName
@@ -166,6 +229,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
         $copy=Join-Path $stage 'prefix'
         # Pending/failed copies are intentionally retained for diagnosis/recovery.
         Copy-Tree $Source $copy
+        Report-Progress 35 'Verifying CLI backup...' 'Checking the recovery copy and original files.' -Force
         if ((Inventory $copy) -ne $before -or (Inventory $Source) -ne $before) { throw "Source changed or preservation verification failed: $Source" }
         Assert-PrefixIdle $Source
         $manifest=[ordered]@{schema=1; source=$Source; target=$active; backup=$prefix; digest=$digest; files=($before | ConvertFrom-Json); created_utc=[DateTime]::UtcNow.ToString('o')}
@@ -176,6 +240,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
     # The verified backup is never placed on PATH. A separate working copy may
     # be updated by the CLI without damaging the recovery material.
     Check-Parents $active
+    Report-Progress 55 'Preparing CLI working environment...' 'Keeping recovery copies separate from working files.' -Force
     if ($sdk) {
         [IO.Directory]::CreateDirectory((Long-Path $activeDirectory)) | Out-Null
         $agentLock=[IO.File]::Open((Join-Path $activeDirectory '.install.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
@@ -295,6 +360,11 @@ function Add-UserPaths($Mappings, $Additional) {
 }
 try {
     $InstallDir=Full-Path $InstallDir
+    if ($Mode -eq 'DescribeBundle') {
+        Check-Parents $InstallDir
+        Write-Json $ReportPath @{schema=1; digest=(Text-Hash (Inventory $InstallDir))}
+        exit 0
+    }
     $data=$env:JIUWENSWARM_DATA_DIR
     if (-not $data) {
         $homeDirectory=$env:JIUWENSWARM_HOME
@@ -313,14 +383,77 @@ try {
     $lock=[IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     try {
         if ($Mode -eq 'PreserveConfig') {
+            Report-Progress 5 'Preserving upgrade settings...' '' -Force
             Preserve-UpgradeConfig
             Write-Json $ReportPath @{success=$true; mode=$Mode}
+            Report-Progress 100 'Upgrade settings preserved.' '' -Force
+            exit 0
+        }
+        $paths=@()
+        if ($Mode -eq 'Initialize') {
+            Report-Progress 70 'Initializing CLI tools...' 'Preparing the managed npm environment.' -Force
+            $nodeSource=@()
+            foreach ($relative in @('runtime\node-runtime','resources\backend\runtime\node-runtime')) {
+                $candidate=Full-Path (Join-Path $InstallDir $relative)
+                Check-Parents $candidate
+                if ([IO.Directory]::Exists((Long-Path $candidate))) {
+                    $nodeSource += [pscustomobject]@{source=$candidate; digest=(Read-BundleDigest ($candidate+'.manifest.json'))}
+                }
+            }
+            $globalPrefix=Join-Path $npmRoot 'global'
+            Check-Parents $globalPrefix
+            if (-not (Test-Path -LiteralPath $globalPrefix)) {
+                if ($nodeSource.Count) {
+                    $selected=$nodeSource[-1]
+                    Check-Parents $selected.source
+                    Assert-PrefixIdle $selected.source
+                    $initialDigest=Text-Hash (Inventory $selected.source)
+                    if ($selected.digest -and $initialDigest -cne $selected.digest) { throw 'Bundled Node runtime differs from its package manifest.' }
+                    $stage=Join-Path $npmRoot ('.global-pending-'+[guid]::NewGuid().ToString('N'))
+                    Copy-Tree $selected.source $stage
+                    # Compare against the original verified content identity,
+                    # not a second read of a backup that could itself change.
+                    if ((Text-Hash (Inventory $stage)) -ne $initialDigest) { throw 'Managed npm prefix verification failed.' }
+                    if ((Text-Hash (Inventory $selected.source)) -cne $initialDigest) { throw 'Bundled Node runtime changed during initialization.' }
+                    Assert-PrefixIdle $selected.source
+                    Write-Json (Join-Path $stage '.workswarm-prefix.json') @{schema=1; source=$selected.source; node_sha256=(File-Hash (Join-Path $stage 'node.exe'))}
+                    [IO.Directory]::Move((Long-Path $stage),(Long-Path $globalPrefix))
+                }
+            }
+            if (Test-Path -LiteralPath $globalPrefix) {
+                foreach ($required in @('node.exe','node_modules\npm\bin\npm-cli.js','node_modules\npm\bin\npx-cli.js','.workswarm-prefix.json')) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $globalPrefix $required) -PathType Leaf)) { throw 'Managed npm prefix is incomplete; preserving it for repair.' }
+                }
+                $bin=Join-Path $npmRoot 'bin'
+                Check-Parents $bin
+                New-Item -ItemType Directory -Path $bin -Force | Out-Null
+                foreach ($command in @('npm','npx')) {
+                    $cli=if ($command -eq 'npm') {'npm-cli.js'} else {'npx-cli.js'}
+                    $body='@"%~dp0..\global\node.exe" "%~dp0..\global\node_modules\npm\bin\'+$cli+'" %*'+"`r`n"
+                    [IO.File]::WriteAllText((Join-Path $bin ($command+'.cmd')),$body,$utf8)
+                    $sh='#!/bin/sh'+"`n"+'basedir=$(dirname "$0")'+"`n"+'exec "$basedir/../global/node.exe" "$basedir/../global/node_modules/npm/bin/'+$cli+'" "$@"'+"`n"
+                    [IO.File]::WriteAllText((Join-Path $bin $command),$sh,$utf8)
+                }
+                $paths += $globalPrefix
+            }
+            # Only package-generated identities may enable the next upgrade's
+            # fast path. Never bless the current directory by hashing user files.
+            foreach ($bundle in $nodeSource) {
+                if ($bundle.digest) { Register-Bundle $bundle.source $bundle.digest }
+            }
+            Add-UserPaths @() $paths
+            Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=@(); sdk_mappings=@(); npm_root=$npmRoot}
+            Report-Progress 100 'CLI environment ready.' '' -Force
             exit 0
         }
         $mappings=@()
+        $bundledChecks=@()
         foreach ($relative in @('runtime\node-runtime','resources\backend\runtime\node-runtime')) {
             $mapping=Preserve-Prefix (Join-Path $InstallDir $relative)
-            if ($mapping) { $mappings += $mapping }
+            if ($mapping) {
+                if ($mapping.bundle_only) { $bundledChecks += $mapping }
+                else { $mappings += $mapping }
+            }
         }
         $sdkMappings=@()
         foreach ($relative in @('runtime\external-cli','resources\backend\runtime\external-cli')) {
@@ -351,36 +484,6 @@ try {
             }
         }
         $paths=@()
-        if ($Mode -eq 'Initialize') {
-            $globalPrefix=Join-Path $npmRoot 'global'
-            Check-Parents $globalPrefix
-            if (-not (Test-Path -LiteralPath $globalPrefix)) {
-                $nodeSource=@($mappings | Where-Object { Test-Path -LiteralPath (Join-Path $_.target 'node.exe') -PathType Leaf } | Select-Object -Last 1)
-                if ($nodeSource.Count) {
-                    $stage=Join-Path $npmRoot ('.global-pending-'+[guid]::NewGuid().ToString('N'))
-                    Copy-Tree $nodeSource[0].backup $stage
-                    if ((Inventory $stage) -ne (Inventory $nodeSource[0].backup)) { throw 'Managed npm prefix verification failed.' }
-                    Write-Json (Join-Path $stage '.workswarm-prefix.json') @{schema=1; source=$nodeSource[0].source; node_sha256=(File-Hash (Join-Path $stage 'node.exe'))}
-                    [IO.Directory]::Move((Long-Path $stage),(Long-Path $globalPrefix))
-                }
-            }
-            if (Test-Path -LiteralPath $globalPrefix) {
-                foreach ($required in @('node.exe','node_modules\npm\bin\npm-cli.js','node_modules\npm\bin\npx-cli.js','.workswarm-prefix.json')) {
-                    if (-not (Test-Path -LiteralPath (Join-Path $globalPrefix $required) -PathType Leaf)) { throw 'Managed npm prefix is incomplete; preserving it for repair.' }
-                }
-                $bin=Join-Path $npmRoot 'bin'
-                Check-Parents $bin
-                New-Item -ItemType Directory -Path $bin -Force | Out-Null
-                foreach ($command in @('npm','npx')) {
-                    $cli=if ($command -eq 'npm') {'npm-cli.js'} else {'npx-cli.js'}
-                    $body='@"%~dp0..\global\node.exe" "%~dp0..\global\node_modules\npm\bin\'+$cli+'" %*'+"`r`n"
-                    [IO.File]::WriteAllText((Join-Path $bin ($command+'.cmd')),$body,$utf8)
-                    $sh='#!/bin/sh'+"`n"+'basedir=$(dirname "$0")'+"`n"+'exec "$basedir/../global/node.exe" "$basedir/../global/node_modules/npm/bin/'+$cli+'" "$@"'+"`n"
-                    [IO.File]::WriteAllText((Join-Path $bin $command),$sh,$utf8)
-                }
-                $paths += $globalPrefix
-            }
-        }
         foreach ($mapping in $mappings) {
             $paths += $mapping.target
             $localBin=Join-Path $mapping.target 'node_modules\.bin'
@@ -395,14 +498,16 @@ try {
         }
         # Working/global copies can take time. Recheck every old source once all
         # copies finish so a late install cannot be erased by the next cleanup.
-        foreach ($mapping in @($mappings)+@($sdkMappings)) {
+        foreach ($mapping in @($mappings)+@($sdkMappings)+@($bundledChecks)) {
+            Report-Progress 90 'Verifying CLI environment...' 'Final checks before installation can continue.' -Force
             Check-Parents $mapping.source
             if ((Text-Hash (Inventory $mapping.source)) -ne $mapping.digest) { throw "Source changed before cleanup: $($mapping.source)" }
             Assert-PrefixIdle $mapping.source
         }
         if ($sdkMappings.Count) { Assert-PrefixIdle $InstallDir -ExecutableOnly }
         Add-UserPaths $mappings $paths
-        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; npm_root=$npmRoot}
+        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; unchanged_bundles=$bundledChecks; npm_root=$npmRoot}
+        Report-Progress 100 'CLI environment ready.' '' -Force
     } finally { $lock.Dispose() }
 } catch {
     $message=$_.Exception.Message+"`r`n"+$_.ScriptStackTrace
