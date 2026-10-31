@@ -2156,13 +2156,16 @@ class AgentWebSocketServer:
         """Build every AgentServer Runtime through one product composition root."""
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
+        from jiuwenswarm.server.runtime.session.end_notifications import (
+            ExtensionSessionEndParticipant,
+        )
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )
 
         owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
-        registry = RuntimeParticipantRegistry()
+        registry = RuntimeParticipantRegistry(host_delete=(ExtensionSessionEndParticipant(),))
         lease = owner.attach_runtime(registry)
         return AgentRuntime(
             agent_manager=agent_manager,
