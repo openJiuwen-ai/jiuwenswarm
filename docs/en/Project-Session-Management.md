@@ -24,6 +24,8 @@ The current implementation adds a `work_mode` dimension to isolate regular work 
 
 ### Communication Convention
 
+In both personal and enterprise editions, Gateway forwards `session.list`, `session.rename`, and `session.pin` to the target AgentServer through E2A. The Server owns session data access. If the Server is stopped, not ready, or disconnected, Gateway returns `SERVICE_UNAVAILABLE` without reading or writing local sessions or loading a local compatibility module.
+
 - Transport: WebSocket JSON messages
 - Request structure: `{ "id": "<req_id>", "method": "<method_name>", "params": { ... } }`
 - Response envelope:
