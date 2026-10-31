@@ -147,17 +147,16 @@ def _colleague_wire(view, service: PersistentAgentService, bound: Mapping[str, s
                 "agent_id": item.agent_id,
                 "workspace_dir": str(service.workspaces.path(WEB_NAMESPACE, item.agent_id)),
             })
-    seen_feishu_apps = {
-        item["connection_key"] for item in connections if item["channel"] == "feishu"
-    }
-    for app_id, bound_agent_id in bound.get("feishu", ()):
-        if bound_agent_id == view.agent_id and app_id not in seen_feishu_apps:
-            connections.append({
-                "channel": "feishu",
-                "connection_key": app_id,
-                "agent_id": view.agent_id,
-                "workspace_dir": view.workspace_dir,
-            })
+    for platform in ("feishu", "dingtalk"):
+        seen_apps = {item["connection_key"] for item in connections if item["channel"] == platform}
+        for app_id, bound_agent_id in sorted(bound.get(platform, ())):
+            if bound_agent_id == view.agent_id and app_id not in seen_apps:
+                connections.append({
+                    "channel": platform,
+                    "connection_key": app_id,
+                    "agent_id": view.agent_id,
+                    "workspace_dir": view.workspace_dir,
+                })
     payload["connections"] = connections
     payload["im_configured"] = len(connections) > 1
     return payload
@@ -335,6 +334,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         self._manager: AgentManager | None = None
         self._conversations: WebConversationStore | None = None
         self._manager_lock = asyncio.Lock()
+        self._connection_operation_locks: dict[str, asyncio.Lock] = {}
         self._model_refresh_lock = asyncio.Lock()
         self._model_refresh = ModelRefreshQueue(lambda payload: self.refresh_models(payload))
 
@@ -399,6 +399,12 @@ class JiuwenMateWebAdapter(GatewayAdapter):
 
     async def attach_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
         """Gateway asks for the agent of one IM app before it writes that binding."""
+        config_id = _text_param(params, "config_id")
+        lock = self._connection_operation_locks.setdefault(config_id, asyncio.Lock())
+        async with lock:
+            return await self._attach_connection(params)
+
+    async def _attach_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
         service = await asyncio.to_thread(self._colleagues)
         agent_id = await asyncio.to_thread(
             service.attach_connection,
@@ -428,6 +434,15 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         }
 
     async def remove_colleague(
+        self, params: Mapping[str, Any], *, im_runtime: AgentManager | None = None,
+    ) -> dict[str, Any]:
+        """Serialize with binding even if Gateway has stopped waiting for deletion."""
+        config_id = _text_param(params, "config_id")
+        lock = self._connection_operation_locks.setdefault(config_id, asyncio.Lock())
+        async with lock:
+            return await self._remove_colleague(params, im_runtime=im_runtime)
+
+    async def _remove_colleague(
         self, params: Mapping[str, Any], *, im_runtime: AgentManager | None = None,
     ) -> dict[str, Any]:
         """Hide a colleague and keep its data (``unbind``), or delete every agent and then the colleague (``purge``).
@@ -566,6 +581,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 channel="web",
                 target_id=_text_param(params, "conversation_id"),
                 tool_call_id=params.get("tool_call_id") if isinstance(params.get("tool_call_id"), str) else None,
+                approver_agent_id=params.get("agent_id") if isinstance(params.get("agent_id"), str) else None,
             )
             return {"request": view.to_dict()}
         if method == ReqMethod.JIUWENMATE_SHARING_LIST.value:

@@ -96,15 +96,21 @@ Gateway 使用当前渠道凭据查询，并以内部 E2A 方法 `jiuwenmate.gro
 
 ### 4.6 所有者跨群分享审批
 
-当前群读取维持既有规则；搜索其他群并命中消息时，宿主按实际命中的来源群拆分冻结结果，在候选进入请求模型前分别发到配置所有者 Web 私聊 `sharing-approvals`。无命中的群不生成空审批卡。原渠道只接收通用等待提示，卡片预览不进入请求模型或原群。
+指定群 ID／群名本身是有界搜索条件，允许没有关键词／时间范围。平台群 ID 在当前 Agent 的实时授权集合内唯一映射到宿主群 ID；歧义和未授权均不放行。CLI 快捷返回的显示时间须按稳定消息 ID 补读原始精确时间后再用于可见下界和冻结复核。
+
+当前群读取维持既有规则；统一内容搜索命中其他群的消息、最终文件或在线文档链接时，宿主按实际命中的来源群拆分冻结结果，在候选进入请求模型前分别发到配置所有者 Web 私聊 `sharing-approvals`。无命中的群不生成空审批卡。原渠道只接收通用等待提示，卡片预览不进入请求模型或原群。
+
+已在当前群共享、登记于该群 Session 的最终文件，可在当前群读取、搜索及再次发送，不因其他群存在相同文件而重复审批，也不随原群分享授权撤销而失去本群可见性。不按同名、指纹或大小追溯最早群。直接读取其他群 Session 的文件仍由宿主 preflight 复用跨群审批，并核验具体文件对象及指纹。Core 回调须使用原生中断暂停入口；详见 F_21_03 §14。
 
 `group_share_approvals` 和 `group_share_grants` 保存在宿主 agents.sqlite3，`GroupShareRepository` 为权威；Agent 可写表格、普通工具权限及 full_access 均不能代替分享授权。所有者由当前个人版可信 Web 身份 local 确认；namespace、配置、运行 Agent、提问者和目标来自宿主 Request，不接受模型改写。IM 运行 Agent 通过 connection_of 找回配置所有者。
 
-一次批准覆盖原 Request、完整规范化查询（含 limit 和分页）及冻结候选，不补入新增内容。永久授权按 namespace／配置／运行 Agent／来源群／目标渠道、app、类型和稳定 ID 保存，所有者可撤销；群名不充当授权键。每次仍须通过平台访问、可见下界与来源状态检查。待审批 15 分钟过期；一次决策幂等，同一查询可绑定同一原生暂停的多个工具调用。
+一次批准覆盖原 Request、完整规范化查询（含 limit 和分页）及冻结候选，不补入新增内容。永久授权按 namespace／配置／运行 Agent／来源群／目标渠道、app、类型和稳定 ID 保存，所有者可撤销；群名不充当授权键；历史消息授权不会自动扩大到文件或在线文档。每次仍须通过平台访问、可见下界与来源状态检查。待审批 15 分钟过期；一次决策幂等，同一查询可绑定同一原生暂停的多个工具调用。
 
-RPC 为 `jiuwenmate.sharing.list {agent_id}`、`.decide {agent_id, approval_id, decision: once|permanent|reject}`、`.revoke {agent_id, grant_id}`。agent_id 是配置 ID，统一返回 `{approvals,grants,conversation_id:'sharing-approvals'}`；query 为完整 GroupMessageQuery 对象，正文允许 null。每条审批记录必须只含一个实际命中消息的来源群和一个目标会话；一次搜索命中多个来源群时拆成多条独立审批，分别决策后才恢复原工具调用。重跑搜索时按原查询读取首次冻结的来源群和消息集合，不将新命中加入原审批。卡片展示来源／接收方／请求者／查询、有限正文摘要和完整可展开候选。未绑定原生现场或来源群数量不为一的记录不可批准。
+RPC 为 `jiuwenmate.sharing.list {agent_id}`、`.decide {agent_id, approval_id, decision: once|permanent|reject}`、`.revoke {agent_id, grant_id}`。agent_id 是配置 ID，统一返回 `{approvals,grants,conversation_id:'sharing-approvals'}`；query 为完整 GroupMessageQuery 对象，正文允许 null。每条审批记录必须只含一个实际命中内容的来源群和一个目标会话；一次搜索命中多个来源群时拆成多条独立审批，分别决策后才恢复原工具调用。重跑搜索时按原查询读取首次冻结的来源群和消息／产物集合，不将新命中加入原审批。卡片展示来源／接收方／请求者／查询、有限摘要和可展开的消息、文件或在线文档链接。批准后文件校验来源路径、大小和 SHA-256 并复制到目标 Session `imports/`；在线文档批准仅释放链接，不授予接收者平台权限。未绑定原生现场或来源群数量不为一的记录不可批准。
 
-Core 以 GroupMessageApprovalRequired 发出安全中断，事件携带可选 approval_ref 供宿主精确关联。业务 rail 与工具使用稳定 native owner/kind，保存前轮 carried_answers；只消费自己的确认。所有者决定后恢复原 Request／Spec，原 IM 及普通工具审批接口不得自批。拒绝、超时或来源变化均安全结束或返回不可用，不静默放行。
+Core 以 `GroupContentApprovalRequired` 发出安全中断，旧 `GroupMessageApprovalRequired` 保留兼容；事件携带可选 approval_ref 供宿主精确关联。业务 rail 与工具使用稳定 native owner/kind，保存前轮 carried_answers；只消费自己的确认。所有者决定后恢复原 Request／Spec，原 IM 及普通工具审批接口不得自批。拒绝、超时或来源变化均安全结束或返回不可用，不静默放行。
+
+匹配到的 CLI 群消息／详情／附件读取复用上述审批。安全解析的单条只读调用由宿主用当前 Agent 私有 CLI 身份预览并冻结，原 Bash 暂停等待，恢复时只释放获准快照；不执行原 shell 前缀、管道或重定向。CLI 应用与来源访问关系必须一致。当前群免跨群审批；外群按实际来源逐卡，消息和附件分别检查 `messages`／`files` 长期授权。无法确认范围的匹配命令在进程执行前拒绝；拒绝或过期的来源在同一 Request 中不因 CLI 参数变化重新申请。普通工具完全访问不跳过该门禁。此命令匹配不是 OS 沙箱，不承诺拦住任意隐藏脚本或同账户直接读库；范围和验证见 F_21_03 §12。
 
 审批操作入口与执行归属分开：Web 运行管理器只恢复 Web 请求，IM 运行管理器只恢复其渠道请求。Web 对 IM 请求仅持久化所有者决定，由 IM 的审批恢复循环继续原 Request，不能使用缺少平台校验能力的 Web driver 代跑。IM 暂未启动时保留已决记录，等待原渠道恢复；普通工具审批、超时、启动恢复也遵守同一渠道归属。
 

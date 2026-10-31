@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS permission_approvals (
     status TEXT NOT NULL,
     decision TEXT,
     reply_json TEXT,
+    approver_agent_id TEXT NOT NULL DEFAULT '',
     UNIQUE (namespace_id, execution_id)
 );
 CREATE INDEX IF NOT EXISTS permission_approvals_by_session
@@ -70,6 +71,7 @@ class PermissionApproval:
     created_at: datetime
     expires_at: datetime
     status: str
+    approver_agent_id: str = ""
     decision: str | None = None
     reply: dict[str, Any] | None = None
 
@@ -87,6 +89,13 @@ class PermissionApprovalRepository(SQLiteStore):
     """SQLite state needed to resume one exact native permission interruption after restart."""
 
     _schema = _SCHEMA
+
+    def __init__(self, db_path) -> None:
+        super().__init__(db_path)
+        with self._transaction() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(permission_approvals)")}
+            if "approver_agent_id" not in columns:
+                conn.execute("ALTER TABLE permission_approvals ADD COLUMN approver_agent_id TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
     def _approval(row) -> PermissionApproval:
@@ -106,6 +115,7 @@ class PermissionApprovalRepository(SQLiteStore):
             created_at=datetime.fromisoformat(row["created_at"]),
             expires_at=datetime.fromisoformat(row["expires_at"]),
             status=row["status"],
+            approver_agent_id=row["approver_agent_id"] or row["agent_id"],
             decision=row["decision"],
             reply=json.loads(row["reply_json"]) if row["reply_json"] else None,
         )
@@ -143,6 +153,18 @@ class PermissionApprovalRepository(SQLiteStore):
         if not intercepted or payload.reason != "awaiting_confirmation":
             raise PersistentAgentError("execution is not awaiting permission confirmation")
         route = record.route_snapshot
+        principal = record.access.principal_ref
+        approver_agent_id = record.agent_id
+        # Business-sharing confirmations retain their dedicated owner-only decision path.
+        sharing = any(item.get("approval_ref") for item in intercepted)
+        if not sharing and record.permission_origin is not None:
+            origin = record.permission_origin
+            principal, route, approver_agent_id = origin.principal_ref, origin.route, origin.agent_id
+        elif (not sharing and record.request_input.kind == "group_message"
+              and record.request_input.source.sender_kind == "agent"):
+            # A Bot handoff without a verified human root must not be approved by
+            # the Bot itself or by an arbitrary member of the current group.
+            route = None
         approval_id = secrets.token_hex(6)
         created_at = event.occurred_at if recovered else now
         expires_at = created_at + APPROVAL_TIMEOUT
@@ -165,7 +187,10 @@ class PermissionApprovalRepository(SQLiteStore):
                 (record.namespace_id, record.request_id),
             )
             conn.execute(
-                "INSERT INTO permission_approvals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)",
+                "INSERT INTO permission_approvals (approval_id,namespace_id,agent_id,session_id,request_id,"
+                "execution_id,config_version,config_fingerprint,principal_ref,route_json,intercepted_json,"
+                "created_at,expires_at,status,decision,reply_json,approver_agent_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?)",
                 (
                     approval_id,
                     record.namespace_id,
@@ -175,11 +200,12 @@ class PermissionApprovalRepository(SQLiteStore):
                     event.execution_id,
                     record.config_version,
                     record.config_fingerprint,
-                    record.access.principal_ref,
+                    principal,
                     None if route is None else json.dumps(route.to_dict(), ensure_ascii=False),
                     json.dumps(intercepted, ensure_ascii=False),
                     created_at.isoformat(),
                     expires_at.isoformat(),
+                    approver_agent_id,
                 ),
             )
             row = conn.execute(
@@ -273,7 +299,8 @@ class PermissionApprovalRepository(SQLiteStore):
         """Find pending confirmations on a route, optionally limited to its initiator."""
         from contextlib import closing
 
-        query = "SELECT * FROM permission_approvals WHERE namespace_id = ? AND agent_id = ? AND status = 'pending'"
+        query = ("SELECT * FROM permission_approvals WHERE namespace_id = ? "
+                 "AND COALESCE(NULLIF(approver_agent_id,''),agent_id) = ? AND status = 'pending'")
         values: tuple[Any, ...] = (namespace_id, agent_id)
         if principal_ref is not None:
             query += " AND principal_ref = ?"
@@ -384,6 +411,7 @@ class PermissionApprovalRepository(SQLiteStore):
         app_id: str | None,
         tool_call_id: str | None,
         now: datetime,
+        approver_agent_id: str | None = None,
     ) -> PermissionApproval:
         """Apply one authenticated response only on the stored channel, target, and initiator."""
         if decision not in ("approve", "reject"):
@@ -399,6 +427,8 @@ class PermissionApprovalRepository(SQLiteStore):
                 raise PersistentAgentError("permission approval is no longer pending", code="CONFLICT")
             if approval.principal_ref != principal_ref or approval.route is None:
                 raise PersistentAgentError("permission approval belongs to another initiator", code="FORBIDDEN")
+            if approval.approver_agent_id != (approver_agent_id or approval.agent_id):
+                raise PersistentAgentError("permission approval belongs to another receiving agent", code="FORBIDDEN")
             if (
                 approval.route.channel != channel
                 or approval.route.target_id != target_id
@@ -456,7 +486,7 @@ class PermissionApprovalRepository(SQLiteStore):
         return expired
 
     def decide_sharing(self, approval_id: str, *, decisions: dict[str, bool], now: datetime) -> PermissionApproval:
-        """Apply host-authenticated owner decisions to the exact business-search interruptions only.
+        """Apply host-authenticated owner decisions to exact business-sharing interruptions only.
 
         This internal entry is never a tool-approval API. The caller authenticates the owner and
         binds each decision to its sharing record; unrelated intercepted operations remain denied.
@@ -472,11 +502,13 @@ class PermissionApprovalRepository(SQLiteStore):
                 return approval
             calls = {item["tool_call_id"]: item for item in approval.intercepted}
             if not decisions or any(
-                call_id not in calls or calls[call_id]["tool_name"] != "search_group_messages"
+                call_id not in calls or calls[call_id]["tool_name"] not in {
+                    "search_group_messages", "bash", "share_file", "read_file", "list_files", "list_dir",
+                }
                 or not calls[call_id].get("approval_ref") or not isinstance(choice, bool)
                 for call_id, choice in decisions.items()
             ):
-                raise PersistentAgentError("sharing decisions must name exact business search calls", code="FORBIDDEN")
+                raise PersistentAgentError("sharing decisions must name exact business sharing calls", code="FORBIDDEN")
             expired = now >= approval.expires_at
             allowed = {key for key, choice in decisions.items() if choice and not expired}
             reply = ConfirmReply.model_validate({"responses": [

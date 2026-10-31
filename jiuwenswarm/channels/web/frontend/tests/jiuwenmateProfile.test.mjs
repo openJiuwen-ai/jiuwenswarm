@@ -185,6 +185,7 @@ test('the employee permissions page lists scoped permanent sharing grants and su
   const target = { channel: 'feishu', app_id: 'app-a', kind: 'group', id: 'destination', name: '目标群' };
   const active = {
     grant_id: 'grant-active', source_group_id: 'source-a', source_group_name: '来源群', target,
+    content_types: ['messages'], source_platform: 'dingtalk',
     created_at: '2026-10-27T01:02:03Z', status: 'active',
   };
   const revoked = { ...active, grant_id: 'grant-revoked', status: 'revoked' };
@@ -224,6 +225,7 @@ test('the employee permissions page lists scoped permanent sharing grants and su
 test('the employee permissions page fails closed when listing or revoking a sharing grant fails', async () => {
   const grant = {
     grant_id: 'grant-active', source_group_id: 'source-a', source_group_name: '来源群',
+    content_types: ['messages'], source_platform: 'feishu',
     target: { channel: 'feishu', app_id: null, kind: 'group', id: 'destination', name: '目标群' },
     created_at: '2026-10-27T01:02:03Z', status: 'active',
   };

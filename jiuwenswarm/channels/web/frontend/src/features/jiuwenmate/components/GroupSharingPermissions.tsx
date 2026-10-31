@@ -56,6 +56,7 @@ export function GroupSharingPermissions({ api, configId, connectionEpoch }: Grou
               <tr>
                 <th>{t('jiuwenmate.sharing.source')}</th>
                 <th>{t('jiuwenmate.sharing.target')}</th>
+                <th>{t('jiuwenmate.sharing.contentTypes')}</th>
                 <th>{t('jiuwenmate.sharing.statusLabel')}</th>
                 <th>{t('jiuwenmate.sharing.createdAt')}</th>
                 <th>{t('jiuwenmate.sharing.actionsLabel')}</th>
@@ -71,10 +72,14 @@ export function GroupSharingPermissions({ api, configId, connectionEpoch }: Grou
                   aria-busy={sharing.busy === `grant:${grant.grant_id}`}
                 >
                   <td>
-                    {grant.source_group_name || grant.source_group_id}
+                    {[grant.source_platform
+                      ? t(`jiuwenmate.im.${grant.source_platform}`, { defaultValue: grant.source_platform }) : '',
+                    grant.source_group_name || grant.source_group_id].filter(Boolean).join(' · ')}
                     <small>{grant.source_group_id}</small>
                   </td>
                   <td>{destination(grant.target)}</td>
+                  <td>{grant.content_types.map((kind) =>
+                    t('jiuwenmate.sharing.contentType.' + kind)).join(', ')}</td>
                   <td data-testid="jiuwenmate-profile-sharing-grant-status" data-variant={grant.status}>
                     {t(`jiuwenmate.sharing.status.${grant.status}`)}
                   </td>
