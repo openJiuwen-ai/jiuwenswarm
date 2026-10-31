@@ -2331,6 +2331,28 @@ async def test_recommendation_request_disables_thinking_for_every_model(
     assert "reasoning_effort" not in captured[0]
 
 
+def test_memory_response_schema_omits_array_keywords_dashscope_rejects() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _v6_response_schema,
+    )
+
+    forbidden = {"uniqueItems", "contains", "minContains", "maxContains"}
+
+    def keywords(node: object) -> set[str]:
+        found: set[str] = set()
+        if isinstance(node, dict):
+            found.update(forbidden & set(node))
+            for value in node.values():
+                found.update(keywords(value))
+        elif isinstance(node, list):
+            for value in node:
+                found.update(keywords(value))
+        return found
+
+    for stage in ("memory_init", "memory_incremental"):
+        assert keywords(_v6_response_schema(stage)) == set()
+
+
 @pytest.mark.asyncio
 async def test_unconsumed_validation_receipts_stay_bounded() -> None:
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import (

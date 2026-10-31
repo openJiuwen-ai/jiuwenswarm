@@ -99,16 +99,33 @@ def test_bounded_turns_keep_the_newest_under_turn_and_char_budgets() -> None:
     )
 
 
-def test_identity_payload_keeps_every_turn_while_the_model_payload_is_bounded() -> None:
+def test_identity_and_model_payload_cover_the_same_bounded_turns() -> None:
     messages = [_message("s", ordinal, "用" * 500) for ordinal in range(30)]
 
     identity = pipeline._session_identity_payload("s", messages)
     model = pipeline._session_model_payload("s", messages)
+    covered = pipeline._summary_coverage_ids(messages)
 
-    assert len(identity["messages"]) == 30
-    assert len(model["messages"]) <= pipeline._SUMMARY_MAX_TURNS_PER_SESSION
+    assert len(identity["messages"]) == len(model["messages"])
+    assert [item["event_id"] for item in identity["messages"]] == [
+        item["event_id"] for item in model["messages"]
+    ]
+    assert covered == {item["event_id"] for item in model["messages"]}
+    assert len(covered) < len(messages)
+    assert len(covered) <= pipeline._SUMMARY_MAX_TURNS_PER_SESSION
     assert model["messages"][-1]["ordinal"] == 29
+    assert model["source_turn_count"] == 30
     assert len(model["interaction_pattern"]) == len(model["messages"])
+    assert not pipeline._summary_lags(
+        {"completed_at": 1_000.0, "source_event_ids": sorted(covered)},
+        1_000.0,
+        covered,
+    )
+    assert pipeline._summary_lags(
+        {"completed_at": 1_000.0, "source_event_ids": sorted(covered)},
+        1_000.0,
+        {message.event_id for message in messages},
+    )
 
 
 def test_fit_summary_session_drops_the_oldest_turns_to_meet_the_limit() -> None:
@@ -273,6 +290,10 @@ def test_store_prune_drops_aged_types_and_superseded_summaries(tmp_path) -> None
     event("dynamic_exposure", "old-exposure", now - 31 * day)
     event("dynamic_exposure", "new-exposure", now - day)
     event("pa_training_example", "kept", now - 365 * day)
+    event("topic_click", "opened", now - 400 * day)
+    event("session_bound", "bound", now - 400 * day)
+    event("not_interested", "dismissed", now - 400 * day)
+    event("session_summary", "old-summary", now - 400 * day, {"session_id": "session-old"})
     for revision, offset in enumerate((1, 2, 3)):
         event(
             "session_summary",
@@ -291,6 +312,10 @@ def test_store_prune_drops_aged_types_and_superseded_summaries(tmp_path) -> None
     assert ("session_summary", "summary-2") not in remaining
     assert ("session_summary", "summary-0") in remaining
     assert ("session_summary", "summary-1") in remaining
+    assert ("topic_click", "opened") in remaining
+    assert ("session_bound", "bound") in remaining
+    assert ("not_interested", "dismissed") in remaining
+    assert ("session_summary", "old-summary") in remaining
     # The interval marker skips a second pass on the same day.
     assert store.prune(now=now) == {}
 

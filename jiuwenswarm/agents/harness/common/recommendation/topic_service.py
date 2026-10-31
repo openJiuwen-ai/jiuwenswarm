@@ -1560,13 +1560,10 @@ class TopicService:
         )
         if not cards:
             return empty
-        corpus_cannot_refill = (
-            preset_only
-            and existing_is_preset
-            and bool(empty["cards"])
-            and len(cards) <= len(empty["cards"])
-        )
-        if corpus_cannot_refill:
+        # Compare like with like: the rebuilt pool against what the current pool
+        # can still serve, not against the one window it currently exposes.
+        current_serviceable = len(empty.get("served_card_ids") or empty["cards"])
+        if preset_only and existing_is_preset and len(cards) <= current_serviceable:
             # The corpus cannot fill the screen again; keep what the page has.
             return empty
         written = write_cold_start_pool(

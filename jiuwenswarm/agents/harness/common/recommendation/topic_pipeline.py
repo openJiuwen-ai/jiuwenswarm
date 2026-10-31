@@ -233,10 +233,12 @@ _RECENT_CATEGORIES = frozenset({"profile_recent_progress", "project_domain_progr
 
 # One session's summarizer input is bounded so a long conversation cannot grow
 # the prompt with its turn count: only the newest turns are read, each text is
-# clipped, and the session stops at its character budget. The caller then drops
-# the oldest turns of a session that still misses the token budget, and packs
-# the remaining sessions into as many calls as the context window needs. The
-# policy is part of every request, so a provider receipt shows the bound in force.
+# clipped, and the session stops at its character budget. The same turns are
+# the ones a summary claims to cover. History files stay complete; this bound
+# is only the model input. The caller then drops the oldest turns of a session
+# that still misses the token budget, and packs the remaining sessions into as
+# many calls as the context window needs. The policy is part of every request,
+# so a provider receipt shows the bound in force.
 _SUMMARY_INPUT_POLICY_VERSION = "topic-starter-v6-session-summary-input-v1"
 _SUMMARY_MAX_TURNS_PER_SESSION = 20
 _SUMMARY_MAX_USER_CHARS = 1_500
@@ -540,6 +542,8 @@ _V6_TAG_SCHEMA = {
         },
     ]
 }
+# Duplicate indices are rejected by the memory validators. uniqueItems is not
+# sent: providers such as Dashscope reject that keyword on an array schema.
 _V6_MEMORY_CORE_SCHEMA = _strict_object(
     {
         "behavior_pattern": _V6_TAG_SCHEMA,
@@ -548,7 +552,6 @@ _V6_MEMORY_CORE_SCHEMA = _strict_object(
             "type": "array",
             "items": {"type": "integer", "minimum": 1},
             "minItems": 1,
-            "uniqueItems": True,
         },
         "preferred_entities": {
             "type": "array",
@@ -605,7 +608,6 @@ _V6_MEMORY_INCREMENTAL_RESPONSE_SCHEMA = _strict_object(
             "type": "array",
             "items": {"type": "integer", "minimum": 1},
             "minItems": 0,
-            "uniqueItems": True,
         },
     }
 )
@@ -3430,21 +3432,59 @@ def _summary_abstract_context(
     return clusters or ["general_interest"]
 
 
+def _select_summary_turns(
+    turns: Sequence[tuple[Any, str, str | None]],
+) -> list[tuple[Any, str, str | None]]:
+    """Newest turns inside the summary budget, returned in their original order.
+
+    ``turns`` is oldest-first. The first kept turn is kept even when it alone
+    exceeds the character budget; later turns stop at the turn count or the
+    budget. Text is clipped the same way the model request clips it.
+    """
+
+    kept: list[tuple[Any, str, str | None]] = []
+    used = 0
+    for payload, content, answer in reversed(tuple(turns)):
+        clipped_content = _clip_summary_text(content, _SUMMARY_MAX_USER_CHARS) or ""
+        clipped_answer = _clip_summary_text(answer, _SUMMARY_MAX_ANSWER_CHARS)
+        cost = len(clipped_content) + len(clipped_answer or "")
+        if kept and (
+            len(kept) >= _SUMMARY_MAX_TURNS_PER_SESSION
+            or used + cost > _SUMMARY_MAX_SESSION_CHARS
+        ):
+            break
+        kept.append((payload, clipped_content, clipped_answer))
+        used += cost
+    kept.reverse()
+    return kept
+
+
+def _summary_coverage_ids(messages: Sequence[V6SourceMessage]) -> set[str]:
+    """Turns a summary of these messages is accountable for."""
+
+    ordered = sorted(messages, key=lambda item: item.ordinal)
+    selected = _select_summary_turns(
+        [(message, message.content, message.assistant_answer) for message in ordered]
+    )
+    return {message.event_id for message, _, _ in selected}
+
+
 def _session_identity_payload(
     session_id: str,
     messages: Sequence[V6SourceMessage],
 ) -> dict[str, Any]:
-    """Every turn, unchanged: the digest that decides whether a summary exists.
+    """The bounded turns the summary covers. A new turn inside that window changes the digest."""
 
-    The digest stays over the whole session so a summary written before input
-    bounding still matches; only a new completed turn makes the session pending.
-    """
-
+    ordered = sorted(messages, key=lambda item: item.ordinal)
+    selected = _select_summary_turns(
+        [(message, message.content, message.assistant_answer) for message in ordered]
+    )
+    covered = [message for message, _, _ in selected]
     input_origin, assistance_origin = _summary_origins(messages)
     return {
         "session_id": session_id,
-        "abstract_context": _summary_abstract_context(messages),
-        "interaction_pattern": [message.action_type for message in messages],
+        "abstract_context": _summary_abstract_context(covered),
+        "interaction_pattern": [message.action_type for message in covered],
         "input_origin": input_origin,
         "assistance_origin": assistance_origin,
         "messages": [
@@ -3453,11 +3493,11 @@ def _session_identity_payload(
                 "ordinal": message.ordinal,
                 "request_id": message.request_id,
                 "role": "user",
-                "content": message.content,
-                "assistant_answer": message.assistant_answer,
+                "content": content,
+                "assistant_answer": answer,
                 "assistance_origin": message.assistance_origin,
             }
-            for message in messages
+            for message, content, answer in selected
         ],
     }
 
@@ -3474,27 +3514,12 @@ def _clip_summary_text(value: str | None, limit: int) -> str | None:
 def _bounded_summary_turns(
     messages: Sequence[V6SourceMessage],
 ) -> list[tuple[V6SourceMessage, str, str | None]]:
-    """Newest-first bounded projection of one session, in ordinal order."""
+    """The summary input and the turns that input is accountable for."""
 
-    kept: list[tuple[V6SourceMessage, str, str | None]] = []
-    used = 0
-    for message in sorted(messages, key=lambda item: item.ordinal, reverse=True):
-        content = _clip_summary_text(
-            message.content, _SUMMARY_MAX_USER_CHARS
-        ) or ""
-        answer = _clip_summary_text(
-            message.assistant_answer, _SUMMARY_MAX_ANSWER_CHARS
-        )
-        cost = len(content) + len(answer or "")
-        if kept and (
-            len(kept) >= _SUMMARY_MAX_TURNS_PER_SESSION
-            or used + cost > _SUMMARY_MAX_SESSION_CHARS
-        ):
-            break
-        kept.append((message, content, answer))
-        used += cost
-    kept.reverse()
-    return kept
+    ordered = sorted(messages, key=lambda item: item.ordinal)
+    return _select_summary_turns(
+        [(message, message.content, message.assistant_answer) for message in ordered]
+    )
 
 
 def _session_model_payload(
@@ -3507,8 +3532,8 @@ def _session_model_payload(
     bounded = _bounded_summary_turns(messages)
     return {
         "session_id": session_id,
-        # The digest keeps every turn; these counts tell an audit that the
-        # summary behind that digest was written from a bounded excerpt.
+        # Counts tell an audit how many turns the session had and how many
+        # the summary was written from.
         "source_turn_count": len(messages),
         "supplied_turn_count": len(bounded),
         "abstract_context": _summary_abstract_context(
@@ -5470,18 +5495,22 @@ class TopicPipeline:
         for session_id in sorted(grouped):
             messages = sorted(grouped[session_id], key=lambda item: item.ordinal)
             input_origin, assistance_origin = _summary_origins(messages)
-            # The digest reads every turn; the summarizer reads only the bounded
-            # projection appended below, so bounding never rewrites old summaries.
+            # Coverage, the digest and the model request share one turn selection.
             session_payload = _session_identity_payload(session_id, messages)
             boundary = prefixes_by_session[session_id].boundary
-            source_event_ids = tuple(item.event_id for item in messages)
+            covered = [
+                message
+                for message in messages
+                if message.event_id in _summary_coverage_ids(messages)
+            ]
+            source_event_ids = tuple(item.event_id for item in covered)
             source_locators = tuple(
                 SessionSourceLocator(
                     session_id=item.session_id,
                     ordinal=item.ordinal,
                     event_id=item.event_id,
                 )
-                for item in messages
+                for item in covered
             )
             semantic_identity = {
                 "context_scope": snapshot.context_scope,
@@ -5738,19 +5767,45 @@ class TopicPipeline:
                     if _scope_matches(project_id, GLOBAL_NEW_CHAT_SCOPE)
                     else f"project:{project_id}"
                 )
+                answers = _completed_answers(session_id, session_records)
+                record_turns = []
+                for ordinal in sorted(prefix.completed_user_ordinals):
+                    record = session_records[ordinal]
+                    if not _summarizable_user_turn(record):
+                        continue
+                    event_id = str(record.get("id") or record.get("request_id") or "")
+                    content = record.get("content")
+                    if not event_id or not isinstance(content, str):
+                        continue
+                    record_turns.append((
+                        event_id,
+                        content,
+                        answers.get(str(record.get("request_id") or "")),
+                    ))
                 turn_ids = {
-                    str(session_records[ordinal].get("id") or session_records[ordinal].get("request_id") or "")
-                    for ordinal in prefix.completed_user_ordinals
-                    if _summarizable_user_turn(session_records[ordinal])
+                    event_id
+                    for event_id, _, _ in _select_summary_turns(record_turns)
                 }
                 if turn_ids:
                     completed_by_scope[scope][session_id] = (prefix.boundary.completed_at, turn_ids)
             pending_by_scope: dict[str, set[str]] = {}
+            cutoff = self._now() - _SUMMARY_SESSION_WINDOW_SECONDS
             for scope, completed in completed_by_scope.items():
-                latest = _latest_session_summaries(self.store, scope, set(completed))
+                ranked = sorted(
+                    (
+                        (session_id, completed_at, turn_ids)
+                        for session_id, (completed_at, turn_ids) in completed.items()
+                        if completed_at >= cutoff and turn_ids
+                    ),
+                    key=lambda item: (-item[1], item[0]),
+                )
+                selected = ranked[:_SUMMARY_SESSION_LIMIT]
+                latest = _latest_session_summaries(
+                    self.store, scope, {session_id for session_id, _, _ in selected},
+                )
                 pending = {
                     session_id
-                    for session_id, (completed_at, turn_ids) in completed.items()
+                    for session_id, completed_at, turn_ids in selected
                     if _summary_lags(latest.get(session_id), completed_at, turn_ids)
                 }
                 if 0 < len(pending) <= _PREPARED_SUMMARY_LIMIT:
@@ -5785,14 +5840,18 @@ class TopicPipeline:
         # latest summary lacks one of them, or their boundary, are summarized.
         latest = _latest_session_summaries(self.store, context_scope, session_ids)
         boundaries = {item.boundary.session_id: item.boundary for item in snapshot.completed_session_prefixes}
-        turn_ids: defaultdict[str, set[str]] = defaultdict(set)
+        grouped_messages: dict[str, list[V6SourceMessage]] = defaultdict(list)
         for item in snapshot.messages:
             if item.session_id in session_ids:
-                turn_ids[item.session_id].add(item.event_id)
+                grouped_messages[item.session_id].append(item)
         pending = {
             session_id
-            for session_id, ids in turn_ids.items()
-            if _summary_lags(latest.get(session_id), boundaries[session_id].completed_at, ids)
+            for session_id, session_messages in grouped_messages.items()
+            if _summary_lags(
+                latest.get(session_id),
+                boundaries[session_id].completed_at,
+                _summary_coverage_ids(session_messages),
+            )
         }
         if not pending:
             return ""

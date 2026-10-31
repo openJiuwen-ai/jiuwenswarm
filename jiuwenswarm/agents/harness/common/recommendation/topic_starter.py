@@ -66,8 +66,11 @@ logger = logging.getLogger(__name__)
 # recommendation.db is written by several stores; wait for the write lock like they do.
 _SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
 
-# Layered retention: dedup windows and caches age out sooner than feedback,
-# receipts and training samples. Event types not listed here are never pruned.
+# Layered retention for caches and receipts. Clicks, session bindings,
+# dismissals and session summaries stay: a later history scan still has to
+# tell an injected card prompt from the user's own words, and a dismissal is
+# lifted by summaries written after it. Superseded summaries are capped
+# separately. Event types not listed here are never pruned by age.
 _RETENTION_DAYS = {
     "dynamic_exposure": 30,
     "starter_slate_manifest": 45,
@@ -79,13 +82,9 @@ _RETENTION_DAYS = {
     "rid_decision": 180,
     "rid_abstention": 180,
     "rid_user_context_snapshot": 180,
-    "session_summary": 90,
     "session_summary_coverage": 90,
     "state_maintenance_receipt": 90,
     "prompt_suggestion_generation": 90,
-    "not_interested": 180,
-    "topic_click": 180,
-    "session_bound": 180,
     "conversation_depth": 180,
     "active_expression_observation": 180,
     "store_pruned": 30,
@@ -232,10 +231,11 @@ class TopicStarterStore:
             connection.execute("VACUUM")
 
     def prune(self, *, now: float) -> dict[str, int]:
-        """Drop aged cache, dedup and receipt rows once per retention interval.
+        """Drop aged cache and receipt rows once per retention interval.
 
-        Feedback, consent records and the training data plane are left alone:
-        their event types are not in ``_RETENTION_DAYS``.
+        Clicks, bindings, dismissals, session summaries, consent records and
+        the training data plane are left alone: their event types are not in
+        ``_RETENTION_DAYS``. Older summary revisions are still capped per session.
         """
 
         recent = self.query_events(
