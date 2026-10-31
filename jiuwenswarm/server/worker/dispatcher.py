@@ -380,6 +380,13 @@ class WorkerDispatcher:
         if not dispatch_id:
             dispatch_id = uuid.uuid4().hex
             self._bridge.events.register(request, dispatch_id)
+        if request.req_method == ReqMethod.CHAT_CANCEL:
+            # A session interrupt ends the round it targets. Its pending
+            # interactions (an ask_user popup waiting for input, a permission
+            # card) are no longer answerable, and the snapshot must not report
+            # the paused session as busy — otherwise every later metadata query
+            # triggers a forced after:0 replay that resurrects the popup.
+            self._bridge.events.retire_session_interactions(request)
         async with self._state_lock:
             if self._draining:
                 self._release_startup_priority(dispatch_id)
