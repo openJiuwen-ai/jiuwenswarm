@@ -7,6 +7,7 @@ from __future__ import annotations
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.subagent import SubagentRail
 
+from jiuwenswarm.agents.harness.common.cua_defaults import cua_model_rejects_images
 from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import (
     build_browser_task_prompt,
 )
@@ -26,9 +27,11 @@ class BrowserTaskPromptRail(SubagentRail):
         enable_subagent_runtime: bool = False,
         cua_agent_enabled: bool = False,
     ) -> None:
-        # Enabled in config but absent from the mounted subagents means the
-        # adapter skipped it because the model rejects image input.
+        # Enabled in config but unavailable means the model rejects image
+        # input: the adapter skipped mounting it, or the request model in use
+        # now does.
         self._cua_agent_enabled = cua_agent_enabled
+        self._deep_agent: object | None = None
         super().__init__(
             enable_async_subagent=enable_async_subagent,
             enable_subagent_runtime=enable_subagent_runtime,
@@ -39,14 +42,24 @@ class BrowserTaskPromptRail(SubagentRail):
             synchronous_subagent_types={"browser_agent", "cua_agent"},
         )
 
+    def init(self, agent) -> None:
+        # Model-call callbacks carry the inner ReActAgent as ``ctx.agent``; only
+        # the DeepAgent handed to ``init`` exposes ``deep_config.subagents``.
+        self._deep_agent = agent
+        super().init(agent)
+
     def _task_prompt_extension(
         self,
         ctx: AgentCallbackContext,
         language: str,
     ) -> str | None:
-        mounted = self._mounted_subagent_names(ctx.agent)
+        agent = self._deep_agent if self._deep_agent is not None else ctx.agent
+        mounted = self._mounted_subagent_names(agent)
         has_browser = "browser_agent" in mounted
-        has_cua = "cua_agent" in mounted
+        # The adapter mounts cua_agent against the config default model; the
+        # request model swapped in afterwards may still reject images.
+        current_model = getattr(getattr(agent, "deep_config", None), "model", None)
+        has_cua = "cua_agent" in mounted and not cua_model_rejects_images(current_model)
         sections: list[str] = []
         if has_browser:
             sections.append(build_browser_task_prompt(language))
