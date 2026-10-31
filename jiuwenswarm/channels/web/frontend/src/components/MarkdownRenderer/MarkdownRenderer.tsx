@@ -10,6 +10,7 @@ import {
   MARKDOWN_REMARK_PLUGINS,
 } from './markdownPlugins';
 import { repairCollapsedGfmTables } from './markdownTransforms';
+import { InsideFencedCodeContext, MarkdownInlineCode } from './InlineCode';
 import './MarkdownRenderer.css';
 
 interface MarkdownRendererProps {
@@ -68,7 +69,7 @@ function MarkdownPre({ children, node, ...props }: MarkdownPreProps): JSX.Elemen
   const contentLines = useContext(MarkdownContentLinesContext);
   const isStreaming = useContext(MarkdownStreamingContext);
   const mermaidCanvasMinHeight = useContext(MermaidCanvasMinHeightContext);
-  const codeBlock = getFencedCodeBlock(children, contentLines, node);
+  const codeBlock = getFencedCodeBlock(children, contentLines, node, MarkdownInlineCode);
   if (codeBlock) {
     const adapter = getFencedCodeAdapter(codeBlock);
     if (adapter) {
@@ -77,7 +78,11 @@ function MarkdownPre({ children, node, ...props }: MarkdownPreProps): JSX.Elemen
     }
   }
 
-  return <pre {...props}>{children}</pre>;
+  return (
+    <pre {...props}>
+      <InsideFencedCodeContext.Provider value={true}>{children}</InsideFencedCodeContext.Provider>
+    </pre>
+  );
 }
 
 function MarkdownTable({ children, ...props }: HTMLAttributes<HTMLTableElement>): JSX.Element {
@@ -90,6 +95,7 @@ function MarkdownTable({ children, ...props }: HTMLAttributes<HTMLTableElement>)
 
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
+  code: MarkdownInlineCode,
   pre: MarkdownPre,
   table: MarkdownTable,
 };
