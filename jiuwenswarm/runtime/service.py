@@ -4018,7 +4018,7 @@ class AgentRuntime:
                 ensure_builtin_agent_groups_installed,
             )
 
-            ensure_builtin_agent_groups_installed()
+            await asyncio.to_thread(ensure_builtin_agent_groups_installed)
         except Exception as exc:  # noqa: BLE001
             logger.warning("builtin agent_group install skipped: %s", exc)
 
