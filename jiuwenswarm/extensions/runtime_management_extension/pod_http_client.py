@@ -626,7 +626,11 @@ class HttpSseAgentServerClient(AgentServerClient):
 def _raise_for_pod_http_error(
     response: httpx.Response, *, base_url: str | None
 ) -> None:
-    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。"""
+    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。
+
+    业务上的「找不到」保持 HTTP 200。HTTP 404 不换机：它也可能是资源不存在，
+    旧进程缺网址靠重启 AgentServer，不靠把 404 解释成这台 Pod 坏了。
+    """
     if not base_url:
         return
     if response.status_code >= 500 or response.status_code == 429:

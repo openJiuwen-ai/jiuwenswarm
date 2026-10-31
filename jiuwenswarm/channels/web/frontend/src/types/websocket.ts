@@ -29,6 +29,8 @@ export interface WsEvent {
   payload: Record<string, unknown>;
   seq?: number;
   stream_id?: string;
+  /** Gateway request id. SSE carries it on the frame id, not only inside payload. */
+  request_id?: string;
 }
 
 export type WebMessage = WsRequest | WsResponse | WsEvent;

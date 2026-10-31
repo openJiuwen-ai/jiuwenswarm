@@ -30,6 +30,22 @@ test('session.list is GET query, not H1 /api/sessions', () => {
   assert.equal(assembled.jsonBody, null);
 });
 
+test('session.switch posts the session id in the path', () => {
+  const assembled = assembleWebRest('session.switch', {
+    session_id: 's',
+    previous_session_id: 'prev',
+    previous_mode: 'agent',
+    mode: 'team',
+    view_id: 'view-1',
+  }, BASE);
+  assert.ok(assembled);
+  assert.equal(assembled.verb, 'POST');
+  assert.equal(assembled.url, '/api/v1/sessions/s/actions/switch');
+  assert.equal(assembled.jsonBody.mode, 'team');
+  assert.equal(assembled.jsonBody.previous_session_id, 'prev');
+  assert.equal(assembled.jsonBody.session_id, undefined);
+});
+
 test('session.create keeps client session_id in body', () => {
   const assembled = assembleWebRest('session.create', { session_id: 'web_1' }, BASE);
   assert.ok(assembled);
@@ -211,10 +227,16 @@ const ENTERPRISE_ASSEMBLE = [
   ['skills.skillnet.evaluate', 'POST', '/api/v1/skills/skillnet/actions/evaluate', { url: 'http://s' }, 'unary'],
   ['skills.evolution.get', 'GET', '/api/v1/skills/evolution', { name: 'evo-1' }, 'unary'],
   ['skills.evolution.save', 'PUT', '/api/v1/skills/evolution', { name: 'evo-1', entries: [] }, 'unary'],
+  ['team.list', 'GET', '/api/v1/teams', {}, 'unary'],
+  ['team.history.get', 'GET', '/api/v1/sessions/sid/team/history', { session_id: 'sid', cursor: 0, limit: 500 }, 'unary'],
+  ['team.snapshot', 'GET', '/api/v1/sessions/sid/team/snapshot', { session_id: 'sid', team_name: 'alpha' }, 'unary'],
+  ['team.quota.get', 'GET', '/api/v1/teams/quota', {}, 'unary'],
+  ['team.stop', 'POST', '/api/v1/teams/actions/stop', { team_id: 'tid' }, 'unary'],
+  ['team.delete', 'DELETE', '/api/v1/teams/alpha', { team_name: 'alpha', mode: 'team' }, 'unary'],
 ];
 
 test('every enterprise mapped method assembles verb+url+kind', () => {
-  assert.equal(ENTERPRISE_ASSEMBLE.length, 42);
+  assert.equal(ENTERPRISE_ASSEMBLE.length, 48);
   const seen = new Set();
   for (const [method, verb, url, params, kind] of ENTERPRISE_ASSEMBLE) {
     seen.add(method);

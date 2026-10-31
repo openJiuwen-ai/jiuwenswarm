@@ -30,6 +30,8 @@ import {
   isTeamLeaderContextUsageSnapshot,
   parseContextUsageSnapshot,
 } from './contextUsage/contextUsageModel';
+import { isEnterprise } from '../edition';
+import { isTeamAgentMode } from './planMode/wireMode';
 
 export { HistoryRecordReassembler };
 
@@ -718,7 +720,9 @@ function safeTimestampMs(value: unknown): number {
 }
 
 function isTeamModeRecord(record: Record<string, unknown>): boolean {
-  return typeof record.mode === 'string' && record.mode.trim().toLowerCase() === 'team';
+  const mode = typeof record.mode === 'string' ? record.mode.trim().toLowerCase() : '';
+  if (!isEnterprise()) return mode === 'team';
+  return isTeamAgentMode(mode);
 }
 
 function isTeamTeammateMessageRecord(record: Record<string, unknown>): boolean {
@@ -1163,6 +1167,34 @@ function parseSessionHistoryTimelineEntry(
         ? 'subagent_activity'
         : 'subagent_message';
     return { kind, at: replay.at, payload: replay.payload };
+  }
+
+  if (eventType === 'chat.notice') {
+    const noticePayload = buildEventPayloadForRecord(record);
+    const noticeType = pickFirstString(noticePayload, ['notice_type', 'type'])
+      ?? pickFirstString(record, ['notice_type', 'type'])
+      ?? '';
+    if (
+      noticeType !== 'requested_team_size'
+      && noticeType !== 'team_quota'
+      && noticeType !== 'team_teammate_quota'
+    ) {
+      return null;
+    }
+    const noticeContent = pickFirstString(noticePayload, ['content', 'message', 'text'])
+      ?? (typeof record.content === 'string' ? record.content : '');
+    if (!noticeContent.trim()) return null;
+    const noticeId = pickFirstString(record, ['id', 'message_id'])
+      ?? `notice-${noticeType}-${sessionId}-${at}`;
+    return {
+      kind: 'message',
+      message: {
+        id: noticeId,
+        role: 'system',
+        content: noticeContent,
+        timestamp: at,
+      },
+    };
   }
 
   if (!ALLOWED_ASSISTANT_EVENT_TYPES.has(eventType)) {

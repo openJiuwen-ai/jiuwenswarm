@@ -221,6 +221,38 @@ def test_is_sse_end_frame_enterprise_ignores_foreign_processing_false(monkeypatc
     assert outbound_mod._is_sse_end_frame(own, "chat-new") is True
 
 
+def test_is_sse_end_frame_enterprise_idle_does_not_end(monkeypatch):
+    monkeypatch.setattr(outbound_mod, "is_enterprise", lambda: True)
+    idle = {
+        "type": "event",
+        "event": "chat.processing_status",
+        "payload": {"is_processing": False, "idle": True, "request_id": "chat-new"},
+    }
+    done = {
+        "type": "event",
+        "event": "chat.processing_status",
+        "payload": {"is_processing": False, "request_id": "chat-new"},
+    }
+    assert outbound_mod._is_sse_end_frame(idle, "chat-new") is False
+    assert outbound_mod._is_sse_end_frame(done, "chat-new") is True
+
+
+def test_is_sse_end_frame_personal_final_ends_status_does_not(monkeypatch):
+    monkeypatch.setattr(outbound_mod, "is_enterprise", lambda: False)
+    assert outbound_mod._is_sse_end_frame(
+        {"type": "event", "event": "chat.final", "payload": {"content": "x"}},
+        "r1",
+    ) is True
+    assert outbound_mod._is_sse_end_frame(
+        {
+            "type": "event",
+            "event": "chat.processing_status",
+            "payload": {"is_processing": False, "idle": True, "request_id": "r1"},
+        },
+        "r1",
+    ) is False
+
+
 def test_http_sse_outbound_enterprise_keeps_open_on_foreign_processing_false(monkeypatch):
     monkeypatch.setattr(outbound_mod, "is_enterprise", lambda: True)
 
@@ -483,6 +515,71 @@ def test_sse_idle_timeout_ends_stream():
             and "idle" in str((e.get("payload") or {}).get("error", ""))
             for e in events
         )
+
+    asyncio.run(_run())
+
+
+def test_session_live_frames_stay_open_after_lamp_off():
+    async def _run():
+        peer = outbound_mod.HttpSseOutbound(session_id="sess-live")
+        peer.session_live = True
+
+        async def _emit() -> None:
+            await peer.send(json.dumps({
+                "type": "event",
+                "event": "chat.processing_status",
+                "payload": {"is_processing": False, "session_id": "sess-live"},
+            }))
+            await peer.send(json.dumps({
+                "type": "event",
+                "event": "chat.delta",
+                "payload": {"content": "later"},
+            }))
+            await peer.close()
+
+        asyncio.create_task(_emit())
+        events = []
+        async for frame in peer.iter_open_frames(keepalive=0.05):
+            if frame.get("type") == "keepalive":
+                continue
+            events.append(frame.get("event"))
+        assert events == ["chat.processing_status", "chat.delta"]
+
+    asyncio.run(_run())
+
+
+def test_session_live_delivery_skips_the_chat_send_outbound():
+    from jiuwenswarm.common.schema.message import Message
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+
+    channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
+
+    async def _run():
+        live = outbound_mod.HttpSseOutbound(session_id="sess-live")
+        live.session_live = True
+        chat = outbound_mod.HttpSseOutbound(session_id="sess-live")
+        channel.register_request_outbound(live)
+        channel.register_request_outbound(chat)
+        try:
+            await channel.send(Message(
+                id="m1",
+                type="event",
+                channel_id="web",
+                session_id="sess-live",
+                params={},
+                timestamp=0,
+                ok=True,
+                payload={"event_type": "chat.delta", "content": "hi", "session_id": "sess-live"},
+                metadata={"delivery_scope": "session_live"},
+            ))
+            delivered = live._frames.get_nowait()
+            assert delivered["event"] == "chat.delta"
+            assert delivered["payload"]["content"] == "hi"
+            assert chat._frames.empty()
+        finally:
+            await channel.unregister_request_outbound(live)
+            await channel.unregister_request_outbound(chat)
 
     asyncio.run(_run())
 

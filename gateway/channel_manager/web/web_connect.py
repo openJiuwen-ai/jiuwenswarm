@@ -1193,6 +1193,27 @@ class WebChannel(BaseWsChannel):
         # Maintain the session busy state before any routing branch can return.
         self._track_session_busy(msg)
 
+        # 企业版团队直播只交给登记了这个 session 的浏览器订阅。
+        # 没有订阅的网关丢掉，避免多台网关各画一遍。
+        live_metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+        if str(live_metadata.get("delivery_scope") or "") == "session_live":
+            peers = {
+                peer
+                for peer in self._peers_for_session(str(getattr(msg, "session_id", "") or ""))
+                if getattr(peer, "session_live", False) and not getattr(peer, "closed", False)
+            }
+            if peers:
+                frame = self._serialize_frame(msg, None)
+                for peer in peers:
+                    self._enqueue_send(peer, frame)
+            else:
+                logger.debug(
+                    "[WebChannel] session live has no subscriber session_id=%s id=%s",
+                    getattr(msg, "session_id", ""),
+                    getattr(msg, "id", ""),
+                )
+            return
+
         # ── health_check relay：临时 session_id（health_check_{ts}_{suffix}）
         # 不匹配任何前端连接，
         # 按常规 session_id 路由会被当作"无连接"丢弃。探活状态是全局的（非会话级），

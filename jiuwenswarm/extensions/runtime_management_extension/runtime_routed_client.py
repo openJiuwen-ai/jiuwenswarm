@@ -33,6 +33,11 @@ from jiuwenswarm.extensions.runtime_management_extension.session_route_client im
     RuntimeSessionRouteClient,
 )
 from gateway.routing.agent_client import AgentServerClient
+from gateway.enterprise.team.route import (
+    TeamRouteResolver,
+    envelope_is_team_scoped,
+    extract_runtime_ready_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +207,18 @@ def identity_from_envelope(
     return session_id, group_id, bot_id, request_id, user_id
 
 
+def _default_team_route_resolver() -> TeamRouteResolver | None:
+    """Build the team-route resolver. ``GATEWAY_TEAM_ROUTE_ENABLED=false`` turns it off."""
+    flag = os.getenv("GATEWAY_TEAM_ROUTE_ENABLED", "true").strip().lower()
+    if flag in {"0", "false", "no"}:
+        return None
+    try:
+        return TeamRouteResolver()
+    except Exception:  # noqa: BLE001
+        logger.warning("[RuntimeRouted] team route resolver unavailable; pinning disabled", exc_info=True)
+        return None
+
+
 def _is_http_retryable(exc: BaseException) -> bool:
     return isinstance(
         exc,
@@ -219,6 +236,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         http_client: HttpSseAgentServerClient | None = None,
         touch_interval_seconds: float = _TOUCH_INTERVAL_SECONDS,
         route_attempts: int = _ROUTE_ATTEMPTS,
+        team_route_resolver: TeamRouteResolver | None = None,
     ) -> None:
         self._route = route_client or RuntimeSessionRouteClient()
         self._owns_route = route_client is None
@@ -226,6 +244,10 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._owns_http = http_client is None
         self._touch_interval_seconds = max(0.0, float(touch_interval_seconds))
         self._route_attempts = max(1, int(route_attempts))
+        self._team_routes: TeamRouteResolver | None = (
+            team_route_resolver if team_route_resolver is not None else _default_team_route_resolver()
+        )
+        self._last_pod_id = ""
         self._connected = False
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._pod_clients: dict[str, HttpSseAgentServerClient] = {}
@@ -394,6 +416,55 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             except Exception as exc:
                 logger.warning("Failed to close route client: %s", exc)
 
+    def _team_target(self, envelope: E2AEnvelope):
+        resolver = self._team_routes
+        if resolver is None or not envelope_is_team_scoped(envelope):
+            return None
+        try:
+            return resolver.resolve(envelope)
+        except Exception:  # noqa: BLE001
+            logger.debug("[RuntimeRouted] team route resolve failed", exc_info=True)
+            return None
+
+    def _record_team_route(
+        self,
+        envelope: E2AEnvelope,
+        base_url: str,
+        route_id: str,
+        caller_triple: tuple[str, str, str],
+    ) -> None:
+        resolver = self._team_routes
+        if resolver is None:
+            return
+        try:
+            resolver.record_route(
+                envelope,
+                base_url=base_url,
+                pod_id=self._last_pod_id,
+                route_id=route_id,
+                caller_triple=caller_triple,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[RuntimeRouted] team route record failed", exc_info=True)
+
+    def _team_route_unhealthy(self, team_session_id: str) -> None:
+        resolver = self._team_routes
+        if resolver is None:
+            return
+        resolver.mark_unhealthy(team_session_id)
+
+    def _observe_team_chunk(self, session_id: str, chunk: AgentResponseChunk) -> None:
+        resolver = self._team_routes
+        if resolver is None:
+            return
+        payload = extract_runtime_ready_payload(chunk)
+        if payload is None:
+            return
+        try:
+            resolver.record_runtime_ready(session_id, payload)
+        except Exception:  # noqa: BLE001
+            logger.debug("[RuntimeRouted] team runtime_ready capture failed", exc_info=True)
+
     def _ensure_connected(self) -> None:
         if not self._connected:
             raise RuntimeError("client not connected")
@@ -421,15 +492,19 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             return await self._http.send_request(envelope, base_url=base_url)
         if _is_heartbeat_envelope(envelope):
             return self._heartbeat_response(envelope)
-        # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
-        apply_invoke_ids_to_envelope(envelope)
+        team_target = self._team_target(envelope)
+        apply_invoke_ids_to_envelope(
+            envelope,
+            tenant_triple=team_target.owner_triple if team_target else None,
+        )
         if _is_routeless_envelope(envelope):
             result = await self._http.send_request(envelope, base_url=_default_http_base())
             return result
         session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(
             envelope, authorized_identity=authorized_identity,
         )
-        if _is_interrupt_envelope(envelope):
+        caller_triple = (group_id, bot_id, user_id or "")
+        if _is_interrupt_envelope(envelope) and team_target is None:
             return await self._send_interrupt_fanout(
                 envelope,
                 session_id=session_id,
@@ -438,13 +513,19 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 request_id=request_id,
                 user_id=user_id,
             )
-        base_url, route_id = await self._route_with_retry(
-            session_id=session_id,
-            group_id=group_id,
-            bot_id=bot_id,
-            request_id=request_id,
-            user_id=user_id,
-        )
+        if team_target is not None:
+            base_url, route_id = team_target.base_url, team_target.route_id or request_id
+            touch_session = team_target.team_session_id
+        else:
+            base_url, route_id = await self._route_with_retry(
+                session_id=session_id,
+                group_id=group_id,
+                bot_id=bot_id,
+                request_id=request_id,
+                user_id=user_id,
+            )
+            touch_session = session_id
+            self._record_team_route(envelope, base_url, route_id, caller_triple)
         try:
             await self._ensure_pod_push(base_url)
             result = await self._http.send_request(envelope, base_url=base_url)
@@ -452,10 +533,13 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             if not _is_http_retryable(exc):
                 raise
             logger.warning(
-                "[RuntimeRouted] unary http failed, re-route: session=%s err=%s",
+                "[RuntimeRouted] unary http failed, re-route: session=%s team_pinned=%s err=%s",
                 session_id,
+                team_target is not None,
                 exc,
             )
+            if team_target is not None:
+                self._team_route_unhealthy(team_target.team_session_id)
             base_url, route_id = await self._route_with_retry(
                 session_id=session_id,
                 group_id=group_id,
@@ -463,9 +547,11 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 request_id=uuid.uuid4().hex,
                 user_id=user_id,
             )
+            touch_session = session_id
+            self._record_team_route(envelope, base_url, route_id, caller_triple)
             await self._ensure_pod_push(base_url)
             result = await self._http.send_request(envelope, base_url=base_url)
-        await self._touch_quiet(session_id, route_id)
+        await self._touch_quiet(touch_session, route_id)
         await self._rebind_after_create(envelope, result, session_id)
         return result
 
@@ -536,8 +622,11 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 is_complete=True,
             )
             return
-        # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
-        apply_invoke_ids_to_envelope(envelope)
+        team_target = self._team_target(envelope)
+        apply_invoke_ids_to_envelope(
+            envelope,
+            tenant_triple=team_target.owner_triple if team_target else None,
+        )
         if _is_routeless_envelope(envelope):
             async for chunk in self._http.send_request_stream(
                 envelope, base_url=_default_http_base()
@@ -547,34 +636,46 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(
             envelope, authorized_identity=authorized_identity,
         )
-        base_url, route_id = await self._route_with_retry(
-            session_id=session_id,
-            group_id=group_id,
-            bot_id=bot_id,
-            request_id=request_id,
-            user_id=user_id,
-        )
+        caller_triple = (group_id, bot_id, user_id or "")
+        if team_target is not None:
+            base_url, route_id = team_target.base_url, team_target.route_id or request_id
+            touch_session = team_target.team_session_id
+        else:
+            base_url, route_id = await self._route_with_retry(
+                session_id=session_id,
+                group_id=group_id,
+                bot_id=bot_id,
+                request_id=request_id,
+                user_id=user_id,
+            )
+            touch_session = session_id
+            self._record_team_route(envelope, base_url, route_id, caller_triple)
         yielded = 0
         try:
             async for chunk in self._stream_with_touch(
                 envelope,
                 base_url=base_url,
-                session_id=session_id,
+                session_id=touch_session,
                 route_id=route_id,
                 group_id=group_id,
                 bot_id=bot_id,
                 user_id=user_id,
             ):
                 yielded += 1
+                self._observe_team_chunk(session_id, chunk)
                 yield chunk
         except Exception as exc:
             if yielded or not _is_http_retryable(exc):
                 raise
             logger.warning(
-                "[RuntimeRouted] stream http failed before first chunk, re-route: session=%s err=%s",
+                "[RuntimeRouted] stream http failed before first chunk, re-route: "
+                "session=%s team_pinned=%s err=%s",
                 session_id,
+                team_target is not None,
                 exc,
             )
+            if team_target is not None:
+                self._team_route_unhealthy(team_target.team_session_id)
             base_url, route_id = await self._route_with_retry(
                 session_id=session_id,
                 group_id=group_id,
@@ -582,18 +683,21 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 request_id=uuid.uuid4().hex,
                 user_id=user_id,
             )
+            touch_session = session_id
+            self._record_team_route(envelope, base_url, route_id, caller_triple)
             async for chunk in self._stream_with_touch(
                 envelope,
                 base_url=base_url,
-                session_id=session_id,
+                session_id=touch_session,
                 route_id=route_id,
                 group_id=group_id,
                 bot_id=bot_id,
                 user_id=user_id,
             ):
+                self._observe_team_chunk(session_id, chunk)
                 yield chunk
         finally:
-            await self._touch_quiet(session_id, route_id)
+            await self._touch_quiet(touch_session, route_id)
 
     async def _stream_with_touch(
         self,
@@ -850,6 +954,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                     request_id=route_id,
                     user_id=user_id,
                 )
+                self._last_pod_id = str(getattr(result, "pod_id", "") or "")
                 return http_base_from_pod_sse_url(result.pod_sse_url), result.request_id
             except RetryableRouteError as exc:
                 last_error = exc

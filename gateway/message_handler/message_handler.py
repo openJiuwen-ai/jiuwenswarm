@@ -4129,6 +4129,24 @@ class MessageHandler(ABC):
         )
 
     @staticmethod
+    def _enterprise_parked_read_timeout(exc: BaseException, forwarded_processing_false: bool) -> bool:
+        """企业版结束灯已转发后，队长流空挂导致的读超时。
+
+        个人版不走这条路径，超时仍按原来的流错误发布。
+        """
+        if not forwarded_processing_false:
+            return False
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        if not is_enterprise():
+            return False
+        try:
+            import httpx
+        except ImportError:
+            return False
+        return isinstance(exc, httpx.ReadTimeout)
+
+    @staticmethod
     def _is_terminal_stream_chunk(chunk: AgentResponseChunk) -> bool:
         """识别仅用于结束流的哨兵 chunk，避免被当作业务事件继续下发。"""
         if not bool(getattr(chunk, "is_complete", False)):
@@ -5546,6 +5564,7 @@ class MessageHandler(ABC):
         has_processing_status_false = False
         track_cron_resume = self._is_permission_resume(env, session_id)
         saw_another_pause = False
+        forwarded_processing_false = False
         _proc_count = 0
         logger.info(
             "[MessageHandler] process_stream started: request_id=%s channel=%s session_id=%s",
@@ -5645,6 +5664,7 @@ class MessageHandler(ABC):
                     if event_type == "chat.processing_status":
                         if payload.get("is_processing") is False and owns_status:
                             has_processing_status_false = True
+                            forwarded_processing_false = True
                     elif event_type == "chat.processing_status_deferred":
                         # Internal placeholder from the cluster-mode
                         # follow-up short stream: the real round-complete
@@ -5690,13 +5710,26 @@ class MessageHandler(ABC):
                 )
                 await self.publish_robot_messages(self._build_error_out_message(request_message, exc))
                 return
-            logger.exception(
-                "[MessageHandler] Stream 异常: request_id=%s total_chunks=%s error=%s",
-                rid, _proc_count, exc,
-            )
-            await self._publish_stream_error(
-                env, session_id, request_metadata, exc,
-            )
+            if self._enterprise_parked_read_timeout(exc, forwarded_processing_false):
+                # 结束灯已经送到浏览器。队长流空挂到读超时不是用户可见的失败，
+                # 补一帧不带 idle 的 false，让企业版 SSE 按现有规则收口。
+                logger.warning(
+                    "[MessageHandler] enterprise stream read timed out after "
+                    "processing_status false: request_id=%s total_chunks=%s",
+                    rid, _proc_count,
+                )
+                await self._send_processing_status(
+                    rid, session_id, channel_id,
+                    is_processing=False, app_id=stream_app_id,
+                )
+            else:
+                logger.exception(
+                    "[MessageHandler] Stream 异常: request_id=%s total_chunks=%s error=%s",
+                    rid, _proc_count, exc,
+                )
+                await self._publish_stream_error(
+                    env, session_id, request_metadata, exc,
+                )
         finally:
             if self._cron_permission_resume_settled(
                 tracking=track_cron_resume,

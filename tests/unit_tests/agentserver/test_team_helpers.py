@@ -2988,6 +2988,74 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(
 
 
 @pytest.mark.anyio
+async def test_enterprise_followup_submits_without_taking_the_session_waiter(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.enterprise.team.session_live import (
+        stop_team_session_live,
+    )
+
+    class _FakeManager(TeamManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stream_alive = True
+            self.waiter_ids: list[str] = []
+
+        def has_stream_task(self, session_id: str) -> bool:
+            return self.stream_alive
+
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        async def interact(self, session_id: str, query: str):
+            self.waiter_ids = [
+                request_id
+                for request_id, _queue in self._pending_waiters.get(session_id, ())
+            ]
+            await self.broadcast_event(
+                session_id,
+                {"event_type": "chat.delta", "content": "四人团队"},
+            )
+            self.stream_alive = False
+            return True, None
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
+    request = SimpleNamespace(
+        session_id="sess-enterprise-followup",
+        request_id="req-user-followup",
+        channel_id="web",
+        metadata={},
+        params={"mode": "team"},
+        user_id="owner",
+    )
+
+    try:
+        chunks = [
+            chunk
+            async for chunk in team_helpers.process_team_message_stream(
+                request,
+                {"query": "帮我创建一个4人团队"},
+                object(),
+            )
+        ]
+    finally:
+        await stop_team_session_live("sess-enterprise-followup")
+
+    assert manager.waiter_ids == ["team-session-live:sess-enterprise-followup"]
+    assert any(
+        isinstance(chunk.payload, dict)
+        and chunk.payload.get("event_type") == "chat.processing_status_deferred"
+        for chunk in chunks
+    )
+    assert all(
+        not (isinstance(chunk.payload, dict) and chunk.payload.get("content") == "四人团队")
+        for chunk in chunks
+    )
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("first_outcome", ["success", "error", "cancel"])
 async def test_concurrent_team_cold_start_delivers_output_once(monkeypatch, first_outcome):
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
