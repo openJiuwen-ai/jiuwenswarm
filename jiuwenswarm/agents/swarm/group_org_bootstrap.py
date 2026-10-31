@@ -3159,6 +3159,7 @@ async def _run_owner_proxy(
     except Exception as exc:
         failed_error = str(exc)
         await _refresh_card(status="failed", fail_unfinished=True)
+        card_marked_failed = True
         from jiuwenswarm.server.runtime.group_execution import post_member_error
 
         await post_member_error(backend, backend.member_name, failed_error, f"expert-error-{plan_id}")
