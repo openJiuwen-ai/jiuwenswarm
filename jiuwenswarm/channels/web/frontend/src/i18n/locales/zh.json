@@ -3382,6 +3382,7 @@
     "detailError": "加载详情失败",
     "detail": {
       "basicInfo": "基本信息",
+      "version": "版本",
       "versionManage": "版本管理",
       "versionsLoadFailed": "版本加载失败",
       "noVersions": "暂无版本记录",
