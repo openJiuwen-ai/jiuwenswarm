@@ -23,6 +23,10 @@ Handler = Callable[[RequestContext], Awaitable[None]]
 @asynccontextmanager
 async def _request_tenant_scope(ctx: RequestContext):
     """HTTP 入口：有 Runtime 则绑 Manager+TenantContext；否则仅绑 TenantContext."""
+    # The cluster catalog has no user session or Agent execution to bind.
+    if ctx.request.req_method.value == "hub.equipment.catalog":
+        yield
+        return
     services = getattr(ctx, "services", None)
     execution_runtime = getattr(services, "execution_runtime", None) if services else None
     if callable(execution_runtime):

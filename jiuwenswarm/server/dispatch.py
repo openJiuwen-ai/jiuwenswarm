@@ -27,6 +27,7 @@ from jiuwenswarm.server.handlers.bootstrap import (
     handle_session_create,
     handle_session_fork,
 )
+from jiuwenswarm.server.handlers.hub_catalog import handle_hub_equipment_catalog
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
 from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
 from jiuwenswarm.server.handlers.organization import (
@@ -157,6 +158,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.PROACTIVE_FEEDBACK: handle_proactive_feedback,
     ReqMethod.BROWSER_RUNTIME_RESTART: handle_browser_runtime_restart,
     ReqMethod.CONFIG_CACHE_CLEAR: handle_config_cache_clear,
+    ReqMethod.HUB_EQUIPMENT_CATALOG: handle_hub_equipment_catalog,
     ReqMethod.AGENT_RELOAD_CONFIG: handle_agent_reload_config,
     ReqMethod.AGENT_PREWARM_SYNC: handle_agent_prewarm_sync,
     ReqMethod.AUTH_CREDENTIALS_UPDATE: handle_auth_credentials_update,
