@@ -78,7 +78,8 @@ def check_cjk_font(results):
     if fc:
         try:
             out = subprocess.run([fc, ":lang=zh", "family"],
-                                 capture_output=True, text=True, timeout=20).stdout
+                                 capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", timeout=20).stdout
             families = {line.strip() for line in out.splitlines() if line.strip()}
             found = sorted(families)[:8]
         except Exception:  # noqa: BLE001
@@ -87,7 +88,8 @@ def check_cjk_font(results):
         # Fall back to a name-hint scan over all fonts.
         if fc:
             try:
-                allf = subprocess.run([fc, "family"], capture_output=True, text=True, timeout=20).stdout
+                allf = subprocess.run([fc, "family"], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=20).stdout
                 found = sorted({h for h in CJK_FONT_HINTS if h.lower() in allf.lower()})
             except Exception:  # noqa: BLE001
                 pass

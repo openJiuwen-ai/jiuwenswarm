@@ -23,13 +23,32 @@ import sys
 import tempfile
 
 
+def _which(tool, *fallbacks):
+    """Absolute path of an external tool, or None when it is unavailable.
+
+    External programs are invoked through this resolved path rather than a bare
+    name left to PATH lookup. `fallbacks` covers the usual install locations for
+    when PATH is minimal (CI sandboxes, service contexts).
+    """
+    found = shutil.which(tool)
+    if found:
+        return os.path.abspath(found)
+    for candidate in fallbacks:
+        if os.path.isabs(candidate) and os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="Recalculate workbook via LibreOffice")
     ap.add_argument("file")
     ap.add_argument("--out", help="output path (defaults to recalc in place)")
     args = ap.parse_args()
 
-    if shutil.which("soffice") is None:
+    soffice = _which("soffice", "/usr/bin/soffice", "/usr/local/bin/soffice",
+                     "/usr/lib/libreoffice/program/soffice",
+                     r"C:\Program Files\LibreOffice\program\soffice.exe")
+    if soffice is None:
         print("soffice (LibreOffice) not found; see doctor.py", file=sys.stderr)
         return 2
     src = os.path.abspath(args.file)
@@ -42,12 +61,13 @@ def main():
     ext = os.path.splitext(src)[1].lower().lstrip(".") or "xlsx"
     flt = "xlsm:Calc MS Excel 2007 VBA" if ext == "xlsm" else "xlsx:Calc MS Excel 2007 XML"
     cmd = [
-        "soffice", "--headless", "--norestore", "--calc",
+        soffice, "--headless", "--norestore", "--calc",
         "--convert-to", flt, "--outdir", tmp, src,
         "-env:UserInstallation=file://" + profile,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+        subprocess.run(cmd, check=True, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=180)
     except subprocess.CalledProcessError as e:  # noqa: BLE001
         print("LibreOffice failed: " + (e.stderr or str(e)), file=sys.stderr)
         return 1
