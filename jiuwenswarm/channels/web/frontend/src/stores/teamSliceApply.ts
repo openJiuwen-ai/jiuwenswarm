@@ -47,20 +47,6 @@ function normalizeTaskStatus(value: unknown): TeamTaskStatus {
   return TEAM_TASK_STATUSES.has(status) ? status : 'pending';
 }
 
-/** 切换 Team 时先清空 session 级投影，避免请求期间继续展示上一个 Team。 */
-export function clearTeamSnapshotProjection(sessionId: string): void {
-  if (!sessionId) return;
-  const store = useSessionStore.getState();
-  if (!store.getRuntime(sessionId)) return;
-  store.setTeamMembers(sessionId, []);
-  store.setTeamDepartedMembers(sessionId, []);
-  store.setTeamTasks(sessionId, []);
-  store.setTeamTaskEvents(sessionId, []);
-  store.setTeamTaskTimeline(sessionId, []);
-  store.setTeamMemberExecutionEvents(sessionId, []);
-  store.setTeamLeaderMemberIds(sessionId, []);
-}
-
 export function applyTeamSnapshotToSession(
   sessionId: string,
   teamId: string,
@@ -95,6 +81,9 @@ export function applyTeamSnapshotToSession(
       mode: member.mode,
       role: member.role,
       cli_agent: member.cli_agent ?? null,
+      workflow_run_id: member.workflow_run_id,
+      agent_template: member.agent_template ?? null,
+      display_name: member.display_name ?? null,
     }));
   const members = allMembers.filter((member) => !isDepartedTeamMemberStatus(member.status));
   const departedMembers = allMembers.filter((member) => isDepartedTeamMemberStatus(member.status));
@@ -115,8 +104,15 @@ export function applyTeamSnapshotToSession(
 
   // teamMembers / teamTasks 是当前所选 Team 的 session 级投影，因此快照必须完整
   // 替换（包括空快照），不能与上一个 Team 的内容合并。
+  // 例外是镜像出来的 swarmflow worker（带 workflow_run_id）：它们只存在于前端、
+  // 不进 team.db 名册，快照缺席不代表已被移除，原样保留（规则同
+  // reconcileSnapshotRoster）；同一 member_id 两边都有时以快照为准，离队清理不丢。
   const currentStore = useSessionStore.getState();
-  currentStore.setTeamMembers(sessionId, members);
+  const snapshotMemberIds = new Set(members.map((member) => member.member_id));
+  const mirroredMembers = (currentStore.getRuntime(sessionId)?.teamMembers ?? []).filter(
+    (member) => member.workflow_run_id && !snapshotMemberIds.has(member.member_id)
+  );
+  currentStore.setTeamMembers(sessionId, [...mirroredMembers, ...members]);
   currentStore.setTeamDepartedMembers(sessionId, departedMembers);
   currentStore.setTeamTasks(sessionId, tasks);
 }

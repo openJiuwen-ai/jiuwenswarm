@@ -153,3 +153,36 @@ test('task flow events are restored as an ordered timeline for the group chat', 
     ],
   );
 });
+
+test('a mirrored swarmflow worker keeps its run id after its tool frames restore', () => {
+  // 镜像 worker 的工具帧也是 role=teammate，回填时不能把分组用的 workflow_run_id 冲掉。
+  const memberId = 'wf_1:[["call", 0]]';
+  const memberRecord = {
+    mode: 'team',
+    event_type: 'team.member',
+    session_id: 'session-1',
+    timestamp: 1_792_080_714,
+    event: {
+      type: 'team.member.spawned',
+      member_id: memberId,
+      name: 'planner',
+      status: 'busy',
+      workflow_run_id: 'wf_1',
+      timestamp: 1_792_080_714_000,
+    },
+  };
+  const frameRecord = {
+    mode: 'team',
+    role: 'teammate',
+    event_type: 'chat.tool_call',
+    session_id: 'session-1',
+    timestamp: 1_792_080_720,
+    member_name: memberId,
+    tool_call: { name: 'bash', description: 'ls' },
+  };
+
+  const state = parseTeamHistoryPanelRecords([memberRecord, frameRecord], 'session-1');
+
+  const member = state.members.find((item) => item.member_id === memberId);
+  assert.equal(member?.workflow_run_id, 'wf_1');
+});
