@@ -66,3 +66,27 @@ async def test_handle_swarmflow_reply_rejects_missing_fields():
     assert resp.ok is False
     assert resp.payload == {"ok": False, "error": "missing session_id/correlation_id/answer"}
     assert tm.calls == []
+
+
+@pytest.mark.anyio
+async def test_handle_swarmflow_reply_skip_maps_to_sentinel_without_answer():
+    """skip=true carries no answer yet still delivers: the message body is the
+    backend's explicit-skip marker, so the human turn skips immediately
+    instead of hanging until the human timeout."""
+    from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
+
+    handler = _make_handler()
+    tm = _FakeTeamManager()
+    with patch(
+        "jiuwenswarm.agents.harness.team.get_team_manager", return_value=tm
+    ):
+        resp = await handler.handle_swarmflow_reply(_req(
+            session_id="sess-1",
+            run_id="run-1",
+            correlation_id="review:host:0",
+            skip=True,
+        ))
+    assert resp.ok is True
+    assert len(tm.calls) == 1
+    _session, msg = tm.calls[0]
+    assert msg.body == HUMAN_REPLY_SKIP
