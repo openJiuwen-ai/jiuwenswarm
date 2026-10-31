@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 | F_16 / session-append |
 | 归档日期 | 2026-10-27 |
-| 后续修订 | 2026-10-29，完整消息、door/origin、行级 uuid；历史查询已拆至 F_23；2026-10-30，合并目标分支并验证历史与统计 Ops 共存；2026-10-31，按事件名对齐文件名与引用，契约与字段不变；2026-10-31，在输入输出字段旁补充实际定义、构造、读取与返回函数 |
+| 后续修订 | 2026-10-29，完整消息、door/origin、行级 uuid；历史查询已拆至 F_23；2026-10-30，合并目标分支并验证历史与统计 Ops 共存；2026-10-31，按事件名对齐文件名与引用，契约与字段不变 |
 | 关联计划 | [EXTV2-16 / Server PR-04](../designs/extensions-v2-development-plan.md#extv2-16-会话历史读写与追加前扩展) |
 | 主责规约 | [S_06](../specs/S_06_session-history-ops.md) |
 
@@ -58,62 +58,6 @@
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
-#### 输入相关定义与实际派发函数
-
-输入的实际字段定义如下；这里的 message、door、origin、uuid 与下表同名，不是 Ops 入参 note 的原始字典。
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAppendInput:
-    """One pending row, its semantic door, producer and final row identity."""
-
-    message: SessionAppendMessage
-    door: str
-    origin: SessionAppendOrigin
-    uuid: str
-```
-
-下面的实际平台函数确定行 UUID、来源和公开消息后，构造 original=SessionAppendInput，再作为 Event 的输入触发处理链。context 独立传入，prepared/原始指纹等私有提交事实保留在 AppendInvocation。
-
-```python
-async def dispatch_session_append(
-    bus: ExtensionEventBus, context: SessionContext, prepared: PreparedHistoryRecord,
-    *, message_id: str, source: str, append_key: str, fingerprint: str, update_metadata: bool,
-    native_message: SessionAppendMessage | None = None,
-) -> SessionAppendResult:
-    """Await the policy chain and one real commit with trusted session facts."""
-    if append_invocation() is not None:
-        raise SessionHistoryError("APPEND_REENTRANT")
-    if context.session_id != prepared.session_id:
-        raise SessionHistoryError("INVALID_SESSION")
-    generation = await asyncio.to_thread(preflight_append, prepared.session_id, require_existing=source == "extension")
-    row_uuid = prepared.record["id"] if source == "extension" else "row:" + hashlib.sha256(append_key.encode("utf-8")).hexdigest()
-    prepared = replace(prepared, record={**prepared.record, "uuid": row_uuid}, metadata={**prepared.metadata, "append_generation": generation})
-    model_info = (context.metadata or {}).get("session_model_info")
-    model_name = model_info.get("model_name") if isinstance(model_info, Mapping) else None
-    door, origin = classify_record(prepared.record, source, model_name)
-    message = native_message if native_message is not None else message_from_record(prepared.record, prefer_stored=source == "extension")
-    original = SessionAppendInput(copy.deepcopy(message), door, origin, row_uuid)
-    state = AppendInvocation(copy.deepcopy(prepared), copy.deepcopy(original), message_id, append_key, fingerprint, update_metadata)
-    token = _INVOCATION.set(state)
-    try:
-        result = await bus.trigger(Event(SESSION_APPEND_EVENT, copy.deepcopy(original)), context)
-        if state.receipt is not None:
-            return copy.deepcopy(state.receipt)
-        if isinstance(result, SessionAppendRejection) and origin.kind == "extension" and door == "note":
-            return SessionAppendResult("rejected", prepared.session_id, message_id, reason=result.reason.strip())
-        raise SessionHistoryError("APPEND_RESULT_INVALID")
-    finally:
-        _INVOCATION.reset(token)
-```
-
-| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
-| --- | --- | --- |
-| message | native_message 或 message_from_record(prepared.record, ...)，深拷贝后放入 original.message | USER 从 event.event_input.message 读取，并只改允许的文本 |
-| door / origin | classify_record(prepared.record, source, model_name) 的两个返回值 | 原记录来源决定，不由可改写正文决定 |
-| uuid | row_uuid：扩展沿用 ext 身份，平台行由 append_key 摘要生成 | 同时写入待提交记录及事件输入，不能由用户替换目标行 |
-| SessionContext | 函数参数 context，且必须与 prepared.session_id 一致 | 作为 bus.trigger 的独立参数，不是 Event 内的可改写字段 |
-
 实际导入位置：`jiuwenswarm.extensions_v2.event_types.session_history`。Handler 接收 dataclass 对象，不接收下面示意 JSON 的任意变体。
 
 ```python
@@ -139,49 +83,6 @@ SessionAppendInput(
 
 #### message 的全部字段
 
-消息对象的实际字段定义（默认值可以直接与表格对应）：
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAppendMessage:
-    """A detached message view; only existing text blocks can be rewritten."""
-
-    type: str
-    content: list[dict[str, Any]]
-    role: str | None = None
-    name: str | None = None
-    is_meta: bool = False
-    tool_call_id: str | None = None
-    tool_calls: list[dict[str, Any]] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return independent JSON-compatible message fields."""
-        return copy.deepcopy(asdict(self))
-```
-
-平台原生 BaseMessage 的字段由这个实际适配函数读取；产品历史记录则由 dispatch 中的 message_from_record 适配。
-
-```python
-def message_from_base_message(message: Any) -> SessionAppendMessage:
-    """Adapt a native BaseMessage; private metadata stays with the platform.
-
-    This converter does not install another persistence or model-input hook.
-    """
-    from openjiuwen.core.foundation.llm import BaseMessage
-
-    if not isinstance(message, BaseMessage):
-        raise ValueError("A native BaseMessage is required")
-    role = message.role
-    if role not in ("user", "assistant", "tool", "system"):
-        raise ValueError("Unsupported native message role")
-    calls = getattr(message, "tool_calls", None)
-    return SessionAppendMessage(
-        type=role, content=content_blocks(message.content), role=role, name=message.name,
-        tool_call_id=getattr(message, "tool_call_id", None),
-        tool_calls=[call.model_dump(mode="json") if hasattr(call, "model_dump") else copy.deepcopy(call) for call in calls] if calls is not None else None,
-    )
-```
-
 | 字段 | 类型 / 默认值 | 含义、实际取值和填写方式 | 可修改范围 |
 | --- | --- | --- | --- |
 | type | str，必有 | 消息种类：user 用户消息、assistant 助手消息、tool 工具结果、attachment 附件、system 通知。平台从原生消息或产品 event_type 适配 | 只读 |
@@ -198,43 +99,6 @@ text 块必须是 `{'type':'text','text': str, ...原附加字段}`；用户只�
 
 #### origin 的全部字段
 
-来源对象的实际定义及生成函数：
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAppendOrigin:
-    """Host-pinned producer identity and actual persistence entrance."""
-
-    kind: str
-    name: str | None
-    entry: str
-```
-
-```python
-def classify_record(record: Mapping[str, Any], source: str, model_name: str | None = None) -> tuple[str, SessionAppendOrigin]:
-    """Separate the row's semantic door from producer and adapter entrance."""
-    if source == "extension":
-        return "note", SessionAppendOrigin("extension", record.get("extension_package_id"), "ops.session.append")
-    event_type = record.get("event_type", "")
-    if event_type == "chat.tool_result":
-        door, kind, name = "tool-result", "tool", record.get("tool_name") or record.get("name")
-    elif event_type == "chat.tool_call":
-        door, kind, name = "tool-call", "model", model_name
-    elif event_type in ("chat.attachment", "attachment"):
-        door, kind, name = "attachment", "platform", None
-    elif event_type in ("context.compact_boundary", "chat.notice", "system.notice"):
-        door, kind, name = "notice", "platform", None
-    elif record.get("role") == "user":
-        door, kind, name = "prompt", "user", None
-    else:
-        door, kind, name = "response", "model", model_name
-    if source == "history.append_record":
-        kind, name = "platform", "history.append_record"
-    return door, SessionAppendOrigin(kind, name, source)
-```
-
-classify_record 的第一个返回值是 door，第二个返回值是 SessionAppendOrigin；source 是平台入口名，真实包身份取自记录中的 extension_package_id。
-
 | 字段 | 类型 / 是否必有 | 含义与应该填写什么 |
 | --- | --- | --- |
 | kind | str，必有 | 平台判定的产生者种类：user / model / tool / extension / platform；用户 Handler 不填写或更改 |
@@ -244,76 +108,6 @@ classify_record 的第一个返回值是 door，第二个返回值是 SessionApp
 door 的本地映射：用户记录→prompt；普通助手记录→response；chat.tool_call→tool-call；chat.tool_result→tool-result；chat.attachment/attachment→attachment；compact boundary、chat.notice/system.notice→notice；扩展 Ops→note。未知助手事件保留 response，事件特有元数据仍在历史记录中，不凭空增设所有 Claude door。
 
 ### 3.3 输出：成功、重复与拒绝
-
-#### 输出相关定义、提交回执与字典返回
-
-事件链返回实际 SessionAppendResult；自己的 note 合法拒绝时 USER 可返回 SessionAppendRejection，派发器会转换成 rejected 回执。
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAppendRejection:
-    """Explicitly refuse an extension note before calling next_handler."""
-
-    reason: str
-```
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAppendResult:
-    """An actual commit receipt, or rejection without a committed row."""
-
-    status: str
-    session_id: str
-    message_id: str
-    message: SessionAppendMessage | None = None
-    reason: str | None = None
-    uuid: str | None = None
-    history_record: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return a detached receipt without exposing mutable commit state."""
-        return {
-            "status": self.status, "session_id": self.session_id, "message_id": self.message_id,
-            "message": self.message.to_dict() if self.message is not None else None,
-            "reason": self.reason, "uuid": self.uuid, "history_record": copy.deepcopy(self.history_record),
-        }
-```
-
-真实提交及输出字段在默认 CORE 的这些位置产生：
-
-```python
-async def session_append_core(
-    event: Event,
-    ops: EventHandlerOps | None,
-    next_handler: EventNext,
-) -> SessionAppendResult:
-    """Persist once per invocation after all earlier handlers have finished."""
-    del next_handler
-    state = current_append_invocation()
-    if ops is None or ops.session_context is None or ops.session_context.session_id != state.prepared.session_id:
-        raise SessionHistoryError("INVALID_SESSION")
-    if not valid_append_input(event.event_input):
-        raise SessionHistoryError("INVALID_MESSAGE")
-    if state.receipt is not None:
-        return copy.deepcopy(state.receipt)
-    prepared = apply_message(state.prepared, event.event_input.message, state.original.message)
-    record, duplicate = await run_history_io(
-        commit_session_message, prepared, state.append_key, state.fingerprint, state.update_metadata,
-    )
-    state.receipt = SessionAppendResult(
-        "duplicate" if duplicate else "persisted", prepared.session_id, state.message_id,
-        message_from_record(record), uuid=record.get("uuid", record["id"]), history_record=record,
-    )
-    return copy.deepcopy(state.receipt)
-```
-
-| 字段位置 | 在哪段代码形成或读取 | 沿链传到哪里 |
-| --- | --- | --- |
-| status | CORE 根据真实 duplicate 标志选择 duplicate/persisted；派发函数把合法 note 拒绝转成 rejected | 不是用户伪造成功结果来替代写入 |
-| session_id / message_id | prepared.session_id 与私有 state.message_id | 目标身份和用户稳定重试键分开 |
-| message / uuid / history_record | 从 commit_session_message 实际返回的 record 构造 | 返回的是实际存储事实，不是进入 Handler 前的任意消息 |
-| reason | 拒绝分支从 SessionAppendRejection.reason.strip() 取得；正常回执默认 None | 向自己的调用方说明为什么未写入 |
-| Ops 返回字典 | 下方 session_append 调用 result.to_dict()；此方法定义就在 SessionAppendResult 内 | message 也转成字典，history_record 独立复制 |
 
 默认 CORE 返回 `SessionAppendResult`；正常 Handler 原样返回 `await next_handler(...)` 的真实对象。不能自行构造“成功”来替代写入。
 
@@ -379,127 +173,6 @@ if receipt["status"] in ("persisted", "duplicate"):
 
 该方法只接受一个 note 字典，顶层必须恰好为 id/message，或兼容格式 id/role/content。不填写 session_id、路径、door、origin、uuid、时间或任意平台 extra。
 
-#### 方法入参在哪个函数读取
-
-公开调用为 `ops.session.append(note)`。下面内部函数的参数名 message 指整个 note 字典；其中 message["message"] 才是内层公开消息。ops 由 Core 注入、bus 由平台登记时绑定，用户只提供第 4.1 节约定的 note。
-
-```python
-async def session_append(
-    ops: EventHandlerOps,
-    message: object,
-    *,
-    bus: ExtensionEventBus | None = None,
-) -> dict[str, object]:
-    """Await session.append policy and commit a transcript-only message.
-
-    Raises:
-        RuntimeError: No session is bound to this invocation.
-        SessionHistoryError: Invalid input, conflict, lifecycle, dispatch or I/O.
-        asyncio.CancelledError: Cancellation, after draining an accepted write.
-    """
-    from jiuwenswarm.server.runtime.session.history_events import dispatch_session_append
-
-    context = _require_session(ops, "session.append")
-    if bus is None:
-        raise SessionHistoryError("APPEND_BUS_UNAVAILABLE")
-    package = ops.package_metadata
-    package_id = package.package_id if package is not None else "<host>"
-    prepared, message_id, key, fingerprint = prepare_extension_append(context.session_id, package_id, message)
-    result = await dispatch_session_append(
-        bus, context, prepared, message_id=message_id, source="extension", append_key=key,
-        fingerprint=fingerprint, update_metadata=False,
-    )
-    return result.to_dict()
-```
-
-note 的 id、message、兼容 role/content 在这个实际校验/准备函数中读取；返回的 message_id 回显用户 id，key/fingerprint 用于幂等提交。
-
-```python
-def prepare_extension_append(
-    session_id: str,
-    package_id: str,
-    message: object,
-) -> tuple[PreparedHistoryRecord, str, str, str]:
-    """Validate a user message and create a namespaced transcript-only record."""
-    require_session_id(session_id)
-    if not isinstance(message, Mapping) or set(message) not in ({"id", "role", "content"}, {"id", "message"}):
-        raise SessionHistoryError("INVALID_MESSAGE")
-    message_id = message["id"]
-    if not isinstance(message_id, str) or _MESSAGE_ID.fullmatch(message_id) is None:
-        raise SessionHistoryError("INVALID_MESSAGE")
-    legacy = "message" not in message
-    try:
-        if legacy:
-            if message["role"] not in ("user", "assistant") or not isinstance(message["content"], str):
-                raise ValueError("Invalid legacy note")
-            view = message_from_dict({"type": message["role"], "content": message["content"], "is_meta": True})
-        else:
-            view = message_from_dict(message["message"])
-            if view.type not in ("user", "assistant", "system") or view.role != view.type or view.tool_calls is not None or view.tool_call_id is not None:
-                raise ValueError("Notes cannot impersonate tool messages")
-            if any(block.get("type") != "text" for block in view.content):
-                raise ValueError("Extension notes accept text blocks only")
-            view = replace(view, is_meta=True)
-        role = "user" if view.type == "user" else "assistant"
-        content = message_text(view)
-        if not legacy and len(json.dumps(view.to_dict(), ensure_ascii=False, allow_nan=False).encode("utf-8")) > MAX_APPEND_BYTES:
-            raise ValueError("Note exceeds the message limit")
-    except (KeyError, TypeError, ValueError, UnicodeError):
-        raise SessionHistoryError("INVALID_MESSAGE") from None
-    if role not in ("user", "assistant") or not isinstance(content, str) or not content.strip():
-        raise SessionHistoryError("INVALID_MESSAGE")
-    try:
-        content_bytes = len(content.encode("utf-8"))
-    except UnicodeError:
-        raise SessionHistoryError("INVALID_MESSAGE") from None
-    if content_bytes > MAX_APPEND_BYTES:
-        raise SessionHistoryError("INVALID_MESSAGE")
-    if not isinstance(package_id, str) or not package_id:
-        raise SessionHistoryError("PACKAGE_CONTEXT_REQUIRED")
-    key = hashlib.sha256(f"{package_id}\0{message_id}".encode("utf-8")).hexdigest()
-    prepared = prepare_history_record(
-        session_id=session_id, request_id="ext-" + key[:32], channel_id="extension",
-        role=role, content=content, timestamp=time.time(),
-        event_type="chat.final" if role == "assistant" else None,
-        extra={"id": "ext:" + key, "extension_message_id": message_id,
-               "extension_package_id": package_id, "message_origin": "extension", "transcript_only": True,
-               "transcript_message": view.to_dict()},
-    )
-    if prepared is None:
-        raise SessionHistoryError("INVALID_MESSAGE")
-    return prepared, message_id, "extension:" + key, original_fingerprint(dict(message))
-```
-
-内层 message.type/content/role/name/is_meta/tool_call_id/tool_calls 的解析及默认值在这里：
-
-```python
-def message_from_dict(value: object) -> SessionAppendMessage:
-    """Parse the public JSON message schema with explicit field validation."""
-    if not isinstance(value, Mapping) or not {"type", "content"} <= set(value):
-        raise ValueError("A message requires type and content")
-    fields = {"type", "content", "role", "name", "is_meta", "tool_call_id", "tool_calls"}
-    if set(value) - fields or value["type"] not in MESSAGE_TYPES:
-        raise ValueError("Unsupported message fields or type")
-    kind = value["type"]
-    role = value.get("role", kind if kind != "attachment" else None)
-    if role not in (None, "user", "assistant", "tool", "system"):
-        raise ValueError("Unsupported message role")
-    name, tool_id, calls = value.get("name"), value.get("tool_call_id"), value.get("tool_calls")
-    if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 256):
-        raise ValueError("Invalid message name")
-    if tool_id is not None and (not isinstance(tool_id, str) or not tool_id):
-        raise ValueError("Invalid tool call id")
-    if calls is not None and (not isinstance(calls, list) or any(not isinstance(x, dict) for x in calls)):
-        raise ValueError("Invalid tool calls")
-    if not isinstance(value.get("is_meta", False), bool):
-        raise ValueError("Invalid is_meta")
-    result = SessionAppendMessage(kind, content_blocks(value["content"]), role, name, value.get("is_meta", False), tool_id, copy.deepcopy(calls))
-    _json_size(result.to_dict())
-    return result
-```
-
-字段位置可沿这条路径核对：`note → session_append 的 message 参数 → prepare_extension_append 内读取 message["id"] / message["message"] → SessionAppendMessage → SessionAppendInput.message`。
-
 | 输入字段 | 必填 / 默认 | 应填写的内容、范围及示例 |
 | --- | --- | --- |
 | id | 必填，无自动值 | 1～128 个 ASCII 字母、数字、`.`、`_`、`:`、`-`；如 audit-order-42。同一业务动作在同一包、同一会话重试使用相同 id |
@@ -558,8 +231,6 @@ await run_history_io(
 卸载/重载撤销用户 Handler，不删除已提交历史或平台 CORE；共享 Ops 在有效 SessionContext 下可供其他事件 Handler 使用。无需用户调用 notify_context_usage 来创建新入口；已有示例仅选用量通知展示接入。
 
 ## 6. 验收与未决问题
-
-2026-10-31 输入输出源码补充：本次只调整文档，将当前类型定义、构造/读取函数和回执返回位置放到字段表旁；代码摘录按本分支实际实现核对，省略的分支明确标注。以下历史业务验证保留原日期和范围，本次未重跑业务、模型或浏览器验收。
 
 2026-10-30 冲突集成验证：合并目标分支 `rsi_native_agent_os` 的 `9115c12d`，保留 PR04 的 messages/append、目标分支已合入的 turns/usage，以及两边原生 Adapter 测试和开发计划。八项 session 方法由同一个共享 Builder 登记，append 继续绑定当前 Worker 的 EventBus；事件和方法契约未调整。
 
