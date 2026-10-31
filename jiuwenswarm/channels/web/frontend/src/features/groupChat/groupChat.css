@@ -251,6 +251,7 @@ button.group-chat-member-row:hover:not(:disabled) { background: var(--color-surf
 }
 @media (max-width: 760px) {
   .group-chat-workspace { position: relative; }
+  .group-chat-workspace .resize-divider { display: none; }
   .group-chat-panel { position: absolute; inset: 0 0 0 auto; width: min(360px, 100%); z-index: 20; background: var(--color-surface-panel); }
   .group-chat-panel-close { display: inline-flex; }
   .group-chat-back { display: inline-flex; }

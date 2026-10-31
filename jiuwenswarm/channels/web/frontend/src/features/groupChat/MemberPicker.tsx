@@ -56,7 +56,7 @@ export function MemberPicker({ group, onClose, onSaved }: {
     const found = selected.find((member) => member.kind === item.kind && member.id === item.packageId);
     if (found) setSelected(selected.filter((member) => member !== found));
     else {
-      setSelected([...selected, newMember(item.kind, item.packageId, item.name)]);
+      setSelected([...selected, newMember(item.kind, item.packageId, item.name, item.description)]);
     }
   }
 

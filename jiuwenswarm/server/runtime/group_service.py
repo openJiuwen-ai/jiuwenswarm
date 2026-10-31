@@ -429,6 +429,7 @@ class GroupService:
                 "id",
                 "member_name",
                 "display_name",
+                "description",
             }:
                 raise GroupError("BAD_REQUEST", "invalid group member fields")
         manager = self.manager_factory(state["channel_id"])

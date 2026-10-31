@@ -38,8 +38,8 @@ export function mergeExecutions(current: GroupExecution[], incoming: GroupExecut
   return [...executions.values()].sort((a, b) => a.created_at - b.created_at);
 }
 
-export function newMember(kind: GroupMember['kind'], id: string, displayName: string): GroupMember {
-  return { kind, id, display_name: displayName, member_name: `member-${crypto.randomUUID()}` };
+export function newMember(kind: GroupMember['kind'], id: string, displayName: string, description?: string): GroupMember {
+  return { kind, id, display_name: displayName, member_name: `member-${crypto.randomUUID()}`, ...(description ? { description } : {}) };
 }
 
 export function selectedMentions(content: string, selected: string[], members: GroupMember[]): string[] {
