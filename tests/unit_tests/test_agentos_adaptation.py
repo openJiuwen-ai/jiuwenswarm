@@ -159,6 +159,29 @@ class SandboxBoundaryTest(unittest.TestCase):
             self.assertEqual(endpoint, {**original, "workdir": "/chosen",
                                         "rootfs": {**original["rootfs"], "workdir": "/rootfs-chosen"}})
 
+    def test_yuanrong_mem_limit_defaults_to_memory(self):
+        from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            cases = (
+                ({"memory": 2048}, 2048),
+                ({"memory": "4096"}, 4096),
+                ({"memory": 2048, "mem_limit": 3072}, 3072),
+                ({"memory": ""}, None),
+                ({}, None),
+            )
+            for extra, expected in cases:
+                endpoint = {"executor": "docker", **extra}
+                original = copy.deepcopy(endpoint)
+                with self.subTest(endpoint=endpoint), \
+                     patch.dict("os.environ", {"JIUWENSWARM_RUNTIME_PROFILE": ""}), \
+                     patch.object(builder, "get_sandbox_endpoint", return_value=endpoint), \
+                     patch.object(builder, "get_agent_root_dir", return_value=root):
+                    result = builder._build_yuanrong_extra_params()
+                    self.assertEqual(result.get("mem_limit"), expected)
+                    self.assertEqual(endpoint, original)
+
     def test_agentos_yuanrong_keeps_user_mapping_and_zero_ids(self):
         from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
 

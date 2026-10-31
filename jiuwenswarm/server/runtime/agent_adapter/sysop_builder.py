@@ -446,6 +446,7 @@ def _build_yuanrong_extra_params() -> dict[str, Any]:
         if value is not None:
             extra_params[key] = value
     _apply_tool_sandbox_env_overrides(extra_params)
+    _default_yuanrong_mem_limit(extra_params)
     return extra_params
 
 
@@ -467,6 +468,24 @@ def _apply_tool_sandbox_env_overrides(extra_params: dict[str, Any]) -> None:
             extra_params[key] = int(text)
         except ValueError as exc:
             raise ValueError(f"{env_name} must be an integer, got {raw!r}") from exc
+
+
+def _default_yuanrong_mem_limit(extra_params: dict[str, Any]) -> None:
+    """Default ``mem_limit`` to ``memory`` when only ``memory`` is configured.
+
+    The yuanrong sandbox provider falls back to ``mem_limit=1024`` when the key
+    is absent. With ``memory`` above 1024 (e.g. 2048) that produces a spec with
+    limit < request, and dockerd rejects the container with "Minimum
+    memoryswap limit should be larger than memory limit".
+    """
+    if "mem_limit" in extra_params or "memory" not in extra_params:
+        return
+    try:
+        memory = int(extra_params["memory"])
+    except (TypeError, ValueError):
+        return
+    if memory > 0:
+        extra_params["mem_limit"] = memory
 
 
 def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
