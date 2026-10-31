@@ -17385,6 +17385,30 @@ class JiuWenSwarmDeepAdapter:
                 cleanup.callback(reset_command_execution, command_token)
             yield
 
+    async def _ensure_extension_session_started(
+        self, request: AgentRequest, inputs: dict[str, Any], model_info: dict[str, object] | None,
+    ) -> None:
+        """Notify new activations after trusted runtime binding, before input."""
+        if request.req_method is not ReqMethod.CHAT_SEND:
+            return
+        from openjiuwen.core.events import SessionContext
+        from jiuwenswarm.extensions_v2.assembly import get_extension_manager
+        from jiuwenswarm.server.runtime.session.model_selection_store import SESSION_MODEL_INFO_KEY
+
+        manager = get_extension_manager()
+        if manager is None:
+            return
+        metadata: dict[str, object] = {}
+        if self._project_dir:
+            metadata["project_root"] = get_project_root()
+        if model_info is not None:
+            metadata[SESSION_MODEL_INFO_KEY] = dict(model_info)
+        context = SessionContext(request.session_id or "default", cwd=get_cwd(), metadata=metadata)
+        await manager.ensure_session_started(
+            context, request_id=request.request_id or "", channel_id=request.channel_id or "",
+            is_interactive=inputs.get("supports_user_interaction", True) is True,
+        )
+
     async def process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
@@ -17583,6 +17607,9 @@ class JiuWenSwarmDeepAdapter:
             resolved_model,
             session_id=request.session_id,
         )
+        from jiuwenswarm.server.runtime.session.model_selection_store import capture_runtime_model_info
+
+        extension_start_model_info = capture_runtime_model_info(resolved_model)
         # Attach subscriptions are passive observers, not executions; see the
         # streaming twin of this guard for the full rationale.
         if not _is_attach_only_subscription(request.params):
@@ -17637,6 +17664,7 @@ class JiuWenSwarmDeepAdapter:
                     interaction_resume=self._is_eternal_interaction_resume(request.params),
                 )
             )
+            await self._ensure_extension_session_started(request, inputs, extension_start_model_info)
             inputs = dict(inputs)
             inputs = self._prepare_multimodal_image_inputs(
                 request,
@@ -18824,6 +18852,7 @@ class JiuWenSwarmDeepAdapter:
                     interaction_resume=self._is_eternal_interaction_resume(request.params),
                 )
             )
+            await self._ensure_extension_session_started(request, inputs, extension_model_info)
             if self._stream_event_rail is not None:
                 self._stream_event_rail.reset_abort(session_id)
             inputs = dict(inputs)
