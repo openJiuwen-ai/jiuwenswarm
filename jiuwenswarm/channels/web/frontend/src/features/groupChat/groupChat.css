@@ -83,6 +83,7 @@
 .group-chat-panel {
   position: relative;
   width: 400px;
+  max-width: 100%;
   flex-shrink: 0;
   overflow-y: auto;
   display: flex;
@@ -241,18 +242,14 @@ button.group-chat-member-row:hover:not(:disabled) { background: var(--color-surf
   overflow: hidden;
   overflow-wrap: anywhere;
 }
-@media (max-width: 1400px) {
-  .group-chat-panel { width: 320px; }
-}
 @media (max-width: 1100px) {
-  .group-chat-panel { width: 280px; }
   .group-chat-messages { padding: 8px 24px 24px; }
   .group-chat-composer .group-chat-muted { display: none; }
 }
 @media (max-width: 760px) {
   .group-chat-workspace { position: relative; }
   .group-chat-workspace .resize-divider { display: none; }
-  .group-chat-panel { position: absolute; inset: 0 0 0 auto; width: min(360px, 100%); z-index: 20; background: var(--color-surface-panel); }
+  .group-chat-panel { position: absolute; inset: 0 0 0 auto; width: min(360px, 100%) !important; z-index: 20; background: var(--color-surface-panel); }
   .group-chat-panel-close { display: inline-flex; }
   .group-chat-back { display: inline-flex; }
   .group-chat-header { padding: 12px 16px; }

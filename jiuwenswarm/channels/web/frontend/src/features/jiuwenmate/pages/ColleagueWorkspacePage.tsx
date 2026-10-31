@@ -238,6 +238,13 @@ export function ColleagueWorkspacePage({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
+  // 卸载时兜底：拖拽中途组件被卸载时清掉全局拖拽态。
+  useEffect(() => () => {
+    if (resizeDragRef.current) {
+      resizeDragRef.current = null;
+      document.body.classList.remove('workspace-resize-active');
+    }
+  }, []);
   const [managementTab, setManagementTab] = useState<Exclude<JiuwenMateRecordTab, 'conversations'>>('channels');
   const [managementSearch, setManagementSearch] = useState('');
   const [selectedArtifact, setSelectedArtifact] = useState<JiuwenMateSharedFile | null>(null);
@@ -1272,7 +1279,7 @@ export function ColleagueWorkspacePage({
       data-testid="jiuwenmate-colleague-workspace"
     >
       {!state.recordsCollapsed ? (
-        <aside className="jiuwenmate-records" data-testid="jiuwenmate-record-panel" style={{ width: recordsWidth, flexShrink: 0 }}>
+        <aside className="jiuwenmate-records" data-testid="jiuwenmate-record-panel" style={{ width: recordsWidth }}>
           <header>
             <h2>{t('jiuwenmate.nav.messages')}</h2>
           </header>
@@ -1302,7 +1309,7 @@ export function ColleagueWorkspacePage({
           data-testid="jiuwenmate-resize-divider-records"
         />
       )}
-      <main className="jiuwenmate-workspace__main" style={{ flex: 1, minWidth: 0 }}>
+      <main className="jiuwenmate-workspace__main">
         {state.recordsCollapsed ? (
           <button
             type="button"
@@ -1357,7 +1364,7 @@ export function ColleagueWorkspacePage({
         />
       ) : null}
       {!board && !activeGroupId && rightPanel ? (
-        <aside className="jiuwenmate-side-panel" data-testid={`jiuwenmate-${rightPanel}-panel`} style={{ width: panelWidth, flexShrink: 0 }}>
+        <aside className="jiuwenmate-side-panel" data-testid={`jiuwenmate-${rightPanel}-panel`} style={{ width: panelWidth }}>
           {rightPanel === 'management' && state.managementChannelId && selectedChannel ? (
             renderChannel(selectedChannel, true)
           ) : (

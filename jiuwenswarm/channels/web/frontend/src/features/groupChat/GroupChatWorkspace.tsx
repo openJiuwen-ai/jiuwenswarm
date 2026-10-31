@@ -77,6 +77,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
+  // 卸载时兜底：拖拽中途组件被卸载（如切换会话）时清掉全局拖拽态。
+  useEffect(() => () => {
+    if (panelResizeRef.current) {
+      panelResizeRef.current = null;
+      document.body.classList.remove('workspace-resize-active');
+    }
+  }, []);
   const [memberSearch, setMemberSearch] = useState(false);
   const [memberQuery, setMemberQuery] = useState('');
   const [input, setInput] = useState('');
