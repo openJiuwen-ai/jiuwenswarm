@@ -474,7 +474,7 @@ from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     build_authorization_execution_context,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
-from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
+from jiuwenswarm.server.runtime.session.session_history import append_history_record, iter_history_records, load_history_records
 from jiuwenswarm.server.runtime import extension_package_manager as equipment
 
 # Goal 用户历史：忙碌插队时先挂起，等上一轮→goal 边界（或流结束）再落盘，
@@ -17419,7 +17419,8 @@ class JiuWenSwarmDeepAdapter:
         """Return True when this session already persisted a completion card for goal_id."""
         message_id = f"goal-completed-{goal_id}"
         try:
-            for rec in load_history_records(session_id):
+            # 只需判断"是否已存在"，流式扫描 + 命中即返回，不必把整份 history 读进内存。
+            for rec in iter_history_records(session_id):
                 if not isinstance(rec, dict):
                     continue
                 if str(rec.get("id") or "") == message_id:
@@ -21971,20 +21972,17 @@ class JiuWenSwarmDeepAdapter:
         # 典型场景：/resume 之后，context_engine 还未加载新 session 的上下文，
         # 但磁盘上已有该 session 的历史消息。
         try:
+            from collections import deque
             from types import SimpleNamespace
-
-            records = load_history_records(session_id)
-            if not records:
-                logger.debug(
-                    "[JiuWenSwarmDeepAdapter] _get_recent_messages: no history records on disk for session %s",
-                    session_id,
-                )
-                return []
 
             # 过滤出适合 recap 的消息记录
             # 只保留 user 消息和 assistant 的最终回复 / compact summary
-            recapworthy = []
-            for rec in records:
+            # 流式扫描 + 有界双端队列：只需要最后 window 条，历史可能有数十万条、
+            # 上百 MB，全量载入会带来 GB 级瞬时内存峰值。
+            recapworthy: deque[Any] = deque(maxlen=window)
+            scanned = 0
+            for rec in iter_history_records(session_id):
+                scanned += 1
                 if not isinstance(rec, dict):
                     continue
                 role = rec.get("role")
@@ -22004,6 +22002,13 @@ class JiuWenSwarmDeepAdapter:
                     if event_type in ("chat.final", "context.compact_summary") or not event_type:
                         recapworthy.append(SimpleNamespace(role="assistant", content=content))
 
+            if not scanned:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] _get_recent_messages: no history records on disk for session %s",
+                    session_id,
+                )
+                return []
+
             if not recapworthy:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] _get_recent_messages: no recap-worthy records on disk for session %s",
@@ -22012,12 +22017,13 @@ class JiuWenSwarmDeepAdapter:
                 return []
 
             logger.info(
-                "[JiuWenSwarmDeepAdapter] _get_recent_messages: loaded %d records from disk for session %s "
-                "(context_engine fallback)",
+                "[JiuWenSwarmDeepAdapter] _get_recent_messages: scanned %d records from disk, kept %d recap-worthy "
+                "for session %s (context_engine fallback)",
+                scanned,
                 len(recapworthy),
                 session_id,
             )
-            return recapworthy[-window:]
+            return list(recapworthy)
         except Exception as exc:
             logger.debug("[JiuWenSwarmDeepAdapter] _get_recent_messages disk fallback failed: %s", exc)
             return []
