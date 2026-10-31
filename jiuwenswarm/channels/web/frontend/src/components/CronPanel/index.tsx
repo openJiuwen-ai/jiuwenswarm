@@ -320,11 +320,18 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   );
 
   // "计划于"列：能识别成 周期/按间隔/单次 六种模式之一的就转成人话摘要（"每天 09:30"），
-  // 识别不了的（Agent工具/TUI建的、或手写 Cron表达式 tab 的任意表达式）原样展示 7 段式原文兜底
+  // 识别不了的（Agent工具/TUI建的、或手写 Cron表达式 tab 的任意表达式）原样展示 7 段式原文兜底。
+  // 同时给出纯文本版（text）供列表单元格做 title 悬停提示：原文兜底分支渲染的是
+  // <span className="mono"> 元素，从元素本身取不到纯文本，单独留一份给 title 用，
+  // 保证"计划于"是 cron 原文时也能 hover 看全文。
   const scheduleLabel = useCallback(
     (cronExpr: string) => {
       const parsed = cronExprToSchedule(cronExpr);
-      return parsed ? summarizeSchedule(parsed, t) : <span className="mono">{cronExpr}</span>;
+      if (parsed) {
+        const summary = summarizeSchedule(parsed, t);
+        return { node: summary, text: summary };
+      }
+      return { node: <span className="mono">{cronExpr}</span>, text: cronExpr };
     },
     [t],
   );
@@ -1080,6 +1087,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               <tbody>
                 {paginatedJobs.map((job) => {
                   const isProactive = job.id === PROACTIVE_AUTO_JOB_ID;
+                  // "计划于"每行只算一次：node 用来渲染，text 给 title 悬停用
+                  // （原文兜底分支的 node 是 <span className="mono"> 元素，取不到纯文本）
+                  const schedule = scheduleLabel(job.cronExpr);
                   return (
                     <tr key={job.id} className="border-b border-border last:border-0">
                       <td className="px-4 py-3 text-text">
@@ -1102,7 +1112,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                         </div>
                       </td>
                       <td className="px-4 py-3 text-text">{job.projectName ?? t('cron.table.noProject')}</td>
-                      <td className="px-4 py-3 text-text">{scheduleLabel(job.cronExpr)}</td>
+                      <td className="px-4 py-3 text-text">
+                        {/* 排程摘要可能较长（周限定组合如"每周一、二、三、四、五 09:30"，
+                            以及解析不出的 7 段式 cron 原文），换行会挤压整张表的其他列；
+                            沿用名称列做法，纯展示层截断：CSS truncate + title 悬停看全文，
+                            不改摘要本身。block 是必需的——truncate 依赖的
+                            overflow/text-overflow 对 inline 元素不生效，td 的直接子节点
+                            要显式 block 化才能省略号截断。 */}
+                        <span className="block max-w-[240px] truncate" title={schedule.text}>
+                          {schedule.node}
+                        </span>
+                      </td>
                       {/* proactive 自动维护 job 的整体开关由 config 控制（关了就删除，不在列表里），
                           因此这里只有两态：过期 → 过期；否则 → 启用，不显示"禁用"中间态
                           （沿用 upstream 提交 59cf6de7 的约束） */}
