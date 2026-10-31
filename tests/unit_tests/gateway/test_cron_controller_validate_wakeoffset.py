@@ -14,8 +14,10 @@ wake_offset_seconds 已被 _clamp_wake_offset_for_upcoming_run 正确截断。
 
 from __future__ import annotations
 
+from datetime import datetime as _RealDateTime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -92,6 +94,33 @@ def _job_params(**overrides) -> dict:
     return params
 
 
+# ---------------------------------------------------------------------------
+# 时间冻结辅助：使 _clamp_wake_offset_for_upcoming_run 的 delay 计算确定性化
+# ---------------------------------------------------------------------------
+
+_FROZEN_NOW = _RealDateTime(2026, 1, 15, 10, 0, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+class _FrozenDateTime(_RealDateTime):
+    """替换 controller.datetime，使 now() 返回固定时刻。
+
+    冻结在 2026-01-15 10:00:30 Asia/Shanghai：
+    - ``*/2 * * * *`` → 下次触发 10:02:00，delay=90s，floor=90
+    - ``0 9 * * *``   → 下次触发 次日 09:00:00，delay=82770s，floor=82770
+    """
+
+    @classmethod
+    def now(cls, tz=None):
+        return _FROZEN_NOW.astimezone(tz) if tz else _FROZEN_NOW
+
+
+@pytest.fixture
+def frozen_now():
+    """冻结 controller 的 datetime.now，使 clamp 计算确定性化。"""
+    with patch("gateway.cron.controller.datetime", _FrozenDateTime):
+        yield
+
+
 # ===========================================================================
 # create_job 截断锚定测试
 # ===========================================================================
@@ -101,7 +130,7 @@ class TestCreateJobClamp:
     """真实调用 create_job，断言 wake_offset_seconds 被截断。"""
 
     @pytest.mark.asyncio
-    async def test_keeps_reasonable_offset(self) -> None:
+    async def test_keeps_reasonable_offset(self, frozen_now) -> None:
         """合理 offset（小于 delay）保持不变。"""
         cc = _make_controller()
         job = await cc.create_job(_job_params(
@@ -111,16 +140,16 @@ class TestCreateJobClamp:
         assert job["wake_offset_seconds"] == 30
 
     @pytest.mark.asyncio
-    async def test_clamps_large_offset(self) -> None:
+    async def test_clamps_large_offset(self, frozen_now) -> None:
         """过大 offset 被截断到 floor(delay)。"""
         cc = _make_controller()
         job = await cc.create_job(_job_params(
             cron_expr="*/2 * * * *",
             wake_offset_seconds=999999,
         ))
-        # delay 最多 120s，截断后应 ≤ 120
+        # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
         assert isinstance(job["wake_offset_seconds"], int)
-        assert 0 <= job["wake_offset_seconds"] <= 120
+        assert job["wake_offset_seconds"] == 90
 
     @pytest.mark.asyncio
     async def test_zero_offset_stays_zero(self) -> None:
@@ -153,7 +182,7 @@ class TestCreateJobClamp:
         assert job["wake_offset_seconds"] == 0
 
     @pytest.mark.asyncio
-    async def test_clamp_logs_to_store_create_call(self) -> None:
+    async def test_clamp_logs_to_store_create_call(self, frozen_now) -> None:
         """截断后的值确实传给 store.create_job。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -162,7 +191,7 @@ class TestCreateJobClamp:
         ))
         stored = cc.store.create_calls[0]
         assert isinstance(stored["wake_offset_seconds"], int)
-        assert 0 <= stored["wake_offset_seconds"] <= 120
+        assert stored["wake_offset_seconds"] == 90
 
 
 # ===========================================================================
@@ -182,16 +211,23 @@ class TestUpdateJobClamp:
     async def test_ignores_offset_when_not_in_patch(self, existing_job_id) -> None:
         """patch 不含 wake_offset_seconds/cron_expr/timezone → 不触发 clamp。"""
         cc = _make_controller()
-        await cc.create_job(_job_params(
+        created = await cc.create_job(_job_params(
             id=existing_job_id,
             cron_expr="0 9 * * *",
             wake_offset_seconds=1800,
         ))
+        offset_after_create = created["wake_offset_seconds"]
         updated = await cc.update_job(existing_job_id, {"name": "new-name"})
-        assert updated["wake_offset_seconds"] == 1800  # 不变
+        # clamp 未触发：store patch 不含 wake_offset_seconds，且值与 create 后一致。
+        # 不断言精确值（如 1800），因为 create 时的 clamp 会用真实墙钟计算剩余
+        # delay 并可能截断（cron 为上海每天 9 点，08:30–09:00 窗口内 delay<1800），
+        # 导致落库值随墙钟变化。改为断言"更新前后不变"以与墙钟解耦。
+        stored_patch = cc.store.update_calls[0][1]
+        assert "wake_offset_seconds" not in stored_patch
+        assert updated["wake_offset_seconds"] == offset_after_create
 
     @pytest.mark.asyncio
-    async def test_keeps_reasonable_offset_change(self, existing_job_id) -> None:
+    async def test_keeps_reasonable_offset_change(self, existing_job_id, frozen_now) -> None:
         """合理 offset 保持不变。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -205,7 +241,7 @@ class TestUpdateJobClamp:
         assert updated["wake_offset_seconds"] == 30
 
     @pytest.mark.asyncio
-    async def test_clamps_large_offset_change(self, existing_job_id) -> None:
+    async def test_clamps_large_offset_change(self, existing_job_id, frozen_now) -> None:
         """过大 offset 被截断。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -216,10 +252,11 @@ class TestUpdateJobClamp:
         updated = await cc.update_job(
             existing_job_id, {"wake_offset_seconds": 999999},
         )
-        assert 0 <= updated["wake_offset_seconds"] <= 120
+        # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
+        assert updated["wake_offset_seconds"] == 90
 
     @pytest.mark.asyncio
-    async def test_clamps_simultaneous_cron_and_large_offset(self, existing_job_id) -> None:
+    async def test_clamps_simultaneous_cron_and_large_offset(self, existing_job_id, frozen_now) -> None:
         """同时改 cron_expr 和 offset（新 offset 对新 delay 过大）→ 截断。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -231,10 +268,11 @@ class TestUpdateJobClamp:
             "cron_expr": "*/2 * * * *",   # 改为每 2 分钟
             "wake_offset_seconds": 999999,
         })
-        assert 0 <= updated["wake_offset_seconds"] <= 120
+        # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
+        assert updated["wake_offset_seconds"] == 90
 
     @pytest.mark.asyncio
-    async def test_accepts_simultaneous_cron_and_reasonable_offset(self, existing_job_id) -> None:
+    async def test_accepts_simultaneous_cron_and_reasonable_offset(self, existing_job_id, frozen_now) -> None:
         """同时改 cron_expr 和 offset（新 offset 合理）→ 保持不变。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -263,7 +301,7 @@ class TestUpdateJobClamp:
         assert updated["wake_offset_seconds"] == 0
 
     @pytest.mark.asyncio
-    async def test_triggers_on_cron_expr_change_only(self, existing_job_id) -> None:
+    async def test_triggers_on_cron_expr_change_only(self, existing_job_id, frozen_now) -> None:
         """只改 cron_expr 也触发 clamp（用 existing 的 offset 重新 clamp）。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -274,11 +312,12 @@ class TestUpdateJobClamp:
         updated = await cc.update_job(existing_job_id, {
             "cron_expr": "*/2 * * * *",  # 改为每 2 分钟
         })
-        # 现有 offset=43200 对新 delay（≤120s）过大，应截断
-        assert 0 <= updated["wake_offset_seconds"] <= 120
+        # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
+        # 现有 offset=43200 对新 delay 过大，应截断到 90
+        assert updated["wake_offset_seconds"] == 90
 
     @pytest.mark.asyncio
-    async def test_triggers_on_timezone_change_only(self, existing_job_id) -> None:
+    async def test_triggers_on_timezone_change_only(self, existing_job_id, frozen_now) -> None:
         """只改 timezone 也触发 clamp。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -292,7 +331,7 @@ class TestUpdateJobClamp:
         assert updated["wake_offset_seconds"] == 30  # 合理 offset 不变
 
     @pytest.mark.asyncio
-    async def test_clamp_applied_to_store_update_call(self, existing_job_id) -> None:
+    async def test_clamp_applied_to_store_update_call(self, existing_job_id, frozen_now) -> None:
         """截断后的值确实传给 store.update_job。"""
         cc = _make_controller()
         await cc.create_job(_job_params(
@@ -303,4 +342,5 @@ class TestUpdateJobClamp:
         await cc.update_job(existing_job_id, {"wake_offset_seconds": 999999})
         stored_patch = cc.store.update_calls[0][1]
         assert isinstance(stored_patch["wake_offset_seconds"], int)
-        assert 0 <= stored_patch["wake_offset_seconds"] <= 120
+        # 冻结在 10:00:30，*/2 下次触发 10:02:00，delay=90s → floor=90
+        assert stored_patch["wake_offset_seconds"] == 90
