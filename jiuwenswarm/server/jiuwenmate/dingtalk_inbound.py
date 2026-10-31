@@ -7,8 +7,9 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
@@ -46,6 +47,7 @@ class DingTalkInboundEvent:
     robot_code: str | None = None
     sender_corp_id: str | None = None
     chatbot_corp_id: str | None = None
+    platform_created_at: datetime | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -55,6 +57,11 @@ class DingTalkInboundEvent:
             _text(getattr(self, field), field)
         if not isinstance(self.received_at, datetime) or self.received_at.tzinfo is None:
             raise ValueError("DingTalk received_at must be timezone-aware")
+        if self.platform_created_at is not None and (
+            not isinstance(self.platform_created_at, datetime) or self.platform_created_at.utcoffset() is None
+            or self.platform_created_at > self.received_at + timedelta(minutes=5)
+        ):
+            raise ValueError("invalid DingTalk platform creation time")
         if self.conversation_type not in {"1", "2"}:
             raise ValueError("invalid DingTalk conversation type")
         if not isinstance(self.receiver_bot_mentioned, bool):
@@ -96,21 +103,37 @@ class DingTalkInboundEvent:
             or data.get("isInAtList") is True
             or (isinstance(chatbot_user_id, str) and chatbot_user_id in mention_ids)
         )
+        received_at = datetime.now(timezone.utc)
+        platform_created_at = None
+        created = data.get("createAt")
+        if not isinstance(created, bool) and (
+            isinstance(created, int) or (isinstance(created, str) and created.isdecimal())
+        ):
+            try:
+                candidate = datetime.fromtimestamp(int(created) / 1000, timezone.utc)
+                if candidate.year >= 2000 and candidate <= received_at + timedelta(minutes=5):
+                    platform_created_at = candidate
+            except (ValueError, OverflowError, OSError):
+                pass
         return cls(
             receiving_app_id=app_id, expected_agent_id=agent_id,
             message_id=_text(data.get("msgId"), "msgId"),
             conversation_id=_text(data.get("conversationId"), "conversationId"),
             sender_staff_id=staff_id, sender_name=data.get("senderNick") or staff_id,
-            text=_text(content.get("content"), "text"), received_at=datetime.now(timezone.utc),
+            text=_text(content.get("content"), "text"), received_at=received_at,
             conversation_type=conversation_type, receiver_bot_mentioned=bot_mentioned,
             mention_ids=mention_ids,
             group_name=data.get("conversationTitle") if isinstance(data.get("conversationTitle"), str) else None,
             robot_code=data.get("robotCode"), sender_corp_id=data.get("senderCorpId"),
             chatbot_corp_id=data.get("chatbotCorpId"),
+            platform_created_at=platform_created_at,
         )
 
     def to_payload(self) -> dict[str, Any]:
-        return {**asdict(self), "received_at": self.received_at.isoformat()}
+        return {
+            **asdict(self), "received_at": self.received_at.isoformat(),
+            "platform_created_at": self.platform_created_at.isoformat() if self.platform_created_at is not None else None,
+        }
 
     @classmethod
     def from_payload(cls, payload: Any) -> DingTalkInboundEvent:
@@ -119,6 +142,8 @@ class DingTalkInboundEvent:
         fields = dict(payload)
         fields["received_at"] = datetime.fromisoformat(fields["received_at"])
         fields["mention_ids"] = tuple(fields.get("mention_ids", ()))
+        if fields.get("platform_created_at") is not None:
+            fields["platform_created_at"] = datetime.fromisoformat(fields["platform_created_at"])
         return cls(**fields)
 
 
@@ -165,17 +190,76 @@ class DingTalkInboundHandler:
         self._config_loader = config_loader
 
     async def handle(self, event: DingTalkInboundEvent) -> InboundDisposition:
+        return await self._handle(event)
+
+    async def handle_history_message(
+        self, binding: DingTalkBinding, message: Mapping[str, Any], *,
+        group_id: str, dispatch_after: datetime,
+    ) -> InboundDisposition:
+        """Accept host-read history without treating user access as Bot membership."""
+        try:
+            if not isinstance(message, Mapping) or dispatch_after.utcoffset() is None:
+                raise ValueError("Invalid history boundary")
+            kind = {"user": "human", "robot": "agent"}.get(message.get("sendType"))
+            # Unknown sender types and media without text cannot become human requests.
+            if kind is None or not isinstance(message.get("text"), str) or not message["text"].strip():
+                return InboundDisposition.HANDLED
+            message_id = _text(message.get("messageId") or message.get("openMessageId"), "history message ID")
+            if message.get("openMessageId", message_id) != message_id:
+                raise ValueError("History message identity mismatch")
+            conversation_id = _text(
+                message.get("openConversationId") or message.get("conversationId"), "history conversation ID",
+            )
+            for name in ("openConversationId", "conversationId"):
+                if message.get(name, conversation_id) != conversation_id:
+                    raise ValueError("History conversation identity mismatch")
+            sender_id = _text(message.get("senderOpenDingTalkId"), "sender open ID")
+            created = message.get("createTime")
+            if not isinstance(created, str):
+                raise ValueError("Missing history timestamp")
+            stamp = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if stamp.utcoffset() is None:
+                # DWS's unqualified conversation timestamps are Shanghai wall time.
+                stamp = stamp.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            stamp = stamp.astimezone(timezone.utc)
+            if stamp.year < 2000:
+                raise ValueError("Invalid history timestamp")
+            event = DingTalkInboundEvent(
+                receiving_app_id=binding.app_id, expected_agent_id=binding.agent_id,
+                robot_code=binding.robot_code, message_id=message_id, conversation_id=conversation_id,
+                sender_staff_id=f"dingtalk-open:{sender_id}",
+                sender_name=message.get("sender") or sender_id,
+                text=message["text"], received_at=stamp, conversation_type="2",
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return InboundDisposition.REJECTED
+        return await self._handle(
+            event, history_group_id=group_id, history_sender_kind=kind,
+            history_dispatch_after=dispatch_after,
+        )
+
+    async def _handle(
+        self, event: DingTalkInboundEvent, *, history_group_id: str | None = None,
+        history_sender_kind: str = "human", history_dispatch_after: datetime | None = None,
+    ) -> InboundDisposition:
         from jiuwenswarm.common.im_binding_lock import im_binding_lock
 
         try:
             async with im_binding_lock("dingtalk", event.receiving_app_id):
                 # Reload and validate the binding inside the same lock as the durable queue write.
-                return await self._handle_bound_event(event)
+                return await self._handle_bound_event(
+                    event, history_group_id=history_group_id,
+                    history_sender_kind=history_sender_kind,
+                    history_dispatch_after=history_dispatch_after,
+                )
         except Exception as exc:
             logger.warning("[DingTalk] application binding busy: error_type=%s", type(exc).__name__)
             return InboundDisposition.REJECTED
 
-    async def _handle_bound_event(self, event: DingTalkInboundEvent) -> InboundDisposition:
+    async def _handle_bound_event(
+        self, event: DingTalkInboundEvent, *, history_group_id: str | None = None,
+        history_sender_kind: str = "human", history_dispatch_after: datetime | None = None,
+    ) -> InboundDisposition:
         from openjiuwen.harness.persistent_agent import DirectMessageSource, GroupMessage, RequestInput
         from jiuwenswarm.server.jiuwenmate.execution_models import (
             AccessSnapshot,
@@ -190,13 +274,18 @@ class DingTalkInboundHandler:
         from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ
 
         try:
-            config = await asyncio.to_thread(self._config_loader) if self._config_loader is not None else None
+            config_loader = self._config_loader
+            if config_loader is None:
+                from jiuwenswarm.common.config import get_config
+                config_loader = get_config
+            config = await asyncio.to_thread(config_loader)
             bindings = await asyncio.to_thread(configured_dingtalk_bindings, config)
             matches = [binding for binding in bindings
                        if binding.app_id == event.receiving_app_id and binding.agent_id == event.expected_agent_id]
             if len(matches) != 1:
                 return InboundDisposition.REJECTED
             binding = matches[0]
+            is_history = history_group_id is not None
             if event.robot_code is not None and event.robot_code != binding.robot_code:
                 return InboundDisposition.REJECTED
             # Only enterprise-internal apps are supported, so a staffId from another
@@ -227,7 +316,7 @@ class DingTalkInboundHandler:
                 principal_ref=f"dingtalk:{binding.app_id}:{event.sender_staff_id}",
                 startup_scope=scope, source_scope=scope, policy_revision=policy_revision,
             )
-            if await self._manager.handle_im_permission_reply(
+            if not is_history and await self._manager.handle_im_permission_reply(
                 event.text, namespace_id=binding.namespace_id, agent_id=binding.agent_id,
                 access=access, channel="dingtalk", target_id=target_id,
                 app_id=binding.app_id, source_message_id=event.message_id,
@@ -235,22 +324,62 @@ class DingTalkInboundHandler:
             ):
                 return InboundDisposition.HANDLED
             if event.conversation_type == "2":
-                group = await asyncio.to_thread(
-                    self._manager.group_chats.resolve,
-                    binding.namespace_id,
-                    "dingtalk",
-                    event.conversation_id,
-                    now=received_at,
-                )
-                await asyncio.to_thread(
-                    self._manager.group_chats.observe_access,
-                    binding.namespace_id,
-                    binding.agent_id,
-                    group.group_chat_id,
-                    binding.app_id,
-                    observed_at=received_at,
-                    source_ref=f"dingtalk:message:{event.message_id}",
-                )
+                if is_history:
+                    group = await asyncio.to_thread(
+                        self._manager.group_chats.get, binding.namespace_id, history_group_id,
+                    )
+                    apps = await asyncio.to_thread(
+                        self._manager.group_chats.active_apps,
+                        binding.namespace_id, binding.agent_id, group.group_chat_id,
+                    )
+                    if (
+                        group.platform != "dingtalk" or group.platform_chat_id != event.conversation_id
+                        or binding.app_id not in apps
+                    ):
+                        return InboundDisposition.REJECTED
+                    membership = await asyncio.to_thread(
+                        self._manager.group_chats.access_for,
+                        binding.namespace_id, binding.agent_id, group.group_chat_id,
+                    )
+                    if received_at < membership.visible_from:
+                        return InboundDisposition.HANDLED
+                    app = next((item for item in dingtalk_apps(config.get("channels", {}).get("dingtalk"))
+                                if item["client_id"] == binding.app_id), None)
+                    allowed = app.get("allow_from", []) if app is not None else []
+                    # A staffId-only allowlist cannot be satisfied by guessing an open ID mapping.
+                    if allowed and "*" not in allowed and event.sender_staff_id.removeprefix("dingtalk-open:") not in allowed:
+                        return InboundDisposition.HANDLED
+                else:
+                    group = await asyncio.to_thread(
+                        self._manager.group_chats.resolve, binding.namespace_id,
+                        "dingtalk", event.conversation_id, now=received_at,
+                    )
+                    await asyncio.to_thread(
+                        self._manager.group_chats.observe_access,
+                        binding.namespace_id, binding.agent_id, group.group_chat_id, binding.app_id,
+                        observed_at=received_at, source_ref=f"dingtalk:message:{event.message_id}",
+                    )
+                    membership = await asyncio.to_thread(
+                        self._manager.group_chats.access_for,
+                        binding.namespace_id, binding.agent_id, group.group_chat_id,
+                    )
+                    if membership.status != "active":
+                        # Ingest time cannot prove freshness: retries may arrive after removal.
+                        proof = event.platform_created_at
+                        if proof is None or proof < received_at - timedelta(minutes=5):
+                            return InboundDisposition.HANDLED
+                        await asyncio.to_thread(
+                            self._manager.group_chats.update_membership,
+                            binding.namespace_id, binding.agent_id, group.group_chat_id, binding.app_id,
+                            status="active", observed_at=proof,
+                            source_ref=f"dingtalk:message:{event.message_id}",
+                        )
+                        membership = await asyncio.to_thread(
+                            self._manager.group_chats.access_for,
+                            binding.namespace_id, binding.agent_id, group.group_chat_id,
+                        )
+                        if membership.status != "active":
+                            return InboundDisposition.HANDLED
                 if event.group_name:
                     await asyncio.to_thread(
                         self._manager.group_chats.set_name,
@@ -262,7 +391,7 @@ class DingTalkInboundHandler:
                     message_id=event.message_id,
                     sender_id=event.sender_staff_id,
                     sender_name=event.sender_name,
-                    sender_kind="human",
+                    sender_kind=history_sender_kind if is_history else "human",
                     received_at=received_at,
                     text=event.text,
                     mention_ids=event.mention_ids,
@@ -282,12 +411,18 @@ class DingTalkInboundHandler:
                         group.group_chat_id,
                         source,
                         source_ref=f"dingtalk:message:{event.message_id}",
-                        changed_at=received_at,
+                        changed_at=None if is_history else received_at,
                     )
                 except PersistentAgentError as exc:
                     if exc.code == "CONFLICT":
                         return InboundDisposition.HANDLED
                     raise
+
+                if is_history and (
+                    history_sender_kind != "human" or "@" in event.text or "＠" in event.text
+                    or history_dispatch_after is None or received_at <= history_dispatch_after
+                ):
+                    return InboundDisposition.HANDLED
 
                 if event.receiver_bot_mentioned:
                     source = source.model_copy(update={

@@ -153,8 +153,7 @@ class DingTalkFileService:
         # 附件落盘钩子（Phase 3）：Gateway 下载字节后经 E2A 交给目标 AgentServer 落盘。
         self._persist_hook: Any = None
 
-    @staticmethod
-    async def _upload_signed_url(url: str, headers: dict[str, str], content: bytes) -> None:
+    async def _upload_signed_url(self, url: str, headers: dict[str, str], content: bytes) -> None:
         from urllib.parse import urlsplit
 
         parsed = urlsplit(url)
@@ -401,14 +400,12 @@ class DingTalkFileService:
     async def _download_with_retry(
         self,
         download_code: str,
-        file_type: str,
         max_retries: int = 3,
     ) -> bytes | None:
         """带重试的文件下载。
 
         Args:
             download_code: 文件下载码
-            file_type: 文件类型（image/file/voice/video）
             max_retries: 最大重试次数
 
         Returns:
@@ -514,7 +511,7 @@ class DingTalkFileService:
         Returns:
             文件信息字典，失败返回 None
         """
-        content = await self._download_with_retry(download_code, "image")
+        content = await self._download_with_retry(download_code)
         if not content:
             return None
 
@@ -557,7 +554,7 @@ class DingTalkFileService:
         Returns:
             文件信息字典，失败返回 None
         """
-        content = await self._download_with_retry(download_code, "file")
+        content = await self._download_with_retry(download_code)
         if not content:
             return None
 
@@ -603,7 +600,7 @@ class DingTalkFileService:
         Returns:
             文件信息字典，失败返回 None
         """
-        content = await self._download_with_retry(download_code, "voice")
+        content = await self._download_with_retry(download_code)
         if not content:
             return None
 
@@ -645,7 +642,7 @@ class DingTalkFileService:
         Returns:
             文件信息字典，失败返回 None
         """
-        content = await self._download_with_retry(download_code, "video")
+        content = await self._download_with_retry(download_code)
         if not content:
             return None
 

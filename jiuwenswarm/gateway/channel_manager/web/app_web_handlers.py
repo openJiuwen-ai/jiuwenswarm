@@ -640,6 +640,11 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.agent_mail.auth.poll",
     "jiuwenmate.agent_mail.auth.cancel",
     "jiuwenmate.agent_mail.disconnect",
+    "jiuwenmate.dingtalk_auth.status",
+    "jiuwenmate.dingtalk_auth.begin",
+    "jiuwenmate.dingtalk_auth.poll",
+    "jiuwenmate.dingtalk_auth.cancel",
+    "jiuwenmate.dingtalk_auth.disconnect",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -685,6 +690,11 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.agent_mail.auth.poll",
     "jiuwenmate.agent_mail.auth.cancel",
     "jiuwenmate.agent_mail.disconnect",
+    "jiuwenmate.dingtalk_auth.status",
+    "jiuwenmate.dingtalk_auth.begin",
+    "jiuwenmate.dingtalk_auth.poll",
+    "jiuwenmate.dingtalk_auth.cancel",
+    "jiuwenmate.dingtalk_auth.disconnect",
     "initialize",
     "session.switch",
     "session.fork",

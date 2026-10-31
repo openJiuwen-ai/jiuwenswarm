@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import time
 from types import SimpleNamespace
@@ -21,7 +21,9 @@ from jiuwenswarm.gateway.routing.keys import ChannelKey
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
-from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundEvent, DingTalkInboundHandler
+from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import (
+    DingTalkInboundEvent, DingTalkInboundHandler, configured_dingtalk_bindings,
+)
 from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
@@ -211,6 +213,275 @@ def _group_delivered(host):
     rows = _group_requests(host)
     deliveries = host.repository.result_deliveries("local", rows[0].record.request_id) if rows else []
     return bool(deliveries) and deliveries[0]["status"] == "delivered"
+
+
+def _known_history_group(host):
+    group = host.manager.group_chats.resolve('local', 'dingtalk', 'conversation-test', now=NOW)
+    host.manager.group_chats.observe_access(
+        'local', 'agent-dingtalk', group.group_chat_id, 'app-dingtalk',
+        observed_at=NOW - timedelta(minutes=1), source_ref='known-bot-membership',
+    )
+    return group
+
+
+def _history_message(**changes):
+    return {
+        'messageId': 'history-message', 'openMessageId': 'history-message',
+        'openConversationId': 'conversation-test', 'senderOpenDingTalkId': 'open-person',
+        'sender': 'Person', 'sendType': 'user', 'text': 'Please inspect the architecture',
+        'createTime': NOW.isoformat(), **changes,
+    }
+
+
+@pytest.mark.asyncio
+async def test_history_plain_text_uses_existing_scheduler_and_bound_bot_delivery(host):
+    group = _known_history_group(host)
+    binding, = configured_dingtalk_bindings(host.config)
+    assert await host.inbound.handle_history_message(
+        binding, _history_message(), group_id=group.group_chat_id, dispatch_after=NOW - timedelta(seconds=1),
+    ) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+    request, = _group_requests(host)
+    assert request.record.request_input.source.sender_id == 'dingtalk-open:open-person'
+    assert request.record.request_input.source.mention_ids == ()
+    assert host.sent[0]['robotCode'] == 'robot-test'
+    assert host.sent[0]['openConversationId'] == 'conversation-test'
+    guidance = host.contexts[0].system_prompt_addendum
+    identity = json.loads(guidance.split('```json\n', 1)[1].split('\n```', 1)[0])
+    assert identity == {'agent_id': 'agent-dingtalk', 'name': '同事'}
+    assert 'OAuth 授权账号仅提供数据访问权限' in guidance
+
+
+@pytest.mark.asyncio
+async def test_shared_history_creates_independent_requests_and_deliveries_for_both_employees(host):
+    from jiuwenswarm.server.jiuwenmate.dingtalk_group_polling import DingTalkGroupPoller
+
+    group = _known_history_group(host)
+    second_app = {**DINGTALK_APP, 'client_id': 'app-learning', 'persistent_agent_id': 'agent-learning',
+                  'robot_code': 'robot-learning'}
+    host.config['channels']['dingtalk']['apps'].append(second_app)
+    host.connections['agent-learning'] = _connection('agent-learning', 'dingtalk', 'app-learning')
+    host.service.get_colleague = lambda ns, agent: SimpleNamespace(enabled=True)
+    host.manager.group_chats.observe_access(
+        'local', 'agent-learning', group.group_chat_id, 'app-learning',
+        observed_at=NOW - timedelta(minutes=1), source_ref='known-learning-membership',
+    )
+    second_channel = _dingtalk_channel(
+        client_id='app-learning', robot_code='robot-learning', agent_id='agent-learning', is_default=False,
+    )
+    second_channel._http = host.channel._http
+    host.gateway.register_channel(second_channel)
+    now = [NOW]
+    message = _history_message(text='大家都自我介绍一下吧', createTime=(NOW + timedelta(seconds=1)).isoformat())
+    host.manager.dingtalk_cli_runtime = SimpleNamespace(
+        group_history_identity=AsyncMock(return_value='a' * 64),
+        read_group_history=AsyncMock(return_value={
+            'readerKey': 'a' * 64, 'messages': [message], 'complete': True, 'hasMore': False,
+            'botCodes': ['robot-test', 'robot-learning'],
+        }),
+    )
+    poller = DingTalkGroupPoller(host.manager, host.inbound, config_loader=lambda: host.config, clock=lambda: now[0])
+    assert await poller.poll_once() == 1
+    await settle(lambda: len(host.contexts) == 2 and len(host.sent) == 2)
+    requests = []
+    for agent in ('agent-dingtalk', 'agent-learning'):
+        session = host.repository.find_session('local', agent, ConversationRef.group(group.group_chat_id))
+        request, = host.repository.session_requests('local', session.session_id)
+        requests.append(request)
+        assert request.record.request_input.source.message_id == message['messageId']
+    assert len({request.record.request_id for request in requests}) == 2
+    assert {sent['robotCode'] for sent in host.sent} == {'robot-test', 'robot-learning'}
+    now[0] += timedelta(seconds=10)
+    assert await poller.poll_once() == 1
+    await asyncio.sleep(0)
+    assert len(host.contexts) == 2
+    assert len(host.sent) == 2
+    await poller.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_participation_uses_known_dingtalk_context_without_erasing_archive_gap(host):
+    from importlib import import_module
+
+    participation = import_module('openjiuwen.harness.persistent_agent.execution.participation')
+    group = _known_history_group(host)
+    binding, = configured_dingtalk_bindings(host.config)
+    assert await host.inbound.handle_history_message(
+        binding, _history_message(text='大家晚上好'), group_id=group.group_chat_id,
+        dispatch_after=NOW - timedelta(seconds=1),
+    ) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+    context = host.contexts[0]
+    request = _group_requests(host)[0].record.request_input
+    ref = core.InvocationRef.from_execution(context.execution).model_dump()
+
+    async def admit(execution, call_id):
+        return {**ref, 'model_call_id': call_id, 'status': 'admitted', 'reservation_ref': 'test-reservation'}
+
+    async def report(execution, call_id, usage):
+        return {**ref, 'model_call_id': call_id, 'status': 'confirmed', 'receipt_ref': 'test-receipt'}
+
+    model = SimpleNamespace(invoke=AsyncMock(return_value=SimpleNamespace(
+        content='{"decision":"respond","effort":"quick","reason":"greeting"}',
+    )))
+    events = []
+
+    async def emit(kind, payload):
+        events.append((kind, payload))
+        return SimpleNamespace(event_id='participation-event')
+
+    test_context = SimpleNamespace(
+        execution=context.execution, system_prompt_addendum='Observed group context can be incomplete.',
+        ports=SimpleNamespace(group_chat=context.ports.group_chat, budget=SimpleNamespace(admit=admit, report=report)),
+    )
+    outcome = await participation.judge_participation(
+        SimpleNamespace(model=SimpleNamespace(build=lambda: model)), test_context, request,
+        SimpleNamespace(emit=emit, emit_ending=emit),
+    )
+    assert outcome.terminal is False
+    model.invoke.assert_awaited_once()
+    assert any(kind == core.EventType.PARTICIPATION_DECIDED for kind, payload in events)
+    assert host.manager.group_archive.recent(
+        'local', group.group_chat_id, cursor=None, limit=8, visible_from=NOW - timedelta(minutes=1),
+    ).status == 'incomplete'
+    invalid = await context.ports.group_chat.recent_messages(context.execution, 'unknown-cursor', 8)
+    assert invalid.status == 'incomplete'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['robot', 'at', 'fullwidth_at', 'old', 'passive'])
+async def test_history_conservative_exclusions_archive_without_execution(host, case):
+    group = _known_history_group(host)
+    binding, = configured_dingtalk_bindings(host.config)
+    message = _history_message()
+    if case == 'robot':
+        message['sendType'] = 'robot'
+    elif case == 'at':
+        message['text'] = '@Someone Please inspect the architecture'
+    elif case == 'fullwidth_at':
+        message['text'] = '＠Someone Please inspect the architecture'
+    elif case == 'passive':
+        host.service.read_settings = lambda ns, agent: SimpleNamespace(group_reply_mode='passive')
+    floor = NOW if case == 'old' else NOW - timedelta(seconds=1)
+    assert await host.inbound.handle_history_message(
+        binding, message, group_id=group.group_chat_id, dispatch_after=floor,
+    ) is InboundDisposition.HANDLED
+    assert not _group_requests(host)
+    archived, = host.manager.group_archive.current_messages('local', group.group_chat_id, ('history-message',))
+    assert archived.text == message['text']
+    assert archived.sender_kind == ('agent' if case == 'robot' else 'human')
+
+
+@pytest.mark.asyncio
+async def test_history_does_not_create_bot_membership_from_user_read_access(host):
+    group = host.manager.group_chats.resolve('local', 'dingtalk', 'conversation-test', now=NOW)
+    binding, = configured_dingtalk_bindings(host.config)
+    assert await host.inbound.handle_history_message(
+        binding, _history_message(), group_id=group.group_chat_id, dispatch_after=NOW - timedelta(seconds=1),
+    ) is InboundDisposition.REJECTED
+    assert host.manager.group_chats.active_accesses('local', 'agent-dingtalk') == ()
+    assert not _group_requests(host)
+
+
+@pytest.mark.asyncio
+async def test_history_redelivery_and_late_callback_share_one_request(host):
+    group = _known_history_group(host)
+    binding, = configured_dingtalk_bindings(host.config)
+    message = _history_message()
+    for _ in range(2):
+        assert await host.inbound.handle_history_message(
+            binding, message, group_id=group.group_chat_id, dispatch_after=NOW - timedelta(seconds=1),
+        ) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+    event = replace(_event(conversation_type='2', receiver_bot_mentioned=True),
+                    message_id='history-message', text=message['text'], received_at=NOW + timedelta(seconds=1))
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+    assert len(_group_requests(host)) == len(host.contexts) == len(host.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_mention_callback_overrides_earlier_history_presentation(host):
+    group = _known_history_group(host)
+    binding, = configured_dingtalk_bindings(host.config)
+    assert await host.inbound.handle_history_message(
+        binding, _history_message(text='@Robot test task'), group_id=group.group_chat_id,
+        dispatch_after=NOW - timedelta(seconds=1),
+    ) is InboundDisposition.HANDLED
+    assert not _group_requests(host)
+    callback = replace(_event(conversation_type='2', receiver_bot_mentioned=True),
+                       message_id='history-message', received_at=NOW + timedelta(seconds=1))
+    assert await host.inbound.handle(callback) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+    assert len(_group_requests(host)) == len(host.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_bot_callback_restores_left_membership_and_visibility(host):
+    group = _known_history_group(host)
+    host.manager.group_chats.update_membership(
+        'local', 'agent-dingtalk', group.group_chat_id, 'app-dingtalk',
+        status='left', observed_at=NOW - timedelta(seconds=1), source_ref='dingtalk:bot-list:verified',
+    )
+    callback = replace(_event(conversation_type='2', receiver_bot_mentioned=True), platform_created_at=NOW)
+    assert await host.inbound.handle(callback) is InboundDisposition.HANDLED
+    access = host.manager.group_chats.access_for('local', 'agent-dingtalk', group.group_chat_id)
+    assert access.status == 'active'
+    assert access.visible_from == NOW
+    await settle(lambda: _group_delivered(host))
+
+
+@pytest.mark.asyncio
+async def test_old_bot_callback_does_not_restore_newer_left_membership(host):
+    group = _known_history_group(host)
+    host.manager.group_chats.update_membership(
+        'local', 'agent-dingtalk', group.group_chat_id, 'app-dingtalk',
+        status='left', observed_at=NOW + timedelta(seconds=1), source_ref='dingtalk:bot-list:verified',
+    )
+    assert await host.inbound.handle(_event(conversation_type='2', receiver_bot_mentioned=True)) is InboundDisposition.HANDLED
+    assert not _group_requests(host)
+    assert host.manager.group_chats.access_for('local', 'agent-dingtalk', group.group_chat_id).status == 'left'
+
+
+@pytest.mark.asyncio
+async def test_normalized_delayed_callback_cannot_restore_bot_removed_after_message_creation(host):
+    group = _known_history_group(host)
+    host.manager.group_chats.update_membership(
+        'local', 'agent-dingtalk', group.group_chat_id, 'app-dingtalk',
+        status='left', observed_at=NOW + timedelta(seconds=1), source_ref='dingtalk:bot-list:verified',
+    )
+    callback = DingTalkInboundEvent.from_callback({
+        'msgId': 'delayed-message', 'conversationId': 'conversation-test', 'conversationType': '2',
+        'senderStaffId': 'staff-test', 'senderNick': 'Person', 'robotCode': 'robot-test',
+        'createAt': int(NOW.timestamp() * 1000), 'msgtype': 'text', 'text': {'content': 'delayed task'},
+    }, app_id='app-dingtalk', agent_id='agent-dingtalk')
+    callback = DingTalkInboundEvent.from_payload(json.loads(json.dumps(callback.to_payload())))
+    assert callback.platform_created_at == NOW
+    assert callback.received_at > NOW + timedelta(seconds=1)
+    assert await host.inbound.handle(callback) is InboundDisposition.HANDLED
+    assert not _group_requests(host)
+    assert host.manager.group_chats.access_for('local', 'agent-dingtalk', group.group_chat_id).status == 'left'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['wrong_group', 'unknown_sender', 'naive_floor', 'restricted_sender'])
+async def test_history_rejects_untrusted_group_or_sender_facts(host, case):
+    group = _known_history_group(host)
+    binding, = configured_dingtalk_bindings(host.config)
+    message = _history_message()
+    floor = NOW - timedelta(seconds=1)
+    if case == 'wrong_group':
+        message['openConversationId'] = 'different-group'
+    elif case == 'unknown_sender':
+        message['sendType'] = 'unknown'
+    elif case == 'naive_floor':
+        floor = NOW.replace(tzinfo=None)
+    else:
+        host.config['channels']['dingtalk']['apps'][0]['allow_from'] = ['staff-allowed']
+    result = await host.inbound.handle_history_message(
+        binding, message, group_id=group.group_chat_id, dispatch_after=floor,
+    )
+    assert result in {InboundDisposition.HANDLED, InboundDisposition.REJECTED}
+    assert not _group_requests(host)
 
 
 @pytest.mark.asyncio
@@ -507,21 +778,31 @@ async def test_only_dingtalk_binding_starts_the_existing_im_runtime(monkeypatch)
     from jiuwenswarm.common import config as config_module
     from jiuwenswarm.server import agent_ws_server as server_module
     from jiuwenswarm.server.jiuwenmate import feishu_group_fanout as fanout_module
+    from jiuwenswarm.server.jiuwenmate import dingtalk_group_polling
 
     monkeypatch.setattr(config_module, "get_config", lambda: {"channels": {"dingtalk": {
         "client_id": "app-dingtalk", "client_secret": "fake-secret", "persistent_agent_id": "agent-dingtalk",
     }}})
-    manager = SimpleNamespace(start=AsyncMock(), recover=AsyncMock(), aclose=AsyncMock())
-    fanout = SimpleNamespace()
+    stops = []
+    manager = SimpleNamespace(start=AsyncMock(), recover=AsyncMock(),
+                              aclose=AsyncMock(side_effect=lambda: stops.append('manager')))
+    poller = SimpleNamespace(start=AsyncMock(), aclose=AsyncMock(side_effect=lambda: stops.append('poller')))
+    poller_factory = MagicMock(return_value=poller)
+    monkeypatch.setattr(dingtalk_group_polling, 'DingTalkGroupPoller', poller_factory)
+    fanout = SimpleNamespace(dingtalk_inbound=object())
     factory = MagicMock(return_value=(fanout, manager))
     monkeypatch.setattr(fanout_module, "create_default_persistent_group_fanout", factory)
     server = object.__new__(server_module.AgentWebSocketServer)
     assert await server._ensure_persistent_group_fanout() is fanout
     assert await server._ensure_persistent_group_fanout() is fanout
     factory.assert_called_once()
+    poller_factory.assert_called_once_with(manager, fanout.dingtalk_inbound)
+    poller.start.assert_awaited_once()
     manager.recover.assert_awaited_once_with("local", channels=frozenset({"dingtalk"}), include_unrouted=False)
     await server._close_persistent_group_fanout()
     manager.aclose.assert_awaited_once()
+    poller.aclose.assert_awaited_once()
+    assert stops == ['poller', 'manager']
 
 
 @pytest.mark.asyncio

@@ -46,13 +46,58 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
   const [sending, setSending] = useState(false);
   const [pollRound, setPollRound] = useState(0);
   const scopeRef = useRef(scope);
-  const reloadSeq = useRef(0);
+  const historyRead = useRef<{
+    api: JiuwenMateChatApi;
+    scope: string;
+    connectionEpoch: number;
+    updatedRequestIds: Set<string>;
+    promise: Promise<void>;
+  } | null>(null);
   const unsent = useRef<{ scope: string; text: string; messageId: string } | null>(null);
   const listed = useRef(requests);
   const liveRequestIds = useRef(new Set<string>());
   const visibleRequests = loadedScope === scope ? requests : [];
   const visibleError = loadedScope === scope ? error : null;
   const loading = Boolean(agentId && conversationId && loadedScope !== scope);
+
+  const reload = useCallback((): Promise<void> => {
+    if (!agentId || !conversationId) return Promise.resolve();
+    const pending = historyRead.current;
+    if (pending?.api === api && pending.scope === scope && pending.connectionEpoch === connectionEpoch) {
+      return pending.promise;
+    }
+    const read = { api, scope, connectionEpoch, updatedRequestIds: new Set<string>(), promise: Promise.resolve() };
+    historyRead.current = read;
+    read.promise = Promise.resolve().then(async () => {
+      if (historyRead.current !== read) return;
+      try {
+        const history = await api.history(agentId, conversationId);
+        if (historyRead.current !== read || scopeRef.current !== scope) return;
+        setRequests((current) => {
+          let reconciled = history;
+          for (const request of current) {
+            if (!read.updatedRequestIds.has(request.requestId)) continue;
+            const snapshot = history.find((item) => item.requestId === request.requestId);
+            // A non-paused ending cannot be resumed by a pending status read.
+            if (snapshot?.status === 'ended' && snapshot.outcome !== 'paused'
+              && (request.status !== 'ended' || request.outcome === 'paused')) continue;
+            reconciled = mergeChatRequest(reconciled, request);
+          }
+          return reconciled;
+        });
+        setLoadedScope(scope);
+        setError(null);
+      } catch (reason) {
+        if (historyRead.current === read && scopeRef.current === scope) {
+          setError(errorMessage(reason));
+          setLoadedScope(scope);
+        }
+      } finally {
+        if (historyRead.current === read) historyRead.current = null;
+      }
+    });
+    return read.promise;
+  }, [api, agentId, conversationId, scope, connectionEpoch]);
 
   useEffect(() => {
     listed.current = visibleRequests;
@@ -66,25 +111,14 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
       setError(null);
     }
     if (!agentId || !conversationId) return;
-    let active = true;
-    api.history(agentId, conversationId).then(
-      (listed) => {
-        if (active) {
-          setRequests(listed);
-          setLoadedScope(scope);
-        }
-      },
-      (reason: unknown) => {
-        if (active) {
-          setError(errorMessage(reason));
-          setLoadedScope(scope);
-        }
-      },
-    );
+    void reload();
     return () => {
-      active = false;
+      const pending = historyRead.current;
+      if (pending?.api === api && pending.scope === scope && pending.connectionEpoch === connectionEpoch) {
+        historyRead.current = null;
+      }
     };
-  }, [api, agentId, conversationId, scope, connectionEpoch]);
+  }, [api, agentId, conversationId, scope, connectionEpoch, reload]);
 
   useEffect(() => {
     if (!agentId) return;
@@ -97,6 +131,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
         (request) => {
           fetching.delete(requestId);
           if (active && request.conversationId === conversationId) {
+            historyRead.current?.updatedRequestIds.add(request.requestId);
             setRequests((current) => mergeChatRequest(current, request));
           }
         },
@@ -108,6 +143,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     const unsubscribe = api.onStream((event) => {
       if (!active || event.agentId !== agentId) return;
       liveRequestIds.current.add(event.requestId);
+      historyRead.current?.updatedRequestIds.add(event.requestId);
       const known = listed.current.some((item) => item.requestId === event.requestId);
       setRequests((current) => applyStreamEvent(current, event) ?? current);
       if (!known || event.kind === 'ended') refresh(event.requestId);
@@ -136,6 +172,9 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     const timer = window.setTimeout(async () => {
       const results = await Promise.allSettled(pendingIds.split(' ').map((id) => api.getRequest(id)));
       if (!active) return;
+      for (const result of results) {
+        if (result.status === 'fulfilled') historyRead.current?.updatedRequestIds.add(result.value.requestId);
+      }
       setRequests((current) =>
         results.reduce(
           (list, result) => (result.status === 'fulfilled' ? mergeChatRequest(list, result.value) : list),
@@ -163,6 +202,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
         unsent.current = null;
         if (scopeRef.current === scope) {
           liveRequestIds.current.add(sent.request.requestId);
+          historyRead.current?.updatedRequestIds.add(sent.request.requestId);
           setRequests((current) => mergeChatRequest(current, sent.request));
         }
         return sent.conversation;
@@ -181,7 +221,10 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
       setError(null);
       try {
         const controlled = await api.abortRequest(requestId, reason);
-        if (scopeRef.current === scope) setRequests((current) => mergeChatRequest(current, controlled));
+        if (scopeRef.current === scope) {
+          historyRead.current?.updatedRequestIds.add(controlled.requestId);
+          setRequests((current) => mergeChatRequest(current, controlled));
+        }
       } catch (reason) {
         if (scopeRef.current === scope) setError(errorMessage(reason));
       }
@@ -194,28 +237,16 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
       setError(null);
       try {
         const updated = await api.decidePermission(approvalId, conversationId, decision, toolCallId);
-        if (scopeRef.current === scope) setRequests((current) => mergeChatRequest(current, updated));
+        if (scopeRef.current === scope) {
+          historyRead.current?.updatedRequestIds.add(updated.requestId);
+          setRequests((current) => mergeChatRequest(current, updated));
+        }
       } catch (reason) {
         if (scopeRef.current === scope) setError(errorMessage(reason));
       }
     },
     [api, conversationId, scope],
   );
-
-  const reload = useCallback(async () => {
-    if (!agentId || !conversationId) return;
-    const requested = scope;
-    const seq = ++reloadSeq.current;
-    try {
-      const listed = await api.history(agentId, conversationId);
-      if (scopeRef.current !== requested || seq !== reloadSeq.current) return;
-      setRequests(listed);
-      setLoadedScope(requested);
-      setError(null);
-    } catch (reason) {
-      if (scopeRef.current === requested && seq === reloadSeq.current) setError(errorMessage(reason));
-    }
-  }, [api, agentId, conversationId, scope]);
 
   return { liveRequestIds: liveRequestIds.current, requests: visibleRequests, error: visibleError, loading, sending, send, abort, decidePermission, reload };
 }

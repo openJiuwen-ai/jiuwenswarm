@@ -140,7 +140,7 @@ export function JiuwenMateApp({
         (method, params) => webRequest(
           method,
           params,
-          method.startsWith('jiuwenmate.agent_mail.') ? { timeoutMs: 130_000 } : undefined,
+          method.startsWith('jiuwenmate.agent_mail.') || method.startsWith('jiuwenmate.dingtalk_auth.') ? { timeoutMs: 130_000 } : undefined,
         ),
         (event, handler) => webClient.on(event, (frame) => handler(frame.payload)),
       ),
@@ -911,6 +911,11 @@ export function JiuwenMateApp({
             onPollAgentMailAuth={api.pollAgentMailAuth}
             onCancelAgentMailAuth={api.cancelAgentMailAuth}
             onDisconnectAgentMail={api.disconnectAgentMail}
+            onLoadDingTalkAuthStatus={api.dingtalkAuthStatus}
+            onBeginDingTalkAuth={api.beginDingTalkAuth}
+            onPollDingTalkAuth={api.pollDingTalkAuth}
+            onCancelDingTalkAuth={api.cancelDingTalkAuth}
+            onDisconnectDingTalkAuth={api.disconnectDingTalkAuth}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
             onConfigureIm={(connection, platform) => openAuthorization(selectedColleague.id, connection ?? null, platform)}

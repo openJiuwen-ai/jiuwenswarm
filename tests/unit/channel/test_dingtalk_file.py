@@ -71,11 +71,13 @@ def _make_file_message(file_paths: list[str]) -> Message:
 
 
 @pytest.mark.asyncio
-async def test_group_space_upload_runs_precheck_signed_put_and_commit(tmp_path):
+@pytest.mark.parametrize("custom_signed_upload", [False, True])
+async def test_group_space_upload_runs_precheck_signed_put_and_commit(tmp_path, custom_signed_upload):
     source = tmp_path / "slides.pptx"
     content = b"pptx bytes"
     source.write_bytes(content)
     http = AsyncMock(spec=httpx.AsyncClient)
+    http.put.return_value = httpx.Response(200)
     http.post.side_effect = [
         httpx.Response(200, json={"result": {"unionid": "union-test"}}),
         httpx.Response(200, json={"space": {"spaceId": "space-test"}}),
@@ -95,7 +97,7 @@ async def test_group_space_upload_runs_precheck_signed_put_and_commit(tmp_path):
         http_client=http,
         api_base="https://api.dingtalk.com",
         oapi_base="https://oapi.dingtalk.com",
-        signed_upload=signed_upload,
+        signed_upload=signed_upload if custom_signed_upload else None,
     )
 
     result = await service.upload_group_file(
@@ -113,11 +115,19 @@ async def test_group_space_upload_runs_precheck_signed_put_and_commit(tmp_path):
         "parentId": "0",
         "name": "slides.pptx",
     }
-    signed_upload.assert_awaited_once_with(
-        "https://oss.aliyuncs.com/signed-upload",
-        {"x-oss-signature": "signed"},
-        content,
-    )
+    if custom_signed_upload:
+        signed_upload.assert_awaited_once_with(
+            "https://oss.aliyuncs.com/signed-upload",
+            {"x-oss-signature": "signed"},
+            content,
+        )
+        http.put.assert_not_awaited()
+    else:
+        http.put.assert_awaited_once_with(
+            "https://oss.aliyuncs.com/signed-upload",
+            content=content,
+            headers={"x-oss-signature": "signed"},
+        )
 
 
 @pytest.mark.asyncio
