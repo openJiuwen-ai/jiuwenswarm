@@ -25,6 +25,7 @@ from gateway.common.paths import (  # noqa: F401
     get_root_dir,
     get_user_home,
     get_user_workspace_dir,
+    get_workspace_dir,
     set_user_home,
 )
 
