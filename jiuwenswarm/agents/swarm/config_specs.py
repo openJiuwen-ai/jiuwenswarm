@@ -41,13 +41,18 @@ from openjiuwen.harness.rails import SkillUseRail
 
 from jiuwenswarm.common.config import (
     ASCEND_AFFINITY_PROVIDER,
+    _get_ttse_config,
+    coerce_config_bool,
     get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_evolution_review_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
+    get_ttse_embedding_config,
+    get_ttse_enabled,
     resolve_string_or_list_config,
 )
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
     resolve_model_config,
@@ -533,10 +538,60 @@ def _code_base_rail_names(role: str) -> tuple[str, ...]:
     return names
 
 
+def _ttse_bank_path(role: str) -> str:
+    """Shared agent-workspace bank. Resolve while the request tenant CV is bound."""
+
+    folder = "leader" if role == "leader" else "member"
+    return str(get_agent_workspace_dir() / ".ttse" / folder / "bank.json")
+
+
+def _ttse_evolution_model_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Judge/induce model. ``react.ttse.model_name`` may pick a ``models.defaults`` entry."""
+
+    fallback = _evolution_model_config(config)
+    wanted = str(_get_ttse_config(config).get("model_name") or "").strip()
+    if not wanted:
+        return fallback
+    models = config.get("models") if isinstance(config, dict) else None
+    defaults = models.get("defaults") if isinstance(models, dict) else None
+    if isinstance(defaults, list):
+        for entry in defaults:
+            if not isinstance(entry, dict):
+                continue
+            client = entry.get("model_client_config") or {}
+            if str(client.get("model_name") or "").strip() != wanted:
+                continue
+            return {
+                "model_client_config": dict(client),
+                "model_config_obj": dict(entry.get("model_config_obj") or {}),
+                "model_name": wanted,
+            }
+    logger.warning(
+        "[swarm.ttse] model_name=%s is not in models.defaults; using the default evolution model",
+        wanted,
+    )
+    return fallback
+
+
+def _ttse_rail_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Bake TTSE harness settings so spawn/recover builders do not re-read config.yaml."""
+
+    block = _get_ttse_config(config)
+    return {
+        "evolution_model_config": _ttse_evolution_model_config(config),
+        "evolve_enabled": coerce_config_bool(block.get("evolve_enabled"), True),
+        "inject_enabled": coerce_config_bool(block.get("inject_enabled"), True),
+        "dream_enabled": coerce_config_bool(block.get("dream_enabled"), True),
+        "leader_bank_path": _ttse_bank_path("leader"),
+        "member_bank_path": _ttse_bank_path("member"),
+        "embedding_config": get_ttse_embedding_config(config),
+    }
+
+
 def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
-    """Return the role-specific skill-evolution rails (shared by both profiles)."""
+    """Return the role-specific evolution rails (shared by both profiles)."""
     if role == "leader":
-        return [
+        specs = [
             RailSpec(
                 type=registry.TEAM_SKILL_EVOLUTION,
                 params=_team_evolution_rail_params(config),
@@ -546,12 +601,20 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
                 params={"skill_create": get_skill_create_enabled(config)},
             ),
         ]
-    return [
+        if get_ttse_enabled(config):
+            specs.append(
+                RailSpec(type=registry.TEAM_TTSE, params=_ttse_rail_params(config))
+            )
+        return specs
+    specs = [
         RailSpec(
             type=registry.MEMBER_SKILL_EVOLUTION,
             params=_member_evolution_rail_params(config),
         ),
     ]
+    if get_ttse_enabled(config):
+        specs.append(RailSpec(type=registry.MEMBER_TTSE, params=_ttse_rail_params(config)))
+    return specs
 
 
 def _build_team_capability_specs(
