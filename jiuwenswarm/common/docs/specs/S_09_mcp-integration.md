@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
 | 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch}.py |
-| 最近一次修订日期 | 2026-10-29 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联 feature | F_01_deepresearch-mcp-delegation.md |
 
 ## 范围 / 边界
@@ -93,6 +93,14 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   工具的深拷贝，不发现工具、不启动 worker。返回值包含未脱敏连接凭据，仅供进程内授权
   检查，不得写日志、持久化或直接传给 SDK。研究专用端点调用原请求级工具，每次 list/call
   重验当前请求、来源身份、工具集合和权限；恢复仅保留首次来源与当前授权的交集。
+- **N11 请求级连接器加载结果对模型可见**：`list_request_mcp_server_tools` 以空
+  connect_params 表示发现失败，非空 params + 零工具表示合法零工具（如 tool_filter 全关）。
+  `interface_deep._append_request_mcp_server_tools` 按此区分并记录本请求未加载出工具的连接器
+  （名称 → 原因），在发布前写到本请求的宿主 MCP 工具实例上；宿主的两个连接器目录工具
+  （列出连接器 / 查询单个连接器的工具）结果末尾追加"本轮不可调用"说明
+  （`annotate_connector_catalog_result`）。状态只挂在本请求工具实例上，不跨请求、不影响其他连接器。
+  目录工具名与查询参数名以宿主 MCP 服务的工具定义为准；查询单个连接器时取不到查询名，
+  按列出连接器的语义全量标注，避免参数名变化后静默失效。
 
 ## 接口契约
 
@@ -100,6 +108,7 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 |---|---|---|
 | `mcp_config.py` | `create_mcp_tool` / `build_mcp_server_config` / `build_enabled_mcp_server_configs` / `acquire_request_scoped_mcp_session` / `RequestScopedOfficeClawMcpTool` / `list_request_mcp_server_tools` / `validate_office_claw_mcp_config` / `bind_active_office_claw_mcp_tools` / `ensure_request_scoped_mcp_tool_allowed` / `preflight_mcp_server_reachable` | N1–N4 |
 | `mcp_config.py` | `RequestScopedOfficeClawMcpTool.server_name` | 只读返回原 `_server_name`；供来源匹配使用，不改变 worker key、请求绑定或工具权限 |
+| `mcp_config.py` | `annotate_connector_catalog_result` / `set_unavailable_connectors`（请求级 MCP 工具实例） / `CONNECTOR_DISCOVERY_FAILED` / `CONNECTOR_NO_TOOLS` | N11；只改写两个目录工具的结果，无不可用连接器时原样返回 |
 | `mcp_server_registry.py` | `McpServerRegistry` / `GlobalMcpWorkerPool` / `get_mcp_server_registry` / `start_mcp_registry_runtime` / `snapshot_for_chat` / `acquire_worker` / `redact_mcp_config` / `extract_mcp_server_list` / `McpRegistrySettings` | N5 / N6 |
 | `mcp_server_registry.py` | `snapshot_for_deepresearch(name) -> tuple[dict, list, dict]` | N10；缺失抛 `UnknownMcpServerError`，停用抛 `DisabledMcpServerError` |
 | `mcp_call_timeout_patch.py` | `apply_mcp_call_timeout_patch` / `force_invalidate_mcp_client` / `is_retryable_mcp_dead_session_error` / `DEFAULT_CALL_TIMEOUT = 30.0` | N7 |
@@ -133,6 +142,7 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 | list 接口回显配置 | 凭据脱敏 | `redact_mcp_config` 测试 |
 | 研究期间来源停用、删除或变更 | 专用端点拒绝继续委派 | `test_deepresearch_mcp_review_regressions.py` |
 | 研究恢复时新增连接或更换来源 | 不扩张首次来源集合 | 同上及 `test_deepresearch_mcp_search.py` |
+| 请求级连接器发现失败 / 零工具，而宿主连接器目录仍显示已连接 | 目录工具结果追加本轮不可用说明（N11） | `test_failed_connector_discovery_is_reported_on_catalog_lookup` 等 |
 
 ## 修改检查单
 

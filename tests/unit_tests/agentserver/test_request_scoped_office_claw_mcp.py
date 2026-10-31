@@ -1856,3 +1856,159 @@ def test_custom_data_block_without_mime_type_is_summarized() -> None:
     summary = _mcp_non_text_summary(SimpleNamespace(data="C" * 10_000))
 
     assert summary == "[binary content: unknown, 10000 base64 chars]"
+
+
+def _catalog_tool_list() -> list[dict[str, object]]:
+    return [
+        {"name": "office_claw_list_connectors", "description": "list", "input_params": {"type": "object"}},
+        {"name": "office_claw_get_connector_tools", "description": "tools", "input_params": {"type": "object"}},
+    ]
+
+
+async def _invoke_catalog_tool(
+    registration: OfficeClawMcpRegistration, tool_name: str, arguments: dict[str, object], catalog_text: str,
+    *, is_error: bool = False,
+) -> str:
+    from mcp.types import CallToolResult, TextContent
+
+    tool = next(item for item in registration.tool_instances if item.card.name == tool_name)
+    result = CallToolResult(content=[TextContent(type="text", text=catalog_text)], isError=is_error)
+    session = SimpleNamespace(call_tool=AsyncMock(return_value=result))
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch("jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"),
+    ):
+        result = await tool._invoke_with_active_binding(arguments)
+    return result["result"]
+
+
+async def _register_with_connector_discovery(
+    monkeypatch: pytest.MonkeyPatch, discovery: dict[str, tuple[list[dict[str, object]], dict[str, object]]],
+) -> tuple[JiuWenSwarmDeepAdapter, OfficeClawMcpRegistration]:
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_catalog_tool_list()))
+
+    async def _fake_discovery(server_name, config):
+        return discovery[server_name]
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", AsyncMock(side_effect=_fake_discovery))
+    adapter = _bare_session_adapter()
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(_valid_config(), connectors={name: {"command": "npx"} for name in discovery})
+    )
+    return adapter, registration
+
+
+@pytest.mark.asyncio
+async def test_failed_connector_discovery_is_reported_on_catalog_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.common.mcp_config import CONNECTOR_DISCOVERY_FAILED
+
+    adapter, registration = await _register_with_connector_discovery(
+        monkeypatch,
+        {
+            "huaweicloud-devkit": ([], {}),
+            "filesystem": ([{"name": "list_dir", "description": "", "input_params": {}}], {"command": "node"}),
+        },
+    )
+    catalog_text = '{"connector":{"name":"huaweicloud-devkit","status":"connected","enabled":true},"tools":[]}'
+    try:
+        assert "list_dir" in registration.tool_names
+        text = await _invoke_catalog_tool(
+            registration, "office_claw_get_connector_tools", {"connectorName": "huaweicloud-devkit"}, catalog_text,
+        )
+        assert text.startswith(catalog_text)
+        assert f"- huaweicloud-devkit：{CONNECTOR_DISCOVERY_FAILED}" in text
+        assert "不要再重复调用" in text
+
+        other = await _invoke_catalog_tool(
+            registration, "office_claw_get_connector_tools", {"connectorName": "filesystem"}, catalog_text,
+        )
+        assert other == catalog_text
+
+        listed = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, catalog_text)
+        assert "huaweicloud-devkit" in listed.removeprefix(catalog_text)
+        assert "filesystem：" not in listed
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+@pytest.mark.asyncio
+async def test_host_error_text_is_kept_but_not_called_catalog_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter, registration = await _register_with_connector_discovery(monkeypatch, {"huaweicloud-devkit": ([], {})})
+    error_text = "Callback failed (409): Connector is not connected: huaweicloud-devkit"
+    try:
+        for arguments in ({"connectorName": "huaweicloud-devkit"}, {}):
+            text = await _invoke_catalog_tool(
+                registration, "office_claw_get_connector_tools", arguments, error_text, is_error=True,
+            )
+            assert text.startswith(error_text)
+            assert "- huaweicloud-devkit：" in text
+            assert "以上为连接器目录记录" not in text
+        ok = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, "{}")
+        assert "以上为连接器目录记录" in ok
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+@pytest.mark.asyncio
+async def test_connector_without_tools_is_reported_separately(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.common.mcp_config import CONNECTOR_NO_TOOLS
+
+    adapter, registration = await _register_with_connector_discovery(
+        monkeypatch, {"huaweicloud-devkit": ([], {"_mcp_client_type": "stdio"})},
+    )
+    try:
+        text = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, "{}")
+        assert f"- huaweicloud-devkit：{CONNECTOR_NO_TOOLS}" in text
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+@pytest.mark.asyncio
+async def test_healthy_connectors_leave_catalog_result_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter, registration = await _register_with_connector_discovery(
+        monkeypatch, {"filesystem": ([{"name": "list_dir", "description": "", "input_params": {}}], {"command": "node"})},
+    )
+    try:
+        text = await _invoke_catalog_tool(registration, "office_claw_list_connectors", {}, '{"total":1}')
+        assert text == '{"total":1}'
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+def test_annotation_only_applies_to_catalog_tools() -> None:
+    from jiuwenswarm.common.mcp_config import annotate_connector_catalog_result
+
+    unavailable = {"huaweicloud-devkit": "工具发现失败"}
+    assert annotate_connector_catalog_result("office_claw_post_message", {}, "ok", unavailable) == "ok"
+    annotated = annotate_connector_catalog_result(
+        "office_claw_get_connector_tools", {"connectorName": "HuaweiCloud-DevKit"}, None, unavailable,
+    )
+    assert annotated is not None and annotated.startswith("[本次请求的连接器实际加载结果]")
+
+
+def test_get_connector_tools_without_name_falls_back_to_full_annotation() -> None:
+    from jiuwenswarm.common.mcp_config import annotate_connector_catalog_result
+
+    unavailable = {"huaweicloud-devkit": "工具发现失败", "flaky-demo": "工具发现失败"}
+    for arguments in ({}, {"connectorName": "  "}, {"name": "huaweicloud-devkit"}):
+        text = annotate_connector_catalog_result("office_claw_get_connector_tools", arguments, "err", unavailable)
+        assert "- huaweicloud-devkit：" in text and "- flaky-demo：" in text
+    other = annotate_connector_catalog_result(
+        "office_claw_get_connector_tools", {"connectorName": "filesystem"}, "ok", unavailable,
+    )
+    assert other == "ok"
+
+
+def test_empty_catalog_text_has_no_dangling_preface() -> None:
+    from jiuwenswarm.common.mcp_config import annotate_connector_catalog_result
+
+    unavailable = {"huaweicloud-devkit": "工具发现失败"}
+    with_text = annotate_connector_catalog_result("office_claw_list_connectors", {}, "{}", unavailable)
+    assert "以上为连接器目录记录" in with_text
+    for empty in (None, ""):
+        note = annotate_connector_catalog_result("office_claw_list_connectors", {}, empty, unavailable)
+        assert "以上" not in note and "- huaweicloud-devkit：" in note
