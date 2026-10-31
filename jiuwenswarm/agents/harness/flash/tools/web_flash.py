@@ -13,6 +13,9 @@ from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
 from jiuwenswarm.agents.harness.common.tools.web_search.harness import (
     JiuwenHarnessWebSearchTool,
 )
+from jiuwenswarm.agents.harness.common.tools.web_search.constants import (
+    KNOWN_PAID_PROVIDERS,
+)
 
 
 def _description(language: str) -> str:
@@ -25,18 +28,33 @@ def _description(language: str) -> str:
     return (
         "Flash 模式联网工具。只填一个操作对象：search 返回 URL 和摘要；"
         "fetch 抓取一个或多个网页的正文。通常先搜索，再抓取相关结果页。"
+        "用户明确指定搜索引擎时，请在 search 中填写 search_source。"
     )
 
 
 def _input_params(language: str) -> dict[str, Any]:
     if language == "en":
-        search_desc = "Search the web. The system selects the available provider."
+        search_desc = (
+            "Search the web. Set search_source when the user explicitly requests "
+            "a specific search engine; otherwise omit it for automatic selection."
+        )
         query_desc = "Search query."
+        search_source_desc = (
+            "Optional explicit search engine, e.g. bocha, petal, tavily. "
+            "Omit when the user does not request a specific engine."
+        )
         fetch_desc = "Fetch full text from one or more webpage URLs."
         urls_desc = "One or more webpage URLs."
     else:
-        search_desc = "联网搜索；可用搜索服务由系统自动选择。"
+        search_desc = (
+            "联网搜索；用户明确指定搜索引擎时填写 search_source，"
+            "未指定时省略并由系统自动选择。"
+        )
         query_desc = "搜索查询。查询当前信息时应使用当前年份或日期。"
+        search_source_desc = (
+            "可选。用户明确指定的搜索引擎，如 bocha、petal、tavily；"
+            "未指定时省略，由系统自动选择。"
+        )
         fetch_desc = "抓取一个或多个网页的正文。"
         urls_desc = "一个或多个网页 URL。"
 
@@ -47,7 +65,16 @@ def _input_params(language: str) -> dict[str, Any]:
                 "type": "object",
                 "description": search_desc,
                 "properties": {
-                    "query": {"type": "string", "minLength": 1, "description": query_desc},
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": query_desc,
+                    },
+                    "search_source": {
+                        "type": "string",
+                        "enum": sorted(KNOWN_PAID_PROVIDERS),
+                        "description": search_source_desc,
+                    },
                     "max_results": {
                         "type": "integer",
                         "minimum": 1,
@@ -119,9 +146,7 @@ def build_web_flash_tool(
 
     async def _invoke(**kwargs: Any) -> Any:
         actions = [
-            name
-            for name in ("search", "fetch")
-            if isinstance(kwargs.get(name), dict)
+            name for name in ("search", "fetch") if isinstance(kwargs.get(name), dict)
         ]
         if len(actions) != 1:
             raise ValueError("fill exactly one web action object: search or fetch")
