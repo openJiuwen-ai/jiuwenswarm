@@ -498,6 +498,7 @@ function AppContent({
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
+  const setPersonalContextInfoTab = usePersonalContextStore((s) => s.setInfoTab);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
@@ -4069,7 +4070,10 @@ function AppContent({
       (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed) ||
       (nav === 'settings' && isSettingsNarrowViewport)
     ) ? nav : null;
-    handleNavigate(nav, peekTarget);
+    if (!handleNavigate(nav, peekTarget)) return;
+    // 「知识」面板常驻挂载，当前子页存在全局 store 的 infoTab 里：activeNav 未变化时再次点击
+    // 导航不会重挂载面板，必须显式复位到图谱页根视图，否则停在「上下文内容」子页时点击无响应。
+    if (nav === 'personalContext') setPersonalContextInfoTab('graph');
   };
 
   const pinSecondarySidebar = (target: SecondarySidebar) => {
