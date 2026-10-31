@@ -1108,6 +1108,8 @@ async def test_forward_loop_isolates_pre_dispatch_failure(
         assert error_out is not None
         assert error_out.id == "bad-session"
         assert "session create rejected" in error_out.payload["error"]
+        assert error_out.payload["is_complete"] is True
+        assert error_out.event_type.value == "chat.error"
         assert cancelled == ["next-task"]
         assert handler._forward_task is not None
         assert not handler._forward_task.done()

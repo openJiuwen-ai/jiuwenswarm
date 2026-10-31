@@ -4173,7 +4173,8 @@ class MessageHandler(ABC):
 
                         err_msg = self._build_error_out_message(msg, exc)
                         err_payload = dict(err_msg.payload or {})
-                        err_payload["event_type"] = "chat.error"
+                        err_payload["event_type"] = EventType.CHAT_ERROR.value
+                        err_payload["is_complete"] = True
                         err_msg.payload = err_payload
                         err_msg.event_type = EventType.CHAT_ERROR
                         await self.publish_robot_messages(err_msg)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import datetime
 import hashlib
 import logging
@@ -30,6 +31,8 @@ _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _HEARTBEAT_OK = "HEARTBEAT_OK"
 _HISTORY_FLUSH_ASYNC_TIMEOUT_SECONDS = 5.0
+_HISTORY_FLUSH_FUTURE: concurrent.futures.Future[None] | None = None
+_HISTORY_FLUSH_FUTURE_LOCK = threading.Lock()
 _HISTORY_CURSOR_VERSION = 1
 _HISTORY_CURSOR_READ_BLOCK_BYTES = 64 * 1024
 _HISTORY_CURSOR_MAX_TOKEN_CHARS = 6 * 1024 * 1024
@@ -1356,14 +1359,16 @@ async def flush_history_writes_async(
 ) -> bool:
     """在事件循环外等待历史落盘，并以有界等待避免错误恢复卡死服务。
 
-    ``Queue.join()`` 没有超时参数。错误恢复路径若在事件循环线程直接调用，
-    一旦 writer 卡住或队列计数异常，整个 AgentServer 都会停止响应。这里把
-    同步等待移入线程，并限制错误恢复愿意等待的时间；超时后跳过本轮 rewind，
-    不阻塞 ``chat.error`` 终态和其它会话。
+    ``Queue.join()`` 没有超时参数，``asyncio.to_thread`` 超时也不会终止线程。
+    错误恢复路径若反复创建阻塞线程，最终会耗尽共享默认执行器。这里使用单飞
+    的 daemon 线程执行 flush：writer 卡住时最多驻留一个 daemon，调用方只等待
+    一个有界 future；超时后跳过本轮 rewind，不阻塞 ``chat.error`` 终态、默认
+    线程池和其它会话。
     """
+    future = _start_or_get_history_flush()
     try:
         await asyncio.wait_for(
-            asyncio.to_thread(flush_history_writes),
+            asyncio.wrap_future(future),
             timeout=max(float(timeout), 0.0),
         )
         return True
@@ -1376,6 +1381,41 @@ async def flush_history_writes_async(
     except Exception as exc:  # noqa: BLE001
         logger.warning("history writer flush failed; skip synchronous rewind: %s", exc)
         return False
+
+
+def _start_or_get_history_flush() -> concurrent.futures.Future[None]:
+    """Start one daemon-backed history flush, or reuse the in-flight one."""
+    global _HISTORY_FLUSH_FUTURE
+
+    with _HISTORY_FLUSH_FUTURE_LOCK:
+        current = _HISTORY_FLUSH_FUTURE
+        if current is not None and not current.done():
+            return current
+
+        future: concurrent.futures.Future[None] = concurrent.futures.Future()
+        _HISTORY_FLUSH_FUTURE = future
+
+        def _run() -> None:
+            global _HISTORY_FLUSH_FUTURE
+            try:
+                flush_history_writes()
+            except BaseException as exc:  # noqa: BLE001
+                if not future.done():
+                    future.set_exception(exc)
+            else:
+                if not future.done():
+                    future.set_result(None)
+            finally:
+                with _HISTORY_FLUSH_FUTURE_LOCK:
+                    if _HISTORY_FLUSH_FUTURE is future:
+                        _HISTORY_FLUSH_FUTURE = None
+
+        threading.Thread(
+            target=_run,
+            name="history-flush-wait",
+            daemon=True,
+        ).start()
+        return future
 
 
 def append_compact_history_records(

@@ -217,7 +217,6 @@ from jiuwenswarm.agents.harness.common.channel_runtime_context import (
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import (
     append_history_record,
-    flush_history_writes,
     flush_history_writes_async,
     load_history_records,
 )
@@ -8199,7 +8198,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             if request.session_id:
                 if not target_request_id:
                     # active 已清除时确保原 tool_call 可见；不能在事件循环 join。
-                    await asyncio.to_thread(flush_history_writes)
+                    if not await flush_history_writes_async():
+                        return
                 records = await asyncio.to_thread(load_history_records, request.session_id)
         except Exception:
             logger.warning("failed to read cancelled tool history: session=%s",

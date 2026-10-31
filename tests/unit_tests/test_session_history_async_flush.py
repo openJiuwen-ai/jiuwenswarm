@@ -15,8 +15,10 @@ async def test_async_flush_times_out_without_blocking_event_loop(
     release = threading.Event()
     worker_entered = threading.Event()
     ticks: list[int] = []
+    thread_names: list[str] = []
 
     def blocked_flush() -> None:
+        thread_names.append(threading.current_thread().name)
         worker_entered.set()
         release.wait(2)
 
@@ -29,10 +31,17 @@ async def test_async_flush_times_out_without_blocking_event_loop(
 
     ticker_task = asyncio.create_task(ticker())
     try:
-        result = await session_history.flush_history_writes_async(timeout=0.05)
+        first, second = await asyncio.gather(
+            session_history.flush_history_writes_async(timeout=0.05),
+            session_history.flush_history_writes_async(timeout=0.05),
+        )
         assert await asyncio.to_thread(worker_entered.wait, 1)
-        assert result is False
+        assert first is False
+        assert second is False
         assert ticks
+        assert thread_names == ["history-flush-wait"]
+        # The shared default executor must remain available after flush timeouts.
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "available"), 1) == "available"
     finally:
         release.set()
         await ticker_task
