@@ -739,9 +739,9 @@ react:
     # context_debug_dir:
 
     # 压缩召回：压缩器替换原始消息时，把原文分块归档到会话目录 compression_recall/，
-    # 模型可通过 [[COMPRESSION_RECALL: id=...]] 标记按需召回原文。默认关闭。
+    # 模型可通过 [[COMPRESSION_RECALL: id=...]] 标记按需召回原文。默认开启。
     compression_recall_config:
-      enabled: false               # true 开启压缩召回（仅对对话/当前轮/轮次级三个压缩器生效）
+      enabled: true                # true 开启压缩召回（仅对对话/当前轮/轮次级三个压缩器生效）
       chunk_size_tokens: 3000      # 归档分块大小（tokens）
       chunk_overlap_tokens: 500    # 相邻分块重叠（tokens，须小于 chunk_size_tokens）
 
@@ -754,11 +754,11 @@ react:
       ttl_message_threshold_ratio: 0.05     # TTL 卸载时，单条工具消息超过窗口容量的该比例才被处理
 
     # 会话记忆：压缩发生前把已提交的关键信息沉淀为 session memory 笔记，
-    # 后续作为压缩上下文块注入。默认关闭。
+    # 后续作为压缩上下文块注入。默认开启。
     # 配置分两层：外层是压缩器本体（何时触发、笔记多大）；
     # 内层 memory 是异步更新器（SessionMemoryManager，由独立 agent/模型后台更新笔记）的行为参数。
     session_memory_compressor_config:
-      enabled: false               # true 开启会话记忆
+      enabled: true                # true 开启会话记忆
       trigger_context_ratio: 0.8   # 上下文占用达到该比例时使用更新的笔记替换上下文、建议sessionmemory的阈值要小于等于下面的compressor，开启是下面的compressor作为兜底设计
       memory:
         update_trigger_context_ratio: 0.1   # 上下文占用达到该比例时异步更新记忆
