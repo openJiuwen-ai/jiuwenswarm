@@ -313,12 +313,12 @@ def _drain():
     _METADATA_QUEUE.join()
 
 
-def _make_session(sid, *, project_dir="", project_id="", pinned=False, pin_order=0, last_user_message_at=None, model="", cron_id="", channel_id="web"):
+def _make_session(sid, *, project_dir="", project_id="", pinned=False, pin_order=0, last_user_message_at=None, model="", cron_id="", channel_id="web", work_mode=""):
     """创建一个会话并写入指定元数据,flush 队列确保落盘。"""
     from jiuwenswarm.server.runtime.session.session_metadata import (
         init_session_metadata, update_session_metadata,
     )
-    init_session_metadata(session_id=sid, project_dir=project_dir, project_id=project_id, model=model, cron_id=cron_id, channel_id=channel_id)
+    init_session_metadata(session_id=sid, project_dir=project_dir, project_id=project_id, model=model, cron_id=cron_id, channel_id=channel_id, work_mode=work_mode)
     if pinned or pin_order:
         update_session_metadata(session_id=sid, pinned=pinned, pin_order=pin_order)
     if last_user_message_at is not None:
@@ -590,6 +590,49 @@ class TestProjectGetCronSessions:
         assert [item["session_id"] for item in response["payload"]["sessions"]] == [
             "cron-new"
         ]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("session_project", "session_mode", "query_project"),
+        [
+            ("default_code", "code", "default"),
+            ("default", "work", "default_code"),
+        ],
+    )
+    async def test_default_project_query_spans_the_two_virtual_defaults(
+        registered_channel, sessions_dir, tmp_path, session_project, session_mode, query_project
+    ):
+        """A task without a project is queried under the work default while its
+        execution session carries the work_mode default.  Both virtual defaults
+        must resolve to the same cron job.  Explicit projects stay isolated."""
+        _make_session(
+            "cron-default-mismatch",
+            project_id=session_project,
+            work_mode=session_mode,
+            cron_id="job-default",
+            last_user_message_at=100.0,
+        )
+
+        response = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": query_project, "cron_id": "job-default"},
+        )
+
+        assert response["ok"] is True
+        assert [
+            item["session_id"] for item in response["payload"]["sessions"]
+        ] == ["cron-default-mismatch"]
+
+        other_project = _make_project("Other", _abspath(tmp_path, "other-default"))
+        isolated = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": other_project.project_id, "cron_id": "job-default"},
+        )
+        assert isolated["ok"] is True
+        assert isolated["payload"]["sessions"] == []
 
     @staticmethod
     @pytest.mark.asyncio
