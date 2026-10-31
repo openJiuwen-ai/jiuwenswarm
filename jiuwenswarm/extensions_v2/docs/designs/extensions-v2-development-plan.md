@@ -295,6 +295,14 @@
 - **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖未合入 PR04 的 messages/append，不新增 session.measure。
 - **代码与契约：** [F_21](../features/F_21_session-usage-ops.md)、[S_11](../specs/S_11_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
 
+### EXTV2-18 激活实例首次输入前初始化
+
+- **目标与范围：** session.start 按 Worker 内包激活实例最多一次通知尝试；原生 chat.send unary/stream 在实际模型/目录绑定后、Agent 输入前等待门，不按每轮或重连重复。
+- **必要前置：** 既有 Bus/Registry/Runtime 激活事实、共享 Ops、原生输入边界；配套 Core handler_ids 公共候选筛选，不依赖 PR04 !83 或 PR05 !90 的功能与提交。
+- **责任与契约：** [F_22](../features/F_22_session-start.md) / [S_12](../specs/S_12_session-start.md)；事件/CORE/Manager 门归 Server，Core 只负责通用筛选。
+- **验收：** 多包/新包/重载/卸载重装、并发首输入、失败/取消/重入、防伪、原始 Ops 上下文、原生输入前调用顺序、实际 ZIP 与真实 Worker/模型链路。
+- **范围：** 无新 Ops、Team/Harness 入口、额外 Agent 输入或前端；保留现有进度编号，新增 EXTV2-18 对应 Server PR06。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -405,6 +413,7 @@ flowchart LR
 | EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | [!81](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/81) | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05；2026-10-29 统一字段含义/填写示例与七段式文档，业务未改、历史验证未重跑 | 2026-10-29 |
 | EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16（追加）/ F_23（查询）/ S_06；2026-10-29 仅拆分特性文档，历史验收未重跑；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径；2026-10-30 合并目标分支冲突后，513 项定向回归及 1 项同 Handler 历史/统计 Ops 共存用例通过，1 项符号链接环境跳过，未重跑真实模型，见 F_16 第 6 节 | 2026-10-30 |
 | EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_21 第 6.2 节 / S_11；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
+| EXTV2-18 激活实例首次输入前初始化 | 完成 | 刘瑜 | [Server !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91) / [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) | 不依赖 PR04/05；Server 253 项、Core 568 项通过（1 项权限跳过）；补验真实 Worker 7 个模型回合、初始化/用量 USER Handler、只读 Ops 及清理全部通过，见 F_22 / S_12 | 2026-10-29 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 

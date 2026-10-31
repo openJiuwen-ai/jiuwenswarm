@@ -8,12 +8,14 @@
 读到"成功但无内容"。修复后合成 final 携带本轮已渲染（未被 output_suppressed）
 的 delta 拼接文本。
 """
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -220,6 +222,72 @@ async def test_native_summary_cache_field_presence_follows_reported_input(monkey
     assert ("cache_tokens" in summary) is (input_tokens > 0)
     if input_tokens > 0:
         assert summary["cache_tokens"] == 0
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_native_session_start_waits_for_binding_and_precedes_agent_input(monkeypatch, streaming):
+    from jiuwenswarm.extensions_v2 import assembly
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep
+    from jiuwenswarm.server.runtime.session.model_selection_store import SESSION_MODEL_INFO_KEY
+
+    adapter = _adapter_ready(monkeypatch)
+    adapter._project_dir = "D:/trusted-project"  # pylint: disable=protected-access
+    trace, observed = [], []
+    bound = {"cwd": "D:/before-binding"}
+    model = SimpleNamespace(model_config=SimpleNamespace(model_name="bound-model"),
+                            model_client_config={"client_provider": "OpenAI", "api_key": "not-public"})
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda request: model)
+    monkeypatch.setattr(adapter, "_mark_session_active",
+                        lambda session_id: setattr(model.model_config, "model_name", "later-change"))
+    monkeypatch.setattr(deep, "get_cwd", lambda: bound["cwd"])
+    monkeypatch.setattr(deep, "get_project_root", lambda: "D:/trusted-project")
+
+    async def bind(runtime_config):
+        bound["cwd"] = "D:/trusted-project/src"
+        trace.append("bound")
+
+    async def started(context, **kwargs):
+        observed.append((context, kwargs))
+        trace.append("start")
+        await asyncio.sleep(0)
+        trace.append("start-return")
+        return ()
+
+    async def send(inputs):
+        trace.append("agent-input")
+
+    monkeypatch.setattr(adapter, "_update_runtime_config", bind)
+    monkeypatch.setattr(assembly, "get_extension_manager", lambda: SimpleNamespace(ensure_session_started=started))
+    _install_stream(adapter, [SimpleNamespace(type="llm_output", payload={"content": "reply"})])
+    adapter._instance.send_input = AsyncMock(side_effect=send)  # pylint: disable=protected-access
+    request = _chat_request()
+    request.req_method = ReqMethod.CHAT_SEND
+    request.is_stream = streaming
+    if streaming:
+        async for _ in adapter.process_message_stream_impl(request, {"query": "hello"}):
+            pass
+    else:
+        result = await adapter.process_message_impl(request, {"query": "hello"})
+        assert result.ok
+    assert trace == ["bound", "start", "start-return", "agent-input"]
+    context, facts = observed[0]
+    assert context.cwd == "D:/trusted-project/src" and context.metadata["project_root"] == "D:/trusted-project"
+    assert context.metadata[SESSION_MODEL_INFO_KEY]["model_name"] == "bound-model"
+    assert "not-public" not in str(context.metadata)
+    assert facts == {"request_id": request.request_id, "channel_id": "web", "is_interactive": True}
+
+
+async def test_control_request_does_not_enter_native_start_gate(monkeypatch):
+    from jiuwenswarm.extensions_v2 import assembly
+
+    def unexpected():
+        pytest.fail("control requests must not initialize input extensions")
+
+    monkeypatch.setattr(assembly, "get_extension_manager", unexpected)
+    request = _chat_request()
+    request.req_method = ReqMethod.HISTORY_GET
+    adapter = _adapter_ready(monkeypatch)
+    await adapter._ensure_extension_session_started(request, {}, None)  # pylint: disable=protected-access
 
 
 
