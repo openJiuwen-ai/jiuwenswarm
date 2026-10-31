@@ -1,0 +1,15 @@
+name: security_rail_detection
+display_name: "安全护栏检测模块"
+enabled: true
+event_version: "1.0"
+subscribed_events:
+  - "permission_interrupt_tool"    # notify 模式 (默认), 后台异步检测, 不参与决策阻断
+analytic_type_id: 1
+
+plugins:
+  - type: data_modeling
+    name: BlankDataModeler
+    model_type: blank
+  - type: threat_analysis
+    name: SecurityRailAnalyzer
+    expected_model_type: blank
