@@ -463,6 +463,16 @@ def _build_request(
     }
 
 
+def _emit_usage(renderer: HumanRenderer) -> None:
+    """Print what the run cost, if the server reported it."""
+    summary = getattr(renderer, "usage_summary", None)
+    if summary is None:
+        return
+    line = summary()
+    if line:
+        logger.info("[usage] %s", line)
+
+
 async def _spinner_loop(renderer: HumanRenderer) -> None:
     while renderer.loading:
         renderer.tick_spinner()
@@ -743,6 +753,8 @@ async def _run_interactive_loop(
                 renderer.handle_tool_call(payload)
             elif kind == "tool_result":
                 renderer.handle_tool_result(payload)
+            elif kind == "usage":
+                renderer.handle_usage(payload)
             elif kind == "final":
                 # team.error is broadcast through the chat.final envelope
                 # (gateway default for unknown EventType). Route it to the
@@ -1130,10 +1142,15 @@ async def _run_chat(
                 show_reasoning=args.show_reasoning,
                 show_tools=args.show_tools,
             )
-            return await _run_interactive_loop(
-                client, renderer, request,
-                timeout=args.timeout,
-            )
+            try:
+                return await _run_interactive_loop(
+                    client, renderer, request,
+                    timeout=args.timeout,
+                )
+            finally:
+                # Report on every exit path, including interrupts and errors:
+                # a run that cost tokens and then failed still cost them.
+                _emit_usage(renderer)
     finally:
         await client.close()
 

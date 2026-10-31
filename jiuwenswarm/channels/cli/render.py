@@ -42,6 +42,7 @@ class HumanRenderer:
         self._show_tools = show_tools
         self._streamed_text = ""
         self._printed_final = False
+        self._usage: dict[str, Any] = {}
         self._loading = False
         self._spinner_idx = 0
         self._start_time = 0.0
@@ -149,8 +150,15 @@ class HumanRenderer:
         if not self._show_tools:
             return
         self._last_token_time = time.monotonic()
-        name = payload.get("tool_name") or payload.get("name", "?")
-        args = payload.get("arguments") or payload.get("input", {})
+        # chat.tool_call nests the name under "tool_call"; chat.tool_update and
+        # chat.tool_result put "tool_name" at the top level. Same event family,
+        # two shapes -- reading only the flat one renders every call as "?".
+        nested = payload.get("tool_call")
+        nested = nested if isinstance(nested, dict) else {}
+        name = (payload.get("tool_name") or payload.get("name")
+                or nested.get("tool_name") or nested.get("name") or "?")
+        args = (payload.get("arguments") or payload.get("input")
+                or nested.get("arguments") or nested.get("input") or {})
         arg_str = json.dumps(args, ensure_ascii=False, default=str)
         if len(arg_str) > 120:
             arg_str = arg_str[:117] + "..."
@@ -163,6 +171,45 @@ class HumanRenderer:
         name = payload.get("tool_name") or payload.get("name", "?")
         status = payload.get("status", "done")
         _logger.info("[tool] %s -> %s", name, status)
+
+    def handle_usage(self, payload: dict[str, Any]) -> None:
+        """Accumulate token accounting the server already reports.
+
+        chat.usage_metadata carries per-call input/output/total/cache counts;
+        context.usage carries the running context window occupancy. Both were
+        arriving and being dropped, so a command-line run could not say what it
+        cost.
+        """
+        meta = payload.get("metadata")
+        um = (meta or {}).get("usage_metadata") if isinstance(meta, dict) else None
+        if isinstance(um, dict):
+            for key in ("input_tokens", "output_tokens", "total_tokens", "cache_tokens"):
+                self._usage[key] = self._usage.get(key, 0) + int(um.get(key) or 0)
+            self._usage["calls"] = self._usage.get("calls", 0) + 1
+            cost = float(um.get("total_cost") or 0.0)
+            if cost:
+                self._usage["cost"] = self._usage.get("cost", 0.0) + cost
+        used = payload.get("tokens_used")
+        if isinstance(used, (int, float)):
+            self._usage["context_tokens"] = int(used)
+            self._usage["context_max"] = int(payload.get("context_max") or 0)
+
+    def usage_summary(self) -> str:
+        """One line of resource accounting, or empty when nothing was reported."""
+        u = self._usage
+        if not u.get("calls"):
+            return ""
+        parts = [f"{u['calls']} model call(s)",
+                 f"in {u.get('input_tokens', 0):,}",
+                 f"out {u.get('output_tokens', 0):,}",
+                 f"total {u.get('total_tokens', 0):,} tokens"]
+        if u.get("cache_tokens"):
+            parts.append(f"cached {u['cache_tokens']:,}")
+        if u.get("context_max"):
+            parts.append(f"context {u.get('context_tokens', 0):,}/{u['context_max']:,}")
+        if u.get("cost"):
+            parts.append(f"cost {u['cost']:.4f}")
+        return "  ·  ".join(parts)
 
     def handle_final(self, payload: dict[str, Any]) -> None:
         if self._printed_final:
