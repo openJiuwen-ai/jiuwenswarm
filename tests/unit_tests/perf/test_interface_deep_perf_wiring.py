@@ -45,18 +45,13 @@ def test_interface_deep_wires_request_summary_rail() -> None:
 
 
 def test_rail_builders_keep_staticmethod() -> None:
-    """Regression: inserting a builder must not steal @staticmethod from the next method."""
+    """留在类上的 builder 仍是 staticmethod；不读实例的 builder 是普通函数。"""
     tree = ast.parse(_DEEP.read_text(encoding="utf-8"))
-    wanted = {
-        "_build_request_summary_rail",
-        "_build_multimodal_image_rail",
-        "_build_task_execution_rail",
-    }
     found: dict[str, bool] = {}
 
     class _Visitor(ast.NodeVisitor):
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if node.name in wanted:
+            if node.name == "_build_request_summary_rail":
                 found[node.name] = any(
                     isinstance(d, ast.Name) and d.id == "staticmethod"
                     for d in node.decorator_list
@@ -64,7 +59,20 @@ def test_rail_builders_keep_staticmethod() -> None:
             self.generic_visit(node)
 
     _Visitor().visit(tree)
-    assert found == {name: True for name in wanted}
+    assert found == {"_build_request_summary_rail": True}
+
+    moved = {
+        "_build_multimodal_image_rail": _ROOT
+        / "jiuwenswarm/server/runtime/agent_adapter/deep/model_factory.py",
+        "_build_task_execution_rail": _ROOT
+        / "jiuwenswarm/server/runtime/agent_adapter/deep/rail_factory.py",
+    }
+    for name, path in moved.items():
+        moved_tree = ast.parse(path.read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.FunctionDef) and node.name == name
+            for node in moved_tree.body
+        )
 
 
 def test_interface_code_includes_request_summary_rail() -> None:

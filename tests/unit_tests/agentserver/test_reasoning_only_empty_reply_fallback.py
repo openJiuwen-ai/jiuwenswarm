@@ -11,6 +11,7 @@ from jiuwenswarm.common.chat_final import (
     reasoning_only_empty_reply_fallback_text,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _apply_reasoning_only_empty_reply_fallback
 
 
 def test_reasoning_only_empty_reply_fallback_text_zh_and_en() -> None:
@@ -63,7 +64,7 @@ def test_fill_reasoning_only_empty_final_content_gates() -> None:
 
 def test_deep_adapter_apply_preserves_dedicated_fallback() -> None:
     assert (
-        JiuWenSwarmDeepAdapter._apply_reasoning_only_empty_reply_fallback(
+        _apply_reasoning_only_empty_reply_fallback(
             has_streamed_content=False,
             had_reasoning_output=True,
             fallback_content="Plan approved.",
@@ -72,7 +73,7 @@ def test_deep_adapter_apply_preserves_dedicated_fallback() -> None:
         == "Plan approved."
     )
     assert (
-        JiuWenSwarmDeepAdapter._apply_reasoning_only_empty_reply_fallback(
+        _apply_reasoning_only_empty_reply_fallback(
             has_streamed_content=False,
             had_reasoning_output=True,
             fallback_content="",
@@ -81,7 +82,7 @@ def test_deep_adapter_apply_preserves_dedicated_fallback() -> None:
         == "FALLBACK"
     )
     assert (
-        JiuWenSwarmDeepAdapter._apply_reasoning_only_empty_reply_fallback(
+        _apply_reasoning_only_empty_reply_fallback(
             has_streamed_content=True,
             had_reasoning_output=True,
             fallback_content="",

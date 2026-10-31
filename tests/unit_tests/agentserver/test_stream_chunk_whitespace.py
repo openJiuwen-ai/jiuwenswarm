@@ -9,6 +9,10 @@ import pytest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import (
+    _parse_stream_chunk,
+    _stream_text_payload,
+)
 
 
 @pytest.mark.parametrize(
@@ -25,7 +29,7 @@ def test_parse_stream_chunk_preserves_whitespace(
     content: str,
     event_type: str,
 ) -> None:
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = _parse_stream_chunk(
         SimpleNamespace(type=chunk_type, payload={"content": content})
     )
 
@@ -33,8 +37,8 @@ def test_parse_stream_chunk_preserves_whitespace(
 
 
 def test_stream_text_payload_skips_only_absent_or_empty_content() -> None:
-    assert JiuWenSwarmDeepAdapter._stream_text_payload("chat.delta", None) is None
-    assert JiuWenSwarmDeepAdapter._stream_text_payload("chat.delta", "") is None
-    assert JiuWenSwarmDeepAdapter._stream_text_payload(
+    assert _stream_text_payload("chat.delta", None) is None
+    assert _stream_text_payload("chat.delta", "") is None
+    assert _stream_text_payload(
         "chat.delta", " hello"
     ) == {"event_type": "chat.delta", "content": " hello"}

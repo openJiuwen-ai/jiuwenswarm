@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -55,28 +56,31 @@ def _adapter_with_tier_models() -> JiuWenSwarmDeepAdapter:
         return built[mcc["model_name"]]
 
     adapter._build_model_from_entry = _build_from_entry  # type: ignore[method-assign]
-
-    name_counter: dict[str, int] = {}
-    for entry in (
-        {
-            "tier": "pro",
-            "is_default": True,
-            "model_client_config": {"model_name": "pro-model"},
-            "model_config_obj": {},
-        },
-        {
-            "tier": "lite",
-            "model_client_config": {"model_name": "lite-model"},
-            "model_config_obj": {},
-        },
-        {
-            "tier": "lite",  # first-wins: ignored
-            "model_client_config": {"model_name": "default-model"},
-            "model_config_obj": {},
-        },
-    ):
-        adapter._register_model_cache_entry(entry, name_counter)
-
+    previous_builder = interface_deep._build_model_from_entry
+    interface_deep._build_model_from_entry = _build_from_entry
+    try:
+        name_counter: dict[str, int] = {}
+        for entry in (
+            {
+                "tier": "pro",
+                "is_default": True,
+                "model_client_config": {"model_name": "pro-model"},
+                "model_config_obj": {},
+            },
+            {
+                "tier": "lite",
+                "model_client_config": {"model_name": "lite-model"},
+                "model_config_obj": {},
+            },
+            {
+                "tier": "lite",  # first-wins: ignored
+                "model_client_config": {"model_name": "default-model"},
+                "model_config_obj": {},
+            },
+        ):
+            adapter._register_model_cache_entry(entry, name_counter)
+    finally:
+        interface_deep._build_model_from_entry = previous_builder
     adapter._model = adapter._model_cache["pro-model"]
     return adapter
 

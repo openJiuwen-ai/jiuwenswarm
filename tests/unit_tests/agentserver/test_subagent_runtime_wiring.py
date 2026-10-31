@@ -19,6 +19,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _agent_ras_kwargs_from_config,
     _optional_enable_subagent_runtime,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _session_has_live_subagent_runtime
 
 
 def test_shipped_template_subagent_runtime_enabled_by_default() -> None:
@@ -75,13 +76,13 @@ def test_session_has_live_subagent_runtime_reads_capacity() -> None:
             }
         )
     )
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         live, "sess-1"
     ) is True
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         idle, "sess-1"
     ) is False
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         SimpleNamespace(_instance=None), "sess-1"
     ) is False
 
@@ -97,7 +98,7 @@ def test_session_has_live_subagent_runtime_fail_closed_when_capacity_raises() ->
             }
         )
     )
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         occupied, "sess-1"
     ) is True
 
@@ -106,10 +107,10 @@ def test_session_has_live_subagent_runtime_missing_controls_is_idle() -> None:
     """dest-stable SDK and never-spawned parents have no control map."""
     missing = SimpleNamespace(_instance=SimpleNamespace())
     invalid = SimpleNamespace(_instance=SimpleNamespace(_subagent_controls="bad"))
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         missing, "sess-1"
     ) is False
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         invalid, "sess-1"
     ) is False
 

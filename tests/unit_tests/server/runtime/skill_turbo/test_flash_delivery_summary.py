@@ -47,6 +47,10 @@ from openjiuwen.harness import create_deep_agent
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.flash.rails.flash_delivery_summary_rail import FlashDeliverySummaryRail
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep, interface_flash
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import (
+    _drain_final_content_to_deltas,
+    _parse_stream_chunk,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
 from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools as turbo_tools
 from jiuwenswarm.server.runtime.skill_turbo.rails.delivery_summary_rail import (
@@ -101,14 +105,22 @@ def assemble_flash(monkeypatch):
             if name.startswith("_build_") and name not in real_builders:
                 monkeypatch.setattr(adapter, name, Mock(return_value=None))
         monkeypatch.setattr(interface_deep, "_build_context_processor_rail", lambda **_: None)
-        monkeypatch.setattr(adapter, "_load_extra_rails_from_env", lambda: [])
+        monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._load_extra_rails_from_env", lambda: [])
         monkeypatch.setattr(adapter, "_bind_checkpointer_to_rails", lambda: None)
         monkeypatch.setattr(adapter, "_filesystem_rail_enabled_for_profile", lambda: False)
         monkeypatch.setattr(adapter, "_task_execution_rail_enabled", lambda: True)
+        task_builder = Mock(return_value=None)
+        skill_protocol_builder = Mock(return_value=None)
+        monkeypatch.setattr(interface_deep, "_build_task_execution_rail", task_builder)
+        monkeypatch.setattr(interface_deep, "_build_skill_protocol_prompt_rail", skill_protocol_builder)
+        monkeypatch.setattr(interface_deep, "_build_heartbeat_rail", lambda: None)
+        monkeypatch.setattr(interface_deep, "_build_avatar_rail", lambda: None)
+        monkeypatch.setattr(interface_deep, "_build_llm_retry_rail", lambda: None)
         rails = adapter._build_agent_rails(config["react"], config, mode="flash")
-        adapter._build_task_execution_rail.assert_not_called()
+        task_builder.assert_not_called()
         adapter._build_skill_turbo_prompt_rail.assert_called_once()
-        adapter._build_skill_protocol_prompt_rail.assert_not_called()
+        skill_protocol_builder.assert_not_called()
         return adapter, rails
 
     return assemble
@@ -379,11 +391,11 @@ async def test_flash_summary_finishes_real_sdk_loop_and_next_turn_still_works(
             assert [e.type for e in events] == ["tool_result", "llm_output", "answer"]
             assert events[1].payload["content"] == _SUMMARY
             # 用真实 adapter 转换结束帧，确认已有 delta 不会再成为一段正文。
-            final = adapter._parse_stream_chunk(
+            final = _parse_stream_chunk(
                 events[-1], _has_streamed_content=True, _streamed_text=_SUMMARY,
             )
             assert final == {"event_type": "chat.final", "content": ""}
-            assert adapter._drain_final_content_to_deltas(
+            assert _drain_final_content_to_deltas(
                 final, segment_streamed_text=_SUMMARY, chunk_payload=events[-1].payload,
             ) == []
         else:

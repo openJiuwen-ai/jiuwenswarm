@@ -177,6 +177,10 @@ async def _run_real_chain(extra: dict, summary_models: list[str] | None = None) 
                 },
             )
         if summary_models is not None:
+            from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+                _accumulate_usage,
+                _new_usage_accumulator,
+            )
             from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
             from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
             from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
@@ -185,8 +189,8 @@ async def _run_real_chain(extra: dict, summary_models: list[str] | None = None) 
                 adapter = adapter_type.__new__(adapter_type)
                 adapter._instance = agent
                 adapter._model_request_config = _build_model("deepseek-v4.1-flash").model_config
-                usage = adapter._new_usage_accumulator()
-                adapter._accumulate_usage(usage, {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12})
+                usage = _new_usage_accumulator()
+                _accumulate_usage(usage, {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12})
                 chunk = adapter._log_and_make_usage_summary_chunk(
                     request_id="r1", channel_id="officeclaw", session_id="boundary-session",
                     usage_accumulator=usage,

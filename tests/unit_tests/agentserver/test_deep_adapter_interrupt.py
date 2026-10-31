@@ -20,6 +20,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     SKILL_TURBO_RESUME_CTX_KEY,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _reset_runtime_cron_context
 
 
 def _build_cancel_request(session_id: str = "tui_sess_1") -> AgentRequest:
@@ -211,12 +212,11 @@ async def test_team_stream_binds_a2a_resource_context(
     monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", lambda _inputs: None)
     monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: None)
     monkeypatch.setattr(
-        adapter, "_prepare_multimodal_image_inputs", lambda _request, inputs: inputs
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._prepare_multimodal_image_inputs", lambda _request, inputs: inputs
     )
     monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)
     monkeypatch.setattr(
-        adapter,
-        "_prepare_react_image_tool_prompt",
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._prepare_react_image_tool_prompt",
         lambda _request, inputs, **_kwargs: inputs,
     )
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "zh")
@@ -619,7 +619,7 @@ async def test_interaction_cancel_appends_cancelled_tools_to_history(
 
     append_mock = MagicMock()
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.append_history_record",
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers.append_history_record",
         append_mock,
     )
 
@@ -734,7 +734,7 @@ def test_reset_runtime_cron_context_resets_shell_session(
     shell_token = set_shell_session_id("sess_reset")
     adapter = _make_adapter()
     try:
-        getattr(adapter, "_reset_runtime_cron_context")(
+        _reset_runtime_cron_context(
             interface_deep._RuntimeCronContextTokens(
                 channel=MagicMock(),
                 session=MagicMock(),
@@ -782,7 +782,7 @@ def test_bind_runtime_cron_context_fills_locked_session_project_metadata(
         assert metadata["project_dir"] == "D:\\locked-project"
         assert metadata["work_mode"] == "code"
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
 
 def test_runtime_cron_tool_context_falls_back_to_last_bound_session(
@@ -813,7 +813,7 @@ def test_runtime_cron_tool_context_falls_back_to_last_bound_session(
     try:
         context.remember_current_binding()
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
     assert context.session_id == "sess_runtime"
     assert context.mode == "agent"
@@ -848,7 +848,7 @@ def test_stream_consumer_cancellation_resets_only_deepresearch_route() -> None:
         assert _get_route()["session_id"] == ""
         assert interface_deep._CRON_TOOL_SESSION_ID.get() == "sess-cancel"
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
 
 def test_stream_normal_completion_resets_route_and_legacy_context_once(
@@ -867,8 +867,9 @@ def test_stream_normal_completion_resets_route_and_legacy_context_once(
         request_id="req-normal",
         mode="agent",
     )
-    reset_runtime = MagicMock(wraps=adapter._reset_runtime_cron_context)
-    monkeypatch.setattr(adapter, "_reset_runtime_cron_context", reset_runtime)
+    reset_runtime = MagicMock(wraps=_reset_runtime_cron_context)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._reset_runtime_cron_context", reset_runtime)
 
     adapter._reset_stream_runtime_context(
         tokens,
@@ -900,7 +901,7 @@ def test_runtime_route_binds_current_session_workspace(tmp_path: Path) -> None:
         # Generation and rewrite tools both consume this routed output root.
         assert dt._get_effective_request_output_dir() == session_workspace.resolve()
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
 
 def test_runtime_route_binds_and_resets_enterprise_a2a_identity() -> None:
@@ -924,7 +925,7 @@ def test_runtime_route_binds_and_resets_enterprise_a2a_identity() -> None:
         assert interface_deep.get_runtime_tool_resource_id() == "resource-1"
         assert interface_deep.get_runtime_tool_a2a_policy_id() == "policy-1"
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
     assert interface_deep.get_runtime_tool_resource_id() == ""
     assert interface_deep.get_runtime_tool_a2a_policy_id() == ""
@@ -991,7 +992,7 @@ def test_runtime_route_binds_adapter_artifact_output_dir(tmp_path: Path) -> None
             agent_workspace / "projects"
         ).resolve()
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
 
 def test_runtime_route_binds_request_workspace_as_artifact_output_dir(
@@ -1017,7 +1018,7 @@ def test_runtime_route_binds_request_workspace_as_artifact_output_dir(
     try:
         assert dt._get_effective_request_output_dir() == request_workspace.resolve()
     finally:
-        adapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
 
 def test_progressive_deepresearch_context_keeps_request_workspace(
@@ -1101,6 +1102,7 @@ def test_full_reset_continues_after_failure_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.server.runtime.agent_adapter.deep import pure_helpers
 
     reset_shell = MagicMock()
     monkeypatch.setattr(
@@ -1108,7 +1110,7 @@ def test_full_reset_continues_after_failure_and_is_idempotent(
         reset_shell,
     )
     route_reset = MagicMock(side_effect=RuntimeError("route reset failed"))
-    monkeypatch.setattr(interface_deep, "reset_deepresearch_route", route_reset)
+    monkeypatch.setattr(pure_helpers, "reset_deepresearch_route", route_reset)
     context_vars = {}
     for name in (
         "_CRON_TOOL_BOUND",
@@ -1130,14 +1132,14 @@ def test_full_reset_continues_after_failure_and_is_idempotent(
     )
 
     with pytest.raises(RuntimeError, match="route reset failed"):
-        JiuWenSwarmDeepAdapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
 
     reset_shell.assert_called_once()
     for context_var in context_vars.values():
         context_var.reset.assert_called_once()
 
     with pytest.raises(RuntimeError, match="route reset failed"):
-        JiuWenSwarmDeepAdapter._reset_runtime_cron_context(tokens)
+        _reset_runtime_cron_context(tokens)
     assert route_reset.call_count == 2
     reset_shell.assert_called_once()
     for context_var in context_vars.values():
@@ -1160,7 +1162,7 @@ def test_cross_context_reset_retains_tokens_for_retry_in_original_context() -> N
     )
 
     with pytest.raises(ValueError):
-        contextvars.Context().run(adapter._reset_runtime_cron_context, tokens)
+        contextvars.Context().run(_reset_runtime_cron_context, tokens)
 
     assert tokens.channel is not None
     assert tokens.session is not None
@@ -1170,8 +1172,8 @@ def test_cross_context_reset_retains_tokens_for_retry_in_original_context() -> N
     assert tokens.shell is not None
     assert tokens.deepresearch is not None and tokens.deepresearch.token is not None
 
-    adapter._reset_runtime_cron_context(tokens)
-    adapter._reset_runtime_cron_context(tokens)
+    _reset_runtime_cron_context(tokens)
+    _reset_runtime_cron_context(tokens)
     assert _get_route()["session_id"] == ""
     assert all(
         token is None
@@ -1320,10 +1322,11 @@ async def test_chat_failure_survives_permission_cleanup_error_and_reaches_route_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.server.runtime.agent_adapter.deep import pure_helpers
 
     adapter = _make_message_adapter(monkeypatch)
-    route_reset = MagicMock(wraps=interface_deep.reset_deepresearch_route)
-    monkeypatch.setattr(interface_deep, "reset_deepresearch_route", route_reset)
+    route_reset = MagicMock(wraps=pure_helpers.reset_deepresearch_route)
+    monkeypatch.setattr(pure_helpers, "reset_deepresearch_route", route_reset)
     monkeypatch.setattr(
         interface_deep,
         "setup_permission_context",
@@ -1354,12 +1357,14 @@ async def test_stream_consumer_cancellation_survives_permission_cleanup_error_an
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.server.runtime.agent_adapter.deep import pure_helpers
 
     adapter = _make_message_adapter(monkeypatch)
-    route_reset = MagicMock(wraps=interface_deep.reset_deepresearch_route)
-    full_reset = MagicMock(wraps=adapter._reset_runtime_cron_context)
-    monkeypatch.setattr(interface_deep, "reset_deepresearch_route", route_reset)
-    monkeypatch.setattr(adapter, "_reset_runtime_cron_context", full_reset)
+    route_reset = MagicMock(wraps=pure_helpers.reset_deepresearch_route)
+    full_reset = MagicMock(wraps=_reset_runtime_cron_context)
+    monkeypatch.setattr(pure_helpers, "reset_deepresearch_route", route_reset)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._reset_runtime_cron_context", full_reset)
     monkeypatch.setattr(
         interface_deep,
         "setup_permission_context",

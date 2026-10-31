@@ -8,6 +8,14 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.server.handlers import _default
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+    _is_interrupt_resume_dispatch,
+    _parse_goal_slash_intent,
+    _record_goal_completed_history_if_needed,
+    _record_goal_set_history_if_needed,
+    _structured_goal_op_from_request,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 # Goal capability tests exercise the checked-out OpenJiuwen implementation,
 # not whichever released package happens to be installed in the test venv.
@@ -241,14 +249,14 @@ async def test_slash_goal_parser_uses_set_argument_or_bare_objective() -> None:
 
 def test_runtime_events_are_adapted_without_leaking_runtime_objects() -> None:
     goal = GoalRecord.create(session_id="session-1", objective="ship the feature").to_dict()
-    updated = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    updated = _parse_stream_chunk(
         OutputSchema(
             type=InteractionEventType.GOAL_UPDATED.value,
             index=0,
             payload={"goal": goal},
         )
     )
-    failed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    failed = _parse_stream_chunk(
         OutputSchema(
             type=InteractionEventType.EXECUTION_ERROR.value,
             index=0,
@@ -268,7 +276,7 @@ def test_runtime_events_are_adapted_without_leaking_runtime_objects() -> None:
 def test_empty_answer_chunk_is_dropped_not_emitted_as_chat_final() -> None:
     """Empty answer is not a UI closer — discard for both Goal and normal chat."""
     assert (
-        JiuWenSwarmDeepAdapter._parse_stream_chunk(
+        _parse_stream_chunk(
             {
                 "type": "answer",
                 "payload": {"output": {"output": "", "chunked": False}},
@@ -277,7 +285,7 @@ def test_empty_answer_chunk_is_dropped_not_emitted_as_chat_final() -> None:
         is None
     )
     assert (
-        JiuWenSwarmDeepAdapter._parse_stream_chunk(
+        _parse_stream_chunk(
             {
                 "type": "answer",
                 "payload": {"output": {"output": "   ", "chunked": False}},
@@ -290,13 +298,13 @@ def test_empty_answer_chunk_is_dropped_not_emitted_as_chat_final() -> None:
 
 def test_runtime_goal_update_payload_is_always_nested_under_goal() -> None:
     goal = GoalRecord.create(session_id="session-1", objective="ship the feature").to_dict()
-    updated = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    updated = _parse_stream_chunk(
         {
             "type": InteractionEventType.GOAL_UPDATED.value,
             "payload": goal,
         }
     )
-    cleared = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    cleared = _parse_stream_chunk(
         {
             "type": InteractionEventType.GOAL_UPDATED.value,
             "payload": {"goal": None},
@@ -422,7 +430,7 @@ def test_active_goal_keeps_chat_final_when_no_goal_round_in_flight() -> None:
 
 def test_interrupt_resume_dispatch_injects_even_without_output_lease() -> None:
     """Permission answers must send_input when Goal already holds the lease."""
-    assert JiuWenSwarmDeepAdapter._is_interrupt_resume_dispatch(
+    assert _is_interrupt_resume_dispatch(
         {
             "source": "permission_interrupt",
             "request_id": "call_1",
@@ -500,7 +508,7 @@ def test_structured_command_goal_set_maps_to_pending_op() -> None:
             "overwrite_confirmed": True,
         },
     )
-    op = JiuWenSwarmDeepAdapter._structured_goal_op_from_request(req)
+    op = _structured_goal_op_from_request(req)
     assert op == {
         "action": "set",
         "objective": "ship it",
@@ -516,7 +524,7 @@ def test_chat_send_does_not_map_to_structured_goal_op() -> None:
         req_method=ReqMethod.CHAT_SEND,
         params={"query": "/goal set do not parse on web", "mode": "agent"},
     )
-    assert JiuWenSwarmDeepAdapter._structured_goal_op_from_request(req) is None
+    assert _structured_goal_op_from_request(req) is None
 
 
 def test_readonly_goal_get_skips_metadata_sync_flag() -> None:
@@ -555,7 +563,7 @@ def test_readonly_goal_get_skips_metadata_sync_flag() -> None:
 
 def test_web_channel_does_not_treat_goal_slash_as_intent() -> None:
     assert (
-        JiuWenSwarmDeepAdapter._parse_goal_slash_intent("/goal set write a report")
+        _parse_goal_slash_intent("/goal set write a report")
         == {"action": "set", "objective": "write a report"}
     )
     # Parsing exists, but stream path only applies it when channel_id == "tui".
@@ -567,7 +575,7 @@ def test_web_channel_does_not_treat_goal_slash_as_intent() -> None:
         req_method=ReqMethod.CHAT_SEND,
         params={"query": "/goal set write a report"},
     )
-    assert JiuWenSwarmDeepAdapter._structured_goal_op_from_request(req) is None
+    assert _structured_goal_op_from_request(req) is None
 
 
 def test_stream_end_synthesizes_final_after_goal_cleared() -> None:
@@ -619,7 +627,7 @@ def test_stream_end_skips_final_when_already_emitted() -> None:
 def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict] = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.append_history_record",
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers.append_history_record",
         lambda **kwargs: captured.append(kwargs),
     )
     req = AgentRequest(
@@ -629,7 +637,7 @@ def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.Monk
         req_method=ReqMethod.COMMAND_GOAL,
         params={"mode": "agent"},
     )
-    JiuWenSwarmDeepAdapter._record_goal_set_history_if_needed(
+    _record_goal_set_history_if_needed(
         req,
         action="set",
         result_type="goal_stream",
@@ -642,7 +650,7 @@ def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.Monk
     assert captured[0]["extra"]["goal_id"] == "g1"
 
     captured.clear()
-    JiuWenSwarmDeepAdapter._record_goal_set_history_if_needed(
+    _record_goal_set_history_if_needed(
         req,
         action="pause",
         result_type="ok",
@@ -653,16 +661,17 @@ def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.Monk
 
 def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict] = []
-    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_GOAL_COMPLETED_PERSISTED", set())
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.append_history_record",
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers._GOAL_COMPLETED_PERSISTED", set())
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers.append_history_record",
         lambda **kwargs: captured.append(kwargs),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.load_history_records",
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers.load_history_records",
         lambda _sid: [],
     )
-    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+    _record_goal_completed_history_if_needed(
         session_id="s1",
         channel_id="web",
         channel_metadata=None,
@@ -679,7 +688,7 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
     assert captured[0]["content"].startswith("goal.completed:")
 
     # 异步落盘未完成（磁盘仍为空）时同 goal 再次触发，由进程内守卫去重
-    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+    _record_goal_completed_history_if_needed(
         session_id="s1",
         channel_id="web",
         channel_metadata=None,
@@ -693,9 +702,10 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
     assert len(captured) == 1
 
     # 跨进程场景：守卫为空、完成卡已在磁盘，由磁盘检查去重
-    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_GOAL_COMPLETED_PERSISTED", set())
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.load_history_records",
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers._GOAL_COMPLETED_PERSISTED", set())
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers.load_history_records",
         lambda _sid: [
             {
                 "id": "goal-completed-g1",
@@ -705,7 +715,7 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
         ],
     )
     captured.clear()
-    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+    _record_goal_completed_history_if_needed(
         session_id="s1",
         channel_id="web",
         channel_metadata=None,
@@ -714,7 +724,7 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
     )
     assert captured == []
 
-    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+    _record_goal_completed_history_if_needed(
         session_id="s1",
         channel_id="web",
         channel_metadata=None,

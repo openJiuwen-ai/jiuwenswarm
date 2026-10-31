@@ -1941,8 +1941,10 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     monkeypatch.setattr(adapter, "_build_stream_event_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_task_planning_rail", lambda *a, **k: None)
     monkeypatch.setattr(adapter, "_build_security_rail", lambda: None)
-    monkeypatch.setattr(adapter, "_build_heartbeat_rail", lambda: None)
-    monkeypatch.setattr(adapter, "_build_avatar_rail", lambda: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._build_heartbeat_rail", lambda: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._build_avatar_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_subagent_rail", lambda **_kwargs: None)
     monkeypatch.setattr(adapter, "_build_skill_rail", lambda **_kwargs: None)
     monkeypatch.setattr(adapter, "_build_skill_retrieval_prompt_rail", lambda: None)
@@ -2375,9 +2377,8 @@ def test_deep_adapter_routes_team_simplify_answer_by_evolution_meta(monkeypatch)
     adapter.mark_as_session_scoped("team-session")
     adapter._skill_evolution_rail = FailingRegularRail()
     monkeypatch.setattr(
-        JiuWenSwarmDeepAdapter,
-        "find_team_skill_rail",
-        staticmethod(lambda request_id, channel_id=None: FakeTeamRail()),
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.find_team_skill_rail",
+        lambda request_id, channel_id=None: FakeTeamRail(),
     )
 
     request = AgentRequest(

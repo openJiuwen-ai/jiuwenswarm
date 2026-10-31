@@ -8,6 +8,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
     TodoCloseTextHold,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 def test_hold_drops_text_and_release_returns_it() -> None:
@@ -98,7 +99,7 @@ def test_release_sequence_forwards_text_once_and_answer_is_deduped() -> None:
         index=0,
         payload={"output": {"output": "留下的进度"}},
     )
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = _parse_stream_chunk(
         answer,
         _has_streamed_content=True,
         _streamed_text="留下的进度",
@@ -116,7 +117,7 @@ def test_foreign_llm_output_is_not_buffered() -> None:
 
 
 def test_parse_stream_chunk_drops_todo_close_control() -> None:
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = _parse_stream_chunk(
         OutputSchema(type="todo_close_drop", index=0, payload={"result_type": "control"}),
     )
     assert parsed is None

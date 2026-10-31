@@ -17,6 +17,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 )
 from jiuwenswarm.server.utils import stream_utils
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 def _ask_user_value(**overrides) -> dict:
@@ -244,7 +245,7 @@ def test_interface_deep_parse_stream_chunk_builds_task_interaction_card() -> Non
         {"type": "task_interaction", "data": [_ask_user_value()]}
     )
 
-    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    parsed = _parse_stream_chunk(chunk)
 
     assert parsed is not None
     assert parsed["event_type"] == "chat.ask_user_question"
@@ -258,4 +259,4 @@ def test_interface_deep_parse_stream_chunk_unparsable_task_interaction_drops() -
         {"type": "task_interaction", "data": [{"status": "pending"}]}
     )
 
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+    assert _parse_stream_chunk(chunk) is None

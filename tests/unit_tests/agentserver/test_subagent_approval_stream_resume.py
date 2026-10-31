@@ -7,25 +7,27 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _is_subagent_approval_answer
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _is_ask_user_payload
 
 
 def test_ask_user_payload_excludes_hosted_subagent_sources() -> None:
     """Hosted cards must not trip outer-loop HITL suppress / invocation_paused."""
-    assert JiuWenSwarmDeepAdapter._is_ask_user_payload(
+    assert _is_ask_user_payload(
         {
             "event_type": "chat.ask_user_question",
             "source": "permission_interrupt",
             "request_id": "call_1",
         }
     )
-    assert not JiuWenSwarmDeepAdapter._is_ask_user_payload(
+    assert not _is_ask_user_payload(
         {
             "event_type": "chat.ask_user_question",
             "source": "subagent_tool_permission",
             "request_id": "subagent_tool_permission_abc",
         }
     )
-    assert not JiuWenSwarmDeepAdapter._is_ask_user_payload(
+    assert not _is_ask_user_payload(
         {
             "event_type": "chat.ask_user_question",
             "source": "subagent_skill_load",
@@ -35,15 +37,15 @@ def test_ask_user_payload_excludes_hosted_subagent_sources() -> None:
 
 
 def test_subagent_approval_answer_detection() -> None:
-    assert JiuWenSwarmDeepAdapter._is_subagent_approval_answer(
+    assert _is_subagent_approval_answer(
         "subagent_tool_permission_abc",
         {"source": "subagent_tool_permission", "answers": ["本次允许"]},
     )
-    assert JiuWenSwarmDeepAdapter._is_subagent_approval_answer(
+    assert _is_subagent_approval_answer(
         "subagent_skill_load_abc",
         {"answers": ["本次允许"]},
     )
-    assert not JiuWenSwarmDeepAdapter._is_subagent_approval_answer(
+    assert not _is_subagent_approval_answer(
         "call_1",
         {"source": "permission_interrupt", "answers": ["本次允许"]},
     )
@@ -63,8 +65,7 @@ async def test_process_message_stream_resolves_subagent_approval_early(
         return True
 
     monkeypatch.setattr(
-        JiuWenSwarmDeepAdapter,
-        "_resolve_subagent_approval_answer",
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._resolve_subagent_approval_answer",
         staticmethod(_fake_resolve),
     )
 
@@ -117,8 +118,7 @@ async def test_process_message_impl_resolves_subagent_approval_early(
         return True
 
     monkeypatch.setattr(
-        JiuWenSwarmDeepAdapter,
-        "_resolve_subagent_approval_answer",
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._resolve_subagent_approval_answer",
         staticmethod(_fake_resolve),
     )
 
