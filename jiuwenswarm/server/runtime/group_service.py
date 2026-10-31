@@ -738,6 +738,10 @@ class GroupService:
         group_id = state["group_id"]
         backend = await self.backend_resolver(state)
         if backend is not None:
+            database = getattr(backend, "db", None)
+            initialize = getattr(database, "initialize", None)
+            if callable(initialize):
+                await initialize()
             token = set_session_id(state["session_id"])
             try:
                 messages = await sync_history(
