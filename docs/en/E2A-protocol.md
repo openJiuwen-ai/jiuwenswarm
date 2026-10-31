@@ -466,3 +466,25 @@ as cancellation rather than being classified as a `chat.error`.
 
 - v0.2.4b3: Merged `agent.fast` and `agent.plan` into unified `agent` mode; added `work_mode`. In Web mode, `agent.plan` + `work_mode` enables hard Plan mode.
 
+## Management Hub equipment catalog
+
+The enterprise management endpoint `GET /api/v1/package-allowlists/catalog` sends the
+sessionless E2A method `hub.equipment.catalog` to Server. Its Server HTTP endpoint is
+`GET /api/v1/hub/equipment/catalog`. Parameters are empty; neither a user nor a session
+is required. The request bypasses Runtime session allocation and Agent execution
+initialization. Server retains Hub lookup, pagination, caching and deduplication.
+Gateway retains management authentication and fixed hidden-package filtering and
+no longer imports the Server catalog implementation.
+
+The enterprise runtime client targets `GATEWAY_RUNTIME_DEFAULT_HTTP_BASE`, falling
+back to the existing `AGENT_SERVER_HOST` (default `127.0.0.1`) and `AGENT_HTTP_PORT`
+(default `8766`) settings. Separate-host deployments must configure a reachable
+Server HTTP address. Server's `TEAM_SKILLS_HUB_BASE_URL` selects the Hub. WebSocket
+clients use their existing connection.
+
+The management response remains `{code: 200, message: "success", data: {items: [...],
+error: ""}}`. An unavailable Server, transport failure or Hub lookup failure produces
+empty `items` and an error message, without a local Gateway fallback. Existing Server
+cold-cache and background-refresh semantics remain in place. Until the pinned protocol
+package provides this method, `schema/message.py` registers it using the existing
+compatibility mechanism; remove that registration after the protocol package ships it.

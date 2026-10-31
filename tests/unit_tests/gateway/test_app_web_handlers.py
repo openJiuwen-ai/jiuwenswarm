@@ -879,43 +879,111 @@ async def test_session_list_forwards_via_e2a_proxy(
 
 
 @pytest.mark.asyncio
-async def test_session_list_keeps_single_user_shared_directory_fallback(monkeypatch):  # noqa: C901
-    """A2g: legacy fallback deleted; kept as placeholder."""
-    pytest.skip("A2g deleted legacy local session.list fallback")
-
-async def _orig_test_session_list_keeps(monkeypatch) -> None:
-    """A2g：legacy 本地列表已删除——保留测试体但改为验证不存在 embedded 引用。"""
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("client_kind", ["legacy", "remote", "missing"])
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        ("session.list", {"limit": 5}),
+        ("session.rename", {"session_id": "current", "title": "New title"}),
+        ("session.pin", {"session_id": "current", "pinned": True}),
+    ],
+)
+async def test_session_management_unavailable_without_server(
+    monkeypatch, enterprise, client_kind, method, params,
+) -> None:
+    """Offline session operations must never access Gateway's local session data."""
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: enterprise)
+    clients = {
+        "legacy": WebSocketAgentServerClient(),
+        "remote": _OfflineRemoteAgentClient(),
+        "missing": None,
+    }
     channel = FakeWebChannel()
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, agent_client=WebSocketAgentServerClient())
-    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=clients[client_kind]))
+
+    def reject_local_access(*args, **kwargs):
+        raise AssertionError("must not access Gateway session data")
+
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda *, limit, offset: ([{"session_id": "legacy", "mode": "agent"}], 1),
-    )
-
-    await channel.methods["session.list"](object(), "req-offline", {"limit": 5}, "current")
-
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["sessions"][0]["session_id"] == "legacy"
-
-
-@pytest.mark.asyncio
-async def test_session_list_does_not_fallback_for_offline_remote_client(monkeypatch) -> None:
-    """Only the local shared-directory client may use Gateway's data directory."""
-    channel = FakeWebChannel()
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, agent_client=_OfflineRemoteAgentClient())
+        reject_local_access,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not read Gateway state")),
+        "jiuwenswarm.server.runtime.session.session_metadata.set_session_pinned",
+        reject_local_access,
     )
-
-    await channel.methods["session.list"](object(), "req-offline-remote", {}, "current")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_rename.apply_session_rename",
+        reject_local_access,
+    )
+    await channel.methods[method](object(), "req-offline", params, "current", "user-42")
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize(
+    "method, params, payload",
+    [
+        ("session.list", {"limit": 5, "offset": 2}, {"sessions": [], "total": 0}),
+        ("session.rename", {"session_id": "target", "title": "New title"}, {"title": "New title"}),
+        ("session.pin", {"session_id": "target", "pinned": True}, {"pinned": True, "pin_order": 1}),
+    ],
+)
+async def test_session_management_forwards_to_server(monkeypatch, enterprise, method, params, payload):
+    """Both editions preserve the E2A identity, request and Server response."""
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: enterprise)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+
+    await channel.methods[method](object(), "req-session", params, "current", "user-42")
+
+    send_request.assert_awaited_once()
+    envelope = send_request.call_args.args[0]
+    assert envelope.method == method
+    assert envelope.channel == "web"
+    assert envelope.user_id == "user-42"
+    assert envelope.params == params
+    assert envelope.session_id == "current"
+    assert envelope.is_stream is False
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["session.list", "session.rename", "session.pin"])
+@pytest.mark.parametrize("failure", ["server-error", "disconnect"])
+async def test_enterprise_session_management_preserves_e2a_failures(monkeypatch, method, failure):
+    """Server errors and disconnects must not trigger local session handling."""
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    send_request = AsyncMock(
+        return_value=SimpleNamespace(ok=False, payload={"error": "session not found", "code": "NOT_FOUND"}),
+    )
+    if failure == "disconnect":
+        send_request.side_effect = ConnectionError("disconnected")
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+
+    await channel.methods[method](
+        object(), "req-failure", {"session_id": "target", "title": "New title", "pinned": True},
+        "current", "user-42",
+    )
+
+    send_request.assert_awaited_once()
+    response = channel.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == ("NOT_FOUND" if failure == "server-error" else "SERVICE_UNAVAILABLE")
+    assert response["error"] == ("session not found" if failure == "server-error" else "disconnected")
 
 
 @pytest.mark.asyncio

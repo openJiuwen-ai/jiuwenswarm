@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext, bind_request_tenant
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,10 @@ Handler = Callable[[RequestContext], Awaitable[None]]
 @asynccontextmanager
 async def _request_tenant_scope(ctx: RequestContext):
     """HTTP 入口：有 Runtime 则绑 Manager+TenantContext；否则仅绑 TenantContext."""
+    # The cluster catalog has no user session or Agent execution to bind.
+    if ctx.request.req_method == ReqMethod.HUB_EQUIPMENT_CATALOG:
+        yield
+        return
     services = getattr(ctx, "services", None)
     execution_runtime = getattr(services, "execution_runtime", None) if services else None
     if callable(execution_runtime):

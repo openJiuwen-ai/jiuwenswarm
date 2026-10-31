@@ -2987,46 +2987,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         AgentServer 输出与迁移前 Web fallback 投影（to_session_info）完全一致。
         """
         from openjiuwen_protocol.message import ReqMethod
-        from gateway.enterprise import is_enterprise
-        from gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        real_client = _resolve(agent_client)
-        # 个人版对齐 develop A2g：统一走 E2A。企业版在 legacy 共享目录且
-        # AgentServer 未就绪时允许本地列表（server.runtime / 无 AS 场景）。
-        if (
-            is_enterprise()
-            and is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.server.control.responses import parse_int_param
-            from jiuwenswarm.server.runtime.session.session_info import to_session_info
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_all_sessions_metadata,
-            )
-
-            raw_params = params if isinstance(params, dict) else {}
-            limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
-            offset = parse_int_param(raw_params, "offset", 0, minimum=0, maximum=10**9)
-            sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={
-                    "sessions": [to_session_info(item) for item in sessions],
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                },
-            )
-            return
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
             channel=channel,
-            agent_client=real_client,
+            agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
             params=params,
@@ -3150,38 +3115,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
         from openjiuwen_protocol.message import ReqMethod
-        from gateway.enterprise import is_enterprise
-        from gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        real_client = _resolve(agent_client)
-        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 rename 回退。
-        if (
-            is_enterprise()
-            and is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.server.runtime.session.session_rename import (
-                apply_session_rename,
-            )
-
-            ok, payload, error, code = apply_session_rename(
-                params if isinstance(params, dict) else {},
-                session_id,
-                init_channel_id=channel.channel_id,
-            )
-            await channel.send_response(
-                ws, req_id, ok=ok, payload=payload or {},
-                error=None if ok else error or "session.rename failed",
-                code=None if ok else code,
-            )
-            return
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
             channel=channel,
-            agent_client=real_client,
+            agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
             params=params,
@@ -3198,43 +3136,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         SESSION_PIN，AgentServer 注入目录 session_metadata）。
         """
         from openjiuwen_protocol.message import ReqMethod
-        from gateway.enterprise import is_enterprise
-        from gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        real_client = _resolve(agent_client)
-        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 pin 回退。
-        if (
-            is_enterprise()
-            and is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            raw_params = params if isinstance(params, dict) else {}
-            sid = raw_params.get("session_id")
-            pinned = raw_params.get("pinned")
-            if not isinstance(sid, str) or not sid.strip():
-                await channel.send_response(ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST")
-                return
-            if not isinstance(pinned, bool):
-                await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
-                return
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                set_session_pinned,
-            )
-
-            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
-            if result is None:
-                await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
-                return
-            new_pinned, new_order = result
-            await channel.send_response(ws, req_id, ok=True, payload={"pinned": new_pinned, "pin_order": new_order})
-            return
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
             channel=channel,
-            agent_client=real_client,
+            agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
             params=params,
