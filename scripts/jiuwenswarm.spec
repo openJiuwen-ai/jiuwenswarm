@@ -8,7 +8,6 @@ r"""JiuwenSwarm PyInstaller 打包配置。
 3. 执行平台 wrapper: .\scripts\build-exe.ps1 或 bash scripts/build-macos.sh
 """
 
-import glob
 import hashlib
 import json
 import os
@@ -32,13 +31,9 @@ if not runtime_config_path.is_file() or runtime_config_path.read_text(encoding="
     raise SystemExit(
         "错误: Python 运行时构建配置未同步，请通过 build.sh、build-macos.sh 或 build-exe wrapper 构建"
     )
-symphony_root = os.path.join(project_root, "jiuwenswarm", "symphony")
-if symphony_root not in sys.path:
-    sys.path.insert(0, symphony_root)
 
 DATA_FILE_PATTERNS = ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.md"]
 EXTENSION_DATA_FILE_PATTERNS = ["**/*.py", *DATA_FILE_PATTERNS]
-DISPATCH_PACKAGE_ROOTS = ("indexing", "models", "orchestration", "retrieval", "shared")
 EXCLUDED_RESOURCE_DIRS = (
     os.path.join("agent", "workspace", "skills", "project-maintainer"),
 )
@@ -53,17 +48,6 @@ OPENJIUWEN_DATA_EXCLUDES = [
 ]
 
 
-def collect_tree_data_files(source_dir, target_dir, patterns):
-    data_files = []
-    for pattern in patterns:
-        full_pattern = os.path.join(source_dir, pattern)
-        for path in glob.glob(full_pattern, recursive=True):
-            if not os.path.isfile(path):
-                continue
-            rel_dir = os.path.dirname(os.path.relpath(path, source_dir))
-            dest_dir = os.path.normpath(os.path.join(target_dir, rel_dir))
-            data_files.append((path, dest_dir))
-    return data_files
 
 
 def collect_resources_data_files(source_dir, target_dir):
@@ -94,17 +78,6 @@ def collect_resources_data_files(source_dir, target_dir):
     return data_files
 
 
-def collect_tree_python_modules(source_dir, package_roots):
-    modules = []
-    for package_root in package_roots:
-        package_dir = os.path.join(source_dir, *package_root.split("."))
-        for path in glob.glob(os.path.join(package_dir, "**", "*.py"), recursive=True):
-            rel_path = os.path.relpath(path, source_dir)
-            module_name = os.path.splitext(rel_path)[0].replace(os.sep, ".")
-            if module_name.endswith(".__init__"):
-                module_name = module_name[: -len(".__init__")]
-            modules.append(module_name)
-    return sorted(set(modules))
 
 try:
     webview_datas = collect_data_files("webview")
@@ -228,11 +201,6 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
-datas += collect_data_files(
-    "jiuwenswarm.symphony",
-    include_py_files=False,
-    includes=DATA_FILE_PATTERNS,
-)
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
 datas += collect_data_files(
@@ -240,16 +208,10 @@ datas += collect_data_files(
     include_py_files=False,
     includes=["**/*.yaml", "**/*.yml", "**/*.json", "**/*.md", "**/*.mjs"],
 )
-for package_root in DISPATCH_PACKAGE_ROOTS:
-    datas += collect_tree_data_files(
-        os.path.join(symphony_root, package_root),
-        package_root,
-        DATA_FILE_PATTERNS,
-    )
 
 # openjiuwen 使用动态导入，需要收集全部子模块
 openjiuwen_submodules = collect_submodules("openjiuwen")
-symphony_submodules = collect_submodules("jiuwenswarm.symphony")
+symphony_submodules = collect_submodules("jiuwenswarm.runtime.symphony")
 # Gateway adapters are re-exported through package-level __getattr__ and
 # import_module(), so PyInstaller cannot discover them from the import graph.
 gateway_adapter_submodules = collect_submodules(
@@ -273,7 +235,6 @@ cli_channel_submodules = collect_submodules(
 team_kv_cache_hiddenimports = [
     "jiuwenswarm.agents.harness.team.kv_cache_team_delete_guard",
 ]
-dispatch_submodules = collect_tree_python_modules(symphony_root, DISPATCH_PACKAGE_ROOTS)
 http2_submodules = [
     *collect_submodules("h2"),
     *collect_submodules("hpack"),
@@ -323,7 +284,7 @@ hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_s
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -499,7 +460,7 @@ _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=[project_root],
     binaries=_bundled_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -515,7 +476,7 @@ a = Analysis(
 
 mcp_a = Analysis(
     [mcp_entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=[project_root],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,

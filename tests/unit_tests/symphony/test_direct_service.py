@@ -15,35 +15,36 @@ from openjiuwen.symphony import (
     CapabilityFingerprint,
     CapabilityIO,
     FingerprintArtifact,
+    GraphArtifactStore,
     OrchestrationPlan,
     ScanResult,
     SkillFolderScanner,
     SymphonyRuntime,
 )
 
-from jiuwenswarm.symphony.adapter import (
+from jiuwenswarm.runtime.symphony.adapter import (
     candidate_ids_from_skill_ids,
     graph_build_orchestration_config_from_swarm,
     llm_config_signature,
     orchestration_config_from_swarm,
 )
-from jiuwenswarm.symphony.build import (
+from jiuwenswarm.runtime.symphony.build import (
     _copy_fingerprint_artifact,
     _relation_cache_counts,
     build_graph,
     graph_status,
 )
-from jiuwenswarm.symphony.config import symphony_config_from_dict
-from jiuwenswarm.symphony.graph_state import load_graph_state
-from jiuwenswarm.symphony.llm import LLMConfig
-from jiuwenswarm.symphony.service import (
+from jiuwenswarm.common.symphony_config import symphony_config_from_dict
+from jiuwenswarm.runtime.symphony.graph_state import load_graph_state
+from jiuwenswarm.runtime.symphony.llm import LLMConfig
+from jiuwenswarm.runtime.symphony.service import (
     SwarmSymphonyService,
     _BuildProcessLogger,
     _OrderedProgressDispatcher,
     _build_progress,
     _graph_needs_build,
 )
-from jiuwenswarm.symphony.graph_storage import latest_incomplete_build, graph_exists
+from jiuwenswarm.runtime.symphony.graph_storage import latest_incomplete_build, graph_exists
 
 
 class _FakeGraphModel:
@@ -218,7 +219,7 @@ def _forbidden_symphony_import(
 def fake_graph_llm(monkeypatch):
     client = _FakeGraphModel()
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build.model_from_config",
+        "jiuwenswarm.runtime.symphony.build.model_from_config",
         lambda _config: client,
     )
     return client
@@ -230,7 +231,7 @@ def stub_model_connection_probe(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.probe_model_connection",
+        "jiuwenswarm.runtime.symphony.service.probe_model_connection",
         probe,
     )
 
@@ -322,9 +323,11 @@ def test_build_and_planning_configs_use_distinct_relation_thresholds(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("edge_weights", [{}, {"runtime_weight": 0.75}, {"runtime_weight": 0.0}])
 async def test_service_graph_adapts_public_artifact_for_skill_graph_panel(
     monkeypatch,
     tmp_path,
+    edge_weights,
 ):
     config = _config(tmp_path)
 
@@ -368,6 +371,7 @@ async def test_service_graph_adapts_public_artifact_for_skill_graph_panel(
                 "source": "capability:writer",
                 "target": "capability:reviewer",
                 "type": "can_feed",
+                **edge_weights,
             },
             {
                 "source": "capability:writer",
@@ -380,19 +384,13 @@ async def test_service_graph_adapts_public_artifact_for_skill_graph_panel(
 
     service = SwarmSymphonyService()
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(service, "_read_graph_artifact", lambda _graph_dir: artifact)
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_execution_disabled_skills",
+        "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills",
         lambda: {"disabled"},
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.evolution.service.load_dynamic_overlay",
-        lambda _graph_dir: {
-            "edges": {"writer->reviewer:can_feed": {"runtime_weight": 0.7}}
-        },
     )
 
     result = await service.graph()
@@ -412,6 +410,7 @@ async def test_service_graph_adapts_public_artifact_for_skill_graph_panel(
             "source": "skill:writer",
             "target": "skill:reviewer",
             "type": "can_feed",
+            **edge_weights,
         }
     ]
     skill_node_ids = {item["id"] for item in result["graph"]["nodes"]}
@@ -470,12 +469,12 @@ async def test_service_graph_disabled_skill_keeps_distinct_unicode_name(
     }
     service = SwarmSymphonyService()
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(service, "_read_graph_artifact", lambda _graph_dir: artifact)
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_execution_disabled_skills",
+        "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills",
         lambda: {"ppt"},
     )
 
@@ -518,14 +517,14 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
         graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
+        "jiuwenswarm.runtime.symphony.service.get_config",
         lambda: {"preferred_language": "zh"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_execution_disabled_skills",
+        "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills",
         lambda: {"disabled"},
     )
     progress = object()
@@ -574,10 +573,10 @@ async def test_service_plan_uses_request_selected_model_instead_of_default(
     service.graph_status = fresh_status
     service._runtime_for = runtime_for
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
+        "jiuwenswarm.runtime.symphony.service.get_config",
         lambda: {"preferred_language": "zh"},
     )
 
@@ -616,10 +615,10 @@ async def test_service_plan_uses_request_selected_model_for_stale_graph_refresh(
         graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
+        "jiuwenswarm.runtime.symphony.service.get_config",
         lambda: {"preferred_language": "zh"},
     )
 
@@ -663,14 +662,14 @@ async def test_service_rebuilds_stale_graph_before_planning(monkeypatch, tmp_pat
         graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
+        "jiuwenswarm.runtime.symphony.service.get_config",
         lambda: {"preferred_language": "en"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_execution_disabled_skills", set
+        "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", set
     )
     progress = object()
     result = await service.plan("write", progress=progress)
@@ -715,10 +714,10 @@ async def test_service_promotes_graph_preparing_before_planning(
         orchestration=SimpleNamespace(plan=unexpected_plan)
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
+        "jiuwenswarm.runtime.symphony.service.get_config",
         lambda: {"preferred_language": "zh"},
     )
 
@@ -756,10 +755,10 @@ async def test_service_rejects_non_dict_planned_graph(
         graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
+        "jiuwenswarm.runtime.symphony.service.get_config",
         lambda: {"preferred_language": "zh"},
     )
 
@@ -1034,7 +1033,7 @@ async def test_real_core_relation_cache_invalidates_for_complete_llm_identity(
         return client
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build.model_from_config",
+        "jiuwenswarm.runtime.symphony.build.model_from_config",
         create_counting_model,
     )
     skills_root = tmp_path / "skills"
@@ -1193,7 +1192,7 @@ async def test_swarm_refresh_publishes_state_when_file_changes_but_fingerprint_d
         return real_runtime(**kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build.SymphonyRuntime",
+        "jiuwenswarm.runtime.symphony.build.SymphonyRuntime",
         capture_status_runtime,
     )
     assert (
@@ -1275,7 +1274,7 @@ async def test_swarm_graph_identity_rebuilds_for_build_or_llm_config_change(
         model="model-v2" if change == "llm_config" else "model-v1"
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build.model_from_config",
+        "jiuwenswarm.runtime.symphony.build.model_from_config",
         lambda llm_config: _FakeGraphModel(llm_config.model),
     )
     captured_status_snapshots = []
@@ -1287,7 +1286,7 @@ async def test_swarm_graph_identity_rebuilds_for_build_or_llm_config_change(
         return real_runtime(**kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build.SymphonyRuntime",
+        "jiuwenswarm.runtime.symphony.build.SymphonyRuntime",
         capture_status_runtime,
     )
     first = await build_graph(
@@ -1406,7 +1405,7 @@ async def test_swarm_auxiliary_prepare_failure_preserves_current(
         raise failure
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build._copy_fingerprint_artifact",
+        "jiuwenswarm.runtime.symphony.build._copy_fingerprint_artifact",
         fail_staged_copy,
     )
     with pytest.raises(type(failure), match="prepare failed" if str(failure) else None):
@@ -1476,7 +1475,7 @@ async def test_swarm_graph_version_uses_run_snapshot_after_root_fingerprint_chan
         _copy_fingerprint_artifact(source_dir, target_dir)
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build._copy_fingerprint_artifact",
+        "jiuwenswarm.runtime.symphony.build._copy_fingerprint_artifact",
         overwrite_root_before_copy,
     )
     result = await build_graph(
@@ -1501,6 +1500,7 @@ async def test_swarm_graph_version_uses_run_snapshot_after_root_fingerprint_chan
 
 
 def test_incompatible_graph_pointer_forces_first_public_rebuild(tmp_path):
+    (tmp_path / "skills").mkdir()
     graph_dir = tmp_path / "graph"
     version_dir = graph_dir / "versions" / "old"
     version_dir.mkdir(parents=True)
@@ -1517,6 +1517,47 @@ def test_incompatible_graph_pointer_forces_first_public_rebuild(tmp_path):
     )
 
     assert graph_exists(graph_dir) is False
+    status = graph_status(tmp_path / "skills", graph_dir)
+    assert status.exists is False
+    assert status.stale is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["malformed", "missing", "unsupported"])
+async def test_damaged_graph_keeps_status_logs_and_cancel_available(
+    tmp_path, monkeypatch, damage,
+):
+    (tmp_path / "skills").mkdir()
+    graph_dir = tmp_path / "graph"
+    config = symphony_config_from_dict(
+        {"paths": {"skills_root": str(tmp_path / "skills"), "graph_dir": str(graph_dir)}}
+    )
+    published = GraphArtifactStore(graph_dir).publish(
+        {"schema_version": "1.0", "generated_at": "2026-10-26T00:00:00Z"},
+        version="test-version",
+    )
+    if damage == "missing":
+        published.graph_path.unlink()
+    elif damage == "unsupported":
+        published.graph_path.write_text('{"schema_version": "0.1"}', encoding="utf-8")
+    else:
+        published.graph_path.write_text("[]", encoding="utf-8")
+    usage = {"total": {"total_tokens": 12}}
+    (graph_dir / "llm_token_usage.json").write_text(json.dumps(usage), encoding="utf-8")
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
+    service = SwarmSymphonyService()
+
+    status = await service.graph_status()
+    graph = await service.graph()
+    cancelled = await service.cancel_build()
+
+    assert status["success"] is True
+    assert status["exists"] is False
+    assert status["stale"] is True
+    assert graph["success"] is False
+    assert cancelled["build_status"] == "idle"
+    for payload in (status, graph, cancelled):
+        assert payload["llm_token_usage"] == usage
 
 
 @pytest.mark.parametrize(
@@ -1558,15 +1599,15 @@ def test_runtime_cache_rebuilds_when_default_llm_changes(monkeypatch, tmp_path):
             created.append(kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: current["value"],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_from_config",
+        "jiuwenswarm.runtime.symphony.service.model_from_config",
         lambda value: ("model", value.model),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.SymphonyRuntime",
+        "jiuwenswarm.runtime.symphony.service.SymphonyRuntime",
         FakeRuntime,
     )
     service = SwarmSymphonyService()
@@ -1611,6 +1652,7 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
         "FingerprintArtifact",
         "FingerprintService",
         "FingerprintSettings",
+        "GraphArtifactStore",
         "OrchestrationConfig",
         "ScanResult",
         "SkillFolderScanner",
@@ -1789,15 +1831,15 @@ async def test_refresh_keeps_build_guard_until_slow_progress_is_drained(
         return SimpleNamespace(to_dict=lambda: {"success": True, "version": "v1"})
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         fake_build_graph,
     )
     service = SwarmSymphonyService()
@@ -1849,15 +1891,15 @@ async def test_start_refresh_graph_runs_in_background_and_reuses_active_task(
         return SimpleNamespace(to_dict=lambda: {"success": True, "version": "v1"})
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         fake_build_graph,
     )
     service = SwarmSymphonyService()
@@ -1920,23 +1962,23 @@ async def test_start_refresh_graph_status_is_running_before_background_task_ente
         return SimpleNamespace(to_dict=lambda: {"success": True, "version": "new"})
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.probe_model_connection",
+        "jiuwenswarm.runtime.symphony.service.probe_model_connection",
         blocking_probe,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         fake_build_graph,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         lambda *args, **kwargs: SimpleNamespace(to_dict=lambda: {"success": True}),
     )
     service = SwarmSymphonyService()
@@ -2089,7 +2131,7 @@ def test_build_progress_invalid_relation_totals_stay_at_stage_start():
 async def test_cancel_build_without_active_task_returns_idle(monkeypatch, tmp_path):
     config = _config(tmp_path)
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
 
@@ -2123,15 +2165,15 @@ async def test_direct_cancel_aborts_blocked_progress_and_releases_guard(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         fake_build_graph,
     )
     service = SwarmSymphonyService()
@@ -2169,15 +2211,15 @@ async def test_cancel_build_aborts_blocked_progress_and_releases_guard(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         fake_build_graph,
     )
     service = SwarmSymphonyService()
@@ -2292,11 +2334,11 @@ async def test_graph_status_repairs_interrupted_build_log(monkeypatch, tmp_path)
     _BuildProcessLogger(graph_dir / "build_log.jsonl").record("update.start")
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         lambda *args, **kwargs: SimpleNamespace(
             to_dict=lambda: {"success": True, "exists": False, "stale": True}
         ),
@@ -2318,7 +2360,7 @@ async def test_service_graph_status_does_not_bind_freshness_to_current_default_m
     captured = {}
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
 
@@ -2330,11 +2372,11 @@ async def test_service_graph_status_does_not_bind_freshness_to_current_default_m
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         fake_graph_status,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: (_ for _ in ()).throw(
             AssertionError("default model must not affect graph status")
         ),
@@ -2355,15 +2397,15 @@ async def test_refresh_build_failure_returns_business_payload(monkeypatch, tmp_p
         raise RuntimeError("LLM unavailable")
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         fail_build,
     )
 
@@ -2401,23 +2443,23 @@ async def test_model_preflight_failure_is_preserved_by_status_and_graph_get(
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: LLMConfig(model="failing-model"),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.probe_model_connection",
+        "jiuwenswarm.runtime.symphony.service.probe_model_connection",
         fail_probe,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         unexpected_build,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         lambda *args, **kwargs: SimpleNamespace(
             to_dict=lambda: {
                 "success": True,
@@ -2473,19 +2515,19 @@ async def test_background_model_preflight_failure_is_visible_without_running_pol
         raise model_error
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: LLMConfig(model="failing-model"),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.probe_model_connection",
+        "jiuwenswarm.runtime.symphony.service.probe_model_connection",
         fail_probe,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         lambda *args, **kwargs: SimpleNamespace(
             to_dict=lambda: {
                 "success": True,
@@ -2525,15 +2567,15 @@ async def test_graph_keeps_recent_build_failure_when_old_graph_is_readable(
         detail=detail,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_execution_disabled_skills",
+        "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills",
         lambda: set(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service._web_graph_payload",
+        "jiuwenswarm.runtime.symphony.service._web_graph_payload",
         lambda *args, **kwargs: {"success": True, "graph": {"nodes": [], "edges": []}},
     )
     service = SwarmSymphonyService()
@@ -2562,15 +2604,15 @@ async def test_refresh_preserves_downstream_failure_result(monkeypatch, tmp_path
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.service_build_graph",
+        "jiuwenswarm.runtime.symphony.service.service_build_graph",
         return_failed_build,
     )
 
@@ -2607,19 +2649,19 @@ async def test_refresh_propagates_framework_model_failure_from_core(
             )
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: LLMConfig(model="failing-model"),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build.model_from_config",
+        "jiuwenswarm.runtime.symphony.build.model_from_config",
         lambda _config: FrameworkFailingModel(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.adapter.model_from_config",
+        "jiuwenswarm.runtime.symphony.adapter.model_from_config",
         lambda _config: FrameworkFailingModel(),
     )
 

@@ -63,7 +63,7 @@ async def test_skill_graph_handlers_delegate_to_process_service(
 ):
     service = _FakeSymphonyService()
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         lambda: service,
     )
     manager = object.__new__(SkillManager)

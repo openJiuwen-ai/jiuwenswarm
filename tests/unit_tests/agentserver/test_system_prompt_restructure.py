@@ -52,7 +52,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
-from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
+from jiuwenswarm.runtime.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -319,7 +319,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=True),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -784,7 +784,7 @@ async def test_symphony_orchestration_rail_clears_when_unavailable(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=True),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -815,7 +815,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=False),
     )
     builder = SystemPromptBuilder(language="cn")

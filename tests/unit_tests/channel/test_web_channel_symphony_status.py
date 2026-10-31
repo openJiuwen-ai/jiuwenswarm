@@ -84,6 +84,7 @@ async def test_web_channel_stream_callback_preserves_delivery_state_and_legacy_p
     )
     handler = object.__new__(MessageHandler)
     handler._stream_app_ids = {}
+    handler._stream_metadata = {}
     handler._handle_evolution_chunk = AsyncMock(return_value=True)
     handler.publish_robot_messages = channel.send
     phase = {"event_type": "chat.output_phase", "output_phase_id": "phase-1", "applied_input_ids": ["steer-1"]}

@@ -15,7 +15,7 @@ from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
 )
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
+from jiuwenswarm.runtime.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
 def _assert_symphony_request_model_context(inputs: dict) -> None:

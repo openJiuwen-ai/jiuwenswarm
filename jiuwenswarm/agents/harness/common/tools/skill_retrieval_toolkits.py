@@ -608,7 +608,7 @@ class SkillRetrievalToolkit:
 
     def _start_background_index_build(self, artifact_root: Path) -> None:
         try:
-            from jiuwenswarm.symphony.skill_retrieval import SkillTaxonomyRuntime
+            from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
             self._auto_build_result = SkillTaxonomyRuntime(
                 records_provider=self.current_index_records,
