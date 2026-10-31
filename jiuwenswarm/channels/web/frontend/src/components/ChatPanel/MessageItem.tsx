@@ -53,6 +53,7 @@ import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
+import { MacroRoutingCard } from './MacroRoutingCard';
 import { FileIcon } from '../FileIcon';
 import { isEnterprise } from '../../edition';
 import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownload';
@@ -69,6 +70,7 @@ import {
 } from '../../features/sessionAssets/sessionAssets';
 import type { MediaItem } from '../../types/message';
 import { useSessionStore } from '../../stores/sessionStore';
+import { isEffectiveTeamMode } from '../../utils/agentMode';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
 import { writeClipboard } from '../../utils/writeClipboard';
@@ -91,8 +93,12 @@ const CHAT_FILE_CATEGORY_LABEL_KEY: Record<ChatFileCategory, string> = {
 
 function openArtifactPanelForActiveMode(selectedArtifactId: string): void {
   const sessionId = useChatStore.getState().activeSessionId;
-  const mode = useSessionStore.getState().runtimes[sessionId ?? '']?.mode ?? 'agent';
-  if (mode === 'team' || mode === 'auto_harness') {
+  const runtime = useSessionStore.getState().runtimes[sessionId ?? ''];
+  const mode = runtime?.mode ?? 'agent';
+  if (
+    mode === 'auto_harness' ||
+    isEffectiveTeamMode(mode, runtime?.lastMacroRoutedMode)
+  ) {
     openArtifactPanel(selectedArtifactId);
     return;
   }
@@ -605,7 +611,27 @@ export const MessageItem = memo(function MessageItem({
 
   // 系统消息
   if (role === 'system') {
-    // slash 命令输出按命令类型路由：compact 使用时间线分隔条，
+    if (content && content.startsWith('macro.routing:')) {
+      const [, jsonStr] = content.split('macro.routing:');
+      try {
+        const routing = JSON.parse(jsonStr) as {
+          mode?: string;
+          confidence?: number;
+          rationale?: string;
+          source?: string;
+          gate_confident?: boolean;
+        };
+        return (
+          <div className="flex justify-center animate-fade-in">
+            <MacroRoutingCard routing={routing} />
+          </div>
+        );
+      } catch {
+        // fall through to default system rendering
+      }
+    }
+
+    // slash 命令输出按命令类型路由：BTW 使用侧问卡片，compact 使用时间线分隔条，
     // 其余命令退回通用文本；isCommandOutput 标记不会影响其他 system 消息。
     if (isCommandOutput) {
       const newlineIdx = content.indexOf('\n');

@@ -1053,6 +1053,7 @@ class WebChannel(BaseWsChannel):
             or event_name in {"chat.input_received", "chat.output_phase"}
             or event_name.startswith("a4p.")
             or event_name.startswith("team.")
+            or event_name.startswith("macro.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")
             or event_name.startswith("org.")

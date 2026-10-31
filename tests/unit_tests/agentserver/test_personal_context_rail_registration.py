@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 from pathlib import Path
 
 import pytest
+from openjiuwen.harness.rails.personal_context import (
+    PersonalContextRail as CorePersonalContextRail,
+)
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
@@ -16,33 +18,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 )
 
 
-def _source(path: str) -> str:
-    return Path(path).read_text(encoding="utf-8")
-
-
 def test_deep_adapter_imports_core_personal_context_rail_only() -> None:
-    module = (
-        Path(__file__).parents[3]
-        / "jiuwenswarm"
-        / "server"
-        / "runtime"
-        / "agent_adapter"
-        / "interface_deep.py"
-    )
-    tree = ast.parse(_source(str(module)))
-    imports = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
-    imported_names = {
-        alias.name
-        for node in imports
-        for alias in (node.names if isinstance(node, ast.Import) else node.names)
-    }
-
-    assert "PersonalContextRail" in imported_names
-    assert "ProactiveContextRail" not in imported_names
+    assert interface_deep.PersonalContextRail is CorePersonalContextRail
+    assert not hasattr(interface_deep, "ProactiveContextRail")
 
 
 @pytest.mark.asyncio

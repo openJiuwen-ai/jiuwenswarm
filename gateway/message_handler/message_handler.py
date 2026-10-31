@@ -47,6 +47,7 @@ from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_PLAN,
     NEW_CANONICAL_MODES,
     NEW_TEAM_CODE_NORMAL,
+    canonicalize_mode_text,
     deprecate_mode,
     is_team_mode,
 )
@@ -96,7 +97,10 @@ _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
 # 先归一到 team.plan.normal / code.team，再 deprecate_mode 映到新 canonical），
 # 故白名单必须显式并入 MODE_ALIASES.keys()，否则会被前置校验判「非法指令」。
 _VALID_MODE_INPUTS: frozenset[str] = frozenset(
-    NEW_CANONICAL_MODES | set(DEPRECATION_MAP.keys()) | set(MODE_ALIASES.keys())
+    NEW_CANONICAL_MODES
+    | set(DEPRECATION_MAP.keys())
+    | set(MODE_ALIASES.keys())
+    | {"auto"}
 )
 # issue #4168: an unknown "team.*" mode is refused with the valid values
 # listed. The gateway would treat it as a plain chat while the AgentServer
@@ -209,6 +213,7 @@ def normalize_legacy_health_check_relay_payload(
 
 class ChannelMode(str, Enum):
     AGENT = "agent"
+    AUTO = "auto"
     # 历史值：plan / fast 已合并为 agent，保留以兼容旧持久化 channel state。
     AGENT_PLAN = "agent.plan"
     AGENT_FAST = "agent.fast"
@@ -244,7 +249,10 @@ def channel_mode_from_str(mode_str: str) -> ChannelMode:
     :attr:`ChannelMode.AGENT`。集中此逻辑避免 ``_get_channel_default_state``、
     ``handle_mode_switch``、``_external_session_aliases`` 等多处手抄。
     """
-    new_mode_str = deprecate_mode(mode_str)
+    canonical_mode = canonicalize_mode_text(mode_str)
+    if canonical_mode == "auto":
+        return ChannelMode.AUTO
+    new_mode_str = deprecate_mode(canonical_mode)
     if new_mode_str in NEW_CANONICAL_MODES:
         try:
             return ChannelMode(new_mode_str)

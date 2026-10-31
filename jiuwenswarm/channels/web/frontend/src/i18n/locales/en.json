@@ -1809,6 +1809,7 @@
     "modePlan": "Planning Mode",
     "modeAgent": "Performance Mode",
     "modeAgentTeam": "Cluster Mode",
+    "modeAuto": "Auto",
     "videoGeneration": "Video generation",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
@@ -4244,6 +4245,13 @@
     "paused": "Paused",
     "waitingTasks": "Waiting Tasks",
     "messageQueue": "Message Queue",
+    "macroRouting": {
+      "title": "Routed mode",
+      "selected": "Selected: {{mode}}",
+      "source": "{{value}}",
+      "confidence": "{{value}}% confidence"
+    },
+    "parallelProgress": "Parallel tasks running ({{completedCount}}/{{total}} complete)",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
     "turnStarting": "Starting…",

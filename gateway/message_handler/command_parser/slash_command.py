@@ -42,6 +42,7 @@ class ModeSubcommand(str, Enum):
     AGENT = "agent"
     CODE = "code"
     TEAM = "team"
+    AUTO = "auto"
     AGENT_PLAN = "agent.plan"
     AGENT_FAST = "agent.fast"
     CODE_PLAN = "code.plan"
@@ -385,7 +386,7 @@ FIRST_BATCH_REGISTRY: tuple[SlashCommandEntry, ...] = (
     ),
     SlashCommandEntry(
         id="mode",
-        canonical_text=f"{GatewaySlashCommand.MODE.value} agent|code|team|agent.plan|agent.fast|code.plan|"
+        canonical_text=f"{GatewaySlashCommand.MODE.value} agent|auto|code|team|agent.plan|agent.fast|code.plan|"
                        f"code.normal|code.team|team.plan|team.plan.normal|team.plan.code",
         scope="gateway",
         req_method=None,
