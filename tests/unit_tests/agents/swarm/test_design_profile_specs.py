@@ -31,15 +31,15 @@ def test_design_profile_declares_web_lookup_and_keeps_session_rails():
     )
     rail_types = {spec.type for spec in rails}
     # Web lookup is in (leader-only tuple; mirror #8874 split it out of the
-    # worker set); the chat-only rails (avatar / heartbeat /
-    # personal-context) are out.
+    # worker set); the chat-only rails (avatar / heartbeat) are out.
+    # Personal context is shared across all host profiles.
     assert config_specs.registry.WEB_SEARCH in config_specs._DESIGN_LEADER_TOOL_NAMES
     assert config_specs.registry.WEB_FETCH in config_specs._DESIGN_LEADER_TOOL_NAMES
     assert config_specs.registry.WEB_PAID_SEARCH in config_specs._DESIGN_LEADER_TOOL_NAMES
     assert config_specs.registry.WEB_SEARCH not in config_specs._DESIGN_TOOL_NAMES
     assert config_specs.registry.AVATAR_PROMPT not in rail_types
     assert config_specs.registry.HEARTBEAT not in rail_types
-    assert config_specs.registry.PERSONAL_CONTEXT not in rail_types
+    assert config_specs.registry.PERSONAL_CONTEXT in rail_types
     # Workers keep the full sys_operation surface (file read/write for node work).
     assert config_specs.registry.SYS_OPERATION in rail_types
 

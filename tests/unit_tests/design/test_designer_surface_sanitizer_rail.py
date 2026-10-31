@@ -29,9 +29,9 @@ class _FakeAgent:
 
 def test_sanitizer_keeps_web_tools_and_drops_team_tools() -> None:
     ability_manager = _FakeAbilityManager(
-        ["free_search", "fetch_webpage", "paid_search", "designer_graph_get", "send_message", "workspace_meta"]
+        ["free_search", "fetch_webpage", "paid_search", "pcs_search", "designer_graph_get", "send_message", "workspace_meta"]
     )
 
     DesignerSurfaceSanitizerRail().init(_FakeAgent(ability_manager))
 
-    assert ability_manager.names() == {"free_search", "fetch_webpage", "paid_search", "designer_graph_get"}
+    assert ability_manager.names() == {"free_search", "fetch_webpage", "paid_search", "pcs_search", "designer_graph_get"}
