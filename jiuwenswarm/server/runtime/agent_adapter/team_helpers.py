@@ -5276,6 +5276,10 @@ def _wf_spawned_member_event(
         "status": status,
         "workflow_run_id": run_id,
     }
+    # Worker task prompt (set at agent_started) — surfaced on the swarm-map lane
+    # so a running worker shows its task. Truncated to keep the event small.
+    if agent.get("prompt"):
+        event["prompt"] = str(agent["prompt"])[:80]
     # Expert nodes keep the same shape as plain workers (name = script label) and
     # carry the expert identity alongside, so the roster can show it as a hint
     # without losing the label — the one thing that tells two calls of one expert apart.
@@ -5441,6 +5445,9 @@ def _workflow_updated_to_team_events(
                                 "old_status": old_status,
                                 "new_status": agent_status,
                                 "workflow_run_id": run_id,
+                                # Agent result (set at agent_completed) — shown on the
+                                # swarm-map lane once the worker finishes.
+                                "outcome": str(agent.get("outcome") or "")[:80],
                             },
                         )
                     )
@@ -5488,6 +5495,24 @@ def _workflow_updated_to_team_events(
                             out.append(_activity_result_frame(base, row, tool_call_id, preview))
                         continue
                     seen_rows.add(row_key)
+                    # Also surface the new entry as a dedicated team.member event
+                    # (consumed by the IDE channel and other team.member clients);
+                    # the chat.tool_* mirror above only feeds the web call list.
+                    activity_text = str(row_content or preview or "").strip()
+                    if activity_text:
+                        out.append(
+                            _team_event_envelope(
+                                "team.member",
+                                session_id,
+                                {
+                                    "type": "team.member.activity_changed",
+                                    "team_id": team_id,
+                                    "member_id": member_id,
+                                    "name": agent.get("name") or agent_id,
+                                    "activity": activity_text[:120],
+                                },
+                            )
+                        )
                     if row_type == "tool_call":
                         frame: dict[str, Any] = {
                             **base,

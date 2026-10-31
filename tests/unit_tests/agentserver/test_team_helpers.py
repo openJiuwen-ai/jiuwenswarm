@@ -7794,6 +7794,55 @@ def test_workflow_updated_to_team_events_ignores_non_workflow_events():
     assert out == []
 
 
+def test_workflow_updated_to_team_events_emits_activity_and_enrichments():
+    """Worker prompt/outcome enrich spawn/status; each new activity emits one activity_changed."""
+    phase = {
+        "id": "impl-1",
+        "name": "impl",
+        "status": "running",
+        "agents": [
+            {
+                "id": "agent-1",
+                "name": "worker-1",
+                "status": "running",
+                "prompt": "Fix the login bug in auth.py",
+                "activity": [
+                    {
+                        "type": "tool_call",
+                        "tool_call_id": "call-1",
+                        "tool_name": "read_file",
+                        "content": "read_file auth.py",
+                        "tool_result_preview": "def login(): ...",
+                    }
+                ],
+            }
+        ],
+    }
+    dedup = team_helpers._WorkflowMirrorDedup({}, {}, set())
+
+    def inner(events, etype):
+        return [e for e in events if e.get("event", {}).get("type") == etype]
+
+    out = team_helpers._workflow_updated_to_team_events(_wf_event([phase]), "sess-wf", dedup)
+    spawns = inner(out, "team.member.spawned")
+    assert spawns and spawns[0]["event"]["prompt"] == "Fix the login bug in auth.py"
+
+    acts = inner(out, "team.member.activity_changed")
+    assert len(acts) == 1
+    assert acts[0]["event"]["member_id"] == "run-1:agent-1"
+    assert acts[0]["event"]["activity"] == "read_file auth.py"
+
+    # A replayed delta must not re-emit the activity event (row dedup).
+    out2 = team_helpers._workflow_updated_to_team_events(_wf_event([phase]), "sess-wf", dedup)
+    assert inner(out2, "team.member.activity_changed") == []
+
+    # Terminal status carries the worker outcome.
+    done = dict(phase, agents=[{**phase["agents"][0], "status": "completed", "outcome": "Login fixed"}])
+    out3 = team_helpers._workflow_updated_to_team_events(_wf_event([done]), "sess-wf", dedup)
+    statuses = inner(out3, "team.member.status_changed")
+    assert statuses and statuses[0]["event"]["outcome"] == "Login fixed"
+
+
 def test_workflow_updated_to_team_events_planned_phase_creates_task():
     seen_phase, seen_agent, spawned = {}, {}, set()
     out = team_helpers._workflow_updated_to_team_events(
