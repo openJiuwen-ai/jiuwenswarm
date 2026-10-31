@@ -16,6 +16,7 @@ import time
 import uuid as uuid_module
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 # Importing ``readline`` transparently upgrades the builtin ``input()`` with
 # line editing: left/right cursor movement, history, and correct multi-byte
@@ -326,6 +327,24 @@ def _build_default_gateway_url(path: str = "/tui") -> str:
     port = os.getenv("GATEWAY_PORT", "19001")
     host = os.getenv("GATEWAY_HOST", "127.0.0.1")
     return f"ws://{host}:{port}{path}"
+
+
+def _validate_gateway_url(url: str) -> None:
+    """Reject endpoints the WebSocket client cannot use, before connecting.
+
+    ``websockets`` only reports a malformed ``GATEWAY_HOST``/``GATEWAY_PORT``
+    or an ``http://`` ``--gateway-url`` as ``InvalidURI``/``ValueError`` from
+    deep inside ``connect()``; without this check those escape as tracebacks.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("ws", "wss"):
+        raise ValueError(f"scheme must be ws or wss: {url!r}")
+    if not parsed.hostname:
+        raise ValueError(f"host is missing: {url!r}")
+    try:
+        parsed.port  # noqa: B018 - accessing the property validates the port
+    except ValueError as exc:
+        raise ValueError(f"port is invalid in {url!r}: {exc}") from None
 
 
 def _generate_session_id() -> str:
@@ -1089,6 +1108,11 @@ async def _run_chat(
     supports_user_interaction: bool = False,
 ) -> int:
     gateway_url = args.gateway_url or _build_default_gateway_url()
+    try:
+        _validate_gateway_url(gateway_url)
+    except ValueError as exc:
+        logger.error("invalid Gateway WebSocket URL %s", exc)
+        return 2
 
     client = GatewayClient(gateway_url)
 

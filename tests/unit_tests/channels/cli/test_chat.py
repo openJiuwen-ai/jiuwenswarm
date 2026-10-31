@@ -25,8 +25,10 @@ from jiuwenswarm.channels.cli.chat import (
     _load_state,
     _normalize_dir,
     _remove_dir_from_config,
+    _run_chat,
     _save_state,
     _validate_args,
+    _validate_gateway_url,
     build_parser,
     resolve_mode,
 )
@@ -98,6 +100,37 @@ class TestGatewayUrl:
     def test_custom_path():
         url = _build_default_gateway_url(path="/tui")
         assert url.endswith("/tui")
+
+    @staticmethod
+    def test_validate_gateway_url_accepts_ws_and_wss():
+        _validate_gateway_url("ws://127.0.0.1:19001/tui")
+        _validate_gateway_url("wss://gateway.example.com/tui")
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "nope",
+            "127.0.0.1:19001/tui",
+            "http://127.0.0.1:19001/tui",
+            "https://gateway.example.com/tui",
+            "ws://:19001/tui",
+            "ws://127.0.0.1:abc/tui",
+            "ws://127.0.0.1:99999/tui",
+        ],
+    )
+    def test_validate_gateway_url_rejects_malformed_endpoints(url):
+        with pytest.raises(ValueError):
+            _validate_gateway_url(url)
+
+    @staticmethod
+    def test_run_chat_returns_2_for_invalid_gateway_url(monkeypatch):
+        monkeypatch.delenv("GATEWAY_PORT", raising=False)
+        monkeypatch.delenv("GATEWAY_HOST", raising=False)
+        args = build_parser().parse_args(
+            ["hi", "--gateway-url", "http://127.0.0.1:19001/tui"]
+        )
+        assert asyncio.run(_run_chat(args, "hi")) == 2
 
 
 class TestSessionId:
