@@ -165,6 +165,77 @@ def test_skills_list_exposes_installation_origin_from_installed_plugins(
     assert listed["source_type"] == "user"
 
 
+def test_enterprise_list_get_fallback_version_id_when_ledger_version_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版无 .archive 且账本 version 为空时，list/get 的 version 回退 version_id。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.is_enterprise",
+        lambda: True,
+    )
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _write_skill(workspace, "id-only-skill")
+    manager.record_skill_installation(
+        name="id-only-skill",
+        source_type="user",
+        origin="customer-skillhub:asset-only-id",
+        source="customer-skillhub",
+        source_id="customer-skillhub",
+        skill_id="asset-only-id",
+        version_id="v-only",
+        version="",
+    )
+
+    listed = next(
+        skill
+        for skill in asyncio.run(manager.handle_skills_list({}))["skills"]
+        if skill.get("name") == "id-only-skill"
+    )
+    assert listed.get("version") == "v-only"
+    assert listed.get("version_id") == "v-only"
+
+    detail = asyncio.run(manager.handle_skills_get({"name": "id-only-skill"}))
+    assert detail.get("version") == "v-only"
+    assert detail.get("version_id") == "v-only"
+
+
+def test_personal_list_get_does_not_fallback_ledger_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """单机版无 .archive 时不把账本 version/version_id 写入接口 version。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.is_enterprise",
+        lambda: False,
+    )
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _write_skill(workspace, "personal-skill")
+    manager.record_skill_installation(
+        name="personal-skill",
+        source_type="user",
+        origin="customer-skillhub:personal",
+        source="customer-skillhub",
+        source_id="customer-skillhub",
+        skill_id="personal",
+        version_id="v-personal",
+        version="9.9.9",
+    )
+
+    listed = next(
+        skill
+        for skill in asyncio.run(manager.handle_skills_list({}))["skills"]
+        if skill.get("name") == "personal-skill"
+    )
+    assert listed.get("version") in (None, "")
+    assert listed.get("version_id") == "v-personal"
+
+    detail = asyncio.run(manager.handle_skills_get({"name": "personal-skill"}))
+    assert detail.get("version") in (None, "")
+
+
 def test_apply_skill_source_configs_empty_array_clears_registry(tmp_path: Path) -> None:
     """显式 skill_sources: [] 应清空已配置源；字段缺失则不碰现有 registry。"""
     workspace = tmp_path / "tenant"

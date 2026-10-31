@@ -1205,6 +1205,13 @@ class SkillManager:
                 response_version = get_current_version(skill_dir)
             except SkillArchiveError as exc:
                 raise SkillRpcError(exc.code, exc.message) from exc
+            # 企业版：无本地产品版本档案时，回落到安装账本 version / version_id。
+            # 单机版保持原行为，不读账本补 version。
+            if is_enterprise() and response_version is None:
+                installation = self._find_skill_installation(name=name)
+                ledger_ver = self._enterprise_ledger_version(installation)
+                if ledger_ver:
+                    response_version = ledger_ver
 
         md = self._try_find_skill_file(read_root)
         if md is None:
@@ -1222,7 +1229,8 @@ class SkillManager:
                 container_meta["name"] = name
                 container_meta["content"] = read_container_pack_body(skill_dir)
                 container_meta["file_path"] = ""
-                container_meta["version"] = None
+                # 单机版容器详情仍固定 version=None；企业版可带当前/账本版本
+                container_meta["version"] = response_version if is_enterprise() else None
                 self._copy_skill_installation_identity(container_meta, base_meta)
                 session_id = str(
                     params.get("_session_id") or params.get("session_id") or ""
@@ -6778,6 +6786,12 @@ class SkillManager:
         )
         meta["has_evolutions"] = _has_effective_evolutions(child)
         self.apply_archive_version_and_type(meta, child)
+        # 企业版：无 .archive 时保留安装账本 version / version_id（不回退 YAML）。
+        # 单机版不补账本 version，避免列表/详情字段语义变化。
+        if is_enterprise() and not meta.get("version") and matched_plugin is not None:
+            ledger_ver = self._enterprise_ledger_version(matched_plugin)
+            if ledger_ver:
+                meta["version"] = ledger_ver
         if meta["skill_type"] == SKILL_TYPE_SKILLPACK:
             try:
                 self._apply_skillpack_projection(
@@ -7025,6 +7039,14 @@ class SkillManager:
             "is_builtin_source": bool(listed_meta.get("is_builtin_source", False)),
             "proprietary": bool(listed_meta.get("proprietary", False)),
         }
+        # 列表扫描经 _apply_skill_installation_meta 写入的账本身份字段
+        # （source_type/origin/version_id 等）须进入 get 的 base，否则
+        # handle_skills_get 里 _copy_skill_installation_identity 为空操作。
+        self._copy_skill_installation_identity(base, listed_meta)
+        if "installed" in listed_meta:
+            base["installed"] = bool(listed_meta.get("installed"))
+        if "marketplace" in listed_meta:
+            base["marketplace"] = listed_meta.get("marketplace")
         return child, base
 
     @staticmethod
@@ -11854,6 +11876,20 @@ class SkillManager:
         if source_type == "prebuilt":
             dto["sync_status"] = "synced" if ready else "failed"
         return dto
+
+    @staticmethod
+    def _enterprise_ledger_version(record: dict[str, Any] | None) -> str | None:
+        """企业版无 .archive 时，从安装账本取展示用 version。
+
+        优先 ``version``（产品展示号），空则回退 ``version_id``（技能源版本键）。
+        """
+        if not isinstance(record, dict):
+            return None
+        for key in ("version", "version_id"):
+            value = str(record.get(key) or "").strip()
+            if value:
+                return value
+        return None
 
     @staticmethod
     def _copy_skill_installation_identity(

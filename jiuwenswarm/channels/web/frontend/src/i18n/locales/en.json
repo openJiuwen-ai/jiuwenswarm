@@ -3445,6 +3445,7 @@
     "detailError": "Failed to load details",
     "detail": {
       "basicInfo": "Basic Info",
+      "version": "Version",
       "versionManage": "Version Management",
       "versionsLoadFailed": "Failed to load versions",
       "noVersions": "No version records",
