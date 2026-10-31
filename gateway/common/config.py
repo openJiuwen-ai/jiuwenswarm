@@ -2749,7 +2749,7 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
     if isinstance(model_config, dict) and "reasoning_level" in model_config:
-        from jiuwenswarm.common.reasoning_config import normalize_reasoning_level
+        from gateway.common.reasoning_config import normalize_reasoning_level
 
         raw_level = model_config["reasoning_level"]
         level = normalize_reasoning_level(raw_level)
@@ -2784,7 +2784,7 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
-    from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
+    from gateway.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 
     saved = deepcopy(group)
     saved.setdefault("model_group_id", _new_business_id("mgp"))
