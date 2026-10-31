@@ -85,21 +85,21 @@ async function mountProfile(extra) {
   dom.window.clearInterval = (id) => timers.delete(id);
   const container = dom.window.document.getElementById('root');
   const root = createRoot(container);
+  let props = {
+    colleague,
+    initialSection: 'permissions',
+    resourceCatalog: catalog,
+    onSaveSettings: noop,
+    onOpenOffice: noop,
+    onChat: noop,
+    onConfigureIm: noop,
+    onConfigureWelink: noop,
+    onToggleDisabled: noop,
+    onDelete: noop,
+    ...extra,
+  };
   await act(async () => {
-    root.render(React.createElement(ColleagueProfilePage, {
-      colleague,
-      initialSection: 'permissions',
-      resourceCatalog: catalog,
-      onSaveSettings: noop,
-      onOpenOffice: noop,
-      onChat: noop,
-      onConfigureIm: noop,
-      onConfigureWelink: noop,
-      onToggleDisabled: noop,
-      onDelete: noop,
-      ...extra,
-    }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    root.render(React.createElement(ColleagueProfilePage, props));
   });
   const find = (id) => container.querySelector(`[data-testid="jiuwenmate-profile-${id}"]`);
   return {
@@ -107,9 +107,16 @@ async function mountProfile(extra) {
     find,
     async click(id) {
       assert.ok(find(id), `Missing profile ${id}`);
-      await act(async () => { find(id).click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+      await act(async () => { find(id).click(); });
     },
-    async flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); },
+    async flush() { await act(async () => {}); },
+    async rerender(patch) {
+      props = { ...props, ...patch };
+      await act(async () => { root.render(React.createElement(ColleagueProfilePage, props)); });
+    },
+    async tickIntervals() {
+      await act(async () => { for (const callback of [...timers.values()]) callback(); });
+    },
     async close() {
       await act(async () => root.unmount());
       dom.window.close();
@@ -123,7 +130,7 @@ async function mountProfile(extra) {
   };
 }
 
-test('the overview hides quick IM setup after the channel is configured', () => {
+test('the overview keeps DingTalk setup until DingTalk is also configured', () => {
   const authorized = {
     ...colleague,
     imConfigured: true,
@@ -143,7 +150,10 @@ test('the overview hides quick IM setup after the channel is configured', () => 
   assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="welink"/);
   assert.match(channels, />取消授权</);
 
-  const overview = renderProfile({ colleague: authorized });
+  const pendingDingTalk = renderProfile({ colleague: authorized });
+  assert.match(pendingDingTalk, /data-testid="jiuwenmate-profile-quick-im"/);
+  assert.match(pendingDingTalk, /钉钉/);
+  const overview = renderProfile({ colleague: { ...authorized, dingtalkConfigured: true } });
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-quick-im"/);
 });
 
@@ -164,6 +174,207 @@ test('DingTalk CLI is automatic and has no per-employee authorization page', () 
   const markup = renderProfile({ initialSection: 'overview' });
   assert.doesNotMatch(markup, /钉钉工作台 CLI/);
   assert.doesNotMatch(markup, /钉钉设备授权/);
+});
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const dingtalkConnection = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
+const dingtalkColleague = { ...colleague, connections: [...colleague.connections, dingtalkConnection] };
+const dingtalkAuthorizing = { status: 'authorizing', cli_version: '1', operation_id: 'ding-operation' };
+
+test('DingTalk account authorization explains its scope and shows loading then the device link', async () => {
+  const pending = deferred();
+  const authUrl = 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=TEST-CODE';
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'not_connected', cli_version: '1' }),
+    onBeginDingTalkAuth: () => pending.promise,
+    onPollDingTalkAuth: async () => dingtalkAuthorizing,
+  });
+  try {
+    const card = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]');
+    assert.match(card.textContent, /钉钉用户账号授权/);
+    assert.match(card.textContent, /群消息.*在线文档.*日历/);
+    const button = card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]');
+    await act(async () => { button.click(); });
+    assert.equal(button.disabled, true);
+    assert.match(button.textContent, /正在发起授权/);
+    await act(async () => { pending.resolve({ ...dingtalkAuthorizing, auth_url: authUrl, user_code: 'TEST-CODE' }); });
+    const link = card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]');
+    assert.equal(link.href, authUrl);
+    assert.equal(link.target, '_blank');
+    assert.match(card.textContent, /TEST-CODE/);
+    await view.tickIntervals();
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]').href, authUrl);
+  } finally {
+    await view.close();
+  }
+});
+
+test('returning from DingTalk authorization immediately shows the account and organization', async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ ...dingtalkAuthorizing,
+      auth_url: 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=TEST', user_code: 'TEST' }),
+    onPollDingTalkAuth: async () => ({ status: 'connected', cli_version: '1', account: 'Test user', organization: 'Test organization' }),
+  });
+  try {
+    const link = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]');
+    assert.equal(link.closest('details')?.open, false, 'The device link is a collapsed fallback, not a second step');
+    await act(async () => { window.dispatchEvent(new window.Event('focus')); });
+    const card = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]');
+    assert.match(card.textContent, /Test user/);
+    assert.match(card.textContent, /Test organization/);
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]'), null);
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-code"]'), null);
+    assert.ok(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-disconnect"]'));
+  } finally { await view.close(); }
+});
+
+test('a visible authorization page refreshes immediately before the next timer tick', async () => {
+  const response = deferred();
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => dingtalkAuthorizing,
+    onPollDingTalkAuth: () => response.promise,
+  });
+  try {
+    await act(async () => {
+      document.dispatchEvent(new window.Event('visibilitychange'));
+    });
+    await act(async () => { response.resolve({ status: 'connected', cli_version: '1', account: 'Visible user', organization: 'Visible organization' }); });
+    assert.match(view.container.textContent, /Visible user/);
+    assert.match(view.container.textContent, /Visible organization/);
+  } finally { await view.close(); }
+});
+
+test('returning to a failed authorization rechecks the login without starting another authorization', async () => {
+  let completed = false;
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => completed
+      ? { status: 'connected', cli_version: '1', account: 'Recovered user', organization: 'Recovered organization' }
+      : { status: 'error', cli_version: '1', error_code: 'authorization_failed' },
+  });
+  try {
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]'));
+    completed = true;
+    await act(async () => { window.dispatchEvent(new window.Event('focus')); });
+    assert.match(view.container.textContent, /Recovered user/);
+    assert.match(view.container.textContent, /Recovered organization/);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-error"]'), null);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-disconnect"]'));
+  } finally { await view.close(); }
+});
+
+test('connected DingTalk organization stays visible when its profile omits the account name', async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ status: 'connected', cli_version: '1', organization: 'Actual organization' }),
+  });
+  try {
+    const account = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-account"]');
+    assert.ok(account);
+    assert.match(account.textContent, /Actual organization/);
+    assert.match(account.textContent, /钉钉账号/);
+    assert.match(account.textContent, /暂不可用/);
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-disconnect"]'));
+  } finally { await view.close(); }
+});
+
+test('DingTalk begin remains authorizing when an older initial status completes', async () => {
+  const initialStatus = deferred();
+  const polls = [];
+  const view = await mountProfile({
+    colleague: dingtalkColleague,
+    initialSection: 'channels',
+    onLoadDingTalkAuthStatus: () => initialStatus.promise,
+    onBeginDingTalkAuth: async () => dingtalkAuthorizing,
+    onPollDingTalkAuth: async (...args) => { polls.push(args); return dingtalkAuthorizing; },
+  });
+  try {
+    await act(async () => {
+      view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').click();
+    });
+    await act(async () => { initialStatus.resolve({ status: 'not_connected', cli_version: '1' }); });
+    const status = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-status"]');
+    assert.equal(status.textContent, zh.jiuwenmate.profile.dingtalkAuth.status.authorizing);
+    await view.tickIntervals();
+    assert.deepEqual(polls, [[colleague.id, 'ding-app', 'ding-operation']]);
+  } finally {
+    await view.close();
+  }
+});
+
+test('DingTalk terminal authorization failure removes the consumed code and explains organization access', async () => {
+  const view = await mountProfile({
+    colleague: dingtalkColleague, initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => ({ ...dingtalkAuthorizing,
+      auth_url: 'https://login.dingtalk.com/oauth2/device/verify.htm?user_code=USED-CODE', user_code: 'USED-CODE' }),
+    onPollDingTalkAuth: async () => ({ status: 'error', cli_version: '1', error_code: 'org_access_denied' }),
+    onBeginDingTalkAuth: async () => ({ ...dingtalkAuthorizing, operation_id: 'new-operation' }),
+  });
+  try {
+    await view.tickIntervals();
+    const card = view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]');
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-open"]'), null);
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-code"]'), null);
+    assert.match(card.querySelector('[role="alert"]').textContent, /组织.*CLI.*权限/);
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-admin"]').href,
+      'https://open-dev.dingtalk.com/fe/old#/developerSettings');
+    assert.equal(card.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth-begin"]').disabled, false);
+  } finally {
+    await view.close();
+  }
+});
+
+test('removing an authorizing DingTalk connection stops polling and ignores its pending response', async () => {
+  const pendingPoll = deferred();
+  let polls = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague,
+    initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => dingtalkAuthorizing,
+    onPollDingTalkAuth: () => { polls += 1; return pendingPoll.promise; },
+  });
+  try {
+    await view.tickIntervals();
+    assert.equal(polls, 1);
+    await view.rerender({ colleague });
+    await act(async () => { pendingPoll.resolve(dingtalkAuthorizing); });
+    await view.tickIntervals();
+    await view.tickIntervals();
+    assert.equal(polls, 1);
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-dingtalk-user-auth"]'), null);
+  } finally {
+    await view.close();
+  }
+});
+
+test('DingTalk polling waits for the previous request before sending another', async () => {
+  const pendingPoll = deferred();
+  let polls = 0;
+  const view = await mountProfile({
+    colleague: dingtalkColleague,
+    initialSection: 'channels',
+    onLoadDingTalkAuthStatus: async () => dingtalkAuthorizing,
+    onPollDingTalkAuth: () => { polls += 1; return pendingPoll.promise; },
+  });
+  try {
+    await view.tickIntervals();
+    await view.tickIntervals();
+    await view.tickIntervals();
+    assert.equal(polls, 1);
+    await act(async () => { pendingPoll.resolve(dingtalkAuthorizing); });
+    await view.tickIntervals();
+    assert.equal(polls, 2);
+  } finally {
+    await view.close();
+  }
 });
 
 test('employee permission settings show the three individual profiles and explain full access', () => {
@@ -810,7 +1021,7 @@ test('channel reply mode renders a compact selected state and disables changes w
   const html = renderProfile({ initialSection: 'channels', colleague: { ...colleague, groupReplyMode: 'passive' } });
   assert.match(html, /aria-pressed="true"[^>]*data-variant="passive"/);
   assert.match(html, /aria-pressed="false"[^>]*data-variant="adaptive"/);
-  assert.match(html, /钉钉群里只有 @ 到机器人的消息会触发回复/);
+  assert.match(html, /钉钉绑定用户账号后，会定期检查已接入群内正文不含 @ 的新增文字/);
   const saving = renderProfile({ initialSection: 'channels', savingResources: true });
   assert.match(saving, /aria-pressed="true"[^>]*disabled=""/);
 });

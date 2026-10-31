@@ -114,7 +114,7 @@ class RecoveryStore(SQLiteStore):
         return self._recovery(row)
 
     def latest(self, namespace_id: str, request_id: str) -> RequestRecovery | None:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             row = conn.execute(
                 "SELECT * FROM request_recoveries WHERE namespace_id = ? AND request_id = ? "
                 "ORDER BY decided_at DESC, rowid DESC LIMIT 1",

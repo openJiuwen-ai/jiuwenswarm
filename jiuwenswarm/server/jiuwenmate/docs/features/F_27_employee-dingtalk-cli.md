@@ -131,32 +131,231 @@ DWS CLI 通过员工专属 `dingtalk_cli` 工具启动，argv 不经过 shell �
 复核后确认 `/v1.0/im/innerGroups/members/query` 是钉钉生成 SDK 对应的群成员查询接口；原实现错把响应当成 `userIds` 列表并将分页游标按字符串处理。现已按 SDK 契约携带 `openConversationId`、发送者 `userId`、`maxResults` 和整数 `nextToken`，并解析 `list[].userId` 及整数游标；替身测试覆盖两页名单和权限/执行失败时不创建日程。官方 SDK 请求字段见 [QueryInnerGroupMemberListRequest](https://javadoc.io/static/com.aliyun/dingtalk/2.1.39/com/aliyun/dingtalkim_1_0/models/QueryInnerGroupMemberListRequest.html)。真实应用权限及群日历写入仍待验收，没有执行真实钉钉写入。
 
 
-## 13. 实施修订（2026-10-29；已由第 14 节替代）
+## 13–15. 历史方案（已由第 17 节替代）
 
-钉钉错误文本中的 `Chat.OrgInnerGroup.Read` 不能作为可在开发者后台搜索的权限名称，原先将其当作缺失权限提示是不准确的。群成员读取现改用官方 DWS `chat group members` 命令和服务级私有共享用户 profile；App Token 仍用于成员 `unionId` 映射及日历写入。共享登录未初始化、成员读取失败或名单不完整时均停止创建，不报告推测的权限名称。此项只需部署者初始化一次共享 DWS 登录，不增加员工登录页面。
+早期多次在 App Token 群成员查询和主机共享 DWS 用户登录态之间切换，遗留了重复的修订记录。真实运行确认 `Chat.OrgInnerGroup.Read` 不宜作为控制台权限名称提示，共享主机账号也不能代表员工独立授权。共享账号回退已经移除；当前以第 17 节员工 OAuth 路径及无授权时的应用路径为准。
 
-验证：`test_dingtalk_cli_local_provider.py` 覆盖共享 profile、分页名单、未登录提示及失败时不创建日程；真实钉钉群成员读取与日历写入尚未联调。
+## 16. 实施修订（2026-10-30）：员工级 OAuth 与在线群文档失败关闭
 
-## 14. 实施修订（2026-10-29；已由第 15 节替代）
+团队版员工详情页按钉钉连接展示 DWS 设备码授权状态，支持开始、轮询、取消及断开；服务端校验员工配置与连接键仍匹配，再以连接 agent ID 作为 scope。用户 profile 与应用 Token profile 分目录，并按连接和应用凭证版本隔离。授权 URL、用户码和有限账号资料经过 RPC 字段白名单；Access Token、Secret 与 CLI 路径不返回前端。在线群文档操作在未授权时失败关闭。
 
-移除群日程对服务级 DWS 用户 OAuth 的依赖，恢复由当前钉钉应用 App Token 调用 `POST /v1.0/im/innerGroups/members/query`。请求按官方生成 SDK 契约传递可信 `openConversationId`、发送者 `userId`、`maxResults` 和整数 `nextToken`，响应必须包含成员列表、`hasMore` 和整数分页游标；只有完整读取并核验发送者在群内后才继续映射参与人和创建日程。接口失败时保留去敏后的钉钉错误码，不再提示登录或猜权限名称。若该接口返回无法在开发者平台核实的 `Chat.OrgInnerGroup.Read`，只报告接口、错误码和“未创建日程”，不得让用户搜索或申请该权限。每条钉钉请求还会注入高优先级操作边界，明确 App Token 请求不涉及 DWS 登录；错误后禁止推断登录状态或提出登录、OAuth、设备码及权限申请方案。若用户希望继续，仅可询问其是否提供参会人 staffId 名单。
+此前方案依赖群根目录 UUID 并请求 DOCX 转换；实测群空间 API 不返回根 UUID，`dentryId=0` 的查询失败，因此该方案未打通。修订后使用员工已授权用户 profile 的 `doc create` 创建 ALIDOC，并由 `drive info` 验证类型；随后按真实文档 UUID 定位存储实体，通过群文件链接发送 API 在可信当前群建立在线入口，分页读回群文件列表验证。该路径需要 `ConvFile.File.Send` 权限。后续步骤失败时保留已创建的文档链接，不再让模型把“已有文档但未进入群”表述为“没有创建任何文档”。
 
-验证：`test_dingtalk_cli_local_provider.py` 的 App Token 分页、上游失败和畸形名单路径，以及 `test_dingtalk_cli_tool.py` 的工具说明回归通过。真实钉钉群成员读取及日历写入仍待当前服务联调；本次不执行授权登录或真实写入。
+验证记录：真实授权账号已创建空白「test在线文档」，`drive info` 返回 `ALIDOC/adoc`，UUID 到存储实体映射成功。最初发送到群时缺少 `ConvFile.File.Send`；用户开通后，同一篇文档已成功发送并在目标群文件列表中读回。发送接口使用内部数字文件名的问题通过群文件入口重命名修复，再以员工用户 CLI 读回标题「test在线文档」和 `ALIDOC/adoc` 在线类型。当前相关 provider/tool 测试共 86 项通过。
 
-## 15. 实施修订（2026-10-29）
-
-针对真实群成员接口持续返回 `DINGTALK_CLI_API_FORBIDDEN` 的情况，保留 App Token 查询作为首选；当钉钉明确拒绝该端点时，自动切换到官方 DWS `chat group members` 命令，复用服务主机上已经存在的共享 DWS 用户登录态。回退仅用于查询可信当前群的完整成员名单，后续身份映射及日历写入仍由应用 App Token 执行。代码不会启动登录、OAuth 或设备码流程；共享登录态不可用、查询失败、分页不完整或名单不含当前发送者时，均停止且不创建日程。更新了员工工具说明与设计规范，避免继续把 App Token 403 当作唯一可用的成员查询方式。
-
-验证：`test_dingtalk_cli_local_provider.py` 59 项通过，覆盖 App Token 拒绝后的共享 DWS 回退及无可用会话时失败关闭；工具说明回归、`git diff --check` 与服务重启状态待本轮核实。真实群成员读取和日历写入尚未联调，不代表线上已创建日程。
-
-## 15. 实施修订（2026-10-29）
-
-针对真实群成员接口持续返回 `DINGTALK_CLI_API_FORBIDDEN` 的情况，保留 App Token 查询作为首选；当钉钉明确拒绝该端点时，自动切换到官方 DWS `chat group members` 命令，复用服务主机上已经存在的共享 DWS 用户登录态。回退仅用于查询可信当前群的完整成员名单，后续身份映射及日历写入仍由应用 App Token 执行。代码不会启动登录、OAuth 或设备码流程；共享登录态不可用、查询失败、分页不完整或名单不含当前发送者时，均停止且不创建日程。更新了员工工具说明与设计规范，避免继续把 App Token 403 当作唯一可用的成员查询方式。
-
-验证：`test_dingtalk_cli_local_provider.py` 59 项通过，覆盖 App Token 拒绝后的共享 DWS 回退及无可用会话时失败关闭；工具说明回归、完整测试结果及服务重启状态待本轮核实。真实群成员读取和日历写入尚未联调，不代表线上已创建日程。
+早期仅完成构建时，授权和群写入尚未验收；上述验证记录已更新为真实设备码授权、在线文档创建及群文件读回结果。历史构建记录不替代实际业务验证。
 
 
-## 16. 可信请求的应用选择（2026-10-30）
+## 17. 实施修订（2026-10-30）：员工账号创建全群会议
+
+此前群成员回退读取主机共享 `~/.dws` 登录态，未接入员工 OAuth；实测共享登录数据不存在。员工 CLI 返回的名单包含 `openDingtalkId`，强当成企业 staffId 会导致通讯录映射失败。现全群会议优先复用该员工的独立授权和当前组织 profile，分页读取可信当前群，区分 userId/openDingTalkId 后由用户日历命令分别邀请。开放 ID 路径保留跨组织成员；群 ID 只能来自已验证平台路由，不通过姓名或不兼容 ID 命名空间猜测成员。无授权时仅保留原有应用路径，移除共享账号回退。
+
+完整名单、有效身份和最多 500 人的用户 CLI 限制在写入前校验；写入只调用一次，缺少 eventId 或连接中断时禁止自动重建。实际测试群已通过员工授权读到 2 位成员，CLI `--dry-run` 预览保留了两位开放 ID，并明确返回 `executed=false`。本次未获得新会议标题和时间，因此未创建真实测试会议或给群成员发送日历邀请。
+
+
+## 18. 钉钉实现清理与审查（2026-10-30）
+
+审查覆盖 Gateway 钉钉配置、连接、文件服务、入站、定时投递兼容入口、员工 CLI/provider/runtime/tool、授权 RPC 与前端。两处 cron 路径是仍有调用的兼容转发，保留；service 层无人调用的独立群日历包装已移除，provider 内部实际使用的方法保留。
+
+合并应用/用户 CLI 环境构造及用户命令响应处理，统一安装缓存策略和响应大小限制；去掉无读取变量、重复参数校验、无效下载标签和终生缓存权限拒绝的分支。补齐默认签名上传实例方法、文件配置透传、文本/附件共用投递回执分类、raw API 绝对 URL/省略 operation 的保护边界。
+
+OAuth 断开前停止待完成授权；开始/取消/断开按员工串行，取消必须匹配员工 scope；CLI 状态失败保留 error，不伪报未绑定；多账号不再默认选第一项。前端按连接废弃过期响应并避免重叠轮询，移除连接后清理状态。更新 Secret 时未编辑 robotCode 则保留配置，明确清空仍可生效。
+
+验证以本轮最终定向 pytest、前端行为测试、构建及只读真实登录/名单检查为准；重构期间不新建外部会议或文档。
+
+最终验证：钉钉/附件/投递/cron/生产接线定向 pytest 为 240 项通过；前端 API 请求测试 31 项、Profile 页面行为测试 28 项通过（包含 3 个授权竞态回归）；`npm run build` 成功。完整 profile+workspace 联合脚本仍有既存 WorkspacePage 的 `import.meta.glob` Node 测试环境失败，未改非钉钉 Workspace 构建逻辑。真实只读检查确认已有员工授权保持 connected、RPC 不返回私有身份字段、当前测试群完整返回 2 人。
+
+
+## 19. 日程标题更新（2026-10-30）
+
+CLI 已支持日程更新，但员工工具原先只暴露创建，导致模型拿 callback staffId 拼接 Raw Calendar PATCH 路径并收到 404。HTTP 404 本身不足以判定 unionId 错误，因此不延续模型对原因的猜测。新增明确的 `update_calendar_event(event_id, title)` 组合操作，以该员工用户 OAuth 和固定组织 profile 读取、更新原事件并读回校验，禁止用重建代替重命名。Raw 日历 PUT/PATCH/DELETE 也纳入宿主操作保护。当前只支持标题更新，不开放删除。
+
+真实验证：用户指定的 2026-10-31 16:00–17:00 原日程标题已从「会议」更新为「AI同事讨论」；eventId、起止时间、参与人、提醒、组织者、会议室和全天状态均与修改前一致，没有新建或删除日程。
+
+## 20. 在线文档搜索、读取与编辑（2026-10-30）
+
+状态：已实现并通过定向回归与临时文档真实联调。沿用本特性的员工独立 OAuth 与受控操作，不开放任意用户 CLI 或 shell；不修改其他平台与个人版。
+
+### 背景、方案与取舍
+
+已有创建操作能生成真实在线文档，但 `edit_group_document` 仅覆盖 DOCX，不能继续编辑在线对象。新增 `search_online_documents(query, cursor, limit)`、`read_online_document(node_id)` 和 `edit_online_document(node_id, edit_mode, content, old_text, new_text)`，分别调用固定版本 CLI 的 `doc +search/+fetch/+update`。搜索限定在线文字文档，返回真实候选 ID、链接和分页边界；不自动选择第一个同名候选。读取返回 Markdown 和稳定对象身份；编辑只接受明确对象，支持追加、唯一文本替换与明确的整篇覆盖，保留原 DOCX 操作。
+
+选择受控操作而非复制飞书的完整 Bash CLI 入口，复用现有凭据隔离与错误控制，避免此次扩展无关产品能力。在线对象只使用当前员工的已授权 profile；模型不能传 Token、profile 或本地文件路径。正文经 stdin 传入，避免以 `@文件` 形式意外读取宿主文件。CLI shortcut 的结构化 `status` 契约与旧原子命令的 `success` 契约分别校验；不能因退出码为零而报告成功。
+
+### 修改与验证边界
+
+代码限定 `dingtalk_cli_local_provider.py`、`dingtalk_cli_runtime.py`、`dingtalk_cli_tool.py` 及其测试。修改后同步 S_06。覆盖未授权、分页、对象身份不匹配、非在线对象、编辑失败/部分成功、正文输入与员工隔离。编辑由 CLI 自带回读验证确认；结果不确定时停止，不能重放成功写入或新建替代原文档。
+
+已执行只读探测：当前员工的 `doc +search` 成功返回 2 个同名候选；`doc +fetch` 成功读取先前测试在线文档及其群文件入口。两者使用 `status` 契约，顶层没有 `success=true`，因此旧用户命令包装不能直接复用成功判断。真实 `+update` 使用 `data.nodeId`、`data.verified` 与 `data.verification.verified`，不能按读取响应的 target 结构判断写入。
+
+真实联调：创建未附加到群的临时在线文档，读取空正文，追加内容，唯一文本替换并回读，整篇覆盖并再次回读，全部符合预期。临时文档以同一节点 ID 清理，删除响应 `ok=true/outcome=success`。没有发送群消息或改动已有群文档。独立审查指出文本替换使用 argv 的跨平台长度限制，已把 old/new 上限分别限定为 4,000 字符，正文 stdin 上限仍为 100,000 字符。
+
+最终定向验证：钉钉文件/入站、附件、cron、CLI provider/tool 及生产接线 308 项通过。未修改前端，因此本轮未重复前端构建。普通群消息摄入不属于上述已完成能力。
+
+## 21. 普通群消息智能响应接入评估（2026-10-30）
+
+状态：开发者先批准增量读取方案，接口核验确认提及元数据不可得后，又明确选择“先实现保守版本”。保守摄入、轮询与共享 IM 生命周期接线已实现，验证记录见本节末尾。
+
+当前只注册机器人回调，群普通消息无法持续进入已存在的 adaptive 判断。官方 CLI 1.0.65 的指定群用户事件能达到 ready，但该版本及 1.0.66 文档仍声明过滤授权账号自己发送的消息，且未提供公开关闭参数；短时间 ready 且零事件不构成业务送达验收。
+
+建议复用员工已有 OAuth，对已知、仍有访问权且开启智能响应的群做约 10 秒周期的有界增量历史读取，不强制新增监测账号。实测测试群返回用户和机器人消息，sendType 为 user/robot；历史 messageId 与 openMessageId 相同，且 8 条消息 ID 与既有机器人回调匹配。历史发送者 ID 为开放 ID，不能当作企业 staffId；返回字段没有可靠的结构化提及信息，自动执行前仍须核验这一边界。
+
+最小候选修改：新增 `dingtalk_group_polling.py` 管理增量水位、限额和退避；在 `agent_ws_server.py` 共享 IM runtime 起停时管理该任务；runtime/provider 提供宿主专用的群历史读取；`dingtalk_inbound.py` 以独立历史入口接入已有群归档和调度，不伪造机器人回调。旧消息不重放，机器人消息只归档，跨来源统一 ID 去重，未知身份或提及元数据不冒充已知值。测试需覆盖本人/其他成员普通消息、@ 回调去重、其他提及、机器人回声、passive、解绑/撤权/停服。以上为候选设计，尚未执行这些验收。
+
+批准后的只读核验：atomic `chat message list-by-ids` 的 JSON/raw 与 `chat +messages-mget` 均没有提供可靠的 atUsers/atDingtalkIds/@all 字段；atomic 保留上游原字段，因此不是简单的 CLI 投影丢失。`search-advanced` 只支持 at-me 和指定 at-ids 的正向过滤，不支持公开的任意提及、排除提及或 @all 通配；完整当前群成员与机器人名单也不能覆盖退出成员、移除机器人、@all 或索引延迟。不能以搜索未命中证明无提及。
+
+本次 97 条测试群消息中，39 条 user、58 条 robot；33 条正文有字面 `@`，未发现结构化标记。开发者据此选择保守版本：非机器人且正文不含 `@` 的新增文字进入 adaptive，其余只归档并保留机器人回调。该方案依赖接收正文保留提及展示，不能宣称支持完整提及语义。
+
+通用准备已完成宿主专用 `read_group_history`：只使用当前员工 OAuth，最多三页/150 条，校验精确群 ID、消息 ID 和时区时间边界，并返回账号摘要与完整性。分页读取的 CLI 契约不含顶层 success，已按其真实结构校验。新增五项边界回归，相关定向测试共 313 项通过；真实最近五分钟受限读取完成，返回零条。尚未接入轮询任务、调度器或模型工具，也未为这部分重启服务。实际样本中八条可与机器人回调对应的消息均含字面 @；八条用户文字不含 @。这只支持样本回放，不构成完整提及语义的保证。
+
+### 保守版本实施与验证（2026-10-31）
+
+上述 313 项和未接线状态为通用准备阶段记录。现已增加 `DingTalkGroupPoller`：约十秒间隔、全局每轮最多八次读取尝试，同 namespace/账号/群合并查询，当前账号、连接、模式和成员访问权重验；同账号首选读取员工缺席时只在有界预算内换其他已授权员工。状态只保存版本和时间边界，私有目录原子落盘，不保存正文或 Token。临时授权错误保持执行下限和进度，明确撤权则重置执行下限；旧记录不重新执行。
+
+`DingTalkInboundHandler.handle_history_message` 使用独立入口，不把历史伪造成机器人回调；只归档机器人、含 ASCII/全角 @ 或观察下限之前的文字，普通新增文字复用现有参与判断、调度与机器人主动群投递。跨来源使用原消息 ID 和每员工 source_ref；历史不覆盖较权威的回调内容。开放身份明确标记，需 staffId 的日历/群文件/DOCX 工具阻断，授权账号的在线文档操作继续可用。
+
+真实只读核验发现 `chat group bots` 返回 `result.bots[].robotCode`，能与配置 robot_code 精确匹配；不能拿 openBotId 替代。现读取历史前校验当前员工机器人在群，收到的实时 botCodes 再筛选同账号其他员工；确认缺席会撤销缓存成员权，避免机器人被踢后继续读取/执行。新回调恢复可见起点，迟到旧回调不恢复较新的离群状态。
+
+最终审查补充：恢复离群访问不能使用回调接收时间，因为重试可能在离群后才到达。事件独立保留 SDK 的 `createAt` 平台时间，跨 Gateway/AgentServer 以 ISO 传输；只有有可靠平台时间、在接收前五分钟以内且晚于离群证据的回调才可恢复。缺少时间不恢复，延迟旧消息不推翻离群记录，未改变 core 状态或执行协议。
+
+验证：钉钉/附件/cron/provider/tool/runtime/poller/生产接线共 425 项通过；前端 API 行为测试 31 项通过，`npm run build` 成功。团队版中英文智能响应提示同步为授权后定期检查无 @ 的新增文字。真实授权账号核验返回同一 reader 摘要、群中四个机器人、最近五分钟零条新消息；录制替身轮询完成一次读取且只写临时 checkpoint，没有创建 Request 或发送消息。真实群新消息自动判断/发送仍需用户发言验收，不能把只读检查写成已经完成该验收。
+
+额外非钉钉共享接线回归为 56 项通过、2 项既存失败：飞书测试硬编码恢复渠道集合不符当前动态集合，以及 WeLink reconciliation 被当前 ChannelManager 渠道校验拒绝。使用 HEAD 的共享 IM 启停方法在独立测试进程复现同样两项失败，ChannelManager 文件亦与 HEAD 一致；未修改这些非钉钉行为。
+
+English summary: Conservative DingTalk group ingestion now uses isolated employee OAuth, bounded incremental reads, live robotCode membership checks and persistent overlapping checkpoints. Only new human text without ASCII/full-width @ enters existing adaptive participation; replies retain the employee's configured bot. Complete mention semantics and a real user-triggered group send remain outside the verified evidence.
+
+服务验证：已重启 Swarm，5173/18092/19001/19000 均监听，前端 HTTP 200；共享 IM runtime 已启动，0600 权限的轮询 checkpoint 在两次观测间持续前移。初次读取失败后由退避重试恢复；对“系统代理导致失败”的怀疑经代理/直连对照后未成立，未修改代理配置。没有发送真实测试群消息，真实参与和回复仍待用户发言观察。
+
+## 22. 已观测上下文与参与判断兼容修复（2026-10-31）
+
+用户真实请求 `req_60c10652009846899a026820ece7a976` 的最终事件为 failed，reason 为 `group history unavailable: known collection gap`，此前没有模型或工具执行事件。钉钉采集正确保留 archive.gap，但 core 的参与判断会直接拒绝 `GroupMessagesResult.status=incomplete`。原接线测试替换了 PA 执行，没有覆盖此真实判断入口，因此未发现这一兼容问题。
+
+最小修复仅在宿主 `HostGroupChatPort.recent_messages` 对钉钉、无游标首屏、非空已知消息、且确切原因是 known collection gap 时返回 `found` 和明确的观测范围说明。它表示找到可读的已知消息，不宣称平台历史完整。归档 gap、空结果、未知游标、权限复查、后续分页和跨群搜索保留原语义。钉钉系统提示同步要求不能从缺失发言推断不存在、同意或全部成员已回复；不修改 core 协议或其他平台。
+
+回归使用真实 core `judge_participation`、真实 HostGroupChatPort 与 SQLite 归档，只替换模型调用，确认先复现中断再通过，并验证归档仍 incomplete、未知游标仍 incomplete。新增首屏边界覆盖钉钉非空、钉钉空页、飞书非空三种情况。该真实请求的实际群记录只读验证返回 found、8 条已知消息和不完整警示；未重放请求或发送群消息。
+
+扩展回归为 446 项通过、1 项既存失败：“仅保留最新100条”断言与当前上限5000不符；本次没有修改归档实现，该实现与 HEAD 完全一致。排除该既存失败后重跑钉钉文件/入站、附件、cron、provider/tool、生产接线、轮询/runtime 和群读取端口专项，结果为 446 passed、1 deselected。
+
+运行验证：2026-10-31 09:23 重启 Swarm，新的 runtime worker 已启动共享 IM；5173/18092/19001/19000 均监听，前端 HTTP 200。轮询进度从 01:22:21 UTC 前移至 01:23:04、01:23:23 UTC，确认重启后继续读取。未重放已结束的失败请求或向真实群发送测试消息，实际群回复仍待新消息验收。
+
+English summary: DingTalk participation may use a nonempty first-page view of known observations while the archive still records a collection gap. Empty, invalid-cursor, authorization, pagination and search results keep their completeness guarantees. The model is explicitly told that unobserved messages cannot prove absence or consent.
+
+## 23. 机器人发送回执与群回读重复归档修复（2026-10-31）
+
+用户展示的 09:24:56/09:24:58 回复在归档中确有两行：发送侧以 processQueryKey 为 ID、source_ref 为 delivery；用户历史读取以 messageId 为 ID、发送者为 botOpenDingTalkId。真实只读核验确认群机器人列表提供 robotCode → botOpenDingTalkId，但消息本身没有 processQueryKey，不能宣称两种 ID 有直接映射。
+
+最小方案：宿主历史结果保留经过校验的机器人发送者映射；轮询仅在 complete 且无 hasMore 的完整有界读取后，针对本群归档合并同一确认机器人、相同非空正文、无附件、正常状态、平台时间与回执时间相差不超过十秒且双向候选唯一的两行。回执前后十秒必须完整落在本轮 since/query_started 窗口内，避免分批或未来候选未产生时错误归并。保留真实 messageId/平台时间及本地员工身份、reply_to，留下 delivery-echo 来源使发送归档重试不恢复旧回执行。重复正文、不同机器人/群、时间不符、映射缺失或歧义均不合并；不是平台级精确 ID 映射。旧游标引用被合并的回执时可以安全失效，不伪造历史完整性。当前增量窗口之前的旧记录需单独完整回读对应时间窗后修复，不能拿本轮完整状态冒充历史覆盖证明。
+
+仅变更钉钉 provider/runtime/poller 和群归档内的钉钉分支，不改前端、core 或其他平台。回归先复现双记录，再覆盖历史先到/回执先到、重试、重复正文、身份/时间/附件边界。独立审查发现局部分页和不完整候选时间窗会提前绑定，已改为 complete 且无 hasMore 才归并，并要求回执和回读各自前后十秒完整覆盖。所有已知回执先参与反向唯一性计算，不能提前排除尚未满足窗口的回执。该反例测试先失败再通过；阶段专项 237 passed、1 项既存保留条数断言排除，最终扩大回归和真实记录修复见下。
+
+最终验证：钉钉文件/入站、附件、cron、provider/tool、生产接线、poller/runtime、群端口、commit 和投递脱敏共 560 passed、1 deselected；排除项仍是 HEAD 保留5000条与旧测试预期100条不符的既存断言。独立复核未再发现本轮 P1/P2。
+
+真实记录修复前以 SQLite backup 保存目标群记录，文件权限0600。随后用原员工 OAuth 完整回读 01:24:35 UTC 之后的历史，complete=true、hasMore=false、返回1条机器人消息；经原历史入口以禁止派发的执行下限归档，再按验证窗口归并。用户报告的一对 ID 由两行变一行，真实 messageId 保留，Request 总数不变、派发尝试为零；没有重发群消息。
+
+服务已于09:38重启，共享 IM runtime 启动，四个服务端口正常、前端 HTTP 200；轮询 checkpoint 从01:37:06前移到01:38:26 UTC，无本轮群读取错误。使用页面同一 ChannelRecords.messages 读取模型确认该回复仅一条，sender 为系统架构工程师、own=true、时间为09:24:56。当前修改仅后端，复用已有前端构建。
+
+English summary: Confirmed DingTalk delivery receipts and user-history bot echoes are merged only for verified bot identities and unique text/time matches within a completed read covering both candidate windows. Ambiguous, partial, attachment and other-platform records stay separate. The reported duplicate pair was repaired after a complete authorized read and backup, without dispatching or resending messages.
+
+## 24. 用户授权客户端隔离与页面反馈修复（2026-10-31）
+
+实际页面的学习小助手授权失败。最初可见错误是服务重启预热期间的 runtime queue is full；服务就绪后再次点击复现 CLI 未返回设备码。直接核对当前员工 CLI 进程输出确认服务端返回900103“应用不存在”：`_oauth_environment` 复用应用环境，错误地把机器人 AppKey/AppSecret 当作 CLI 用户设备授权客户端覆盖。只移除 OAuth 环境中的 DWS_CLIENT_ID/DWS_CLIENT_SECRET 后，同一隔离员工目录可取得授权链接和设备码；测试进程已终止，没有代用户完成授权。
+
+最小修复：只在用户 OAuth 环境移除机器人客户端覆盖，保留员工隔离目录、已有登录态与机器人 App Token 环境；用户业务命令继续显式选择员工 profile。前端保持上下布局，标题改为“钉钉用户账号授权”，说明群消息读取、在线文档和日历用途；请求期间明确显示获取链接，返回后展示设备码及可点击授权页，后端保留可安全展示的失败类型，不透传原始日志或凭据。中英文文案同步。计划覆盖 OAuth/app 凭据分离、真实前端按钮的加载/链接/错误/轮询保留以及 build；验证尚未执行。
+
+验证：provider/tool/runtime 后端245项通过；新环境隔离/错误脱敏两项单独重跑通过。前端员工配置页29项、API31项、语言资源6项通过，npm run build 成功。完整 test:jiuwenmate-profile 脚本另带的 workspace 测试因 Node 无 import.meta.glob 而加载失败，属于未改动的工作台打包环境问题；员工配置页已单独完整运行通过。另更新了上一轮普通群消息能力变更遗留的过期“钉钉只能@”文案断言。独立审查未发现本轮 P1/P2。真实已授权架构员工在新 OAuth 环境仍 connected，受限群读取成功、返回零条新消息；真实新授权页面验收待补充。
+
+真实页面验证：09:49重启，worker 已 agent_ready，5173/18092/19001/19000 正常，前端 HTTP 200。刷新 Chrome 后进入学习小助手渠道页，账号授权新标题及用途说明可见；点击显示“正在获取授权链接…”，随后显示设备码、“打开钉钉授权页”及取消按钮，CLI 同时打开设备授权标签页。停止在用户确认之前，尚未完成该员工绑定；未共享另一员工凭据。实际页面截图留在临时验证目录，不提交设备码或授权链接。
+
+English summary: Employee user OAuth now uses the CLI user authorization client instead of overriding it with bot AppKey/AppSecret. Bot App Token operations retain their credentials. The account authorization card explains group messages, online documents and calendars, displays loading and the device link, and retains the same operation's link during partial status polls. No user consent was completed automatically.
+
+## 25. 已消费设备码与组织权限失败识别（2026-10-31）
+
+用户在设备页看到 Invalid or expired user code。实际学习小助手授权进程日志表明设备码已授权成功，随后 CLI 因所选组织未授权该账号访问 CLI 数据而退出；pid 对应进程不存在，但没有 exit 文件。宿主仅检查 exit 文件和600秒期限，错误地保持 authorizing 并重用已消费设备码；真实状态查询已复现 authorizing。
+
+最小修复：状态查询结合进程存活及 CLI 安全终态识别，不再返回已退出/过期操作的 URL、设备码或 operation_id；组织拒绝使用安全枚举 org_access_denied，保留失败证据以便重进页面仍能显示原因，重新发起时清理上次失败元数据。前端按枚举显示本地化原因和开放平台 CLI 访问管理入口，停止旧轮询并允许重新发起。复用原状态模型、员工隔离和授权流程，不自动开通组织权限或切换组织。回归覆盖已消费组织拒绝、异常退出、超时及页面清除旧码；计划验证尚未执行。
+
+验证：后端 provider/tool/runtime/poller 298项通过，前端员工配置页30项和API31项通过，npm run build成功。三类终态的回归先复现 authorizing/not_connected 错误，再验证安全错误及旧URL/设备码清除；组织拒绝同时覆盖JSON转义消息。真实子进程验证存活、退出及PID创建时间不符时不判为当前操作；取消/断开只向匹配活进程发信号。独立审查发现终态保留PID后取消可能误杀复用进程，已按相同身份校验修复并补回归，复核无本轮P1/P2。
+
+真实旧操作在修复构建期间被仍运行的旧服务按600秒期限清理，随后状态已是not_connected；未伪造或恢复该授权操作。组织拒绝的根因来自此前实际CLI日志，未代用户开通权限或反复申请新码。修复后的真实新授权及组织权限开通仍需用户执行，不把回归替身当成组织验收。
+
+运行验证：10:04重启后新的worker已agent_ready，四个服务端口正常、前端HTTP200；未发起新的设备授权，以免用户在组织权限处理前再次消费设备码。已明确告知需组织管理员为该账号开放CLI访问，或选择已有权限的组织，待用户完成后继续真实授权验证。
+
+管理入口核验：用户在首页找不到CLI管理，实际入口为“更多 → 基本信息 → CLI设置”，原CLI使用的直达地址为 `https://open-dev.dingtalk.com/fe/old#/developerSettings`，已在真实Chrome打开并核实。该组织DWS CLI总开关已经开启，“其他渠道”全员禁止，“cyc的系统架构工程师”全员可用；此前笼统称组织未开启不够准确，拒绝还涉及Agent渠道和人员范围。未更改任何权限。Swarm管理链接改为该直达地址，中英文名称对齐真实菜单，回归及build另记。
+
+## 26. 登记员工专属CLI渠道后的授权客户端校正（2026-10-31）
+
+用户自行开通后，真实CLI设置页新增“cyc的Agent学习小助手”、全员可用，其他渠道仍禁止。受限设备授权探测确认：同一学习员工应用凭据从此前900103“应用不存在”变为正常返回设备URL/code；探测进程已终止、临时浏览器页已关闭，不能复用该探测码。
+
+这纠正§24的临时判断：AppKey/AppSecret可合法用于组织登记的自建OAuth客户端，并非一律不应注入。§24移除覆盖只证明内置CLI客户端能取得设备码，没有验证其组织Agent渠道许可；不能以该探测结果替代完整授权。当前用户明确开通员工专属渠道，应恢复当前配置应用完整凭据对作为OAuth客户端，继续保持员工user-oauth和AppToken目录隔离，不静默切换到被组织禁止的“其他渠道”。已有登录数据不删除或复制。对应环境隔离测试按实际契约校正，后续需使用新设备码经用户确认完成真实绑定与读取验收。
+
+校正后provider/tool/runtime/poller 298项通过，独立复核未发现P1/P2。CLI设置直达链接的7项前端定向测试通过，npm run build成功；尚未把设备码探测写成用户授权完成。
+
+真实验收：10:18重启后worker已agent_ready。经Swarm学习小助手渠道页发起正式授权，设备页明确显示该员工应用dinglk4vrnlzhfamib7n；用户随后确认“已完成”。后台runtime返回connected、账号常钰聪、组织openjiuwen harness组；员工隔离reader可用，受限读取测试群返回complete=true/hasMore=false、5条消息，机器人在群校验通过。员工adaptive已启用、存在一个active群访问。真实Chrome中的Swarm卡片显示“钉钉用户账号已绑定该员工”、正确账号组织及断开按钮。未代用户发送测试群消息、创建文档或日程；普通新消息自动回复不作为此次只读授权验收的通过项。
+
+## 27. 共享读取时员工进度丢失的回归（2026-10-31）
+
+用户真实消息“大家都自我介绍一下吧”（02:25:52 UTC）仅生成架构师Request，参与判断respond；学习员工没有Request，不能解释为模型ignore。已只读确认两员工enabled/adaptive、同群active且可见起点早于今天、allow_from为空；新实例发现同一账号群两位接收者。真实历史返回两机器人；临时归档加捕获scheduler的真实入站可向两员工accept。现网当时没有recipient/floor日志，尚不能精确还原缺席原因。
+
+独立审查稳定复现共享水位缺陷：员工身份查询临时失败/退避时，floor保留但员工不在recipients；同账号另一员工仍读消息并推进群checkpoint。缺席超过重叠窗口后，即使恢复加入，消息也已在since之前。新授权还会因确认未绑定的指数退避延迟观察起点。不能把该复现直接当作真实现场唯一根因。
+
+已实现：维持同账号同群共享有界读取，额外在当前poller内存保留各recipient已处理的时间边界；暂停接收者不推进其边界，恢复时用当前接收者最早边界回读，仍按原floor和每员工source_ref防止越权/重复执行。确认失去访问、解绑或账号变更时随floor清理，重启继续使用原“不自动执行停机旧消息”的语义；不新增跨层状态字段或核心协议。确认未授权按下一轮重查，暂时查询失败仍保留退避。补充接收者/floor及数量日志，不记录正文/Token。
+
+验证：polling和production_wiring共102项通过，覆盖双员工暂停恢复、下一轮发现新授权、共享水位领先时的分页补读、撤权、重启和失败不前进；真实SQLite/scheduler/commit/outbox配合替代模型与网络，证明同一条“大家都自我介绍一下吧”为两员工生成独立Request、分别通过其robotCode投递，重复轮询不重复执行。provider/tool/runtime/group_chat_port另288项通过，1项既有100条保留上限测试与当前5000条实现不一致而排除，未改该行为。只读独立复核未发现新增阻断问题。首次授权成功到下一次发现之间仍存在原有观察起点窗口；不声称本地集成测试替代真实群重发验收。
+
+运行状态：10:38:55新worker已agent_ready，四个服务端口可连接且前端HTTP200。10:39:00和10:39:04分别记录架构师与学习员工进入同一个群的观察，两者floor均为02:38:55 UTC。已请求用户发送新消息进行真实双员工验收；未回放旧Request、未代用户发群消息。
+
+## 28. 钉钉授权账号与 AI 员工发言身份边界（2026-10-31）
+
+现场证据：10:25:52的自我介绍请求由架构师生成了“我是……常钰聪”的错误回复。已发布AgentCard仍为系统架构工程师，system_prompt的职责也未变；入站来源及群归档均把常钰聪正确标为human，机器人回复标为agent，没有OAuth写入员工名称的证据。该执行仅调用new_context，没有读取OAuth身份工具。当前提示说明授权账号用于文档和日历，却没有明确区分授权账号、发言人和AI员工；模型发生身份混淆，错误自称还会进入后续群背景。
+
+最小修复：ExecutionDriver复用本次已发布snapshot的AgentCard，将ID/name作为数据传给钉钉专用execution guidance。该提示明确OAuth只提供数据权限、消息发送者不等于员工、自我介绍使用已配置员工身份、历史错误自称不得沿用；不改OAuth归属、不硬编码真人姓名、不替换历史内容或清空会话，不修改其他渠道提示。该边界在参与判断及正式执行前一并进入system_prompt_addendum。
+
+回归先红后绿：纯提示与真实scheduler上下文两项测试均先失败，修复后通过；tool、production_wiring、polling与session_scheduler共222项通过。独立只读复核未发现P1/P2。另用两员工当前实际配置模型做隔离调用，背景特意保留“我是……常钰聪”的错误自称，新指引下分别回答为系统架构AI同事和agent学习小助手，均未冒充真人；未提供工具、未写入真实Request、未投递群消息。11:57:50重启后的worker已agent_ready，四个服务端口正常、前端HTTP200；本次没有前端改动，复用既有dist。
+
+真实群的10:56:10重发已分别产生两员工Request，均completed且钉钉投递回执delivered，这发生在本次身份补丁重启前；其中已出现用户纠正后的正确身份，不能把它当作补丁真实验收结果。
+
+## 29. 直接在群文件空间创建在线文档（2026-10-31）
+
+问题与原因：此前的组合流程先在个人目录创建，再调用convFile links/send、最后重命名群入口；发送动作按授权账号unionId产生真人消息，发送快照带源文档内部数字名。群文件入口改名不能消除这条历史消息。
+
+验证设计与取舍：通用Storage CopyDentry受限探测返回HTTP500，未重试；随后完整读取群文件列表确认没有新增副本，不把500推断为不支持或权限问题。Storage空间元信息额外缺少Storage.Space.Read，但原生创建不依赖该权限。CLI drive info从已有群文档解析到群根目录后，doc create --folder/--workspace成功；进一步只传--workspace为可信群spaceId也成功，覆盖不依赖已有文件的创建路径。已创建两篇明确标记验证用途的在线文档，均回读为ALIDOC、正确群workspaceId与正确标题；生产组合函数的端到端验证见下文。
+
+已实现：仅修改LocalDingTalkCliRuntime.create_group_document及其测试和钉钉工具说明，创建时明确--workspace为已核验当前群空间。保留原OAuth和群空间解析，删除个人创建后的links/send、群入口改名等有消息副作用的步骤；读回必须核对nodeId、在线类型、标题和workspaceId，并以queryDentryId确认存储空间，再核验群文件列表出现同一dentry。创建后失败继续保留真实URL并阻止重建，不回退个人消息、不上传DOCX。不改前端、个人版、其他渠道或agent-core。
+
+验证：12项专项回归先红后绿，覆盖正常、第二页、类型/标题/node/workspace错配、存储位置错配、空ID、列表缺失与分页停滞；provider/tool/production_wiring/polling/group_runtime共364项通过。独立只读复核未发现P1/P2。修改后的完整函数实际创建《群文档创建修复验证》（nodeId mweZ92PV6pqKK0lotRpOLDdN8xEKBD6p），返回同一在线文档URL和群内dentryId 241479184224，群文件列表核验通过；从调用前时间读取群消息返回complete=true、hasMore=false、0条，未产生真人文件发送消息。两篇前序原生接口验证文档保留在群文件列表，不删除用户原有文档。
+
+运行验收：常规停服因旧worker IPC不可达留下服务子进程，核对本仓Python模块和PID后定向停止残留并重新启动。14:26:02新worker已agent_ready；14:26:03两员工均恢复同群监听；5173/18092/19001/19000可连接，前端HTTP200。新创建流程已随新worker加载，无前端修改，复用已有dist。
+
+English summary: DingTalk now creates an online document directly in the verified conversation file workspace instead of creating a personal document and sending its link as the authorized user. Creation is reported only after identity, type, title, workspace and group file visibility are verified. The live host workflow confirmed group-file visibility without generating a user-account message; 364 focused tests passed. The restarted runtime and both group observers are ready.
+
+
+### 30. 授权完成后的页面反馈（2026-10-31）
+
+用户要求删除重复授权步骤，并加快账号和组织信息显示。根因：页面仅每2.5秒检查进行中的授权，返回前台不触发检查，后台定时器还可能被浏览器延迟；正常授权期间始终展开设备链接和设备码，容易被误认为二次确认。只读实测两个现有绑定的后端状态检查约256ms和1193ms，均已包含账号和组织，本次先修复前端等待。
+
+确认范围：仅修改团队版员工授权页面、对应中英文文案和回归测试；不改变OAuth身份、授权凭据或个人版。进行中每秒检查一次，页面重新获得焦点或变为可见时立即检查，同一连接仍只允许一个状态请求在途。将设备码及授权链接收进默认关闭的备用帮助区域，成功、失败或取消后不显示旧码和旧链接。保留手动打开入口以支持自动浏览器打开失败和远程部署。验证计划：返回页面自动显示账号与组织、慢请求不重叠、解绑和失败清理，运行授权页面测试及前端build。已实现：新增回归测试先在旧实现失败，修复后页面测试32项通过，npm run build通过（仅有现有大包提示）；本地HTTP入口与新构建的index及JavaScript一致，无需重启后端。未重新发起真人授权，不改动现有绑定。
+
+English summary: Refresh pending DingTalk authorization immediately when the user returns to the page and every second while waiting, preserving the single in-flight request guard. Keep device-code instructions in a collapsed fallback rather than presenting a second authorization step. All 32 profile tests and the frontend production build passed. The running web server serves the new build. Existing user bindings were preserved; a new live authorization was not performed.
+
+
+### 31. 授权完成与状态检查交错（2026-10-31）
+
+现场：新增绑定员工的设备授权进程已退出，网页显示authorization_failed；同一员工、同一应用修订目录重新执行CLI状态及profile检查返回connected并含账号与组织。状态实现先查询登录态，再检查进程存活；若登录凭据恰在两步之间写入，旧的未登录结果与新的进程退出事实组合成误判。前端将error视为终态停止检查，使短暂误判留在页面。
+
+最小修复：provider在判断操作结束前有界重读一次真实登录态，仅在CLI状态与唯一profile均验证后返回connected；仍保持真实失败、组织拒绝和过期判断，不凭成功文案推断已绑定。团队版页面对authorization_failed状态在返回前台时重新查询当前绑定，而不是再次发起授权；失败状态不持续高频轮询。修改provider、员工页面、各自回归测试及本规约；不改变凭据存储和OAuth流程，不动个人版。验证计划：交错完成、真正失败仍终止、前台恢复已绑定及现有授权回归，前端build后重启源码服务并检查RPC。完成证据：两种完成交错回归在旧实现均失败，修复后provider/tool/production/polling/group_runtime共366项通过，页面33项通过，前端build通过。源码服务重启后15:43:21 runtime worker agent_ready；通过5173网页WebSocket实际核验生活小助手、学习小助手和系统架构工程师三份授权均为connected，账号、组织均存在且无error_code。网页index和JavaScript与新构建一致；未重新登录或替换既有绑定。
+
+English summary: A stale unauthenticated snapshot could be combined with a newly exited device-login process and incorrectly become a terminal failure. Revalidate persisted login once at that boundary and recheck a failed authorization when returning to the UI, without starting a second login. The two completion-race regressions failed before the fix; 366 backend tests, 33 profile tests and the production build passed afterwards. The restarted source service returned connected states with account and organization through the actual Web RPC for all three DingTalk employees, including the affected employee. No new authorization was initiated.
+
+
+### 32. 已绑定账号的名称与组织展示（2026-10-31）
+
+现场复现：生活小助手的当前CLI profile仅包含组织级资料，未给userName/userId且corpName退化为corpId，RPC仍为connected。前端将整个身份区域放在auth.account存在的条件下，导致连已返回的组织也被隐藏。使用同一员工OAuth环境执行只读contact +me已实际取得本人姓名和所属组织。
+
+最小方案：保持已登录判定不变，仅在profile缺失账号/组织名称或以ID充当名称时，使用明确当前profile的contact +me补充展示字段；有界超时，拒绝与已知profile userId冲突的资料，只投影name与org，不向页面传播手机、邮箱等字段，不改变内部读群身份与权限。页面connected时始终独立显示两行，字段缺失提示暂不可用。验证：组织有值但账号缺失、当前账号名称补齐、身份冲突及资料查询失败，授权现有回归、前端build、重启后RPC及真实页面。验证完成：缺资料及ID退化的两个回归先在旧实现失败；授权综合回归370项通过，补充无效响应和超时用例后provider139项重新通过，前端页面34项通过，npm run build通过。源码服务重启后16:02:19 worker agent_ready；通过实际页面进入生活小助手渠道卡片，两个独立DOM节点已可见且显示真实账号名和真实组织名称。没有重新授权，也未改变群访问身份。
+
+English summary: Organization-only CLI profiles can omit the account name, which previously hid the whole identity panel. Resolve missing display names through a bounded, scoped, read-only current-user lookup and render the account and organization independently. Login status and access decisions remain unchanged. The missing-identity regressions failed before the fix. The combined backend suite passed 370 cases; the provider suite passed 139 cases after adding malformed-response and timeout coverage. All 34 profile tests and the production build passed. After restarting the source service, the actual employee channel page visibly displayed both the real account name and organization, without reauthorization.
+
+## 33. 可信请求的应用选择（2026-10-30）
 
 DingTalkCliScope 新增可选 app_id，由宿主从已核验钉钉请求的 route snapshot 注入，不接受模型选择。存在明确 app_id 时按该应用唯一解析，禁用、缺失、重复或已绑定另一 Agent 均拒绝，不能回落到默认应用；群和发送者仍来自可信钉钉事件。
 

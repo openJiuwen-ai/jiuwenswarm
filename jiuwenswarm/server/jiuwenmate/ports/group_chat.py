@@ -74,11 +74,21 @@ class HostGroupChatPort:
             requests = await asyncio.to_thread(self._sessions.session_requests, execution.namespace_id, execution.session_id)
             queued = {state.record.request_input.trigger_message_id for state in requests if state.status == "queued"}
             messages = tuple(item.model_copy(update={"queued_request": item.message_id in queued}) for item in messages)
+        status, reason = result.status, result.reason
+        if (
+            group.platform == "dingtalk" and cursor is None and messages
+            and status == "incomplete" and reason == "known collection gap"
+        ):
+            # The bounded local lookup succeeded; only the platform-wide collection is partial.
+            # Participation can use observed facts, never infer absence from this view.
+            # Keep the archive's gap and all cursor/search completeness contracts unchanged.
+            status = "found"
+            reason = "DingTalk observed messages only; the full group history may be incomplete."
         return GroupMessagesResult(
             namespace_id=execution.namespace_id, agent_id=execution.agent_id, session_id=execution.session_id,
             request_id=execution.request_id, execution_id=execution.execution_id, source_ref=execution.source_ref,
-            status=result.status, messages=messages, next_cursor=result.next_cursor,
-            scanned_through=result.scanned_through, reason=result.reason,
+            status=status, messages=messages, next_cursor=result.next_cursor,
+            scanned_through=result.scanned_through, reason=reason,
         )
 
     async def current_trigger(self, execution: ExecutionContext, message_id: str):

@@ -42,6 +42,91 @@ def append(records, number, **changes):
                                   source_ref=f"feishu:message:m{number}")
 
 
+@pytest.mark.parametrize('history_first', [False, True])
+def test_dingtalk_receipt_and_verified_bot_echo_become_one_record(records, history_first):
+    group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
+    receipt = message(1, message_id='process-key', sender_id='app', sender_name='employee',
+                      sender_kind='agent', text='Good morning', received_at=NOW + timedelta(seconds=3), reply_to='human-1')
+    echo = message(2, message_id='platform-id', sender_id='dingtalk-open:bot', sender_name='Bot nickname',
+                   sender_kind='agent', text=receipt.text, received_at=NOW + timedelta(seconds=1))
+    items = [(receipt, 'delivery:del-1'), (echo, 'dingtalk:message:platform-id')]
+    for item, source in reversed(items) if history_first else items:
+        records.archive.append('local', group.group_chat_id, item, source_ref=source)
+    reconcile = records.archive.reconcile_dingtalk_deliveries
+    assert reconcile('local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
+                     observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == 1
+    assert reconcile('local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
+                     observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == 0
+    records.archive.append('local', group.group_chat_id, receipt, source_ref='delivery:del-1')
+    records.archive.append('local', group.group_chat_id, echo, source_ref='dingtalk:message:platform-id')
+    page = records.archive.history_page('local', group.group_chat_id, cursor=None, limit=20,
+                                       visible_from=NOW, reader_id='employee')
+    assert len(page.messages) == 1
+    merged, = page.messages
+    assert (merged.message_id, merged.sender_id, merged.sender_name, merged.reply_to) == (
+        'platform-id', 'app', 'employee', 'human-1')
+    assert merged.received_at == echo.received_at
+
+
+@pytest.mark.parametrize('case', ['other_bot', 'human', 'different_text', 'late', 'attachment', 'ambiguous_echo',
+                                  'ambiguous_receipt', 'unknown_bot', 'feishu'])
+def test_dingtalk_echo_reconciliation_preserves_distinct_or_ambiguous_messages(records, case):
+    group = records.groups.resolve('local', 'feishu' if case == 'feishu' else 'dingtalk', 'cid', now=NOW)
+    receipt = message(1, message_id='process-key', sender_id='app', sender_kind='agent', text='Repeated text')
+    echo = message(2, message_id='platform-id', sender_id='dingtalk-open:bot', sender_kind='agent', text=receipt.text)
+    if case == 'other_bot':
+        echo = echo.model_copy(update={'sender_id': 'dingtalk-open:other'})
+    elif case == 'human':
+        echo = echo.model_copy(update={'sender_kind': 'human'})
+    elif case == 'different_text':
+        echo = echo.model_copy(update={'text': 'Different'})
+    elif case == 'late':
+        echo = echo.model_copy(update={'received_at': NOW + timedelta(minutes=2)})
+    elif case == 'attachment':
+        receipt = receipt.model_copy(update={'attachment_refs': ('outgoing:file',)})
+    records.archive.append('local', group.group_chat_id, receipt, source_ref='delivery:del-1')
+    records.archive.append('local', group.group_chat_id, echo, source_ref='dingtalk:message:platform-id')
+    if case.startswith('ambiguous_'):
+        duplicate = echo if case == 'ambiguous_echo' else receipt
+        source = 'dingtalk:message:another' if case == 'ambiguous_echo' else 'delivery:del-2'
+        records.archive.append('local', group.group_chat_id, duplicate.model_copy(update={'message_id': 'another'}),
+                               source_ref=source)
+    mapping = {} if case == 'unknown_bot' else {'app': 'dingtalk-open:bot'}
+    assert records.archive.reconcile_dingtalk_deliveries(
+        'local', group.group_chat_id, mapping, observed_since=NOW - timedelta(seconds=20),
+        observed_through=NOW + timedelta(seconds=30)) == 0
+    page = records.archive.recent('local', group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
+    assert len(page.messages) == (3 if case.startswith('ambiguous_') else 2)
+
+
+@pytest.mark.parametrize('since,through', [(0, 30), (-20, 5)])
+def test_dingtalk_echo_requires_complete_past_and_future_candidate_window(records, since, through):
+    group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
+    receipt = message(1, message_id='process', sender_id='app', sender_kind='agent', text='Same text')
+    echo = message(2, message_id='echo', sender_id='dingtalk-open:bot', sender_kind='agent', text=receipt.text)
+    records.archive.append('local', group.group_chat_id, receipt, source_ref='delivery:del')
+    records.archive.append('local', group.group_chat_id, echo, source_ref='dingtalk:message:echo')
+    assert records.archive.reconcile_dingtalk_deliveries(
+        'local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
+        observed_since=NOW + timedelta(seconds=since), observed_through=NOW + timedelta(seconds=through),
+    ) == 0
+
+
+def test_dingtalk_unsettled_receipt_still_counts_as_ambiguous_candidate(records):
+    group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
+    for mid, source, sender, seconds in [
+        ('receipt-a', 'delivery:a', 'app', 0), ('receipt-b', 'delivery:b', 'app', 15),
+        ('echo', 'dingtalk:message:echo', 'dingtalk-open:bot', 8),
+    ]:
+        records.archive.append('local', group.group_chat_id, message(
+            1, message_id=mid, sender_id=sender, sender_kind='agent', text='Same',
+            received_at=NOW + timedelta(seconds=seconds)), source_ref=source)
+    assert records.archive.reconcile_dingtalk_deliveries(
+        'local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
+        observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=20),
+    ) == 0
+
+
 def test_same_message_concurrent_receivers_and_restart_share_one_record(records):
     with ThreadPoolExecutor(max_workers=4) as pool:
         refs = list(pool.map(lambda _: append(records, 1), range(8)))
@@ -219,6 +304,38 @@ def test_edited_message_keeps_scan_identity_and_old_redelivery_does_not_undo_it(
         append(records, 1)
     result = records.archive.recent("local", records.group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
     assert result.messages[0].text == "new" and result.scanned_through == "m1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('platform,has_messages,expected', [
+    ('dingtalk', True, 'found'), ('dingtalk', False, 'incomplete'), ('feishu', True, 'incomplete'),
+])
+async def test_known_observations_do_not_claim_complete_or_empty_platform_history(records, platform, has_messages, expected):
+    port_class = import_module(f'{PKG}.ports.group_chat').HostGroupChatPort
+    group = records.groups.resolve('local', platform, 'known-chat', now=NOW)
+    records.groups.observe_access('local', 'agent', group.group_chat_id, 'app', observed_at=NOW, source_ref='known-member')
+    records.archive.mark_gap('local', group.group_chat_id)
+    if has_messages:
+        records.archive.append('local', group.group_chat_id, message(1), source_ref='known-message')
+    execution = core.ExecutionContext(
+        namespace_id='local', agent_id='agent', session_id='session', request_id='request', execution_id='exec',
+        source_ref='event:1', config_version='v1', config_fingerprint='a' * 64, principal_ref='principal',
+        startup_scope=frozenset({'chat'}), source_scope=frozenset({'chat'}), policy_revision='p1',
+        capability_snapshot=frozenset({'construction'}),
+    )
+    session = SimpleNamespace(agent_id='agent', conversation=SimpleNamespace(kind='group', key=group.group_chat_id))
+
+    async def verify(access, current_group):
+        return 'active'
+
+    port = port_class(records.groups, records.archive, SimpleNamespace(get_session=lambda *args: session),
+                      namespace_id='local', agent_id='agent', verify_membership=verify)
+    result = await port.recent_messages(execution)
+    assert result.status == expected
+    assert records.archive.recent('local', group.group_chat_id, cursor=None, limit=8, visible_from=NOW).status == 'incomplete'
+    if result.status == 'found':
+        assert result.messages[0].message_id == 'm1'
+        assert 'incomplete' in result.reason
 
 
 @pytest.mark.asyncio

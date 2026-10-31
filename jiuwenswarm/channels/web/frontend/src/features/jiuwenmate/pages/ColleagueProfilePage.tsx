@@ -45,6 +45,7 @@ import type {
   ColleagueResourceOption,
   JiuwenMateModelCatalog,
   JiuwenMateSchedule,
+  JiuwenMateDingTalkAuthStatus,
   JiuwenMateWireSettings,
 } from '../jiuwenmateApi';
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
@@ -153,6 +154,11 @@ interface ColleagueProfilePageProps {
   onPollAgentMailAuth?: (agentId: string, operationId: string) => Promise<{ status: string; cli_version: string | null }>;
   onCancelAgentMailAuth?: (agentId: string, operationId: string) => Promise<{ status: string; cli_version: string | null }>;
   onDisconnectAgentMail?: (agentId: string) => Promise<{ status: string; cli_version: string | null }>;
+  onLoadDingTalkAuthStatus?: (agentId: string, connectionKey: string) => Promise<JiuwenMateDingTalkAuthStatus>;
+  onBeginDingTalkAuth?: (agentId: string, connectionKey: string) => Promise<JiuwenMateDingTalkAuthStatus>;
+  onPollDingTalkAuth?: (agentId: string, connectionKey: string, operationId: string) => Promise<JiuwenMateDingTalkAuthStatus>;
+  onCancelDingTalkAuth?: (agentId: string, connectionKey: string, operationId: string) => Promise<JiuwenMateDingTalkAuthStatus>;
+  onDisconnectDingTalkAuth?: (agentId: string, connectionKey: string) => Promise<JiuwenMateDingTalkAuthStatus>;
   activity?: JiuwenMateActivityMember | null;
   onOpenOffice: () => void;
   onChat: () => void;
@@ -204,6 +210,11 @@ export function ColleagueProfilePage({
   onPollAgentMailAuth,
   onCancelAgentMailAuth,
   onDisconnectAgentMail,
+  onLoadDingTalkAuthStatus,
+  onBeginDingTalkAuth,
+  onPollDingTalkAuth,
+  onCancelDingTalkAuth,
+  onDisconnectDingTalkAuth,
   activity = null,
   onOpenOffice,
   onChat,
@@ -235,6 +246,14 @@ export function ColleagueProfilePage({
   const [agentMailEmail, setAgentMailEmail] = useState('');
   const [agentMailOperation, setAgentMailOperation] = useState('');
   const [agentMailError, setAgentMailError] = useState('');
+  const [dingtalkAuthStatuses, setDingtalkAuthStatuses] = useState<Record<string, JiuwenMateDingTalkAuthStatus>>({});
+  const [dingtalkAuthErrors, setDingtalkAuthErrors] = useState<Record<string, string>>({});
+  const [dingtalkAuthBusy, setDingtalkAuthBusy] = useState<Record<string, boolean>>({});
+  const dingtalkAuthMounted = useRef(false);
+  const dingtalkAuthConnections = useRef(new Map<string, string>());
+  const dingtalkAuthGenerations = useRef(new Map<string, number>());
+  const dingtalkAuthActions = useRef(new Set<string>());
+  const dingtalkAuthPolls = useRef(new Set<string>());
   const agentMailAuthWindow = useRef<Window | null>(null);
   const applyAgentMailStatus = (status: { status: string; email?: string }) => {
     setAgentMailStatus(status.status);
@@ -242,6 +261,64 @@ export function ColleagueProfilePage({
   };
   const handleAgentMailError = (error: unknown) => {
     setAgentMailError(error instanceof Error ? error.message : String(error));
+  };
+  const updateDingTalkAuth = (connectionKey: string, status: JiuwenMateDingTalkAuthStatus) => {
+    setDingtalkAuthStatuses((current) => {
+      const previous = current[connectionKey];
+      const next = status.status === 'authorizing' && status.operation_id
+        && status.operation_id === previous?.operation_id ? {
+          ...status,
+          auth_url: status.auth_url || previous.auth_url,
+          user_code: status.user_code || previous.user_code,
+        } : status;
+      return { ...current, [connectionKey]: next };
+    });
+    setDingtalkAuthErrors((current) => ({ ...current, [connectionKey]: '' }));
+  };
+  const nextDingTalkAuthGeneration = (connectionKey: string) => {
+    const generation = (dingtalkAuthGenerations.current.get(connectionKey) ?? 0) + 1;
+    dingtalkAuthGenerations.current.set(connectionKey, generation);
+    return generation;
+  };
+  const isCurrentDingTalkAuth = (connectionKey: string, generation: number) =>
+    dingtalkAuthMounted.current
+    && dingtalkAuthConnections.current.has(connectionKey)
+    && dingtalkAuthGenerations.current.get(connectionKey) === generation;
+  const runDingTalkAuthorization = async (
+    connectionKey: string,
+    action: () => Promise<JiuwenMateDingTalkAuthStatus>,
+  ) => {
+    if (!dingtalkAuthMounted.current || !dingtalkAuthConnections.current.has(connectionKey)
+      || dingtalkAuthActions.current.has(connectionKey)) return;
+    const generation = nextDingTalkAuthGeneration(connectionKey);
+    dingtalkAuthActions.current.add(connectionKey);
+    setDingtalkAuthBusy((current) => ({ ...current, [connectionKey]: true }));
+    setDingtalkAuthErrors((current) => ({ ...current, [connectionKey]: '' }));
+    try {
+      const status = await action();
+      if (isCurrentDingTalkAuth(connectionKey, generation)) updateDingTalkAuth(connectionKey, status);
+    } catch (error) {
+      if (isCurrentDingTalkAuth(connectionKey, generation)) {
+        setDingtalkAuthErrors((current) => ({ ...current, [connectionKey]: error instanceof Error ? error.message : String(error) }));
+      }
+    } finally {
+      if (isCurrentDingTalkAuth(connectionKey, generation)) {
+        dingtalkAuthActions.current.delete(connectionKey);
+        setDingtalkAuthBusy((current) => ({ ...current, [connectionKey]: false }));
+      }
+    }
+  };
+  const beginDingTalkAuthorization = (connectionKey: string) => {
+    if (!onBeginDingTalkAuth) return;
+    return runDingTalkAuthorization(connectionKey, () => onBeginDingTalkAuth(colleague.id, connectionKey));
+  };
+  const disconnectDingTalkAuthorization = (connectionKey: string) => {
+    if (!onDisconnectDingTalkAuth) return;
+    return runDingTalkAuthorization(connectionKey, () => onDisconnectDingTalkAuth(colleague.id, connectionKey));
+  };
+  const cancelDingTalkAuthorization = (connectionKey: string, operationId: string) => {
+    if (!onCancelDingTalkAuth) return;
+    return runDingTalkAuthorization(connectionKey, () => onCancelDingTalkAuth(colleague.id, connectionKey, operationId));
   };
   const startMailAuthorization = async () => {
     if (!onBeginAgentMailAuth) return;
@@ -389,6 +466,104 @@ export function ColleagueProfilePage({
       window.clearInterval(timer);
     };
   }, [agentMailOperation, colleague.id, onLoadAgentMailStatus, onPollAgentMailAuth]);
+  useEffect(() => {
+    dingtalkAuthMounted.current = true;
+    return () => {
+      dingtalkAuthMounted.current = false;
+      for (const connectionKey of dingtalkAuthGenerations.current.keys()) {
+        nextDingTalkAuthGeneration(connectionKey);
+      }
+      dingtalkAuthActions.current.clear();
+    };
+  }, []);
+  useEffect(() => {
+    const connections = new Map(colleague.connections
+      .filter((connection) => connection.channel === 'dingtalk')
+      .map((connection) => [connection.connectionKey, connection.agentId]));
+    const staleKeys = new Set<string>();
+    for (const [connectionKey, agentId] of dingtalkAuthConnections.current) {
+      if (connections.get(connectionKey) !== agentId) {
+        staleKeys.add(connectionKey);
+        nextDingTalkAuthGeneration(connectionKey);
+        dingtalkAuthActions.current.delete(connectionKey);
+      }
+    }
+    dingtalkAuthConnections.current = connections;
+    if (staleKeys.size) {
+      setDingtalkAuthStatuses((current) => Object.fromEntries(
+        Object.entries(current).filter(([key]) => !staleKeys.has(key)),
+      ));
+      setDingtalkAuthErrors((current) => Object.fromEntries(
+        Object.entries(current).filter(([key]) => !staleKeys.has(key)),
+      ));
+      setDingtalkAuthBusy((current) => Object.fromEntries(
+        Object.entries(current).filter(([key]) => !staleKeys.has(key)),
+      ));
+    }
+  }, [colleague.connections]);
+  useEffect(() => {
+    if (section !== 'channels' || !onLoadDingTalkAuthStatus) return;
+    let active = true;
+    const connections = colleague.connections.filter((item) => item.channel === 'dingtalk');
+    void Promise.all(connections.map(async (connection) => {
+      if (dingtalkAuthActions.current.has(connection.connectionKey)) return;
+      const generation = nextDingTalkAuthGeneration(connection.connectionKey);
+      try {
+        const status = await onLoadDingTalkAuthStatus(colleague.id, connection.connectionKey);
+        if (active && isCurrentDingTalkAuth(connection.connectionKey, generation)) {
+          updateDingTalkAuth(connection.connectionKey, status);
+        }
+      } catch (error) {
+        if (active && isCurrentDingTalkAuth(connection.connectionKey, generation)) {
+          setDingtalkAuthErrors((current) => ({ ...current, [connection.connectionKey]: error instanceof Error ? error.message : String(error) }));
+        }
+      }
+    }));
+    return () => { active = false; };
+  }, [colleague.connections, colleague.id, connectionEpoch, onLoadDingTalkAuthStatus, section]);
+  useEffect(() => {
+    const pending = Object.entries(dingtalkAuthStatuses).filter(([connectionKey, status]) =>
+      dingtalkAuthConnections.current.has(connectionKey) && (
+        (status.status === 'authorizing' && status.operation_id && onPollDingTalkAuth)
+        || (status.status === 'error' && status.error_code === 'authorization_failed' && onLoadDingTalkAuthStatus)
+      ),
+    );
+    if (!pending.length) return;
+    const pollAuthorization = (includeFailed = false) => {
+      for (const [connectionKey, status] of pending) {
+        if (status.status !== 'authorizing' && !includeFailed) continue;
+        if (!dingtalkAuthConnections.current.has(connectionKey) || dingtalkAuthActions.current.has(connectionKey)
+          || dingtalkAuthPolls.current.has(connectionKey)) continue;
+        const generation = nextDingTalkAuthGeneration(connectionKey);
+        dingtalkAuthPolls.current.add(connectionKey);
+        const check = status.status === 'authorizing'
+          ? onPollDingTalkAuth!(colleague.id, connectionKey, status.operation_id!)
+          : onLoadDingTalkAuthStatus!(colleague.id, connectionKey);
+        void check
+          .then((next) => {
+            if (isCurrentDingTalkAuth(connectionKey, generation)) updateDingTalkAuth(connectionKey, next);
+          })
+          .catch((error: unknown) => {
+            if (isCurrentDingTalkAuth(connectionKey, generation)) {
+              setDingtalkAuthErrors((current) => ({ ...current, [connectionKey]: error instanceof Error ? error.message : String(error) }));
+            }
+          })
+          .finally(() => { dingtalkAuthPolls.current.delete(connectionKey); });
+      }
+    };
+    const refreshVisibleAuthorization = () => {
+      if (document.visibilityState !== 'hidden') pollAuthorization(true);
+    };
+    const timer = pending.some(([, status]) => status.status === 'authorizing')
+      ? window.setInterval(pollAuthorization, 1000) : undefined;
+    window.addEventListener('focus', refreshVisibleAuthorization);
+    document.addEventListener('visibilitychange', refreshVisibleAuthorization);
+    return () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      window.removeEventListener('focus', refreshVisibleAuthorization);
+      document.removeEventListener('visibilitychange', refreshVisibleAuthorization);
+    };
+  }, [colleague.connections, colleague.id, dingtalkAuthStatuses, onPollDingTalkAuth, onLoadDingTalkAuthStatus]);
   useEffect(() => {
     if (section !== 'persona' || !onLoadSettings) return;
     let active = true;
@@ -571,6 +746,12 @@ export function ColleagueProfilePage({
               onStartAgentMailAuth={startMailAuthorization}
               onDisconnectAgentMail={disconnectAgentMail}
               onCancelAgentMailAuth={cancelAgentMailAuth}
+              dingtalkAuthStatuses={dingtalkAuthStatuses}
+              dingtalkAuthErrors={dingtalkAuthErrors}
+              dingtalkAuthBusy={dingtalkAuthBusy}
+              onBeginDingTalkAuth={beginDingTalkAuthorization}
+              onCancelDingTalkAuth={cancelDingTalkAuthorization}
+              onDisconnectDingTalkAuth={disconnectDingTalkAuthorization}
             />
           )}
         </div>
@@ -1079,6 +1260,12 @@ function ProfileSectionDetail({
   onStartAgentMailAuth,
   onDisconnectAgentMail,
   onCancelAgentMailAuth,
+  dingtalkAuthStatuses,
+  dingtalkAuthErrors,
+  dingtalkAuthBusy,
+  onBeginDingTalkAuth,
+  onCancelDingTalkAuth,
+  onDisconnectDingTalkAuth,
 }: {
   colleague: JiuwenMateColleague;
   sharingApi?: GroupSharingApi;
@@ -1124,6 +1311,12 @@ function ProfileSectionDetail({
   onStartAgentMailAuth: () => void;
   onDisconnectAgentMail: () => void;
   onCancelAgentMailAuth: () => void;
+  dingtalkAuthStatuses: Record<string, JiuwenMateDingTalkAuthStatus>;
+  dingtalkAuthErrors: Record<string, string>;
+  dingtalkAuthBusy: Record<string, boolean>;
+  onBeginDingTalkAuth: (connectionKey: string) => void;
+  onCancelDingTalkAuth: (connectionKey: string, operationId: string) => void;
+  onDisconnectDingTalkAuth: (connectionKey: string) => void;
 }) {
   const { t } = useTranslation();
   const [resourcePickerOpen, setResourcePickerOpen] = useState(false);
@@ -1310,6 +1503,61 @@ function ProfileSectionDetail({
                             </button>
                           ) : null}
                         </div>
+                        {platform === 'dingtalk' ? (() => {
+                          const auth = dingtalkAuthStatuses[connection.connectionKey];
+                          const busy = Boolean(dingtalkAuthBusy[connection.connectionKey]);
+                          const error = dingtalkAuthErrors[connection.connectionKey]
+                            || (auth?.error_code ? t(`jiuwenmate.profile.dingtalkAuth.failures.${auth.error_code}`) : '');
+                          return (
+                            <div className="jiuwenmate-profile__mail-card jiuwenmate-profile__dingtalk-auth-card" data-testid="jiuwenmate-dingtalk-user-auth" data-variant={connection.connectionKey}>
+                              <div className="jiuwenmate-profile__mail-content">
+                                <strong data-testid="jiuwenmate-dingtalk-user-auth-title">{t('jiuwenmate.profile.dingtalkAuth.title')}</strong>
+                                <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-description">
+                                  {t('jiuwenmate.profile.dingtalkAuth.description')}
+                                </p>
+                                <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-status">
+                                  {t(`jiuwenmate.profile.dingtalkAuth.status.${auth?.status ?? 'loading'}`)}
+                                </p>
+                                {auth?.status === 'connected' ? (
+                                  <div className="jiuwenmate-profile__dingtalk-auth-identity" data-testid="jiuwenmate-dingtalk-user-auth-account">
+                                    <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-account-name">{t('jiuwenmate.profile.dingtalkAuth.account')}: {auth.account || t('jiuwenmate.profile.dingtalkAuth.accountUnavailable')}</p>
+                                    <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-organization">{t('jiuwenmate.profile.dingtalkAuth.organization')}: {auth.organization || t('jiuwenmate.profile.dingtalkAuth.organizationUnavailable')}</p>
+                                  </div>
+                                ) : null}
+                                {auth?.status === 'authorizing' && auth.auth_url ? (
+                                  <details data-testid="jiuwenmate-dingtalk-user-auth-help">
+                                    <summary data-testid="jiuwenmate-dingtalk-user-auth-help-toggle">{t('jiuwenmate.profile.dingtalkAuth.help')}</summary>
+                                    {auth.user_code ? (
+                                      <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-dingtalk-user-auth-code"><strong>{t('jiuwenmate.profile.dingtalkAuth.code')}</strong> {auth.user_code}</p>
+                                    ) : null}
+                                    <a href={auth.auth_url} target="_blank" rel="noreferrer" data-testid="jiuwenmate-dingtalk-user-auth-open">{t('jiuwenmate.profile.dingtalkAuth.open')}</a>
+                                  </details>
+                                ) : null}
+                                <div className="jiuwenmate-profile__im-actions">
+                                  {auth?.status === 'authorizing' ? (
+                                    <button type="button" className="jiuwenmate-link-button" disabled={busy || !auth.operation_id}
+                                      onClick={() => auth.operation_id && onCancelDingTalkAuth(connection.connectionKey, auth.operation_id)}
+                                      data-testid="jiuwenmate-dingtalk-user-auth-cancel">{t('jiuwenmate.profile.dingtalkAuth.cancel')}</button>
+                                  ) : auth?.status === 'connected' ? (
+                                    <button type="button" className="jiuwenmate-link-button" disabled={busy}
+                                      onClick={() => onDisconnectDingTalkAuth(connection.connectionKey)}
+                                      data-testid="jiuwenmate-dingtalk-user-auth-disconnect">{t('jiuwenmate.profile.dingtalkAuth.disconnect')}</button>
+                                  ) : (
+                                    <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" disabled={busy || !onBeginDingTalkAuth}
+                                      onClick={() => onBeginDingTalkAuth(connection.connectionKey)}
+                                      data-testid="jiuwenmate-dingtalk-user-auth-begin">{t(`jiuwenmate.profile.dingtalkAuth.${busy ? 'beginPending' : 'begin'}`)}</button>
+                                  )}
+                                </div>
+                                {error ? <p className="jiuwenmate-profile__mail-note" role="alert" data-testid="jiuwenmate-dingtalk-user-auth-error">{error}</p> : null}
+                                {auth?.error_code === 'org_access_denied' ? (
+                                  <a href="https://open-dev.dingtalk.com/fe/old#/developerSettings" target="_blank" rel="noreferrer" data-testid="jiuwenmate-dingtalk-user-auth-admin">
+                                    {t('jiuwenmate.profile.dingtalkAuth.openAdmin')}
+                                  </a>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })() : null}
                       </li>
                     ))}
                   </ul>
