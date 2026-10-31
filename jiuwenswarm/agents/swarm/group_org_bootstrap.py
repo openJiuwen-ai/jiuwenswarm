@@ -2274,45 +2274,24 @@ def _final_file_path(raw: Any, *, session_id: str, organization_id: str) -> Path
     return resolved
 
 
-def _file_digest(path: Path) -> bytes | None:
-    """Content hash used to collapse a copied final file onto one attachment."""
-    try:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.digest()
-    except OSError:
-        return None
-
-
 def _owner_final_files(
     submitted: list, roots: list[Any], *, session_id: str, organization_id: str
 ) -> list[dict]:
     """Files the Owner delivered: complete_team_run attachments and the root result_uri.
 
     Child-task outputs are never scanned, so drafts stay out of the group post.
-    The same path is attached once. A later file with the same bytes, such as
-    the Owner's copy of the summary ``result_uri``, is omitted too. The first
-    path is the one that stays.
     """
     candidates = [item.get("path") for item in submitted if isinstance(item, dict)]
     for task in roots:
         context = getattr(task, "output_context", None)
         candidates.append(getattr(context, "result_uri", None))
     files: list[dict] = []
-    seen_paths: set[str] = set()
-    seen_digests: set[bytes] = set()
+    seen: set[str] = set()
     for raw in candidates:
         path = _final_file_path(raw, session_id=session_id, organization_id=organization_id)
-        if path is None or str(path) in seen_paths:
+        if path is None or str(path) in seen:
             continue
-        digest = _file_digest(path)
-        if digest is not None and digest in seen_digests:
-            continue
-        seen_paths.add(str(path))
-        if digest is not None:
-            seen_digests.add(digest)
+        seen.add(str(path))
         files.append({"name": path.name, "path": str(path)})
     return files
 
@@ -3187,37 +3166,11 @@ async def _run_owner_proxy(
         raise
     finally:
         try:
-            await pause_organization_instances(
-                session_id=session_id,
-                task_pool=task_pool,
-                team_ids=[
-                    str(item["team_id"])
-                    for item in group_organization_teams(session_id)
-                    if item.get("team_id")
-                ],
-                include_summary=completed,
-            )
-        except Exception:
-            logger.exception("group organization pause failed session=%s", session_id)
-        # Release while this plan is still the live one, then mark it done or
-        # failed. Marking it earlier let the next queued round bind, and this
-        # finally then released that new binding. A failed round releases too,
-        # but only while the instance still points at this organization.
-        try:
-            bound_now = await _live_backend(runtime, team_id, session_id)
-            current = _bound_organization(bound_now)
-            if current and current != organization_id:
-                logger.info(
-                    "group organization release skipped; instance moved "
-                    "session=%s plan=%s bound=%s",
-                    session_id,
-                    plan_id,
-                    current,
-                )
-            else:
-                await dissolve_completed_swarm_organization(
-                    org_runtime=org_runtime,
-                    task_pool=task_pool,
+            if start_watchdog is not None:
+                start_watchdog.cancel()
+            _results.pop(key, None)
+            try:
+                await pause_organization_instances(
                     session_id=session_id,
                     task_pool=task_pool,
                     team_ids=[
@@ -3227,15 +3180,9 @@ async def _run_owner_proxy(
                     ],
                     include_summary=completed,
                 )
-        except Exception:
-            logger.exception(
-                "group organization dissolve failed session=%s",
-                session_id,
-            )
-        try:
-            if failed_error is not None:
-                update_group_organization_plan(
-                    session_id, plan_id, status="failed", error=failed_error
+            except Exception:
+                logger.exception(
+                    "group organization pause failed session=%s", session_id
                 )
             # Release while this plan is still the live one, then mark it done
             # or failed. Marking it earlier let the next queued round bind, and
