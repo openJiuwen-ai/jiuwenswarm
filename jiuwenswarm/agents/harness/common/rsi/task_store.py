@@ -135,25 +135,36 @@ class RsiTaskStore:
         task_dir = self.task_dir(self.tasks_root, task_id)
         with _LOCK:
             current = self.get(task_id)  # re-read under lock
-            old = current.status
-            if old not in set(from_states):
-                raise RsiTaskStateConflict(
-                    f"任务 {task_id} 状态 {old} 不允许迁移到 {to_state}（允许来源: {sorted(from_states)}）"
-                )
-            allowed = _STATUS_TRANSITIONS.get(TaskStatus(old), frozenset())
-            if to_state not in allowed:
-                raise RsiTaskStateConflict(f"任务 {task_id} 状态 {old} 不允许迁移到 {to_state}")
-            payload = current.to_dict()
-            payload["status"] = to_state
-            payload["updated_at"] = utcnow_iso()
-            if cause:
-                history = payload.setdefault("status_history", [])
-                if not isinstance(history, list):
-                    history = []
-                history.append({"from": old, "to": to_state, "cause": cause, "ts": utcnow_iso()})
-                payload["status_history"] = history
+            old, payload = self._transition_payload(
+                current, from_states=from_states, to_state=to_state, cause=cause
+            )
             self._write_task(task_dir, payload)
         # P1 钩子放在锁外执行（回调不应持有文件锁）
+        if self._on_status_changed is not None:
+            self._on_status_changed(task_id, old, to_state)
+        return RsiTask.from_dict(payload)
+
+    def update_status_with_results(
+        self,
+        task_id: str,
+        from_states: list[str],
+        to_state: str,
+        results: dict[str, Any],
+        cause: str = "",
+    ) -> RsiTask:
+        """Atomically persist Provider results and their public state transition."""
+        task_dir = self.task_dir(self.tasks_root, task_id)
+        with _LOCK:
+            current = self.get(task_id)
+            old, payload = self._transition_payload(
+                current, from_states=from_states, to_state=to_state, cause=cause
+            )
+            config = dict(payload.get("config") or {})
+            merged = dict(config.get("results") or {})
+            merged.update({key: value for key, value in results.items() if value is not None})
+            config["results"] = merged
+            payload["config"] = config
+            self._write_task(task_dir, payload)
         if self._on_status_changed is not None:
             self._on_status_changed(task_id, old, to_state)
         return RsiTask.from_dict(payload)
@@ -204,6 +215,34 @@ class RsiTaskStore:
             self._write_task(task_dir, payload)
 
     # -- 内部 --
+
+    @staticmethod
+    def _transition_payload(
+        current: RsiTask,
+        *,
+        from_states: list[str],
+        to_state: str,
+        cause: str,
+    ) -> tuple[str, dict[str, Any]]:
+        task_id = current.task_id
+        old = current.status
+        if old not in set(from_states):
+            raise RsiTaskStateConflict(
+                f"任务 {task_id} 状态 {old} 不允许迁移到 {to_state}（允许来源: {sorted(from_states)}）"
+            )
+        allowed = _STATUS_TRANSITIONS.get(TaskStatus(old), frozenset())
+        if to_state not in allowed:
+            raise RsiTaskStateConflict(f"任务 {task_id} 状态 {old} 不允许迁移到 {to_state}")
+        payload = current.to_dict()
+        payload["status"] = to_state
+        payload["updated_at"] = utcnow_iso()
+        if cause:
+            history = payload.setdefault("status_history", [])
+            if not isinstance(history, list):
+                history = []
+            history.append({"from": old, "to": to_state, "cause": cause, "ts": utcnow_iso()})
+            payload["status_history"] = history
+        return old, payload
 
     def _read_task(self, task_id: str) -> dict[str, Any] | None:
         task_dir = self.task_dir(self.tasks_root, task_id)
