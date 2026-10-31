@@ -3647,3 +3647,26 @@ async def test_member_instance_loses_group_reply_tools(monkeypatch):
     )
     assert removed == []
     assert ("remove", "swarm_org_member_silence") in sections
+
+
+@pytest.mark.asyncio
+async def test_organization_record_uses_a_short_name_and_reads_back(tmp_path):
+    from openjiuwen.agent_teams.paths import reset_task_openjiuwen_home, set_task_openjiuwen_home
+
+    member = "member-97f673a6-1234-5678-9abc-def012345678"
+    team_id = bootstrap.instance_team_id(SESSION, member)
+    home = set_task_openjiuwen_home(tmp_path / "core")
+    try:
+        async def _conversation():
+            return SimpleNamespace(history_path=tmp_path / "history" / "history.jsonl")
+
+        backend = SimpleNamespace(team_name="outer-team", group_conversation=_conversation)
+        await bootstrap._record_team_run(
+            backend, member_name=member, team_id=team_id, session_id=SESSION, organization_id="org-1",
+        )
+        files = list(group_chat.group_runs_dir("outer-team").glob("*.json"))
+        assert [item.name.startswith("org-") and len(item.name) == 21 for item in files] == [True]
+        saved = await bootstrap.saved_organization_instance(backend, member, SESSION)
+        assert saved["organization_id"] == "org-1"
+    finally:
+        reset_task_openjiuwen_home(home)
