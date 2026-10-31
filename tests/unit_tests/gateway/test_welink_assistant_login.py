@@ -186,6 +186,30 @@ def test_typed_assistant_credential_stays_disabled_until_cli_and_hides_the_secre
     assert "hidden" not in str(public)
 
 
+def test_cli_rescan_replaces_the_shared_reader_account():
+    stored = apply_welink_authorization(
+        {
+            "account": "h00557917",
+            "cli_authorized": True,
+            "reader_credential_dir": "C:/reader",
+            "bindings": [{
+                "persistent_agent_id": "mate_old",
+                "assistant_credential_id": "old-id",
+                "assistant_secret": "old-secret",
+                "credential_dir": "C:/old",
+            }],
+        },
+        {
+            "persistent_agent_id": "mate_old",
+            "account": "h00990000",
+            "cli_authorized": True,
+            "reader_credential_dir": "C:/reader-new",
+        },
+    )
+    assert stored["account"] == "h00990000"
+    assert stored["bindings"][0]["assistant_credential_id"] == "old-id"
+
+
 def test_another_reader_account_is_rejected_without_dropping_existing_binding():
     import pytest
 

@@ -60,6 +60,7 @@
   },
   "jiuwenmate": {
     "sharing": {
+      "unread": "Unread cross-group sharing approval",
       "title": "Cross-group sharing approvals",
       "open": "Open sharing approvals",
       "pending": "Sharing requests awaiting your decision: {{count}}",
@@ -337,14 +338,13 @@
       "welinkAssistantExisting": "Enter an existing AK/SK",
       "welinkAssistantCredentialId": "AK",
       "welinkAssistantCredentialPlaceholder": "AK of the existing assistant",
-      "welinkAssistantAccount": "Assistant group member account (optional)",
-      "welinkAssistantAccountHint": "Enter the assistant memberAccount from group membership to identify this colleague",
       "welinkAssistantSecret": "SK",
       "welinkAssistantSecretPlaceholder": "SK of the existing assistant",
       "welinkSaveCredential": "Save",
       "welinkSavingCredential": "Saving",
       "welinkGenerating": "Generating the authorization code",
       "welinkBoundAccount": "Bound account {{account}}",
+      "welinkSwitchAccount": "Switch account",
       "welinkAccountMissing": "No WeLink account yet. Finish the first scan first.",
       "welinkQr": "WeLink login QR code",
       "welinkFailed": "WeLink login failed",
@@ -356,6 +356,25 @@
       "hideSecret": "Hide API Secret"
     },
     "profile": {
+      "welinkOffice": {
+        "title": "WeLink Mail & Calendar",
+        "description": "Enter and verify your work email to let this colleague use WeLink mail and calendar.",
+        "email": "Work email",
+        "emailPlaceholder": "Enter your work email address",
+        "account": "WeLink account",
+        "loginHint": "Sign in and bind WeLink for this colleague before connecting mail and calendar.",
+        "login": "Sign in to WeLink",
+        "connect": "Connect and verify",
+        "disconnect": "Disconnect",
+        "working": "Working…",
+        "failed": "The operation failed. Please try again.",
+        "status": {
+          "loading": "Loading connection status…",
+          "connected": "Mail and calendar connected",
+          "not_connected": "Mail and calendar not connected",
+          "unavailable": "Mail and calendar unavailable"
+        }
+      },
       "sectionsLabel": "Employee configuration",
       "sections": {
         "overview": "Overview",

@@ -35,7 +35,6 @@ interface LoginSnapshot {
   assistant_ready?: boolean;
   assistant_credential_id?: string;
   assistant_secret?: string;
-  assistant_account?: string;
 }
 
 interface CreatedCredential {
@@ -49,7 +48,6 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
   const [assistantMode, setAssistantMode] = useState<'scan' | 'existing'>('scan');
   const [credentialId, setCredentialId] = useState('');
   const [assistantSecret, setAssistantSecret] = useState('');
-  const [assistantAccount, setAssistantAccount] = useState('');
   const [created, setCreated] = useState<CreatedCredential | null>(null);
   const [copied, setCopied] = useState<'ak' | 'sk' | ''>('');
   const [done, setDone] = useState<WelinkScanKind[]>([]);
@@ -66,6 +64,7 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
   const qrUrlRef = useRef('');
   const startLock = useRef(false);
   const doneRef = useRef<WelinkScanKind[]>([]);
+  const switchingRef = useRef(false);
 
   const finish = () => {
     if (finished.current) return;
@@ -83,7 +82,7 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
       try {
         const method = kind === 'assistant' ? 'channel.welink.assistant_login_status' : 'channel.welink.login_status';
         const next = await webRequest<LoginSnapshot>(method, {
-          session_id: sessionId, assistant_account: assistantAccount.trim(),
+          session_id: sessionId,
         }, { timeoutMs: 45000 });
         if (cancelled) return;
         seenQr.current = Boolean(next.qr_url || next.qr_payload);
@@ -110,6 +109,10 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
               return;
             }
           }
+          if (kind === 'cli' && switchingRef.current) {
+            switchingRef.current = false;
+            return;
+          }
           if (bothScansDone(updated)) finish();
           return;
         }
@@ -128,7 +131,7 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [sessionId, activeKind, created, assistantAccount, t]);
+  }, [sessionId, activeKind, created, t]);
 
   const saveExistingAssistant = async () => {
     const value = account.trim();
@@ -144,7 +147,6 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
         config_id: configId,
         assistant_credential_id: credential,
         assistant_secret: secret,
-        assistant_account: assistantAccount.trim(),
       }, { timeoutMs: 45000 });
       setAssistantSecret('');
       setCredentialId('');
@@ -201,14 +203,13 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
     void webRequest<LoginSnapshot>('channel.welink.get_bindings', { config_id: configId }).then((status) => {
       if (cancelled) return;
       if (status.account) setAccount(status.account);
-      if (status.assistant_account) setAssistantAccount(status.assistant_account);
       const ready: WelinkScanKind[] = [];
       if (status.cli_ready) ready.push('cli');
       if (status.assistant_ready) ready.push('assistant');
       doneRef.current = ready;
       setDone(ready);
-      if (bothScansDone(ready)) finish();
-      else if (!status.cli_ready) void startRef.current('cli');
+      // An existing binding must stay on this screen. Closing here makes 授权 look like it did nothing.
+      if (!status.cli_ready) void startRef.current('cli');
     }).catch((cause) => {
       if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
     });
@@ -256,35 +257,21 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
   const showPrimary = Boolean(created || showChoice || showRetry);
   const primaryDisabled = starting || (saveExisting && (!credentialId.trim() || !assistantSecret.trim())) || (showChoice && !saveExisting && !account.trim() && !showRetry);
 
-  const confirmCreated = async () => {
-    if (!created || startLock.current) return;
-    if (!assistantAccount.trim()) {
-      finish();
-      return;
-    }
-    startLock.current = true;
-    setStarting(true);
-    setError('');
-    try {
-      await webRequest<LoginSnapshot>('channel.welink.assistant_credential_save', {
-        config_id: configId,
-        account,
-        assistant_credential_id: created.id,
-        assistant_secret: created.secret,
-        assistant_account: assistantAccount.trim(),
-      }, { timeoutMs: 45000 });
-      finish();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      startLock.current = false;
-      setStarting(false);
-    }
+  const switchAccount = () => {
+    if (startLock.current) return;
+    switchingRef.current = true;
+    const updated = doneRef.current.filter((item) => item !== 'cli');
+    doneRef.current = updated;
+    setDone(updated);
+    setCreated(null);
+    setCredentialId('');
+    setAssistantSecret('');
+    void start('cli');
   };
 
   const runPrimary = () => {
     if (created) {
-      void confirmCreated();
+      finish();
       return;
     }
     if (showRetry && !cliDone) {
@@ -338,6 +325,17 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
         {cliDone && account ? (
           <p className="jiuwenmate-welink-status" data-testid="jiuwenmate-welink-bound-account">
             {t('jiuwenmate.im.welinkBoundAccount', { account })}
+            {showChoice ? (
+              <button
+                type="button"
+                className="jiuwenmate-welink-copy"
+                data-testid="jiuwenmate-welink-switch-account"
+                disabled={starting}
+                onClick={switchAccount}
+              >
+                {t('jiuwenmate.im.welinkSwitchAccount')}
+              </button>
+            ) : null}
           </p>
         ) : null}
         {showChoice ? (
@@ -367,19 +365,6 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
               {t('jiuwenmate.im.welinkAssistantExisting')}
             </label>
           </fieldset>
-        ) : null}
-        {showChoice || created ? (
-            <label className="jiuwenmate-field" data-testid="jiuwenmate-welink-assistant-account-field">
-              <span data-testid="jiuwenmate-welink-assistant-account-label">{t('jiuwenmate.im.welinkAssistantAccount')}</span>
-              <input
-                value={assistantAccount}
-                onChange={(event) => setAssistantAccount(event.target.value)}
-                placeholder={t('jiuwenmate.im.welinkAssistantAccountHint')}
-                autoComplete="off"
-                spellCheck={false}
-                data-testid="jiuwenmate-welink-assistant-account"
-              />
-            </label>
         ) : null}
         {saveExisting ? (
           <>

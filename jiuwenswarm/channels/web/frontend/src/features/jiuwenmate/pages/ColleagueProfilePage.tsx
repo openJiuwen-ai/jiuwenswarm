@@ -35,6 +35,7 @@ import baiduModelIcon from '../../../assets/providers/baidu.svg';
 import customModelIcon from '../../../assets/settings/models/custom.svg';
 import { ConnectorPickerDrawer } from '../../../components/ConnectorMarket/ConnectorPickerDrawer';
 import { PageCard } from '../../../components/ui';
+import { WelinkOfficeCard, type WelinkOfficeActions } from '../components/WelinkOfficeCard';
 import { ActionMenu } from '../components/ActionMenu';
 import { JiuwenMateConfirmDialog } from '../components/JiuwenMateDialog';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
@@ -129,7 +130,7 @@ export interface ColleagueSettingsEdit {
   knowledge?: string[];
 }
 
-interface ColleagueProfilePageProps {
+interface ColleagueProfilePageProps extends WelinkOfficeActions {
   colleague: JiuwenMateColleague;
   modelCatalog?: JiuwenMateModelCatalog;
   initialSection?: JiuwenMateProfileSection;
@@ -204,6 +205,9 @@ export function ColleagueProfilePage({
   onRunSchedule,
   onLoadScheduleHistory,
   sharingApi,
+  onLoadWelinkOfficeStatus,
+  onConnectWelinkOffice,
+  onDisconnectWelinkOffice,
   onLoadAgentMailStatus,
   connectionEpoch = 0,
   onBeginAgentMailAuth,
@@ -740,6 +744,16 @@ export function ColleagueProfilePage({
               onDeleteSchedule={onDeleteSchedule}
               onRunSchedule={onRunSchedule}
               onLoadScheduleHistory={onLoadScheduleHistory}
+              welinkOfficeCard={
+                <WelinkOfficeCard
+                  key={`${colleague.id}:${connectionEpoch}`}
+                  agentId={colleague.id}
+                  onLoadWelinkOfficeStatus={onLoadWelinkOfficeStatus}
+                  onConnectWelinkOffice={onConnectWelinkOffice}
+                  onDisconnectWelinkOffice={onDisconnectWelinkOffice}
+                  onConfigureWelink={onConfigureWelink}
+                />
+              }
               agentMailStatus={agentMailStatus}
               agentMailEmail={agentMailEmail}
               agentMailError={agentMailError}
@@ -1254,6 +1268,7 @@ function ProfileSectionDetail({
   onDeleteSchedule,
   onRunSchedule,
   onLoadScheduleHistory,
+  welinkOfficeCard,
   agentMailStatus,
   agentMailEmail,
   agentMailError,
@@ -1305,6 +1320,7 @@ function ProfileSectionDetail({
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
   onRunSchedule?: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
+  welinkOfficeCard: ReactNode;
   agentMailStatus: string;
   agentMailEmail: string;
   agentMailError: string;
@@ -1691,6 +1707,7 @@ function ProfileSectionDetail({
             {agentMailError && <p role="alert" className="jiuwenmate-profile__mail-note">{agentMailError}</p>}
           </div>
         </article>
+        {welinkOfficeCard}
       </section>
     );
   }

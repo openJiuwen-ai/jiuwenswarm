@@ -562,3 +562,20 @@ test('all nested sharing translations and interpolation fields match in Chinese 
       [...zh[key].matchAll(/\{\{(.*?)\}\}/g)].map((match) => match[1]).sort(), key);
   }
 });
+
+test('unread sharing conversation shows a dot and only opening the inbox marks it read', async () => {
+  const view = await renderWorkspace(snapshot([], []), [{
+    conversation_id: 'normal', title: 'Normal chat', updated_at: '2026-10-29T01:00:00Z',
+  }, {
+    conversation_id: 'sharing-approvals', title: '跨群分享审批', unread: true,
+    updated_at: '2026-10-29T00:00:00Z',
+  }]);
+  try {
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-sharing-unread"]'));
+    assert.ok(!view.calls.some((call) => call.params.mark_read === true));
+    Object.defineProperty(view.dom.window.document, 'visibilityState', { configurable: true, value: 'visible' });
+    await act(async () => view.dom.window.document.querySelector('[data-testid="jiuwenmate-sharing-unread"]').closest('button').click());
+    await flush();
+    assert.ok(view.calls.some((call) => call.method === 'jiuwenmate.sharing.list' && call.params.mark_read === true), JSON.stringify(view.calls));
+  } finally { await view.close(); }
+});

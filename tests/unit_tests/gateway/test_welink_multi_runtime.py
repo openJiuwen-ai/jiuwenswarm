@@ -15,8 +15,16 @@ def test_assistants_share_reader_but_have_distinct_channel_keys(tmp_path):
 
 def test_history_keeps_original_time():
     from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_messages import parse_history_messages
-    messages = parse_history_messages([{'messageId':'1', 'senderAccount':'human', 'content':'hello', 'sendTime':'2026-10-27T06:51:36Z'}], group_id='g')
-    assert messages[0].received_at == '2026-10-27T06:51:36+00:00'
+    messages = parse_history_messages(
+        [{'messageId': '1', 'senderAccount': 'human', 'content': 'hello', 'serverSendTime': 1767225600000}],
+        group_id='g',
+    )
+    assert messages[0].received_at == '2026-01-01T00:00:00+00:00'
+    ignored = parse_history_messages(
+        [{'messageId': '2', 'senderAccount': 'human', 'content': 'hello', 'sendTime': '2026-10-27T06:51:36Z'}],
+        group_id='g',
+    )
+    assert ignored[0].received_at == ''
 
 
 @pytest.mark.asyncio
@@ -74,9 +82,10 @@ async def test_shared_reader_retries_each_colleague_and_catches_up_new_binding(t
     a = channel('dig_1_a')
     channels = {'ak-a':a}
     reader = WelinkReader(object(), 'h1', str(tmp_path), 4, channels)
+    reader._subscriptions.register('ak-a', a.config.agent_id, 'g')
     members = MembershipStore(tmp_path/'membership.json')
     members.set('g', shared=True, assistants={'dig_1_a','dig_1_b'})
-    reader._poller = SimpleNamespace(poll=Mock(return_value=[message]), _snapshot=('g',), _membership=members,
+    reader._poller = SimpleNamespace(poll=Mock(return_value=[message]), _snapshot=('g',), last_page=('g', [message]), _membership=members,
                                     _is_shared=lambda group: True, commit=Mock())
     await reader.scan()
     assert a._deliver.call_args_list[0].kwargs['first_observation']
@@ -84,13 +93,14 @@ async def test_shared_reader_retries_each_colleague_and_catches_up_new_binding(t
     b = channel('dig_1_b')
     b._deliver.side_effect = [False, True]
     channels['ak-b'] = b
+    reader._subscriptions.register('ak-b', b.config.agent_id, 'g')
     reader._poller.poll.return_value = []
     await reader.scan()
     assert reader._pending
     await reader.scan()
     assert not reader._pending
-    assert b._history.call_count == 1
-    assert a._history.call_count == 1
+    assert b._history.call_count == 0
+    assert a._history.call_count == 0
     assert b._deliver.call_count == 2
 
 
@@ -115,10 +125,12 @@ async def test_retry_after_restart_preserves_invoke_alias_and_completed_targets(
     members.set('g', shared=True, assistants={'member-a', 'member-b'})
 
     def poller():
-        return SimpleNamespace(poll=Mock(return_value=[]), _snapshot=('g',), _membership=members,
+        return SimpleNamespace(poll=Mock(return_value=[]), _snapshot=('g',), last_page=('g', [message]), _membership=members,
             _is_shared=lambda group: True, commit=Mock())
 
     reader = WelinkReader(object(), 'reader', str(tmp_path), 4, channels)
+    for credential, item in channels.items():
+        reader._subscriptions.register(credential, item.config.agent_id, 'g')
     reader._poller = poller()
     reader._pending = [{'message': asdict(message), 'targets': ['ak-a', 'ak-b'], 'target_agents': {'ak-a': 'a', 'ak-b': 'b'}, 'commit': True}]
     reader._save(reader._pending_path, reader._pending)
@@ -159,7 +171,7 @@ async def test_reassigned_credential_drops_old_jobs_and_catches_up_new_colleague
     reader = WelinkReader(object(), 'reader', str(tmp_path), 4, channels)
     members = MembershipStore(tmp_path / 'membership.json')
     members.set('g', shared=True, assistants={'member'})
-    reader._poller = SimpleNamespace(poll=Mock(return_value=[]), _snapshot=('g',), _membership=members,
+    reader._poller = SimpleNamespace(poll=Mock(return_value=[]), _snapshot=('g',), last_page=('g', [message]), _membership=members,
         _is_shared=lambda group: True, commit=Mock())
     old_key = reader._key('ak', 'g')
     reader._seen.add(old_key)
@@ -168,11 +180,13 @@ async def test_reassigned_credential_drops_old_jobs_and_catches_up_new_colleague
          'target_agents': {'ak': 'a'}},
         {'message': asdict(message), 'targets': ['ak'], 'target_agents': {'ak': 'a'}, 'commit': True},
     ]
+    reader._subscriptions.register('ak', 'a', 'g')
     channels['ak'] = second
     await reader.scan()
     assert second._deliver.await_count == 0 and second._history.call_count == 0
+    reader._subscriptions.register('ak', 'b', 'g')
     await reader.scan()
-    assert second._history.call_count == 1 and second._deliver.await_count == 1
+    assert second._history.call_count == 0 and second._deliver.await_count == 1
     assert second._deliver.call_args.kwargs['first_observation']
     assert reader._key('ak', 'g') != old_key
 
@@ -194,12 +208,14 @@ async def test_canonical_alias_survives_completed_job_and_restart(tmp_path):
     members = MembershipStore(tmp_path / 'membership.json')
     members.set('g', shared=True, assistants={'member'})
     def poller():
-        return SimpleNamespace(poll=Mock(return_value=[]), _snapshot=('g',), _membership=members,
+        return SimpleNamespace(poll=Mock(return_value=[]), _snapshot=('g',), last_page=('g', [message]), _membership=members,
             _is_shared=lambda group: True, commit=Mock())
     def job():
         return {'message': asdict(message), 'targets': ['ak'], 'target_agents': {'ak': 'a'}, 'commit': True}
 
     reader = WelinkReader(object(), 'reader', str(tmp_path), 4, channels)
+    for credential, item in channels.items():
+        reader._subscriptions.register(credential, item.config.agent_id, 'g')
     reader._poller = poller()
     reader._pending = [job()]
     await reader.scan()

@@ -15,6 +15,7 @@ from pathlib import Path
 from .welink_connect import WelinkChannel, auth_recheck_due
 from .welink_messages import WelinkHistoryMessage, WelinkMedia, select_new_messages
 from .welink_poller import CursorStore, WelinkPoller
+from .welink_subscriptions import MentionSubscriptions
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,14 @@ class WelinkReader:
         self.directory = Path(directory)
         self.interval = interval
         self.channels = channels
-        self._poller = WelinkPoller(cli, account, CursorStore(self.directory / 'cursors.json'))
+        self._subscriptions = MentionSubscriptions(self.directory / 'mention-subscriptions.sqlite3', account)
+        self._poller = WelinkPoller(
+            cli, account, CursorStore(self.directory / 'cursors.json'),
+            registered_groups=lambda: self._subscriptions.groups(self._target_agents(self.channels)),
+            revoke_group=self._subscriptions.revoke,
+            needs_catchup=lambda group: any(self._key(key, group) not in self._seen
+                                           for key in self._eligible(group)),
+        )
         self._pending_path = self.directory / 'fanout-pending.json'
         self._seen_path = self.directory / 'assistant-observations.json'
         self._aliases_path = self.directory / 'message-aliases.json'
@@ -74,32 +82,23 @@ class WelinkReader:
         return {key: self.channels[key].config.agent_id for key in credentials if key in self.channels}
 
     def _eligible(self, group: str) -> dict[str, WelinkChannel]:
-        if not self._poller._is_shared(group):
-            return {}
-        record = self._poller._membership.get(group)
-        accounts = set(record[1]) if record else set()
-        return {key: channel for key, channel in tuple(self.channels.items()) if channel._own_assistants(accounts)}
-
-    async def _refresh_group(self, group: str) -> bool:
-        record = self._poller._membership.get(group)
-        now = time.monotonic()
-        due = getattr(self._poller, '_recheck_due', lambda *_: False)(group, now)
-        stale = record is None or (record[0] and not self._poller._is_shared(group))
-        if (due or stale) and getattr(self._poller, '_member_hold', {}).get(group, 0) <= now:
-            await asyncio.to_thread(self._poller._classify, group, now)
-            record = self._poller._membership.get(group)
-        return record is not None and not (record[0] and not self._poller._is_shared(group))
+        targets = self._subscriptions.targets(group)
+        return {key: channel for key, channel in tuple(self.channels.items())
+                if (key, channel.config.agent_id) in targets}
 
     async def scan(self) -> None:
         if not self._pending:
             messages = await asyncio.to_thread(self._poller.poll)
             jobs = []
-            for group in self._poller._snapshot:
+            page = self._poller.last_page
+            if page is not None:
+                group, history = page
                 for credential, channel in self._eligible(group).items():
                     key = self._key(credential, group)
                     if key in self._seen:
                         continue
                     jobs.append({'prepare_catchup': True, 'group': group, 'credential': credential, 'seen_key': key,
+                                 'history': [asdict(item) for item in history],
                                  'target_agents': self._target_agents([credential])})
             for item in messages:
                 targets = list(self._eligible(item.group_id))
@@ -116,15 +115,18 @@ class WelinkReader:
                     self._pending.pop(0)
                     self._save(self._pending_path, self._pending)
                     continue
-                if not await self._refresh_group(group):
-                    return
                 if not self._eligible(group).get(credential):
                     self._pending.pop(0)
                     self._save(self._pending_path, self._pending)
                     continue
-                history = await asyncio.to_thread(channel._history, group)
-                record = self._poller._membership.get(group)
-                catchup, _ = select_new_messages(history, None, account=self.account, ignore_senders=set(record[1]))
+                # Old discovery-era catchup jobs have no authorized history page.
+                # Drop them; a later subscribed poll prepares a fresh bounded page.
+                if 'history' not in job:
+                    self._pending.pop(0)
+                    self._save(self._pending_path, self._pending)
+                    continue
+                history = [self._message(raw) for raw in job['history']]
+                catchup, _ = select_new_messages(history, None, account=self.account)
                 now = datetime.now(timezone.utc).isoformat()
                 catchup = [replace(item, received_at=item.received_at or now) for item in catchup]
                 boundary = min((item.received_at for item in catchup), default=now)
@@ -159,8 +161,6 @@ class WelinkReader:
                 job['canonical_message_id'] = canonical
                 self._save(self._pending_path, self._pending)
             message = replace(original, message_id=canonical)
-            if not await self._refresh_group(original.group_id):
-                return
             eligible = self._eligible(original.group_id)
             for credential in list(job['targets']):
                 channel = eligible.get(credential)

@@ -37,6 +37,7 @@ class WelinkHistoryMessage:
     group_id: str
     media: tuple[WelinkMedia, ...] = ()
     received_at: str = ""
+    mention_accounts: tuple[str, ...] = ()
 
 
 _MESSAGE_ID_KEYS = ("messageId", "message_id", "msgId", "msg_id", "id")
@@ -55,7 +56,10 @@ _NAME_KEYS = ("senderName", "sender_name", "userName", "user_name", "name", "fro
 _TEXT_KEYS = ("text", "content", "body", "msg", "message")
 _GROUP_KEYS = ("groupId", "group_id", "groupID", "chatId", "chat_id")
 _GROUP_KINDS = {"group", "groupchat", "group_chat", "0", "1", "chat_type_group_msg", "group_msg", "normal_group"}
-_DIRECT_KINDS = {"p2p", "single", "user", "private", "direct", "c2c", "chat_type_p2p_msg", "p2p_msg"}
+_DIRECT_KINDS = {
+    "p2p", "single", "singlechat", "single_chat", "user", "private", "private_chat", "direct",
+    "c2c", "chat_type_p2p_msg", "chat_type_single_msg", "p2p_msg", "person",
+}
 _MEDIA_LABELS = {
     "PICTURE_MSG": "图片",
     "IMAGESPAN_MSG": "图片",
@@ -234,28 +238,89 @@ def parse_history_messages(payload: Any, *, group_id: str) -> list[WelinkHistory
                 group_id=group_id,
                 media=media,
                 received_at=_history_time(item),
+                mention_accounts=at_accounts(item),
             )
         )
     return messages
 
 
+def at_accounts(item: dict[str, Any]) -> tuple[str, ...]:
+    """Read ``atAccountList`` from one ``query-history-message`` chatInfo item."""
+    raw = item.get("atAccountList")
+    if not isinstance(raw, list):
+        return ()
+    accounts: list[str] = []
+    for entry in raw:
+        if isinstance(entry, str) and entry.strip():
+            accounts.append(entry.strip())
+    return tuple(dict.fromkeys(accounts))
+
+
+def at_accounts_in_nodes(*nodes: Any) -> tuple[str, ...]:
+    """Read ``atAccountList`` from a mention frame and its parsed extension objects."""
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            found.extend(at_accounts(node))
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for node in nodes:
+        walk(node)
+    return tuple(dict.fromkeys(found))
+
+
+def mention_accounts_in_history(payload: Any, message_id: str) -> tuple[str, ...]:
+    """Find ``atAccountList`` for one history message id."""
+    target = str(message_id)
+    for item in _as_items(payload):
+        if isinstance(item, dict) and _first_text(item, _MESSAGE_ID_KEYS) == target:
+            return at_accounts(item)
+    return ()
+
+
+def contact_mail_note(accounts: tuple[str, ...] | list[str], payload: Any) -> str:
+    """Format ``personMail`` values returned by ``contact detail`` for the given accounts."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("users"), list):
+        return ""
+    by_account: dict[str, str] = {}
+    for user in payload["users"]:
+        if not isinstance(user, dict):
+            continue
+        mail = user.get("personMail")
+        if not isinstance(mail, str):
+            continue
+        mail = mail.strip()
+        if not mail or mail.startswith("-") or "@" not in mail or any(char in mail for char in " ,;<>"):
+            continue
+        for key in ("personAccount", "w3Account"):
+            account = user.get(key)
+            if isinstance(account, str) and account.strip():
+                by_account.setdefault(account.strip(), mail)
+    pairs = [f"{account} {by_account[account]}" for account in accounts if account in by_account]
+    if not pairs:
+        return ""
+    return "被@账号邮箱：" + "；".join(pairs)
+
+
 def _history_time(item: dict[str, Any]) -> str:
-    for key in ("sendTime", "send_time", "sentAt", "timestamp", "createTime", "created_at"):
-        value = item.get(key)
-        if value is None:
-            continue
-        try:
-            if isinstance(value, (int, float)) or str(value).isdigit():
-                number = float(value)
-                parsed = datetime.fromtimestamp(number / 1000 if number > 10**11 else number, timezone.utc)
-            else:
-                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    continue
-            return parsed.astimezone(timezone.utc).isoformat()
-        except (ValueError, TypeError, OverflowError, OSError):
-            continue
-    return ""
+    """Read ``serverSendTime`` from ``im query-history-message`` chatInfo. It is a millisecond timestamp."""
+    value = item.get("serverSendTime")
+    if not isinstance(value, (int, float)) and not (isinstance(value, str) and value.isdigit()):
+        return ""
+    try:
+        number = float(value)
+        if number <= 10**11:
+            return ""
+        parsed = datetime.fromtimestamp(number / 1000, timezone.utc)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return ""
+    return parsed.isoformat()
 
 
 def select_new_messages(

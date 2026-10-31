@@ -101,7 +101,7 @@ FORMAL_CAPACITY_MARGIN_TOKENS = 1024
 
 TemplateSource = Callable[[str], Mapping[str, Any] | None]
 # Platforms whose apps are bound to a colleague as separate connections.
-IM_CHANNELS = frozenset({"feishu", "dingtalk"})
+IM_CHANNELS = frozenset({"feishu", "dingtalk", "welink"})
 
 
 class ModelProvider(Protocol):

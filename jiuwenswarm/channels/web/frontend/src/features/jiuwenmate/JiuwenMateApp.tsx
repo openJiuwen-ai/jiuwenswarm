@@ -140,7 +140,9 @@ export function JiuwenMateApp({
         (method, params) => webRequest(
           method,
           params,
-          method.startsWith('jiuwenmate.agent_mail.') || method.startsWith('jiuwenmate.dingtalk_auth.') ? { timeoutMs: 130_000 } : undefined,
+          method.startsWith('jiuwenmate.agent_mail.') || method.startsWith('jiuwenmate.welink_office.') || method.startsWith('jiuwenmate.dingtalk_auth.')
+            ? { timeoutMs: 130_000 }
+            : undefined,
         ),
         (event, handler) => webClient.on(event, (frame) => handler(frame.payload)),
       ),
@@ -906,6 +908,9 @@ export function JiuwenMateApp({
             onLoadScheduleHistory={loadScheduleHistory}
             connectionEpoch={connectionEpoch}
             sharingApi={api.sharing}
+            onLoadWelinkOfficeStatus={api.welinkOfficeStatus}
+            onConnectWelinkOffice={api.connectWelinkOffice}
+            onDisconnectWelinkOffice={api.disconnectWelinkOffice}
             onLoadAgentMailStatus={api.agentMailStatus}
             onBeginAgentMailAuth={api.beginAgentMailAuth}
             onPollAgentMailAuth={api.pollAgentMailAuth}

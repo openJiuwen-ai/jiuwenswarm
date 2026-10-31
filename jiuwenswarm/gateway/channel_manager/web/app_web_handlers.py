@@ -635,6 +635,9 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.channel.list",
     "jiuwenmate.channel.messages",
     "jiuwenmate.channel.trace",
+    "jiuwenmate.welink_office.status",
+    "jiuwenmate.welink_office.connect",
+    "jiuwenmate.welink_office.disconnect",
     "jiuwenmate.agent_mail.status",
     "jiuwenmate.agent_mail.auth.begin",
     "jiuwenmate.agent_mail.auth.poll",
@@ -685,6 +688,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.channel.list",
     "jiuwenmate.channel.messages",
     "jiuwenmate.channel.trace",
+    "jiuwenmate.welink_office.status",
+    "jiuwenmate.welink_office.connect",
+    "jiuwenmate.welink_office.disconnect",
     "jiuwenmate.agent_mail.status",
     "jiuwenmate.agent_mail.auth.begin",
     "jiuwenmate.agent_mail.auth.poll",
@@ -6200,7 +6206,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     await cm.set_conf("welink", stored)
                 return view
 
-    async def _persist_welink_login_step(login_session, kind: str, assistant_account: str = "") -> dict:
+    async def _persist_welink_login_step(login_session, kind: str) -> dict:
         from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import reveal_new_assistant_credential
 
         reveal: dict[str, str] = {}
@@ -6214,8 +6220,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             account = login_session.account
             reveal = reveal_new_assistant_credential(credential_id, secret)
             patch = {"assistant_credential_id": credential_id, "assistant_secret": secret}
-            if assistant_account:
-                patch["assistant_account"] = assistant_account.strip()
         else:
             account = login_session.resolved_account or login_session.account
             credential_source = login_session.credential_dir
@@ -6272,9 +6276,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         payload = await asyncio.to_thread(ASSISTANT_LOGIN_MANAGER.refresh, login_session)
         if payload.get("status") == "success" and not login_session.saved:
             try:
-                payload = await _persist_welink_login_step(
-                    login_session, "assistant", str(params.get("assistant_account") or ""),
-                )
+                payload = await _persist_welink_login_step(login_session, "assistant")
             except Exception as e:  # noqa: BLE001
                 logger.exception("[channel.welink.assistant_login_status] 保存助手凭证失败, req_id=%s: %s", req_id, e)
                 login_session.status = "failed"
@@ -6302,8 +6304,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
             return
         try:
-            if "assistant_account" in params:
-                patch["assistant_account"] = str(params.get("assistant_account") or "").strip()
             view = await _save_welink_connection(patch["persistent_agent_id"], patch["account"], patch)
         except Exception as exc:  # noqa: BLE001
             from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
