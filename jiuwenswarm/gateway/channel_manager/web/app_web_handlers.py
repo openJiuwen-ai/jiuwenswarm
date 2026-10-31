@@ -6136,6 +6136,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await _forward_harness_to_agent(ws, req_id, params, session_id, user_id, req_method=rm)
 
         channel.register_method(method_name, _handler)
+        if rm.value != method_name:
+            channel.register_method(rm.value, _handler)
 
     _register_harness("harness.packages", _HarnessReq.HARNESS_PACKAGES_GET)
     _register_harness("harness.packages.scan", _HarnessReq.HARNESS_PACKAGES_SCAN)
