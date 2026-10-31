@@ -85,7 +85,10 @@ import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { getWebTransport } from '../utils/env';
-import { shouldMarkCronUnreadFromFinal } from '../features/cron/cronUnreadFallback';
+import {
+  applyCronSettleUnread,
+  shouldMarkCronUnreadFromFinal,
+} from '../features/cron/cronUnreadFallback';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -3575,11 +3578,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               && activeSessionVisibleRef.current
               && targetSid === activeSessionIdRef.current
               && document.visibilityState === 'visible';
-            if (viewing) {
-              useCronStore.getState().clearCronJobUnread(cronJobId);
-            } else {
-              useCronStore.getState().markCronJobUnread(cronJobId);
-            }
+            const store = useCronStore.getState();
+            applyCronSettleUnread({
+              jobId: cronJobId,
+              sessionId: targetSid,
+              viewing,
+              mark: store.markCronJobUnread,
+              clear: store.clearCronJobUnread,
+            });
           }
         }
 
@@ -4868,16 +4874,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             if (matched) cronJobId = matched.id;
           }
           if (cronJobId) {
-            // 与 cron.run.updated 一致：正在看这条会话 = 已读，不要误亮蓝点。
+            // 正在看 = 已读；切走后 live 回放同一趟收尾时不要再亮蓝点。
             const viewing =
               activeSessionVisibleRef.current
               && sessionId === activeSessionIdRef.current
               && document.visibilityState === 'visible';
-            if (viewing) {
-              useCronStore.getState().clearCronJobUnread(cronJobId);
-            } else {
-              useCronStore.getState().markCronJobUnread(cronJobId);
-            }
+            const store = useCronStore.getState();
+            applyCronSettleUnread({
+              jobId: cronJobId,
+              sessionId,
+              viewing,
+              mark: store.markCronJobUnread,
+              clear: store.clearCronJobUnread,
+            });
           }
         }
         if (!isProcessingNow) {

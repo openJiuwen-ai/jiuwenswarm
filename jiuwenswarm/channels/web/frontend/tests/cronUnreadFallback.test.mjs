@@ -12,10 +12,14 @@ const vite = await createServer({
   },
 });
 let shouldMarkCronUnreadFromFinal;
+let applyCronSettleUnread;
+let resetCronSettleAcknowledgmentsForTests;
 try {
-  ({ shouldMarkCronUnreadFromFinal } = await vite.ssrLoadModule(
-    '/src/features/cron/cronUnreadFallback.ts',
-  ));
+  ({
+    shouldMarkCronUnreadFromFinal,
+    applyCronSettleUnread,
+    resetCronSettleAcknowledgmentsForTests,
+  } = await vite.ssrLoadModule('/src/features/cron/cronUnreadFallback.ts'));
 } finally {
   await vite.close();
 }
@@ -34,4 +38,40 @@ test('chat.final with terminal status marks unread', () => {
   assert.equal(shouldMarkCronUnreadFromFinal({ is_placeholder: false, status: 'succeeded' }), true);
   assert.equal(shouldMarkCronUnreadFromFinal({ is_placeholder: false, status: 'failed' }), true);
   assert.equal(shouldMarkCronUnreadFromFinal({ is_placeholder: true, status: 'succeeded' }), false);
+});
+
+test('applyCronSettleUnread: viewing clears once; later leave replay does not re-mark', () => {
+  resetCronSettleAcknowledgmentsForTests();
+  const marked = [];
+  const cleared = [];
+  const mark = (id) => marked.push(id);
+  const clear = (id) => cleared.push(id);
+
+  applyCronSettleUnread({
+    jobId: 'job-1', sessionId: 'cron_abc', viewing: true, mark, clear,
+  });
+  assert.deepEqual(cleared, ['job-1']);
+  assert.deepEqual(marked, []);
+
+  // 模拟切走后 live 回放又来 processing=false
+  applyCronSettleUnread({
+    jobId: 'job-1', sessionId: 'cron_abc', viewing: false, mark, clear,
+  });
+  assert.deepEqual(marked, []);
+  assert.deepEqual(cleared, ['job-1']);
+});
+
+test('applyCronSettleUnread: background first settle marks unread', () => {
+  resetCronSettleAcknowledgmentsForTests();
+  const marked = [];
+  const cleared = [];
+  applyCronSettleUnread({
+    jobId: 'job-2',
+    sessionId: 'cron_bg',
+    viewing: false,
+    mark: (id) => marked.push(id),
+    clear: (id) => cleared.push(id),
+  });
+  assert.deepEqual(marked, ['job-2']);
+  assert.deepEqual(cleared, []);
 });
