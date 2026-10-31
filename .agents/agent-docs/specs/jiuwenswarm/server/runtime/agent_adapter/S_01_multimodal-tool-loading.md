@@ -1,3 +1,13 @@
+---
+title: Work / Code 多模态工具加载契约
+author: ldstyle8
+author_email: liudongdong46@huawei.com
+id: S_01_multimodal-tool-loading
+type: S
+modules: []
+files: []
+---
+
 # Work / Code 多模态工具加载契约
 
 | 项 | 值 |

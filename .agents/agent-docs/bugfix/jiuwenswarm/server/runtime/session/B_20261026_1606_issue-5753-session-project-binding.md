@@ -1,3 +1,15 @@
+---
+title: 'Issue #5753：普通会话发送消息后混入全局项目目录'
+author: kdgmpw
+author_email: lishuqi4@huawei.com
+id: B_20261026_1606_issue-5753-session-project-binding
+type: B
+modules: []
+files: []
+designs: null
+design_note: 历史设计关联待核实，不等同于没有关联设计
+---
+
 # Issue #5753：普通会话发送消息后混入全局项目目录
 
 日期：2026-10-26。涉及 `jiuwenswarm/server/runtime/session/session_metadata.py`
