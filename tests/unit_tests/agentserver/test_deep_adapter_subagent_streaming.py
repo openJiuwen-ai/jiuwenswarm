@@ -361,6 +361,9 @@ async def test_approval_resume_keeps_child_identity_and_logs_interruption(parent
         allowed = False
 
         async def before_tool_call(self, ctx):
+            answer = BaseInterruptRail()._get_user_input(ctx, ctx.inputs.tool_call.id)
+            if isinstance(answer, dict) and answer.get("approved") is True:
+                self.allowed = True
             if not self.allowed:
                 BaseInterruptRail()._raise_interrupt(
                     ctx.inputs.tool_name, ctx.inputs.tool_call, InterruptRequest(message="private approval"),
@@ -389,11 +392,11 @@ async def test_approval_resume_keeps_child_identity_and_logs_interruption(parent
         ends = [e for e in _execution_events(caplog) if e["event"] == "tool.end"]
         assert len(ends) == 1 and ends[0]["status"] == "interrupted"
         assert ends[0]["execution_started"] is False
-        approval_rail.allowed = True
         approval = InteractiveInput()
         approval.update(first["interrupt_ids"][0], {"approved": True})
         result = await tool.invoke({**inputs, "query": approval}, session=session, tool_call_id="same-outer-call")
         assert result.data["output"] == "approved result" and calls == ["executed"]
+        assert approval_rail.allowed is False  # the definition is not the running child's rail
         dispatches = [e for e in _execution_events(caplog) if e["event"] == "dispatch.end"]
         assert [e["status"] for e in dispatches] == ["interrupted", "completed"]
         assert len({e["child_session_id"] for e in dispatches}) == 1

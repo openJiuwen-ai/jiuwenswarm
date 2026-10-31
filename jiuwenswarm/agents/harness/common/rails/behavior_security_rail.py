@@ -9,6 +9,7 @@ from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
 from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail
 
 from jiuwenswarm.common.behavior_security import ACTIVE_BEHAVIOR, _event_id, raw_event
+from jiuwenswarm.common.utils import logger
 
 OUTPUT_BLOCK_MESSAGE = (
     "当前工具输出未通过安全检测，已终止本轮操作。"
@@ -47,6 +48,8 @@ class BehaviorSecurityRail(DeepAgentRail):
         ctx.extra["behavior.dialogue_context"] = pairs
 
     async def before_tool_call(self, ctx):
+        # A retry uses the same callback context; retire its previous attempt.
+        self._finish_tool_call(ctx)
         ctx.extra["behavior.finished"] = False
         ctx.extra["behavior.policy_revision"] = self.bridge.policy_revision()
         task = asyncio.current_task()
@@ -59,11 +62,23 @@ class BehaviorSecurityRail(DeepAgentRail):
         # The permission rail reports full-access ALLOW after checking immutable
         # control-plane paths. Other profiles can still request cloud authorization.
 
-    async def after_tool_call(self, ctx):
+    @staticmethod
+    def _finish_tool_call(ctx):
         ctx.extra["behavior.finished"] = True
         token = ctx.extra.pop("behavior.context_token", None)
         if token is not None:
-            ACTIVE_BEHAVIOR.reset(token)
+            try:
+                ACTIVE_BEHAVIOR.reset(token)
+            except (ValueError, RuntimeError):
+                # A legacy caller may cross Contexts. Output inspection must
+                # still run even if its old token cannot be reset here.
+                logger.warning("[behavior-security] tool context token reset failed")
+
+    async def on_tool_exception(self, ctx):
+        self._finish_tool_call(ctx)
+
+    async def after_tool_call(self, ctx):
+        self._finish_tool_call(ctx)
         confirmation = ctx.extra.pop("behavior.install_confirmation", None)
         if confirmation:
             BaseInterruptRail()._raise_interrupt(ctx.inputs.tool_name, ctx.inputs.tool_call,
@@ -86,5 +101,5 @@ class BehaviorSecurityRail(DeepAgentRail):
                 })
 
     def uninit(self, agent):
-        for task in self.bridge.tasks:
-            task.cancel()
+        config = getattr(agent, "deep_config", None)
+        self.bridge.cancel_reports(getattr(config, "tool_owner_id", None))

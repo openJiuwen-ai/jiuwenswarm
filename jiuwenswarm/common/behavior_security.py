@@ -92,6 +92,7 @@ class BehaviorSecurityBridge:
         self.config = config
         self.transport = transport
         self.tasks: set[asyncio.Task] = set()
+        self._report_sessions: dict[asyncio.Task, str] = {}
         self.decisions: OrderedDict[str, PermissionResult] = OrderedDict()
         self.local_decisions: OrderedDict[str, PermissionResult] = OrderedDict()
 
@@ -141,7 +142,16 @@ class BehaviorSecurityBridge:
             return
         task = asyncio.create_task(self._send({**event, "mode": "report"}))
         self.tasks.add(task)
+        self._report_sessions[task] = event.get("sessionId", "")
         task.add_done_callback(self.tasks.discard)
+        task.add_done_callback(lambda completed: self._report_sessions.pop(completed, None))
+
+    def cancel_reports(self, session_id: str) -> None:
+        """Retire only reports owned by the agent being unloaded."""
+        if session_id:
+            for task, owner in list(self._report_sessions.items()):
+                if owner == session_id:
+                    task.cancel()
 
     @staticmethod
     def _output_inspection_events(event: dict) -> list[dict] | None:
@@ -256,6 +266,7 @@ class BehaviorSecurityBridge:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks.clear()
+        self._report_sessions.clear()
 
 
 def skill_confirmation_pending(ctx: Any) -> bool:

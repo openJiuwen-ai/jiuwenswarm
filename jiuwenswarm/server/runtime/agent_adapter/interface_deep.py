@@ -14084,8 +14084,7 @@ def _jws_install_subagent_runtime_patch() -> None:
             return sub
 
     def _apply_runtime_defaults(self, sub, subagent_type):
-        # Core may reuse the parent's rail objects. Detach their Agent binding and
-        # native-image policy state; pause/stream bookkeeping keeps its existing semantics.
+        # Compatibility with Core versions that still reuse the parent's rails.
         parent_rails = self.configured_rails()
         image_rails = sub.find_rails_by_type((JiuSwarmStreamEventRail, MultimodalImageRail))
         shared = [rail for rail in image_rails if rail in parent_rails]
@@ -14094,11 +14093,7 @@ def _jws_install_subagent_runtime_patch() -> None:
             for rail in image_rails:
                 detached = rail
                 if rail in shared:
-                    detached = copy.copy(rail)
-                    policy = detached._image_capability_policy
-                    if policy is not None:
-                        detached._image_capability_policy = ImageCapabilityPolicy(policy.request_source, policy.config_source)
-                    detached._deep_agent = None
+                    detached = rail.clone_for_subagent()
                 sub.add_rail(detached)
         if not sub.find_rails_by_type((JiuSwarmStreamEventRail,)):
             parents = self.find_rails_by_type((JiuSwarmStreamEventRail,))

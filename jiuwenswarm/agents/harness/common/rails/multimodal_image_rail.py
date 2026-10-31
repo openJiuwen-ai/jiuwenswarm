@@ -29,6 +29,13 @@ class MultimodalImageRail(DeepAgentRail):
         self._deep_agent: Any | None = None
         self._image_capability_policy: ImageCapabilityPolicy | None = None
 
+    def clone_for_subagent(self):
+        cloned = type(self)(enable_image_multimodal=self._enable_image_multimodal)
+        policy = self._image_capability_policy
+        if policy is not None:
+            cloned.configure_image_capabilities(policy.request_source, policy.config_source)
+        return cloned
+
     def configure_image_capabilities(self, request_source, config_source=None) -> None:
         if self._image_capability_policy is None:
             self._image_capability_policy = ImageCapabilityPolicy(request_source, config_source)
