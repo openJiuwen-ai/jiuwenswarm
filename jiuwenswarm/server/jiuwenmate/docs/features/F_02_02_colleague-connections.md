@@ -6,16 +6,16 @@
 | --- | --- |
 | 建档日期 | 2026-10-26 |
 | 范围 | Swarm `jiuwenswarm/server/jiuwenmate/` 的同事存储、发布、运行时视图与 IM 入站检查；Gateway 飞书和钉钉的绑定、解除与同事删除入口；JiuwenMate 前端同事列表、IM 连接、删除和工作空间选择。不修改 agent-core |
-| 方案成熟度 | 已确认：产品取舍、D-01、D-08、企业飞书处理方式与架构修订均由本 session 用户于 2026-10-26 确认（第 3 节） |
-| 计划条目 | [JM-02](../designs/jiuwenmate-development-plan.md) 的子特性；同时修改 JM-08（飞书入站检查）、JM-10（同事页面）和 JM-21 钉钉子范围的接线。保留这些条目的整项负责人、排期与状态；本子范围负责人同步登记到计划 |
+| 方案成熟度 | D-10 已确认；2026-10-30 三渠道 canonical 方案已获用户批准，当前实现见 §12；§11 旧迁移草稿不作为当前契约 |
+| 计划条目 | [JM-02](../designs/jiuwenmate-development-plan.md) 的连接聚合子特性；扩展还涉及 JM-08（飞书入站）、JM-10（同事页面）、JM-14（渠道能力隔离）和 JM-21（跨群检索与审批）。当前契约按 §12 与 S_04；不实施 §11 草稿中的新增绑定表及历史数据迁移 |
 | 负责人 | 本子特性方案与实现：Song Haoran；JM-02、JM-10 整项负责人常钰聪，JM-08、JM-21 整项负责人闫祉君，不变 |
-| 状态 | D-10 的 Web/飞书共享身份已在本地实现，尚未验证；本次未运行测试，未进行真实渠道联调。原连接隔离实现的历史验证见第 8、10 节 |
+| 状态 | 三渠道 canonical 绑定、平台来源及 Session 产物分享已实现并通过本地定向回归；真实 Web／飞书／钉钉联调待验收。旧数据迁移和 OS 沙箱不在本轮范围 |
 | 设计依据 | [架构](../designs/jiuwenmate-architecture.md)第 2.1、4.1、9.2 节（按 6.2 节修订，已获确认）；[S_03](../specs/S_03_im-direct-message-and-delivery.md) |
-| 关联 feature | 前置：[F_02](F_02_colleague-management.md)、[F_21_02 钉钉单聊](F_21_02_dingtalk-direct-message.md)（本方案替代其第 9 节的合入依赖和 D-07 的临时检查）；相关：[F_08](F_08_feishu-group-fanout.md)、[F_10](F_10_web-colleague-management.md)、[F_14](F_14_workspace-read.md)、[F_24](F_24_personal-data-access.md) |
-| 验证摘要 | 2026-10-26 的历史结果只证明当时的按连接隔离实现。本次 D-10 代码尚未验证；测试、浏览器与真实飞书联调均未运行 |
+| 关联 feature | 前置：[F_02](F_02_colleague-management.md)、[F_21_02 钉钉单聊](F_21_02_dingtalk-direct-message.md)（本方案替代其第 9 节的合入依赖和 D-07 的临时检查）；相关：[F_08](F_08_feishu-group-fanout.md)、[F_10](F_10_web-colleague-management.md)、[F_11 群公共记录](F_11_group-public-records.md)、[F_14](F_14_workspace-read.md)、[F_21 跨群检索](F_21_cross-group-search.md)、[F_24](F_24_personal-data-access.md) |
+| 验证摘要 | 2026-10-26 的历史结果只证明当时的按连接隔离实现。本轮本地验证见 §12 与三渠道方案第 13 节；浏览器与真实渠道联调均未运行 |
 | Refs | 无独立 issue；需求来源为本 session 用户决定。[PR1 !76（钉钉，提交 `1d6f9445`）](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/76) 与 [PR2 !77（本方案）](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/77) 配套审阅和交付；均为草稿，未经用户审批不合入 |
 
-> **当前规则修订（2026-10-28）：** D-10 已将 Web 与飞书收敛到同一 canonical Agent ID；新飞书绑定不再创建 IM Persistent Agent。钉钉仍使用独立连接 Agent。2026-10-26 起的“每个连接一个运行 Agent”仅继续适用于钉钉及历史飞书记录；与 D-10 冲突的早期描述按 D-10 解释。
+> **当前规则（2026-10-28）：** D-10 已将 Web 与飞书收敛到同一 canonical Agent ID；新飞书绑定不再创建 IM Persistent Agent。钉钉仍使用独立连接 Agent。2026-10-26 起的“每个连接一个运行 Agent”仅继续适用于钉钉及历史飞书记录；与 D-10 冲突的早期描述按 D-10 解释。2026-10-29 §11 提议让钉钉也使用 canonical Agent；在方案获确认并实现前，D-10 与现行 S_04 仍是有效规则。
 
 ## 2. 背景、目标与范围
 
@@ -591,3 +591,150 @@ sequenceDiagram
 - 最终决定：飞书绑定写入同事的 canonical `config_id`，`attach_connection` 不创建 Agent 行、版本、workspace 或连接登记；飞书和 Web 共用版本与工作空间，会话仍按已有 conversation/session key 隔离。飞书入口仍依据当前唯一 `app_id → persistent_agent_id` 绑定校验。钉钉维持独立连接 Agent。
 - 兼容：既有飞书配置在重新绑定前继续使用原 ID；重新绑定后使用 canonical ID。旧飞书 Agent 的数据库记录、窗口、Session 和文件保留，不自动迁移或删除。钉钉数据与路径不变。
 - 实现状态：代码与文档正在本次工作区修改；本次未运行测试或真实飞书联调。
+
+## 11. 2026-10-29 草稿：钉钉接入 canonical Agent
+
+> 本节是待评审的目标设计，不代表当前代码或 S_04 契约已经变化。目标是 JiuwenSwarm Web、飞书、钉钉共用一个 canonical Agent；Session 上下文和渠道凭据保持隔离；群聊产物保存在来源 Session，并按来源群访问关系与跨群审批控制读取和分享。钉钉请求不继承飞书专属授权和工具。实现前需确认本节详细方案，并同步 S_04 与架构文档。
+
+### 11.1 背景、目标与边界
+
+当前 D-10 让 Web 与飞书指向同一个同事 canonical Agent；钉钉仍由 `attach_connection` 创建专属 Agent。由此，钉钉请求不能按该 Agent 身份检索飞书群访问记录，也不能直接读取 canonical Agent 工作空间中的文件。另一方面，现有最终产物集中在 Agent 级 `output/`，群请求的 `workspace_read` 可读取共享工作空间；文件没有来源群标记，跨群消息审批也不会拦截文件读取或分享。
+
+目标场景：同一个同事分别将其飞书机器人和钉钉机器人拉进各自群聊。用户在钉钉群提出问题后，Agent 可在授权范围内检索飞书群的已归档消息，或检索飞书群 Session 下生成的产物；命中其他来源群的消息或文件时，逐来源群向所有者申请跨群分享审批。
+
+本方案共用 Agent ID、配置、发布版本和工作空间根目录；不同平台、应用和会话的聊天上下文与认证凭据保持隔离。群聊最终产物按来源 Session 保存，不使用 Agent 级共享 `output/`。跨渠道检索仅针对 Agent 当前获准访问的群聊消息与群聊产物，不开放其他平台的私聊历史，也不自动把飞书会话历史注入钉钉 Session。每个 Agent 每个平台暂按一个应用绑定设计，允许同一 Agent 分别绑定一个飞书应用和一个钉钉应用。
+
+### 11.2 方案概览
+
+```mermaid
+flowchart LR
+    W[JiuwenSwarm Web] -->|canonical agent_id| A[Persistent Agent 配置与发布版本]
+    F[飞书 app_id] -->|绑定 canonical agent_id| R[渠道路由与绑定登记]
+    D[钉钉 client_id] -->|绑定 canonical agent_id| R
+    R -->|channel + app_id + agent_id| Q[Request / route_snapshot]
+    Q -->|会话按渠道与会话键隔离| S[(Sessions / Windows)]
+    Q -->|按请求渠道筛选工具和凭据| X[单次 Execution]
+    X -->|写入当前会话| O[Agent workspace / sessions/session_id/output]
+    A -->|agent_group_access| G[授权群检索]
+    M[(共享群归档：每群一份，位于 Agent workspace 外)] --> G
+    O --> G
+    G --> P[每来源群、每目标会话审批]
+    P -->|批准后返回对应内容| T[原目标渠道与会话]
+```
+
+图中 Agent workspace 保存 Agent 级 Skill / Resource 和各 Session 的独立文件；群消息及附件由宿主在 Agent workspace 外按群只保存一份。`agent_group_access` 决定 Agent 可检索哪些群归档。普通群文件工具只访问当前 Session；其他群的消息或产物必须通过显式跨群检索，并在所有者批准后才进入原目标请求。
+
+### 11.3 关键决策
+
+#### D-11 三个渠道使用同一 canonical Agent
+
+- Web、飞书与钉钉的绑定都解析为同一配置 `agent_id`。新钉钉绑定不创建第二个 `colleagues` 运行行、独立发布快照或独立办公目录；`attach_connection` 对两种 IM 渠道都幂等返回 canonical Agent ID。
+- 渠道应用仍须逐个登记，并同时满足渠道、应用 ID、canonical Agent 和当前配置文件绑定关系。保持每个 Agent 每个平台最多一个活动应用；相同 Agent ID 可同时出现在不同平台的绑定中。
+- Web 是配置行对应的运行身份，IM 绑定登记只记录渠道应用到 canonical Agent 的关系。解除钉钉应用只解除该绑定，不隐藏或删除 Web / 飞书 Agent，也不删除共享文件。
+- 依据：用户已确认 Web 与飞书共用 Agent，并要求钉钉接入同一 Agent；现有请求路由已携带平台与应用身份，可以按渠道区分入口。
+
+#### D-12 Session 隔离、群产物按来源会话保存
+
+- 每条请求仍按 `(namespace_id, agent_id, conversation kind, channel, conversation_key)` 定位 Session。钉钉会话、飞书私聊和各自平台群聊不共用上下文；历史群消息需由跨群搜索工具明确查询。
+- Agent 仍有一个 canonical 工作空间，保存 Agent 级 Skill、Resource 等共享资产；每个 Session 有自己的目录，中间草稿和最终产物都保存在 `sessions/<session_id>/`，最终产物位于 `sessions/<session_id>/output/`。普通 Session 文件工具只访问当前 Session 与明确发布的 Agent 级共享资产，不访问其他 Session。逻辑布局如下：
+  ```text
+  <agent_workspace>/
+    skills/                    # Agent 级
+    resources/                 # Agent 级
+    sessions/<session_id>/     # 会话级
+      output/                  # 本 Session 的最终产物
+  ```
+  不再建立 Agent 级共享 `output/`，也不把一个群的文件直接放进另一个群的 Session。
+- 群消息与附件继续由宿主放在 Agent workspace 外的共享群归档中，每个群只存一份：`jiuwenmate/group_messages/<group_id>/`。`agents.sqlite3` 中的 `agent_group_access` 记录 Agent 与群的有效访问关系；归档不复制进 Agent 或 Session 目录。
+- 群 Session 关联其冻结的渠道、应用和会话标识。普通文件工具只能读取当前 Session 下的文件和明确发布的 Agent 级共享资产；跨群访问通过独立的群产物检索流程，不能通过路径遍历访问其他 Session。
+- **本草稿建议：** Web 私聊及 IM 私聊产生的文件默认属于其来源私有会话，不出现在群产物搜索中；要分享进群，所有者需对明确的来源和目标作出授权。该默认策略待评审确认。
+- 旧 Agent 级 `output/` 文件缺少来源 Session / 来源群事实，不自动归入任一群，也不向群检索开放。旧钉钉专属 Agent 的 Session 与文件继续保留，不自动复制到 canonical Agent。
+
+#### D-13 平台专属工具和凭据按请求渠道隔离
+
+- 按持久化 `RequestRouteSnapshot.channel` 与 `app_id` 建立可信的请求级能力边界。群 Session 的会话渠道是通用 `group`，不能用它判定平台；必须使用 route snapshot 中冻结的 `feishu` / `dingtalk`。
+- Agent 的共同人设、模型与渠道中立工具来自同一发布配置。构造 Invocation 时按渠道投影工具与提示词：飞书专属工具、Skill 提示和 CLI 环境不挂载到钉钉请求；钉钉应用密钥留在 Gateway 渠道运行时，不注入模型或共享 Bash 环境。Web 与飞书沿用现有能力行为，钉钉只获得渠道中立能力和共享工作空间访问。
+- `lark-cli` 当前按 `(namespace_id, agent_id)` 寻址运行目录。实施时须增加渠道 / 应用限定或请求级环境策略，确保钉钉 Bash 没有飞书 CLI 配置目录、凭据文件或可调用的飞书命令。仅隐藏系统提示中的命令名称不构成隔离。
+- 群请求的 `workspace_read` 还须按当前 Session 收窄到该群目录；`read_file`、`list_files`、`share_file` 及产物下载均须由宿主按来源 Session 校验。其他 Session 的文件只能经跨群产物检索和审批路径访问。
+- 用户选择不引入 Bash 沙箱，并希望通过系统提示词告知 Agent 只使用当前 Session 的 `sessions/<session_id>/output/`；宿主同时向 Invocation 提供当前目录路径。`share_file` 使用该 Session 下的工作空间相对路径。这只能作为行为约定：当前 Bash 在服务账号权限下运行，路径提示无法阻止 Shell 或子进程读取其他 Session 文件。实现和文档不得将其表述为强制权限隔离；若要求防止越权访问，仍需后续引入沙箱或禁用群聊 Bash。
+- 所有重试与恢复执行沿用原 Request 中冻结的渠道路由，不依据当前通道配置推导或扩大权限；缺少路由或无法校验绑定时按失败关闭处理。
+
+#### D-14 同一 Agent 可检索其已授权群的消息和产物
+
+- `agent_group_access` 继续以 canonical `agent_id` 记录群授权，并保留 `app_id`、平台群映射和 `visible_from`。同一 Agent 在两个渠道分别入群后，检索服务先按活动授权关系读取 workspace 外的共享群消息归档，再按该来源群关联到的 Session 检索其产物；消息归档仍只有一份，产物只保存在其 Agent Session 下。
+- 产物索引保存 `namespace_id`、canonical `agent_id`、`session_id`、稳定 `group_id`、来源 `channel/app_id`、工作空间相对路径、文件指纹和生成时间。搜索以该来源事实为准，要求 Agent 当前仍有来源群的有效访问授权，并核对 `visible_from`、Session 路由、文件指纹和状态。来源不明、Session 与来源群不匹配、授权撤销或越过可见起点的产物一律不可检索。
+- 目标群对本群 Session 下文件可按当前群权限读取；跨群消息和文件通过所有者专属审批卡。一次审批只对应一个来源群和一个目标渠道 / 应用 / 会话；一次批准、永久授权与拒绝沿用现有语义。查询可含多个关键词，命中多个来源群时仍每群一张审批卡。
+- 所有者审批预览列出来源群、目标会话、文件名、类型、大小和可供所有者核验的内容预览；预览只进入所有者审批界面。目标 Execution 在批准前不得获得文件正文或可下载路径。批准固定文件指纹；若恢复前文件已变化或删除，必须重新审批。永久授权记录增加资源类型；既有仅针对群消息的授权不自动扩大到文件产物，所有者可单独批准该来源到目标的文件分享。
+- 该能力只覆盖群公共归档，不扩展为 Feishu 私聊历史读取，也不把 Agent 加入某个平台解释为允许其他 Agent 或用户直接读取其私聊内容。
+
+### 11.4 连接登记与接口调整
+
+当前 `colleague_connections` 以 `(namespace_id, agent_id)` 为主键，因此同一个 Agent 不能登记飞书和钉钉两条连接；`connection_of(namespace_id, agent_id)` 也隐含单连接假设。草稿方案将其改为多绑定记录：
+
+- 每条记录包含绑定 ID、`namespace_id`、`config_id`、运行 `agent_id`、`channel`、`connection_key`、绑定状态和时间。新 canonical 绑定的 `agent_id == config_id`；历史专属 Agent 记录保留其旧 `agent_id` 并标记为已脱离的历史数据。
+- 活动绑定对 `(namespace_id, config_id, channel)` 保持唯一，对平台应用键实施唯一校验；Agent ID 可跨不同渠道重复。YAML 仍是当前接收应用路由的配置事实，数据库登记用于拒绝手工错绑、过期或不匹配的路由。
+- 以精确查询 `connection_for(namespace_id, agent_id, channel, connection_key)` 或等价的多条记录 API 代替入站路径对单条 `connection_of` 的依赖。飞书与钉钉入站均校验当前 YAML 指向的 Agent 与活动绑定记录完全一致；Web 仍直接使用配置 Agent。
+- `list_agents`、`connections` 和发布流程只把 canonical Agent 展示、发布一次；历史脱离 Agent 不作为当前连接或同事展示，但由删除流程追踪，避免留下无法清理的数据。
+
+### 11.5 既有钉钉绑定迁移
+
+迁移采用显式重新绑定，不在升级启动时静默切换应用：
+
+1. 数据库迁移保留现有钉钉专属 Agent 行、快照、Session、窗口、办公目录和群访问记录；新增多绑定关系及历史脱离状态，不合并 Agent 对话或文件。
+2. 用户在同事页面把既有钉钉应用重新绑定到该同事时，Gateway 串行处理同事级操作；服务端为 canonical Agent 建立该应用的活动绑定并返回 canonical ID，随后 Gateway 保存 `persistent_agent_id`。
+3. 保存成功后，将旧专属 Agent 的对应应用标为历史脱离并从活动列表隐藏；其原有的活动群访问记录可按精确 `app_id` 复制到 canonical Agent，保留 `visible_from`、状态及验证事实，使已归档的钉钉群仍可被同一 Agent 搜索。重复执行不得扩大授权范围。
+4. 保存失败时，原 YAML 和旧绑定继续工作；重试使用同一个 canonical 绑定。绑定切换完成后，旧会话、窗口与文件保留在历史 Agent 下，不自动合并；新钉钉会话与新产物进入 canonical Agent。
+5. 同事 `purge` 清理 canonical Agent 与其记录的历史脱离 Agent；单独解除钉钉绑定只停止该应用收发，保留 Agent、历史和共享工作空间。
+
+如果配置写入与登记状态不能通过现有 Gateway 串行锁实现可重试顺序，应加入明确的 `pending / active / legacy_detached` 状态及幂等确认步骤；任何不确定状态均不得被入站路由接受。此处是实现时必须验证的故障窗口。
+
+### 11.6 实施影响与顺序
+
+| 实施项 | 主要位置 | 目标变化 | 依赖 / 独立验证 |
+| --- | --- | --- | --- |
+| I-20 | `repository.py`、`models.py`、DB schema migration | 连接关系支持 canonical Agent 多渠道绑定，并保留历史脱离 Agent | 真实临时 SQLite；旧库升级与重启读回 |
+| I-21 | `service.py`、`web_adapter.py`、Gateway Feishu / DingTalk bind handlers | 两渠道 attach 返回 canonical ID；新增精确多绑定查询、解除与清理语义 | 服务端及 E2A/Gateway 重试测试 |
+| I-22 | `feishu_group_fanout.py`、`dingtalk_inbound.py`、配置解析器 | 两种 IM 入站均按 app 与 channel 精确核验到同一 Agent ID；同 Agent 跨平台绑定合法 | Feishu 与 DingTalk 入站接线测试、错绑拒绝 |
+| I-23 | `execution_driver.py`、`spec_provider.py`、`bash_runtime.py`、`lark_cli_runtime.py`、WorkspaceAccess / Core 接口 | 依据 Request route snapshot 构造渠道能力视图；群文件工具限定当前 Session；提示词标明 Session 产物路径，并记录 Bash 无强隔离边界 | 通道能力矩阵、跨 Session 文件工具拒绝、提示词与重试路由测试 |
+| I-24 | 群访问与 Session 产物索引、`group_chat_repository.py`、`group_sharing_service.py`、`output_files.py` | canonical Agent 汇聚各渠道已授权群消息和产物；跨群文件按来源逐群审批、审批后才释放内容 | 真实 SQLite，飞书来源群产物→钉钉目标群审批闭环 |
+| I-25 | 同事页面与连接视图 | 飞书、钉钉都显示关联到同一同事 / 工作空间；可分别绑定、解除渠道 | 前端 API / 页面回归与浏览器核对 |
+
+预期主要在 JiuwenSwarm 实现；现有 Request route snapshot 已含渠道与 app ID，暂不要求改 agent-core。实现前仍需核实其公开 Persistent Agent 构造接口能否消费宿主投影后的 Spec；若不能，先更新跨仓契约，再决定最小 core 改动。
+
+### 11.7 验证设计
+
+| 验证 ID | 场景 | 预期结果 | 验证层级 |
+| --- | --- | --- | --- |
+| F_02_02-V-19 | 同一同事绑定 Web、一个 Feishu app 和一个 DingTalk app | 三个入口解析到同一 canonical Agent；不新增渠道专属 Agent、发布版本或工作空间；重复绑定幂等 | 服务、Gateway 与真实 SQLite |
+| F_02_02-V-20 | 同一 Agent 在飞书和钉钉群各有 Session；分别发送新消息 | Session 与窗口按会话隔离；切换渠道不把另一群聊天自动注入当前上下文 | 请求路由与执行集成测试 |
+| F_02_02-V-21 | 飞书群在其 Session `output/` 生成文件，钉钉群请求查找并读取 | 文件归属飞书来源群；未经跨群授权不能经普通文件工具读取；批准后只释放该来源群文件 | 真实文件系统、Session / Group 关联与 WorkspaceAccess |
+| F_02_02-V-22 | 钉钉请求尝试调用飞书 CLI、读取飞书配置或使用飞书专属 Skill；飞书与 Web 请求执行既有流程 | 钉钉 Spec、提示、PATH、环境变量及文件系统视图均无飞书凭据 / 命令；既有 Web / Feishu 能力不回归 | Invocation 集成与子进程环境测试 |
+| F_02_02-V-23 | 从钉钉群检索该 Agent 已入群的 Feishu 群消息，再检索未加入的群或可见起点之前消息 | 前者仅返回归档且授权范围内内容；后两者不可见；工具结果不会自动形成目标群公开消息 | 真实 SQLite 与群端口测试 |
+| F_02_02-V-24 | 钉钉群查询命中一个或多个 Feishu 来源群 | 每个来源群分别产生审批；拒绝阻止对应来源分享；一次批准仅放行该次；长期授权只对已批准来源与目标路由生效 | GroupSharingService 与端到端渠道替身 |
+| F_02_02-V-25 | 旧数据库升级、旧钉钉应用显式重新绑定、解绑与同事 purge | 旧数据保留且不混入 canonical Session；活动绑定只路由 canonical Agent；历史脱离 Agent 最终可由 purge 清理 | 迁移 SQLite 与 Gateway 重试/故障注入 |
+| F_02_02-V-26 | 缺失 route snapshot、伪造 app_id、登记与 YAML 不一致、能力投影失败 | 请求拒绝或不启动平台专属工具；不回落到普通 Agent，不静默扩大能力 | 入站及执行失败关闭测试 |
+| F_02_02-V-27 | 同 Agent 的群 A 与群 B 分别生成同名文件；群 B 通过普通 `read_file` / `list_files` / `share_file` 访问群 A 文件 | 群 B 无法枚举、读取或投递群 A 文件；当前 Session 内文件正常工作 | Core 文件工具与宿主真实路径检查 |
+| F_02_02-V-28 | 群 B 搜索群 A 的多个产物，包含 Agent 已退出的群、`visible_from` 前产物及无来源的旧全局 output 文件 | 仅有效授权范围进入审批候选；每个命中来源群单独审批；授权前目标 Execution 无正文 / 文件路径；不明来源和旧全局文件 fail closed | 真实 SQLite、文件系统、GroupSharingService 与请求恢复 |
+| F_02_02-V-29 | 构造不同 Session 的群执行提示词和交付请求 | 提示词只给当前 Session 的 `sessions/<session_id>/output/` 实际路径；产物保存和 `share_file` 使用该 Session 路径；该验证仅证明提示词正确生成，不证明 Bash 越界访问被阻止 | Invocation / prompt 单测与文件交付测试 |
+
+**实际执行记录：** 未执行。本节为设计预期，不代表测试、浏览器或真实平台验证已通过。测试命令与实现版本在开发后填写。
+
+### 11.8 兼容限制与待确认事项
+
+- 旧钉钉文件与对话历史保留在旧专属 Agent 下；本方案不自动迁移这些文件或合并窗口。若需要旧文件出现在共享空间，应单独提供显式文件迁移步骤。
+- 旧 Agent 级 `output/` 中的文件没有可靠来源 Session / 群信息，不能按文件名、创建时间或模型说明推测归属；迁移后继续保留供所有者处理，但群 Session 默认不可见。需要跨群访问的旧文件，须由所有者显式指定来源与目标后重新登记。
+- 旧钉钉群授权复制到 canonical Agent 时严格按原 `app_id`、活动状态和 `visible_from` 复制；已撤销或无法核实的授权不迁移。长期分享授权不自动从旧 Agent 跨 ID 迁移。
+- 新绑定的数据目录、绑定关系和已归档群消息不能由旧版本安全解释；数据库升级须备份并有明确回退策略。未设计完成前不能宣称旧版程序可直接回滚。
+- Web / 私聊来源文件的可见范围、旧 Agent 级 output 的显式登记流程仍待评审。用户选择不做 Bash 沙箱，并希望以系统提示词声明当前 Session 产物路径；此为模型行为约定，不能提供强制隔离保证。
+- 本节详细的存量群访问迁移、Web 与飞书渠道工具兼容规则、数据库状态机仍待设计评审确认。确认前不修改 S_04 与架构文档，不开始代码实施。
+
+
+## 12. 三渠道共用身份实现（2026-10-30）
+
+本节记录当前实现，替代第 11 节草稿中新增多绑定数据库结构的设想；历史验证和旧连接机制仍保留其适用范围。完整方案及本轮验证见仓库 `docs/superpowers/specs/2026-10-30-web-feishu-dingtalk-shared-agent-design.md`。
+
+新式飞书、钉钉 attach 都返回配置的 canonical Agent ID，不新增 Agent、版本、workspace 或连接登记。YAML 中渠道与应用的当前唯一绑定继续是入站依据。钉钉入站对 canonical 身份核对可见配置，对历史连接仍核对原应用登记；隐藏或失效配置拒绝入站。连接视图分别显示 Web、飞书、钉钉，但 ID 和 Agent 工作空间相同，Session 与回复路由分别保存。
+
+重绑前检查相同渠道／应用的历史连接是否仍有 queued、dispatched 或 ended/paused 请求；存在时返回 CONFLICT，不搬迁正在执行或待审批的工作。旧 Agent、窗口、Session、文件和长期授权不自动迁移或删除。Gateway 与 AgentServer 均按同事 ID 串行处理绑定和删除，避免 Gateway 超时而服务端继续删除时重新绑定失效 ID。钉钉重绑另以跨进程应用锁覆盖 Gateway 检查／保存和入站校验／入队；锁在 Stream 停止／重载前释放。本轮没有增加新的历史迁移接口。
+
+新增验证入口为 `test_three_channel_shared_agent.py` 和 `test_dingtalk_production_wiring.py` 的 canonical 入站用例；真实平台绑定、重绑及并发边界仍须联调。

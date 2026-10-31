@@ -27,13 +27,15 @@ const groupMessageQuery = {
 const approval = {
   approval_id: 'approval-a', request_id: 'request-a', agent_id: 'runtime-feishu', config_id: 'config-web',
   status: 'pending', can_decide: true, requester_name: 'Requester Alice',
-  source_groups: [{ group_id: 'source-a', name: 'Source team' }, { group_id: 'source-b', name: 'Second source' }],
+  source_groups: [{ group_id: 'source-a', name: 'Source team', platform: 'dingtalk' }],
+  content_types: ['messages'], artifacts: [],
   target, query: groupMessageQuery, summary: 'Confidential budget summary',
   messages: [{ group_id: 'source-a', group_name: 'Source team', message_id: 'message-a', sender_name: 'Sender Bob', text: '<script>secret exact text</script>\nline two' }],
   created_at: '2026-10-27T00:00:00Z', expires_at: '2099-10-27T00:10:00Z', decided_at: null,
 };
 const grant = {
   grant_id: 'grant-a', source_group_id: 'source-a', source_group_name: 'Source team', target,
+  content_types: ['messages'], source_platform: 'dingtalk',
   created_at: '2026-10-27T00:01:00Z', status: 'active',
 };
 const snapshot = (approvals = [approval], grants = [grant]) => ({ approvals, grants, conversation_id: 'sharing-approvals' });
@@ -107,7 +109,12 @@ async function renderWorkspace(initial = snapshot(), conversations = [], people 
       });
       await flush();
     },
-    async close() { await act(async () => root.unmount()); dom.window.close(); },
+    async close() {
+      await act(async () => root.unmount());
+      dom.window.close();
+      globalThis.window = browser.window;
+      globalThis.document = browser.window.document;
+    },
   };
 }
 
@@ -139,7 +146,7 @@ test('a never-used private chat discovers a durable inbox without exposing previ
     assert.ok(view.find('agent-message').querySelector('[data-testid="jiuwenmate-colleague-avatar"]'));
     assert.equal(view.find('owner-decision'), null);
     assert.ok(!view.find('grants'), 'Permanent authorizations belong on the colleague permissions page');
-    for (const value of ['Source team', 'Second source', 'Requester Alice', 'Destination team', 'budget query', 'Confidential budget summary', 'all members']) {
+    for (const value of ['Source team', 'Requester Alice', 'Destination team', 'budget query', 'Confidential budget summary', 'all members']) {
       assert.ok(view.find('inbox').textContent.includes(value), value);
     }
     assert.equal(view.find('messages').open, false);
@@ -148,6 +155,15 @@ test('a never-used private chat discovers a durable inbox without exposing previ
     assert.equal(view.find('message').querySelector('script'), null);
     assert.equal(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'), null);
     assert.ok(!view.calls.some((call) => call.method === 'jiuwenmate.chat.send' || call.method === 'jiuwenmate.permission.decide'));
+  } finally { await view.close(); }
+});
+
+test('approval source explicitly identifies the platform independently of the destination', async () => {
+  const view = await renderWorkspace();
+  try {
+    await view.click('open');
+    assert.match(view.find('sources').textContent, /DingTalk · Source team/);
+    assert.match(view.find('target').textContent, /Destination team/);
   } finally { await view.close(); }
 });
 

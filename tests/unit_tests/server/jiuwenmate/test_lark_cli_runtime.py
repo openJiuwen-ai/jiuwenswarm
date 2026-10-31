@@ -23,6 +23,29 @@ def config(agent="agent-a", app="app-a", secret="test-secret"):
     ]}}}
 
 
+@pytest.mark.asyncio
+async def test_group_read_uses_private_binary_profile_and_cwd(tmp_path, monkeypatch):
+    calls = []
+
+    async def run(argv, stdin, env, *, cwd=None):
+        calls.append((argv, stdin, env, cwd))
+        return '{"ok": true, "data": {"messages": []}}'
+
+    runtime = runtime_class()(tmp_path / "host", config_loader=lambda: config(), runner=run)
+    monkeypatch.setattr(runtime, "status", lambda *args: {"status": "ready", "app_id": "app-a"})
+    result = await runtime.run_group_read("local", "agent-a", ["im", "+messages-mget", "--message-ids", "om_a"])
+    assert result["ok"]
+    argv, stdin, env, cwd = calls[0]
+    assert argv[0] == str(runtime._binary()) and not stdin
+    assert "agent-a" in env["LARKSUITE_CLI_CONFIG_DIR"]
+    assert Path(cwd).is_relative_to(runtime.root / "cli_read_previews")
+    with pytest.raises(ValueError):
+        await runtime.run_group_read("local", "agent-a", ["im", "+messages-resources-download", "--output", str(tmp_path / "leak")])
+    with pytest.raises(ValueError):
+        await runtime.run_group_read("local", "agent-a", ["im", "+messages-mget", "--profile", "foreign"])
+    assert len(calls) == 1
+
+
 @pytest.fixture
 def setup_cli(tmp_path):
     from jiuwenswarm.server.runtime.mcp.package_manifest import load_mcp_package

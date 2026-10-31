@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -68,12 +68,12 @@ class IMPermissionReplies:
                         app_id=app_id, target_id=target_id, principal_ref=access.principal_ref)
 
         async def feedback(message: str) -> None:
-            digest = hashlib.sha256(f"{identity}:{source_message_id}:{message}".encode()).hexdigest()
+            key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"permission-reply:{identity}:{source_message_id}:{message}"))
             try:
                 await self._send({
                     "channel": channel, "app_id": app_id, "chat_id": target_id,
                     "source_message_id": source_message_id,
-                    "idempotency_key": f"permission-reply:{digest}", "text": message,
+                    "idempotency_key": key, "text": message,
                     **({"is_direct_message": is_direct_message} if channel == "dingtalk" else {}),
                 })
             except Exception as exc:
@@ -81,7 +81,7 @@ class IMPermissionReplies:
 
         def belongs(approval: PermissionApproval) -> bool:
             return (
-                approval.namespace_id == namespace_id and approval.agent_id == agent_id
+                approval.namespace_id == namespace_id and approval.approver_agent_id == agent_id
                 and approval.principal_ref == access.principal_ref and approval.route is not None
                 and (approval.route.channel, approval.route.app_id, approval.route.target_id)
                 == (channel, app_id, target_id)
@@ -159,6 +159,7 @@ class IMPermissionReplies:
             await self._decide(
                 approval.approval_id, decision=decision, access=access, channel=channel,
                 target_id=target_id, app_id=app_id, tool_call_id=tool_call_id,
+                approver_agent_id=agent_id,
             )
         except PersistentAgentError as exc:
             if exc.code == "CONFLICT":
