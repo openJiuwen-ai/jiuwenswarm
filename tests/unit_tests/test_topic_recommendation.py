@@ -494,6 +494,10 @@ def _resolved():
     return recommendation_model_config()
 
 def test_by_default_topics_follow_the_model_new_chats_use(chat_config):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+        recommendation_model_options,
+    )
+
     config = _resolved()
     assert config is not None
     assert (config.model, config.base_url, config.api_key) == (
@@ -501,6 +505,9 @@ def test_by_default_topics_follow_the_model_new_chats_use(chat_config):
     # The entry leaves its window unset; the chain does not take the chat list's 256K default.
     assert config.context_window_tokens == 131072
     assert (config.effective_temperature, config.effective_top_p) == (0, 1)
+    options = recommendation_model_options(None)
+    assert options["selected_model"] == "mdl_chat"
+    assert "follow_main" not in {item["model_id"] for item in options["model_options"]}
 
 def test_a_chosen_model_is_kept_in_config_and_decides_the_model(chat_config):
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
@@ -516,8 +523,8 @@ def test_a_chosen_model_is_kept_in_config_and_decides_the_model(chat_config):
     assert load_recommendation_controls()["enabled"] is False
     assert "consent_version" not in chat_config.read_text(encoding="utf-8")
 
-    assert save_recommendation_model("follow_main") is True
-    assert _resolved().model == "chat-model"
+    assert save_recommendation_model("follow_main") is False
+    assert _resolved().model == "long-model"
 
 def test_a_complete_ark_environment_still_overrides_the_choice(chat_config, monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
@@ -2317,7 +2324,10 @@ async def test_recommendation_request_disables_thinking_for_every_model(
     )
     await invoke("v6_utility_scorer", "system", "{}")
 
-    assert captured[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert captured[0]["extra_body"] == {
+        "thinking": {"type": "disabled"},
+        "enable_thinking": False,
+    }
     assert "reasoning_effort" not in captured[0]
 
 

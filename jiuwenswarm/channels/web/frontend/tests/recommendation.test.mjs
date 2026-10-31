@@ -186,7 +186,7 @@ describe('recommendation settings page', () => {
     last_failure: null,
     provider_refused: false,
     enabled: false,
-    selected_model: 'follow_main',
+    selected_model: 'mdl_flash',
     model_options: [
       { model_id: 'mdl_flash', name: 'deepseek-v4-1-flash-260910', disabled_reason: null },
       { model_id: 'mdl_pro', name: 'deepseek-v4-1-pro', disabled_reason: null },
@@ -396,12 +396,12 @@ describe('recommendation settings page', () => {
   test('choosing a model sends only its ID and shows it as chosen', async (t) => {
     const ui = await mount(t);
     await click(modelSelect());
-    await click(modelOptions()[2]);
+    await click(modelOptions()[1]);
     assert.deepEqual(ui.selections(), [{ model: 'mdl_pro' }]);
     assert.equal(modelSelect()?.textContent, 'deepseek-v4-1-pro');
 
     await click(modelSelect());
-    await click(modelOptions()[3]);
+    await click(modelOptions()[2]);
     assert.equal(ui.selections().length, 1);
   });
 

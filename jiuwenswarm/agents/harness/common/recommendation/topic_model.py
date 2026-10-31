@@ -15,9 +15,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable
 
-# Same switch the other background callers use: one extra_body, no model-name branch.
+# One extra_body for every model. Qwen ignores thinking.type and reads enable_thinking.
 # reasoning_effort stays off this request; Doubao rejects it together with thinking disabled.
-_THINKING_DISABLED_EXTRA_BODY = {"thinking": {"type": "disabled"}}
+_THINKING_DISABLED_EXTRA_BODY = {
+    "thinking": {"type": "disabled"},
+    "enable_thinking": False,
+}
 
 # A result whose consumer fails before record_validation keeps its receipt here; bound how many
 # such unconsumed results stay referenced, since a caller is not obliged to call aclose().
@@ -240,8 +243,7 @@ def build_ark_stage_invoker(
         }
         if max_tokens is not None:
             request["max_tokens"] = max_tokens
-        # thinking 不是 create() 的类型化参数，放顶层会在 SDK 校验时 TypeError。
-        # 不另发 enable_thinking：DashScope 对始终思考的模型会以 400 拒绝。
+        # thinking 和 enable_thinking 都不是 create() 的类型化参数，放顶层会在 SDK 校验时 TypeError。
         request["extra_body"] = dict(_THINKING_DISABLED_EXTRA_BODY)
         try:
             data = json.loads(payload)

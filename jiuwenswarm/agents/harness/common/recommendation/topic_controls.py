@@ -308,9 +308,9 @@ def recommendation_model_options(auth_session: str | None) -> dict[str, Any]:
     """The chat models the topic model can be chosen from, each with why it cannot be when it cannot."""
     config = get_config()
     entries = [entry for entry in get_available_models(config, auth_session) if _model_name(entry)]
-    chosen = _chosen_entry(config, entries)
+    chosen = _chosen_entry(config, entries) or _main_model(entries)
     return {
-        "selected_model": str(chosen["model_id"]) if chosen is not None else FOLLOW_MAIN_MODEL,
+        "selected_model": str(chosen["model_id"]) if chosen is not None and chosen.get("model_id") else "",
         "model_options": [{"model_id": str(entry.get("model_id") or ""),
                            "name": str(entry.get("alias") or "") or _model_name(entry),
                            "disabled_reason": _unusable_reason(entry)} for entry in entries],
@@ -318,12 +318,11 @@ def recommendation_model_options(auth_session: str | None) -> dict[str, Any]:
 
 
 def save_recommendation_model(model: str) -> bool:
-    """Keep the topic model choice: ``follow_main`` or the ID of a configured model the chain can call."""
-    if model != FOLLOW_MAIN_MODEL:
-        entries = [entry for entry in get_default_models(get_config()) if _model_name(entry)]
-        entry = next((entry for entry in entries if str(entry.get("model_id") or "") == model), None)
-        if entry is None or _unusable_reason(entry) is not None:
-            return False
+    """Keep one configured model id. The composer selection is not a recommendation model."""
+    entries = [entry for entry in get_default_models(get_config()) if _model_name(entry)]
+    entry = next((entry for entry in entries if str(entry.get("model_id") or "") == model), None)
+    if entry is None or _unusable_reason(entry) is not None:
+        return False
 
     def mutate(config: dict[str, Any]) -> dict[str, Any]:
         section = config.get("recommendation")
@@ -339,8 +338,9 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     """The topic chain's model: a complete environment override, else the chat model chosen in settings.
 
     The override applies only when ``ARK_API_KEY``, ``ARK_MODEL``, ``ARK_BASE_URL`` and
-    ``ARK_CONTEXT_WINDOW_TOKENS`` are all set. Otherwise the choice is ``follow_main`` or one
-    configured chat model. Name, endpoint, key and window come from that entry. None when
+    ``ARK_CONTEXT_WINDOW_TOKENS`` are all set. Otherwise the choice is one configured
+    model id. An unset choice or a legacy ``follow_main`` value uses the first
+    configured model. Name, endpoint, key and window come from that entry. None when
     that model cannot be called this way.
     """
     override = ArkBackgroundConfig.from_environ(environ)

@@ -573,7 +573,11 @@ def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> Rec
             },
             created_at=time.time(),
         )
-    elif event_type in {"topic_click", "not_interested"} and service is not None and host.topic_outcome_queue is not None:
+    elif (
+        event_type in {"topic_click", "not_interested"}
+        and service is not None
+        and host.topic_outcome_queue is not None
+    ):
         return _ok(service.record_interaction(
             event,
             outcome_queue=host.topic_outcome_queue,

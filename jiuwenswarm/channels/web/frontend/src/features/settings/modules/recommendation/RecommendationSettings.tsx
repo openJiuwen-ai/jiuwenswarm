@@ -16,12 +16,10 @@ type RecommendationStatus = {
   enabled: boolean;
   configured: boolean;
   last_failure: string | null;
-  /** 'follow_main' or the model_id of the chosen chat model. */
+  /** model_id of the recommendation model. */
   selected_model: string;
   model_options: { model_id: string; name: string; disabled_reason: ModelUnusableReason | null }[];
 };
-
-const FOLLOW_MAIN_MODEL = 'follow_main';
 
 type Profile = {
   units: { unit_id: string; summary: string; sources: { session_id: string; ordinal: number; content: string }[] }[];
@@ -56,9 +54,7 @@ function modelOptions(t: TFunction, status: RecommendationStatus): SelectOption[
     login_required: t('settingsPanel.recommendation.modelLoginRequired'),
     free: t('settingsPanel.recommendation.modelFree'),
   };
-  return [
-    { value: FOLLOW_MAIN_MODEL, label: t('settingsPanel.recommendation.followMainModel') },
-    ...status.model_options.map((option) => {
+  return status.model_options.map((option) => {
       const reason = option.disabled_reason ? reasons[option.disabled_reason] : undefined;
       return {
         // Only a selectable model is ever sent, and every one of those has an ID.
@@ -67,8 +63,7 @@ function modelOptions(t: TFunction, status: RecommendationStatus): SelectOption[
         disabled: reason !== undefined,
         disabledReason: reason,
       };
-    }),
-  ];
+  });
 }
 
 /** 「推荐」页：话题模型与推荐数据。开关由声明式配置项渲染。 */

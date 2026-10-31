@@ -55,20 +55,29 @@ MAX_SUGGESTIONS = 1
 MAX_FORK_ANSWER_TOKENS = 10_000
 # Nothing of the parent call is overridden, its reasoning setting included, as in src-raw: a
 # parameter that differs from the parent's breaks the prompt-cache key.
-SUGGESTION_PROMPT = """This is an app-generated request for a suggested next user message. The user did not write this message.
-
-Your suggestion will appear in the user's empty message composer. They can accept it, edit it, or ignore it; it will not be sent automatically.
-
-Predict the single message this user is most likely to type next from the visible conversation.
-Use the whole conversation to understand their current intent and the latest exchange. Choose the
-action and specific object that best continue that intent, rather than a generally useful follow-up.
-Express its core naturally in the user's voice, keeping the requirements needed to retain its meaning.
-Choose the strongest grounded move even if several continuations are possible; uncertainty about
-exact wording or incidental details is not a reason to return null. Use null only when the
-conversation offers no grounded next move at all.
-
-Set suggestion to exactly one natural user message, one line, at most 240 characters, or null.
-No alternatives or explanation."""
+SUGGESTION_PROMPT = (
+    "This is an app-generated request for a suggested next user message. "
+    "The user did not write this message.\n\n"
+    "Your suggestion will appear in the user's empty message composer. "
+    "They can accept it, edit it, or ignore it; it will not be sent "
+    "automatically.\n\n"
+    "Predict the single message this user is most likely to type next from "
+    "the visible conversation.\n"
+    "Use the whole conversation to understand their current intent and the "
+    "latest exchange. Choose the\n"
+    "action and specific object that best continue that intent, rather than "
+    "a generally useful follow-up.\n"
+    "Express its core naturally in the user's voice, keeping the requirements "
+    "needed to retain its meaning.\n"
+    "Choose the strongest grounded move even if several continuations are "
+    "possible; uncertainty about\n"
+    "exact wording or incidental details is not a reason to return null. "
+    "Use null only when the\n"
+    "conversation offers no grounded next move at all.\n\n"
+    "Set suggestion to exactly one natural user message, one line, at most "
+    "240 characters, or null.\n"
+    "No alternatives or explanation."
+)
 
 
 # src-raw lets these single words through: each is a whole command the user types.
