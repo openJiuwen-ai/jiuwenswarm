@@ -861,3 +861,78 @@ async def test_ensure_skips_for_agent_mode() -> None:
 
     restored = await server._ensure_code_mode_state(request, "agent", "fast", agent)
     assert restored is False
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_turn_ignores_invalid_stored_mode() -> None:
+    """Sessions with invalid history tags (e.g. "subagent") must not inherit
+    them as the session mode (issue #4903).
+    """
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    session_id = "sess-invalid-mode"
+    agent = MagicMock()
+    manager = MagicMock()
+    manager.get_agent_for_request = AsyncMock(return_value=agent)
+    manager.wait_for_session_prewarm = AsyncMock()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    server._resolve_code_language = MagicMock(return_value="cn")
+
+    request = AgentRequest(
+        request_id="req-invalid-mode",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hello"},
+    )
+
+    with patch.object(
+        session_metadata,
+        "get_session_metadata",
+        return_value={"session_id": session_id, "mode": "subagent"},
+    ):
+        mode, sub_mode, resolved_agent = await server._prepare_code_mode_chat_turn(
+            request, "web", sync_metadata=False
+        )
+
+    assert mode == "agent"
+    assert resolved_agent is agent
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_turn_inherits_valid_stored_mode() -> None:
+    """Sessions with valid stored modes must still inherit them."""
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    session_id = "sess-valid-mode"
+    agent = MagicMock()
+    manager = MagicMock()
+    manager.get_agent_for_request = AsyncMock(return_value=agent)
+    manager.wait_for_session_prewarm = AsyncMock()
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    server._resolve_code_language = MagicMock(return_value="cn")
+
+    request = AgentRequest(
+        request_id="req-valid-mode",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hello"},
+    )
+
+    with patch.object(
+        session_metadata,
+        "get_session_metadata",
+        return_value={"session_id": session_id, "mode": "code.team"},
+    ):
+        mode, sub_mode, resolved_agent = await server._prepare_code_mode_chat_turn(
+            request, "web", sync_metadata=False
+        )
+
+    assert mode == "code"
+    assert sub_mode == "team"
+    assert resolved_agent is agent
