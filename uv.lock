@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
@@ -62,6 +62,20 @@ dependencies = [
     { name = "cryptography" },
     { name = "tzdata" },
     { name = "webauthn" },
+]
+
+[[package]]
+name = "adx-environment"
+version = "0.1.0rc3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "idna" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a0/b2/81938382edddba5ae311a2043c40701c4de1907e727a8a0f575beb4d78a2/adx_environment-0.1.0rc3.tar.gz", hash = "sha256:40a2d34a5085696c176de0ec108ecbb6f2d9fa05bcb0d06c39fff051daf65438", size = 148023, upload-time = "2026-10-22T23:31:41.06Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ff/ce/45ca0f91226012f7096be4b6abbf953bf67952afff4b0051b588eb0d0486/adx_environment-0.1.0rc3-py3-none-any.whl", hash = "sha256:244fd2bfd92367dce4ad0b2089e2ce9b53472c68ba2a3c194bce67330cf57c18", size = 101131, upload-time = "2026-10-22T23:31:39.595Z" },
 ]
 
 [[package]]
@@ -1938,7 +1952,7 @@ wheels = [
 [[package]]
 name = "intelli-router"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=intelli_router&rev=feature%2FintelliRouter#f70ae827ba059deddef87406f90b77bcde403dc1" }
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=intelli_router&rev=feature%2FintelliRouter_261030#e83f98f2251e889d1f51a7b631aa675c0e43168d" }
 dependencies = [
     { name = "httpx" },
 ]
@@ -3035,8 +3049,8 @@ wheels = [
 
 [[package]]
 name = "openjiuwen"
-version = "0.1.19"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f#2e77c1af1b2d284a5a02cbac070397048bc5678f" }
+version = "0.1.20"
+source = { git = "https://gitcode.com/robbluo/agent-core.git?rev=78ad1ae3846580e4dac83a243b388a5c366ced7f#78ad1ae3846580e4dac83a243b388a5c366ced7f" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -6009,6 +6023,9 @@ dependencies = [
 a2a = [
     { name = "a2a-sdk", extra = ["http-server"] },
 ]
+adx = [
+    { name = "adx-environment" },
+]
 claude = [
     { name = "openjiuwen", extra = ["claude"] },
 ]
@@ -6127,6 +6144,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0" },
+    { name = "adx-environment", marker = "extra == 'adx'", specifier = ">=0.1.0rc3" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.14.0,<2.24" },
@@ -6173,12 +6191,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2e77c1af1b2d284a5a02cbac070397048bc5678f" },
+    { name = "openjiuwen", git = "https://gitcode.com/robbluo/agent-core.git?rev=78ad1ae3846580e4dac83a243b388a5c366ced7f" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/robbluo/agent-core.git?rev=78ad1ae3846580e4dac83a243b388a5c366ced7f" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/robbluo/agent-core.git?rev=78ad1ae3846580e4dac83a243b388a5c366ced7f" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/robbluo/agent-core.git?rev=78ad1ae3846580e4dac83a243b388a5c366ced7f" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/robbluo/agent-core.git?rev=78ad1ae3846580e4dac83a243b388a5c366ced7f" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/robbluo/agent-core.git?rev=78ad1ae3846580e4dac83a243b388a5c366ced7f" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
@@ -6234,7 +6252,7 @@ requires-dist = [
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
     { name = "workswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
 ]
-provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "cua", "shell-ast", "test"]
+provides-extras = ["adx", "harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "cua", "shell-ast", "test"]
 
 [package.metadata.requires-dev]
 dev = [
