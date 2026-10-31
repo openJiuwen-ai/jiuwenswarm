@@ -1,9 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""跨模块基础设施工具（时间、日志脱敏指纹等）。
-
-Gateway 侧副本（log_masking 内部支撑）；源文件
-jiuwenswarm/infrastructure/utils.py，改动请同步两侧。"""
+# Gateway 侧副本（log_masking 内部支撑）；源文件 jiuwenswarm/infrastructure/utils.py，改动请同步两侧。
+"""跨模块基础设施工具（时间、日志脱敏指纹等）。"""
 
 from __future__ import annotations
 

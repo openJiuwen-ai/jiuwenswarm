@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Gateway 侧基础设施配置（log_masking 内部支撑；源文件
-jiuwenswarm/infrastructure/config.py，改动请同步两侧）。"""
+# Gateway 侧副本（log_masking 内部支撑）；源文件 jiuwenswarm/infrastructure/config.py，改动请同步两侧。
+"""jiuwenswarm 基础设施配置（优先读环境变量 / 仓库根 ``.env`` 已由进程加载）。"""
 
 from __future__ import annotations
 
