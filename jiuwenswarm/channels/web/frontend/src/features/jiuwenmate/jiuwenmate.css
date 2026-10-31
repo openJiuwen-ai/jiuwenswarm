@@ -1588,8 +1588,9 @@
   grid-column: 1;
   grid-row: 1;
   display: flex;
-  width: 100%;
-  min-width: 0;
+  width: 368px;
+  flex: 0 1 auto;
+  min-width: 240px;
   min-height: 0;
   flex-direction: column;
   gap: 12px;
@@ -1865,6 +1866,7 @@
   grid-row: 1;
   position: relative;
   display: flex;
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
@@ -1915,7 +1917,9 @@
   grid-column: 3;
   grid-row: 1;
   display: flex;
-  min-width: 0;
+  width: 400px;
+  flex: 0 1 auto;
+  min-width: 280px;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
@@ -5953,10 +5957,18 @@
     display: none;
   }
 
+  .jiuwenmate-workspace .resize-divider { display: none; }
+
+  .jiuwenmate-workspace:not(.jiuwenmate-workspace--collapsed) .jiuwenmate-records {
+    width: 100% !important;
+    flex: 1 1 auto;
+  }
+
   .jiuwenmate-workspace--panel-open .jiuwenmate-side-panel {
     position: absolute;
     z-index: 5;
     inset: 0;
+    width: 100% !important;
     grid-column: 1;
   }
 

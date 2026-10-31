@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   AtSign, Bot, ChevronLeft, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
 } from 'lucide-react';
@@ -54,6 +54,36 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const [addingMembers, setAddingMembers] = useState(false);
   const [panel, setPanel] = useState<'members' | 'files' | null>('members');
   const [preview, setPreview] = useState<GroupFile | null>(null);
+  const [panelWidth, setPanelWidth] = useState(400);
+  const panelResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const handlePanelResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || panelResizeRef.current) return;
+    event.preventDefault();
+    document.body.classList.add('workspace-resize-active');
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panelResizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: panelWidth };
+  };
+  const handlePanelResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = panelResizeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const next = drag.startWidth - (event.clientX - drag.startX);
+    setPanelWidth(Math.min(720, Math.max(280, next)));
+  };
+  const handlePanelResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (panelResizeRef.current?.pointerId !== event.pointerId) return;
+    panelResizeRef.current = null;
+    document.body.classList.remove('workspace-resize-active');
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+  // 卸载时兜底：拖拽中途组件被卸载（如切换会话）时清掉全局拖拽态。
+  useEffect(() => () => {
+    if (panelResizeRef.current) {
+      panelResizeRef.current = null;
+      document.body.classList.remove('workspace-resize-active');
+    }
+  }, []);
   const [memberSearch, setMemberSearch] = useState(false);
   const [memberQuery, setMemberQuery] = useState('');
   const [input, setInput] = useState('');
@@ -511,10 +541,22 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       </div>
     </div> : <div className="group-chat-empty" data-testid="group-chat-unavailable">{t('groupChat.unavailable')}</div>}
     </div>
-    {group && preview && <aside className="group-chat-panel is-preview" data-testid="group-chat-panel" data-variant="preview">
+    {group && (preview || panel) && (
+      <div
+        className="resize-divider resize-divider--workspace touch-none select-none"
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={handlePanelResizeStart}
+        onPointerMove={handlePanelResizeMove}
+        onPointerUp={handlePanelResizeEnd}
+        onPointerCancel={handlePanelResizeEnd}
+        data-testid="group-chat-resize-divider"
+      />
+    )}
+    {group && preview && <aside className="group-chat-panel is-preview" data-testid="group-chat-panel" data-variant="preview" style={{ width: panelWidth, flexShrink: 0 }}>
       <GroupFilePreviewPanel file={preview} onBack={() => setPreview(null)} />
     </aside>}
-    {group && panel && !preview && <aside className="group-chat-panel" data-testid="group-chat-panel" data-variant={panel}>
+    {group && panel && !preview && <aside className="group-chat-panel" data-testid="group-chat-panel" data-variant={panel} style={{ width: panelWidth, flexShrink: 0 }}>
       <button type="button" className="group-chat-icon-button group-chat-panel-close" aria-label={t('common.close')}
         onClick={() => setPanel(null)} data-testid="group-chat-panel-close"><X size={18} /></button>
       {panel === 'files' ? <>
@@ -559,7 +601,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
             <span>{t('groupChat.you')}</span>
           </div>}
           {visibleMembers.map((member) => <button type="button" className="group-chat-member-row" key={member.member_name}
-            disabled={sending} onClick={() => mention(member.member_name)} title={t('groupChat.mention')}
+            disabled={sending} onClick={() => mention(member.member_name)} title={member.description || t('groupChat.mention')}
             data-testid="group-chat-member" data-variant={member.member_name}>
             <TeamMemberAvatar member={member.member_name} className="group-chat-member-avatar" alt="" />
             <span>{member.display_name || member.member_name}</span>
@@ -571,13 +613,14 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           {!showSelf && !visibleMembers.length && <p className="group-chat-muted" data-testid="group-chat-no-member-match">
             {t('groupChat.noMemberMatch')}</p>}
         </div>
-        <footer className="group-chat-panel-footer">
+        {/* 清空聊天记录 / 删除会话入口暂时不暴露；恢复时把下面的 JSX 注释解开即可。 */}
+        {/* <footer className="group-chat-panel-footer">
           <button type="button" className="group-chat-outline-button" disabled={clearing}
             onClick={() => { setError(''); setClearOpen(true); }} data-testid="group-chat-clear-history">
             {t('groupChat.clearHistory')}</button>
           <button type="button" className="group-chat-delete" onClick={() => directory.openDelete(group)}
             data-testid="group-chat-delete">{t('groupChat.deleteConversation')}</button>
-        </footer>
+        </footer> */}
       </>}
     </aside>}
     {addingMembers && group && <MemberPicker group={group} onClose={() => setAddingMembers(false)} onSaved={(saved) => {
