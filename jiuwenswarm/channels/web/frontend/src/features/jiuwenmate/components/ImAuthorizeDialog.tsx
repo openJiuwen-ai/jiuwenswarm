@@ -23,6 +23,7 @@ export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed, in
   const [platform, setPlatform] = useState<ImPlatform>(fixed?.platform ?? initialPlatform ?? 'feishu');
   const [appId, setAppId] = useState(fixed?.appId ?? '');
   const [robotCode, setRobotCode] = useState(fixed?.robotCode ?? '');
+  const [robotCodeEdited, setRobotCodeEdited] = useState(false);
   const [secret, setSecret] = useState('');
   const [secretVisible, setSecretVisible] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -30,15 +31,20 @@ export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed, in
   const canConfirm = appId.trim().length > 0 && secret.trim().length > 0;
 
   useEffect(() => {
-    if (fixed?.robotCode) setRobotCode((current) => current || fixed.robotCode || '');
-  }, [fixed?.robotCode]);
+    if (!robotCodeEdited && fixed?.robotCode !== undefined) setRobotCode(fixed.robotCode);
+  }, [fixed?.robotCode, robotCodeEdited]);
 
   const confirm = async () => {
     if (!canConfirm || saving) return;
     setSaving(true);
     setError('');
     try {
-      await onConfirm({ platform, appId: appId.trim(), appSecret: secret, robotCode: robotCode.trim() });
+      await onConfirm({
+        platform,
+        appId: appId.trim(),
+        appSecret: secret,
+        robotCode: fixed?.platform === 'dingtalk' && !robotCodeEdited ? undefined : robotCode.trim(),
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -79,7 +85,7 @@ export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed, in
             disabled={Boolean(fixed) || saving}
             onChange={(event) => {
               setPlatform(event.target.value as ImPlatform);
-              setAppId(''); setSecret(''); setRobotCode(''); setError('');
+              setAppId(''); setSecret(''); setRobotCode(''); setRobotCodeEdited(false); setError('');
             }}
           >
             <option value="feishu">{t('jiuwenmate.im.feishu')}</option>
@@ -107,7 +113,10 @@ export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed, in
         {platform === 'dingtalk' ? (
           <label className="jiuwenmate-field">
             <span>{t('jiuwenmate.im.robotCode')}</span>
-            <input data-testid="jiuwenmate-im-robot-code" value={robotCode} onChange={(event) => setRobotCode(event.target.value)} placeholder={t('jiuwenmate.im.robotCodePlaceholder')} autoComplete="off" />
+            <input data-testid="jiuwenmate-im-robot-code" value={robotCode} onChange={(event) => {
+              setRobotCodeEdited(true);
+              setRobotCode(event.target.value);
+            }} placeholder={t('jiuwenmate.im.robotCodePlaceholder')} autoComplete="off" />
           </label>
         ) : null}
         {error ? <p data-testid="jiuwenmate-im-error" className="jiuwenmate-action-error" role="alert">{error}</p> : null}

@@ -281,6 +281,95 @@ test('group WebSocket delivery triggers typing and follows resized replies until
   await act(async () => root.unmount());
 });
 
+
+test('slow initial history and repeated reloads share one request and eventually leave loading', async () => {
+  let resolveHistory;
+  let calls = 0;
+  let chat;
+  const history = new Promise((resolve) => { resolveHistory = resolve; });
+  const testApi = { history: () => { calls += 1; return history; }, onStream: () => () => {} };
+  function Chat() {
+    chat = usePrivateChat(testApi, 'agent', 'conversation-a', 0);
+    return React.createElement('div', null, chat.loading ? 'loading' : chat.requests.map((r) => r.text).join(','));
+  }
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(Chat)));
+    await act(async () => { void chat.reload(); void chat.reload(); void chat.reload(); });
+    assert.equal(calls, 1, 'Repeated reloads must not stack full histories behind the initial read');
+    await act(async () => resolveHistory([requestA]));
+    assert.equal(chat.loading, false);
+    assert.equal(document.getElementById('root').textContent, 'old conversation');
+  } finally { await act(async () => root.unmount()); }
+});
+
+test('reconnect starts a fresh history and ignores the older same-conversation response', async () => {
+  const responses = [];
+  let chat;
+  const testApi = { history: () => new Promise((resolve) => responses.push(resolve)), onStream: () => () => {} };
+  function Chat({ epoch }) {
+    chat = usePrivateChat(testApi, 'agent', 'conversation-a', epoch);
+    return React.createElement('div', null, chat.requests.map((r) => r.text).join(','));
+  }
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(Chat, { epoch: 0 })));
+    await act(async () => root.render(React.createElement(Chat, { epoch: 1 })));
+    assert.equal(responses.length, 2);
+    await act(async () => responses[1]([{ ...requestA, text: 'reconnected history' }]));
+    await act(async () => responses[0]([requestA]));
+    assert.equal(chat.loading, false);
+    assert.equal(document.getElementById('root').textContent, 'reconnected history');
+  } finally { await act(async () => root.unmount()); }
+});
+
+
+test('a slow history snapshot does not erase a request refreshed from a live ended event', async () => {
+  let resolveHistory;
+  let emit;
+  let chat;
+  const testApi = {
+    history: () => new Promise((resolve) => { resolveHistory = resolve; }),
+    onStream: (callback) => { emit = callback; return () => {}; },
+    getRequest: async () => requestA,
+  };
+  function Chat() {
+    chat = usePrivateChat(testApi, 'agent', 'conversation-a', 0);
+    return React.createElement('div', null, chat.requests.map((r) => r.text).join(','));
+  }
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(Chat)));
+    await act(async () => emit({ kind: 'ended', agentId: 'agent', requestId: requestA.requestId, executionId: 'exec', seq: 1, text: '' }));
+    await act(async () => resolveHistory([]));
+    assert.equal(chat.loading, false);
+    assert.equal(document.getElementById('root').textContent, 'old conversation');
+  } finally { await act(async () => root.unmount()); }
+});
+
+for (const pending of [{ status: 'dispatched', outcome: null }, { status: 'ended', outcome: 'paused' }]) {
+test(`a terminal history snapshot is not downgraded by an earlier ${pending.status}/${pending.outcome} response`, async () => {
+  let resolveHistory;
+  let emit;
+  let chat;
+  const testApi = {
+    history: () => new Promise((resolve) => { resolveHistory = resolve; }),
+    onStream: (callback) => { emit = callback; return () => {}; },
+    getRequest: async () => ({ ...requestA, ...pending, replies: [], running: pending.status === 'dispatched', approval: null }),
+  };
+  function Chat() { chat = usePrivateChat(testApi, 'agent', 'conversation-a', 0); return null; }
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(Chat)));
+    await act(async () => emit({ kind: 'delta', agentId: 'agent', requestId: requestA.requestId, executionId: 'exec', seq: 1, text: 'draft' }));
+    await act(async () => resolveHistory([{ ...requestA, outcome: 'completed' }]));
+    assert.equal(chat.requests[0].status, 'ended');
+    assert.deepEqual(chat.requests[0].replies, ['old reply']);
+  } finally { await act(async () => root.unmount()); }
+});
+
+}
+
 const pickerBundle = 'node_modules/.cache/jiuwenmate-chat-switch/MemberPicker.mjs';
 const pickerMocks = {
   '/agentManagement/client': `export const createAgentManagementClient = () => ({ listCatalog: async () => [{

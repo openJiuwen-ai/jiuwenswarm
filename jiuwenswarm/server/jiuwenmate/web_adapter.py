@@ -111,6 +111,11 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_POLL.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_CANCEL.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_DISCONNECT.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL.value,
+        ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value,
     }
 )
 
@@ -562,6 +567,34 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 }
             if method == ReqMethod.JIUWENMATE_AGENT_MAIL_DISCONNECT.value:
                 return {"agent_mail": await manager.agent_mail_runtime.disconnect(scope)}
+        if method.startswith("jiuwenmate.dingtalk_auth."):
+            config_id = _text_param(params, "agent_id")
+            connection_key = _text_param(params, "connection_key")
+            service = await asyncio.to_thread(self._colleagues)
+            await asyncio.to_thread(service.get_colleague, WEB_NAMESPACE, config_id)
+            connection = next((
+                item for item in await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
+                if item.channel == "dingtalk" and item.connection_key == connection_key
+            ), None)
+            if connection is None or (connection_key, connection.agent_id) not in _bound_apps().get("dingtalk", set()):
+                raise PersistentAgentError("DingTalk connection is not bound to this employee", code="NOT_FOUND")
+            from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
+            scope = DingTalkCliScope(WEB_NAMESPACE, connection.agent_id)
+            runtime = manager.dingtalk_cli_runtime
+            if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS.value:
+                return {"dingtalk_auth": await runtime.dingtalk_auth_status(scope)}
+            if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN.value:
+                return {"authorization": await runtime.dingtalk_auth_begin(scope)}
+            if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL.value:
+                operation_id = _text_param(params, "operation_id")
+                status = await runtime.dingtalk_auth_status(scope)
+                if status.get("operation_id") not in (None, operation_id):
+                    raise PersistentAgentError("DingTalk authorization operation changed", code="CONFLICT")
+                return {"dingtalk_auth": status}
+            if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL.value:
+                return {"dingtalk_auth": await runtime.dingtalk_auth_cancel(scope, _text_param(params, "operation_id"))}
+            if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value:
+                return {"dingtalk_auth": await runtime.dingtalk_auth_disconnect(scope)}
         if method == ReqMethod.JIUWENMATE_REQUEST_GET.value:
             view = await manager.request_view(WEB_NAMESPACE, _text_param(params, "request_id"))
             return {"request": view.to_dict()}

@@ -77,7 +77,7 @@ export function JiuwenMateRail({
         })}
       </nav>
       <div className="jiuwenmate-rail__spacer" />
-      <JiuwenMateModeSwitch active label={t('jiuwenmate.mode.exit')} onToggle={onExit} iconOnly />
+      <JiuwenMateModeSwitch active label={t('jiuwenmate.mode.personal')} onToggle={onExit} />
     </aside>
   );
 }

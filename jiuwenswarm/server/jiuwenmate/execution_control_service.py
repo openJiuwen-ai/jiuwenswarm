@@ -113,7 +113,7 @@ class ControlStore(SQLiteStore):
         return self._control(row)
 
     def get(self, namespace_id: str, request_id: str) -> RequestControl | None:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             row = self._row(conn, namespace_id, request_id)
         return None if row is None else self._control(row)
 

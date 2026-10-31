@@ -130,11 +130,12 @@
     "title": "九问员工",
     "mode": {
       "enter": "团队版",
-      "exit": "切换为个人版"
+      "exit": "切换为个人版",
+      "personal": "个人版"
     },
     "nav": {
       "messages": "聊天",
-      "office": "办公室",
+      "office": "员工中心",
       "plaza": "广场",
       "assets": "资产",
       "skills": "技能",
@@ -203,7 +204,7 @@
       }
     },
     "intro": {
-      "title": "办公室",
+      "title": "员工中心",
       "subtitle": "创建和管理 AI 员工，派送至 IM 群内自主履职",
       "create": "创建员工",
       "goCreate": "前往创建",
@@ -406,6 +407,35 @@
           "error": "启动邮箱服务失败，请稍后重试。"
         }
       },
+      "dingtalkAuth": {
+        "title": "钉钉用户账号授权",
+        "description": "为该员工单独授权钉钉用户账号，用于读取已接入群消息、操作在线文档及管理日历日程。实际可用范围取决于账号和组织权限。",
+        "begin": "授权钉钉账号",
+        "beginPending": "正在发起授权…",
+        "cancel": "取消授权",
+        "disconnect": "断开账号",
+        "open": "重新打开授权页",
+        "help": "授权页未打开？",
+        "code": "设备码：",
+        "account": "钉钉账号",
+        "accountUnavailable": "账号名暂不可用",
+        "organizationUnavailable": "组织名称暂不可用",
+        "organization": "所属组织",
+        "openAdmin": "前往钉钉开放平台（CLI设置）",
+        "failures": {
+          "org_access_denied": "钉钉账号已确认，但所选组织未授权此账号通过 CLI 访问数据。请联系组织主管理员开通权限后重新授权，或选择已有权限的组织。",
+          "authorization_expired": "本次设备授权已过期，请重新点击“授权钉钉账号”获取新链接和设备码。",
+          "authorization_failed": "本次授权未完成或授权进程已结束，请重新授权，勿重复使用旧设备码。"
+        },
+        "status": {
+          "loading": "正在检查授权状态…",
+          "unavailable": "钉钉 CLI 当前不可用。",
+          "not_connected": "尚未绑定钉钉用户账号。",
+          "authorizing": "请在钉钉完成授权，完成后将自动显示账号和所属组织。",
+          "connected": "钉钉用户账号已绑定该员工。",
+          "error": "检查钉钉授权失败，请稍后重试。"
+        }
+      },
       "quickIm": "快速配置 IM 渠道",
       "goConfigure": "去配置",
       "groupReplyMode": "群聊回复模式",
@@ -413,7 +443,7 @@
         "passive": "被动",
         "passiveHint": "仅在群聊中被 @ 时回复。",
         "adaptive": "自适应",
-        "adaptiveHint": "被 @ 时回复；飞书等可接收未 @ 消息的平台，会按身份职责判断是否参与。钉钉群里只有 @ 到机器人的消息会触发回复。"
+        "adaptiveHint": "被 @ 时回复；可接收普通群消息的平台会按身份职责判断是否参与。钉钉绑定用户账号后，会定期检查已接入群内正文不含 @ 的新增文字。"
       },
       "permissions": {
         "title": "员工权限",
@@ -675,12 +705,12 @@
       "rawSpan": "选择 OTel Span"
     },
     "office": {
-      "title": "办公室",
+      "title": "员工中心",
       "activityLoading": "正在加载活跃数据…",
       "activityFailed": "活跃数据加载失败：{{reason}}",
       "noResponse": "尚未响应",
       "tabs": {
-        "members": "办公室成员",
+        "members": "员工中心成员",
         "activity": "活跃数据",
         "tasks": "任务中心"
       },

@@ -113,6 +113,11 @@ class ConversationArchive:
         require_identifier("source_ref", source_ref)
         stamp = utc_time(changed_at).isoformat() if changed_at is not None else None
         with self.connection(namespace_id, group_id, create=True) as conn:
+            if source_ref.startswith('delivery:') and self.groups.get(namespace_id, group_id).platform == 'dingtalk':
+                merged = conn.execute('SELECT message_id FROM messages WHERE source_ref=?',
+                                      ('dingtalk:delivery-echo:' + source_ref.removeprefix('delivery:'),)).fetchone()
+                if merged is not None:
+                    return message_reference(group_id, merged['message_id'])
             if message.status == "recalled":
                 conn.execute("INSERT OR IGNORE INTO recalls VALUES (?,?,?)",
                              (message.message_id, source_ref, stamp or utc_time(message.received_at).isoformat()))
@@ -165,6 +170,57 @@ class ConversationArchive:
                         )
             _retain_latest(conn)
         return message_reference(group_id, message.message_id)
+
+    def reconcile_dingtalk_deliveries(self, namespace_id: str, group_id: str, bot_senders: dict[str, str], *,
+                                     observed_since: datetime, observed_through: datetime) -> int:
+        """Merge only unambiguous text echoes from live-verified employee bots in this group.
+
+        Robot ACKs contain processQueryKey, not the history messageId. There is no
+        direct ID mapping: ambiguous, attachment and out-of-window pairs stay separate.
+        """
+        if not bot_senders or self.groups.get(namespace_id, group_id).platform != 'dingtalk':
+            return 0
+        lower, upper = utc_time(observed_since), utc_time(observed_through)
+        with self.connection(namespace_id, group_id, create=True) as conn:
+            _retain_latest(conn)
+            receipts, echoes = [], {}
+            for row in conn.execute('SELECT message_id,payload,source_ref FROM messages'):
+                item = GroupMessage.model_validate_json(row['payload'])
+                if item.sender_kind != 'agent' or item.status != 'normal' or not item.text or item.attachment_refs:
+                    continue
+                if row['source_ref'].startswith('delivery:') and item.sender_id in bot_senders:
+                    receipts.append((row, item))
+                elif row['source_ref'].startswith('dingtalk:message:'):
+                    echoes.setdefault((item.sender_id, item.text), []).append((row, item))
+            candidates, echo_counts = [], {}
+            for row, receipt in receipts:
+                matches = [pair for pair in echoes.get((bot_senders[receipt.sender_id], receipt.text), ())
+                           if abs((pair[1].received_at - receipt.received_at).total_seconds()) <= 10]
+                candidates.append((row, receipt, matches))
+                for echo_row, _ in matches:
+                    echo_counts[echo_row['message_id']] = echo_counts.get(echo_row['message_id'], 0) + 1
+            merged = 0
+            for row, receipt, matches in candidates:
+                if len(matches) != 1 or echo_counts[matches[0][0]['message_id']] != 1:
+                    continue
+                echo_row, echo = matches[0]
+                # Count all known candidates first, then require both directions'
+                # entire matching window to lie inside a completed historical read.
+                if any((item.received_at - lower).total_seconds() < 10
+                       or (upper - item.received_at).total_seconds() < 10 for item in (receipt, echo)):
+                    continue
+                canonical = echo.model_copy(update={
+                    'sender_id': receipt.sender_id, 'sender_name': receipt.sender_name,
+                    'reply_to': receipt.reply_to,
+                })
+                source = 'dingtalk:delivery-echo:' + row['source_ref'].removeprefix('delivery:')
+                conn.execute('UPDATE messages SET payload=?,source_ref=? WHERE message_id=?',
+                             (canonical.model_dump_json(), source, echo.message_id))
+                conn.execute('DELETE FROM messages WHERE message_id=?', (receipt.message_id,))
+                merged += 1
+            if merged:
+                conn.execute('UPDATE archive_info SET content_revision=content_revision+1')
+            return merged
 
     def recall(self, namespace_id: str, group_id: str, message_id: str, *, source_ref: str,
                changed_at: datetime) -> None:

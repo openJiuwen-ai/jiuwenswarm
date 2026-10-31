@@ -26,8 +26,23 @@ import {
   withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
-test('DingTalk CLI has no employee OAuth management RPCs', () => {
-  assert.equal(Object.keys(JIUWENMATE_METHODS).some((key) => key.toLowerCase().includes('dingtalkcli')), false);
+test('DingTalk authorization methods keep their RPC names, scope and response envelopes', async () => {
+  const calls = [];
+  const status = { status: 'connected', cli_version: '1.0.65', account: 'tester' };
+  const api = createJiuwenMateApi(async (method, params) => {
+    calls.push({ method, params });
+    return method === 'jiuwenmate.dingtalk_auth.begin' ? { authorization: status } : { dingtalk_auth: status };
+  });
+  assert.deepEqual(await api.dingtalkAuthStatus('agent-1', 'ding-app'), status);
+  assert.deepEqual(await api.beginDingTalkAuth('agent-1', 'ding-app'), status);
+  assert.deepEqual(await api.pollDingTalkAuth('agent-1', 'ding-app', 'operation'), status);
+  assert.deepEqual(await api.cancelDingTalkAuth('agent-1', 'ding-app', 'operation'), status);
+  assert.deepEqual(await api.disconnectDingTalkAuth('agent-1', 'ding-app'), status);
+  assert.deepEqual(calls.map(({ method }) => method), ['status', 'begin', 'poll', 'cancel', 'disconnect']
+    .map((action) => `jiuwenmate.dingtalk_auth.${action}`));
+  assert.ok(calls.every(({ params }) => params.agent_id === 'agent-1' && params.connection_key === 'ding-app'));
+  assert.equal(calls[2].params.operation_id, 'operation');
+  assert.equal(calls[3].params.operation_id, 'operation');
 });
 
 const wireColleague = {
@@ -92,6 +107,28 @@ function recorder(responses) {
   };
   return { calls, api: createJiuwenMateApi(request) };
 }
+
+test('DingTalk binding preserves an omitted robot code and sends an explicit clear', async () => {
+  const { calls, api } = recorder({ 'channel.dingtalk.bind_agent': {} });
+  const colleague = toColleague(wireColleague);
+
+  await api.bindConnection(colleague, 'dingtalk', { appId: 'ding-app', appSecret: 'new-secret' });
+  await api.bindConnection(colleague, 'dingtalk', { appId: 'ding-app', appSecret: 'new-secret', robotCode: '' });
+
+  assert.deepEqual(calls, [
+    ['channel.dingtalk.bind_agent', {
+      config_id: colleague.configId,
+      client_id: 'ding-app',
+      client_secret: 'new-secret',
+    }],
+    ['channel.dingtalk.bind_agent', {
+      config_id: colleague.configId,
+      client_id: 'ding-app',
+      client_secret: 'new-secret',
+      robot_code: '',
+    }],
+  ]);
+});
 
 test('server colleagues map to page colleagues with the persisted enabled state', () => {
   const colleague = toColleague(wireColleague);

@@ -7,6 +7,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _TEXT_FIELDS = ("name", "client_id", "client_secret", "persistent_agent_id", "robot_code", "api_base", "oapi_base")
+_FILE_FIELDS = ("max_download_size", "download_timeout", "send_file_allowed", "enable_file_download", "workspace_dir")
 # Keys that describe one app. In the legacy flat form they live directly under channels.dingtalk.
 _APP_KEYS = ("name", "enabled", "client_id", "client_secret", "persistent_agent_id", "robot_code", "allow_from",
              "is_default")
@@ -84,7 +85,8 @@ def dingtalk_channel_settings(raw: Any, *, api_base: str, oapi_base: str) -> lis
 
     Disabled, incomplete and duplicated apps do not start, and only one ordinary app is
     started. ``api_base`` and ``oapi_base`` are the defaults when neither the app nor the
-    shared section names a domain.
+    shared section names a domain. File settings use app values before shared values;
+    unset values keep the channel model's defaults.
     """
     shared = raw if isinstance(raw, Mapping) else {}
     apps = dingtalk_apps(raw)
@@ -102,7 +104,7 @@ def dingtalk_channel_settings(raw: Any, *, api_base: str, oapi_base: str) -> lis
             if ordinary_started:
                 continue
             ordinary_started = True
-        settings.append({
+        channel_settings = {
             "enabled": True,
             "client_id": app["client_id"],
             "client_secret": app["client_secret"],
@@ -112,7 +114,14 @@ def dingtalk_channel_settings(raw: Any, *, api_base: str, oapi_base: str) -> lis
             "allow_from": app["allow_from"],
             "api_base": app["api_base"] or _text(shared.get("api_base")) or api_base,
             "oapi_base": app["oapi_base"] or _text(shared.get("oapi_base")) or oapi_base,
-        })
+        }
+        for key in _FILE_FIELDS:
+            value = app.get(key)
+            if value is None:
+                value = shared.get(key)
+            if value is not None:
+                channel_settings[key] = value
+        settings.append(channel_settings)
     return settings
 
 
