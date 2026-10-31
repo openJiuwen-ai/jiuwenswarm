@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
+from openjiuwen_protocol.expert_http_routes import expert_http_routes
+
 from gateway.channel_manager.web.http_routes.mapped import WebHttpMappedRoute
-from jiuwenswarm.common.schema.expert_http_routes import expert_http_routes
 
 _TENANT_QUERY = ("group_id", "bot_id", "user_id", "service_id", "agent_id")
 

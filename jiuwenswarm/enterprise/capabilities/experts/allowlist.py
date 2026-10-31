@@ -3,6 +3,10 @@
 """企业版按本次请求的允许名单决定专家包能不能看、能装、能用。
 
 个人版先看产品形态并放行，不读名单，不组装租户平面。
+
+名单的键名、内部 HTTP 头、规范化与编解码规则、隐藏包清单是 gateway / server
+双端契约，唯一实现在 ``openjiuwen_protocol.package_allowlist``；本模块只保留
+依赖进程内运行时（ContextVar、Hub/市场包查找）的准入判断。
 """
 
 from __future__ import annotations
@@ -13,9 +17,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from jiuwenswarm.common.schema.package_allowlist import (
+from openjiuwen_protocol.match_expressions import matches, validate_match_expr
+from openjiuwen_protocol.package_allowlist import (
     HIDDEN_HUB_ASSET_IDS,
-    METADATA_KEY,
+    PACKAGE_ALLOWLIST_METADATA_KEY as METADATA_KEY,
+    PACKAGE_KIND_DIRS,
     canonical_kind,
     ensure_packages_fit,
     normalize_packages,
@@ -31,11 +37,6 @@ _SUBJECT: ContextVar[tuple[str, str] | None] = ContextVar(
 _ALLOWLIST: ContextVar[list[dict[str, Any]] | None] = ContextVar(
     "package_allowlist_packages", default=None
 )
-
-_KIND_DIRS = {
-    "agent_template": "agent_templates",
-    "agent_group": "agent_groups",
-}
 
 
 def hidden_from_enterprise(package_id: str) -> bool:
@@ -62,8 +63,6 @@ def _packages_from_metadata(metadata: Mapping[str, Any] | None) -> list[dict[str
 
 
 def _require_valid_match_exprs(packages: list[dict[str, Any]]) -> None:
-    from gateway.config.enterprise.expressions import validate_match_expr
-
     for item in packages:
         match_expr = item.get("match_expr")
         if match_expr is not None:
@@ -116,7 +115,6 @@ def _scope_allows(match_expr: Any, identity: dict[str, str]) -> bool:
     """空范围对任何身份放行。限定范围在没有身份或求值失败时拒绝。"""
     if match_expr is None or match_expr == "" or match_expr == []:
         return True
-    from gateway.config.enterprise.expressions import matches
 
     try:
         return matches(match_expr, identity)
@@ -166,7 +164,7 @@ def filter_cards(kind: str, cards: list[dict]) -> list[dict]:
 
 
 def _kind_dir(kind: str) -> str:
-    return _KIND_DIRS[kind]
+    return PACKAGE_KIND_DIRS[kind]
 
 
 def _hub_record(kind: str, package_id: str):

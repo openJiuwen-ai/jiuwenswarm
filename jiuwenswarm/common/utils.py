@@ -47,6 +47,11 @@ from logging.handlers import BaseRotatingHandler
 import portalocker
 from ruamel.yaml import YAML
 
+from openjiuwen_protocol.logging_config import (
+    LOGGING_LEVEL_FIELDS,
+    LOG_CONFIG_OP_DELETE,
+    LOG_CONFIG_OP_FIELD,
+)
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 from jiuwenswarm.enterprise import is_enterprise
@@ -3187,35 +3192,27 @@ def update_log_levels(
 def _logging_config_row_to_dict(obj: dict[str, Any] | Any) -> dict[str, Any]:
     if isinstance(obj, dict):
         return {
-            "level": obj.get("level", "INFO"),
-            "console_level": obj.get("console_level"),
-            "gateway": obj.get("gateway"),
-            "channel": obj.get("channel"),
-            "agent_server": obj.get("agent_server"),
-            "full": obj.get("full"),
+            key: obj.get(key, "INFO" if key == "level" else None)
+            for key in LOGGING_LEVEL_FIELDS
         }
     return {
-        "level": getattr(obj, "level", "INFO"),
-        "console_level": getattr(obj, "console_level", None),
-        "gateway": getattr(obj, "gateway", None),
-        "channel": getattr(obj, "channel", None),
-        "agent_server": getattr(obj, "agent_server", None),
-        "full": getattr(obj, "full", None),
+        key: getattr(obj, key, "INFO" if key == "level" else None)
+        for key in LOGGING_LEVEL_FIELDS
     }
 
 
 def apply_logging_config_payload(payload: dict[str, Any] | None) -> None:
     """将 DB 行 / WS payload 转为 :func:`update_log_levels` 调用。"""
-    if not payload or payload.get("op") == "delete":
+    if not payload or payload.get(LOG_CONFIG_OP_FIELD) == LOG_CONFIG_OP_DELETE:
         update_log_levels()
         return
 
     kwargs: dict[str, Any] = {}
-    if payload.get("level") is not None:
-        kwargs["log_level"] = str(payload["level"])
-    for key in ("console_level", "gateway", "channel", "agent_server", "full"):
-        if payload.get(key) is not None:
-            kwargs[key] = str(payload[key])
+    for key in LOGGING_LEVEL_FIELDS:
+        if payload.get(key) is None:
+            continue
+        # ``level`` 对应 ``update_log_levels`` 的 ``log_level`` 形参。
+        kwargs["log_level" if key == "level" else key] = str(payload[key])
     update_log_levels(**kwargs)
 
 

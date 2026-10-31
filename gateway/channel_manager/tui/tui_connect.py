@@ -1903,8 +1903,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if "project_dir" not in params and session_id:
                 try:
                     from gateway.common.external_providers import provider
+                    from openjiuwen_protocol.provider_domains import (
+                        PROVIDER_DOMAIN_SESSION_METADATA,
+                    )
 
-                    meta = await provider("session_metadata").get_session_metadata_async(
+                    meta = await provider(
+                        PROVIDER_DOMAIN_SESSION_METADATA
+                    ).get_session_metadata_async(
                         session_id, cache_bust=True, user_id=user_id,
                     )
                     if isinstance(meta, dict):
