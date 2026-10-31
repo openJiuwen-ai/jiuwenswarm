@@ -1910,11 +1910,21 @@ def _json_object(value: Any) -> dict[str, Any] | None:
 
 
 def _is_agent_error(payload: dict[str, Any]) -> bool:
-    return str(payload.get("result_type") or "").strip().lower() == "error"
+    if str(payload.get("result_type") or "").strip().lower() == "error":
+        return True
+    # A failed task-loop round (TASK_FAILED, e.g. an LLM stream ReadError)
+    # resolves as a bare ``{"error": ...}`` dict without ``result_type`` or
+    # ``output``. Treat it as an error so the original cause is kept instead
+    # of being masked as "node agent returned empty output".
+    error = payload.get("error")
+    if error is None or not str(error).strip():
+        return False
+    return not str(payload.get("output") or payload.get("content") or "").strip()
 
 
 def _agent_failure_message(result: Any) -> str | None:
-    """Failure text when a DeepAgent invoke ended as ``result_type=error``.
+    """Failure text when a DeepAgent invoke ended as ``result_type=error``
+    or as a bare ``{"error": ...}`` from a failed task-loop round.
 
     A task-loop timeout is a normal return value, not an exception. Its
     ``output`` is the timeout sentence. Treating that sentence as creative

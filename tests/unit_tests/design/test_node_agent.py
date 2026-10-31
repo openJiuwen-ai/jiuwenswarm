@@ -333,6 +333,16 @@ def test_agent_failure_message_reads_task_loop_timeout() -> None:
     assert _agent_failure_message("The scene is as in Image 1.") is None
 
 
+def test_agent_failure_message_reads_bare_task_loop_failure() -> None:
+    from jiuwenswarm.server.runtime.designer.node_agent import _agent_failure_message
+
+    cause = "[181001] model call failed, reason: openAI API async stream error: ReadError"
+    assert _agent_failure_message({"error": cause}) == cause
+    assert _agent_failure_message({"output": json.dumps({"error": cause})}) == cause
+    assert _agent_failure_message({"error": "  "}) is None
+    assert _agent_failure_message({"output": "红色陶瓷杯静置", "error": "warn"}) is None
+
+
 class _FakeNodeAgent:
     def __init__(self, result: dict) -> None:
         self.result = result
@@ -424,6 +434,39 @@ async def test_task_loop_error_does_not_submit_another_video(
         await NodeAgentHost(_DummySpawner())._run_deep_agent(node, ctx, DesignerGraphToolkit(_DummySpawner(), ctx))
     assert calls == []
     assert captured["completion_timeout"] == 7200.0
+
+
+@pytest.mark.asyncio
+async def test_task_loop_failure_keeps_original_cause(
+    designer_store: DesignerGraphStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+    from jiuwenswarm.server.runtime.designer.node_agent import NodeAgentHost
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_workspace_dir",
+        lambda: tmp_path,
+    )
+    _install_fake_deep_agent(
+        monkeypatch,
+        {"error": "[181001] model call failed, reason: openAI API async stream error: ReadError"},
+    )
+    node = {
+        "id": "n_char_1",
+        "type": "text",
+        "label": "character",
+        "config": {"tools": ["call_model"]},
+    }
+    ctx = NodeExecutionContext(
+        graph={"graph_id": "g1", "nodes": [node], "edges": [], "metadata": {}},
+        run_id="r1",
+        node_id="n_char_1",
+        run={"run_id": "r1", "node_states": {}},
+    )
+    with pytest.raises(RuntimeError, match="stream error: ReadError"):
+        await NodeAgentHost(_DummySpawner())._run_deep_agent(node, ctx, DesignerGraphToolkit(_DummySpawner(), ctx))
 
 
 @pytest.mark.asyncio
