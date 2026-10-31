@@ -1994,6 +1994,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # Fixed Code rails retain their existing ownership and order.
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
+            _RailBuildInfo(
+                "_cron_execution_guard_rail",
+                self._build_cron_execution_guard_rail,
+            ),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
             _RailBuildInfo(
