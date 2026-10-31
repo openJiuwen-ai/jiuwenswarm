@@ -1159,6 +1159,10 @@ class CronSchedulerService:
                     "project_id": job.project_id or "",
                     "project_dir": exec_project_dir,
                     "work_mode": job.work_mode or DEFAULT_WEB_WORK_MODE,
+                    # 定时任务无人值守：不向模型暴露 ask_user 等交互能力。
+                    # cron 单 agent 走 unary 通道，没有「提问→等待回答→续跑」回路，
+                    # 一旦模型调用 ask_user 就只会产出空正文，被降级为执行失败。
+                    "supports_user_interaction": False,
                 }
                 if exec_project_dir:
                     params["cwd"] = exec_project_dir
@@ -1166,7 +1170,11 @@ class CronSchedulerService:
                 if job.model_name:
                     params["model_name"] = job.model_name
                 request_metadata: dict[str, Any] = {
-                    "cron": {"job_id": job.id, "run_id": run_id}
+                    "cron": {"job_id": job.id, "run_id": run_id},
+                    # 同步给 metadata：swarm/code 的 rail 装配
+                    # （code_rails.build_structured_ask_user）与 team 成员继承
+                    # 都读 request_metadata 而非 params，仅改 params 覆盖不到。
+                    "supports_user_interaction": False,
                 }
                 if job.xiaoyi_push_id:
                     request_metadata["scheduled_device"] = {
