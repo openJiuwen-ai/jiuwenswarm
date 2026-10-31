@@ -2619,6 +2619,7 @@ class CronSchedulerService:
     ) -> None:
         """把「正在跑」的会话号写进 Redis，多副本 list 才能被前端发现。
 
+        每个 job 独立 String key + 独立 TTL，避免短超时任务 EXPIRE 整表把长任务刷掉。
         仅企业版；个人版不写 Redis。
         """
         from gateway.enterprise import is_enterprise
@@ -2630,17 +2631,26 @@ class CronSchedulerService:
         if not jid or not sid:
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import cron_active_sessions_hash_rel
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_active_session_rel,
+                cron_active_sessions_hash_rel,
+            )
             from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
 
             client = get_gateway_redis_client_if_open()
             if client is None:
                 return
-            key = cron_active_sessions_hash_rel()
-            await client.hset(key, jid, sid)
-            # 整表短 TTL：任务异常退出未擦除时也不会永久脏数据
             expire_s = int(ttl_seconds) if int(ttl_seconds or 0) > 0 else 3600
-            await client.expire(key, max(60, expire_s))
+            await client.set(
+                cron_active_session_rel(jid),
+                sid,
+                ttl_seconds=max(60, expire_s),
+            )
+            # 清理旧版整表 Hash 字段，避免双写期读到过期脏数据
+            try:
+                await client.hdel(cron_active_sessions_hash_rel(), jid)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             logger.debug(
                 "[Cron] publish active_session failed job=%s session=%s",
@@ -2657,13 +2667,20 @@ class CronSchedulerService:
         if not jid:
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import cron_active_sessions_hash_rel
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_active_session_rel,
+                cron_active_sessions_hash_rel,
+            )
             from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
 
             client = get_gateway_redis_client_if_open()
             if client is None:
                 return
-            await client.hdel(cron_active_sessions_hash_rel(), jid)
+            await client.delete(cron_active_session_rel(jid))
+            try:
+                await client.hdel(cron_active_sessions_hash_rel(), jid)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception:  # noqa: BLE001
             logger.debug("[Cron] clear active_session failed job=%s", jid, exc_info=True)
 
@@ -2675,26 +2692,44 @@ class CronSchedulerService:
             return {}
         out = self.list_active_exec_sessions()
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import cron_active_sessions_hash_rel
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_active_session_scan_rel,
+                cron_active_sessions_hash_rel,
+            )
             from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
 
             client = get_gateway_redis_client_if_open()
             if client is None:
                 return out
+            prefix = "gateway:cron_active_session:"
+            keys = await client.scan_iter(cron_active_session_scan_rel())
+            if keys:
+                values = await client.mget(list(keys))
+                for key, value in zip(keys, values):
+                    rel = str(key or "").strip()
+                    if not rel.startswith(prefix):
+                        continue
+                    job_id = rel[len(prefix):].strip()
+                    if isinstance(value, (bytes, bytearray)):
+                        sid = bytes(value).decode("utf-8", errors="replace").strip()
+                    else:
+                        sid = str(value or "").strip()
+                    if job_id and sid:
+                        out[job_id] = sid
+            # 双写过渡：仍兼容旧整表 Hash（若尚未迁完）
             raw = await client.hgetall(cron_active_sessions_hash_rel())
-            if not isinstance(raw, dict):
-                return out
-            for key, value in raw.items():
-                if isinstance(key, (bytes, bytearray)):
-                    job_id = bytes(key).decode("utf-8", errors="replace").strip()
-                else:
-                    job_id = str(key or "").strip()
-                if isinstance(value, (bytes, bytearray)):
-                    sid = bytes(value).decode("utf-8", errors="replace").strip()
-                else:
-                    sid = str(value or "").strip()
-                if job_id and sid:
-                    out[job_id] = sid
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    if isinstance(key, (bytes, bytearray)):
+                        job_id = bytes(key).decode("utf-8", errors="replace").strip()
+                    else:
+                        job_id = str(key or "").strip()
+                    if isinstance(value, (bytes, bytearray)):
+                        sid = bytes(value).decode("utf-8", errors="replace").strip()
+                    else:
+                        sid = str(value or "").strip()
+                    if job_id and sid and job_id not in out:
+                        out[job_id] = sid
         except Exception:  # noqa: BLE001
             logger.debug("[Cron] collect active_sessions from redis failed", exc_info=True)
         return out

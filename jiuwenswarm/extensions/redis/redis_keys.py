@@ -69,9 +69,26 @@ def cron_permission_hold_by_session_rel(session_id: str) -> str:
     return f"gateway:cron_permission_hold_by_session:{sid}"
 
 
-def cron_active_sessions_hash_rel() -> str:
-    """``gateway:cron_active_sessions`` Hash：job_id → 正在执行的 cron 会话号。
+def cron_active_session_rel(job_id: str) -> str:
+    """``gateway:cron_active_session:{job_id}`` String：该 job 正在执行的会话号。
 
+    每个 job 独立 key + 独立 TTL，避免短超时任务把整表 EXPIRE 盖掉长任务。
     企业多副本下列表可能打到非执行 Pod；前端靠这个字段发现到点会话并订 live。
+    """
+    jid = str(job_id or "").strip()
+    if not jid:
+        raise ValueError("job_id is required")
+    return f"gateway:cron_active_session:{jid}"
+
+
+def cron_active_session_scan_rel() -> str:
+    """``gateway:cron_active_session:*``，供 collect 扫描所有进行中会话。"""
+    return "gateway:cron_active_session:*"
+
+
+def cron_active_sessions_hash_rel() -> str:
+    """旧版整表 Hash（已废弃）。
+
+    曾用单 key + EXPIRE，后写入的短 TTL 会覆盖先写入的长任务。保留名仅用于迁移清理。
     """
     return "gateway:cron_active_sessions"
