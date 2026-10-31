@@ -2156,6 +2156,9 @@ class AgentWebSocketServer:
         """Build every AgentServer Runtime through one product composition root."""
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
+        from jiuwenswarm.server.runtime.session.attach_notifications import (
+            ExtensionSessionAttachParticipant,
+        )
         from jiuwenswarm.server.runtime.session.end_notifications import (
             ExtensionSessionEndParticipant,
         )
@@ -2166,6 +2169,8 @@ class AgentWebSocketServer:
         owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
         registry = RuntimeParticipantRegistry(host_delete=(ExtensionSessionEndParticipant(),))
+        self._session_association_participant = ExtensionSessionAttachParticipant()
+        registry.register_host_foreground(self._session_association_participant)
         lease = owner.attach_runtime(registry)
         return AgentRuntime(
             agent_manager=agent_manager,
@@ -2510,6 +2515,9 @@ class AgentWebSocketServer:
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop", "voice.task.checkpoint.ack",
+                # A released view only cleans up its existing association;
+                # its exact identity is checked even if the Session archived.
+                "session.detach",
             }
             # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
             # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。
@@ -2561,6 +2569,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SESSION_DETACH:
+                await self._handle_session_detach(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
                 await self._handle_session_plan_status(ws, request, send_lock)
@@ -4975,6 +4986,35 @@ class AgentWebSocketServer:
             await send_wire_payload(
                 ws, encode_agent_response_for_wire(response, response_id=request.request_id)
             )
+
+    async def _handle_session_detach(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Release one current view identity without ending its Session."""
+        params = request.params if isinstance(request.params, dict) else {}
+        participant = getattr(self, "_session_association_participant", None)
+        if participant is None:
+            ok, payload = False, {"error": "Session associations are not ready", "code": "NOT_READY"}
+        else:
+            try:
+                detached = await participant.detach(
+                    channel_id=request.channel_id,
+                    session_id=params.get("session_id"),
+                    view_id=params.get("view_id"),
+                    attachment_id=params.get("attachment_id"),
+                )
+                ok, payload = True, {
+                    "session_id": params["session_id"], "surface_id": params["view_id"],
+                    "attachment_id": params["attachment_id"], "detached": detached,
+                }
+            except ValueError as exc:
+                ok, payload = False, {"error": str(exc), "code": "BAD_REQUEST"}
+            except LookupError as exc:
+                ok, payload = False, {"error": str(exc), "code": "STALE_ATTACHMENT"}
+        response = AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id, ok=ok,
+            payload=payload, metadata=request.metadata,
+        )
+        async with send_lock:
+            await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
 
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Translate ``session.switch`` between WebSocket wire and Runtime."""
