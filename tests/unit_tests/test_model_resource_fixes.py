@@ -368,6 +368,36 @@ def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime)
         store.set_session_model_selection("../escape", selection)
 
 
+@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+def test_model_selection_read_rides_out_metadata_replacement(tmp_path, monkeypatch, runtime):
+    import json
+    from pathlib import Path
+
+    store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
+    selection = {"type": "model_group", "id": "mgp_a", "route_id": "rte_b"}
+    metadata_path = tmp_path / "design_race" / "metadata.json"
+    metadata_path.parent.mkdir()
+    metadata_path.write_text(json.dumps({"model_selection": selection}), encoding="utf-8")
+    real_read_text = Path.read_text
+    denials = {"left": 2}
+
+    def read_text(self, *args, **kwargs):
+        if self == metadata_path and denials["left"]:
+            denials["left"] -= 1
+            raise PermissionError(13, "file is being replaced")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert store.get_session_model_selection("design_race") == ModelSelection.model_validate(selection)
+
+    denials["left"] = store._SHARING_RETRY_ATTEMPTS
+    with pytest.raises(ModelSelectionError, match="cannot read the session's model selection"):
+        store.get_session_model_selection("design_race")
+
+
 def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
     from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver as GatewayResolver
 

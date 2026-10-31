@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 from jiuwenswarm.common.model_selection import ModelSelection
 from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+# The metadata writer publishes via tmp+rename and retries Windows sharing
+# violations up to this budget; a reader landing in that window gets Errno 13
+# on a healthy file.
+_SHARING_RETRY_ATTEMPTS = 100
 
 
 def _metadata_path(session_id: str) -> Path:
@@ -22,12 +28,24 @@ def _metadata_path(session_id: str) -> Path:
     return path
 
 
+def _read_text_ride_out_sharing(path: Path) -> str:
+    attempt = 0
+    while True:
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            attempt += 1
+            if attempt >= _SHARING_RETRY_ATTEMPTS:
+                raise
+            time.sleep(min(0.001 * attempt, 0.01))
+
+
 def get_session_model_selection(session_id: str) -> ModelSelection | None:
     path = _metadata_path(session_id)
     if not path.is_file():
         return None
     try:
-        raw = json.loads(path.read_text(encoding="utf-8")).get("model_selection")
+        raw = json.loads(_read_text_ride_out_sharing(path)).get("model_selection")
         return ModelSelection.model_validate(raw) if isinstance(raw, dict) else None
     except (OSError, ValueError) as exc:
         raise ModelSelectionError(MODEL_GROUP_INVALID, "cannot read the session's model selection") from exc
