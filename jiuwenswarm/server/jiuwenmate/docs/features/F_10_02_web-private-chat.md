@@ -289,3 +289,23 @@ core 升级到 `9eb336b4` 后补充执行（同日）：
 - 2026-10-14：core 在 `9eb336b4` 接通 PA-10、PA-06。宿主代码无需修改；补充正式执行验收（I-08），删除已失效的 canary，并按 core 新的包结构调整两处测试导入。
 - 2026-10-14：负责人在浏览器试用后要求回复流式输出并渲染 Markdown。按变更闸门提交分析与方案，经确认采用推送加查询补齐（D-05）与 `MarkdownRenderer`（D-06）；D-04 修订为轮询兜底；新增 I-09 与 JM-10-V-04。改动跨 AgentServer、Gateway 与前端，未修改 agent-core。
 - 2026-10-22：补齐多会话侧栏的行内管理行为及选中背景尺寸。`WebConversationStore` 持久化置顶状态并迁移既有 SQLite 表，`jiuwenmate.conversation.pin` 提供前端操作；会话按置顶与最近更新时间分组排序。前端修复 Grid 隐式最小尺寸导致会话行超宽的问题，并将头像、标题组与选中背景垂直居中（D-07、JM-10-V-05）。
+
+
+## 2026-10-31 私聊历史加载修复
+
+用户已批准最小范围修复。现场小九会话仍有69条请求，列表约1.9秒返回，历史35秒未返回；运行时原生线程采样有13个线程处于SQLite busy等待。历史和列表的多处纯SELECT使用BEGIN IMMEDIATE，页面同时每2秒重新读全量历史且允许重叠，形成锁与请求放大。
+
+方案：SQLiteStore保留默认立即写事务，新增显式只读选项（query_only与延迟BEGIN）给已核验的历史、控制状态、恢复状态和会话列表读取，不修改写入、权限和产物核验。前端同scope/API/连接轮次只允许一个历史请求在途；新scope或重连隔离旧结果；目录轮询不得重叠，移除重复首次全员加载与未变化的整段历史刷新。保持定时提醒发现、IM选择保护、流式与请求状态补查。实施计划和验证记录见仓库docs/superpowers/plans/2026-10-31-private-chat-loading.md。验证尚未完成。
+
+English summary: Audited history SELECTs will use read-only snapshots instead of reserving the SQLite writer lock. Frontend history and directory reads will be bounded while preserving reconnect, streaming, reminders and IM isolation. Implementation and verification are in progress.
+
+
+实测补充：只读事务上线后，原生线程采样的SQLite busy等待降为0，但原manager仍逐字段await to_thread，69条历史超过300次排队，实测34.6秒且后续请求超时。必要的同链路补充修改为agent_manager.py：先一次工作线程读取Session/请求状态，再在事件循环捕获调度器running ID快照，随后一次工作线程批量完成同一段历史的只读组装；单请求查询也复用相同组装函数。不缓存历史、不改消息顺序、产物验签和恢复/审批/控制来源。继续验证。
+
+
+验证结论：锁等待回归16项在旧实现失败；同一慢历史重复读取、重连离线结果提示、实时更新不被历史覆盖、终态不被旧暂停状态降级，以及调度器运行中状态时序均完成RED→GREEN。最终后端111项通过（1项原有shared/文件路径用例在原事务行为下同样失败，已单独排除），钉钉生产接入55项通过；前端hook10项、Workspace/Profile39项、API31项通过，前端build与最终资源打包通过。重启源码服务后，实际Web接口两次返回小九会话全部69条，ID顺序与数据库一致，当前活跃轮询负载下耗时14.8秒/14.3秒；修复前35秒内未返回。真实浏览器已显示小九69条请求，无加载提示和页面错误。剩余全量历史延迟仍较高，不能将本次恢复加载描述为瞬时加载。
+
+English summary: Verified read-only snapshots remove SQLite writer-lock contention. History requests are coalesced, directory batches do not overlap, and a 30-second catch-up remains for missed pushes. History materialization now uses two constant worker jobs with scheduler state read on the event loop after request states. The actual page displays all 69 requests with no loading error; full-history latency is about 14 seconds under the observed polling load. Tests and production build passed within the stated scope; an independently baseline-failing shared-file fixture remains unchanged.
+
+
+继续优化（2026-10-31）：线上历史仍约15秒。对真实数据库完整_read_view性能采样显示69条请求打开556次连接、执行2091次SQL，独立读取3.1秒。补充sqlite_store.py显式只读批次上下文，按线程和数据库路径复用查询连接；每个既有只读事务仍独立BEGIN/COMMIT，不跨全量历史保留共享锁。agent_manager.py只在批量视图读取范围使用，不改变写事务、缓存正文、权限或产物核验。新增连接复用、写者可提交、嵌套/异常关闭与线程隔离验证，尚在实施。

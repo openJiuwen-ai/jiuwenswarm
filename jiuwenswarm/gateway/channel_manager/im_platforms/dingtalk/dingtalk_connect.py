@@ -20,7 +20,6 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
 from jiuwenswarm.common.utils import get_agent_workspace_dir
-from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
@@ -375,15 +374,9 @@ class DingTalkChannel(BaseChannel):
             return result
 
         if has_file:
-            if share_mode not in {"upload", "attachment"}:
-                return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
             media_id = file_key
             dentry_id = None
             if share_mode == "upload":
-                if is_direct_message:
-                    return {"outcome": "failed", "error_code": "DINGTALK_GROUP_UPLOAD_REQUIRED"}
-                if not isinstance(sender_staff_id, str) or not sender_staff_id.strip():
-                    return {"outcome": "failed", "error_code": "DINGTALK_SENDER_ID_REQUIRED"}
                 if file_key:
                     dentry_id = file_key
                 else:
@@ -437,17 +430,9 @@ class DingTalkChannel(BaseChannel):
                     return include_file_key({"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"})
                 except Exception:
                     return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
-                body = self._response_json(response)
-                if response.status_code >= 500 or response.status_code == 408:
-                    return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
-                if response.status_code != 200:
-                    return include_file_key({"outcome": "failed", "error_code": "DINGTALK_REJECTED"})
-                receipt = body.get("processQueryKey")
-                if not isinstance(receipt, str) or not receipt.strip():
-                    return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_MISSING"})
-                if not has_text:
-                    return include_file_key({"outcome": "delivered", "external_message_id": receipt})
-                file_key = media_id
+                result = self._persistent_send_receipt(response, chat_id=chat_id, fresh=fresh)
+                if result["outcome"] != "delivered" or not has_text:
+                    return include_file_key(result)
 
         data = (
             self._build_private_message_payload(chat_id, text)
@@ -463,27 +448,28 @@ class DingTalkChannel(BaseChannel):
             return include_file_key({"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"})
         except Exception:
             return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
-        try:
-            body = response.json()
-        except ValueError:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        return include_file_key(self._persistent_send_receipt(response, chat_id=chat_id, fresh=fresh))
+
+    def _persistent_send_receipt(
+        self, response: httpx.Response, *, chat_id: str, fresh: bool,
+    ) -> dict[str, Any]:
+        """Classify a robot receipt consistently for text and attachment sends."""
+        body = self._response_json(response)
         code = str(body.get("code") or "")
         if code == "unknown.send.result" or response.status_code >= 500 or response.status_code == 408:
-            return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
+            return {"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"}
         if response.status_code == 401 and not fresh:
             # A cached token can be revoked early. Nothing was sent, so the next attempt gets a new one.
             self._access_token = None
-            return include_file_key({"outcome": "pending", "error_code": "DINGTALK_TOKEN_EXPIRED"})
+            return {"outcome": "pending", "error_code": "DINGTALK_TOKEN_EXPIRED"}
         if response.status_code != 200:
             rejected = response.status_code in {401, 403, 404, 413, 422, 429} or (
                 400 <= response.status_code < 500 and bool(code)
             )
-            return include_file_key({
+            return {
                 "outcome": "failed" if rejected else "unknown",
                 "error_code": "DINGTALK_REJECTED" if rejected else "DINGTALK_SEND_UNKNOWN",
-            })
+            }
         for field, error in (
             ("invalidStaffIdList", "DINGTALK_TARGET_INVALID"),
             ("flowControlledStaffIdList", "DINGTALK_RATE_LIMITED"),
@@ -491,14 +477,13 @@ class DingTalkChannel(BaseChannel):
         ):
             targets = body.get(field, [])
             if not isinstance(targets, list):
-                return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_INVALID"})
+                return {"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_INVALID"}
             if chat_id in targets:
-                return include_file_key({"outcome": "failed", "error_code": error})
+                return {"outcome": "failed", "error_code": error}
         key = body.get("processQueryKey")
         if not isinstance(key, str) or not key.strip():
-            return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_MISSING"})
-        result = {"outcome": "delivered", "external_message_id": key}
-        return include_file_key(result)
+            return {"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_MISSING"}
+        return {"outcome": "delivered", "external_message_id": key}
 
     @staticmethod
     def _response_json(response: httpx.Response) -> dict[str, Any]:

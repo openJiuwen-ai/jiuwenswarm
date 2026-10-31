@@ -36,9 +36,11 @@ class SQLiteStore:
         return conn
 
     @contextmanager
-    def _transaction(self) -> Iterator[sqlite3.Connection]:
+    def _transaction(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
         with closing(self._connect()) as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            if not write:
+                conn.execute("PRAGMA query_only = ON")
+            conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             try:
                 yield conn
             except BaseException:

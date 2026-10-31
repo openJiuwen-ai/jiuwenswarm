@@ -10,6 +10,9 @@ import { initReactI18next } from 'react-i18next';
 const browser = new JSDOM('<!doctype html>', { url: 'http://localhost' });
 globalThis.window = browser.window;
 globalThis.document = browser.window.document;
+globalThis.MutationObserver = browser.window.MutationObserver;
+// JSDOM has no layout observer; these tests exercise request routing rather than resize.
+globalThis.ResizeObserver = class { observe() {} disconnect() {} };
 const { createRoot } = await import('react-dom/client');
 const { ColleagueWorkspacePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueWorkspacePage.js');
 
@@ -67,6 +70,7 @@ async function renderWorkspace() {
   const chat = {
     listConversations: async (agentId) => {
       calls.push(['list', agentId]);
+      if (state.listGate) await state.listGate;
       return agentId === 'config-web' ? state.webConversations : [];
     },
     history: async (agentId, conversationId) => {
@@ -97,17 +101,19 @@ async function renderWorkspace() {
   const flush = () => act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  await act(async () => {
+  let connectionEpoch = 1;
+  const render = () => {
     root.render(React.createElement(ColleagueWorkspacePage, {
       colleagues: [colleague],
       selectedColleagueId: colleague.id,
       chat,
-      connectionEpoch: 1,
+      connectionEpoch,
       onSelectColleague: () => undefined,
       onCreateSchedule: () => undefined,
       onRenameColleague: async () => undefined,
     }));
-  });
+  };
+  await act(async () => render());
   await flush();
   await flush();
   const select = () => container.querySelector('[data-testid="jiuwenmate-workspace-connection-select"]');
@@ -117,6 +123,11 @@ async function renderWorkspace() {
     container,
     select,
     flush,
+    async reconnect() {
+      connectionEpoch += 1;
+      await act(async () => render());
+      await flush();
+    },
     async choose(agentId) {
       await act(async () => {
         select().value = agentId;
@@ -202,4 +213,46 @@ test('in the Web workspace a new Web result still opens by itself', async () => 
   } finally {
     await page.close();
   }
+});
+
+
+test('directory polling waits for its previous batch instead of stacking requests', async () => {
+  const page = await renderWorkspace();
+  let release;
+  try {
+    page.state.listGate = new Promise((resolve) => { release = resolve; });
+    page.calls.length = 0;
+    await page.poll(); await page.poll(); await page.poll();
+    assert.equal(page.calls.filter(([kind]) => kind === 'list').length, 1);
+  } finally {
+    release(); page.state.listGate = null;
+    await page.flush(); await page.close();
+  }
+});
+
+test('unchanged directory polls avoid whole histories but retain a bounded missed-push fallback', async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  const page = await renderWorkspace();
+  try {
+    page.calls.length = 0;
+    await page.poll(); await page.poll();
+    assert.equal(page.calls.filter(([kind]) => kind === 'history').length, 0);
+    now += 31000;
+    await page.poll();
+    assert.equal(page.calls.filter(([kind]) => kind === 'history').length, 1);
+  } finally { await page.close(); }
+});
+
+
+test('reconnect discovers Web results created offline while preserving the selected IM workspace', async () => {
+  const page = await renderWorkspace();
+  try {
+    await page.choose('runtime-feishu');
+    page.state.webConversations = [webResult];
+    await page.reconnect();
+    await page.poll();
+    assert.equal(page.select().value, 'runtime-feishu');
+    assert.ok(page.container.querySelector('[data-testid="jiuwenmate-workspace-web-result"]'));
+  } finally { await page.close(); }
 });

@@ -282,7 +282,7 @@ class ExecutionRepository(SQLiteStore):
 
     def find_session(self, namespace_id: str, agent_id: str, conversation: ConversationRef) -> SessionRecord | None:
         """The colleague's Session for a conversation, or None before first contact; nothing is created."""
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             row = conn.execute(
                 "SELECT * FROM sessions WHERE namespace_id = ? AND agent_id = ? AND kind = ? "
                 "AND channel = ? AND conversation_key = ?",
@@ -291,7 +291,7 @@ class ExecutionRepository(SQLiteStore):
         return None if row is None else self._session(row)
 
     def get_session(self, namespace_id: str, session_id: str) -> SessionRecord:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             row = conn.execute(
                 "SELECT * FROM sessions WHERE namespace_id = ? AND session_id = ?", (namespace_id, session_id)
             ).fetchone()
@@ -408,7 +408,7 @@ class ExecutionRepository(SQLiteStore):
         return RequestState(record=record, seq=seq, status="queued", outcome=None, updated_at=record.received_at), True
 
     def get_request(self, namespace_id: str, request_id: str) -> RequestState:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             return self._request(self._require_request(conn, namespace_id, request_id))
 
     @staticmethod
@@ -492,7 +492,7 @@ class ExecutionRepository(SQLiteStore):
 
     def pending_continuation_ref(self, namespace_id: str, request_id: str) -> str | None:
         """The interrupted Execution awaiting a continuation that has not started yet."""
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             return self._pending_continuation(conn, namespace_id, request_id)
 
     @staticmethod
@@ -546,7 +546,7 @@ class ExecutionRepository(SQLiteStore):
             return self._request(self._require_request(conn, namespace_id, request_id))
 
     def executions(self, namespace_id: str, request_id: str) -> list[ExecutionRecord]:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             rows = conn.execute(
                 "SELECT * FROM executions WHERE namespace_id = ? AND request_id = ? ORDER BY started_at, rowid",
                 (namespace_id, request_id),
@@ -554,7 +554,7 @@ class ExecutionRepository(SQLiteStore):
         return [self._execution(row) for row in rows]
 
     def session_requests(self, namespace_id: str, session_id: str) -> list[RequestState]:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             rows = conn.execute(
                 "SELECT * FROM requests WHERE namespace_id = ? AND session_id = ? ORDER BY seq",
                 (namespace_id, session_id),
@@ -562,7 +562,7 @@ class ExecutionRepository(SQLiteStore):
         return [self._request(row) for row in rows]
 
     def latest_session_request(self, namespace_id: str, session_id: str) -> RequestState | None:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             row = conn.execute(
                 "SELECT * FROM requests WHERE namespace_id = ? AND session_id = ? ORDER BY seq DESC LIMIT 1",
                 (namespace_id, session_id),
@@ -860,7 +860,7 @@ class ExecutionRepository(SQLiteStore):
         self, namespace_id: str, session_id: str, request_id: str, execution_id: str
     ) -> tuple[AgentEvent, ...]:
         """Saved events of an Execution of the given Session and Request, in ``local_seq`` order."""
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             owner = conn.execute(
                 "SELECT 1 FROM executions e JOIN requests r "
                 "ON r.namespace_id = e.namespace_id AND r.request_id = e.request_id "
@@ -878,7 +878,7 @@ class ExecutionRepository(SQLiteStore):
 
     def candidate_output(self, namespace_id: str, output_id: str) -> AgentEvent | None:
         """The stored ``output.proposed`` event of an output, for delivery handoff."""
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             row = conn.execute(
                 "SELECT e.event_json FROM candidate_outputs c "
                 "JOIN execution_events e ON e.namespace_id = c.namespace_id AND e.event_id = c.event_id "
@@ -919,7 +919,7 @@ class ExecutionRepository(SQLiteStore):
 
     def result_deliveries(self, namespace_id: str, request_id: str) -> list[dict[str, object]]:
         """Delivery states for one Request, oldest first; output bodies are not copied here."""
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             rows = conn.execute(
                 "SELECT delivery_id, request_id, execution_id, output_id, channel, target_id, status, "
                 "idempotency_key, attempt_count, external_message_id, error_code, created_at, updated_at, notice_text "

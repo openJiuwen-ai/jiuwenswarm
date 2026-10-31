@@ -549,11 +549,20 @@ class AgentManager:
         self, namespace_id: str, agent_id: str, conversation: ConversationRef
     ) -> list[RequestView]:
         """Requests of the colleague's Session in this conversation, oldest first; empty before first contact."""
-        session = await asyncio.to_thread(self._sessions.find_session, namespace_id, agent_id, conversation)
-        if session is None:
-            return []
-        states = await asyncio.to_thread(self._sessions.session_requests, namespace_id, session.session_id)
-        return [await self._view(state, conversation.key) for state in states]
+        def read_states() -> list[RequestState]:
+            session = self._sessions.find_session(namespace_id, agent_id, conversation)
+            if session is None:
+                return []
+            return self._sessions.session_requests(namespace_id, session.session_id)
+
+        states = await asyncio.to_thread(read_states)
+        # Read scheduler state after request states, on the event loop, as in a single view.
+        running = frozenset(run.record.request_id for run in self._scheduler.running)
+
+        def read_views() -> list[RequestView]:
+            return [self._read_view(state, conversation.key, state.record.request_id in running) for state in states]
+
+        return await asyncio.to_thread(read_views)
 
     async def latest_conversation_message(
         self, namespace_id: str, agent_id: str, conversation: ConversationRef
@@ -748,19 +757,16 @@ class AgentManager:
     async def _view(self, state: RequestState, conversation_key: str) -> RequestView:
         # The scheduler's running set changes on the event loop, so it is read here and not in the thread.
         running = any(run.record.request_id == state.record.request_id for run in self._scheduler.running)
-        replies, files, reason, draft = await asyncio.to_thread(self._result, state)
-        control = await asyncio.to_thread(self._control.control_of, state.record.namespace_id, state.record.request_id)
-        deliveries = await asyncio.to_thread(
-            self._sessions.result_deliveries, state.record.namespace_id, state.record.request_id
-        )
+        return await asyncio.to_thread(self._read_view, state, conversation_key, running)
+
+    def _read_view(self, state: RequestState, conversation_key: str, running: bool) -> RequestView:
+        replies, files, reason, draft = self._result(state)
+        control = self._control.control_of(state.record.namespace_id, state.record.request_id)
+        deliveries = self._sessions.result_deliveries(state.record.namespace_id, state.record.request_id)
         status_of = {delivery["output_id"]: delivery["status"] for delivery in deliveries}
         files = tuple({**item, "delivery_status": status_of.get(item["output_id"])} for item in files)
-        recovery = await asyncio.to_thread(
-            self._recovery.recovery_of, state.record.namespace_id, state.record.request_id
-        )
-        approval = await asyncio.to_thread(
-            self._permission_approvals.pending_for_request, state.record.namespace_id, state.record.request_id
-        )
+        recovery = self._recovery.recovery_of(state.record.namespace_id, state.record.request_id)
+        approval = self._permission_approvals.pending_for_request(state.record.namespace_id, state.record.request_id)
         return RequestView(
             state=state,
             running=running,

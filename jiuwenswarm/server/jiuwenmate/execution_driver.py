@@ -189,7 +189,8 @@ class ExecutionDriver:
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
             )
-            permission_profile = getattr(snapshot.load_spec(), "permission_profile", "default")
+            published_spec = snapshot.load_spec()
+            permission_profile = getattr(published_spec, "permission_profile", "default")
             workspace = HostWorkspaceAccess(
                 self._workspaces,
                 record.namespace_id,
@@ -251,7 +252,7 @@ class ExecutionDriver:
             addenda = [
                 item for item in (
                     guidance,
-                    dingtalk_execution_guidance(record.route_snapshot),
+                    dingtalk_execution_guidance(record.route_snapshot, card=published_spec.card),
                     _session_workspace_guidance(record.session_id, session_workspace, output_dir),
                     vision_guidance(),
                 ) if item

@@ -93,7 +93,7 @@ class WebConversationStore(SQLiteStore):
     def require_open(self, namespace_id: str, agent_id: str, conversation_id: str) -> None:
         """Refuse a conversation that was deleted; one that does not exist yet is open."""
         require_identifier("conversation_id", conversation_id)
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             row = self._row(conn, namespace_id, agent_id, conversation_id)
         if row is not None and row["deleted_at"] is not None:
             raise PersistentAgentError("conversation not found", code="NOT_FOUND")
@@ -140,12 +140,12 @@ class WebConversationStore(SQLiteStore):
             )
 
     def known(self, namespace_id: str, agent_id: str, conversation_id: str) -> bool:
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             return self._row(conn, namespace_id, agent_id, conversation_id) is not None
 
     def list(self, namespace_id: str, agent_id: str) -> list[WebConversation]:
         """Conversations not deleted, latest message first."""
-        with self._transaction() as conn:
+        with self._transaction(write=False) as conn:
             rows = conn.execute(
                 "SELECT * FROM web_conversations WHERE namespace_id = ? AND agent_id = ? AND deleted_at IS NULL "
                 "ORDER BY pinned DESC, updated_at DESC, created_at DESC",

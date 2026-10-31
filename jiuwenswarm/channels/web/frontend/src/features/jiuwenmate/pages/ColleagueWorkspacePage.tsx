@@ -315,93 +315,88 @@ export function ColleagueWorkspacePage({
   }, [colleagueId]);
 
   useEffect(() => {
-    let cancelled = false;
-    setAllRecordsError(null);
-    Promise.all(
-      colleagues.map(async (item) =>
-        chat.listConversations(item.id).then(
-          (conversations) => conversations.map((conversation) => ({ ...conversation, agentId: item.id })),
-          (reason: unknown) => {
-            if (!cancelled) setAllRecordsError(errorMessage(reason));
-            return [];
-          },
-        ),
-      ),
-    ).then((lists) => {
-        if (cancelled) return;
-        setAllRecords(lists.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [chat, colleagues, connectionEpoch]);
-
-  useEffect(() => {
     let active = true;
     let primed = false;
+    let inFlight = false;
     let known = new Map<string, string>();
-    let generation = 0;
+    let lastHistoryRefreshAt = Date.now();
+    const reloadHistory = () => {
+      lastHistoryRefreshAt = Date.now();
+      void reloadChatRef.current();
+    };
     const tick = async () => {
-      const token = ++generation;
+      if (!active || inFlight) return;
       const people = colleaguesRef.current;
       if (!people.length) return;
-      const lists = await Promise.all(
-        people.map(async (item) =>
-          chat.listConversations(item.id).then(
-            (conversations) => conversations.map((conversation) => ({ ...conversation, agentId: item.id })),
-            () => [] as Array<JiuwenMateConversation & { agentId: string }>,
+      inFlight = true;
+      setAllRecordsError(null);
+      try {
+        const lists = await Promise.all(
+          people.map(async (item) =>
+            chat.listConversations(item.id).then(
+              (conversations) => conversations.map((conversation) => ({ ...conversation, agentId: item.id })),
+              (reason: unknown) => {
+                if (active) setAllRecordsError(errorMessage(reason));
+                return [] as Array<JiuwenMateConversation & { agentId: string }>;
+              },
+            ),
           ),
-        ),
-      );
-      if (!active || token !== generation) return;
-      const flat = lists.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      setAllRecords(flat);
-      if (agentIdRef.current) void reloadListRef.current();
-      const next = new Map(flat.map((item) => [`${item.agentId}:${item.id}`, item.updatedAt]));
-      if (primed) {
-        const newest = flat
-          .filter((item) => {
-            const previous = known.get(`${item.agentId}:${item.id}`);
-            return previous === undefined || item.updatedAt > previous;
-          })
-          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-        if (newest) {
-          const same = newest.agentId === agentIdRef.current && newest.id === conversationIdRef.current;
-          // Conversations listed for every colleague are Web conversations. An IM workspace the user
-          // chose stays chosen, so later messages still go to its agent; the result is only offered.
-          const imChosen = !people.some((item) => item.id === agentIdRef.current);
-          if (!scheduleEditorRef.current && (!same || boardRef.current)) {
-            if (imChosen) {
-              setWebResult({ agentId: newest.agentId, conversationId: newest.id });
-              if (!boardRef.current) void reloadChatRef.current();
-            } else {
-              if (newest.agentId !== agentIdRef.current) onSelectColleagueRef.current(newest.agentId);
-              setWorkspaceAgentId(newest.agentId);
-              setBoard(false);
-              setState((current) => selectRecordTab(current, 'conversations'));
-              setPicked({ agentId: newest.agentId, conversationId: newest.id });
+        );
+        if (!active) return;
+        const flat = lists.flat().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+        setAllRecords(flat);
+        // The selected colleague already has an initial list read in useConversations.
+        if (primed && agentIdRef.current) await reloadListRef.current();
+        if (!active) return;
+        const next = new Map(flat.map((item) => [`${item.agentId}:${item.id}`, item.updatedAt]));
+        if (primed) {
+          const newest = flat
+            .filter((item) => {
+              const previous = known.get(`${item.agentId}:${item.id}`);
+              return previous === undefined || item.updatedAt > previous;
+            })
+            .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+          if (newest) {
+            const same = newest.agentId === agentIdRef.current && newest.id === conversationIdRef.current;
+            // Web results never replace the IM workspace explicitly chosen by the user.
+            const imChosen = !people.some((item) => item.id === agentIdRef.current);
+            if (!scheduleEditorRef.current && (!same || boardRef.current)) {
+              if (imChosen) {
+                setWebResult({ agentId: newest.agentId, conversationId: newest.id });
+                if (!boardRef.current) reloadHistory();
+              } else {
+                if (newest.agentId !== agentIdRef.current) onSelectColleagueRef.current(newest.agentId);
+                setWorkspaceAgentId(newest.agentId);
+                setBoard(false);
+                setState((current) => selectRecordTab(current, 'conversations'));
+                setPicked({ agentId: newest.agentId, conversationId: newest.id });
+              }
             }
+            if (same) reloadHistory();
+          } else if (!boardRef.current && Date.now() - lastHistoryRefreshAt >= 30_000) {
+            // Preserve a bounded catch-up for missed pushes without re-reading every two seconds.
+            reloadHistory();
           }
-          if (same) void reloadChatRef.current();
-        } else if (!boardRef.current) {
-          void reloadChatRef.current();
         }
+        primed = true;
+        known = next;
+      } finally {
+        inFlight = false;
       }
-      primed = true;
-      known = next;
     };
-    refreshTalkRef.current = () => {
-      void tick();
-    };
+    refreshTalkRef.current = () => { void tick(); };
     void tick();
-    const timer = window.setInterval(() => {
-      void tick();
-    }, 2000);
+    const timer = window.setInterval(() => { void tick(); }, 2000);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
   }, [chat]);
+
+  useEffect(() => {
+    // Keep the known directory across reconnects so offline Web results are still discovered.
+    refreshTalkRef.current();
+  }, [colleagues, connectionEpoch]);
 
   useEffect(() => {
     return chat.onStream((event) => {
