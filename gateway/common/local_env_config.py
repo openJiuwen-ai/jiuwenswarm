@@ -932,12 +932,14 @@ def set_os_environ(
             active.pop(legacy, None)
             _pop_bare_if_default_default(sid, aid, legacy)
         _sync_bound_overlay_write(env_name, None, ns=key)
+        _invalidate_resolved_config_cache(service_id=sid, agent_id=aid)
         return
     plain = _plaintext_tip_value(env_name, value)
     active[env_name] = plain
     if legacy is not None:
         active.pop(legacy, None)
     _sync_bound_overlay_write(env_name, plain, ns=key)
+    _invalidate_resolved_config_cache(service_id=sid, agent_id=aid)
 
 
 def get_os_environ(
