@@ -467,17 +467,19 @@ class ChatPanel(
                 }
                 "switch_session" -> {
                     val sid = msg.get("sessionId")?.asString ?: return
-                    // session.switch is a team-mode server operation — the user's
-                    // chat mode (code.plan / code.normal / code.team) is sent per-message,
-                    // not per-session.
-                    debug("ACTION→ switch_session $sid mode=code.team")
+                    debug("ACTION switch_session $sid")
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
-                            service.session.switchSession(sid, "code.team")
+                            // Let the server resolve the target session's stored mode;
+                            // it returns the canonical mode in the switch response.
+                            val serverMode = service.session.switchSession(sid)
                             // sendCurrentStatus() loads the new session's history exactly
-                            // once (guarded by historyLoadedForSession) — no separate
+                            // once (guarded by historyLoadedForSession) - no separate
                             // loadHistory call here, which used to triple-load history.
                             sendCurrentStatus()
+                            if (!serverMode.isNullOrBlank()) {
+                                dispatchToWebview(mapOf("type" to "mode_updated", "mode" to serverMode))
+                            }
                         } catch (e: Exception) {
                             dispatchToWebview(mapOf("type" to "error", "message" to e.message))
                         }
