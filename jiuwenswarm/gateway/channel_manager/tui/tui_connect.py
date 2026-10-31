@@ -96,6 +96,9 @@ async def _tui_config_send_request(client: Any, env: Any, *, label: str) -> Any:
 
 CLI_FORWARD_REQ_METHODS = frozenset(
     {
+        "path.get",
+        "path.set",
+        "config.cache_clear",
         "command.add_dir",
         "command.btw",
         "command.chrome",
@@ -235,6 +238,9 @@ CLI_FORWARD_REQ_METHODS = frozenset(
 
 CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
     {
+        "path.get",
+        "path.set",
+        "config.cache_clear",
         "command.add_dir",
         "command.btw",
         "command.chrome",

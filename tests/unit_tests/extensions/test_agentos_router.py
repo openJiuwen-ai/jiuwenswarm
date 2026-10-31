@@ -3284,3 +3284,34 @@ async def test_apply_remote_overrides_keeps_reaper_running_on_value_change() -> 
     assert client._sandbox_idle_timeout_seconds == 120.0
     assert client._idle_reaper_task is existing  # same task, not restarted
     await client._stop_idle_reaper_task()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_switch_waits_for_background_ssh_setup(monkeypatch) -> None:
+    from jiuwenswarm.extensions.agentos.agentos_router.config import load_ssh_channel_endpoint
+
+    endpoint = load_ssh_channel_endpoint({"channels": {"ssh": {
+        "enabled": True, "listen_host": "127.0.0.1", "listen_port": 2222,
+        "auth": {"enabled": True},
+    }}})
+    assert endpoint.auth_enabled
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong, ssh_channel_endpoint=endpoint, connect_warmup_enabled=False)
+    task = asyncio.create_task(client.thirdagent_switch(user_id="alice", agent_type="jiuwenswarm"))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert yuanrong.create_calls == 0
+        issuer = SimpleNamespace(issue_ephemeral_key=lambda **kwargs: "ephemeral-test-key")
+        client.set_key_issuer(issuer)
+        result = await asyncio.wait_for(task, timeout=1)
+        assert result["ok"] and result["payload"]["ssh_private_key"] == "ephemeral-test-key"
+        client.set_key_issuer(None)
+        monkeypatch.setattr(client, "_ssh_key_ready_timeout", 0.01)
+        result = await client.thirdagent_switch(user_id="alice", agent_type="jiuwenswarm")
+        assert not result["ok"] and result["code"] == "SSH_NOT_READY"
+        assert yuanrong.create_calls == 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await client.shutdown()
