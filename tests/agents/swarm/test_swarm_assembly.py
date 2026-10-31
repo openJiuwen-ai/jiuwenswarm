@@ -3617,20 +3617,23 @@ def test_swarm_assembly_hint_carries_cron_marker() -> None:
 
 def test_browser_key_derivation() -> None:
     """_browser_key composes session+member into a unique, stable key."""
-    # Normal: session_id + member_name → "sess-alice"
-    assert _browser_key("sess", "alice", "teammate") == "sess-alice"
+    # Normal identities produce stable, SDK-safe keys.
+    key = _browser_key("sess", "alice", "teammate")
+    assert key.startswith("swarm_")
+    assert len(key) == 70
+    assert key == _browser_key("sess", "alice", "teammate")
     # Leader also keyed by member_name, not role
-    assert _browser_key("sess", "leader", "leader") == "sess-leader"
+    assert _browser_key("sess", "leader", "leader") == _browser_key("sess", "leader", "teammate")
     # Different sessions never collide on the same member_name
     assert _browser_key("s1", "alice", "teammate") != _browser_key("s2", "alice", "teammate")
     # Different member_names in same session are distinct
     assert _browser_key("sess", "alice", "teammate") != _browser_key("sess", "bob", "teammate")
     # Empty member_name falls back to role
-    assert _browser_key("sess", "", "leader") == "sess-leader"
+    assert _browser_key("sess", "", "leader") == _browser_key("sess", "leader", "leader")
     # Both empty → empty (preserves shared-browser legacy behaviour)
     assert _browser_key("", "", "") == ""
-    # No session → just the discriminator
-    assert _browser_key("", "alice", "teammate") == "alice"
+    # A missing session still has a stable, isolated identity.
+    assert _browser_key("", "alice", "teammate") != key
 
 
 def test_browser_subagent_spec_included_when_enabled() -> None:
@@ -3727,7 +3730,7 @@ def test_browser_subagent_provider_passes_correct_browser_key(
 
     assert result is not None
     assert len(captured) == 1
-    assert captured[0]["browser_key"] == "sess42-browser-usd-sgd"
+    assert captured[0]["browser_key"] == _browser_key("sess42", "browser-usd-sgd", "teammate")
     assert (
         captured[0]["max_iterations"]
         == DEFAULT_BROWSER_AGENT_MAX_ITERATIONS
