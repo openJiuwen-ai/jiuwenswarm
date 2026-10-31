@@ -6,6 +6,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import i18n from '../i18n';
+import { detectTtsLanguage, pickTtsVoice, ttsLanguageForLocale } from '../utils/ttsVoice';
 
 // ============================================================================
 // 语音识别 (STT)
@@ -249,6 +250,10 @@ export function useSpeechRecognition(
 // ============================================================================
 
 interface UseSpeechSynthesisOptions {
+  /**
+   * 兜底语言：朗读语言按文本内容自动判定，仅在文本没有中英文字（如纯数字）时使用。
+   * 未指定时跟随界面语言。
+   */
   language?: string;
   rate?: number;
   pitch?: number;
@@ -260,7 +265,8 @@ interface UseSpeechSynthesisOptions {
 
 interface UseSpeechSynthesisReturn {
   isSpeaking: boolean;
-  speak: (text: string) => void;
+  /** promptText：触发该回复的用户输入，回复本身无法判定语言时按它的语言朗读。 */
+  speak: (text: string, promptText?: string) => void;
   stop: () => void;
   pause: () => void;
   resume: () => void;
@@ -272,7 +278,7 @@ export function useSpeechSynthesis(
   options: UseSpeechSynthesisOptions = {}
 ): UseSpeechSynthesisReturn {
   const {
-    language = 'zh-CN',
+    language,
     rate = 1,
     pitch = 1,
     volume = 1,
@@ -307,7 +313,7 @@ export function useSpeechSynthesis(
   }, [isSupported]);
 
   const speak = useCallback(
-    (text: string) => {
+    (text: string, promptText = '') => {
       if (!isSupported) {
         onError?.(i18n.t('speech.synthesisUnsupported'));
         return;
@@ -317,17 +323,18 @@ export function useSpeechSynthesis(
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = language;
+      // 朗读语言：回复内容 → 用户输入 → 兜底语言（未指定时跟随界面语言）
+      const fallbackLanguage = language ?? ttsLanguageForLocale(i18n.language);
+      const lang = detectTtsLanguage(text, detectTtsLanguage(promptText, fallbackLanguage));
+      utterance.lang = lang;
       utterance.rate = rate;
       utterance.pitch = pitch;
       utterance.volume = volume;
 
-      // 选择合适的中文语音
-      const chineseVoice = voices.find(
-        (v) => v.lang.includes('zh') || v.lang.includes('CN')
-      );
-      if (chineseVoice) {
-        utterance.voice = chineseVoice;
+      // 按朗读语言选择语音；没有匹配语音时交给浏览器按 utterance.lang 选择
+      const voice = pickTtsVoice(voices, lang);
+      if (voice) {
+        utterance.voice = voice;
       }
 
       utterance.onstart = () => {
