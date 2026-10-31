@@ -1,6 +1,6 @@
 # session.repo / ops.session.repo 规约
 
-最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，使用说明见 [F_15](../features/F_15_session-repo-ops.md)。本规约维护字段和默认语义，特性文档解释填写方式。
+最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，使用说明见 [F_15](../features/F_15_session-repo.md)。本规约维护字段和默认语义，特性文档解释填写方式。
 
 ## 1. 能力与默认来源
 

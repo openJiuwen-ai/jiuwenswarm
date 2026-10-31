@@ -257,15 +257,15 @@
 - **目标与范围：** 提供 `ops.session.cwd()`、`ops.session.root()`；在现有用量事件真实入口绑定执行目录与项目根快照，供当次 Handler 查询。
 - **责任与契约：** [S_03](../specs/S_03_session-workspace-ops.md) 为唯一契约来源；能力和 Build Handler 放在 `handler_ops/`，登记接入 bootstrap，事实采集留在回合宿主入口。
 - **开工硬前置：** 已有 EXTV2-01 的装配、EXTV2-05 的 Ops Build 接线与原生回合用量触发点，不依赖本轮管理增强项。
-- **验收标准：** [F_13 cwd 验收](../features/F_13_session-workspace-ops.md#6-验收与未决问题) 和 [F_28 root 验收](../features/F_28_session-root-query.md#6-验收与未决问题)；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
+- **验收标准：** [F_13 cwd 验收](../features/F_13_session-cwd.md#6-验收与未决问题) 和 [F_28 root 验收](../features/F_28_session-root.md#6-验收与未决问题)；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_ops.py`、`test_context_usage.py`；真实模型和网络联调单独记录。
 - **前端与联合交付：** 本特性不增加前端入口；Worker 内扩展包可以独立验证，不据此完成 M1～M3。
-- **特性文档：** [F_13 cwd](../features/F_13_session-workspace-ops.md) 与 [F_28 root](../features/F_28_session-root-query.md) 分别维护一个 Ops / Event；仍对应同一 Server PR-01 交付。
+- **特性文档：** [F_13 cwd](../features/F_13_session-cwd.md) 与 [F_28 root](../features/F_28_session-root.md) 分别维护一个 Ops / Event；仍对应同一 Server PR-01 交付。
 
 ### EXTV2-14 会话主模型查询
 
 - **目标与范围：** 提供只读 `ops.session.model()`，派发 session.model 并返回优先运行快照的模型名字符串；保存资料仅在有名称时提供回退；不创建、切换或调用模型。
-- **责任与契约：** [S_04](../specs/S_04_session-model-ops.md)；事实来源及验证见 [F_14](../features/F_14_session-model-ops.md)。
+- **责任与契约：** [S_04](../specs/S_04_session-model-ops.md)；事实来源及验证见 [F_14](../features/F_14_session-model.md)。
 - **开工硬前置：** 已有装配与共享 Ops Builder；不依赖项目 Git 查询。
 - **验收标准与独立验证：** F_14 的运行快照、保存选择、缺失、白名单、隔离与示例验证；`test_session_model_ops.py` 和原生 Adapter 回归。
 - **前端与联合交付：** 无新增前端入口，不据此完成 M1～M3。对应 Server PR-02。
@@ -275,27 +275,27 @@
 - **目标与范围：** 提供只读 `ops.session.repo()`，派发 session.repo，由可信 cwd 返回 root/remote/internal/name，linked worktree 的 root 对齐主工作树；不执行 Git 写入。
 - **责任与契约：** [S_05](../specs/S_05_session-repo-ops.md)；Ops 登记沿用 session Builder，Git 业务读取位于 `server/runtime/session/session_repo.py`。
 - **开工硬前置：** EXTV2-13 的可信 cwd 与共享 session Ops 接线；不以 EXTV2-14 的模型资料为前提。
-- **验收标准：** [F_15 第 5 节](../features/F_15_session-repo-ops.md#6-验收与未决问题) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
+- **验收标准：** [F_15 第 5 节](../features/F_15_session-repo.md#6-验收与未决问题) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`；示例 `examples/session_repo_info/`。
 - **前端与联合交付：** 新增同名查询 Event/CORE；不新增前端入口；不据此完成 M1～M3。对应 Server PR-03。
 
 ### EXTV2-16 会话历史读写与追加前扩展
 
 - **目标与范围：** 提供只读 `ops.session.messages()`（同名查询事件、最近 4096 项消息数组）、写入 `ops.session.append(note)` 和追加前事件 `session.append`；输入为完整消息视图及独立 door/origin/uuid，受控改写文本后由 CORE 实际落盘并返回 message/uuid/history_record。接入原可等待主历史、原生 BaseMessage 适配和 history.append_record RPC；不驱动 Agent、不同步改写活跃模型上下文，不新增前端入口。
-- **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；[F_16](../features/F_16_session-history-ops.md) 说明追加事件/方法，[F_23](../features/F_23_session-messages-ops.md) 独立说明只读历史查询（本 PR 新增文档编号，交付任务不拆分）；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
+- **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；[F_16](../features/F_16_session-append.md) 说明追加事件/方法，[F_23](../features/F_23_session-messages.md) 独立说明只读历史查询（本 PR 新增文档编号，交付任务不拆分）；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
 - **开工硬前置：** 已有 EXTV2-01 装配、EXTV2-05 共享 Ops Builder、宿主绑定的有效 SessionContext 和原历史服务；不依赖 cwd / model / repo 能力。
-- **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 追加验收](../features/F_16_session-history-ops.md#6-验收与未决问题) 与 [F_23 查询验收](../features/F_23_session-messages-ops.md#6-验收与未决问题)。
+- **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 追加验收](../features/F_16_session-append.md#6-验收与未决问题) 与 [F_23 查询验收](../features/F_23_session-messages.md#6-验收与未决问题)。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py` 与 `test_session_history_messages.py`；用户示例 `examples/session_history_audit/`，追加字段和迁移见 F_16，查询字段和只读用户示例见 F_23。
 - **前端与联合交付：** 历史可通过既有读取入口恢复，本次不主动渲染 UI，不据此完成 M1～M3。对应 Server PR-04。
 ### EXTV2-17 会话轮次与用量查询
 
 - **目标与独立验收：** 新增共享只读 `ops.session.turns()` 和 `ops.session.usage()`；两项派发同名查询事件，前者统计已提交原生用户输入，后者返回 context/rateLimits/可选 cost，未知数字不伪造。验证多会话、重复记录、工具/模型活动、空值与零值、历史恢复、宿主快照、用户包调用与卸载。
 - **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖追加调用作为查询前置，不新增 session.measure。
-- **代码与契约：** [F_21 usage](../features/F_21_session-usage-ops.md)、[F_29 turns](../features/F_29_session-turns-query.md)、[S_11](../specs/S_11_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
+- **代码与契约：** [F_21 usage](../features/F_21_session-usage.md)、[F_29 turns](../features/F_29_session-turns.md)、[S_11](../specs/S_11_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
 
 ### EXTV2-22 七项只读查询事件化
 
-- **逐项特性文档：** [cwd](../features/F_13_session-workspace-ops.md)；[root](../features/F_28_session-root-query.md)；[model](../features/F_14_session-model-ops.md)；[repo](../features/F_15_session-repo-ops.md)；[messages](../features/F_23_session-messages-ops.md)；[turns](../features/F_29_session-turns-query.md)；[usage](../features/F_21_session-usage-ops.md)。每篇只维护一个 Ops 与同名 Event，共享机制和既有实施证据移到 designs/session-query-events.md。
+- **逐项特性文档：** [cwd](../features/F_13_session-cwd.md)；[root](../features/F_28_session-root.md)；[model](../features/F_14_session-model.md)；[repo](../features/F_15_session-repo.md)；[messages](../features/F_23_session-messages.md)；[turns](../features/F_29_session-turns.md)；[usage](../features/F_21_session-usage.md)。每篇只维护一个 Ops 与同名 Event，共享机制和既有实施证据移到 designs/session-query-events.md。
 - **编号登记：** Extensions V2 features 作用域新增 F_28（root）与 F_29（turns），维护者刘瑜；F_27 公共说明迁入设计目录并保留历史编号，不复用。
 - **范围：** cwd/root/model/repo/messages/turns/usage 七个同名查询事件、代理与默认 CORE；字段以 Claude 为主，同步既有用户示例和详细字段文档。
 - **依赖：** 已合入的 Core Bus/Builder 和平台读取服务；不依赖未合入生命周期 PR，不增加 Front/Supervisor EventBus。
