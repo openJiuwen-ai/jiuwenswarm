@@ -259,5 +259,10 @@
       <td width="28%"><a href="zh/开发实践/JiuwenSwarm日报生成器开发实践.md">日报生成器</a></td>
       <td width="50%">自动汇总工作日报的 Agent 开发案例。</td>
     </tr>
+    <tr>
+      <td width="22%"><strong>集群模式结果核验</strong></td>
+      <td width="28%"><a href="zh/开发实践/JiuwenSwarm集群模式结果核验实践.md">集群模式结果核验</a></td>
+      <td width="50%">用固定资料核验成员分工、执行失败与来源一致性。</td>
+    </tr>
   </tbody>
 </table>
