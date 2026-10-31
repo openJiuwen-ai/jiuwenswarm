@@ -94,6 +94,10 @@ def _early_checkpoint_disabled_by_env() -> bool:
 _DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS = 60000
 _TOOL_RESULT_DISPLAY_MAX_CHARS_LIMIT = 100_000
 
+# DeepResearch 执行信封 schema_version（与 execution.EXECUTION_SCHEMA 对齐，
+# 此处用字面量避免向 tools/deepresearch 反向 import 拉起整条 deepresearch 栈）。
+_DEEPRESEARCH_EXECUTION_SCHEMA = "openjiuwen.deepresearch.execute.v1"
+
 
 def _resolve_source_skill(session: Any = None) -> str:
     """Return active skill name for tool-call attribution, or empty string.
@@ -129,10 +133,31 @@ def _resolve_tool_result_display_max_chars() -> int:
     return parsed
 
 
+def _deepresearch_completed_content(result: Any) -> str | None:
+    """Return the deepresearch completed envelope's content, else None.
+
+    Matches ``schema_version == openjiuwen.deepresearch.execute.v1`` +
+    ``kind == "completed"`` with a string ``content``; falls back to None
+    for any other shape so callers can default to ``str(result)``.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get("schema_version") != _DEEPRESEARCH_EXECUTION_SCHEMA:
+        return None
+    if result.get("kind") != "completed":
+        return None
+    content = result.get("content")
+    if not isinstance(content, str):
+        return None
+    return content
+
+
 def _format_tool_result_for_stream(result: Any) -> str:
     if result is None:
         return ""
-    text = str(result)
+    text = _deepresearch_completed_content(result)
+    if text is None:
+        text = str(result)
     limit = _resolve_tool_result_display_max_chars()
     if limit == 0 or len(text) <= limit:
         return text

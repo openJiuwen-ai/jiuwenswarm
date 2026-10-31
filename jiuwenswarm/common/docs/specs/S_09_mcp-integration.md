@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
 | 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch}.py |
-| 最近一次修订日期 | 2026-10-27 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联 feature | F_01_deepresearch-mcp-delegation.md |
 
 ## 范围 / 边界
@@ -31,7 +31,7 @@ mcp_call_timeout_patch.py ─┐ 两个互相独立的 openjiuwen monkeypatch，
 mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.__init__
 
 契约耦合：自建 remote client 必须补打 _jws_call_timeout 印章——
-漏打则 timeout patch 的内层 300s 兜底会先掐断长调用。
+漏打则 timeout patch 的进程级默认 30s 兜底会先掐断长调用。
 ```
 
 ## 不变量
@@ -54,13 +54,32 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 - **N6 worker 池判等与 retire**：`config_fingerprint`（sha256）判等，变更即 retire；
   池 key = server_name（env 含 `OFFICE_CLAW_INVOCATION_ID / CALLBACK_TOKEN` 时附 env
   指纹）。list 接口凭据一律脱敏（`redact_mcp_config`）。
-- **N7 timeout patch 的 wait_for 不变量**：remote transport 必须用
-  `asyncio.wait_for` 而非 `anyio.fail_after`（跨 task cancel scope 语义，TC_MCP_CALL_014）；
-  monkeypatch `ToolMgr._create_client` 盖 `_jws_call_timeout` 印章；包 SDK 工厂抬
-  `sse_read_timeout`；AbilityManager 模块级 anyio 代理桥 `fail_after` → `wait_for`
-  （contextvar `_am_call_timeout`）并包装 Tool / MCPTool / LocalFunction / RestfulApi /
-  RequestScopedOfficeClawMcpTool.invoke + `__init_subclass__` 钩子；死会话错误标记表
-  重连重试一次（at-least-once）；`_client_io_lock` 串行共享 client；`_PATCHED` 幂等。
+- **N7 remote 生命周期归属**：connect、退出上下文、失败清理和重连必须由同一任务
+  执行。发现用完整生命周期协程；池化连接复用 worker；ToolMgr 的 Streamable HTTP
+  连接由补丁的专用 owner 管理，SSE 保留 SDK owner，建连取消时等待该 owner 的
+  finally 清理。SSE public disconnect 的等待者取消时，在 10 秒清理预算内等待完整
+  停止流程；预算内的后续取消不得再次传给 owner。预算耗尽后取消目标任务，并最多
+  再等待 1 秒收尾；仍未结束则报告失败、保留不可复用状态，不无限屏蔽取消。
+  ToolMgr HTTP 建连/断开失败后的 owner 等待同样屏蔽调用者取消；取消后使用
+  进入清理等待时的截止时间继续有界收尾，不再次取消正在清理的 owner。
+  SSE 清理任务自身取消按清理失败报告，只有等待者真实取消才继续传播原取消。
+  worker 初始化取消向排队调用者映射为 McpWorkerStoppedError，worker 本身继续传播
+  原取消；发现阶段的内部取消仅跳过当前连接器，真实外部取消继续传播。
+  call_tool/list_tools 的内部取消（等待者无 cancel 请求）在所属任务清理成功后
+  最多重连重试一次；再次内部取消映射为普通工具错误。清理失败不得当作成功重试，
+  调用或清理期间的真实外部取消继续传播。
+  建连/调用用 `asyncio.timeout`
+  保持任务归属；`wait_for` 仅可用于完整生命周期或不持有上下文的单次 I/O。
+  超时/死会话先 await disconnect 再重置状态，禁止延迟跨任务 aclose；False 必须报错。
+  owner 结束后若仍有未清资源，禁止换新任务复用该 client。scanner 停止等待发现清理，
+  无论 scanner 是否启动都关闭全局 worker。
+  `_jws_call_timeout` 印章、SDK read timeout、AbilityManager 截止桥、共享 client
+  串行和死会话重试一次（at-least-once）保持；外部取消必须传播。
+  包装幂等性以当前方法/factory 的显式标记为准；即使 `_PATCHED` 与注册集合被重置，
+  也不得重复包装或叠加 ToolMgr owner。旧 SDK 建连吞掉新收到的取消并返回 False 时，
+  补丁须恢复该取消，让外层超时及用户取消保持原语义。
+  SSE 仍使用 SDK owner，在该任务内直接关闭 SDK 的 AsyncExitStack，避免旧 SDK 的
+  wait_for(__aexit__) 跨任务退出；失败保留不可复用状态，不重新关闭已消费的 stack。
 - **N8 refresh patch 修三缺陷**：`ToolMgr._inner_refresh_mcp_tools`（先 list 后删旧、
   失败保留旧快照）、`ToolMgr.refresh_tool_server`（`None` = TTL 跳过 vs `[]` = 空刷新）、
   `ResourceMgr.refresh_mcp_server`（真实现）+ `get_mcp_tool_infos`（刷新后
@@ -74,6 +93,14 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   工具的深拷贝，不发现工具、不启动 worker。返回值包含未脱敏连接凭据，仅供进程内授权
   检查，不得写日志、持久化或直接传给 SDK。研究专用端点调用原请求级工具，每次 list/call
   重验当前请求、来源身份、工具集合和权限；恢复仅保留首次来源与当前授权的交集。
+- **N11 请求级连接器加载结果对模型可见**：`list_request_mcp_server_tools` 以空
+  connect_params 表示发现失败，非空 params + 零工具表示合法零工具（如 tool_filter 全关）。
+  `interface_deep._append_request_mcp_server_tools` 按此区分并记录本请求未加载出工具的连接器
+  （名称 → 原因），在发布前写到本请求的宿主 MCP 工具实例上；宿主的两个连接器目录工具
+  （列出连接器 / 查询单个连接器的工具）结果末尾追加"本轮不可调用"说明
+  （`annotate_connector_catalog_result`）。状态只挂在本请求工具实例上，不跨请求、不影响其他连接器。
+  目录工具名与查询参数名以宿主 MCP 服务的工具定义为准；查询单个连接器时取不到查询名，
+  按列出连接器的语义全量标注，避免参数名变化后静默失效。
 
 ## 接口契约
 
@@ -81,6 +108,7 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 |---|---|---|
 | `mcp_config.py` | `create_mcp_tool` / `build_mcp_server_config` / `build_enabled_mcp_server_configs` / `acquire_request_scoped_mcp_session` / `RequestScopedOfficeClawMcpTool` / `list_request_mcp_server_tools` / `validate_office_claw_mcp_config` / `bind_active_office_claw_mcp_tools` / `ensure_request_scoped_mcp_tool_allowed` / `preflight_mcp_server_reachable` | N1–N4 |
 | `mcp_config.py` | `RequestScopedOfficeClawMcpTool.server_name` | 只读返回原 `_server_name`；供来源匹配使用，不改变 worker key、请求绑定或工具权限 |
+| `mcp_config.py` | `annotate_connector_catalog_result` / `set_unavailable_connectors`（请求级 MCP 工具实例） / `CONNECTOR_DISCOVERY_FAILED` / `CONNECTOR_NO_TOOLS` | N11；只改写两个目录工具的结果，无不可用连接器时原样返回 |
 | `mcp_server_registry.py` | `McpServerRegistry` / `GlobalMcpWorkerPool` / `get_mcp_server_registry` / `start_mcp_registry_runtime` / `snapshot_for_chat` / `acquire_worker` / `redact_mcp_config` / `extract_mcp_server_list` / `McpRegistrySettings` | N5 / N6 |
 | `mcp_server_registry.py` | `snapshot_for_deepresearch(name) -> tuple[dict, list, dict]` | N10；缺失抛 `UnknownMcpServerError`，停用抛 `DisabledMcpServerError` |
 | `mcp_call_timeout_patch.py` | `apply_mcp_call_timeout_patch` / `force_invalidate_mcp_client` / `is_retryable_mcp_dead_session_error` / `DEFAULT_CALL_TIMEOUT = 30.0` | N7 |
@@ -106,13 +134,15 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 | stdio 命令带 `-e` / `-c` | 白名单外拦截 | 准入测试 |
 | remote URL 指向内网 / 元数据地址 | SSRF 屏蔽拒绝 | 准入测试（逃生 env 显式开） |
 | 企业版配置 stdio MCP | 拒绝（N2） | 企业分支测试 |
-| remote 调用挂死 | wait_for 超时 + 死会话标记 → 作废重连一次 | `test_mcp_call_timeout_recovery.py` |
+| remote 调用挂死 | 保留超时，在 owner 清理；下次调用重连。死会话错误当轮重试一次 | `test_mcp_call_timeout_recovery.py` |
+| remote 生命周期取消/退出 | 进入和退出同任务，清理失败报错且禁止换任务复用残留上下文 | `test_mcp_remote_lifecycle.py`（真实 AnyIO TaskGroup + 内存传输） |
 | 共享 client 并发调用 | `_client_io_lock` 串行 | 同上 |
 | 扫描期工具列表失败 | 保留旧快照（N8） | `test_mcp_tool_list_refresh_patch.py` |
 | 配置变更（指纹变） | worker retire 重建 | registry 测试 |
 | list 接口回显配置 | 凭据脱敏 | `redact_mcp_config` 测试 |
 | 研究期间来源停用、删除或变更 | 专用端点拒绝继续委派 | `test_deepresearch_mcp_review_regressions.py` |
 | 研究恢复时新增连接或更换来源 | 不扩张首次来源集合 | 同上及 `test_deepresearch_mcp_search.py` |
+| 请求级连接器发现失败 / 零工具，而宿主连接器目录仍显示已连接 | 目录工具结果追加本轮不可用说明（N11） | `test_failed_connector_discovery_is_reported_on_catalog_lookup` 等 |
 
 ## 修改检查单
 

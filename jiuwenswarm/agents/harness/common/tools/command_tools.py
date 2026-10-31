@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -765,6 +766,17 @@ def _path_key(env: dict[str, str]) -> str:
     return "PATH"
 
 
+def _runtime_python_dir() -> str | None:
+    """Return the directory of the running interpreter, if it ships ``python.exe``.
+    """
+    if not sys.executable:
+        return None
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if os.path.isfile(os.path.join(exe_dir, "python.exe")):
+        return exe_dir
+    return None
+
+
 def _discover_windows_tool_dirs() -> tuple[list[str], list[str]]:
     """Discover tool dirs to merge into subprocess PATH (Windows only).
 
@@ -781,6 +793,14 @@ def _discover_windows_tool_dirs() -> tuple[list[str], list[str]]:
     """
     trusted: list[str] = []
     workspace: list[str] = []
+
+    # Custom install roots (e.g. D:\Application\OfficeAce) are invisible to the
+    # default-root scan below. Reuse the running interpreter's directory so the
+    # subprocess gets the same Python that the prompt probed.
+    runtime_python_dir = _runtime_python_dir()
+    if runtime_python_dir:
+        trusted.append(runtime_python_dir)
+
     local_app_data = os.environ.get("LOCALAPPDATA")
     program_files = os.environ.get("ProgramFiles")
     program_files_root = (

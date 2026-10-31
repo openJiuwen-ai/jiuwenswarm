@@ -728,14 +728,25 @@ class McpServerRegistry:
         self._scanner_stop.set()
         task = self._scanner_task
         self._scanner_task = None
-        if task is None:
-            return
-        task.cancel()
         try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-        await self.worker_pool.close_all()
+            if task is not None:
+                task.cancel()
+                try:
+                    # 等待已有 scanner 清理完成；调用 stop 的任务取消时，不再次打断它。
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass  # scanner 本身的取消，外部取消在下方继续传播
+                        raise
+                except Exception:
+                    logger.exception("[McpServerRegistry] scanner shutdown failed")
+        finally:
+            # 即使 scanner 尚未启动，也可能已经创建了全局 worker。
+            await self.worker_pool.close_all()
 
     async def scan_once(self) -> None:
         """单轮扫描（单测 / 扫描循环复用）。"""

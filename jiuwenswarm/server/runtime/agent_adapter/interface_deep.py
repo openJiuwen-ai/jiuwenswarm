@@ -136,6 +136,10 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     STATUSLINE_SETUP_AGENT_TYPE,
     build_statusline_setup_agent_config,
 )
+from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
+    RefusalTextScrub,
+    is_refusal_scrub_control,
+)
 from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
     TodoCloseTextHold,
     is_todo_close_control,
@@ -582,6 +586,8 @@ from jiuwenswarm.common.config import (
     resolve_string_or_list_config,
 )
 from jiuwenswarm.common.mcp_config import (
+    CONNECTOR_DISCOVERY_FAILED,
+    CONNECTOR_NO_TOOLS,
     MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     OfficeClawMcpRegistration,
     RequestScopedOfficeClawMcpTool,
@@ -1778,6 +1784,11 @@ def _parse_bool(value: Any, *, default: bool = False) -> bool:
     return default
 
 
+def _env_truthy(name: str) -> bool:
+    """True when the environment variable is explicitly enabled."""
+    return _parse_bool(os.getenv(name), default=False)
+
+
 def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
     """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
 
@@ -2543,6 +2554,7 @@ class _RequestMcpToolBuffers:
     pending_tools: list[tuple[RequestScopedOfficeClawMcpTool, bool]] = field(default_factory=list)
     research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
     research_tool_names: dict[str, list[str]] = field(default_factory=dict)
+    unavailable_connectors: dict[str, str] = field(default_factory=dict)
 
 
 _SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
@@ -5161,7 +5173,15 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] request-scoped MCP connector discovery failed: "
                     "request_id=%s server=%s error=%s", request.request_id, server_name, exc,
                 )
+                if server_name != "office-claw":
+                    buffers.unavailable_connectors[server_name] = CONNECTOR_DISCOVERY_FAILED
                 continue
+            # Discovery reports failure as empty params; a legitimately empty
+            # connector (e.g. every tool filtered off) still returns params.
+            if server_name != "office-claw" and not tool_defs:
+                buffers.unavailable_connectors[server_name] = (
+                    CONNECTOR_NO_TOOLS if params else CONNECTOR_DISCOVERY_FAILED
+                )
             self._stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
             if tool_defs:
                 from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
@@ -5308,6 +5328,15 @@ class JiuWenSwarmDeepAdapter:
                 invocation_id = await self._append_identity_pinned_office_claw_tools(
                     request, office_claw_config, buffers, yield_to_existing=True,
                 )
+
+            if buffers.unavailable_connectors:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connectors unavailable this request: "
+                    "request_id=%s connectors=%s", request.request_id, buffers.unavailable_connectors,
+                )
+                for tool, _strict in buffers.pending_tools:
+                    if tool.server_name == "office-claw":
+                        tool.set_unavailable_connectors(buffers.unavailable_connectors)
 
             if not replace_request_scoped_mcp_registration(generation, generation):
                 logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
@@ -10372,6 +10401,79 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
+    def _build_stalled_access_circuit_rail(self) -> Any | None:
+        """Stop strategy-level auth/credential retry loops."""
+        if _env_truthy("JIUWEN_DISABLE_STALLED_ACCESS_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by env"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.execution_guard.stalled_access_circuit_rail import (
+                StalledAccessCircuitRail,
+            )
+
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            stalled_cfg = guard_cfg.get("stalled_access") if isinstance(guard_cfg, dict) else {}
+            if not isinstance(stalled_cfg, dict):
+                stalled_cfg = {}
+            if stalled_cfg.get("enabled", True) is False:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail disabled by config"
+                )
+                return None
+            try:
+                auth_threshold = int(stalled_cfg.get("auth_threshold", 5))
+                probe_threshold = int(stalled_cfg.get("probe_threshold", 3))
+                window_seconds = float(stalled_cfg.get("window_seconds", 1800))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail invalid thresholds; "
+                    "using defaults"
+                )
+                auth_threshold, probe_threshold, window_seconds = 5, 3, 1800.0
+
+            rail = StalledAccessCircuitRail(
+                auth_threshold=auth_threshold,
+                probe_threshold=probe_threshold,
+                window_seconds=window_seconds,
+                language=self._resolve_runtime_language(),
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] StalledAccessCircuitRail create failed: %s",
+                exc,
+            )
+            return None
+
+    def _build_last_iteration_finalize_rail(self) -> Any | None:
+        """Return a partial result when the ReAct budget is exhausted."""
+        if _env_truthy("JIUWEN_DISABLE_LAST_ITERATION_FINALIZE_RAIL"):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail disabled by env"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.last_iteration_finalize_rail import (
+                LastIterationFinalizeRail,
+            )
+
+            rail = LastIterationFinalizeRail(language=self._resolve_runtime_language())
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] LastIterationFinalizeRail create failed: %s",
+                exc,
+            )
+            return None
+
     @staticmethod
     def _build_model_routing(config: dict[str, Any] | None = None) -> Any | None:
         """构建 ModelRoutingRail（模型路由）。
@@ -10939,6 +11041,20 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+
+        if not mode.startswith("team") and not mode.startswith("code"):
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_stalled_access_circuit_rail",
+                    self._build_stalled_access_circuit_rail,
+                )
+            )
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_last_iteration_finalize_rail",
+                    self._build_last_iteration_finalize_rail,
+                )
+            )
 
         # SkillEvolutionRail / TTSERail 不在冷启动时挂载，由 _update_rails_for_mode
         # 经 _reconcile_evolution_rails 按配置按需注册/注销
@@ -13721,6 +13837,10 @@ class JiuWenSwarmDeepAdapter:
         circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
         if circuit_breaker_rail is not None:
             circuit_breaker_rail.set_language(resolved_language)
+        for rail_name in ("_stalled_access_circuit_rail", "_last_iteration_finalize_rail"):
+            localized_rail = getattr(self, rail_name, None)
+            if localized_rail is not None:
+                localized_rail.set_language(resolved_language)
 
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
@@ -20932,6 +21052,7 @@ class JiuWenSwarmDeepAdapter:
         interaction_stream = None
         interaction_stream_abort = True
         perf_summary_status = "ok"
+        emitted_chat_error = False
         hitl_pending_stream = False
         try:
             self._runtime_cron_tool_context.remember_current_binding()
@@ -21428,11 +21549,12 @@ class JiuWenSwarmDeepAdapter:
             runner_stream_started_at = time.monotonic()
             first_chunk_seen = False
             todo_close_hold = TodoCloseTextHold()
+            refusal_scrub = RefusalTextScrub()
 
-            def _take_todo_close_chunks() -> list[AgentResponseChunk]:
+            def _take_held_chunks(hold: Any) -> list[AgentResponseChunk]:
                 """下发挂起的外层正文。drop 过的块不在这里。"""
                 nonlocal emitted_terminal_chat_final, has_streamed_content
-                payloads = todo_close_hold.take()
+                payloads = hold.take()
                 if not payloads:
                     return []
                 chunks: list[AgentResponseChunk] = []
@@ -21492,9 +21614,11 @@ class JiuWenSwarmDeepAdapter:
                 # first token for this round. Hold/drop/release are internal
                 # and are written before the model streams, so they must not
                 # count as the first token.
-                if not first_chunk_seen and not is_todo_close_control(
-                    str(getattr(chunk, "type", "") or "")
-                ):
+                chunk_type_name = str(getattr(chunk, "type", "") or "")
+                internal_hold = is_todo_close_control(chunk_type_name) or is_refusal_scrub_control(
+                    chunk_type_name
+                )
+                if not first_chunk_seen and not internal_hold:
                     first_chunk_seen = True
                     server_logger.info(
                         "[AgentServer] runner streaming first chunk: session_id=%s request_id=%s"
@@ -21580,12 +21704,27 @@ class JiuWenSwarmDeepAdapter:
                 close_action = todo_close_hold.decide(
                     chunk_type, foreign=foreign_output,
                 )
-                if close_action == "skip":
+                scrub_content = ""
+                if chunk_type == "llm_output":
+                    payload = chunk.payload
+                    if isinstance(payload, dict):
+                        scrub_content = str(payload.get("content") or payload.get("output") or "")
+                    else:
+                        scrub_content = str(payload or "")
+                scrub_action = refusal_scrub.decide(
+                    chunk_type, foreign=foreign_output, content=scrub_content,
+                )
+                if close_action == "skip" or scrub_action == "skip":
                     continue
                 if close_action in ("flush_skip", "flush_pass"):
-                    for held_chunk in _take_todo_close_chunks():
+                    for held_chunk in _take_held_chunks(todo_close_hold):
                         yield held_chunk
                     if close_action == "flush_skip":
+                        continue
+                if scrub_action in ("flush_skip", "flush_pass"):
+                    for held_chunk in _take_held_chunks(refusal_scrub):
+                        yield held_chunk
+                    if scrub_action == "flush_skip":
                         continue
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
@@ -21670,6 +21809,9 @@ class JiuWenSwarmDeepAdapter:
                         accumulated_reasoning = ""
                     if close_action == "buffer":
                         todo_close_hold.push(delta_payload)
+                        continue
+                    if scrub_action == "buffer":
+                        refusal_scrub.push(delta_payload)
                         continue
                     has_streamed_content = True
                     boundary = self._begin_visible_chat_content(stream_is_user_originated)
@@ -21888,7 +22030,9 @@ class JiuWenSwarmDeepAdapter:
             # 轮次已正常完成/取消，flush 与合成 final 必须发出，否则前端悬挂）。
             # hitl_pending_stream 只反映"本轮出过 ask_user 卡片"，不随续跑复位。
             if not suppress_stream_after_hitl:
-                for held_chunk in _take_todo_close_chunks():
+                for held_chunk in _take_held_chunks(todo_close_hold):
+                    yield held_chunk
+                for held_chunk in _take_held_chunks(refusal_scrub):
                     yield held_chunk
             if accumulated_text and not suppress_stream_after_hitl:
                 # Same rule as _adapt_goal_intermediate_final: demote host
@@ -22112,6 +22256,8 @@ class JiuWenSwarmDeepAdapter:
                         lambda: reset_current_multimodal_image_files(image_files_token),
                     )
                 )
+            if emitted_chat_error and perf_summary_status != "cancelled":
+                perf_summary_status = "error"
             if perf_context_initialized:
                 cleanup_steps.extend(
                     (
@@ -22773,7 +22919,7 @@ class JiuWenSwarmDeepAdapter:
                 chunk_type = chunk.type
                 payload = chunk.payload
 
-                if is_todo_close_control(chunk_type):
+                if is_todo_close_control(chunk_type) or is_refusal_scrub_control(chunk_type):
                     return None
 
                 if chunk_type == "steering_consumed":
@@ -24081,7 +24227,11 @@ class JiuWenSwarmDeepAdapter:
     async def repair_model_response(self, prompt: str) -> str | None:
         """Run a focused repair prompt using the currently selected chat model."""
         if self._model is None:
-            logger.warning("[JiuWenSwarmDeepAdapter] repair skipped: no model instance available")
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] repair skipped: no model instance available "
+                "(cache_keys=%s default=%s)",
+                list(self._model_cache)[:5], self._default_model_name or "<unset>",
+            )
             return None
         from openjiuwen.core.foundation.llm.schema.message import UserMessage
 

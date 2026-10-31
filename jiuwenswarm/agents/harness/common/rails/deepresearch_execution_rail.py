@@ -8,6 +8,7 @@ import copy
 import inspect
 import json
 import logging
+import time
 from typing import Any, Mapping
 
 from openjiuwen.core.foundation.llm import ToolMessage
@@ -38,7 +39,11 @@ from jiuwenswarm.perf.context import (
 
 DEEPRESEARCH_EXECUTION_STATE_KEY = "deepresearch_execution_states"
 DEEPRESEARCH_EXECUTION_ALIAS_KEY = "deepresearch_execution_aliases"
+DEEPRESEARCH_DELIVERY_INDEX_KEY = "deepresearch_delivery_index"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
+_SHORT_CIRCUIT_FIELD = "idempotent_short_circuit"
+_MAX_DELIVERY_INDEX_ENTRIES = 20
+_REDO_HINT = "如需重新生成该报告，请更换报告文件名（file_name）后再次发起研究。"
 _TOOL_NAME = "deepresearch_execute"
 _BRIEF_REFRESH_SECTION = "deepresearch_brief_refresh"
 _BRIEF_REFRESH_INSTRUCTION = (
@@ -114,6 +119,123 @@ def _load_aliases(session: Any) -> dict[str, str]:
 def _save_aliases(session: Any, aliases: dict[str, str]) -> None:
     if session is not None:
         session.update_state({DEEPRESEARCH_EXECUTION_ALIAS_KEY: aliases})
+
+
+def _normalize_topic(query: str) -> str:
+    return " ".join(str(query or "").strip().split()).lower()
+
+
+def _load_delivery_index(session: Any) -> dict[str, dict[str, Any]]:
+    if session is None:
+        return {}
+    value = session.get_state(DEEPRESEARCH_DELIVERY_INDEX_KEY)
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): dict(entry)
+        for key, entry in value.items()
+        if isinstance(entry, Mapping)
+    }
+
+
+def _save_delivery_index(session: Any, idx: dict[str, dict[str, Any]]) -> None:
+    if session is not None:
+        session.update_state({DEEPRESEARCH_DELIVERY_INDEX_KEY: idx})
+
+
+def _record_delivery(
+    session: Any,
+    workflow_id: str,
+    *,
+    query: str,
+    file_name: str,
+    conversation_id: str,
+    html_style_status: str | None,
+    requested_report_type: str = "brief",
+    content: str = "",
+) -> None:
+    idx = _load_delivery_index(session)
+    normalized_query = _normalize_topic(query)
+    fname = str(file_name or "").strip()
+    # 空键不入索引：空 query/file_name 的条目会误拦后续合法空参调用（issue #5131 审查）
+    if not normalized_query or not fname:
+        return
+    idx[workflow_id] = {
+        "query": normalized_query,
+        "file_name": fname,
+        "conversation_id": str(conversation_id or ""),
+        "html_style_status": html_style_status,
+        "requested_report_type": str(requested_report_type or "brief"),
+        # 首次交付文案：短路时原样复用，避免同一事件两种呈现（CR-4）。
+        "content": str(content or ""),
+        "delivered_at": time.time(),
+    }
+    # 索引随研究次数单调增长，而 state 通道每轮都携带全量索引；按交付时间
+    # 只保留最近 N 条（CR-5）。
+    if len(idx) > _MAX_DELIVERY_INDEX_ENTRIES:
+        stale = sorted(
+            idx, key=lambda key: idx[key].get("delivered_at") or 0.0
+        )[: len(idx) - _MAX_DELIVERY_INDEX_ENTRIES]
+        for key in stale:
+            del idx[key]
+    _save_delivery_index(session, idx)
+    logger.info(
+        "[deepresearch_execution_rail] recorded delivery workflow_id=%s "
+        "conversation_id=%s",
+        workflow_id,
+        str(conversation_id or ""),
+    )
+
+
+def _lookup_delivery(
+    session: Any,
+    *,
+    query: str,
+    file_name: str,
+    requested_report_type: str = "",
+) -> dict[str, Any] | None:
+    """同会话×同主题×同 file_name 已交付则返回交付条目，否则 None。
+
+    主题按 _normalize_topic 归一化后比较（两侧均归一化），消除大小写/空白差异。
+    空 query 或空 file_name 不参与匹配——空键不应拦截合法研究（issue #5131 审查）。
+    requested_report_type 为本次调用的显式报告类型：与交付条目不同则不命中，
+    否则同主题同 file_name 换类型（如 brief→professional）会被短路吞掉（CR-3）；
+    未显式给出类型时沿用原幂等守卫。同键多条时取最近一次交付（强制重跑会追加
+    新 workflow_id 条目）。
+    """
+    topic = _normalize_topic(query)
+    fname = str(file_name or "").strip()
+    if not topic or not fname:
+        return None
+    requested_type = str(requested_report_type or "").strip()
+    entries = list(_load_delivery_index(session).values())
+    for entry in reversed(entries):
+        if (
+            _normalize_topic(str(entry.get("query") or "")) != topic
+            or str(entry.get("file_name") or "").strip() != fname
+        ):
+            continue
+        if requested_type and requested_type != str(
+            entry.get("requested_report_type") or "brief"
+        ):
+            continue
+        return dict(entry)
+    # 漏拦可观测：同主题已有交付但 file_name/报告类型不同，本次视为新任务正常
+    # 执行，记录对比日志以便评估守卫命中率（CR-2）。
+    delivered_file_names = [
+        str(entry.get("file_name") or "")
+        for entry in entries
+        if _normalize_topic(str(entry.get("query") or "")) == topic
+    ]
+    if delivered_file_names:
+        logger.info(
+            "[deepresearch_execution_rail] delivery miss: same topic with "
+            "different file_name/report_type query=%s file_name=%s delivered=%s",
+            topic,
+            fname,
+            delivered_file_names,
+        )
+    return None
 
 
 def _workflow_id(session: Any, tool_call_id: str) -> str:
@@ -238,6 +360,13 @@ def _interaction_tool_call(tool_call: Any, interaction_id: str) -> Any:
     return cloned
 
 
+def _clone_tool_call_with_id(tool_call: Any, new_id: str) -> Any:
+    model_copy = getattr(tool_call, "model_copy", None)
+    cloned = model_copy(deep=True) if callable(model_copy) else copy.deepcopy(tool_call)
+    cloned.id = new_id
+    return cloned
+
+
 def _resume_input(ctx: AgentCallbackContext, tool_call_id: str) -> Any:
     value = getattr(ctx, "extra", {}).get(RESUME_USER_INPUT_KEY)
     if isinstance(value, InteractiveInput):
@@ -351,6 +480,79 @@ class DeepResearchExecutionRail(DeepAgentRail):
             current[workflow_id] = dict(state)
             _save_states(ctx.session, current)
 
+        # 幂等守卫：同会话×同主题×同 file_name 已交付则短路返回「已完成」，
+        # 不进入 bind_deepresearch_execution_context，阻止报告交付后重复执行（issue #5131）。
+        # workflow_id not in states：进行中 workflow 的续跑不走短路，避免吞掉用户答复
+        # 与残留 state（atomgit-bot 审查 Issue 2）。
+        # not is_upgrade：升级/追问会用 original_query 覆盖本次 query，与已交付 brief
+        # 条目同键，命中短路会把「升级专业版」当成已完成吞掉（renquanjia 审查 CR-005）。
+        requested_type = str(
+            args.get("report_type")
+            or (request_context or {}).get("requested_report_type")
+            or ""
+        ).strip()
+        hit = _lookup_delivery(
+            ctx.session,
+            query=str(args.get("query") or ""),
+            file_name=str(args.get("file_name") or ""),
+            requested_report_type=requested_type,
+        )
+        if hit is not None and not is_upgrade and workflow_id not in states:
+            from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
+                _completion_content,
+                _persist_delivered_state,
+                _result,
+            )
+
+            completion_text = str(hit.get("content") or "").strip()
+            if not completion_text:
+                completion_text = _completion_content(
+                    {"file_name": str(hit.get("file_name") or "")},
+                    hit.get("html_style_status"),
+                )
+            # 短路会吞掉「重新研究同一主题」的合法请求，文案须给出可自愈的重做
+            # 通道（曹凯淇审查 CR-1）。
+            completion_text = f"{completion_text}\n\n{_REDO_HINT}"
+            short_state = _persist_delivered_state(
+                ctx,
+                workflow_id=workflow_id,
+                conversation_id=str(hit.get("conversation_id") or ""),
+                query=str(args.get("query") or ""),
+                file_name=str(hit.get("file_name") or ""),
+                requested_report_type=str(
+                    requested_type or hit.get("requested_report_type") or "brief"
+                ),
+            )
+            ctx.inputs.tool_result = _result(
+                "completed",
+                short_state,
+                content=completion_text,
+                **{_SHORT_CIRCUIT_FIELD: True},
+            )
+            ctx.inputs.tool_msg = ToolMessage(
+                content=completion_text,
+                tool_call_id=tool_call_id,
+            )
+            ctx.request_force_finish(
+                {"output": completion_text, "result_type": "answer"}
+            )
+            logger.info(
+                "[deepresearch_execution_rail] idempotent short-circuit "
+                "tool_call_id=%s conversation_id=%s",
+                tool_call_id,
+                str(hit.get("conversation_id") or ""),
+            )
+            # 跳过工具方法体靠上面的 request_force_finish：@rail wrapper 在 before
+            # 钩子之后检查 has_force_finish_request，命中则消费请求并直接返回
+            # force_finish 的 result（无请求时才是 None），方法体不执行。
+            # 不能写共享 ctx.extra["_skip_tool"]——该标记由 AbilityManager 在
+            # _railed_execute_single_tool_call 方法体入口按名 pop，本调用走不到
+            # pop，标记会残留并被同轮并行 tool call 误消费（工具静默返回空结果）。
+            # 短路标识只放本次 tool_result（_SHORT_CIRCUIT_FIELD），after_tool_call
+            # 读 payload 后 early-return：取消路径会跳过 after 回调，不落共享 extra
+            # 也就不存在残留键（renquanjia 审查 Issue 6）。
+            return
+
         model = self._model_provider() if callable(self._model_provider) else None
         request_id = str((request_context or {}).get("request_id") or "").strip()
         requested_report_type = (request_context or {}).get("requested_report_type")
@@ -374,6 +576,28 @@ class DeepResearchExecutionRail(DeepAgentRail):
             mcp_context_provider=self._mcp_context_provider,
             load_state=lambda: _load_states(ctx.session).get(workflow_id),
         )
+        # B: 打断续跑时 harness 用 interaction_id 续跑，终端 chat.tool_result 会携带
+        # interaction_id，原始 tool_call_id 的 chat.tool_call 永远等不到配对结果，
+        # open_calls/pending 泄漏 -> 下一轮 LLM 误判「研究未完成」触发重弹问题/重跑。
+        # 这里把 tool_call.id 重写回 workflow_id（经 alias 解析的原始 id），使
+        # StreamEventRail(priority=80) 发出的 chat.tool_call/chat.tool_result 都对齐原始 id。
+        # bridge 场景（模型换新 id 重试被桥接旧 state）例外：本次调用 id 本身就是
+        # 历史 id，原样保留——按 interaction 后缀模式判断，而非"是否在 aliases 中"
+        # （bridge 的 alias 不带该后缀），否则 tool_msg.tool_call_id 会被改写成旧
+        # workflow_id 而与 assistant 消息 tool_calls 的新 id 不匹配（issue #5131 回归）。
+        original_workflow_id = workflow_id
+        if (
+            tool_call_id != original_workflow_id
+            and tool_call_id.startswith(f"{original_workflow_id}_interaction_")
+        ):
+            try:
+                ctx.inputs.tool_call.id = original_workflow_id
+            except (AttributeError, TypeError):
+                # 不可变 tool_call 兜底：clone 一份再赋 id（参考 _interaction_tool_call 的 model_copy/deepcopy）
+                ctx.inputs.tool_call = _clone_tool_call_with_id(
+                    ctx.inputs.tool_call, original_workflow_id
+                )
+            tool_call_id = original_workflow_id  # 后续 tokens/cleanup 都用原始 id
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})
         tokens[tool_call_id] = token
 
@@ -382,7 +606,11 @@ class DeepResearchExecutionRail(DeepAgentRail):
             return
         try:
             payload = _result_payload(ctx.inputs.tool_result)
-            if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:
+            if payload is None:
+                return
+            if payload.get(_SHORT_CIRCUIT_FIELD) is True:
+                return
+            if payload.get("schema_version") != EXECUTION_SCHEMA:
                 return
             if payload.get("kind") == "in_progress":
                 return  # A concurrent caller must not overwrite or finish the active workflow.
@@ -462,6 +690,26 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 )
                 return
 
+            # 幂等守卫：completed 终态在清理 state 前记录交付索引，供下一轮
+            # 同主题×同 file_name 调用 before_tool_call 短路返回「已交付」，
+            # 阻止深度研究报告交付后再次对话重复执行（issue #5131）。
+            if payload.get("kind") == "completed" and isinstance(state, Mapping):
+                _record_delivery(
+                    ctx.session,
+                    workflow_id,
+                    query=str(state.get("query") or ""),
+                    file_name=str(state.get("file_name") or ""),
+                    conversation_id=str(state.get("conversation_id") or ""),
+                    html_style_status=payload.get("html_style_status"),
+                    requested_report_type=str(
+                        state.get("requested_report_type") or "brief"
+                    ),
+                    content=(
+                        payload.get("content")
+                        if isinstance(payload.get("content"), str)
+                        else ""
+                    ),
+                )
             fallback = payload.get("fallback")
             model_handoff = (
                 payload.get("kind") == "error"
@@ -510,6 +758,10 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 )
 
             if isinstance(content, str) and content.strip():
+                # 不改写 tool_result：保留结构化信封（kind=completed +
+                # workflow_llm_token_usage），使 StreamEventRail raw_output 与
+                # interface_deep._extract_deepresearch_sdk_usage 能提取 SDK token
+                # 用量（atomgit-bot 审查 Issue 4）。面向模型的精简文案落到 tool_msg。
                 ctx.request_force_finish(
                     {"output": content.strip(), "result_type": "answer"}
                 )
@@ -523,6 +775,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
 
 
 __all__ = [
+    "DEEPRESEARCH_DELIVERY_INDEX_KEY",
     "DEEPRESEARCH_EXECUTION_ALIAS_KEY",
     "DEEPRESEARCH_EXECUTION_STATE_KEY",
     "DEEPRESEARCH_INTERACTION_PLACEHOLDER",

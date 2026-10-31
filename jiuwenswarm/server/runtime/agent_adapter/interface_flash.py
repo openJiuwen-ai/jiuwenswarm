@@ -16,9 +16,10 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 部署组合提示：OfficeClaw 交互请求由 Relay 显式发送 ``mode=flash`` 选型，
 不再由 ``flash.enabled`` 将普通 Agent 请求自动转换为 Flash；其它渠道和后台
 来源沿用各自的既有路由策略。具体准入与会话续接由 ``_shared`` 的模式解析负责。
-flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail``
-等健壮性 rail，长文档 / 弱网任务的容错弱于
-normal，部署时仍需评估所选 Flash profile 的能力边界。
+flash 白名单包含 ``_context_overflow_recovery_rail``（仅上下文溢出兜底，
+正常路径零开销），但不含 ``_llm_retry_rail`` 等重试类健壮性 rail，
+长文档 / 弱网任务的容错仍弱于 normal，部署时需评估所选 Flash profile
+的能力边界。
 
 flash 行为由类常量定义：
 - :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``
@@ -218,6 +219,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 "skill_tool",
                 "skill_complete",
                 "todo",
+                "office_claw_list_wishes",
             ],
         },
     }
@@ -258,9 +260,15 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_model_routing_rail",
         "_security_rail",
         "_heartbeat_rail",
+        "_request_summary_rail",
+        "_stalled_access_circuit_rail",
+        "_last_iteration_finalize_rail",
         "_subagent_rail",
         "_permission_rail",
         "_context_processor_rail",
+        # 上下文溢出兜底：413/ModelArts.81001 input-token-limit 时
+        # 由该 rail 设置 force_compact 并在重试前压缩上下文。正常请求不触发。
+        "_context_overflow_recovery_rail",
         # _filesystem_rail: SlimSysOperationRail（flash override），init() 注册
         #   Read/Write/Edit/Glob/Grep/Bash，不注册 powershell/list_files；
         #   丢掉=无文件/shell 能力。

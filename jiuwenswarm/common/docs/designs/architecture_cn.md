@@ -395,7 +395,7 @@ app_gateway / app_agentserver 启动：
 | overlay 绑定即 seal | miss 回退 tip 会让任务 A 的配置渗透进任务 B |
 | tip 写入联动失效 config 缓存 | 否则 agent 改了密钥、配置视图还读旧值 |
 | monkeypatch 单装配点 + `_PATCHED` 幂等 | 补丁散落多点会随 SDK 升级成雷区；常量化目标名一处可改 |
-| wait_for 而非 anyio.fail_after | 跨 task cancel scope 语义（TC_MCP_CALL_014） |
+| remote 生命周期同任务 | 发现协程 / 现有 worker / ToolMgr HTTP owner 持有完整上下文；SSE 复用 SDK owner。生命周期阶段用 asyncio.timeout，禁止跨任务或延迟 aclose |
 | thinking/reasoning 窄白名单 | 前缀宽匹配曾让 GLM-4 误吃 GLM-5 参数 |
 | WS 限额双轨不统一 | 内部链流式事件 vs 浏览器链 base64 文档，载荷形态不同 |
 | 版本总序（stable>pre>类型序） | 字符串比较会把 0.10 排在 0.9 前、pre-release 当 stable |
