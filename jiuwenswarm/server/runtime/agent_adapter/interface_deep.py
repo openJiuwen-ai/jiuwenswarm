@@ -62,6 +62,7 @@ from openjiuwen.harness import (
 )
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import PromptSection, resolve_language
+from openjiuwen.harness.subagent_types import GENERAL_PURPOSE_TYPE
 from openjiuwen.harness.rails import (
     LLMRetryRail,
     SkillUseRail,
@@ -14145,6 +14146,31 @@ def _jws_install_subagent_runtime_patch() -> None:
 
         if not sub.find_rails_by_type((SubagentLoggingRail,)):
             sub.add_rail(SubagentLoggingRail())
+        if sub.card.name == GENERAL_PURPOSE_TYPE:
+            # Scope inherited user-facing rules after the runtime env section (89).
+            sub.system_prompt_builder.add_section(PromptSection(
+                name="runtime.subagent_role",
+                content={"en": (
+                    "# Subtask role\n\n"
+                    "You execute the current delegated subtask for the parent agent.\n"
+                    "- Follow its goal, scope, read/write boundaries and completion criteria; "
+                    "keep inherited permission and safety constraints.\n"
+                    "- Finish when the criteria are met. Report out-of-scope findings "
+                    "instead of expanding the task.\n"
+                    "- Diagnose failures before retrying. Retry with new information or a "
+                    "meaningful change; when blocked, return completed work, the specific "
+                    "error, remaining work and needed input.\n"
+                    "- Hand back conclusions, key evidence, accessible artifact paths, "
+                    "actual verification and unfinished items. State uncertainty; "
+                    "do not label partial work complete.\n"
+                    "- Your final response is a handoff to the parent agent. The parent "
+                    "handles final user-facing delivery; send files directly only when "
+                    "this subtask explicitly requires it.\n"
+                    "- This task handoff may exceed inherited short-summary limits when "
+                    "needed to preserve key evidence, important errors and unfinished work.\n"
+                )},
+                priority=90,
+            ))
         # pylint: disable=protected-access
         parent_ws = getattr(self._deep_config, "workspace", None)
         # pylint: enable=protected-access
