@@ -105,6 +105,13 @@ class SessionActivityParticipant(Protocol):
         ...
 
 
+class SessionForegroundParticipant(Protocol):
+    """Observe committed view transitions without changing other activity APIs."""
+
+    async def foreground_changed(self, event: SessionForegroundEvent) -> None:
+        ...
+
+
 class SessionDeleteParticipant(Protocol):
     @property
     def name(self) -> str:
@@ -139,6 +146,7 @@ class RuntimeParticipantRegistry:
 
     def __init__(self, *, host_delete: tuple[SessionDeleteParticipant, ...] = ()) -> None:
         self._host_delete = tuple(host_delete)
+        self._host_foreground: tuple[SessionForegroundParticipant, ...] = ()
         self._activity: tuple[SessionActivityParticipant, ...] = ()
         self._delete: tuple[SessionDeleteParticipant, ...] = ()
         self._targets: dict[str, SessionLifecycleTarget] = {}
@@ -154,6 +162,15 @@ class RuntimeParticipantRegistry:
 
     def snapshot_activity(self) -> tuple[SessionActivityParticipant, ...]:
         return self._activity
+
+    def register_host_foreground(self, participant: SessionForegroundParticipant) -> None:
+        """Register a Runtime-lifetime observer unaffected by provider toggles."""
+        if not any(current is participant for current in self._host_foreground):
+            self._host_foreground += (participant,)
+
+    def snapshot_foreground(self) -> tuple[SessionForegroundParticipant, ...]:
+        """Compose fixed view observers with replaceable activity participants."""
+        return self._host_foreground + self._activity
 
     def snapshot_delete(self) -> tuple[SessionDeleteParticipant, ...]:
         return self._host_delete + self._delete
@@ -232,6 +249,7 @@ __all__ = [
     "SessionExecutionEvent",
     "SessionExecutionFinishedEvent",
     "SessionForegroundEvent",
+    "SessionForegroundParticipant",
     "SessionInactiveEvent",
     "SessionInputIntentDisposition",
     "SessionInputIntentEvent",

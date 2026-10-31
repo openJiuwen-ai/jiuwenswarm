@@ -81,6 +81,7 @@ class ReqMethod(Enum):
     SESSION_PREVIEW = "session.preview"
     SESSION_CREATE = "session.create"
     SESSION_SWITCH = "session.switch"
+    SESSION_DETACH = "session.detach"
     SESSION_DELETE = "session.delete"
     SESSION_INPUT_INTENT = "session.input.intent"
     SESSION_RENAME = "session.rename"

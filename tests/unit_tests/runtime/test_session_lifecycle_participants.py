@@ -180,3 +180,32 @@ async def test_host_delete_observer_survives_kvc_publication_and_lease_release(m
     assert registry.snapshot_delete() == (host,) + dynamic
     await lease.release()
     assert registry.snapshot_delete() == (host,)
+
+
+@pytest.mark.asyncio
+async def test_fixed_foreground_observer_survives_kvc_transitions(monkeypatch):
+    host = object()
+    delete_observer = object()
+    registry = RuntimeParticipantRegistry(host_delete=(delete_observer,))
+    assert registry.snapshot_delete() == (delete_observer,)
+    registry.register_host_foreground(host)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime.get_kv_cache_runtime",
+        lambda:_Runtime(),
+    )
+    owner = KVCacheApplicationOwner()
+    lease = owner.attach_runtime(registry)
+    assert registry.snapshot_foreground() == (host,)
+    assert registry.snapshot_activity() == ()
+    await owner.set_enabled(True)
+    dynamic = registry.snapshot_activity()
+    assert len(dynamic) == 1 and registry.snapshot_foreground() == (host,)+dynamic
+    await owner.set_enabled(False)
+    assert registry.snapshot_foreground() == (host,) and registry.snapshot_activity() == ()
+    await owner.suspend()
+    assert registry.snapshot_delete() == (delete_observer,)
+    assert registry.snapshot_foreground() == (host,)
+    await owner.set_enabled(True)
+    await lease.release()
+    assert registry.snapshot_delete() == (delete_observer,)
+    assert registry.snapshot_foreground() == (host,) and registry.snapshot_activity() == ()
