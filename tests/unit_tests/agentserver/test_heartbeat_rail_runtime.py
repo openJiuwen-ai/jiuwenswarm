@@ -141,7 +141,9 @@ def test_single_agent_adapters_mount_heartbeat_rail(
     rails = adapter._build_agent_rails({}, {"models": {}}, mode=mode)
 
     assert [info.attr_name for info in declared_rails].count("_heartbeat_rail") == 1
-    assert len(rails) == 1
+    # The adapter always appends the task-loop budget rail; the heartbeat rail
+    # is still mounted (and first) after the heartbeats-only instantiation.
+    assert len([rail for rail in rails if isinstance(rail, HeartbeatRail)]) == 1
     assert isinstance(rails[0], HeartbeatRail)
     assert rails[0]._runtime._service is heartbeat_service
 
