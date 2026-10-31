@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Bound-session capabilities contributed during ``ops.build``."""
+"""Bound-session catalog: seven event proxies plus existing append/file Ops.
+
+The older direct reader functions remain storage-level compatibility helpers;
+they are not the methods registered in the public Handler Ops catalog.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +26,8 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from jiuwenswarm.extensions_v2.event_types.session_queries import SESSION_QUERY_EVENTS
+from jiuwenswarm.extensions_v2.handler_ops.session_queries import session_query_method
 from jiuwenswarm.server.runtime.session.model_selection_store import (
     SESSION_MODEL_INFO_KEY,
     get_session_model_info,
@@ -194,15 +200,12 @@ async def session_ops_build(
     builder = await next_handler(event)
     if not isinstance(builder, EventHandlerOpsBuilder):
         raise TypeError("ops.build must return EventHandlerOpsBuilder")
+    if bus is None:
+        raise RuntimeError("session query Ops require the host EventBus")
     builder.add_namespace("session")
-    builder.add_method("session", "cwd", session_cwd)
-    builder.add_method("session", "root", session_root)
-    builder.add_method("session", "model", session_model)
-    builder.add_method("session", "repo", session_repo)
-    builder.add_method("session", "messages", session_messages)
+    for event_type in SESSION_QUERY_EVENTS:
+        builder.add_method("session", event_type.split(".", 1)[1], session_query_method(bus, event_type))
     builder.add_method("session", "append", partial(session_append, bus=bus))
-    builder.add_method("session", "turns", session_turns)
-    builder.add_method("session", "usage", session_usage)
     return builder
 
 

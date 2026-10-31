@@ -12,11 +12,17 @@ class SessionModelInfo:
 
     def register(self, registrar):
         registrar.register_event_handler("context.usage.updated", self.on_usage, {}, "user")
+        registrar.register_event_handler("session.model", self.on_model_query, {}, "user")
 
     async def on_usage(self, event, ops, next_handler):
-        info = await ops.session.model()
-        logger.info("session model: session=%s info=%s", ops.session_context.session_id, info)
+        model_name = await ops.session.model()
+        logger.info("session model: session=%s model_name=%s", ops.session_context.session_id, model_name)
         return await next_handler(event)
+
+    async def on_model_query(self, event, ops, next_handler):
+        result = await next_handler(event)
+        logger.debug("session.model query completed")
+        return result
 
 
 def create_extension():

@@ -23,21 +23,22 @@ receipt = await ops.session.append({
         "content": [{"type": "text", "text": "This turn was audited."}],
     },
 })
-page = await ops.session.messages(limit=5)  # cursor 缺省为 None，重新取最新快照
+messages = await ops.session.messages()  # 从旧到新，最多最近 4096 项
+recent = messages[-5:]  # 只在返回数组上切片，不再传 limit/cursor
 ```
 
 - id：调用者填写的稳定重试键，不是会话 ID；1～128 个 ASCII 字母、数字或 `._:-`。
 - message.type：本例 assistant；也可 user/system 文本。不能伪造工具结果。
 - message.content：文本块数组；每个 text 字段填写实际正文。role 可省略，默认同 type；is_meta 由平台固定 True。
 - 不填写 door/origin/uuid、会话、时间或路径；这些由平台固定。
-- receipt.status：persisted / duplicate / rejected。成功的 receipt.message 是结构化消息，receipt.uuid 是实际行身份，receipt.history_record 是可与 page.messages 比较的产品记录。
+- receipt.status：persisted / duplicate / rejected。成功的 receipt.message 是结构化消息，receipt.uuid 是实际行身份，receipt.history_record 是产品历史行；它与 messages() 的消息投影不是同一结构，不能直接比较两个对象。
 - receipt.message_id 回显用户 id；产品记录原 id 可用于分组，不能代替行 uuid。rejected 时 message/uuid/history_record 为 None，reason 给出原因。
 
-事件输入为 message/door/origin/uuid；嵌套匹配用 `origin.kind` 点路径。只改已有文本块 text，不改工具关联、非文本块、数量或顺序。next_handler 继续当前链；append Ops 创建新链；messages 直接读取。不要在追加 Hook 内递归调用 append。
+事件输入为 message/door/origin/uuid；嵌套匹配用 `origin.kind` 点路径。只改已有文本块 text，不改工具关联、非文本块、数量或顺序。next_handler 继续当前链；append Ops 创建新链；messages Ops 另起 session.messages 查询链并返回 role/text/toolUses 数组。不要在追加 Hook 内递归调用 append。
 
 成功仅表示产品历史落盘，不发送新 Agent 输入、不自动 ui.render、不保证改写活跃模型上下文。原始工具 result/私有元数据仍由平台保留，不宣称彻底脱敏所有存储。
 
-追加事件/方法的完整字段、默认值、拒绝和迁移见 [F_16](../../docs/features/F_16_session-history-ops.md)；messages 的参数、分页、记录字段、错误和可单独使用的只读用户包见 [F_23](../../docs/features/F_23_session-messages-ops.md)。本示例仍展示读写联合使用，不要求查询方先安装或使用追加功能。旧 `{id, role, content:str}` 方法参数仍支持；旧事件顶层 content/source 与旧回执 message 的产品记录形态已迁移。
+追加事件/方法的完整字段、默认值、拒绝和迁移见 [F_16](../../docs/features/F_16_session-history-ops.md)；messages 的无参数调用、消息数组字段、查询事件、错误和独立用户包见 [F_23](../../docs/features/F_23_session-messages-ops.md)。本示例仍展示读写联合使用，不要求查询方先安装或使用追加功能。旧 `{id, role, content:str}` 方法参数仍支持；旧事件顶层 content/source 与旧回执 message 的产品记录形态已迁移。
 
 ## English
 
@@ -45,4 +46,7 @@ Install this directory as an extension ZIP through the existing management inter
 
 Use a stable id and `{message: {type: "assistant", content: [{type: "text", text: "..."}]}}`. Retry the entire original request unchanged. The host supplies session/package identity, origin, door and row uuid. The receipt contains status, session_id, message_id, structured message, uuid, history_record and reason. Compare history_record with the product history page; message.content is an array, not a legacy string. Rejection has no stored message/uuid/history_record.
 
-The Ops are shared with any platform event carrying a valid SessionContext. Appending does not run an Agent, inject a live model message, or render UI. Uninstall removes the user policy, not stored history. See [F_16](../../docs/features/F_16_session-history-ops.md) for the append event/method, allowed edits and migration. See [F_23](../../docs/features/F_23_session-messages-ops.md) for the read-only messages contract, cursor paging, record fields and a standalone reader package. Querying history does not require appending a note or registering an append handler.
+The Ops are shared with any platform event carrying a valid SessionContext. Appending does not run an Agent, inject a live model message, or render UI. Uninstall removes the user policy, not stored history. See [F_16](../../docs/features/F_16_session-history-ops.md) for the append event/method, allowed edits and migration. See [F_23](../../docs/features/F_23_session-messages-ops.md) for the read-only messages event, chronological message-array fields and a standalone reader package. Querying history does not require appending a note or registering an append handler.
+
+
+2026-10-31：messages() 的项不是原产品历史行；使用 row["text"]，不读取 content、extension_message_id 或页游标。要核对刚追加的行身份，使用 append 的真实提交回执；本例仅在最近返回项中核对保存正文，不把正文相同当作全局行身份。

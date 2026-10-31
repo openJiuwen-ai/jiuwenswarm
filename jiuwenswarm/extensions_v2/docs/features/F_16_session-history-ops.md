@@ -10,7 +10,7 @@
 
 ## 1. 范围、状态与依据
 
-本文只说明追加前事件和追加方法。历史分页查询 `ops.session.messages` 的参数、返回字段、快照、错误和独立只读用户示例已拆至 [F_23](F_23_session-messages-ops.md)，不再与写入契约合写；两份文档仍属于同一个 PR04 / EXTV2-16，不新增开发任务。
+本文只说明追加前事件和追加方法。历史消息查询 `ops.session.messages` 的事件、返回数组字段、错误和独立只读用户示例已拆至 [F_23](F_23_session-messages-ops.md)，不再与写入契约合写；两份文档仍属于同一个 PR04 / EXTV2-16，不新增开发任务。
 
 本特性在 [PR !83](https://gitcode.com/huenrui_/jiuwenswarm/pull/83) 内升级事件契约，原编号不变。实现位置为 Worker；Front/Supervisor 沿用既有路由，agent-core 不修改。依赖既有 Core EventBus、Registry、Ops Builder 和 USER 故障隔离，验证使用 Core `ead700d7d18a247968d64de54918cf5d201a207a`。
 
@@ -118,7 +118,7 @@ door 的本地映射：用户记录→prompt；普通助手记录→response；c
 | message_id | str，必有 | Ops 调用时回显用户参数 id；平台调用时为原产品记录 id。不是通用行唯一身份 |
 | message | SessionAppendMessage 或 None | 成功/重复为**实际存下来的**公开消息（同 3.2 的全部字段）；拒绝为 None。可能与进入 Handler 时正文不同 |
 | uuid | str 或 None | 成功/重复为实际记录 uuid，旧行可回退到原 id；拒绝为 None，不能凭拒绝回执声称存在一行 |
-| history_record | dict 或 None | 成功/重复为实际产品历史记录的独立副本，可与 messages 查询比较；移除内部 _session_append。记录字段见 [F_23 第 4.2 节](F_23_session-messages-ops.md#42-返回字典的全部字段)。拒绝为 None |
+| history_record | dict 或 None | 成功/重复为实际产品历史行的独立副本，移除内部 _session_append；常见 id/role/content/request_id/channel_id/timestamp，可有 uuid/transcript_message/native_message。它不等于 messages() 的 role/text/toolUses 消息投影，不能直接比较两个结构；拒绝为 None |
 | reason | str 或 None | 拒绝时的非空原因；成功/重复为 None。用于给自己的调用方解释拒绝，不是异常堆栈 |
 
 唯一合法拒绝对象是 `SessionAppendRejection(reason="说明原因")`：reason 必填 str，去首尾空白后 1～512 字符，且必须在 next 之前、针对自己的 note 返回。普通平台/RPC 历史不能被 USER 拒绝；非法拒绝/改写依 Core USER 故障隔离继续原有效输入。抛异常不等于业务拒绝。CORE 已真实提交后，回传改写或后置拒绝不能撤销已写事实。
@@ -222,7 +222,7 @@ await run_history_io(
 
 该异步入口收到原生 BaseMessage 时，在过滤/提交之前适配为公开消息，同时将原生 JSON 快照留在 native_message 中。工具关联、metadata、工具参数由宿主保留，允许的 content 改写合并回待存快照，原调用者的 BaseMessage 实例不被就地修改。原有产品流式事件入口继续适配，不要求把全系统历史迁移为 BaseMessage 存储。
 
-启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 append 等共享方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；[历史查询的直接读取链](F_23_session-messages-ops.md#51-平台装配和业务调用链) 独立说明。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
+启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 append 等共享方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；[历史查询的同名事件链](F_23_session-messages-ops.md#51-平台装配和业务调用链) 独立说明。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
 
 生命周期预检在 Hook 前捕获 generation，提交锁内复验；不持文件/队列锁执行 USER。文件关闭后才成功回执，同一次调用的重复 next 复用真实结果；回执深拷贝，后置篡改不改变已经保存的事实。写入开始后取消先排空，再传播 CancelledError。写入与元数据仍非跨存储原子事务，不承诺 fsync 断电耐久。
 
@@ -253,7 +253,7 @@ await run_history_io(
 
 ## 7. 参考资料
 
-- [F_23 历史查询](F_23_session-messages-ops.md)：参数、分页/快照、只读用户包与查询证据。
+- [F_23 历史查询](F_23_session-messages-ops.md)：无参数查询、消息数组、只读用户包与查询证据。
 - [S_06 主责规约](../specs/S_06_session-history-ops.md)：不变量、兼容与错误范围。
 - [内置事件接入说明](../designs/builtin-event-development-guide.md)：公共 EventBus/Handler/Ops 机制。
 - [事件类型](../../event_types/session_history.py)、[平台触发](../../../server/runtime/session/history_events.py)、[消息映射](../../../server/runtime/session/history_message.py)、[默认 CORE](../../event_handlers/session_history.py)。

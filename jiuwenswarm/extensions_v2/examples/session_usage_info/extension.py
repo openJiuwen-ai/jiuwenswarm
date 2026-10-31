@@ -15,7 +15,7 @@ class SessionUsageInfo:
 
     async def on_usage(self, event, ops, next_handler):
         turns = await ops.session.turns()
-        usage = await ops.session.usage(breakdown=True)
+        usage = await ops.session.usage(breakdown="summary")
         logger.info(
             "session usage: session=%s turns=%s usage=%s",
             ops.session_context.session_id, turns, usage,

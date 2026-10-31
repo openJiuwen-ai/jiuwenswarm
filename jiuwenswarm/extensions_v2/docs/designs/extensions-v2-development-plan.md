@@ -258,13 +258,15 @@
 - **责任与契约：** [S_03](../specs/S_03_session-workspace-ops.md) 为唯一契约来源；能力和 Build Handler 放在 `handler_ops/`，登记接入 bootstrap，事实采集留在回合宿主入口。
 - **开工硬前置：** 已有 EXTV2-01 的装配、EXTV2-05 的 Ops Build 接线与原生回合用量触发点，不依赖本轮管理增强项。
 - **验收标准：** [F_13 第 6 节](../features/F_13_session-workspace-ops.md#6-验收与未决问题) 的 V-01～V-07；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
+
+- **验收标准：** [F_13 第 5 节](../features/F_13_session-workspace-ops.md#6-验收与未决问题) 的 V-01～V-07；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_ops.py`、`test_context_usage.py`；真实模型和网络联调单独记录。
 - **前端与联合交付：** 本特性不增加前端入口；Worker 内扩展包可以独立验证，不据此完成 M1～M3。
 - **特性文档：** [F_13](../features/F_13_session-workspace-ops.md)，对应 Server 开发计划 PR-01。
 
 ### EXTV2-14 会话主模型查询
 
-- **目标与范围：** 提供只读 `ops.session.model()`，优先返回宿主绑定的运行模型快照，缺失时读取当前会话保存的稳定选择；不创建、切换或调用模型。
+- **目标与范围：** 提供只读 `ops.session.model()`，派发 session.model 并返回优先运行快照的模型名字符串；保存资料仅在有名称时提供回退；不创建、切换或调用模型。
 - **责任与契约：** [S_04](../specs/S_04_session-model-ops.md)；事实来源及验证见 [F_14](../features/F_14_session-model-ops.md)。
 - **开工硬前置：** 已有装配与共享 Ops Builder；不依赖项目 Git 查询。
 - **验收标准与独立验证：** F_14 的运行快照、保存选择、缺失、白名单、隔离与示例验证；`test_session_model_ops.py` 和原生 Adapter 回归。
@@ -272,17 +274,19 @@
 
 ### EXTV2-15 会话 Git 仓库查询
 
-- **目标与范围：** 提供只读 `ops.session.repo()`，由可信 cwd 查询最近 Git 工作树根、当前分支、完整 HEAD 与 detached 状态，支持 linked worktree；不执行 Git 写入。
+- **目标与范围：** 提供只读 `ops.session.repo()`，派发 session.repo，由可信 cwd 返回 root/remote/internal/name，linked worktree 的 root 对齐主工作树；不执行 Git 写入。
 - **责任与契约：** [S_05](../specs/S_05_session-repo-ops.md)；Ops 登记沿用 session Builder，Git 业务读取位于 `server/runtime/session/session_repo.py`。
 - **开工硬前置：** EXTV2-13 的可信 cwd 与共享 session Ops 接线；不以 EXTV2-14 的模型资料为前提。
 - **验收标准：** [F_15 第 6 节](../features/F_15_session-repo-ops.md#6-验收与未决问题) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
+
+- **验收标准：** [F_15 第 5 节](../features/F_15_session-repo-ops.md#6-验收与未决问题) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`；示例 `examples/session_repo_info/`。
-- **前端与联合交付：** 不新增查询 Event、业务 CORE 或前端入口；不据此完成 M1～M3。对应 Server PR-03。
+- **前端与联合交付：** 新增同名查询 Event/CORE；不新增前端入口；不据此完成 M1～M3。对应 Server PR-03。
 
 
 ### EXTV2-16 会话历史读写与追加前扩展
 
-- **目标与范围：** 提供只读 `ops.session.messages(limit=50, cursor=None)`、写入 `ops.session.append(note)` 和追加前事件 `session.append`；输入为完整消息视图及独立 door/origin/uuid，受控改写文本后由 CORE 实际落盘并返回 message/uuid/history_record。接入原可等待主历史、原生 BaseMessage 适配和 history.append_record RPC；不驱动 Agent、不同步改写活跃模型上下文，不新增前端入口。
+- **目标与范围：** 提供只读 `ops.session.messages()`（同名查询事件、最近 4096 项消息数组）、写入 `ops.session.append(note)` 和追加前事件 `session.append`；输入为完整消息视图及独立 door/origin/uuid，受控改写文本后由 CORE 实际落盘并返回 message/uuid/history_record。接入原可等待主历史、原生 BaseMessage 适配和 history.append_record RPC；不驱动 Agent、不同步改写活跃模型上下文，不新增前端入口。
 - **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；[F_16](../features/F_16_session-history-ops.md) 说明追加事件/方法，[F_23](../features/F_23_session-messages-ops.md) 独立说明只读历史查询（本 PR 新增文档编号，交付任务不拆分）；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
 - **开工硬前置：** 已有 EXTV2-01 装配、EXTV2-05 共享 Ops Builder、宿主绑定的有效 SessionContext 和原历史服务；不依赖 cwd / model / repo 能力。
 - **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 追加验收](../features/F_16_session-history-ops.md#6-验收与未决问题) 与 [F_23 查询验收](../features/F_23_session-messages-ops.md#6-验收与未决问题)。
@@ -291,8 +295,8 @@
 
 ### EXTV2-17 会话轮次与用量查询
 
-- **目标与独立验收：** 新增共享只读 `ops.session.turns()` 和 `ops.session.usage(breakdown=False)`；前者按主会话已提交用户输入去重，后者分开返回上下文占用和回合消耗并保留估算/实测来源。验证多会话、重复记录、工具/模型活动、空值与零值、历史恢复、宿主快照、用户包调用与卸载。
-- **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖未合入 PR04 的 messages/append，不新增 session.measure。
+- **目标与独立验收：** 新增共享只读 `ops.session.turns()` 和 `ops.session.usage()`；两项派发同名查询事件，前者统计已提交原生用户输入，后者返回 context/rateLimits/可选 cost，未知数字不伪造。验证多会话、重复记录、工具/模型活动、空值与零值、历史恢复、宿主快照、用户包调用与卸载。
+- **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖追加调用作为查询前置，不新增 session.measure。
 - **代码与契约：** [F_21](../features/F_21_session-usage-ops.md)、[S_11](../specs/S_11_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
 
 ### EXTV2-18 激活实例首次输入前初始化
@@ -341,6 +345,12 @@
 **整个 Server 合并 PR 的硬前置是 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110)，先合入 Core，再合入 Server。** end/attach/detach 单项本身不需要 handler_ids；合并交付并不取消 start 的跨仓依赖。Core !110 同步合并最新目标分支，保留已合入的 EV-06/F_06 包信息能力，待合入的限定派发文档改为 EV-07/F_07。
 
 本次 Server 1744 项通过、3 项跳过；Core 587 项通过、1 项跳过。原生输入初始化等待、固定删除/foreground 观察者共存、历史与用量 Ops、模型上下文、Runtime 创建/切换/删除及 Gateway 转发在回归范围内。Gateway 断连清理的 1 项失败在未修改目标分支和本分支上独立复现，最终显式排除，未计入通过；证据与边界见 F_22 / F_24 / F_25 / F_26 第 6 节及本地 consolidate-server-prs-20261031 目录。历史真实模型证据保持原日期，本次未重跑。
+
+### EXTV2-22 七项只读查询事件化
+
+- **范围：** cwd/root/model/repo/messages/turns/usage 七个同名查询事件、代理与默认 CORE；字段以 Claude 为主，同步既有用户示例和详细字段文档。
+- **依赖：** 已合入的 Core Bus/Builder 和平台读取服务；不依赖未合入生命周期 PR，不增加 Front/Supervisor EventBus。
+- **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见 [F_27](../features/F_27_session-query-events.md)，协议见 [S_16](../specs/S_16_session-query-events.md)。
 
 ## 3. 特性依赖关系与并行开发
 
@@ -461,6 +471,7 @@ flowchart LR
 | EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 404 项回归、19 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker 与两个模型回合、用户资源清理、并发/重复删除、断连/归档非触发、卸载及进程端口清理通过，见 F_24 / S_13 | 2026-10-29 |
 | EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_25 / S_14 | 2026-10-29 |
 | EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_26 / S_15 | 2026-10-29 |
+| EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | — | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见 F_27 / S_16 | 2026-10-31 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 

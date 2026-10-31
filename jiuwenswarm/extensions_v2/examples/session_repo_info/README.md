@@ -1,21 +1,23 @@
-# 会话仓库信息示例 / Session repository information
+# Git 仓库身份示例
 
-## 中文
+这是用户扩展包，不是产品内置包。订阅既有 context.usage.updated，在自己的 USER Handler 调用公开 Ops；Ops 现在各自派发同名查询 Event，查询 USER→BUILTIN→CORE 返回后由代理解包。用户不创建 Bus、Builder 或 CORE，不改平台 Adapter。
 
-此包订阅已有 `context.usage.updated`，在 USER Handler 中调用
-`await ops.session.repo()`，记录当前会话工作目录所在的 Git 工作树根、分支、HEAD
-和 detached 状态，然后继续原事件链。用户无需修改 Server、提供上下文、创建 EventBus 或注册 Ops。
-
-在本目录打包，使 ZIP 根目录直接包含 manifest.yaml 与 extension.py：
-
-```powershell
-Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .\session-repo-info.zip
+```python
+repo = await ops.session.repo()  # root/remote/internal/name，或 None
+if repo is not None:
+    logger.info("repo root=%s remote=%s", repo["root"], repo["remote"])
 ```
 
-将 ZIP 放到服务运行环境能读取的目录，在现有 Web 命令入口逐条执行：
+root 为主工作树根，linked worktree 也返回主根；当前目录另查 cwd。remote 优先 origin.pushurl，并去除 URL 凭据。当前构建无内部仓库清单，internal=False/name=None。旧 branch/head/detached 不再返回。
+
+在本目录打包，让 ZIP 根直接包含 manifest.yaml 和 extension.py：
+
+```powershell
+Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .\session_repo_info.zip
+```
 
 ```text
-/extension install "D:\extensions\session-repo-info.zip"
+/extension install "D:\extensions\session_repo_info.zip"
 /extension query example.session-repo-info
 ```
 
@@ -65,3 +67,9 @@ repo() 无参数；返回 repo_root、branch、head、detached 四键。detached
 每个字段的类型、默认/缺失、合法值、来源和示例，以及完整注册/调用链见 [特性文档第 4、5 节](../../docs/features/F_15_session-repo-ops.md)。本轮仅文档，历史业务验证未重跑。
 
 English: the query takes no arguments. All returned fields are host-provided facts, not caller input. Read the linked field tables for precise types, nullability, source and state combinations. Returned data does not activate a model, modify Git or render UI. This revision only clarifies documentation; historical runtime evidence retains its original date and scope.
+
+一次有效原生用量通知后可以在宿主日志感知结果；其它已绑定可信会话的事件同样能调用，不必须先执行 notify。本例保持原通知 next；不调用 ui.render。逐字段含义、默认值、缺失语义和迁移见 [特性文档](../../docs/features/F_15_session-repo-ops.md)，统一七项返回参数示例见 [session_query_audit](../session_query_audit/)。
+
+## English
+
+repo() returns root, remote, internal and name, or None. Linked worktrees report the main root. Origin push URL is preferred and credentials are removed. This build has no internal-repository allowlist; internal is false and name is null. The package only supplies USER handlers. The host collects trusted session context, builds Ops and serves the default CORE. Query events are call interception points, not change notifications. The example logs results and continues the original event without rendering UI. See the linked feature document for field meanings and migration.

@@ -1,4 +1,4 @@
-# 会话主模型 Ops 规约
+# session.model / ops.session.model 规约
 
 | 项 | 值 |
 | --- | --- |
@@ -7,35 +7,35 @@
 | 主责模块 | `handler_ops/session_ops.py` 与 `server/runtime/session/model_selection_store.py` |
 | 关联特性 | [F_14](../features/F_14_session-model-ops.md) |
 
-## 1. 接口
+最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，使用说明见 [F_14](../features/F_14_session-model-ops.md)。本规约维护字段和默认语义，特性文档解释填写方式。
 
-`await ops.session.model() -> dict[str, object] | None`，不接受会话 ID、模型 ID 或路径参数。目标仅来自宿主绑定的 `SessionContext.session_id`。
+## 1. 能力与默认来源
 
-| 字段 | 含义 |
-| --- | --- |
-| `selection` | 保存的 `type`、`id`、可选 `route_id`；运行快照不混入旧保存选择，值为 None |
-| `model_name` | 运行模型配置名称，或会话保存的旧版模型名；稳定选择未解析时可为 None |
-| `provider` | 运行模型提供方；持久化选择没有已确认提供方时为 None |
-| `source` | `runtime` 表示当次运行快照，`session` 表示会话保存记录，不是凭据或模型目录来源 |
-| `activated` | 运行快照为 True；仅有保存记录时为 None，表示未知，而非已确认未激活 |
+| Ops / Event | 默认来源 | 返回类型 |
+| --- | --- | --- |
+| session.model | 绑定 session_model_info 经公开字段校验后取 model_name；否则 get_session_model_info(session_id)。 | str 或 None |
 
-稳定模型组选择保留其组与 route 标识，不创建路由器或猜测实际物理模型。运行模型名称也不保证是模型组最后一次实际路由成员。
+## 2. 输入输出字段
 
-## 2. 不变量
+### session.model：输入
 
-- SM-01：优先读取 `SessionContext.metadata["session_model_info"]`，缺失时才在线程中读取保存记录。忽略事件输入中的模型、路径和会话 ID。
-- SM-02：新方法加入已有 session Build Handler，不重复新增 session 命名空间，不新增同名查询事件。
-- SM-03：公开字段采用白名单，返回全新的普通字典，不能修改调用上下文或保存记录。不能泄露 API Key、URL、Header、请求参数或可变模型对象。
-- SM-04：原生入口在模型应用后立即采集局部摘要，发布函数在创建任务前再次复制。并发与嵌套调用不共享可变摘要。
-- SM-05：查询不创建或切换模型、不调用模型、不写 metadata、不读全局默认配置来补造会话事实。
+| 字段 | 类型 / 默认 | 谁填写 | 含义与边界 | 怎样填 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法参数 | 无 | 调用者不填写 | 查询已绑定会话，不接受 session_id、路径、模型名或包 ID | 直接调用 await ops.session.<方法>() |
+| Event.event_input | 空映射 {} | Ops 代理自动构造 | 查询 Handler 收到空参数对象；不是 SessionContext，也不携带可改写目标身份 | 注册时使用 match_pattern={} |
 
-## 3. 缺失与错误
+### session.model：返回值字段
 
-没有 SessionContext 时抛出 RuntimeError。会话无保存模型且无运行快照时返回 None。非法会话 ID 通过现有路径验证拒绝，损坏 metadata 或选择格式失败沿现有 ModelSelectionError 传播。非法宿主模型摘要按 TypeError / ValueError 拒绝，不把输入错误解释为真实缺失。
+| 字段 | 类型 / 出现条件 | 谁提供 | 准确含义 | 消费方式 / 例子 |
+| --- | --- | --- | --- | --- |
+| 方法返回 / value | str 或 None | 由平台 CORE 或查询 Handler 返回 | 模型名称字符串；只有选择 ID 而没有实际名称时返回 None，不把路由 ID 当模型名 | example-model；不是模型详情字典 |
+| 不再返回的旧键 | selection/model_name/provider/source/activated | 调用者删除旧访问代码 | 这些是平台内部模型事实或保存选择结构，不再是公开 model() 的返回字段 | 把 info['model_name'] 改成 model_name = await ops.session.model() |
 
-异常经 USER Handler 调用后的处理遵循 Core EventBus 故障隔离规则；上述错误描述能力函数自身的行为。
+## 3. 事件、可信绑定与错误
 
-## 4. 业务接入与验证
+每个公开 Ops 触发同名查询 Event。USER 返回 value/deny 封装，Ops 解包；默认 CORE 调用原始服务，不经公共 Ops 再次发起同名查询。调用者不填 session_id，不从返回视图决定平台真实身份或授权根。缺失值、真实零值、读取故障不同；拒绝和重入见 S_16。查询结果不写平台数据、不自动渲染。
+
+## 4. 兼容迁移与差异
 
 原生回合复用 `context.usage.updated` 作为运行快照接入点，沿用原事件 CORE。模型查询不依赖该 CORE，也不通过该 CORE 执行。验证记录和使用示例见 F_14 与 `examples/session_model_info/`。
 
@@ -44,3 +44,7 @@
 五个返回键均存在：selection/model_name/provider/source/activated。selection 有值时 type/id 必有，route_id 仅 model_group 可用，None 序列化时省略；类型和值规则见 F_14 第 4 节。runtime+True 与 session+None 是当前合法组合，不返回 False 表示未启动。session_model_info 缺失或为 None 时回读保存值；非法非 None 摘要报错，不回退。所有字段由平台返回，用户查询不填模型/会话/路径。
 
 本轮仅文档，不改变业务代码，未重跑历史业务验证。完整说明按七段式编写指南维护，历史验收保留原日期和范围。
+
+| 方法 | 迁移 | Claude 对照差异 |
+| --- | --- | --- |
+| model | 旧 info['model_name'] / info.get('provider') 等访问改为直接消费字符串；需要模型配置详情的业务应使用自己已有的配置能力，不从名称反推供应商、凭据或激活状态。 | 返回主体对齐 Claude 字符串；本地缺失事实保留 None。保存名称不保证此刻已经激活，运行快照仍优先于保存信息。 |
