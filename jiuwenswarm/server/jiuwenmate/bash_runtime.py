@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.core.foundation.tool.schema import ToolOutput
 from openjiuwen.core.sys_operation import LocalWorkConfig, SysOperation, SysOperationCard
 from openjiuwen.core.sys_operation.base import OperationMode
 from openjiuwen.core.sys_operation.local.shell_operation import ShellOperation
@@ -20,19 +22,26 @@ from openjiuwen.harness.tools.shell.bash import BashTool
 
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import _kill_children, _stop_process
+from jiuwenswarm.server.jiuwenmate.cli_group_commands import UnsafeGroupRead, parse_group_read
 
 _KEY = "jiuwenmate.bash_runtime"
 PROVIDER = "jiuwenmate.bash"
 WEB_FETCH_PROVIDER = "core.web_fetch"
+_CLI_SHARING_GUIDANCE = (
+    "飞书群消息、消息详情和消息附件的 CLI 读取会由宿主检查来源，并在跨群时暂停当前 Bash 调用等待所有者审批。"
+    "批准后原调用返回冻结的获批结果，附件导入本 Session 的 imports；不要自行批准或改用其他命令绕过拒绝。"
+    "请使用单条明确的 lark-cli 读取命令，不混入重定向、管道、动态参数或其他脚本；这类命令无法确认范围时不会执行。"
+    "完全访问不跳过跨群业务审批，文档、日历和授权等其他 CLI 功能仍按原方式使用。"
+)
 BASH_PROMPT = (
     "\n\n# 命令使用约定（非技术隔离）\n\n"
     "可以使用 bash 运行必要的脚本和已准备的 CLI，默认工作目录为本次 Session 的私有草稿目录。"
     "普通中间文件直接放在本次 Session 目录；只有 Lark Slides 专用计划、截图等放在其中的 `.lark-slides/`。"
-    "最终交付文件放到 Agent 工作空间共享的 `output/`，并用 `share_file` 登记 `output/<文件名>`。"
+    "最终交付文件放到本 Session 的 `sessions/<session_id>/output/`，并用 `share_file` 登记该目录下的工作空间相对路径。"
     "按本次执行注入的目录说明操作文件；不访问其他同事、个人版目录、宿主配置、数据库、群公共消息库，"
     "文件工具使用工作空间相对路径；Bash 只使用本次执行指定的 Session 目录与 `JIUWENMATE_OUTPUT_DIR`。"
     "不要使用其他绝对路径、..、符号链接或脚本绕过原工具的权限拒绝和版本冲突。"
-    "sessions/ 中只使用本次 Session 的草稿，不访问其他会话；普通文件操作优先使用文件工具。"
+    "sessions/ 中只使用本次 Session 的草稿和 output，不访问其他会话；普通文件操作优先使用文件工具。"
     "不读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖。飞书用户授权只按 Skill 为当前 Agent 的独立 CLI profile 完成，"
     "不借用其他 Agent 或个人版登录态，也不切换到其他飞书用户。"
     "飞书应用级操作默认使用 bot；读取个人日历等用户资源时，按 lark-shared 与 lark-calendar Skill 的说明，"
@@ -43,13 +52,13 @@ BASH_PROMPT = (
     "不要读取、显示或复制 Token、用户认证文件或 Secret。"
     "只能使用宿主为当前同事准备的飞书应用。命令超时或回执缺失表示结果未知，不自动重复创建文档。"
     "后台启动不表示完成；执行结束时后台命令会清理。文档创建成功与请求者获得访问权须分别核实。"
-)
+) + _CLI_SHARING_GUIDANCE
 FULL_ACCESS_BASH_PROMPT = (
     "\n\n# 命令使用约定\n\n"
     "你可以使用 bash 运行必要的脚本、命令和联网操作。当前员工已启用完全访问，命令与文件工具都受服务进程的 OS 用户权限约束，"
-    "不要尝试绕过操作系统权限。执行时仍优先使用本次 Session 草稿目录，最终交付文件放到 Agent 工作空间共享的 `output/`，"
-    "并用 `share_file` 登记 `output/<文件名>`。不要读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖。"
-)
+    "不要尝试绕过操作系统权限。执行时仍优先使用本次 Session 草稿目录，最终交付文件放到本 Session 的 `sessions/<session_id>/output/`，"
+    "并用 `share_file` 登记该目录下的工作空间相对路径。不要读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖。"
+) + _CLI_SHARING_GUIDANCE
 WEB_FETCH_PROMPT = (
     "\n\n# 网页读取\n\n"
     "消息中的 http 或 https 链接，先用 fetch_webpage 读取正文，再据此回答。"
@@ -160,10 +169,10 @@ def refresh_builtin_tools(fields: dict[str, Any]) -> dict[str, Any]:
     return {**fields, "tools": updated, "system_prompt": prompt}
 
 
-def bind_bash_runtime(context, *, office: Path, cli, permission_profile: str = "default") -> None:
+def bind_bash_runtime(context, *, office: Path, cli, permission_profile: str = "default", group_cli=None) -> None:
     session_workspace = office / "sessions" / context.execution.session_id
-    output_dir = office / "output"
-    context.extras[_KEY] = (session_workspace, output_dir, cli, context.execution, [], permission_profile)
+    output_dir = session_workspace / "output"
+    context.extras[_KEY] = (session_workspace, output_dir, cli, context.execution, [], permission_profile, group_cli)
 
 
 def _process_key(execution) -> str:
@@ -186,6 +195,8 @@ class _OwnedShell(ShellOperation):
         self.processes = []
 
     async def _create_subprocess(self, command, cwd, env, *, shell_type="auto", background=False, stream=False):
+        if parse_group_read(command) is not None:
+            raise UnsafeGroupRead("matched group reads must use the host approval adapter")
         process = await super()._create_subprocess(command, cwd, env, shell_type=shell_type,
                                                    background=background, stream=stream)
         if os.name == "nt":
@@ -256,9 +267,46 @@ class _Operation:
 
 
 class _PersistentBash(BashTool):
-    def __init__(self, operation, session_workspace, execution, language):
+    def __init__(self, operation, session_workspace, execution, language, group_cli=None):
         super().__init__(operation, language=language)
         self._session_workspace, self._execution = session_workspace, execution
+        self._group_cli = group_cli
+
+    async def _cli_read(self, inputs):
+        from openjiuwen.harness import persistent_agent as core
+
+        command = inputs.get("command", "")
+        try:
+            plan = parse_group_read(command)
+            if plan is None:
+                return None
+            if self._group_cli is None:
+                raise UnsafeGroupRead("当前执行没有可用的群消息授权上下文")
+            result = await self._group_cli.execute(self._execution, command, plan)
+        except core.GroupContentApprovalRequired as exc:
+            from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
+            from openjiuwen.core.single_agent.interrupt.response import InterruptKind, InterruptRequest
+            from openjiuwen.harness.persistent_agent.tools.group_history import GROUP_SHARE_INTERRUPT_OWNER
+            from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
+
+            raise ToolInterruptException(request=InterruptRequest(
+                message="CLI 跨群内容分享需要所有者批准。", payload_schema=ConfirmPayload.to_schema(),
+                metadata={"kind": "group_share", "approval_id": exc.approval_id, "origin": "cli_group_read"},
+                interrupt_owner=GROUP_SHARE_INTERRUPT_OWNER, interrupt_kind=InterruptKind.CONFIRM,
+            )) from None
+        except UnsafeGroupRead as exc:
+            message = f"群内容读取未执行：{exc}。请使用来源明确的单条 CLI 读取命令。"
+            return ToolOutput(success=False, data={"content": message, "status": "cli_group_read_blocked"}, error=message)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("CLI sharing failed request=%s error_type=%s",
+                                                self._execution.request_id, type(exc).__name__)
+            message = "CLI 群内容读取或授权检查失败，未返回候选内容。请检查宿主日志后再决定是否继续。"
+            return ToolOutput(success=False, data={"content": message, "status": "cli_group_read_failed"}, error=message)
+        import json
+
+        content = "宿主已处理原 CLI 读取请求：\n" + json.dumps(result, ensure_ascii=False)
+        return self._bounded(ToolOutput(success=result.get("ok") is True, data={"content": content},
+                                        error=None if result.get("ok") is True else "未获准分享跨群内容"))
 
     def _inputs(self, inputs):
         # Core's large-output persistence uses a shared temporary directory.
@@ -284,6 +332,9 @@ class _PersistentBash(BashTool):
         return output
 
     async def invoke(self, inputs, **kwargs):
+        guarded = await self._cli_read(inputs)
+        if guarded is not None:
+            return guarded
         token = set_shell_session_id(_process_key(self._execution))
         try:
             return self._bounded(await super().invoke(self._inputs(inputs), **kwargs))
@@ -291,6 +342,10 @@ class _PersistentBash(BashTool):
             reset_shell_session_id(token)
 
     async def stream(self, inputs, **kwargs):
+        guarded = await self._cli_read(inputs)
+        if guarded is not None:
+            yield guarded
+            return
         token = set_shell_session_id(_process_key(self._execution))
         try:
             async for output in super().stream(self._inputs(inputs), **kwargs):
@@ -302,7 +357,7 @@ class _PersistentBash(BashTool):
 def build_bash_tool(params: dict[str, Any], context):
     if set(params) - {"tools"} or _KEY not in context.extras:
         raise ValueError("Bash requires a trusted JiuwenMate Invocation")
-    session_workspace, output_dir, cli, execution, tools, permission_profile = context.extras[_KEY]
+    session_workspace, output_dir, cli, execution, tools, permission_profile, group_cli = context.extras[_KEY]
     parent = parent_sys_operation(context)
     if parent is not None and parent.mode != OperationMode.LOCAL:
         raise ValueError("JiuwenMate Bash requires the local operation")
@@ -318,7 +373,7 @@ def build_bash_tool(params: dict[str, Any], context):
         config.shell_allowlist = [*config.shell_allowlist, "lark-cli", "lark-cli.cmd"]
     operation = SysOperation(SysOperationCard(id=f"jm-bash:{execution.execution_id}", work_config=config))
     shell = _Shell(_OwnedShell(config), session_workspace, output_dir, cli, execution)
-    tool = _PersistentBash(_Operation(parent or operation, shell), session_workspace, execution, context.language)
+    tool = _PersistentBash(_Operation(parent or operation, shell), session_workspace, execution, context.language, group_cli)
     tools.append(tool)
     from openjiuwen.harness.manifest import ensure_builtin_elements_registered
 

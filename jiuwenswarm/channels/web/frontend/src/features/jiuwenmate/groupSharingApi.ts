@@ -8,6 +8,8 @@ export type SharingTimestamp = string | number;
 export interface SharingQuery {
   query: string | null;
   keywords?: string[];
+  content_types?: ('messages' | 'files' | 'online_docs')[];
+  platforms?: string[];
   since: string | null;
   until: string | null;
   sender_id: string | null;
@@ -33,11 +35,25 @@ export interface SharingApproval {
   status: 'pending' | 'approved_once' | 'approved_permanent' | 'rejected' | 'expired';
   can_decide: boolean;
   requester_name: string;
-  source_groups: { group_id: string; name: string }[];
+  source_groups: { group_id: string; name: string; platform?: string | null; platform_chat_id?: string | null }[];
   target: SharingTarget;
   query: SharingQuery;
+  content_types: ('messages' | 'files' | 'online_docs')[];
   summary: string;
-  messages: { group_id: string; group_name: string; message_id: string; sender_name: string; text: string | null }[];
+  messages: { group_id: string; group_name: string; platform?: string | null; message_id: string; sender_name: string; text: string | null }[];
+  artifacts: {
+    group_id: string;
+    group_name: string;
+    platform?: string | null;
+    artifact_id: string;
+    artifact_kind: 'file' | 'online_doc';
+    title: string;
+    file_name: string | null;
+    file_size: number | null;
+    url: string | null;
+    snippet: string | null;
+    created_at: string;
+  }[];
   created_at: SharingTimestamp;
   expires_at: SharingTimestamp;
   decided_at: SharingTimestamp | null;
@@ -47,6 +63,8 @@ export interface SharingGrant {
   grant_id: string;
   source_group_id: string;
   source_group_name: string;
+  source_platform?: string | null;
+  content_types: ('messages' | 'files' | 'online_docs')[];
   target: SharingTarget;
   created_at: SharingTimestamp;
   status: 'active' | 'revoked';
@@ -73,10 +91,14 @@ function target(value: unknown): boolean {
 
 function query(value: unknown): boolean {
   return record(value) &&
+    (value.platforms === undefined || (Array.isArray(value.platforms) && value.platforms.length <= 16 &&
+      value.platforms.every((platform: unknown) => typeof platform === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(platform)))) &&
     ['query', 'since', 'until', 'sender_id', 'cursor'].every((key) =>
       value[key] === null || typeof value[key] === 'string') &&
     (value.keywords === undefined || (Array.isArray(value.keywords) &&
       value.keywords.every((item: unknown) => typeof item === 'string'))) &&
+    (value.content_types === undefined || (Array.isArray(value.content_types) &&
+      value.content_types.every((item: unknown) => ['messages', 'files', 'online_docs'].includes(String(item))))) &&
     typeof value.limit === 'number' && Number.isInteger(value.limit) && value.limit > 0 && value.limit <= 500 &&
     ['group_ids', 'group_names'].every((key) =>
       Array.isArray(value[key]) && value[key].every((item: unknown) => typeof item === 'string'));
@@ -103,16 +125,27 @@ function snapshot(value: unknown, configId: string): GroupSharingSnapshot {
     !value.approvals.every((item: unknown) => record(item) &&
       strings(item, ['approval_id', 'request_id', 'agent_id', 'config_id', 'status', 'requester_name', 'summary']) &&
       query(item.query) &&
+      Array.isArray(item.content_types) &&
+      item.content_types.every((kind: unknown) => ['messages', 'files', 'online_docs'].includes(String(kind))) &&
       item.config_id === configId && typeof item.can_decide === 'boolean' &&
       ['pending', 'approved_once', 'approved_permanent', 'rejected', 'expired'].includes(String(item.status)) &&
       target(item.target) && Array.isArray(item.source_groups) && item.source_groups.length === 1 &&
       item.source_groups.every((group: unknown) => strings(group, ['group_id', 'name'])) &&
       Array.isArray(item.messages) && item.messages.every((message: unknown) => record(message) &&
         strings(message, ['group_id', 'group_name', 'message_id', 'sender_name']) &&
-        (message.text === null || typeof message.text === 'string'))) ||
+        (message.text === null || typeof message.text === 'string')) &&
+      Array.isArray(item.artifacts) && item.artifacts.every((artifact: unknown) => record(artifact) &&
+        strings(artifact, ['group_id', 'group_name', 'artifact_id', 'artifact_kind', 'title', 'created_at']) &&
+        ['file', 'online_doc'].includes(String(artifact.artifact_kind)) &&
+        (artifact.file_name === null || typeof artifact.file_name === 'string') &&
+        (artifact.file_size === null || (typeof artifact.file_size === 'number' && Number.isInteger(artifact.file_size))) &&
+        (artifact.url === null || typeof artifact.url === 'string') &&
+        (artifact.snippet === null || typeof artifact.snippet === 'string'))) ||
     !value.grants.every((item: unknown) => record(item) &&
       strings(item, ['grant_id', 'source_group_id', 'source_group_name']) &&
-      ['active', 'revoked'].includes(String(item.status)) && target(item.target))
+      ['active', 'revoked'].includes(String(item.status)) && target(item.target) &&
+      Array.isArray(item.content_types) &&
+      item.content_types.every((kind: unknown) => ['messages', 'files', 'online_docs'].includes(String(kind))))
   ) {
     throw new Error('Invalid private sharing snapshot');
   }

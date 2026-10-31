@@ -1,8 +1,9 @@
 """Private, frozen cross-group sharing receipts and revocable destination grants.
 
-Only ``get`` and ``for_query`` return the full result. Other host operations
-return receipt metadata; only the authenticated owner's list includes previews.
-The host must recheck platform access and current grants before sending data.
+``get``, ``for_query`` and batch snapshot operations are private host APIs.
+The single-create compatibility entry returns only receipt metadata; only the
+authenticated owner's list exposes previews to an RPC. The host must recheck
+platform access and current grants before sending data.
 """
 
 from __future__ import annotations
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS group_share_grants (
     source_group_name TEXT NOT NULL,
     target_json TEXT NOT NULL,
     grant_key TEXT NOT NULL,
+    content_types_json TEXT NOT NULL DEFAULT '["messages"]',
     approval_id TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -130,6 +132,23 @@ def _grant_key(scope: dict, source_group_id: str) -> str:
     ], _MAX_SCOPE_BYTES)
 
 
+def _result_content_types(result: dict) -> list[str]:
+    """Classify the exact kinds frozen in one source group's approval snapshot."""
+    if result.get("kind") == "cli_group_read":
+        from jiuwenswarm.server.jiuwenmate.cli_group_snapshot import CliReadSnapshot
+
+        return list(CliReadSnapshot.model_validate(result).content_types)
+    types = []
+    if result.get("hits"):
+        types.append("messages")
+    kinds = {item.get("artifact_kind") for item in result.get("artifacts", ()) if isinstance(item, dict)}
+    if "file" in kinds:
+        types.append("files")
+    if "online_doc" in kinds:
+        types.append("online_docs")
+    return types
+
+
 class GroupShareRepository(SQLiteStore):
     """Durable host state in the caller-supplied agents.sqlite3; opens no default DB."""
 
@@ -147,6 +166,13 @@ class GroupShareRepository(SQLiteStore):
                 conn.executemany(
                     "UPDATE group_share_approvals SET tool_call_ids_json=? WHERE approval_id=?",
                     [(json.dumps([row["tool_call_id"]]), row["approval_id"]) for row in rows],
+                )
+            grant_columns = {row["name"] for row in conn.execute("PRAGMA table_info(group_share_grants)")}
+            if "content_types_json" not in grant_columns:
+                # Existing permanent approvals were message-only; do not broaden them.
+                conn.execute(
+                    "ALTER TABLE group_share_grants ADD COLUMN content_types_json TEXT NOT NULL "
+                    "DEFAULT '[\"messages\"]'"
                 )
 
     @staticmethod
@@ -169,18 +195,39 @@ class GroupShareRepository(SQLiteStore):
         frozen = json.loads(row["result_json"])
         messages = [{
             "group_id": hit["group_id"], "group_name": hit["group_name"],
+            "platform": hit.get("platform"), "platform_chat_id": hit.get("platform_chat_id"),
             "message_id": hit["message"]["message_id"], "sender_name": hit["message"]["sender_name"],
             "text": hit["message"].get("text"),
         } for hit in frozen["hits"]]
+        artifacts = [{
+            "group_id": hit["group_id"], "group_name": hit["group_name"],
+            "platform": hit.get("platform"), "platform_chat_id": hit.get("platform_chat_id"),
+            "artifact_id": hit["artifact_id"], "artifact_kind": hit["artifact_kind"],
+            "title": hit["title"], "file_name": hit.get("file_name"), "file_size": hit.get("file_size"),
+            "url": hit.get("url"), "snippet": hit.get("snippet"), "created_at": hit["created_at"],
+        } for hit in frozen.get("artifacts", ())]
         excerpts = []
         for message in messages[:3]:
             text = " ".join((message["text"] or "").split()) or "暂无正文"
             excerpts.append(text if len(text) <= 100 else text[:99] + "…")
+        for artifact in artifacts[:3]:
+            text = artifact["file_name"] or artifact["url"] or artifact["title"]
+            excerpts.append(text if len(text) <= 100 else text[:99] + "…")
         target_name = scope["target"]["name"]
         target_label = target_name if len(target_name) <= 40 else target_name[:39] + "…"
+        content_types = _result_content_types(frozen)
+        counts = []
+        if messages:
+            counts.append(f"{len(messages)} 条消息")
+        file_count = sum(item["artifact_kind"] == "file" for item in artifacts)
+        doc_count = sum(item["artifact_kind"] == "online_doc" for item in artifacts)
+        if file_count:
+            counts.append(f"{file_count} 个文件")
+        if doc_count:
+            counts.append(f"{doc_count} 个在线文档")
         summary = (
-            f"申请分享 {len(sources)} 个来源群的 {len(messages)} 条消息至「{target_label}」。内容摘录："
-            + ("；".join(excerpts) if excerpts else "暂无正文")
+            f"申请分享 1 个来源群的{'、'.join(counts) or '内容'}至「{target_label}」。内容摘录："
+            + ("；".join(excerpts[:3]) if excerpts else "暂无正文")
         )[:400]
         return {
             **{key: row[key] for key in (
@@ -191,8 +238,10 @@ class GroupShareRepository(SQLiteStore):
             "requester_name": scope["requester_name"], "source_groups": sources,
             "target": _target_view(scope["target"]),
             "query": GroupMessageQuery.model_validate(scope["query"]).model_dump(mode="json"),
+            "content_types": content_types,
             "summary": summary,
             "messages": messages,
+            "artifacts": artifacts,
         }
 
     @staticmethod
@@ -201,6 +250,7 @@ class GroupShareRepository(SQLiteStore):
             **{key: row[key] for key in (
                 "grant_id", "source_group_id", "source_group_name", "created_at", "status",
             )},
+            "content_types": json.loads(row["content_types_json"]),
             "target": _target_view(json.loads(row["target_json"])),
         }
 
@@ -236,7 +286,8 @@ class GroupShareRepository(SQLiteStore):
         self, scope: dict, query_digest: str, result: dict, source_groups: list[dict], now: datetime,
     ) -> dict | None:
         """Freeze one per-source approval snapshot; refuse scope rebinding."""
-        return self.create_or_get_batch([(scope, query_digest, result, source_groups)], now=now)[0]
+        row = self.create_or_get_batch([(scope, query_digest, result, source_groups)], now=now)[0]
+        return {key: value for key, value in row.items() if key != "result"}
 
     def create_or_get_batch(self, snapshots: list[tuple[dict, str, dict, list[dict]]], *, now: datetime) -> list[dict]:
         """Atomically freeze all hit groups for one search so partial approval batches cannot appear."""
@@ -254,7 +305,12 @@ class GroupShareRepository(SQLiteStore):
             seen_digests.add(query_digest)
             result_json = _json(result, _MAX_SNAPSHOT_BYTES)
             try:
-                frozen = GroupMessageSearchResult.model_validate(json.loads(result_json))
+                if result.get("kind") == "cli_group_read":
+                    from jiuwenswarm.server.jiuwenmate.cli_group_snapshot import CliReadSnapshot
+
+                    frozen = CliReadSnapshot.model_validate(json.loads(result_json))
+                else:
+                    frozen = GroupMessageSearchResult.model_validate(json.loads(result_json))
             except ValueError:
                 raise PersistentAgentError("invalid group sharing result") from None
             for key in ("namespace_id", "agent_id", "request_id"):
@@ -268,9 +324,13 @@ class GroupShareRepository(SQLiteStore):
             group_id = require_identifier("group_id", group.get("group_id"))
             _name(group.get("name"))
             source = {"group_id": group_id, "name": group["name"]}
-            if not frozen.hits or any(hit.group_id != group_id for hit in frozen.hits):
-                raise PersistentAgentError("group sharing snapshot must contain hits from its source")
-            if sum(len((hit.message.text or "").encode("utf-8")) for hit in frozen.hits) > MAX_PREVIEW_TEXT_BYTES:
+            if not (frozen.hits or frozen.artifacts) or any(
+                hit.group_id != group_id for hit in (*frozen.hits, *frozen.artifacts)
+            ):
+                raise PersistentAgentError("group sharing snapshot must contain source content")
+            preview_bytes = sum(len((hit.message.text or "").encode("utf-8")) for hit in frozen.hits)
+            preview_bytes += sum(len((hit.snippet or "").encode("utf-8")) for hit in frozen.artifacts)
+            if preview_bytes > MAX_PREVIEW_TEXT_BYTES:
                 raise PersistentAgentError("group sharing preview is too large")
             prepared.append((scope, query_digest, scope_json, result_json, _json([source], _MAX_SCOPE_BYTES)))
 
@@ -348,6 +408,16 @@ class GroupShareRepository(SQLiteStore):
     def approved_for_request(self, namespace_id: str, request_id: str) -> list[dict]:
         """Receipts for outbound checks; permanent receipts still require current grants."""
         return self._for_request(namespace_id, request_id, approved=True)
+
+    def denied_groups(self, namespace_id: str, agent_id: str, request_id: str) -> frozenset[str]:
+        """Do not solicit the same source again through a changed CLI command in this Request."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT source_groups_json FROM group_share_approvals "
+                "WHERE namespace_id=? AND agent_id=? AND request_id=? AND status IN ('rejected','expired')",
+                (namespace_id, agent_id, request_id),
+            ).fetchall()
+        return frozenset(source["group_id"] for row in rows for source in json.loads(row["source_groups_json"]))
 
     def for_native(self, native_approval_id: str) -> dict | None:
         """Find any linked business receipt, including decided ones, to prevent bypasses."""
@@ -434,15 +504,24 @@ class GroupShareRepository(SQLiteStore):
         return self._record(self._required(conn, row["approval_id"]))
 
     @staticmethod
-    def _has_grant(conn: sqlite3.Connection, scope: dict, source_group_id: str) -> bool:
-        return conn.execute(
-            "SELECT 1 FROM group_share_grants WHERE grant_key=? AND status='active'", (_grant_key(scope, source_group_id),),
-        ).fetchone() is not None
+    def _has_grant(
+        conn: sqlite3.Connection, scope: dict, source_group_id: str, content_types: list[str] | tuple[str, ...],
+    ) -> bool:
+        row = conn.execute(
+            "SELECT content_types_json FROM group_share_grants WHERE grant_key=? AND status='active'",
+            (_grant_key(scope, source_group_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        granted = set(json.loads(row["content_types_json"]))
+        return set(content_types).issubset(granted)
 
-    def has_grant(self, scope: dict, source_group_id: str) -> bool:
-        """Check the exact namespace/config/runtime/source/destination grant, never a receipt."""
+    def has_grant(
+        self, scope: dict, source_group_id: str, content_types: list[str] | tuple[str, ...] = ("messages",),
+    ) -> bool:
+        """Check a destination grant covering every requested content type."""
         with closing(self._connect()) as conn:
-            return self._has_grant(conn, scope, source_group_id)
+            return self._has_grant(conn, scope, source_group_id, content_types)
 
     def authorize_from_grants(self, approval_id: str, *, now: datetime) -> dict:
         """Record existing current grants atomically, without creating or restoring any grant."""
@@ -455,7 +534,10 @@ class GroupShareRepository(SQLiteStore):
                 return self._transition(conn, row, "expired", stamp, None)
             scope = json.loads(row["scope_json"])
             sources = json.loads(row["source_groups_json"])
-            if not sources or not all(self._has_grant(conn, scope, group["group_id"]) for group in sources):
+            content_types = _result_content_types(json.loads(row["result_json"]))
+            if not sources or not content_types or not all(
+                self._has_grant(conn, scope, group["group_id"], content_types) for group in sources
+            ):
                 return self._record(row)
             return self._transition(conn, row, "approved_permanent", stamp, "permanent")
 
@@ -483,16 +565,30 @@ class GroupShareRepository(SQLiteStore):
                 raise PersistentAgentError("group sharing native approval is not bound", code="CONFLICT")
             if decision == "permanent":
                 scope = json.loads(row["scope_json"])
+                result = json.loads(row["result_json"])
+                content_types = _result_content_types(result)
+                if not content_types:
+                    raise PersistentAgentError("group sharing approval contains no shareable content")
                 for group in json.loads(row["source_groups_json"]):
-                    if self._has_grant(conn, scope, group["group_id"]):
+                    existing = conn.execute(
+                        "SELECT grant_id, content_types_json FROM group_share_grants "
+                        "WHERE grant_key=? AND status='active'",
+                        (_grant_key(scope, group["group_id"]),),
+                    ).fetchone()
+                    if existing is not None:
+                        merged = sorted(set(json.loads(existing["content_types_json"])) | set(content_types))
+                        conn.execute(
+                            "UPDATE group_share_grants SET content_types_json=? WHERE grant_id=?",
+                            (_json(merged, _MAX_SCOPE_BYTES), existing["grant_id"]),
+                        )
                         continue
                     conn.execute(
                         "INSERT INTO group_share_grants (grant_id, namespace_id, config_id, agent_id, "
-                        "source_group_id, source_group_name, target_json, grant_key, approval_id, status, created_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,'active',?)",
+                        "source_group_id, source_group_name, target_json, grant_key, content_types_json, "
+                        "approval_id, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,'active',?)",
                         ("share_grant_" + secrets.token_hex(16), namespace_id, config_id, scope["agent_id"],
                          group["group_id"], group["name"], _json(_target_view(scope["target"]), _MAX_SCOPE_BYTES),
-                         _grant_key(scope, group["group_id"]), approval_id, stamp),
+                         _grant_key(scope, group["group_id"]), _json(content_types, _MAX_SCOPE_BYTES), approval_id, stamp),
                     )
             decided = self._transition(conn, row, _DECISIONS[decision], stamp, decision)
             return decided

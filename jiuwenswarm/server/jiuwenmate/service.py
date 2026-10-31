@@ -79,14 +79,14 @@ DEFAULT_COLLEAGUE = ColleagueSettings(
 # Write and edit parameter text is rewritten to these office-relative paths when the tool is registered.
 WORKSPACE_PROMPT = (
     "\n\n# 办公目录\n\n"
-    "你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。"
-    "路径一律写成相对于办公目录的路径，不要使用绝对路径。"
-    "新建文件默认放在办公目录根下，路径写文件名本身，例如 `test.txt`；"
-    "只有对方指定了子目录时，才使用 `资料/周报.md` 这样的相对路径。"
+    "Agent 工作空间中的 `skills/` 和 `resources/` 是 Agent 级共享资产；普通文件工具只可访问这些资产以及本次 Session 的目录。"
+    "路径一律写成相对于 Agent 工作空间的路径，不要使用绝对路径。"
+    "新建文件和中间草稿默认放在本次 Session 目录 `sessions/<session_id>/`；"
+    "最终交付文件放在 `sessions/<session_id>/output/`。"
     "修改已有文件前先读取它；如果提示版本冲突，说明文件已被改动，重新读取后再修改。"
-    "`sessions/<session_id>/` 存放该会话的私有中间产物；只能使用本次执行指定的会话目录，普通中间文件直接放在其中，"
-    "Lark Slides 专用计划和截图放在其中的 `.lark-slides/`。最终交付文件放入 Agent 共享的 `output/`，"
-    "并通过 `share_file` 登记 `output/<文件名>`；不要把其他会话的草稿当作共享产物。"
+    "普通中间文件直接放在本次 Session 目录，Lark Slides 专用计划和截图放在其中的 `.lark-slides/`。"
+    "只能使用本次执行指定的 Session 目录；不要读取或修改其他 Session 的草稿或输出文件。"
+    "最终交付文件通过 `share_file` 登记 `sessions/<session_id>/output/<文件名>`。"
     "具体可访问范围由本次请求授权决定；遇到拒绝时不要猜测文件内容或声称已经读取。"
     "需要把已完成的文件交给对方时，用 share_file 登记；回答结束后由系统发送。"
 )
@@ -557,62 +557,17 @@ class PersistentAgentService:
         return self._repository.connections(namespace_id, agent_id)
 
     def attach_connection(self, namespace_id: str, agent_id: str, channel: str, connection_key: str) -> str:
-        """Return the canonical Feishu agent or create a dedicated agent for another IM app.
-
-        Web and Feishu share the colleague's identity and workspace. DingTalk keeps its
-        per-connection agent. New dedicated agents are published from the colleague's last
-        publication, never from unpublished settings.
-        """
+        """Bind Web, Feishu and DingTalk to one colleague; retain legacy connection data."""
         config = self._require_config(namespace_id, agent_id)
         if channel not in IM_CHANNELS:
             raise PersistentAgentError(f"unsupported channel {channel!r}")
         require_identifier("connection_key", connection_key)
-        if channel == "feishu":
-            return config.agent_id
-        now = self._clock()
-        created = self._id_factory()
-        record = self._repository.insert_connection_agent(
-            ColleagueDefinition(
-                namespace_id=namespace_id,
-                agent_id=created,
-                settings=config.settings.with_persona(""),
-                source_template_id=None,
-                is_default=False,
-                enabled=True,
-                revision=0,
-                published_revision=None,
-                current_version=None,
-                created_at=now,
-                updated_at=now,
-            ),
-            ConnectionRecord(
-                namespace_id=namespace_id,
-                agent_id=created,
-                config_id=config.agent_id,
-                channel=channel,
-                connection_key=connection_key,
-                created_at=now,
-            ),
-        )
-        agent = self._require(namespace_id, record.agent_id)
-        published = self._published_settings(config)
-        if agent.current_version is None and published is not None:
-            try:
-                snapshot = self._prepare_version(namespace_id, agent, published, None)
-                self._repository.publish_connection_agent(
-                    namespace_id, snapshot, config_id=config.agent_id, config_revision=config.published_revision,
-                    settings=published, published_at=now,
-                )
-            except Exception as exc:
-                current = self._repository.get(namespace_id, agent.agent_id)
-                if current is None:
-                    # The colleague was deleted meanwhile; preparing the version recreated the office.
-                    self._workspaces.remove(namespace_id, agent.agent_id)
-                    raise PersistentAgentError("colleague not found", code="NOT_FOUND") from exc
-                # A publication that ran meanwhile has already given the new agent its version.
-                if getattr(exc, "code", None) != "CONFLICT" or current.current_version is None:
-                    raise
-        return record.agent_id
+        if self._repository.connection_has_unfinished_work(namespace_id, channel, connection_key):
+            raise PersistentAgentError(
+                "Finish or end the legacy connection's running or approval-waiting requests before rebinding.",
+                code="CONFLICT",
+            )
+        return config.agent_id
 
     def hide_colleague(self, namespace_id: str, agent_id: str) -> None:
         """Take a colleague off the list and stop all its agents; every agent keeps its data. Repeating is harmless."""

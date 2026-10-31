@@ -165,6 +165,17 @@ class DingTalkInboundHandler:
         self._config_loader = config_loader
 
     async def handle(self, event: DingTalkInboundEvent) -> InboundDisposition:
+        from jiuwenswarm.common.im_binding_lock import im_binding_lock
+
+        try:
+            async with im_binding_lock("dingtalk", event.receiving_app_id):
+                # Reload and validate the binding inside the same lock as the durable queue write.
+                return await self._handle_bound_event(event)
+        except Exception as exc:
+            logger.warning("[DingTalk] application binding busy: error_type=%s", type(exc).__name__)
+            return InboundDisposition.REJECTED
+
+    async def _handle_bound_event(self, event: DingTalkInboundEvent) -> InboundDisposition:
         from openjiuwen.harness.persistent_agent import DirectMessageSource, GroupMessage, RequestInput
         from jiuwenswarm.server.jiuwenmate.execution_models import (
             AccessSnapshot,
@@ -195,9 +206,11 @@ class DingTalkInboundHandler:
                 and event.sender_corp_id != event.chatbot_corp_id
             ):
                 return InboundDisposition.REJECTED
-            # The bound agent must be the one created for this app, so it never serves another connection.
+            # The current YAML binding was checked above; only legacy identities need a connection row.
             connection = await asyncio.to_thread(self._service.connection_of, binding.namespace_id, binding.agent_id)
-            if connection is None or (connection.channel, connection.connection_key) != ("dingtalk", binding.app_id):
+            if connection is None:
+                await asyncio.to_thread(self._service.get_config, binding.namespace_id, binding.agent_id)
+            elif (connection.channel, connection.connection_key) != ("dingtalk", binding.app_id):
                 return InboundDisposition.REJECTED
             view = await asyncio.to_thread(self._service.get_colleague, binding.namespace_id, binding.agent_id)
             if getattr(view, "enabled", True) is False:

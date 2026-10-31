@@ -1519,7 +1519,14 @@ class LocalDingTalkCliRuntime:
         defaults = [app for app in apps if app["is_default"]]
         if len(defaults) > 1:
             return None
-        if defaults:
+        if scope.app_id is not None:
+            matches = [app for app in apps if app["client_id"] == scope.app_id]
+            if len(matches) != 1:
+                return None
+            app = matches[0]
+            if app["persistent_agent_id"] and app["persistent_agent_id"] != scope.agent_id:
+                return None
+        elif defaults:
             app = defaults[0]
         elif len(apps) == 1:
             # Team mode uses one shared DingTalk application. Older channel configs may

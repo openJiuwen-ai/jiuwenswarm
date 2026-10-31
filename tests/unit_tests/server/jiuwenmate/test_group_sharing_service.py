@@ -56,15 +56,63 @@ def sharing(tmp_path):
 
 
 async def test_first_cross_group_search_interrupts_without_returning_content(sharing):
-    with pytest.raises(core.GroupMessageApprovalRequired):
+    with pytest.raises(core.GroupContentApprovalRequired):
         await sharing.port.search_messages(sharing.execution, sharing.query)
     rows = sharing.repo.list_for_owner("local", "config-1", owner_principal="local")
     assert len(rows["approvals"]) == 1
     assert rows["approvals"][0]["messages"][0]["text"] == "private launch plan"
 
 
+@pytest.mark.parametrize("kind", ["file", "online_doc"])
+async def test_artifact_tool_releases_content_only_after_owner_approval(sharing, tmp_path, kind):
+    from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
+    from openjiuwen.harness.persistent_agent.tools.group_history import PersistentGroupMessageSearchTool
+
+    row = dict(
+        artifact_id="artifact-1", source_group_id="source-group", artifact_kind=kind,
+        title="launch report", snippet="private launch result", created_at=NOW.isoformat(),
+    )
+    imports = []
+    if kind == "file":
+        source = tmp_path / "report.txt"
+        source.write_text("launch", encoding="utf-8")
+        row.update(session_id="source-session", file_name="report.txt", file_size=6,
+                   file_ref="sha256:" + "a" * 64, file_path="sessions/source-session/output/report.txt")
+
+        def import_file(*args):
+            imports.append(args)
+            return "sessions/session-1/imports/report.txt"
+
+        sharing.gate._files = SimpleNamespace(
+            resolve=lambda *args, **kwargs: source,
+            search_text=lambda *args: source.read_text(encoding="utf-8"),
+            import_approved=import_file,
+        )
+    else:
+        row["url"] = "https://example.feishu.cn/docx/launch"
+    sharing.sessions.search_session_artifacts = lambda *args, **kwargs: [row]
+    sharing.delegate.sharing_sources.return_value = ({
+        "group_id": "source-group", "name": "Source group", "visible_from": (NOW - timedelta(days=1)).isoformat(),
+    },)
+    tool = PersistentGroupMessageSearchTool(execution=sharing.execution, group_chat=sharing.port)
+    args = {"query": "launch", "content_types": ["files" if kind == "file" else "online_docs"]}
+    with pytest.raises(ToolInterruptException) as caught:
+        await tool.invoke(args)
+    assert caught.value.request.metadata["kind"] == "group_share"
+    assert not imports
+    pending, = sharing.repo.pending_for_request("local", "request-1")
+    sharing.repo.bind_native("local", "request-1", "native-1")
+    sharing.repo.decide(pending["approval_id"], namespace_id="local", config_id="config-1",
+                        owner_principal="local", decision="once", now=NOW)
+    result = await tool.invoke(args)
+    assert result.success and result.data["artifacts"][0]["artifact_kind"] == kind
+    assert "source_file_path" not in result.data["artifacts"][0]
+    assert bool(imports) == (kind == "file")
+    sharing.delegate.search_messages.assert_not_called()
+
+
 async def approve(sharing, decision="once"):
-    with pytest.raises(core.GroupMessageApprovalRequired):
+    with pytest.raises(core.GroupContentApprovalRequired):
         await sharing.port.search_messages(sharing.execution, sharing.query)
     row, = sharing.repo.pending_for_request("local", "request-1")
     sharing.repo.bind_native("local", "request-1", "native-1")
@@ -84,6 +132,20 @@ async def test_once_returns_only_frozen_content_with_current_execution_identity(
     assert result.hits[0].message.text == "private launch plan"
 
 
+async def test_approval_created_before_platform_field_can_resume_after_upgrade(sharing):
+    import json
+
+    row = await approve(sharing)
+    scope = sharing.repo.get(row["approval_id"])["scope"]
+    scope["query"].pop("platforms", None)
+    with sharing.repo._transaction() as conn:
+        conn.execute("UPDATE group_share_approvals SET scope_json=? WHERE approval_id=?",
+                     (json.dumps(scope), row["approval_id"]))
+    result = await sharing.port.search_messages(sharing.execution, sharing.query)
+    assert result.status == "found"
+    assert result.hits[0].message.text == "private launch plan"
+
+
 async def test_recalled_source_is_not_released_after_owner_approval(sharing):
     await approve(sharing)
     sharing.archive.current_messages = lambda *args: (sharing.result.hits[0].message.model_copy(
@@ -94,14 +156,14 @@ async def test_recalled_source_is_not_released_after_owner_approval(sharing):
 
 async def test_once_does_not_authorize_another_query(sharing):
     await approve(sharing)
-    with pytest.raises(core.GroupMessageApprovalRequired):
+    with pytest.raises(core.GroupContentApprovalRequired):
         await sharing.port.search_messages(sharing.execution, core.GroupMessageQuery(query="another"))
 
 
 async def test_rejection_returns_no_candidates(sharing):
     await approve(sharing, "reject")
     result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert result.status == "forbidden" and not result.hits
+    assert result.status == "unavailable" and not result.hits and not result.artifacts
 
 
 async def test_current_group_search_does_not_ask_owner(sharing):
@@ -121,10 +183,11 @@ async def test_permanent_grant_is_scoped_to_destination_and_is_revocable(sharing
     assert not result.hits and result.status == "forbidden"
 
 
-async def test_no_search_match_still_requires_permission_for_cross_group_scope(sharing):
+async def test_no_search_match_returns_no_candidates_or_share_request(sharing):
     sharing.delegate.search_messages.return_value = sharing.result.model_copy(update={"status": "empty", "hits": ()})
-    with pytest.raises(core.GroupMessageApprovalRequired):
-        await sharing.port.search_messages(sharing.execution, sharing.query)
+    result = await sharing.port.search_messages(sharing.execution, sharing.query)
+    assert result.status == "empty" and not result.hits and not result.artifacts
+    assert not sharing.repo.pending_for_request("local", "request-1")
 
 
 async def test_source_membership_failure_does_not_return_saved_approval(sharing):
@@ -207,7 +270,7 @@ async def test_owner_preview_resolves_requester_in_the_exact_destination_without
         return {"ou_requester": name} if name else {}
 
     monkeypatch.setattr(feishu_group_fanout, "feishu_member_names", names)
-    with pytest.raises(core.GroupMessageApprovalRequired):
+    with pytest.raises(core.GroupContentApprovalRequired):
         await sharing.port.search_messages(sharing.execution, sharing.query)
     data = sharing.repo.list_for_owner("local", "config-1", owner_principal="local")
     await sharing.gate.enrich_owner_view(data)

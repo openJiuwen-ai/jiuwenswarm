@@ -64,6 +64,30 @@ class AccessSnapshot:
 
 
 @dataclass(frozen=True, kw_only=True)
+class PermissionOrigin:
+    """Trusted human approval destination, independent of the executing principal."""
+
+    principal_ref: str
+    agent_id: str
+    request_id: str
+    route: RequestRouteSnapshot
+
+    def __post_init__(self) -> None:
+        for name in ("principal_ref", "agent_id", "request_id"):
+            _require_text(name, getattr(self, name))
+        if not isinstance(self.route, RequestRouteSnapshot):
+            raise PersistentContractError("invalid permission origin route")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"principal_ref": self.principal_ref, "agent_id": self.agent_id,
+                "request_id": self.request_id, "route": self.route.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PermissionOrigin:
+        return cls(**{**data, "route": RequestRouteSnapshot.from_dict(data["route"])})
+
+
+@dataclass(frozen=True, kw_only=True)
 class RequestRecord:
     """One accepted task, persisted before dispatch and reused by every Execution."""
 
@@ -78,6 +102,7 @@ class RequestRecord:
     request_input: RequestInput
     received_at: datetime
     route_snapshot: RequestRouteSnapshot | None = None
+    permission_origin: PermissionOrigin | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -104,6 +129,8 @@ class RequestRecord:
         object.__setattr__(self, "received_at", self.received_at.astimezone(timezone.utc))
         if self.route_snapshot is not None and not isinstance(self.route_snapshot, RequestRouteSnapshot):
             raise PersistentContractError("invalid Request route snapshot")
+        if self.permission_origin is not None and not isinstance(self.permission_origin, PermissionOrigin):
+            raise PersistentContractError("invalid Request permission origin")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +145,7 @@ class RequestRecord:
             "request_input": self.request_input.model_dump(mode="json"),
             "received_at": self.received_at.isoformat(),
             "route_snapshot": None if self.route_snapshot is None else self.route_snapshot.to_dict(),
+            "permission_origin": None if self.permission_origin is None else self.permission_origin.to_dict(),
         }
 
     @classmethod
@@ -127,6 +155,8 @@ class RequestRecord:
         fields["received_at"] = datetime.fromisoformat(fields["received_at"])
         route = fields.get("route_snapshot")
         fields["route_snapshot"] = None if route is None else RequestRouteSnapshot.from_dict(route)
+        origin = fields.get("permission_origin")
+        fields["permission_origin"] = None if origin is None else PermissionOrigin.from_dict(origin)
         return cls(**fields)
 
 

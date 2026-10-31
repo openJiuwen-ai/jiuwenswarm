@@ -413,3 +413,38 @@ uv run --no-sync python -u -m pytest --no-cov -q -o log_cli=false --tb=short tes
 - **先红后绿与审查：** 两个 H1/H2 刷新用例和一个实际发布仓储用例先失败，再通过。独立只读审查指出仅凭标题会覆盖同名人设、未闭合人设围栏会导致不断追加章节；新增四个回归先失败，再用生成区域标记修复。验证章节不重复、用户人设 / 相邻章节 / 围栏原文不丢失、刷新幂等、草稿不被发布和旧快照不变。两个既有发布测试同步接受人设与宿主说明之间的区域标记。
 - **扩大回归：** 对 `test_bash_runtime.py`、`test_cli_capability_publication.py`、`test_resource_assembly.py`、`test_persistent_agent_service.py`、`test_session_scheduler.py` 执行 `python -m pytest <上述路径> --asyncio-mode=auto -o addopts='' -o log_cli=false -q --tb=short --show-capture=no`：最终 110 passed，5 failed。Bash / CLI 发布 / 调度三个文件独立回归 62 passed。未加 `--asyncio-mode=auto` 的首次运行另有 34 项未标记 async 测试运行失败；修正运行参数后消失，未改产品代码绕过。
 - **未通过项：** `test_each_colleague_gets_its_own_skill_copy_and_deletion_keeps_the_others`、`test_selected_knowledge_pages_are_copied_and_other_pages_stay_out`、`test_installed_catalog_lists_only_regular_pages_inside_the_context_root` 报 Windows 1314；`test_public_views_never_carry_model_credentials` 的 POSIX 0600 断言在 Windows 不成立；`test_an_unpublished_knowledge_page_refuses_publication` 报既有 IndexError。与本文件已有遗留类别一致，不计为通过。真实服务、模型和飞书未启动或调用。
+
+## 13. 2026-10-29 Session 产物目录与访问边界
+
+> 本节记录 Session 文件布局及跨群产物检索与审批。群消息单份归档与访问关系见 [F_11 群公共记录](F_11_group-public-records.md)；跨渠道共享 Agent 的整体设计仍见 [F_02_02 钉钉共享 Agent 设计草稿](F_02_02_colleague-connections.md)。
+
+### 13.1 目标行为
+
+- Agent 工作空间保留 Agent 级 Skill、Resource；每个 Session 在其中有独立目录，最终产物改存到 `sessions/<session_id>/output/`，不再集中写入 Agent 根目录的 `output/`：
+  ```text
+  <agent_workspace>/
+    skills/                    # Agent 级 Skill
+    resources/                 # Agent 级 Resource
+    sessions/<session_id>/     # 会话级文件
+      output/                  # 本 Session 的最终产物
+  ```
+  当前 Session 可按现有工作流生成、读取和交付自己的文件；普通权限下的文件工具只访问当前 Session 及 Agent 级 `skills/`、`resources/`。群请求即使配置为 `full_access`，Core 文件工具仍收窄到当前 Session 和共享资产；非群的 `full_access` 继续保留原有宿主级文件权限。
+- 群消息与附件仍由宿主保存在 Agent 工作空间外的共享群归档中，每个群只保存一份，路径为 `jiuwenmate/group_messages/<group_id>/`。`agents.sqlite3` 中的 `agent_group_access` 关系决定 Agent 可读取哪些群归档；不把消息复制到 Agent workspace 或各 Session。
+- 输出候选和下载定位都绑定 `sessions/<session_id>/output/`；交付端重验文件大小与 SHA-256，并拒绝其他 Session 的路径。Agent 根目录旧 `output/` 保留在磁盘，不由默认文件工具或新交付解析器自动开放；非群 `full_access` 仍可按其原权限读取宿主文件。
+- `search_group_messages` 可按 `content_types` 搜索消息、文件及在线文档链接；`query` 与 `keywords` 使用不区分大小写的字面 OR 匹配。产物索引仅收录群 Session 成功完成时明确引用的最终输出；草稿、旧 Agent 根 `output/` 和私聊产物不纳入群产物搜索。
+- 跨群命中按“来源群 × 目标会话”分别审批。一次批准仅释放该次冻结结果；永久授权记录获准的内容类型，旧有长期授权只覆盖消息。批准后的跨 Session 文件复制到当前 Session 的 `imports/`，在线文档只释放链接，不自动授予接收方平台访问权。
+
+### 13.2 文件工具与 Bash 边界
+
+群请求的普通 `read_file`、`list_files`、`share_file`、文件候选校验和下载定位按当前 Session 限定。跨 Session 文件只有经所有者批准后才复制到当前 Session 的 `imports/` 供任务读取或复用；新生成的最终交付仍放在当前 Session 的 `output/`。宿主向提示词提供当前 Session 的 `sessions/<session_id>/output/` 路径，并要求 Agent 把最终文件保存在该目录、通过 `sessions/<session_id>/output/<文件名>` 交付。Bash 没有沙箱，因此此授权流程不能阻止 Shell 直接读取其他 Session 文件。
+
+用户选择不引入 Bash 沙箱，并希望用系统提示词说明产物路径。该提示只能引导模型，不能阻止 Bash 或子进程直接读取服务账号可访问的其他 Session 文件。因此 Core 文件工具的路径限制不等于 Bash 隔离；**整体群文件保密仍不是强安全边界**。如需防止模型、脚本或提示注入绕过授权，必须后续使用 OS 级隔离，或不向群聊 Invocation 装配 Bash。不得将提示词描述成权限执行器。
+
+### 13.3 迁移与验证要求
+
+- 新会话按新目录布局创建。迁移不根据文件名、时间或模型生成说明推测旧共享文件来源；旧 Agent 根 `output/` 保留给所有者处理，不加入群产物索引或新文件交付解析。
+- 必须验证群 A / 群 B 不能经普通文件工具枚举、读取或投递对方 Session 文件；跨群检索只返回来源仍授权且不早于 `visible_from` 的最终产物，并按来源群审批。
+- 文件获批后须重验源路径、大小和 SHA-256，再复制到当前 Session；在线文档链接批准不等于平台权限授予。真实渠道和浏览器验收仍需单独记录。
+- Bash 的越界读取不能用提示词测试证明已被技术阻止；若按当前选择保留 Bash，只能记录此风险，不能把相关场景写成通过了强隔离验收。
+
+**实现记录：** `WorkspaceStore.ensure_session` 创建 Session `output/`；默认 Core 读写范围只开放 Agent 级 `skills/`、`resources/` 与当前 Session；群请求的文件工具不因 `full_access` 绕过 Session 边界；文件候选与 Gateway key 使用 Session 相对路径。旧 Agent 根 `output/` 不自动迁移。JiuwenSwarm 仅从成功完成的群 Session 最终输出建立文件／在线文档链接索引，经现有跨群审批流程释放；本轮未运行测试或静态检查，真实渠道联调未执行。Bash 仍无沙箱，不能据此声称阻止其直接读取其他 Session 文件。

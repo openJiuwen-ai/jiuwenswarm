@@ -127,38 +127,48 @@ class WorkspaceStore:
         path = self.path(namespace_id, agent_id)
         self._check_directory(path.parent, create=True)
         self._check_directory(path, create=True)
-        self._check_directory(path / "output", create=True)
+        self._check_directory(path / "skills", create=True)
+        self._check_directory(path / "resources", create=True)
         return path
 
     def ensure_session(self, namespace_id: str, agent_id: str, session_id: str) -> Path:
-        """Ensure the Agent's shared output and one private execution-session directory."""
+        """Ensure one private Session directory and its final-output subdirectory."""
         _require_dir_name("session_id", session_id)
         root = self.ensure(namespace_id, agent_id)
         session_root = root / SESSIONS_DIR / session_id
         self._check_directory(session_root, create=True)
+        self._check_directory(session_root / "output", create=True)
         return session_root
 
+    def ensure_session_imports(self, namespace_id: str, agent_id: str, session_id: str) -> Path:
+        """Create a safe imports directory for artifacts approved into this Session."""
+        session_root = self.ensure_session(namespace_id, agent_id, session_id)
+        return self._check_directory(session_root / "imports", create=True)
+
     def resolve_shared_output(self, namespace_id: str, agent_id: str, file_path: str) -> Path | None:
-        """Resolve a regular file directly under this Agent's shared ``output/`` directory."""
+        """Resolve a regular file under its originating ``sessions/<id>/output/`` directory."""
         parts = file_path.split("/") if isinstance(file_path, str) else []
         if (
-            len(parts) != 2
-            or parts[0] != "output"
-            or parts[1] in ("", ".", "..")
-            or any(char in parts[1] for char in ("\\", ":", "\x00"))
+            len(parts) != 4
+            or parts[0] != SESSIONS_DIR
+            or not _DIR_NAME.fullmatch(parts[1])
+            or parts[2] != "output"
+            or parts[3] in ("", ".", "..")
+            or any(char in parts[3] for char in ("\\", ":", "\x00"))
         ):
             return None
 
         try:
             workspace = self.path(namespace_id, agent_id)
-            output_root = workspace / "output"
             self._check_directory(workspace, create=False)
+            _, session_root = self.validate_session_paths(namespace_id, agent_id, parts[1])
+            output_root = session_root / "output"
             self._check_directory(output_root, create=False)
             output_metadata = output_root.lstat()
             if self._is_redirected(output_metadata) or not stat.S_ISDIR(output_metadata.st_mode):
                 return None
 
-            candidate = output_root / parts[1]
+            candidate = output_root / parts[3]
             metadata = candidate.lstat()
             if self._is_redirected(metadata) or not stat.S_ISREG(metadata.st_mode):
                 return None
@@ -169,6 +179,12 @@ class WorkspaceStore:
 
     def remove(self, namespace_id: str, agent_id: str) -> None:
         shutil.rmtree(self.path(namespace_id, agent_id), ignore_errors=True)
+
+    def shared_asset_roots(self, namespace_id: str, agent_id: str) -> tuple[Path, ...]:
+        """Return only Agent-level asset roots; Session data is authorized separately."""
+        workspace = self.path(namespace_id, agent_id)
+        self._check_directory(workspace, create=False)
+        return tuple(self._check_directory(workspace / name, create=False) for name in ("skills", "resources"))
 
 
 class HostWorkspaceAccess:
@@ -182,6 +198,7 @@ class HostWorkspaceAccess:
         *,
         knowledge_root: str | None = None,
         permission_profile: str = "default",
+        enforce_session_boundary: bool = False,
     ) -> None:
         self._root = store.path(namespace_id, agent_id)
         self._store = store
@@ -191,6 +208,9 @@ class HostWorkspaceAccess:
         if permission_profile not in {"default", "automatic", "full_access"}:
             raise PersistentAgentError("invalid permission_profile")
         self._permission_profile = permission_profile
+        if not isinstance(enforce_session_boundary, bool):
+            raise PersistentAgentError("invalid Session boundary policy")
+        self._enforce_session_boundary = enforce_session_boundary
 
     @property
     def scope(self) -> tuple[str, str]:
@@ -253,8 +273,11 @@ class HostWorkspaceAccess:
             and self._granted(execution, WORKSPACE_KNOWLEDGE_READ)
             and knowledge_root is not None
         )
-        host_wide = workspace_granted and self._permission_profile == "full_access"
-        allowed_roots = (Path(self._root.anchor),) if host_wide else (self._root,) if workspace_granted else ()
+        host_wide = (
+            workspace_granted and self._permission_profile == "full_access" and not self._enforce_session_boundary
+        )
+        asset_roots = self._store.shared_asset_roots(self._namespace_id, self._agent_id)
+        allowed_roots = (Path(self._root.anchor),) if host_wide else asset_roots if workspace_granted else ()
         if not host_wide and knowledge_granted and knowledge_root is not None:
             allowed_roots = (knowledge_root,)
         return WorkspaceReadScope(
@@ -274,13 +297,14 @@ class HostWorkspaceAccess:
     async def resolve_write_scope(self, execution: ExecutionContext) -> WorkspaceWriteScope:
         sessions, current = self._session_roots(execution)
         granted = self._granted(execution, WORKSPACE_WRITE)
-        host_wide = granted and self._permission_profile == "full_access"
+        host_wide = granted and self._permission_profile == "full_access" and not self._enforce_session_boundary
+        asset_roots = self._store.shared_asset_roots(self._namespace_id, self._agent_id)
         return WorkspaceWriteScope(
             status="allowed" if granted else "forbidden",
             agent_id=execution.agent_id,
             session_id=execution.session_id,
             workspace_root=self._root,
-            allowed_write_roots=(Path(self._root.anchor),) if host_wide else (self._root,) if granted else (),
+            allowed_write_roots=(Path(self._root.anchor),) if host_wide else asset_roots if granted else (),
             private_sessions_root=sessions,
             current_session_root=current if granted else None,
             source_ref=self._source_ref(),

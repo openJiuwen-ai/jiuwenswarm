@@ -32,5 +32,6 @@ await esbuild.build({
     },
   }],
   jsx: 'automatic',
-  define: { 'import.meta.env': '{}' },
+  define: { 'import.meta.env': '{}', 'import.meta.glob': '__testAssetGlob' },
+  banner: { js: 'var __testAssetGlob = () => ({});' },
 });

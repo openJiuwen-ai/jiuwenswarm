@@ -4959,8 +4959,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
 
-    async def _channel_dingtalk_bind_agent(ws, req_id, params, session_id):
-        """Bind one DingTalk app to a colleague through the agent AgentServer keeps for that app."""
+    async def _save_dingtalk_binding(ws, req_id, params, session_id):
+        """Validate and save a binding while the caller holds its application lock."""
         cm = _resolve(channel_manager)
         if cm is None:
             await channel.send_response(
@@ -5013,14 +5013,39 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         try:
             section = update_dingtalk_section(bind)
-            if not await _apply_dingtalk(ws, req_id, cm, section, "channel.dingtalk.bind_agent"):
-                return
         except ValueError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
             return
         except Exception:  # noqa: BLE001
             logger.exception("[channel.dingtalk.bind_agent] binding save failed")
             await channel.send_response(ws, req_id, ok=False, error="binding save failed", code="INTERNAL_ERROR")
+            return
+        return section, agent_id, cm
+
+    async def _channel_dingtalk_bind_agent(ws, req_id, params, session_id):
+        from filelock import Timeout
+        from jiuwenswarm.common.im_binding_lock import im_binding_lock
+
+        client_id = str(params.get("client_id") or "").strip() if isinstance(params, dict) else ""
+        if not client_id:
+            await _save_dingtalk_binding(ws, req_id, params, session_id)
+            return
+        try:
+            async with im_binding_lock("dingtalk", client_id):
+                saved = await _save_dingtalk_binding(ws, req_id, params, session_id)
+        except Timeout:
+            await channel.send_response(ws, req_id, ok=False, error="application binding is busy", code="CONFLICT")
+            return
+        if saved is None:
+            return
+        section, agent_id, cm = saved
+        # Do not hold the app lock while stopping a Stream worker with in-flight callbacks.
+        try:
+            if not await _apply_dingtalk(ws, req_id, cm, section, "channel.dingtalk.bind_agent"):
+                return
+        except Exception:
+            logger.exception("[channel.dingtalk.bind_agent] binding apply failed")
+            await channel.send_response(ws, req_id, ok=False, error="binding apply failed", code="INTERNAL_ERROR")
             return
         await channel.send_response(
             ws, req_id, ok=True, payload={"binding": {"client_id": client_id, "persistent_agent_id": agent_id}},

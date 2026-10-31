@@ -665,7 +665,7 @@ def test_runtime_shares_the_default_application_with_every_employee(tmp_path):
     assert first_env["DWS_CONFIG_DIR"] != second_env["DWS_CONFIG_DIR"]
     assert first_env["DWS_CACHE_DIR"].startswith(first_env["DWS_CONFIG_DIR"])
     assert first_env["npm_config_cache"] == second_env["npm_config_cache"]
-    assert first_env["npm_config_cache"].endswith("/npm-cache/1.0.65")
+    assert first_env["npm_config_cache"].replace("\\", "/").endswith("/npm-cache/1.0.65")
     assert first_env["DWS_DISABLE_KEYCHAIN"] == "1"
 
 
@@ -759,7 +759,7 @@ async def test_execute_uses_app_token_api_mode_without_user_login(tmp_path):
             "appToken": "[redacted]",
         },
     }
-    assert calls[0][0] == ["/tools/dws", "api", "GET", "/v1.0/microApp/allApps"]
+    assert calls[0][0] == [str(Path("/tools/dws").resolve()), "api", "GET", "/v1.0/microApp/allApps"]
     assert calls[0][1]["DWS_CLIENT_ID"] == "ding-app"
     assert calls[0][1]["DWS_CLIENT_SECRET"] == "app-secret"
     assert "auth" not in calls[0][0]
@@ -1138,7 +1138,7 @@ async def test_npx_calls_sharing_a_cache_are_serialized_across_runtime_instances
     await tasks
     assert not second_was_concurrent
     assert calls == [
-        ["/tools/npx", "--yes", "--package=dingtalk-workspace-cli@1.0.65", "--", "dws", "api", "GET", "/v1.0/test"],
+        [str(Path("/tools/npx").resolve()), "--yes", "--package=dingtalk-workspace-cli@1.0.65", "--", "dws", "api", "GET", "/v1.0/test"],
         [str(binary), "api", "GET", "/v1.0/test"],
     ]
 

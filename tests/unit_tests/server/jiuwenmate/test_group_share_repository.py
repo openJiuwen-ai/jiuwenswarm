@@ -14,7 +14,7 @@ from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchRes
 
 
 NOW = datetime(2026, 10, 27, 8, tzinfo=timezone.utc)
-SOURCES = [{"group_id": "source-a", "name": "研发群"}, {"group_id": "source-b", "name": "产品群"}]
+SOURCES = [{"group_id": "source-a", "name": "研发群"}]
 
 
 def repository(tmp_path):
@@ -29,7 +29,8 @@ def scope(**changes):
         "principal_ref": "feishu:user:requester", "requester_name": "申请人",
         "target": {"channel": "feishu", "app_id": "app-1", "kind": "group", "id": "dest-1", "name": "接收群"},
         "query": {"query": "发布", "since": None, "until": None, "sender_id": None, "cursor": None,
-                  "limit": 50, "group_ids": [], "group_names": []},
+                  "limit": 50, "group_ids": [], "group_names": [], "keywords": [],
+                  "content_types": ["messages", "files", "online_docs"], "platforms": []},
     }
     value.update(changes)
     return value
@@ -42,7 +43,7 @@ def result(bound_scope=None, *, texts=("机密甲", "机密乙")):
         "session_id": "session-1", "request_id": bound_scope["request_id"],
         "execution_id": "execution-private", "source_ref": "source-private", "status": "found",
         "query_complete": True, "hits": [
-            {"group_id": SOURCES[index % 2]["group_id"], "group_name": SOURCES[index % 2]["name"],
+            {"group_id": SOURCES[0]["group_id"], "group_name": SOURCES[0]["name"],
              "message_ref": f"private-ref-{index}",
              "message": {"message_id": f"message-{index}", "sender_id": "private-sender", "sender_name": "张三",
                          "sender_kind": "human", "received_at": NOW.isoformat(), "text": text,
@@ -130,10 +131,12 @@ def test_owner_view_previews_only_explicit_fields_and_requires_native_binding(tm
     view, = repo.list_for_owner("local", "config-1")["approvals"]
     assert set(view) == {"approval_id", "request_id", "agent_id", "config_id", "status", "can_decide",
                          "requester_name", "source_groups", "target", "query", "summary", "messages",
-                         "created_at", "expires_at", "decided_at"}
+                         "created_at", "expires_at", "decided_at", "content_types", "artifacts"}
     assert view["messages"] == [
-        {"group_id": "source-a", "group_name": "研发群", "message_id": "message-0", "sender_name": "张三", "text": "机密甲"},
-        {"group_id": "source-b", "group_name": "产品群", "message_id": "message-1", "sender_name": "张三", "text": "机密乙"},
+        {"group_id": "source-a", "group_name": "研发群", "platform": None, "platform_chat_id": None,
+         "message_id": "message-0", "sender_name": "张三", "text": "机密甲"},
+        {"group_id": "source-a", "group_name": "研发群", "platform": None, "platform_chat_id": None,
+         "message_id": "message-1", "sender_name": "张三", "text": "机密乙"},
     ]
     assert view["query"] == scope()["query"]
     assert "2" in view["summary"] and not view["can_decide"]
@@ -157,7 +160,7 @@ def test_owner_summary_describes_first_three_frozen_messages_only(tmp_path):
     for excerpt in ("发布计划 下周上线", "风控审核通过后通知", "回滚预案已准备"):
         assert excerpt in summary
     assert "第四条不应进入摘要" not in summary
-    assert "接收群" in summary and "2 个来源群" in summary and "4 条消息" in summary
+    assert "接收群" in summary and "1 个来源群" in summary and "4 条消息" in summary
     assert "\n" not in summary and len(summary) <= 400
     for metadata in (row, *repo.pending_for_request("local", "request-1")):
         assert "summary" not in metadata
@@ -191,12 +194,11 @@ def test_owner_summary_explicitly_marks_messages_without_body(tmp_path, text):
     assert len(summary) <= 400
 
 
-def test_owner_summary_marks_empty_result_without_inventing_content(tmp_path):
+def test_empty_result_does_not_create_an_owner_card(tmp_path):
     repo = repository(tmp_path)
-    create(repo, frozen={**result(), "status": "empty", "hits": []})
-    view = repo.list_for_owner("local", "config-1")["approvals"][0]
-    assert "暂无正文" in view["summary"]
-    assert view["messages"] == []
+    with pytest.raises(PersistentAgentError):
+        create(repo, frozen={**result(), "status": "empty", "hits": []})
+    assert not repo.list_for_owner("local", "config-1")["approvals"]
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -216,6 +218,7 @@ def test_owner_view_normalizes_partial_query_without_rewriting_private_scope(tmp
         assert view["query"] == {
             "query": "launch", "since": None, "until": None, "sender_id": None, "cursor": None,
             "limit": 10, "group_ids": ["source-a"], "group_names": [],
+            "keywords": [], "content_types": ["messages", "files", "online_docs"], "platforms": [],
         }
     assert repo.get(approval_id)["scope"] == partial_scope
 
@@ -269,7 +272,7 @@ def test_decisions_are_idempotent_conflicts_rejected_and_snapshot_immutable(tmp_
         assert_no_content(item)
     assert not repo.approved_for_request("other", "request-1")
     assert repo.has_grant(scope(), "source-a") is (decision == "permanent")
-    assert repo.has_grant(scope(), "source-b") is (decision == "permanent")
+    assert not repo.has_grant(scope(), "source-b")
 
 
 @pytest.mark.parametrize("dimension", ["namespace_id", "config_id", "agent_id", "channel", "app_id", "kind", "id"])
@@ -287,9 +290,9 @@ def test_permanent_grants_require_exact_source_and_destination(tmp_path, dimensi
     changed["target"]["name"] = "renamed"
     assert repo.has_grant(changed, "source-a")
     grants = repository(tmp_path).list_for_owner("local", "config-1")["grants"]
-    assert {grant["source_group_id"] for grant in grants} == {"source-a", "source-b"}
+    assert {grant["source_group_id"] for grant in grants} == {"source-a"}
     for grant in grants:
-        assert set(grant) == {"grant_id", "source_group_id", "source_group_name", "target", "created_at", "status"}
+        assert set(grant) == {"grant_id", "source_group_id", "source_group_name", "target", "created_at", "status", "content_types"}
 
 
 def test_revocation_cannot_be_undone_by_old_receipts_or_grant_based_authorization(tmp_path):
@@ -306,7 +309,7 @@ def test_revocation_cannot_be_undone_by_old_receipts_or_grant_based_authorizatio
     assert not repo.has_grant(scope(), "source-a")
     next_row = create(repo, scope(request_id="request-2"))
     assert repo.authorize_from_grants(next_row["approval_id"], now=NOW)["status"] == "pending"
-    assert repo.has_grant(scope(), "source-b")
+    assert not repo.has_grant(scope(), "source-b")
     repo.bind_native("local", "request-2", "native-second")
     decide(repo, next_row)
     assert repo.has_grant(scope(), "source-a")
@@ -457,7 +460,7 @@ def test_same_query_multiple_calls_share_one_decision_and_recover_after_restart(
     for key in ("status", "decision", "decided_at", "result", "scope"):
         assert restored[key] == saved[key]
     assert reopened.list_for_owner("local", "config-1")["grants"] == grants
-    assert len(grants) == (2 if decision == "permanent" else 0)
+    assert len(grants) == (1 if decision == "permanent" else 0)
     assert reopened.for_native("native-batch")["tool_call_ids"] == ["call-a", "call-b", "call-c"]
     if decision in ("once", "permanent"):
         approved, = reopened.approved_for_request("local", "request-1")
@@ -488,7 +491,7 @@ def test_concurrent_same_query_call_bindings_do_not_lose_ids_or_duplicate_grants
     with ThreadPoolExecutor(max_workers=8) as executor:
         decisions = list(executor.map(lambda _: decide(repository(tmp_path), saved), range(8)))
     assert all(row["tool_call_ids"] == saved["tool_call_ids"] for row in decisions)
-    assert len(repo.list_for_owner("local", "config-1")["grants"]) == 2
+    assert len(repo.list_for_owner("local", "config-1")["grants"]) == 1
 
 
 def legacy_database(tmp_path, status):
@@ -582,7 +585,7 @@ def test_concurrent_create_decide_and_revoke_use_durable_transactions(tmp_path):
         decisions = list(executor.map(lambda _: decide(repository(tmp_path), rows[0]), range(12)))
     assert all(row["status"] == "approved_permanent" for row in decisions)
     grants = repo.list_for_owner("local", "config-1")["grants"]
-    assert len(grants) == 2
+    assert len(grants) == 1
     with ThreadPoolExecutor(max_workers=8) as executor:
         list(executor.map(lambda _: repository(tmp_path).revoke(
             grants[0]["grant_id"], namespace_id="local", config_id="config-1", owner_principal="local", now=NOW), range(12)))
@@ -652,12 +655,12 @@ def test_invalid_snapshots_never_create_partial_rows(tmp_path, invalid):
     assert not repo.pending_for_request("local", "request-1")
 
 
-def test_empty_candidates_still_require_source_scope_approval(tmp_path):
+def test_empty_candidates_cannot_be_saved_as_a_sharing_approval(tmp_path):
     repo = repository(tmp_path)
     snapshot = {**result(), "status": "empty", "hits": []}
-    row = create(repo, frozen=snapshot)
-    assert row["status"] == "pending"
-    assert repo.list_for_owner("local", "config-1")["approvals"][0]["messages"] == []
+    with pytest.raises(PersistentAgentError):
+        create(repo, frozen=snapshot)
+    assert not repo.list_for_owner("local", "config-1")["approvals"]
 
 
 def test_schema_coexists_with_unrelated_agents_tables(tmp_path):
@@ -669,5 +672,5 @@ def test_schema_coexists_with_unrelated_agents_tables(tmp_path):
     approve(repo)
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT value FROM unrelated_agents").fetchone()[0] == "preserved"
-    assert len(repo.list_for_owner("local", "config-1")["grants"]) == 2
+    assert len(repo.list_for_owner("local", "config-1")["grants"]) == 1
 

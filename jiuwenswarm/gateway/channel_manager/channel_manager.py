@@ -174,8 +174,9 @@ class ChannelManager(ABC):
                 if path is None:
                     return {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
                 file_args = {"file_path": str(path), "file_key": None}
-            file_args["share_mode"] = file.get("share_mode")
-            file_args["file_name"] = file.get("name")
+            if channel_id == "dingtalk":
+                file_args["share_mode"] = file.get("share_mode")
+                file_args["file_name"] = file.get("name")
             text = text if isinstance(text, str) and text.strip() else None
 
         if channel_id == "dingtalk":
