@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import tempfile
-import time
 import uuid
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
@@ -309,8 +309,19 @@ def _get_mime_type(filename: str) -> str:
     return _FILE_TYPE_TO_MIME_TYPE.get(ext, "text/plain")
 
 
+def _sanitize_name_part(value: str, *, max_length: int = 64) -> str:
+    """把来自 URL 的片段收敛成安全的单段文件名成分.
+
+    只保留 ASCII 字母、数字与 ``_.-``，其余一律替换成下划线：``os.path.basename``
+    已经挡住了路径分隔符，这里进一步限定字符集，使远端可控的名字不会把百分号编码、
+    空白或 shell 元字符带进临时目录。同时限制长度——URL 里的长名字会让拼出的路径
+    超过文件系统的 NAME_MAX，下载直接以 ENAMETOOLONG 失败。
+    """
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", value or "")[:max_length]
+
+
 async def _download_remote_file(url: str) -> str:
-    """下载远程文件到临时文件，返回本地路径.
+    """下载远程文件到临时文件，返回本地路径；调用方负责删除.
 
     Raises:
         RuntimeError: 下载失败
@@ -326,15 +337,28 @@ async def _download_remote_file(url: str) -> str:
     raw_name = os.path.basename(parsed.path) or "downloaded_file"
     raw_name = raw_name.split("?")[0]
 
-    suffix = os.path.splitext(raw_name)[1] or ""
-    base_name = os.path.splitext(raw_name)[0] or "downloaded_file"
-    unique_name = f"{base_name}_{int(time.time())}{suffix}"
+    stem, extension = os.path.splitext(raw_name)
+    suffix = _sanitize_name_part(extension, max_length=16)
+    base_name = _sanitize_name_part(stem).lstrip(".") or "downloaded_file"
 
-    tmp_dir = tempfile.gettempdir()
-    local_path = os.path.join(tmp_dir, unique_name)
-
-    with open(local_path, "wb") as f:
-        f.write(data)
+    # 文件名由远端 URL 决定，固定拼接会被预判：攻击者可预先放符号链接，让写入
+    # 落到任意文件。NamedTemporaryFile 内部以 O_CREAT|O_EXCL 建 0600 文件，遇到已
+    # 存在的链接直接失败；随机后缀也避免同一 URL 并发下载互相覆盖。delete=False
+    # 是必需的：文件要留给调用方使用，与同包的 _download_remote_to_temp 一致。
+    tmp = tempfile.NamedTemporaryFile(prefix=f"{base_name}_", suffix=suffix, delete=False)
+    local_path = tmp.name
+    try:
+        tmp.write(data)
+        tmp.flush()
+    except Exception:
+        # 写入失败时文件对调用方无用，此处删除，避免留下空临时文件。
+        tmp.close()
+        try:
+            os.unlink(local_path)
+        except OSError:
+            pass
+        raise
+    tmp.close()
 
     logger.info("[SEND_FILE_TO_USER] Downloaded remote file: %s -> %s", url, local_path)
     return local_path
