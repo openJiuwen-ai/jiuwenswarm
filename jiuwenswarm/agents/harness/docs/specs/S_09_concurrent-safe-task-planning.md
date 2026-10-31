@@ -8,7 +8,7 @@
 | 编号 / slug | S_09 / concurrent-safe-task-planning |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/concurrent_safe_rails.py`（两 rail 子类 + `_tp_light_skip_refresh`）；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_build_task_planning_rail` :9834、`_is_sandbox_bound_rail` :8058） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen.harness.rails.SysOperationRail`、`openjiuwen.harness.rails.task_planning_rail.TaskPlanningRail`（父类：guard 重置、todo_create 阻断等）、`openjiuwen.core.runner.Runner.resource_mgr`（进程级工具注册表）、`openjiuwen.harness.schema.task.TaskPlan / TodoItem / TodoStatus`、todo 三工具 |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -46,7 +46,7 @@
 
 ### ConcurrentSafeSysOperationRail（`SysOperationRail` 子类）
 
-`init(agent)`：语言取 `system_prompt_builder.language`（缺省 cn）；`enable_read_image_multimodal` 三级（rail 属性 → `deep_config.enable_read_image_multimodal` → True）→ 造七工具 → N1 查表注册 → 逐卡入 ability_manager。别名 `ConcurrentSafeFileSystemRail`（configs / 旧文档命名兼容）。
+`init(agent)`：语言取 `system_prompt_builder.language`（缺省 cn）；`enable_read_image_multimodal` 三级（rail 属性 → `deep_config.enable_read_image_multimodal` → **False**）→ 造七工具 → N1 查表注册 → 逐卡入 ability_manager。`ReadFileTool` 同时收到 `image_multimodal_resolver` 闭包（读同一个三级值），每次 `read_file` 调用时求值——模型热切换后无需重建 rail，语义见 [[S_22]] N1/N2。别名 `ConcurrentSafeFileSystemRail`（configs / 旧文档命名兼容）。
 
 ### ConcurrentSafeTaskPlanningRail（`TaskPlanningRail` 子类）
 

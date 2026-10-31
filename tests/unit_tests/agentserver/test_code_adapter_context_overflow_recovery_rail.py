@@ -126,3 +126,35 @@ def test_build_context_overflow_recovery_rail_callable_returns_rail_or_none():
         assert result._max_recovery_attempts == 3, (
             "ContextOverflowRecoveryRail should be built with max_recovery_attempts=3"
         )
+
+
+# ─── TC-005: code 模式固定列表含 MultimodalImageRail ────────────────────────
+
+
+def test_build_agent_rails_includes_multimodal_image_rail_entry():
+    """CodeAdapter 的会话必须挂 MultimodalImageRail，否则上传图片进不了主模型。
+
+    回归：web 会话走 CodeAdapter，固定 rail 列表漏了该 rail，导致上传图只以
+    引用行路径出现，模型只能调用 read_file 现读图片。
+    """
+    adapter = JiuwenSwarmCodeAdapter()
+
+    captured: list = []
+    real_instantiate = adapter._instantiate_rails
+
+    def _passthrough_instantiate(rail_infos, config_base, *args, **kwargs):
+        captured.extend(rail_infos)
+        return rail_infos
+
+    object.__setattr__(adapter, "_instantiate_rails", _passthrough_instantiate)
+    try:
+        adapter._build_agent_rails(config={}, config_base={}, mode="code")
+    finally:
+        object.__setattr__(adapter, "_instantiate_rails", real_instantiate)
+
+    attr_names = [ri.attr_name for ri in captured]
+    assert "_multimodal_image_rail" in attr_names, (
+        "code mode fixed rails should contain _multimodal_image_rail"
+    )
+    multimodal_info = captured[attr_names.index("_multimodal_image_rail")]
+    assert multimodal_info.build_func == adapter._build_multimodal_image_rail

@@ -93,6 +93,19 @@ _BINARY_RESULT_MARKERS = (
 
 _PATH_KEYS = ("path", "file_path", "file", "target_file")
 
+# 视觉理解工具：主模型可原生看图时这些工具应被跳过，图片像素已随消息提供。
+VISION_TOOL_NAMES = frozenset(
+    {
+        "visual_question_answering",
+        "vision_qa",
+        "VisionQA",
+        "image_reading",
+    }
+)
+
+def is_vision_tool(tool_name: str) -> bool:
+    return str(tool_name or "").strip() in VISION_TOOL_NAMES
+
 
 def is_read_file_tool(tool_name: str) -> bool:
     return str(tool_name or "").strip() in READ_FILE_TOOL_NAMES
@@ -127,6 +140,30 @@ def extract_path_from_arguments(arguments: Any) -> str | None:
         if not text.startswith("{"):
             return text
     return None
+
+
+def extract_paths_from_arguments(arguments: Any) -> list[str]:
+    """Extract all file paths from tool arguments, including ``file_paths`` lists."""
+    data = _coerce_arguments_dict(arguments)
+    if data is None:
+        single = extract_path_from_arguments(arguments)
+        return [single] if single else []
+
+    paths: list[str] = []
+    raw_paths = data.get("file_paths")
+    if isinstance(raw_paths, (list, tuple)):
+        paths.extend(
+            str(item).strip()
+            for item in raw_paths
+            if isinstance(item, str) and item.strip()
+        )
+    elif isinstance(raw_paths, str) and raw_paths.strip():
+        paths.append(raw_paths.strip())
+    for key in _PATH_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            paths.append(value.strip())
+    return list(dict.fromkeys(paths))
 
 
 def is_image_file_path(path: str) -> bool:
@@ -168,6 +205,45 @@ def build_non_text_read_error(path: str, *, language: str = "cn") -> str:
 def is_read_file_error_message(message: str) -> bool:
     text = str(message or "").lstrip()
     return text.startswith(READ_FILE_ERROR_PREFIX)
+
+
+def build_provided_image_read_error(path: str, *, language: str = "cn") -> str:
+    """拒绝读取已随消息提供像素的图片。"""
+
+    target = path or "<unknown>"
+    if language == "cn":
+        return (
+            f"{READ_FILE_ERROR_PREFIX} 「{target}」已作为图像内容随本次消息直接提供，"
+            "无需再调用 read_file 读取；请直接使用已提供的图片像素。"
+        )
+    return (
+        f"{READ_FILE_ERROR_PREFIX} '{target}' is already provided as image content "
+        "in this request; do not call read_file for it. Use the provided image pixels directly."
+    )
+
+
+def build_native_image_tool_error(*, language: str = "cn") -> str:
+    """拒绝在原生看图模型下调用视觉理解工具。"""
+
+    if language == "cn":
+        return (
+            "[VISION_TOOL_SKIPPED] 当前模型支持原生看图，用户上传的图片已作为图像内容"
+            "随消息直接提供，无需调用 visual_question_answering 或 image_reading。"
+            "请直接使用已提供的图片像素回答；其他本地图片请用 read_file 读取。"
+        )
+    return (
+        "[VISION_TOOL_SKIPPED] The current model supports native image understanding and "
+        "user-uploaded images are provided directly as image content. "
+        "Do not call visual_question_answering or image_reading. "
+        "Answer using the provided image pixels; for other local images use read_file."
+    )
+
+
+def reject_vision_tool_for_native_image(
+    ctx: "AgentCallbackContext", *, language: str = "cn"
+) -> None:
+    """Skip a vision tool call when the main model already received the pixels."""
+    reject_read_file(ctx, build_native_image_tool_error(language=language))
 
 
 def _unwrap_tool_output(result: Any) -> Any:

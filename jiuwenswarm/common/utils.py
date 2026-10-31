@@ -67,7 +67,8 @@ except ImportError:
     jsonlogger = None
 
 # read_file 工具：False 时不把图片字节注入主模型对话，改走 image_reading / VQA 等视觉工具。
-# 用于 create_deep_agent(enable_read_image_multimodal=...) 与 MultimodalImageRail(enable_image_multimodal=...)。
+# 仅用于无请求模型上下文的旁路装配（wiki_tools / auto_memory extraction_runner）；
+# 主链路（deep/code/flash adapter）按当前模型能力逐请求解析，不读这个常量。
 DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL: bool = False
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024

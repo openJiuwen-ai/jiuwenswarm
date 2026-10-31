@@ -81,58 +81,6 @@ def _model_ctx(messages):
 
 
 @pytest.mark.asyncio
-async def test_stream_event_rail_strips_image_blocks_when_read_image_multimodal_disabled():
-    rail = JiuSwarmStreamEventRail()
-    message = UserMessage(
-        content=[
-            {"type": "text", "text": "Image loaded from read_file: C:/tmp/blog.png"},
-            {
-                "type": "image_url",
-                "image_url": {"url": "data:image/png;base64,abc"},
-            },
-        ],
-    )
-    ctx = SimpleNamespace(
-        session=None,
-        inputs=SimpleNamespace(tools=[]),
-        context=_ModelContext([message]),
-        extra={},
-    )
-
-    await rail.before_model_call(ctx)
-
-    assert message.content == "Image loaded from read_file: C:/tmp/blog.png"
-
-
-@pytest.mark.asyncio
-async def test_stream_event_rail_keeps_image_blocks_when_read_image_multimodal_enabled():
-    rail = JiuSwarmStreamEventRail()
-    rail.init(
-        SimpleNamespace(
-            deep_config=SimpleNamespace(enable_read_image_multimodal=True),
-        )
-    )
-    content = [
-        {"type": "text", "text": "Image loaded from read_file: C:/tmp/blog.png"},
-        {
-            "type": "image_url",
-            "image_url": {"url": "data:image/png;base64,abc"},
-        },
-    ]
-    message = UserMessage(content=list(content))
-    ctx = SimpleNamespace(
-        session=None,
-        inputs=SimpleNamespace(tools=[]),
-        context=_ModelContext([message]),
-        extra={},
-    )
-
-    await rail.before_model_call(ctx)
-
-    assert message.content == content
-
-
-@pytest.mark.asyncio
 async def test_stream_event_rail_does_not_enable_symphony_status_events_for_plan_tool():
     rail = JiuSwarmStreamEventRail()
     session = _StreamSession()

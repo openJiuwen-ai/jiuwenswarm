@@ -1,5 +1,5 @@
 ---
-description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流域 specs 索引（S_01~S_21）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
+description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流 / 原生多模态域 specs 索引（S_01~S_22）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
 ---
 
 # harness：代理执行挂件的多域聚合目录
@@ -14,16 +14,17 @@ common / code / flash——**spec 按改哪块机制切，不按目录树切**�
 [docs/AGENTS.md](docs/AGENTS.md)。
 
 **当前 specs 覆盖任务规划域（S_01~S_06）、可靠性域（S_07~S_10）、subagent 域
-（S_11~S_14）、中断交互域（S_15~S_19）与事件流域（S_20~S_21）**。未归档的域（team /
+（S_11~S_14）、中断交互域（S_15~S_19）、事件流域（S_20~S_21）与原生多模态域
+（S_22）**。未归档的域（team /
 skill_selection / memory / 观测性 / …）不等于不存在，只等于还没有契约文档；动这些域时
 同样遵循"机制横跨多个子树"的找代码方式（subagent 域横跨 openjiuwen SDK 机制主体与
 server 装配层；中断交互域的原语层在 agent-core `openjiuwen`、守卫与结算层在 server
 runtime——spec 关联模块按仓分列；事件流域的正向通道底层在 agent-core stream 队列、
-消费侧在 server runtime），新增 spec 从 S_22 起编（编号跨域连续，不复用）。
+消费侧在 server runtime），新增 spec 从 S_23 起编（编号跨域连续，不复用）。
 
 修改任何代码前先读对应 spec；改规约本身必须同步 specs（三条强制约束见文末）。
 
-## Specs 索引（任务规划域 S_01~S_06 + 可靠性域 S_07~S_10 + subagent 域 S_11~S_14 + 中断交互域 S_15~S_19 + 事件流域 S_20~S_21）
+## Specs 索引（任务规划域 S_01~S_06 + 可靠性域 S_07~S_10 + subagent 域 S_11~S_14 + 中断交互域 S_15~S_19 + 事件流域 S_20~S_21 + 原生多模态域 S_22）
 
 - `docs/specs/S_01_todo-storage-and-toolchain.md` — todo.json 整表存储、stock 四工具行为、代际 token、todo_compat monkeypatch 装配时序
 - `docs/specs/S_02_task-execution-rail.md` — TaskExecutionRail 全景：状态→事件映射、串行顺序约束、auto_advance / lazy_start、产物检测、代际过滤
@@ -46,6 +47,7 @@ runtime——spec 关联模块按仓分列；事件流域的正向通道底层�
 - `docs/specs/S_19_cancellation-settlement-and-finalization.md` — 取消结算与收尾（server runtime）：三级 settle 入口、纯 confirm 本地判定、合法 ToolMessage 插入（不产孤儿）、三通道降级写入、清键与持久化、`{id}#{n}` 序号代际
 - `docs/specs/S_20_stream-event-emission-channel.md` — 事件流主通道与发射契约：agent-core stream 底层（三 schema / END_FRAME / 队列重试与强清）、六类事件发射时机、sid 解析三序、cwd rebind 双模式、symphony 工具进度桥接、装配挂载七处、消费侧终态判定
 - `docs/specs/S_21_pause-checkpoints-and-context-repair.md` — 暂停检查点与上下文修复：pause/resume/abort 状态机（shell 进程树击杀）、per-session 六字典、早 checkpoint（post_agent_execute 不关流）、取消结果收集、占位检测（legacy 7 类文案）、call_goal 注入剥离（deepcopy 防泄漏）、SkillTurbo HITL 改写、上下文修复四计数
+- `docs/specs/S_22_native-multimodal-image-input.md` — 原生多模态图片输入：模型能力三态解析（条目硬边界 / 显式兜底 / 内置窄表）、`MultimodalImageRail` 发送侧唯一决策点、像素物化与视图剥离、三预算最老优先降级与 `attached`/`omitted` 状态行、`ctx.extra` 已提供图片快照、read_file 重复读 / 视觉工具护栏、fallback notice 一致性
 
 ## 统一术语表
 
@@ -100,6 +102,9 @@ runtime——spec 关联模块按仓分列；事件流域的正向通道底层�
 | 占位 / 占位替换 | 中断工具的 `[Tool interrupted]` 双语文案 ToolMessage；修复规则：占位 + 后续同 id 真实结果 → 就地替换占位删后续 duplicate [[S_21]] |
 | HITL 改写 | after_tool_call 把含 `__skill_turbo_hitl__` 标记的工具结果改写为 ToolInterruptException，让 harness 原生中断机制接管；改写后跳过 tool_result 发射 [[S_21]] |
 | call_goal 注入 / 剥离 | 注入（模型侧）：deepcopy schema + model_copy 产新 ToolInfo 防执行侧泄漏；剥离（工具侧）：extract 后无条件清洗写回 [[S_21]] |
+| 原生多模态解析 | adapter 每请求解析一次 `enable_read_image_multimodal`（模型条目声明 > 显式配置 > 内置窄表），rail / resolver / 工具护栏 / notice 只读该值 [[S_22]] |
+| 已提供图片快照 | `ctx.extra["_jiuwenswarm_provided_image_paths"]`：invoke 级路径快照，工具跨任务/线程时替代 ContextVar 做"这张图已随消息提供"判定 [[S_22]] |
+| attached / omitted | 图片状态行 `[image #n attached]` / `[image #n omitted: reason]`：模型可见的"给过/没给"事实来源，超预算按最老优先 omitted [[S_22]] |
 
 ## 公开入口
 
@@ -123,7 +128,8 @@ runtime——spec 关联模块按仓分列；事件流域的正向通道底层�
 | `StructuredAskUserRail` | `common/rails/ask_user_rail.py` | [[S_15]] [[S_17]] | AskUserRail 子类：questions 扩展字段（≤8 问、`__other__` 自定义选项）+ 容错解码；deep / code / team 装配 |
 | `CodeConfirmInterruptRail` | `code/rails/code_confirm_interrupt_rail.py` | [[S_15]] | ConfirmInterruptRail 子类：switch_mode / exit_plan_mode 确认弹卡（双语文案），code 装配（~910） |
 | `PermissionInterruptRail`（agent-core） | `openjiuwen/harness/rails/security/tool_security_rail.py` | [[S_16]] | 拦截一切工具的权限 rail（priority=90，inherit_to_subagents）：判定序六步 / 双 key / 授权三级记忆 / persist 回滚；宿主侧装配与变体选择见 [[S_17]] |
-| `JiuSwarmStreamEventRail` | `common/rails/stream_event_rail.py` | [[S_20]] [[S_21]] | 事件流 rail（priority=80）：六类事件发射 / sid 解析 / cwd rebind / symphony 桥接（S_20）+ pause/abort 检查点 / 早 checkpoint / 上下文修复 / HITL 改写（S_21）；七处装配（deep/code/flash 继承/skill_turbo/team/auto_harness/swarm builtin_rails） |
+| `JiuSwarmStreamEventRail` | `common/rails/stream_event_rail.py` | [[S_20]] [[S_21]] [[S_22]] | 事件流 rail（priority=80）：六类事件发射 / sid 解析 / cwd rebind / symphony 桥接（S_20）+ pause/abort 检查点 / 早 checkpoint / 上下文修复 / HITL 改写（S_21）+ read_file 已提供图片 / 视觉工具护栏与 invoke 级图片路径快照（S_22）；七处装配（deep/code/flash 继承/skill_turbo/team/auto_harness/swarm builtin_rails） |
+| `MultimodalImageRail` | `common/rails/multimodal_image_rail.py` | [[S_22]] | 原生多模态发送侧唯一决策点（priority=75）：enabled 装像素物化 mutator（写历史）、disabled 装视图级过滤 mutator；同步系统提示 `multimodal_image_policy` 段；deep 经 `_build_multimodal_image_rail` 装配 |
 
 ### Tools（经 `add_ability` 注册进 agent）
 
@@ -142,7 +148,9 @@ runtime——spec 关联模块按仓分列；事件流域的正向通道底层�
 | `install_todo_modify_compat_patch()` | `common/tools/todo_compat.py` | [[S_01]] | openjiuwen 工具 monkeypatch；**全局副作用型入口，import 时序红线见铁律 7** |
 | `ToolResultErrorDetector` | `common/rails/execution_guard/circuit_breaker_rail.py` | [[S_08]] | 共享错误判定器（非 rail）：三级回退 has_error → has_explicit_success 压过 ctx → ctx_has_error；被熔断与其它模块复用 |
 | `path_whitespace_fix` 函数群 | `common/rails/path_whitespace_fix.py` | [[S_10]] | 路径参数空白修复：squash 恰一匹配、修参不可变类型保持；宿主 `JiuSwarmStreamEventRail` |
-| `read_file_validation` 函数群 | `common/rails/read_file_validation.py` | [[S_10]] | 读侧四工具修复名单校验：fail-closed 放弃链、二进制双轨判定、parallel_read 聚合放行 |
+| `read_file_validation` 函数群 | `common/rails/read_file_validation.py` | [[S_10]] [[S_22]] | 读侧四工具修复名单校验：fail-closed 放弃链、二进制双轨判定、parallel_read 聚合放行；原生图片模式另提供 `build_provided_image_read_error` / `build_native_image_tool_error` / `extract_paths_from_arguments` |
+| `model_capabilities` 函数群 | `common/tools/model_capabilities.py` | [[S_22]] | 模型图片能力三态解析：`resolve_model_entry_support`（bool 优先 → modalities）→ `resolve_model_supports_image`（条目 → 内置窄表，text-only 前缀先判） |
+| `user_prompt_builder` 图片函数群 | `common/prompt/user_prompt_builder.py` | [[S_22]] | 引用行 `build_image_reference_line` / `parse_image_references`、像素注入与三预算 `inject_image_content_from_references`、视图过滤 `filter_image_content_from_view`、视觉 token 估算、路径归一 `is_provided_image_path`、ContextVar 图片列表 |
 | `run_subagent_with_timeout` | `common/tools/subagent_executor/execution_timeout.py` | [[S_14]] | 委托边界执行器：五道闸 + 结果三态 + 实例级永久退役；task_tool / AgentTool 通道经它调用，SessionSpawnExecutor 裸 invoke 无边界（差异见 [[S_14]] 通道表） |
 | `install_subagent_authorization_wiring` | `common/tools/subagent_executor/authorization.py` | [[S_13]] | 授权 wiring：patch `create_subagent` 汇聚点装配子代理授权链（幂等 / 零侵入 / main scope 唯一准入 / 审批注册表） |
 | `install_subagent_control_compat_patch` | `common/tools/subagent_compat.py` | [[S_12]] | compat 类替换：类属性换 SubagentControl → CompatibleSubagentControl（含镜像流开关）；patch 失败 → runtime 降级；**全局副作用型入口，import 时序红线同铁律 7** |
@@ -166,10 +174,10 @@ agents/harness/
 │   ├── rails/                    #   code_task_planning_rail（S_02/S_05）/ code_plan_approval_interrupt_rail（S_04）/ code_agent_mode_rail（S_04 模式恢复）/ code_plan_approval_rail（p76 未装配遗留）/ code_confirm_interrupt_rail（S_15 确认卡）/ coding_artifact_post_process_rail
 │   └── tools/                    #   code_todo_tools 四子类（S_05）
 ├── common/                       # 跨 profile 共享挂件（最大子树）
-│   ├── rails/                    #   task_execution_rail（S_02）+ 可靠性域（S_07 重试与溢出恢复 / S_08 熔断 execution_guard/ / S_09 并发安全 / S_10 配额 rail 与输入守卫纯函数库）+ subagent 域（S_13 subagent_skill_authorization_rail / subagent_permission_rail、S_14 browser_task_prompt_rail）+ 中断交互域（S_15/S_17 ask_user_rail、S_17 interrupt/ 子树 interrupt_helpers 与 permissions/ 子树 config_loader / owner_scopes / tool_permission_context）+ 事件流域（S_20/S_21 stream_event_rail、symphony/tool_stream_events）+ 模型路由 / symphony 编排等
-│   ├── tools/                    #   todo_resume / todo_compat / user_todo_tool（S_01/S_05）/ deepresearch/（S_06）/ subagent_compat.py（S_12 类替换）/ subagent_executor/（S_13/S_14 授权 wiring 与委托边界）/ web_search / xiaoyi_phone_tools 等 40+ 件
-│   └── …                         #   auto_harness/ auto_memory/ long_horizon/ memory/ plugins/ prompt/ recommendation/ skill_sleep/（未归档域）
-├── docs/                         # 归档规约 AGENTS.md + specs/（S_01~S_21）
+│   ├── rails/                    #   task_execution_rail（S_02）+ 可靠性域（S_07 重试与溢出恢复 / S_08 熔断 execution_guard/ / S_09 并发安全 / S_10 配额 rail 与输入守卫纯函数库）+ subagent 域（S_13 subagent_skill_authorization_rail / subagent_permission_rail、S_14 browser_task_prompt_rail）+ 中断交互域（S_15/S_17 ask_user_rail、S_17 interrupt/ 子树 interrupt_helpers 与 permissions/ 子树 config_loader / owner_scopes / tool_permission_context）+ 事件流域（S_20/S_21 stream_event_rail、symphony/tool_stream_events）+ 原生多模态域（S_22 multimodal_image_rail、stream_event_rail 读图护栏）+ 模型路由 / symphony 编排等
+│   ├── tools/                    #   todo_resume / todo_compat / user_todo_tool（S_01/S_05）/ deepresearch/（S_06）/ subagent_compat.py（S_12 类替换）/ subagent_executor/（S_13/S_14 授权 wiring 与委托边界）/ model_capabilities.py（S_22 能力解析）/ web_search / xiaoyi_phone_tools 等 40+ 件
+│   └── …                         #   auto_harness/ auto_memory/ long_horizon/ memory/ plugins/ prompt/（S_22 图片引用行与像素注入）recommendation/ skill_sleep/（其余未归档域）
+├── docs/                         # 归档规约 AGENTS.md + specs/（S_01~S_22）+ features/
 ├── flash/                        # flash profile 挂件
 │   ├── permissions/              #   tool_policy_projection（S_05 统一名权限投影三段式）/ flash_permission_rail / skill_install
 │   ├── rails/                    #   flash_todo_rail（S_05）/ flash_subagent_rail（S_11/S_14 flash 变体三差异）/ flash_delivery_summary / flash_memory / slim_sys_operation
@@ -182,7 +190,7 @@ agents/harness/
 
 ## 架构铁律
 
-从二十一份 specs 的不变量中提炼的跨 spec 最高优先级约束。逐条细则以回链 spec 为准。
+从二十二份 specs 的不变量中提炼的跨 spec 最高优先级约束。逐条细则以回链 spec 为准。
 
 1. **代际 token 单向流**：agent-core 侧只读 token 打标过滤，写侧唯一 bump 点是
    `todo_resume.bump_todo_generation_token`。新增任何"重置任务列表"的路径必须走 bump，
@@ -309,6 +317,14 @@ agents/harness/
 44. **占位替换方向固定**：占位 ToolMessage + 后续同 id 真实结果 → 就地把占位替换为
     真实并删后续 duplicate（占位被真实替换，而非 duplicate 规则删真实保占位）；新增
     任何工具中断占位文案必须同步登记 legacy 模板清单 [[S_21]]。
+45. **原生多模态发送决策唯一在 rail**：像素是否真正发给模型只由
+    `MultimodalImageRail.before_model_call` 决定；`deep_config.enable_read_image_multimodal`
+    是唯一解析真源，rail / ReadFileTool resolver / stream 护栏 / fallback notice 只读不推断 [[S_22]]。
+46. **模型条目声明是硬边界**：模型条目 `supports_image=False` / `modalities` 无 `image`
+    时显式 `true` 不生效（避免请求必然失败）；条目声明支持时显式 `false` 仍可关闭（VQA 降级）；
+    内置表只做窄前缀匹配，text-only 前缀先于 image 前缀判定 [[S_22]]。
+47. **跨任务的图片判定不读 ContextVar**：已提供图片只认 `before_invoke` 写入
+    `ctx.extra` 的路径快照；新增读取方不得改回 ContextVar（工具跨任务/线程会丢）[[S_22]]。
 
 ## 生命周期与配置消费
 
@@ -316,7 +332,7 @@ agents/harness/
 
 | profile | 装配点 | 装配内容 |
 | --- | --- | --- |
-| deep | `server/runtime/agent_adapter/interface_deep.py` | 任务规划：`_build_task_execution_rail`（config `enable_task_execution_rail`，**默认 False**，切换需重启实例 by design）；`_build_work_plan_approval_rail`（deep 与 work profile 共用）；模块级 `install_todo_modify_compat_patch()`（import 时执行）。可靠性：`_build_llm_retry_rail`（~9873）/ `_build_context_overflow_recovery_rail`（~9408，连续溢出阈值装配传 3）/ `_build_circuit_breaker_rail` / `_build_task_planning_rail`（~9594，**一律** ConcurrentSafeTaskPlanningRail 子类）。subagent：`_build_subagent_rail`（~9620，BrowserTaskPromptRail 子类）+ 模块级 `install_subagent_control_compat_patch`（~9640，import 时执行）/ `_bind_subagent_model_resolver`（~6958）/ `_bind_subagent_authorization_wiring`（~6964）/ `_build_configured_subagents`（~4511）。中断交互：`_build_structured_ask_user_rail`（~9663，StructuredAskUserRail）/ `build_permission_rail`（~10796，三级 rail 选择 + host 闭包族 + 发卡相位标记与守卫方法族，见 [[S_17]]/[[S_18]]）。事件流：`_build_stream_event_rail`（@9380，失败降级 None）+ `_RailBuildInfo` 注册（@10378）+ 集成面注入（checkpointer @13809 / adapter @13807 / metadata @13297 / cwd @13151 / abort 调用点 @14973 / cleanup @3511，见 [[S_20]]/[[S_21]]） |
+| deep | `server/runtime/agent_adapter/interface_deep.py` | 任务规划：`_build_task_execution_rail`（config `enable_task_execution_rail`，**默认 False**，切换需重启实例 by design）；`_build_work_plan_approval_rail`（deep 与 work profile 共用）；模块级 `install_todo_modify_compat_patch()`（import 时执行）。可靠性：`_build_llm_retry_rail`（~9873）/ `_build_context_overflow_recovery_rail`（~9408，连续溢出阈值装配传 3）/ `_build_circuit_breaker_rail` / `_build_task_planning_rail`（~9594，**一律** ConcurrentSafeTaskPlanningRail 子类）。subagent：`_build_subagent_rail`（~9620，BrowserTaskPromptRail 子类）+ 模块级 `install_subagent_control_compat_patch`（~9640，import 时执行）/ `_bind_subagent_model_resolver`（~6958）/ `_bind_subagent_authorization_wiring`（~6964）/ `_build_configured_subagents`（~4511）。中断交互：`_build_structured_ask_user_rail`（~9663，StructuredAskUserRail）/ `build_permission_rail`（~10796，三级 rail 选择 + host 闭包族 + 发卡相位标记与守卫方法族，见 [[S_17]]/[[S_18]]）。事件流：`_build_stream_event_rail`（@9380，失败降级 None）+ `_RailBuildInfo` 注册（@10378）+ 集成面注入（checkpointer @13809 / adapter @13807 / metadata @13297 / cwd @13151 / abort 调用点 @14973 / cleanup @3511，见 [[S_20]]/[[S_21]]）。原生多模态：`_resolve_enable_read_image_multimodal`（每请求三态解析）+ `_build_multimodal_image_rail`（~10015，失败降级 None）+ 三预算传参（~11007）+ `_build_image_tool_fallback_notice`（仅解析 False 时提示，见 [[S_22]]） |
 | code | `server/runtime/agent_adapter/interface_code.py` | `_build_code_task_planning_rail()`（~885）；`_build_plan_approval_rail()`（~1339，纳入热重载覆盖）；`user_todos` 工具构建映射（~309/~1593）。可靠性：`_FIXED_RAIL_NAMES`（~452，llm_retry / overflow 恢复固定名单）。subagent：`_build_configured_subagents`（~1124，经 `_RAIL_BUILD_NAMES` ~287 纳入热重载覆盖）。中断交互：`_build_structured_ask_user_rail`（~893）/ `CodeConfirmInterruptRail`（~910，switch_mode / exit_plan_mode 确认卡） |
 | team 编排 | `agents/swarm/providers/code_rails.py` | code rails 镜像（~434）+ `build_team_plan_approval`（~375，`_is_team_plan_leader` 门控）+ `build_user_todos`（tools.py ~565）。中断交互：StructuredAskUserRail 与权限 rail 装配（~413-420；team 继承侧 `team/team_runtime_inheritance.py` ~213） |
 | flash | `server/runtime/agent_adapter/interface_flash.py` | `_build_task_planning_rail()`（~994，替换 stock `TaskPlanningRail` 的 4→1 位点）。subagent：`_build_subagent_rail`（~973，FlashSubagentRail）/ `_bind_subagent_model_resolver`（~353）。中断交互：`build_permission_rail`（~420） |
@@ -347,6 +363,11 @@ agents/harness/
   并发多会话靠它隔离）；`_inflight_tool_calls` 实例级**跨会话共享**；早 checkpoint
   幂等标记**invoke 级**（ctx.extra）；`_bg_emit_tasks`（light 模式后台发射）**类级**
   防回收集合 [[S_20]] [[S_21]]
+- 原生多模态域的状态归属：图片路径快照**invoke 级**（`ctx.extra[
+  "_jiuwenswarm_provided_image_paths"]`，工具跨任务/线程的唯一可靠来源）、本次图片列表
+  **同调用栈 ContextVar 级**（prompt 组装用，用完 reset）、多模态 window mutator
+  **ContextWindow 级**（属性 `_jiuwenswarm_multimodal_image_window_mutator` 防重复安装）、
+  `attached`/`omitted` 状态行**随历史持久化**（模型可见事实来源）[[S_22]]
 
 **配置**：`enable_task_execution_rail` 是任务规划域唯一的实例级开关；code / flash / plan
 approval 的装配不带独立开关（装配即启用）。`user_todos` 还需 `resources/config*.yaml`
@@ -365,7 +386,10 @@ builder 拒挂返回 None）、`WORKSPACE_QUOTA_ENABLED`（env，默认关）、
 不装，见 [[S_17]] N1）；ask_user / confirm rail 装配即启用。事件流域的开关：
 `JIUWENCLAW_EARLY_CHECKPOINT`（env，默认开，0/false/no/off 关早 checkpoint）与
 `TOOL_RESULT_DISPLAY_MAX_CHARS`（env，默认 60000、上限 100000、0 不截断）归 [[S_21]]/
-[[S_20]]；发射本体装配即启用、无独立开关。
+[[S_20]]；发射本体装配即启用、无独立开关。原生多模态域的开关：`react.enable_read_image_multimodal`
+（三态：显式 bool > 模型条目声明 > 内置能力表；false 即走视觉工具链）、
+`react.multimodal_image_budget`（总字节）/ `multimodal_image_token_budget`（视觉 token）/
+`multimodal_image_max_count`（张数，默认 8），后两者 0 = 不限，按最老优先降级 [[S_22]]。
 
 ## 测试
 
@@ -387,7 +411,8 @@ pytest.ini 的 addopts 含全仓 coverage 与 `-v`，日常跑请覆盖为仅保
 # 组3 事件流 + close hold + flash 权限投影 + deepresearch 落盘 + 续轮绑定（S_02/S_03/S_05/S_06 散件）
 .venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/test_stream_event_rail_todo.py tests/unit_tests/agentserver/test_todo_close_text_hold.py tests/unit_tests/agentserver/test_flash_permission_actions.py tests/unit_tests/agentserver/test_flash_permission_display_args.py tests/unit_tests/agentserver/test_flash_permission_lifecycle.py tests/unit_tests/agentserver/test_flash_permission_persistence.py tests/unit_tests/agentserver/test_deepresearch_todo_progress.py tests/unit_tests/agentserver/test_deepresearch_stream_tool.py tests/unit_tests/agentserver/test_deepagent_task_plan_binding_patch.py -o addopts="--asyncio-mode=auto"
 
-# 组4 可靠性域（S_07/S_08/S_09/S_10：重试 rail / 溢出恢复 / 路径修复 / 读校验 / 装配投影；
+# 组4 可靠性域 + 原生多模态域（S_07/S_08/S_09/S_10：重试 rail / 溢出恢复 / 路径修复 /
+#     读校验 / 装配投影；S_22：能力解析 / 图片 rail 视图 / 读图护栏 / resolver 装配；
 #     common/rails 目录内另含 model_routing 等相邻域 3 件，一并跑无害）
 .venv\Scripts\python.exe -m pytest tests/unit_tests/agents/harness/common/rails/ tests/unit_tests/agentserver/test_code_adapter_context_overflow_recovery_rail.py tests/unit_tests/server/runtime/skill_turbo/test_llm_retry_rail_mount.py tests/agents/swarm/test_team_member_llm_retry.py -o addopts="--asyncio-mode=auto"
 
@@ -417,7 +442,10 @@ close 流控（S_03）→ 组1（nudge）+组3（text hold）；审批门（S_04
 宿主集成）→ 组5；中断交互域（S_15~S_19：原语三态 / 权限拦截 / 宿主装配 / 相位守卫 /
 取消结算）→ 组6；事件流域（S_20：发射通道 / sid / cwd / symphony；S_21：暂停 /
 checkpoint / 修复 / HITL 改写）→ 组7（改发射或取消路径时另跑组6 的 cancel 件与
-组3 的 stream_event_rail_todo）。
+组3 的 stream_event_rail_todo）；原生多模态域（S_22：能力解析 / `MultimodalImageRail` /
+像素注入与视图剥离 / 读图与视觉工具护栏 / ReadFileTool resolver）→ 组4，
+另跑 `tests/unit_tests/server/runtime/agent_adapter/test_model_capability_resolution.py`
+与 `test_image_tool_fallback.py`（能力三态解析与提示一致性）。
 
 修复类改动必须附**能复现原故障的测试**（先红后绿）；修契约类问题（事件映射 / 时序 /
 过滤口径）必须列出全部同构调用点逐个确认。各 spec 的"修改检查单"节列出场景矩阵
