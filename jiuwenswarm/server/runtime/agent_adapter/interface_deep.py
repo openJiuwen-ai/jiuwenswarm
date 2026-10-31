@@ -152,6 +152,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, has_live_pending_interrupt, validate_manual_resume,
+    discard_restored_permission_batch, unanswered_permission_batch,
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
     ROOT_PERMISSION_ANSWER_KEY as _ROOT_PERMISSION_ANSWER_KEY,
@@ -3804,6 +3805,26 @@ class JiuWenSwarmDeepAdapter:
             return {"moa_can_access": lambda kind, resource_id: bool(checker(request, kind, resource_id))}
         return {}
 
+    def _restored_permission_fresh_input(self, request: AgentRequest | None) -> bool:
+        """Select only a cold, unowned full batch replaced by actual user text."""
+        if request is None or not self._is_host_permission_update_input(request):
+            return False
+        params = request.params if isinstance(request.params, dict) else {}
+        text = params.get("query") or params.get("content")
+        if (not isinstance(text, str) or not text.strip()
+                or any(key in params for key in ("answers", "card_id", "request_id"))):
+            return False
+        if (self._is_interrupt_resume_dispatch(params) or self._wants_attach_goal(params)
+                or self._resolve_input_dispatch_mode(params) is not None):
+            return False
+        sid = self._resolve_interrupt_session_id(request.session_id)
+        if self._session_adapter_key(self._parent_session_id) != sid:
+            return False
+        if (self._permission_work_pending(sid, include_core_interrupt=False)
+                or self._goal_record_is_active()):
+            return False
+        return unanswered_permission_batch(self._instance, sid, self._deep_agent_loop_session_id()) is not None
+
     async def _get_session_adapter_for_request(
         self,
         request: AgentRequest,
@@ -3847,6 +3868,7 @@ class JiuWenSwarmDeepAdapter:
             return await self._get_or_create_session_adapter(
                 request.session_id,
                 history_before_request_id=request.request_id,
+                execution_request=request,
                 reserve_activity=reserve_activity,
                 external_harness_binding=external_harness_binding,
                 **(
@@ -3866,6 +3888,7 @@ class JiuWenSwarmDeepAdapter:
             selected = await self._get_or_create_session_adapter(
                 request.session_id,
                 history_before_request_id=request.request_id,
+                execution_request=request,
                 reserve_activity=reserve_activity,
                 host_external_input=True,
                 external_harness_binding=external_harness_binding,
@@ -3902,6 +3925,7 @@ class JiuWenSwarmDeepAdapter:
         reserve_activity: bool = False,
         host_external_input: bool = False,
         permission_project_dir: str | None = None,
+        execution_request: AgentRequest | None = None,
         external_harness_binding: dict[str, Any] | None = None,
         moa_enabled: bool | None = None,
         model_selection: Any = None,
@@ -4190,6 +4214,21 @@ class JiuWenSwarmDeepAdapter:
                     existing = None
 
             if existing is not None:
+                if execution_request is not None:
+                    try:
+                        # The parent owns this same-class child under the session lock.
+                        # Page status commands can prewarm it before text arrives.
+                        if existing._restored_permission_fresh_input(  # pylint: disable=protected-access
+                            execution_request,
+                        ):
+                            await discard_restored_permission_batch(
+                                existing._instance, sid,  # pylint: disable=protected-access
+                                existing._deep_agent_loop_session_id(),  # pylint: disable=protected-access
+                            )
+                    except BaseException:
+                        await existing._isolate_permission_instance()  # pylint: disable=protected-access
+                        await self._evict_failed_permission_session_adapter(sid, existing)
+                        raise
                 if requested_mcp_scan_names is not None:
                     # Claim the immutable first-chat snapshot while the parent
                     # session lock is still held. Concurrent sends may reconcile
@@ -4258,63 +4297,93 @@ class JiuWenSwarmDeepAdapter:
             if moa_snapshot is not None:
                 config["moa_config_snapshot"] = moa_snapshot
                 config["moa_can_access"] = moa_can_access
-            await adapter.create_instance(
-                config,
-                mode=self._session_instance_mode,
-                sub_mode=self._session_instance_sub_mode,
-                **self._session_instance_extra_create_kwargs(),
-            )
+            restoring_permission = False
             try:
-                # The same-class child retains the selection used to build its runtime.
-                adapter._collaboration_model_selection = selection  # pylint: disable=protected-access
-                adapter._collaboration_model_name = str(model_name or "")  # pylint: disable=protected-access
-                adapter.persist_skill_retrieval_session_profile()
-                instance_ready_at = time.monotonic()
-                await adapter.start_interaction(session_id=sid)
+                await adapter.create_instance(
+                    config,
+                    mode=self._session_instance_mode,
+                    sub_mode=self._session_instance_sub_mode,
+                    **self._session_instance_extra_create_kwargs(),
+                )
+                try:
+                    # The same-class child retains the selection used to build its runtime.
+                    adapter._collaboration_model_selection = selection  # pylint: disable=protected-access
+                    adapter._collaboration_model_name = str(model_name or "")  # pylint: disable=protected-access
+                    adapter.persist_skill_retrieval_session_profile()
+                    instance_ready_at = time.monotonic()
+                    await adapter.start_interaction(session_id=sid)
+                except BaseException:
+                    await adapter._close_moa_runtime(suppress_errors=True)
+                    raise
+                interaction_ready_at = time.monotonic()
+
+                # Keep this child unpublished until cold permission settlement succeeds.
+                restoring_permission = execution_request is not None
+                if restoring_permission:
+                    restoring_permission = adapter._restored_permission_fresh_input(  # pylint: disable=protected-access
+                        execution_request,
+                    )
+                if not restoring_permission:
+                    self._session_adapters[sid] = adapter
+                if metadata.get("moa_enabled") is not effective_moa:
+                    update_session_metadata(
+                        session_id=sid, moa_enabled=effective_moa,
+                        touch_last_message_at=False, sync_write=True,
+                    )
+                # A brand-new session adapter is created from ``_session_instance_config``
+                # (which may predate the latest global reload). If a global reload left a
+                # pending ``config_base``, apply it now so the new session reflects the
+                # same configuration as already-existing sessions that reload lazily.
+                # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
+                # (including the no-pending case, where it silently catches up).
+                if not restoring_permission:
+                    await self._reload_session_adapter_if_stale(
+                        sid,
+                        adapter,
+                        host_external_input=host_external_input,
+                        freshly_built=True,
+                    )
+                # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
+                # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
+                # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
+                # （全新会话磁盘无历史，warmup 内部会静默跳过）。
+                try:
+                    from jiuwenswarm.agents.harness.common.session_ops_service import (
+                        warmup_session_context,
+                    )
+
+                    restored = await warmup_session_context(
+                        deep_agent=getattr(adapter, "_instance", None),
+                        session_id=sid,
+                        history_before_request_id=history_before_request_id,
+                    )
+                    if restoring_permission and not restored:
+                        raise RootPermissionQueueError("permission_continuation_context_missing")
+                except Exception as exc:
+                    if restoring_permission:
+                        raise
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session context warmup failed: "
+                        "session_id=%s error=%s",
+                        sid,
+                        exc,
+                    )
+                if restoring_permission:
+                    await discard_restored_permission_batch(
+                        adapter._instance, sid,  # pylint: disable=protected-access
+                        adapter._deep_agent_loop_session_id(),  # pylint: disable=protected-access
+                    )
+                    await self._reload_session_adapter_if_stale(
+                        sid, adapter, host_external_input=host_external_input, freshly_built=True,
+                    )
+                    self._session_adapters[sid] = adapter
             except BaseException:
-                await adapter._close_moa_runtime(suppress_errors=True)
+                if restoring_permission:
+                    await adapter._isolate_permission_instance()  # pylint: disable=protected-access
+                    # Publish only an isolated owner, then use the existing cleanup gate.
+                    self._session_adapters[sid] = adapter
+                    await self._evict_failed_permission_session_adapter(sid, adapter)
                 raise
-            interaction_ready_at = time.monotonic()
-
-            self._session_adapters[sid] = adapter
-            if metadata.get("moa_enabled") is not effective_moa:
-                update_session_metadata(
-                    session_id=sid, moa_enabled=effective_moa,
-                    touch_last_message_at=False, sync_write=True,
-                )
-            # A brand-new session adapter is created from ``_session_instance_config``
-            # (which may predate the latest global reload). If a global reload left a
-            # pending ``config_base``, apply it now so the new session reflects the
-            # same configuration as already-existing sessions that reload lazily.
-            # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
-            # (including the no-pending case, where it silently catches up).
-            await self._reload_session_adapter_if_stale(
-                sid,
-                adapter,
-                host_external_input=host_external_input,
-                freshly_built=True,
-            )
-            # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
-            # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
-            # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
-            # （全新会话磁盘无历史，warmup 内部会静默跳过）。
-            try:
-                from jiuwenswarm.agents.harness.common.session_ops_service import (
-                    warmup_session_context,
-                )
-
-                await warmup_session_context(
-                    deep_agent=getattr(adapter, "_instance", None),
-                    session_id=sid,
-                    history_before_request_id=history_before_request_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] session context warmup failed: "
-                    "session_id=%s error=%s",
-                    sid,
-                    exc,
-                )
             if requested_mcp_scan_names is not None or restored_profile is not None:
                 adapter.mark_session_mcp_reconcile_started()
             self._touch_session_adapter(sid)
@@ -10030,7 +10099,7 @@ class JiuWenSwarmDeepAdapter:
     def _build_stream_event_rail() -> JiuSwarmStreamEventRail | None:
         """Build JiuSwarmStreamEventRail."""
         try:
-            stream_event_rail = JiuSwarmStreamEventRail()
+            stream_event_rail = JiuSwarmStreamEventRail(project_interruption_snapshots=True)
             logger.info("[JiuWenSwarmDeepAdapter] JiuSwarmStreamEventRail create success")
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] JiuSwarmStreamEventRail create failed: %s", exc)
@@ -11255,7 +11324,7 @@ class JiuWenSwarmDeepAdapter:
         self, config: dict[str, Any], *, smart: bool,
         installed_permissions: dict[str, Any] | None, model_name: str, workspace_root: Any,
     ) -> PermissionRailGroup:
-        return build_permission_group(
+        group = build_permission_group(
             config, permission_builder=build_permission_rail,
             permission_inputs={
                 "llm": self._model, "model_name": model_name, "session_id": self._parent_session_id,
@@ -11272,7 +11341,9 @@ class JiuWenSwarmDeepAdapter:
             sandboxed=getattr(self._sys_operation_card, "mode", None) == OperationMode.SANDBOX,
             language=self._resolve_runtime_language(),
         )
-
+        if group.stream_event_rail is not None:
+            group.stream_event_rail.project_interruption_snapshots = True
+        return group
 
     def _permission_group_bindings(self, group: PermissionRailGroup) -> dict[str, Any]:
         """Translate a rail recipe using the adapter's existing binding names."""
@@ -11313,7 +11384,7 @@ class JiuWenSwarmDeepAdapter:
         })
         return epoch, layers[0], effective
 
-    def _permission_work_pending(self, session_id: str) -> bool:
+    def _permission_work_pending(self, session_id: str, *, include_core_interrupt: bool = True) -> bool:
         """Keep callbacks, interrupted turns and background children on E."""
         if self._has_live_root_permission_owner(session_id):
             return True
@@ -11331,7 +11402,7 @@ class JiuWenSwarmDeepAdapter:
         if instance.is_invoke_active or instance.active_round is not None:
             return True
         loop_session = getattr(instance, "loop_session", None)
-        if loop_session is not None:
+        if include_core_interrupt and loop_session is not None:
             state = loop_session.get_state(INTERRUPTION_KEY)
             if getattr(state, "interrupted_tools", None):
                 return True
@@ -15071,6 +15142,11 @@ class JiuWenSwarmDeepAdapter:
                 and not (request.channel_id == "video_tool"
                          and isinstance(inputs.get("query"), InteractiveInput))):
             raise RuntimeError("全双工工具任务正在执行，请等待任务完成后再发送文字消息。")
+        if (self._enable_auto_permission
+                and str(request.params.get("source") or "").strip() == "permission_interrupt"):
+            answers = request.params.get("answers")
+            if not isinstance(answers, list) or len(answers) != 1:
+                raise RootPermissionQueueError("permission_queue_one_answer_required")
         # An interrupt resume must preserve the pending assistant/tool ordering.
         if not isinstance(inputs.get("query"), InteractiveInput):
             await sync_conversation_context(self._instance, request.session_id)
@@ -18633,6 +18709,7 @@ class JiuWenSwarmDeepAdapter:
             self._mark_session_active(session_id)
             self._register_session_agent_task(session_id)
         stream_consumer_cancelled = False
+        permission_prepare_rejected = False
         image_files_token = None
         _run_span: Any = None
         _run_exception: BaseException | None = None
@@ -18854,7 +18931,14 @@ class JiuWenSwarmDeepAdapter:
                     is_complete=True,
                 )
 
-            inputs = await self._prepare_root_input_dispatch(request, inputs)
+            try:
+                inputs = await self._prepare_root_input_dispatch(request, inputs)
+            except RootPermissionQueueError:
+                permission_prepare_rejected = (
+                    self._enable_auto_permission
+                    and str(request.params.get("source") or "").strip() == "permission_interrupt"
+                )
+                raise
             moa_progress = getattr(self._moa_runtime, "progress", None)
             if moa_progress is not None:
                 moa_mailbox = moa_progress.open()
@@ -19124,6 +19208,10 @@ class JiuWenSwarmDeepAdapter:
             if moa_progress is not None:
                 moa_stream = moa_progress.stream(interaction_stream)
                 runner_stream = moa_stream
+            snapshot_projection = bool(
+                self._stream_event_rail is not None
+                and self._stream_event_rail.project_interruption_snapshots
+            )
             async for chunk in runner_stream:
                 chunk_type = (
                     chunk.get("event_type", chunk.get("type"))
@@ -19143,6 +19231,19 @@ class JiuWenSwarmDeepAdapter:
                     first_seen=first_chunk_seen,
                     failure=run_failure,
                 )
+                # This root loop publishes one question from its complete SDK
+                # snapshot; raw/controller copies must not replace its locator.
+                if snapshot_projection:
+                    chunk_type = getattr(chunk, "type", None)
+                    if chunk_type == "__interaction__" and not (
+                        isinstance(chunk.payload, dict)
+                        and chunk.payload.get("interaction_type") == "activate_confirm"
+                    ):
+                        continue
+                    if chunk_type == "controller_output":
+                        question = parse_common_stream_chunk(chunk)
+                        if isinstance(question, dict) and question.get("event_type") == "chat.ask_user_question":
+                            continue
                 if not (hasattr(chunk, "type") and hasattr(chunk, "payload")):
                     parsed = await run_stream_parser(
                         self._parse_stream_chunk,
@@ -19566,6 +19667,8 @@ class JiuWenSwarmDeepAdapter:
             logger.exception("[JiuWenSwarmDeepAdapter] 流式任务异常: %s", exc)
             if _debug_logger is not None:
                 _debug_logger.end_run(status="error", error=exc)
+            if permission_prepare_rejected:
+                raise
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,

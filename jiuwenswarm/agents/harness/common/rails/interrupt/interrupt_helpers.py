@@ -1285,10 +1285,14 @@ def _is_permission_interaction(interaction: Any) -> bool:
 
 
 def _iter_interactions(state_outputs: list) -> Any:
-    """Yield interaction objects, flattening nested interaction lists."""
+    """Yield interaction objects from lists or complete SDK state schemas."""
     for interaction in state_outputs:
         if isinstance(interaction, (list, tuple)):
             yield from _iter_interactions(list(interaction))
+        elif getattr(interaction, "type", None) == "__interaction__":
+            yield from _iter_interactions([interaction.payload])
+        elif isinstance(interaction, dict) and interaction.get("type") == "__interaction__":
+            yield from _iter_interactions([interaction.get("payload")])
         else:
             yield interaction
 

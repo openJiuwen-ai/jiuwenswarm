@@ -1449,6 +1449,7 @@ class AgentRuntime:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
         request = self._normalize_runtime_request(request)
+        self._validate_permission_answer(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -1829,9 +1830,16 @@ class AgentRuntime:
                 on_control_event=on_control_event,
                 _agent_execution=self._agent_execution_owner(request),
             )
-        async with aclosing(self._stream_with_runtime_context(stream)) as events:
-            async for event in events:
-                yield event
+        try:
+            async with aclosing(self._stream_with_runtime_context(stream)) as events:
+                async for event in events:
+                    yield event
+        except BaseException:
+            session_id = request.session_id or "default"
+            request_id = self._control_request_id(request)
+            if self._session_coordinator.has_control_target(session_id, request_id):
+                await self._mark_pending_interaction_id(session_id, request_id)
+            raise
 
     async def _stream_with_runtime_context(
         self, stream: AsyncIterator[RuntimeEvent]
@@ -1936,6 +1944,7 @@ class AgentRuntime:
         )
 
         request = self._normalize_runtime_request(request)
+        self._validate_permission_answer(request)
         is_session_input = self._is_session_input_request(request)
         is_team_session_message = (
             self._request_targets_team(request)
@@ -3257,6 +3266,26 @@ class AgentRuntime:
         from jiuwenswarm.runtime.request import CHAT_TURN_METHODS
 
         return CHAT_TURN_METHODS
+
+    @classmethod
+    def _validate_permission_answer(cls, request: AgentRequest) -> None:
+        """Reject malformed approvals before they can supersede waiting work."""
+        params = request.params if isinstance(request.params, dict) else {}
+        if (
+            request.req_method is not ReqMethod.CHAT_SEND
+            or str(params.get("source") or "").strip() != "permission_interrupt"
+        ):
+            return
+        if cls._request_targets_team(request) or not cls._is_single_agent_session_mode(
+            params.get("mode"), work_mode=params.get("work_mode"),
+        ):
+            return
+        from jiuwenswarm.runtime.interaction import InteractionAnswerError, validate_answer_items
+
+        answers = params.get("answers")
+        if not isinstance(answers, list):
+            raise InteractionAnswerError("answers must be a list")
+        validate_answer_items(answers)
 
     @staticmethod
     def _is_interrupt_resume_request(request: AgentRequest) -> bool:
