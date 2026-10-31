@@ -289,9 +289,11 @@ def ensure_team_entity_for_binding(
 def _register_common_provider() -> None:
     import sys
 
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_TEAM_ENTITY_STORE
+
     from jiuwenswarm.common.external_providers import register
 
-    register("team_entity_store", sys.modules[__name__])
+    register(PROVIDER_DOMAIN_TEAM_ENTITY_STORE, sys.modules[__name__])
 
 
 _register_common_provider()

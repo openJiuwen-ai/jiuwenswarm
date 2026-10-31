@@ -476,9 +476,9 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if is_enterprise():
-        from jiuwenswarm.common.schema.package_allowlist import (
-            HEADER_NAME,
-            METADATA_KEY as GRANT_METADATA_KEY,
+        from openjiuwen_protocol.package_allowlist import (
+            PACKAGE_ALLOWLIST_HEADER_NAME as HEADER_NAME,
+            PACKAGE_ALLOWLIST_METADATA_KEY as GRANT_METADATA_KEY,
             decode_package_allowlist_header,
         )
 

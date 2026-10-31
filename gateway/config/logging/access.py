@@ -6,6 +6,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from openjiuwen_protocol.logging_config import (
+    LOG_CONFIG_OP_DELETE,
+    LOG_CONFIG_OP_FIELD,
+)
+
 from gateway.config.logging.repository import (
     LOGGING_LEVEL_FIELDS,
     LoggingConfigRepository,
@@ -69,7 +74,9 @@ def _runtime_kwargs_from_updates(updates: dict[str, Any]) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     if updates.get("level") is not None:
         kwargs["log_level"] = str(updates["level"])
-    for key in ("console_level", "gateway", "channel", "agent_server", "full"):
+    for key in LOGGING_LEVEL_FIELDS:
+        if key == "level":
+            continue
         if updates.get(key) is not None:
             kwargs[key] = str(updates[key])
     return kwargs
@@ -154,11 +161,11 @@ async def delete_logging_in_config() -> bool:
             return data
 
         update_config(_mutate)
-        _apply_runtime_levels({"op": "delete"})
+        _apply_runtime_levels({LOG_CONFIG_OP_FIELD: LOG_CONFIG_OP_DELETE})
         return bool(found["value"])
 
     deleted = await repo.delete()
-    _apply_runtime_levels({"op": "delete"})
+    _apply_runtime_levels({LOG_CONFIG_OP_FIELD: LOG_CONFIG_OP_DELETE})
     return deleted
 
 

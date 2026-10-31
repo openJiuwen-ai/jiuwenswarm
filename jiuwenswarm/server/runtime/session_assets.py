@@ -27,18 +27,28 @@ import time
 from pathlib import Path
 from typing import Any
 
+from openjiuwen_protocol.session_assets import (
+    ASSET_ID_PREFIX,
+    ASSET_KIND_AUDIO,
+    ASSET_KIND_DOCUMENT,
+    ASSET_KIND_IMAGE,
+    ASSET_KIND_VIDEO,
+    ASSET_NAME_MAX_LENGTH,
+    ASSET_SOURCES,
+    ASSET_SOURCE_UPLOAD,
+)
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 logger = logging.getLogger(__name__)
 
 _STATE_FILE = "session_assets.json"
-_NAME_MAX = 60
+_NAME_MAX = ASSET_NAME_MAX_LENGTH
 _FORBIDDEN_NAME_CHARS = re.compile(r"[@\r\n\t]")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _KINDS = {
-    "image": {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"},
-    "video": {".mp4", ".mov", ".webm", ".mkv", ".avi"},
-    "audio": {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"},
+    ASSET_KIND_IMAGE: {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"},
+    ASSET_KIND_VIDEO: {".mp4", ".mov", ".webm", ".mkv", ".avi"},
+    ASSET_KIND_AUDIO: {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"},
 }
 
 
@@ -56,7 +66,7 @@ def _kind_of(path: str) -> str:
     for kind, suffixes in _KINDS.items():
         if suffix in suffixes:
             return kind
-    return "document"
+    return ASSET_KIND_DOCUMENT
 
 
 def _path_key(path: str) -> str:
@@ -148,11 +158,11 @@ class SessionAssetManager:
             source = str(item.get("source") or "upload")
             assets.append(
                 {
-                    "asset_id": f"asset_{secrets.token_hex(4)}",
+                    "asset_id": f"{ASSET_ID_PREFIX}{secrets.token_hex(4)}",
                     "name": name,
                     "kind": _kind_of(path),
                     "path": path,
-                    "source": source if source in ("upload", "generated") else "upload",
+                    "source": source if source in ASSET_SOURCES else ASSET_SOURCE_UPLOAD,
                     "created_at": time.time(),
                 }
             )

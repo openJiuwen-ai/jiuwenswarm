@@ -1682,8 +1682,13 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     state_mcps: list[dict[str, Any]] = []
     try:
         from gateway.common.external_providers import provider
-        mcp_state = provider("mcp_state")
-        mcp_registry = provider("mcp_registry")
+        from openjiuwen_protocol.provider_domains import (
+            PROVIDER_DOMAIN_MCP_REGISTRY,
+            PROVIDER_DOMAIN_MCP_STATE,
+        )
+
+        mcp_state = provider(PROVIDER_DOMAIN_MCP_STATE)
+        mcp_registry = provider(PROVIDER_DOMAIN_MCP_REGISTRY)
         for rec in mcp_state.list_connected_mcps():
             name = rec.get("name", "")
             if not name or mcp_registry.is_stale_marketplace_record(name, rec):

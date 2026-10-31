@@ -4336,8 +4336,13 @@ class MessageHandler(ABC):
 
         try:
             from gateway.common.external_providers import provider
+            from openjiuwen_protocol.provider_domains import (
+                PROVIDER_DOMAIN_SESSION_METADATA,
+            )
 
-            metadata = await provider("session_metadata").get_session_metadata_async(
+            metadata = await provider(
+                PROVIDER_DOMAIN_SESSION_METADATA
+            ).get_session_metadata_async(
                 msg.session_id, enable_writeback=False, user_id=msg.user_id,
             )
             owner_id = str((metadata or {}).get("team_name") or "").strip()
@@ -4706,10 +4711,15 @@ class MessageHandler(ABC):
             from gateway.common.model_selection_store import (
                 get_session_model_selection,
             )
+            from openjiuwen_protocol.provider_domains import (
+                PROVIDER_DOMAIN_SESSION_METADATA,
+            )
 
             if get_session_model_selection(session_id) is not None:
                 return ""
-            metadata = await provider("session_metadata").get_session_metadata_async(
+            metadata = await provider(
+                PROVIDER_DOMAIN_SESSION_METADATA
+            ).get_session_metadata_async(
                 session_id, cache_bust=True, enable_writeback=False, user_id=user_id,
             )
         except SessionMetadataRemoteUnavailable:

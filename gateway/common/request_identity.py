@@ -24,6 +24,10 @@
 4. **必填策略**
    - 个人版 Web：建议有顶层 ``user_id``；其余可缺
    - 企业版 Web：``routing.bot_id`` 建议有；``user_id``/``group_id`` 按策略需要
+
+实现已收口到 ``openjiuwen_protocol.identity``（gateway 与 AgentServer 共用的
+唯一来源）；本模块只 re-export 并保留 gateway 本地 handler 的
+``merge_routing_into_params`` 适配。
 """
 
 from __future__ import annotations
@@ -31,88 +35,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-ROUTING_METADATA_KEY = "routing"
-USER_ID_FIELD = "user_id"
-# 仅这些写入 metadata.routing；user_id 在 metadata 顶层。
-WEB_ROUTING_ID_FIELDS = ("group_id", "bot_id", "gateway_id")
-WEB_IDENTITY_FIELDS = (USER_ID_FIELD, *WEB_ROUTING_ID_FIELDS)
-
-
-def _identity_value(value: Any) -> str | None:
-    if isinstance(value, (list, tuple)):
-        value = value[0] if value else None
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _pick_field(mapping: Mapping[str, Any], field: str) -> str | None:
-    return _identity_value(mapping.get(field))
-
-
-def normalize_routing_identity(
-    *sources: Mapping[str, Any] | None,
-) -> dict[str, str]:
-    """从若干 mapping 归一化完整身份（含 ``user_id``）；同一字段以先出现的非空值为准。"""
-    identity: dict[str, str] = {}
-    for source in sources:
-        if not isinstance(source, Mapping):
-            continue
-        for field in WEB_IDENTITY_FIELDS:
-            if field in identity:
-                continue
-            value = _pick_field(source, field)
-            if value:
-                identity[field] = value
-    return identity
-
-
-def apply_routing_metadata(
-    metadata: Mapping[str, Any] | None,
-    routing: Mapping[str, str] | None,
-) -> dict[str, Any]:
-    """写入身份：``user_id`` → 顶层；``group_id``/``bot_id``/``gateway_id`` → ``routing``。"""
-    meta = dict(metadata or {})
-    identity = dict(routing or {})
-
-    for field in WEB_ROUTING_ID_FIELDS:
-        meta.pop(field, None)
-
-    if USER_ID_FIELD in identity:
-        user_id = _identity_value(identity.get(USER_ID_FIELD))
-        if user_id:
-            meta[USER_ID_FIELD] = user_id
-        else:
-            meta.pop(USER_ID_FIELD, None)
-
-    cleaned = {
-        field: value
-        for field, value in identity.items()
-        if field in WEB_ROUTING_ID_FIELDS and str(value or "").strip()
-    }
-    if cleaned:
-        meta[ROUTING_METADATA_KEY] = cleaned
-    else:
-        meta.pop(ROUTING_METADATA_KEY, None)
-    return meta
-
-
-def web_routing_identity(metadata: Mapping[str, Any] | None) -> dict[str, str]:
-    """读完整身份：顶层 ``user_id`` + ``metadata.routing`` 三字段。"""
-    if not isinstance(metadata, Mapping):
-        return {}
-    identity: dict[str, str] = {}
-    user_id = _pick_field(metadata, USER_ID_FIELD)
-    if user_id:
-        identity[USER_ID_FIELD] = user_id
-    routing = metadata.get(ROUTING_METADATA_KEY)
-    if isinstance(routing, Mapping):
-        for field in WEB_ROUTING_ID_FIELDS:
-            value = _pick_field(routing, field)
-            if value:
-                identity[field] = value
-    return identity
+from openjiuwen_protocol.identity import (
+    ROUTING_METADATA_KEY,
+    USER_ID_FIELD,
+    WEB_IDENTITY_FIELDS,
+    WEB_ROUTING_ID_FIELDS,
+    apply_routing_metadata,
+    normalize_routing_identity,
+    web_routing_identity,
+)
 
 
 def merge_routing_into_params(
