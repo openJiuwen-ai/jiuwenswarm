@@ -1,4 +1,4 @@
-"""Regression coverage for SwarmSkillHub API TLS configuration."""
+"""Regression coverage for source-level API and artifact download TLS configuration."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def _parse_source_config(raw):
 
 
 @pytest.mark.parametrize("setting", [None, True, False])
-def test_source_tls_setting_reaches_hub_api_client(setting):
+def test_source_tls_setting_reaches_api_and_download_clients(setting):
     raw = {
         "source_id": "swarmskillhub",
         "provider_type": "swarmskillhub",
@@ -64,13 +64,24 @@ def test_source_tls_setting_reaches_hub_api_client(setting):
         raw["verify_ssl"] = setting
     provider = SwarmSkillHubSourceExtension().create_provider(_parse_source_config(raw))
     expected = True if setting is None else setting
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("SKILL.md", "# TLS configuration regression\n")
+    payload = archive.getvalue()
+    descriptor = ArtifactDescriptor(
+        artifact_ref=ArtifactRef(SkillRef("swarmskillhub", "sample"), "v1"),
+        download_url="https://download.example.com/sample.zip",
+        checksum_sha256=hashlib.sha256(payload).hexdigest(),
+    )
     urls = []
     verify_values = []
     original_client = httpx.AsyncClient
 
     def respond(request):
         urls.append(str(request.url))
-        return httpx.Response(200, json={"code": 200, "data": {"items": []}})
+        if request.url.host == "hub.example.com":
+            return httpx.Response(200, json={"code": 200, "data": {"items": []}})
+        return httpx.Response(200, content=payload)
 
     def client_factory(**kwargs):
         verify_values.append(kwargs["verify"])
@@ -82,13 +93,14 @@ def test_source_tls_setting_reaches_hub_api_client(setting):
     async def run():
         try:
             await provider._get_data("/api/v1/plugins")
+            assert await provider.download_artifact(descriptor) == payload
         finally:
             await provider.close()
 
     with patch("httpx.AsyncClient", side_effect=client_factory):
         asyncio.run(run())
-    assert verify_values == [expected]
-    assert urls == ["https://hub.example.com/api/v1/plugins"]
+    assert verify_values == [expected, expected]
+    assert urls == ["https://hub.example.com/api/v1/plugins", descriptor.download_url]
 
 
 @pytest.mark.parametrize("setting", ["false", "true", 0, 1, None])
@@ -120,7 +132,11 @@ def test_ported_download_tls_and_integrity_behavior(scenario, error):
     )
     policy = DownloadPolicy(max_bytes=1 if scenario == "oversize" else 1024)
     provider = SwarmSkillHubSourceExtension().create_provider(
-        SourceConfig(source_id="swarmskillhub", provider_type="swarmskillhub")
+        _parse_source_config({
+            "source_id": "swarmskillhub",
+            "provider_type": "swarmskillhub",
+            "verify_ssl": False,
+        })
     )
     requests = []
     client_settings = []
