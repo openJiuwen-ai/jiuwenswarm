@@ -172,6 +172,7 @@ class SwarmSkillHubSourceExtension(SkillSourceExtension):
             source_id=config.source_id,
             display_name=display_name,
             timeout=timeout,
+            verify_ssl=config.verify_ssl,
         )
         # 信任策略内聚 Provider：构造后从 config.yaml 注入验签策略，并显式声明
         # 下载主机白名单（注册时并入来源 download_policy）。
