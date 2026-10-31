@@ -34,6 +34,68 @@ def _model_entry(model_name: str, api_base: str = "https://api.example.invalid")
     }
 
 
+@pytest.mark.parametrize(
+    "placeholder_fields",
+    [
+        {"model_name": "your-model-name"},
+        {"api_base": "https://example.com/compatible-mode/v1"},
+        {"api_key": "sk-xxxxxxxxx"},
+        {
+            "model_name": "your-model-name",
+            "api_base": "https://example.com/compatible-mode/v1",
+            "api_key": "sk-xxxxxxxxx",
+        },
+    ],
+)
+def test_build_probe_models_skips_placeholders_before_model_construction(placeholder_fields):
+    entry = _model_entry("model-a")
+    entry["model_client_config"].update(placeholder_fields)
+
+    with (
+        patch.object(image_modality_warmup, "get_default_models", return_value=[entry]),
+        patch(
+            "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_model_from_entry"
+        ) as build_model,
+        patch.object(image_modality_warmup, "set_cached_image_support") as set_cached,
+        patch.object(image_modality_warmup.logger, "warning") as warning,
+    ):
+        models = image_modality_warmup._build_probe_models({})
+
+    assert models == []
+    build_model.assert_not_called()
+    set_cached.assert_not_called()
+    warning.assert_called_once_with(
+        "[ImageModalityWarmup] skipping placeholder model configuration"
+    )
+
+
+def test_build_probe_models_keeps_valid_model_alongside_placeholder():
+    placeholder = _model_entry("your-model-name")
+    valid = _model_entry("model-a")
+    model = object()
+
+    with (
+        patch.object(
+            image_modality_warmup, "get_default_models", return_value=[placeholder, valid]
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_model_from_entry",
+            return_value=model,
+        ) as build_model,
+        patch.object(
+            image_modality_warmup,
+            "probe_cache_key",
+            return_value=("https://api.example.invalid", "model-a"),
+        ),
+    ):
+        models = image_modality_warmup._build_probe_models({})
+
+    assert models == [model]
+    build_model.assert_called_once_with(
+        valid["model_client_config"], valid["model_config_obj"]
+    )
+
+
 @pytest.mark.asyncio
 async def test_warmup_probes_each_configured_model_once():
     config = {"models": {"defaults": [_model_entry("model-a"), _model_entry("model-b")]}}
