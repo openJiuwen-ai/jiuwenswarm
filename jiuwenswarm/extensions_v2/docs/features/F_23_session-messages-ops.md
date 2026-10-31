@@ -50,48 +50,70 @@ sequenceDiagram
 
 ### 3.2 事件输入、会话上下文与字段说明
 
-| 事件输入字段 | 类型 / 默认 | 谁填写 | 准确含义与改写边界 | 填写示例 |
-| --- | --- | --- | --- | --- |
-| Event.event_input | 空映射 {} | Ops 代理自动构造 | 查询 Handler 收到空参数对象；不是 SessionContext，也不携带可改写目标身份 | 注册时使用 match_pattern={} |
+先分清谁需要填写。普通调用者只填写方法参数；返回值由平台或查询 Handler 提供，用户拿到后直接消费。
+只有在自己的查询 Handler 中短路或加工输出时，才需要按输出表构造值。所有表格分别解释“填什么、代表什么、起什么作用”，并写明缺失和错误边界。
 
-会话上下文通过 `bus.trigger(Event(...), context)` 的第二个参数传递，与 Event.event_input 分开。下面字段由平台和 Core 绑定，不能通过增加查询参数改换会话或读取目标。
-
-| 对象 / 字段 | 类型与是否必需 | 谁提供 / 表达什么 | 填写或读取示例 |
+| 数据所在位置 | 谁负责 | 用户应该做什么 | 作用 |
 | --- | --- | --- | --- |
-| ops.session_context | Core 只读属性 | 平台随外层事件传入，Core 在执行 Handler 前绑定 | 直接读属性；不是 await 方法，不收集、不组装上下文 |
-| SessionContext.session_id | 有效非空 str，必需 | 平台业务边界提供的当前会话身份 | session-a；不从 query 输入或 Hook 返回值改换目标 |
-| 查询所需资料 | 有效 session_id 即可 | 历史由平台服务按会话 ID 读取；不预装到 SessionContext | 不要求 cwd、root、model 或用量快照 |
-| current_query_origin().package | str 或 None | Server 查询代理从原调用 Ops 的包身份记录 | 是原发起包，不是当前 Hook 所属包；无 Ops 查询域时 helper 返回 None，须先判空；不是 Core next.origin |
+| Ops 方法参数 | 普通调用者 | 调用 usage 时按需填 breakdown/columns；其他六项不传参数 | 选择本次查询选项，不选择另一个会话 |
+| Event.event_input | Ops 代理自动构造；查询 USER 可合法改写 | 按下表读选项；需要改写时构造新 Event 后 next | 让本次查询链使用合法选项，不修改可信上下文 |
+| SessionContext | 平台采集，Core 绑定 | 普通用户不补填；通过 ops.session_context 只读访问 | 确定本次查谁、使用哪些可信目录和快照 |
+| Event 输出 value/deny | 默认 CORE；或替代结果的查询 Handler | 查询 Handler 才需构造 return {value: ...} 或 return {deny: ...} | 决定这次查询的返回视图或明确拒绝 |
+| Ops 直接返回值 | 分派器校验、复制并解包 | 普通调用者消费字段即可，不需要重新填写或再次解包 value | 作为自己业务方法的参数，不自动写回平台或渲染 |
 
-`ops.session_context` 是已有只读属性。业务方法负责采集和组装，查询代理只取出它并继续传给查询事件；Bus 会规范化为只读副本，保留同一会话身份和资料，不承诺前后是同一个 Python 对象。
+事件信封与查询输入如下。event_type 不属于参数字典；event_input 与可信 SessionContext 是独立传递的两部分。
+
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Event.event_type | 固定 str | Ops 代理自动填写；不是方法参数 | "session.messages" | 进入哪一条查询处理链的类型名 | Bus 据此寻找已注册的 Matcher / Validator / Handler 链 | 用户不用填；不要在 arguments 中增加 event_type，也不要通过改类型跳到另一条查询链 |
+| Event.event_input | 只读 Mapping；无选项时 {} | Ops 代理复制并构造；查询 Handler 读取 | {}；由代理生成，用户调用方法时仍不传参数 | 这一次查询的选项，独立于 SessionContext | 供 Matcher / 查询 Handler / CORE 读取；不承载可改写会话身份 | 仅 usage 允许下述选项；其余六项必须是空映射。不可原地改写；合法改写用新的 Event 和参数映射传 next |
+
+平台随本次调用附带的资料如下。这些是已绑定事实，用户不需要在调用 Ops 时逐项填写；查询 Handler 也不能通过改写 Event 输入替换它们。
+
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| ops.session_context | Core 只读属性，查询需要非 None | 平台把上下文随外层 Event 交给 Bus，Core 绑定到实际 Handler 的 Ops | 用户不用填，也不用 await；直接读取 ops.session_context | 本次 Handler 的可信会话资料入口 | 代理取出这份资料，随查询 Event 的独立 context 参数继续传递 | 缺少上下文时查询报错；不要把用户输入 payload 包装成平台可信上下文 |
+| SessionContext.session_id | 平台验证过的非空 str，必需 | 平台业务入口提供；用户普通调用不填写 | 平台例如绑定 session-a；查询方法和 Event 输入里都不再填 session_id | 本次绑定的是哪个会话 | 读取相应会话的历史、保存模型或用量服务；同时参与隔离和循环保护 | 缺失/非法不能查询；返回值或 Event 输入不能把目标改成另一个会话 |
+| 额外目录 / 模型 / 历史快照 | 本方法不要求 | 历史由平台服务按会话 ID 读取 | 用户不用把消息数组、cwd 或模型放入 SessionContext | 只需绑定有效会话身份即可定位历史 | 避免调用方为了读消息先触发用量或追加消息 | 没有完整历史资料在上下文中不会阻止按会话 ID 读取 |
+| current_query_origin().package | str 或 None；helper 本身也可返回 None | Server 分派器从原 Ops 的包身份记录；不是用户传参 | 先 origin = current_query_origin()，非 None 时再读 origin.package | 谁发起了本次查询，而不是当前查询 Hook 属于哪个包 | 用于用户自己的审计和来源判断；它不是 Core next.origin 或授权证明 | 直接宿主触发而没有 Ops 调用域时 helper 可为 None；不要无判空访问 .package |
+
+`ops.session_context` 是只读属性，不是采集或组装上下文的 Ops 方法。平台业务方法负责收集和构造；
+查询代理只读取这份资料，再交给查询事件。Bus 会生成规范化的只读副本，保留同一会话身份和资料，不要求前后是同一个 Python 对象。
 
 ### 3.3 事件输出、允许的改写、失败与取消
 
-| 事件结果字段 | 类型 | 出现规则 | 准确含义 | 如何消费 |
-| --- | --- | --- | --- | --- |
-| value | list[dict] | 成功时唯一顶层键 | 本次查询值；允许 None 的查询仍须包装为 {"value": None} | Ops 会取出 value；调用者不需要再访问 result["value"] |
-| deny | 去空白后非空 str，原字符串最多 512 字符 | 明确拒绝时唯一顶层键 | 公开拒绝原因；不能和 value 同时出现 | return {"deny": "QUERY_DISABLED"}；Ops 转为 SessionQueryDenied |
+先看查询 Handler 的事件输出封装。普通 Ops 调用者不用构造这层封装；查询 Handler 从 next 得到完整封装后，
+可直接返回，不要又包成 {"value": result} 形成两层 value。
 
-下面的返回字段位于事件结果的 `value` 内。方法成功返回时已经去掉外层 value 包装，因此消费示例中的对象就是方法返回值。
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| value | list[dict]；成功时唯一顶层键 | 默认 CORE 提供；查询 USER 短路或加工结果时按同样结构填写 | return {"value": []} | 这一次查询成功给出的值；下一张表解释它内部每个字段 | Ops 校验、独立复制并解包；普通调用者拿到的是 value 本身 | 本方法的 value 不能为 None；未知时按表返回空数组或保留必需对象。不能同时填写 deny 或增加未知顶层键；USER 无效输出会按 Core 隔离规则处理，不能靠错填来拒绝 |
+| deny | 去空白后非空 str，原字符串最多 512 字符；拒绝时唯一顶层键 | 希望明确拒绝此次查询的查询 Handler 填写 | return {"deny":"QUERY_DISABLED"}；也可使用能公开给调用者的简短原因 | 明确拒绝这一次查询，不是返回了一个未知数值或平台读取故障 | 分派器将其转换为 SessionQueryDenied，code=DENIED，reason 保留原因；调用者可按拒绝分支处理 | 正常成功不填；不能与 value 同时出现，也不能填空白、False、None 或异常对象。抛普通异常可能被隔离后继续，并不等于 deny |
 
-| 返回字段 | 类型 / 出现条件 | 谁提供 | 准确含义 | 消费方式与例子 |
-| --- | --- | --- | --- | --- |
-| 方法返回 / value | list[dict]，最多 4096 项 | 平台 CORE 或查询 Handler | 最近保留消息，从旧到新；缺少历史时 []。没有 page 包装、cursor、snapshot_id 或 has_more | 最近五条用 messages[-5:]；最后一条用 messages[-1]（先判断非空） |
-| value[i].role | user / assistant | 已提交消息类型 | 谁写了该条；独立工具结果行投影成 user，并通过 toolResults 表达结果 | user |
-| value[i].text | str，必有 | 消息文本块拼接 | 只拼接文本块，没有文本为 ''；不把图片或工具结构序列化成普通正文 | hello；不是旧 content 键 |
-| value[i].toolUses | list[dict]，必有 | 助手结构化工具调用 | 本条 assistant 发起的调用；没有为 []。结果存在时回填 text/result/isError | []；不使用记录 id 来代替 tool_use_id |
-| toolUses[j].tool_use_id | 非空 str | 原工具调用 ID | 关联工具结果的调用标识；不是会话 ID、消息行 uuid 或工具名 | call-1 |
-| toolUses[j].tool | 非空 str | 原工具名 | 实际调用的工具名称 | Read / Bash / mcp__server__tool |
-| toolUses[j].input | dict | 结构化原工具参数 | 工具调用输入对象；旧记录缺失 ID/名称/参数时不补造一个调用 | {'path': 'README.md'} |
-| toolUses[j].text | str，可缺省 | 配对结果文本 | 有结果后按模型可读文本填入；调用未完成可缺失 | file contents |
-| toolUses[j].result | JSON 值，可缺省 | 已存工具结果 | 保留原可公开结果对象或标量；没有已存结果时省略，不伪造 None 作为已完成 | {'ok': True} |
-| toolUses[j].isError | True，可缺省 | 已存工具失败事实 | 只有确知工具报错时出现 True；成功通常省略 | True |
-| value[i].toolResults | list[dict]，仅 user，可缺省 | 用户侧工具结果块或独立工具结果行 | 为模型呈现的结果，与 assistant 的 toolUses 通过 tool_use_id 对应 | 没有时省略，不强制补空数组 |
-| toolResults[j].tool_use_id | 非空 str，必有 | 原调用 ID | 关联它回答的那个工具调用 | call-1 |
-| toolResults[j].text | str，必有 | 工具结果文本块拼接 | 模型读到的工具返回文本 | file contents |
-| toolResults[j].isError | bool，必有 | 工具结果状态 | 工具明确报错为 True，否则 False；不要与 assistant 可省略的字段混淆 | False |
-| toolResults[j].result | JSON 值，可缺省 | 存档中的公开工具结果 | 存档确有该结果时提供；不把 UI 进度或内部元数据当成结果 | {'ok': True} |
-| 不返回的字段 | handle/id/uuid/request_id/产品 extra | 无须填写 | Claude messages() 不带 compact 专用 handle；产品原始字段不混入此消息视图 | 追加后要核对行身份，使用 append 的真实提交回执 |
+下面以 **Ops 直接返回值为根**解释所有公开字段；在事件输出中，它们位于 value 内。
+
+本方法返回消息数组。i/j 表示数组下标，例如 messages[0]["toolUses"][0]；不要填名为 i/j 的键。 None/True/False 是 Python 写法，JSON 示例中分别写 null/true/false，不能加引号冒充字符串。
+
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 方法直接返回值（事件中的 value） | list[dict]，最多 4096 项 | CORE 读取已提交主会话历史并生成独立消息视图 | 无消息填 []；有消息按旧到新排列，例如 [{"role":"user","text":"你好","toolUses":[]}] | 最近保留的用户/助手消息投影，不是原始 JSONL 行、分页对象或活跃模型的全部上下文 | 生成近期摘要；最近五条用 messages[-5:]，最后一条先判非空再取 messages[-1] | 无可读历史用 []，不是 None；I/O 或解析故障不能伪装为空数组；不再填写 limit/cursor |
+| [i].role | user 或 assistant 字符串，每条必有 | 历史消息角色投影；独立工具结果行投影成 user | "user" 或 "assistant" | 这条消息在模型消息视图中的发送角色；不等同于原产品历史行 role | 按用户输入和助手回复分组；工具结果通过 toolResults 表达 | 不能省略或填 system/tool 等其他值；不要用昵称、Agent ID 代替角色 |
+| [i].text | str，每条必有；可为空字符串 | 原消息的文本块拼接 | "请读取 README.md"；没有普通文本时填 "" | 人能阅读的普通正文；图片和工具结构不会被强行序列化到这里 | 摘要、检索或正文展示；工具调用参数从 toolUses 读取 | 无文本为 "" 而非 None；不要把整条 JSON 记录、列表或图片对象填进 text |
+| [i].toolUses | list[dict]，每条必有 | 默认从助手消息里的结构化工具调用提取 | 没有调用填 []；有调用填下述对象数组 | 本条消息记录的工具调用及可配对结果，不是当前可用工具清单 | 查看助手调用了哪些工具、输入是什么、是否已有结果；读取不会再次执行工具 | 没有也必须保留 []；旧记录缺失调用 ID/名称/参数时不编造调用 |
+| [i].toolUses[j].tool_use_id | 非空 str，调用对象必有 | 原始工具调用 ID | "call-read-1"，并与对应 toolResults 项使用相同 ID | 一次具体工具调用的关联标识；不是消息 id、会话 id 或工具名 | 把工具请求与响应配对，避免同一工具多次调用混淆 | 不能省略、填空字符串或用另一条调用的 ID 占位 |
+| [i].toolUses[j].tool | 非空 str，调用对象必有 | 原始工具名称 | "Read"、"Bash" 或实际的 MCP 工具名 | 这次调用使用的工具名称，不是给用户看的操作说明 | 标注或按工具类型汇总调用；字段本身不注册工具或授予调用权限 | 不能省略或填空；不要拿工具 ID、会话 ID 代替名称 |
+| [i].toolUses[j].input | 可复制 JSON 对象，必有 | 原结构化工具参数 | {"file_path":"README.md"}；无参数的调用填 {} | 这一次调用传给工具的参数对象，不是工具返回值或字符串化 JSON | 解释某次工具操作针对什么目标；消费方按工具自身参数定义读取 | 不能填 None 或普通字符串；不要猜补原记录未保存的参数或加入对象实例 |
+| [i].toolUses[j].text | str，可缺省 | 已配对工具结果的可读文本 | 结果确有文字时填 "项目说明"；结果文本确为空时填 "" | 该调用已观察到的结果文字，不是原调用前的助手正文 | 在工具调用旁显示结果摘要；不能仅靠缺省判断工具成功或失败 | 尚无结果文字时省略键，不用 None 或虚构“执行成功”占位 |
+| [i].toolUses[j].result | 可复制的 JSON 值，可缺省 | 存档中已保存且可公开的工具结果 | 例如 {"text":"项目说明"}；也可为实际保存的数组或标量 | 结构化结果，与面向阅读的 text 分开 | 让用户业务按结构处理结果；不会反向执行或更新工具状态 | 未知时省略；只有真实结果就是 JSON null 时才填 None，不用 None 代表“还没读到” |
+| [i].toolUses[j].isError | 仅 True，可缺省 | 确知该工具调用的结果报错 | 确知错误填 True；成功或未标记错误时省略该键 | 该调用已观察到错误；与 toolResults 中必填布尔字段规则不同 | 标记错误调用，提醒用户业务检查结果 | 不要填 False、None 或字符串；此字段不存在不能证明工具已经完成 |
+| [i].toolResults | list[dict]，可缺省，只允许出现在 user 消息 | 用户侧工具结果块或独立工具结果行 | 有结果时填下述结果对象数组；没有时省略 | 作为模型输入呈现的工具响应，可与前面的助手调用配对 | 查看工具回答了哪次调用；与普通用户正文区分 | 没有时可省略，不强制补 []；assistant 消息不能增加这个字段 |
+| [i].toolResults[j].tool_use_id | 非空 str，结果对象必有 | 它所回答的原调用 ID | "call-read-1"，对应 toolUses 中同一调用 | 这份结果属于哪一次工具请求 | 跨消息关联请求和结果；不能仅按工具名配对 | 不能省略或为空，也不能拿消息行 uuid 替代 |
+| [i].toolResults[j].text | str，结果对象必有；可为空字符串 | 工具结果的文本块拼接 | "项目说明"；结果无可读文本时填 "" | 模型能阅读的工具返回正文 | 查看或摘要结果；结构化处理优先读取可得的 result | 无文字仍保留 ""，不能省略或填 None |
+| [i].toolResults[j].isError | bool，结果对象必有 | 已保存的工具结果状态 | 明确报错填 True，否则按已保存状态填 False | 这条工具响应是否标记为错误；它与 toolUses.isError 的可省略 True 规则不同 | 区分正常工具响应和错误响应 | 不能省略，不能填字符串 "false" 或 0/1；不要把状态未知硬写成成功 |
+| [i].toolResults[j].result | 可复制 JSON 值，可缺省 | 存档中的公开结构化工具结果 | 例如 {"text":"项目说明"}；仅填真实保存的结果 | 这份工具响应的机器可读结果 | 按业务字段读取结果，而不是重新解析展示文本 | 存档没有时省略；不填 UI 进度、内部元数据或编造结果 |
+| 不返回的字段：handle/id/uuid/request_id/产品 extra | 本消息视图没有这些键 | 不由 messages 查询返回 | 不要增加或访问这些键 | 公开消息视图与原始产品历史行、compact 专用 handle 是不同结构 | 要核对追加记录身份时使用 append 的真实回执；消息查询只消费约定的角色、正文和工具字段 | 访问不存在的键可能 KeyError；不要把缺失理解成历史记录没有真实身份 |
+
+`toolUses[].isError` 只允许出现 True；`toolResults[].isError` 则是必须填写的 True/False。两种字段不能套用同一缺省规则。可选结构化 result 缺失与真实 JSON null 也不同；查询返回的是独立消息投影，不能直接拿它和 append 回执中的 history_record 逐字段比较。
 
 继续默认查询使用 `await next_handler(event)`。需要短路时，可直接返回 `{"value": []}`；需要明确拒绝时返回 `{"deny": "QUERY_DISABLED"}`，下游可以不执行。加工结果必须符合本表的值类型及专项 spec；只改变本次返回视图，不改写平台真实状态、上下文或授权范围。
 
@@ -150,9 +172,12 @@ def create_extension():
 async def messages() -> list[dict]: ...
 ```
 
-| 方法参数 | 类型 / 默认 | 谁填写 | 准确含义 | 应该怎样填 |
-| --- | --- | --- | --- | --- |
-| 方法参数 | 无 | 调用者不填写 | 查询已绑定会话，不接受 session_id、路径、模型名或包 ID | 直接调用 await ops.session.messages() |
+| 字段 / 参数 | 类型、必填与默认 | 谁填写 / 从哪里来 | 填写什么 / 正确例子 | 代表什么意思 | 有什么作用 / 怎样使用 | 不填、未知或错填时怎样处理 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 方法参数 | 无参数 | 普通调用者不填写参数 | await ops.session.messages() | 查询目标由当前 Ops 已绑定的会话上下文确定 | 直接读取这次会话的视图；不需要另填会话 ID 或路径 | 括号留空；不要调用 ops.session.messages({})，也不要传 None/session_id/cwd；空 {} 仅由代理生成在 Event 输入中 |
+
+表中“无参数”就是调用括号留空，不是让用户传入空字典。只有 usage 有可选查询选项；
+平台会话身份、目录和快照不通过这些选项填写。完整参数对象和事件结果的对应例子见第 4.3 节。
 
 典型调用如下；它可写在任何满足会话前提的已注册业务 Handler 中。
 
@@ -173,6 +198,80 @@ for message in messages[-5:]:
 ```
 
 成功返回 `list[dict]`，字段及缺失语义见第 3.3 节。无 SessionContext 报 RuntimeError；非法会话 ID 由平台会话校验拒绝；方法参数非法报 TypeError。活跃同名或间接循环报 QUERY_REENTRANT，深度超过 16 报 QUERY_DEPTH_EXCEEDED；不允许调用方覆盖 bus / event_type。平台读取故障保持其原有异常类型和稳定 code。Handler 未捕获 Ops 错误时，还受外层事件自身的故障隔离规则约束，不能把外层继续误认为查询成功。
+
+### 4.3 从填写输入到消费输出的完整字段例子
+
+假设下述用户消息、助手工具请求和匹配的工具结果都已提交到主会话历史。 用户无需在查询参数中重新填写平台资料。下面的 Event 参数由方法代理自动构造：
+
+```json
+{}
+```
+
+查询 Handler 默认继续后，完整事件输出可为：
+
+```json
+{
+  "value": [
+    {
+      "role": "user",
+      "text": "请读取 README.md",
+      "toolUses": []
+    },
+    {
+      "role": "assistant",
+      "text": "我来读取项目说明。",
+      "toolUses": [
+        {
+          "tool_use_id": "call-read-1",
+          "tool": "Read",
+          "input": {
+            "file_path": "README.md"
+          },
+          "text": "项目说明",
+          "result": {
+            "text": "项目说明"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "text": "",
+      "toolUses": [],
+      "toolResults": [
+        {
+          "tool_use_id": "call-read-1",
+          "text": "项目说明",
+          "isError": false,
+          "result": {
+            "text": "项目说明"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Ops 返回的是上面 value 对应的值，不包含额外的 value 外壳。以下代码放在已绑定会话的业务 Handler 中，
+logger 沿用第 3.4 节模块中的定义。它展示字段怎样影响用户自己的消费逻辑：
+
+```python
+messages = await ops.session.messages()
+for message in messages[-5:]:
+    logger.info("role=%s text_length=%s", message["role"], len(message["text"]))
+    for call in message["toolUses"]:
+        logger.info("tool=%s call_id=%s", call["tool"], call["tool_use_id"])
+        if call.get("isError") is True:
+            logger.info("this tool call has an error result")
+```
+
+若查询 Handler 希望明确拒绝，可返回以下完整事件结果；此时普通调用方收到 SessionQueryDenied，
+而不是一个需要自行解析 deny 的成功字典：
+
+```json
+{"deny": "QUERY_DISABLED"}
+```
 
 ## 5. 接入与兼容方案
 
