@@ -242,6 +242,7 @@ export interface ChatRuntime {
    */
   pendingGoalObjectiveBubble: { content: string; timestamp: string } | null;
   inputValue: string;
+  inputSkillPositions: { name: string; offset: number }[];
   /** evolutionStatus 自动清除定时器，按 session 隔离 */
   evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null;
   /** interruptResult 自动清除定时器，按 session 隔离 */
@@ -296,6 +297,7 @@ function createEmptyRuntime(): ChatRuntime {
     pendingA4PAuthorization: null,
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
+    inputSkillPositions: [],
     evolutionStatusClearTimer: null,
     interruptResultClearTimer: null,
   };
@@ -450,7 +452,7 @@ interface ChatState {
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
   clearPermissionQuestions: (sessionId: string) => void;
-  setInputValue: (sessionId: string, value: string) => void;
+  setInputValue: (sessionId: string, value: string, skillPositions?: { name: string; offset: number }[]) => void;
   setSessionError: (sessionId: string, error: string | null) => void;
   setUsageSummary: (sessionId: string, messageId: string, usage: UsageSummary) => void;
   addFileItems: (
@@ -2272,14 +2274,18 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  setInputValue: (sessionId, value) => {
+  setInputValue: (sessionId, value, skillPositions) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, inputValue: value },
+          [sessionId]: {
+            ...runtime,
+            inputValue: value,
+            inputSkillPositions: skillPositions ?? (value === runtime.inputValue ? runtime.inputSkillPositions : []),
+          },
         },
       };
     });
