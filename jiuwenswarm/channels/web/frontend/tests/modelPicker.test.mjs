@@ -9,6 +9,14 @@ import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 import svgr from 'vite-plugin-svgr';
 
+// Transport selection reads the browser environment while modules are imported.
+const moduleDom = new JSDOM('<!doctype html>', { url: 'http://localhost/' });
+const moduleGlobals = new Map();
+for (const [name, value] of Object.entries({ window: moduleDom.window, document: moduleDom.window.document })) {
+  moduleGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+}
+
 // Use the production transform for the provider catalog's import.meta.glob and assets.
 const vite = await createServer({
   configFile: false,
@@ -39,6 +47,11 @@ try {
   ]);
 } finally {
   await vite.close();
+  for (const [name, descriptor] of moduleGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+  moduleDom.window.close();
 }
 const [
   { default: ModelPicker },
@@ -107,6 +120,7 @@ async function withFixture(run, language = 'en') {
     };
   }
   const previousGlobals = new Map();
+  dom.window.__JIUWENSWARM_EDITION__ = 'personal';
   for (const [name, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -181,6 +195,20 @@ function cronDrawer(overrides = {}) {
     ...overrides,
   });
 }
+
+test('enterprise chat model stays visible but cannot open its menu or show a dropdown arrow', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    window.__JIUWENSWARM_EDITION__ = 'enterprise';
+    await mount(createElement(ChatModelSelector));
+    const trigger = byId('chat-panel-model-selector-trigger');
+    assert.equal(trigger.disabled, true);
+    assert.match(trigger.textContent, /Configured A/);
+    assert.equal(trigger.querySelector('.chat-mode-select__chevron'), null);
+    await click(trigger);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
+  });
+});
 
 test('Team conversations keep model-group selection enabled', () => {
   const selectorSource = readFileSync(
@@ -363,24 +391,83 @@ test('opening a stored team task from the list preserves its mode and model', as
   });
 });
 
-test('an unavailable saved task model stays visible and is not replaced during catalog refresh', async () => {
+for (const language of ['zh', 'en']) {
+  test(`an unavailable saved task model is explained in ${language} without replacing its value`, async () => {
+    await withFixture(async ({ mount, click, byId }) => {
+      let submitted;
+      await mount(
+        cronDrawer({
+          initial: { ...initialForm, modelName: 'removed-model' },
+          onSubmit(value) {
+            submitted = value;
+          },
+        }),
+      );
+      await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
+      assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+      const hint = byId('cron-drawer-model-unavailable-hint');
+      assert.ok(hint);
+      assert.equal(hint.getAttribute('role'), 'status');
+      assert.equal(
+        hint.textContent,
+        resources[language].translation.cron.drawer.modelUnavailable.replace('{{model}}', 'removed-model'),
+      );
+      await click(byId('cron-model-picker-trigger'));
+      assert.equal(document.querySelector('[aria-checked="true"]'), null);
+      await click(document.body);
+      await click(byId('cron-drawer-submit-btn'));
+      assert.equal(submitted.modelName, 'removed-model');
+    }, language);
+  });
+}
+
+test('task model availability waits for a successful catalog load, including an empty result', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    useSessionStore.setState({ modelsLoaded: false, availableModels: [], chatAvailableModels: [] });
+    await mount(cronDrawer());
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+  });
+});
+
+test('deleting the last task model shows a warning until the user selects an available model', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     let submitted;
+    useSessionStore.getState().setAvailableModels([catalog[1]]);
     await mount(
       cronDrawer({
-        initial: { ...initialForm, modelName: 'removed-model' },
         onSubmit(value) {
           submitted = value;
         },
       }),
     );
-    await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
-    assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[3]]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
     await click(byId('cron-model-picker-trigger'));
-    assert.equal(document.querySelector('[aria-checked="true"]'), null);
-    await click(document.body);
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
     await click(byId('cron-drawer-submit-btn'));
-    assert.equal(submitted.modelName, 'removed-model');
+    assert.equal(submitted.modelName, 'configured-b');
+  });
+});
+
+test('a task model remains available when only a same-name non-default connection survives', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    await mount(cronDrawer());
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[2]]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Secondary connection');
   });
 });
 
@@ -397,6 +484,8 @@ test('a new task keeps an unselected model instead of borrowing the active chat 
       }),
     );
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Select Model');
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
     await click(byId('cron-drawer-submit-btn'));
     assert.equal(submitted.modelName, null);
   });

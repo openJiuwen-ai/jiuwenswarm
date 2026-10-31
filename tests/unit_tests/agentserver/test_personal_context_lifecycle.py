@@ -68,7 +68,9 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> AgentWebSocketServer:
     monkeypatch.setattr(
         server_module, "PersonalContextHostAPI", _FakePersonalContextHost
     )
-    return AgentWebSocketServer(host="127.0.0.1", port=0)
+    server = AgentWebSocketServer(host="127.0.0.1", port=0)
+    monkeypatch.setattr(server, "_schedule_tokenizer_warmup", lambda *_args, **_kwargs: None)
+    return server
 
 
 def test_personal_context_cancellation_handlers_do_not_raise_inside_except() -> None:
@@ -156,6 +158,7 @@ async def test_start_opens_websocket_without_waiting_for_personal_context(
                 task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        await server.stop()
 
 
 @pytest.mark.asyncio
@@ -183,13 +186,16 @@ async def test_start_restores_enabled_personal_context_state_to_agent_manager(
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
-    await server.start(bind_transport=True)
-    task = server._personal_context_start_task  # pylint: disable=protected-access
-    assert task is not None
-    await task
+    try:
+        await server.start(bind_transport=True)
+        task = server._personal_context_start_task  # pylint: disable=protected-access
+        assert task is not None
+        await task
 
-    assert events == ["ws-serve"]
-    manager_update.assert_awaited_once_with(True)
+        assert events == ["ws-serve"]
+        manager_update.assert_awaited_once_with(True)
+    finally:
+        await server.stop()
 
 
 @pytest.mark.asyncio
@@ -224,12 +230,15 @@ async def test_personal_context_start_failure_does_not_fail_agentserver_start(
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
-    await server.start(bind_transport=True)
-    assert server._personal_context_start_task is not None  # pylint: disable=protected-access
-    await server._personal_context_start_task  # pylint: disable=protected-access
+    try:
+        await server.start(bind_transport=True)
+        assert server._personal_context_start_task is not None  # pylint: disable=protected-access
+        await server._personal_context_start_task  # pylint: disable=protected-access
 
-    assert server._server is not None  # pylint: disable=protected-access
-    assert events == ["ws-serve"]
+        assert server._server is not None  # pylint: disable=protected-access
+        assert events == ["ws-serve"]
+    finally:
+        await server.stop()
 
 
 @pytest.mark.asyncio

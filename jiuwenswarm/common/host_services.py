@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import threading
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from typing import Any
 
 RuntimePushHandler = Callable[
@@ -26,6 +27,34 @@ _runtime_push_handlers: list[RuntimePushHandler] = []
 _runtime_wake_handlers: list[RuntimeWakeHandler] = []
 _runtime_xiaoyi_channel_providers: list[RuntimeXiaoyiChannelProvider] = []
 _runtime_host_handlers_lock = threading.RLock()
+_request_push_handlers: dict[tuple[str, ...], RuntimePushHandler] = {}
+
+
+def _push_route(message: dict[str, Any]) -> tuple[str, ...]:
+    from jiuwenswarm.common.request_identity import web_routing_identity
+
+    identity = web_routing_identity(message.get("metadata"))
+    return tuple(
+        str(message.get(key) or "")
+        for key in ("request_id", "channel_id", "session_id")
+    ) + tuple(
+        identity.get(key, "") for key in ("user_id", "group_id", "bot_id", "gateway_id")
+    )
+
+
+@contextmanager
+def scoped_runtime_push_handler(message: dict[str, Any], handler: RuntimePushHandler):
+    """Route in-turn delivery even from reused SDK tasks with older ContextVars."""
+    key = _push_route(message)
+    with _runtime_host_handlers_lock:
+        if key in _request_push_handlers:
+            raise RuntimeError("duplicate request push route")
+        _request_push_handlers[key] = handler
+    try:
+        yield
+    finally:
+        with _runtime_host_handlers_lock:
+            _request_push_handlers.pop(key, None)
 
 
 def _remove_handler_owner(handlers: list[Any], handler: Any) -> None:
@@ -78,15 +107,33 @@ def restore_runtime_push_handler(
 
 
 async def send_runtime_push(message: dict[str, Any]) -> bool:
-    """Send through the optional host adapter; return False when unavailable."""
+    """Send through the optional host adapter; return False when unavailable.
+
+    HTTP 聊天会挂一个「仅转发 chat.file」的请求级 handler。cron / 其它
+    server_push 若命中同一路由键却被它拒绝（返回 False），必须再回退到进程级
+    ``send_push``（WebSocket 或 ``events/stream`` hub），否则企业版 runtime
+    模式下定时任务永远送不到 Gateway。
+    """
     with _runtime_host_handlers_lock:
-        handler = _runtime_push_handler
-    if handler is None:
-        return False
-    result = handler(message)
-    if inspect.isawaitable(result):
-        result = await result
-    return result if isinstance(result, bool) else True
+        scoped = _request_push_handlers.get(_push_route(message))
+        host = _runtime_push_handler
+    handlers: list[RuntimePushHandler] = []
+    if scoped is not None:
+        handlers.append(scoped)
+    if host is not None and host is not scoped:
+        handlers.append(host)
+    for handler in handlers:
+        result = handler(message)
+        if inspect.isawaitable(result):
+            result = await result
+        if result is None:
+            return True
+        if isinstance(result, bool):
+            if result:
+                return True
+            continue
+        return True
+    return False
 
 
 class RuntimeHostPushTransport:
@@ -178,6 +225,7 @@ def get_runtime_xiaoyi_channel(channel_id: str = "xiaoyi") -> Any:
 
 
 __all__ = [
+    "scoped_runtime_push_handler",
     "RuntimePushHandler",
     "RuntimeHostPushTransport",
     "RuntimeWakeHandler",

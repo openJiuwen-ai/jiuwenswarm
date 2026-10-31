@@ -357,6 +357,19 @@ def is_team_cron_mode(mode: str | None) -> bool:
     return is_team_mode(mode)
 
 
+def normalize_tenant_id(raw: Any) -> str:
+    """群、机器人、用户都是字符串。没填、不是字符串、或只有空白时保持空串。
+
+    个人版旧数据没有这三格，读写都保持 ``""``，与原来一致。
+    企业版创建路径会要求三格都有真值，不会靠这里补占位。
+    """
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text:
+            return text
+    return ""
+
+
 @dataclass(frozen=True)
 class CronTarget:
     """Where to push cron results."""
@@ -422,9 +435,13 @@ class CronJob:
     mcp: list[str] | None = None
     # 飞书多应用场景：创建该定时任务的 app_id，用于推送时定位到正确的 app 配置
     app_id: str = ""
+    # 租户里的群、机器人。和 user_id 凑成「这条任务是谁的」。
+    # 没填时保持空串（个人版旧数据没有这两格，与原来一致）。
+    group_id: str = ""
+    bot_id: str = ""
     # 创建者标识（web 端 user_id）。执行时透传给 faas 的 X-Session-Context，
     # 否则 CreateSandbox 拉不起导致 60s 超时（见 plan-cron-user-id）。
-    # 默认空串兼容旧数据；语义=创建者，创建后不可变。
+    # 语义=创建者，创建后不可变。没填或空字符串在读写时保持空串。
     user_id: str = ""
     # 登录免费模型的凭据句柄绑定：创建/改选登录模型时，由创建连接上的华为账号
     # 登录会话派生（credential_ref_for_user）。路由 user_id 与华为账号是两套
@@ -437,6 +454,8 @@ class CronJob:
     # from_dict 仅做 normalize + 兜底 "work"，不做跨层 Project 反查；
     # 精确值由创建/更新路径从 Project 记录注入，或由展示层二次查询覆盖。
     work_mode: str = DEFAULT_WEB_WORK_MODE
+    # 企业库表调度用的下一趟触发时刻（秒）。空值不写进个人版文件。
+    next_run_at: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -477,10 +496,13 @@ class CronJob:
             d["mcp"] = list(self.mcp)
         if self.app_id:
             d["app_id"] = self.app_id
-        if self.user_id:
-            d["user_id"] = self.user_id
+        d["group_id"] = normalize_tenant_id(self.group_id)
+        d["bot_id"] = normalize_tenant_id(self.bot_id)
+        d["user_id"] = normalize_tenant_id(self.user_id)
         if self.credential_ref:
             d["credential_ref"] = self.credential_ref
+        if self.next_run_at is not None:
+            d["next_run_at"] = self.next_run_at
         return d
 
     @staticmethod
@@ -530,6 +552,14 @@ class CronJob:
         updated_at_f = (
             float(updated_at) if isinstance(updated_at, (int, float)) else None
         )
+
+        def _epoch_field(key: str) -> float | None:
+            raw = data.get(key, None)
+            if isinstance(raw, (int, float)):
+                return float(raw)
+            return None
+
+        next_run_at_f = _epoch_field("next_run_at")
 
         if not job_id:
             raise ValueError("id is required")
@@ -601,11 +631,10 @@ class CronJob:
         app_id_raw = data.get("app_id", "")
         job_app_id = str(app_id_raw).strip() if isinstance(app_id_raw, str) else ""
 
-        # user_id：老数据兜底（无 user_id → ""）
-        job_user_id_raw = data.get("user_id", "")
-        job_user_id = (
-            str(job_user_id_raw).strip() if isinstance(job_user_id_raw, str) else ""
-        )
+        # 空值 / 缺字段保持空串（个人版旧数据没有这三格）。
+        job_group_id = normalize_tenant_id(data.get("group_id", ""))
+        job_bot_id = normalize_tenant_id(data.get("bot_id", ""))
+        job_user_id = normalize_tenant_id(data.get("user_id", ""))
 
         # credential_ref：老数据兜底（无字段 → ""，即未绑定登录账号）
         job_credential_ref_raw = data.get("credential_ref", "")
@@ -645,9 +674,12 @@ class CronJob:
             model_selection=job_model_selection,
             mcp=job_mcp,
             app_id=job_app_id,
+            group_id=job_group_id,
+            bot_id=job_bot_id,
             user_id=job_user_id,
             credential_ref=job_credential_ref,
             work_mode=job_work_mode,
+            next_run_at=next_run_at_f,
         )
 
 
@@ -659,7 +691,7 @@ class CronRunState:
     job_id: str
     wake_at_iso: str
     push_at_iso: str
-    status: str = "pending"  # pending|running|succeeded|failed
+    status: str = "pending"  # pending|running|succeeded|failed|awaiting_approval|skipped
     placeholder_sent: bool = False
     pushed_final: bool = False
     started_at: float | None = None
@@ -691,3 +723,7 @@ class CronRunState:
     execution_session_allocated: bool = False
     # Manual proactive checks report their outcome through a UI notification.
     manually_triggered: bool = False
+    # 执行流已经把终稿放进会话直播。后面的推送不再往同一条直播放第二遍。
+    live_final_forwarded: bool = False
+    # 直播帧序号。浏览器若短暂连了两次，用它丢掉来晚的旧帧。
+    live_seq: int = 0

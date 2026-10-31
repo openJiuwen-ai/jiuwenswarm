@@ -152,7 +152,7 @@ If the service is already running it will auto-reload; otherwise run `jiuwenswar
    - `im:message:send`: Send messages as the app
    - `im:message.p2p_msg:readonly`: Get private messages sent to the bot
    - `im:message.group_at_msg:readonly`: Receive group chat @bot message events
-   - `im:resource:upload`: Upload images and files
+   - `im:resource`: Get and upload image or file resources
    - `contact:user.employee_id:readonly`: Get user ID information
 
 ![Feishu permissions](../assets/images/feishu_app_permission.png)

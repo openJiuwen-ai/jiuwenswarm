@@ -145,6 +145,12 @@ class _TestableScheduler(CronSchedulerService):
     async def on_wake(self, job, run_id):
         return await self._on_wake(job, run_id)
 
+    async def claim_wake(self, job, run_id):
+        return await self._claim_wake(job, run_id)
+
+    def push_allowed(self, run_id):
+        return self._push_allowed(run_id)
+
     async def cancel_agent_session(self, state, *, reason="test", strict=False):
         return await self._cancel_agent_session(state, reason=reason, strict=strict)
 
@@ -170,6 +176,18 @@ class _TestableScheduler(CronSchedulerService):
         return await self._run_stream_cron_job(
             envelope=envelope, timeout_seconds=timeout_seconds, state=state
         )
+
+    def plant_permission_hold(self, job, session_id):
+        self._hold_job_for_permission(job, session_id)
+
+    def local_permission_hold_session(self, job_id):
+        return self._permission_hold_session(job_id)
+
+    async def permission_hold_blocks(self, job_id):
+        return await self._permission_hold_blocks_new_run(job_id)
+
+    def mark_permission_resume(self, session_id):
+        self.mark_permission_resume_succeeded(session_id)
 
     async def run_team_stream_job(
         self,
@@ -529,7 +547,9 @@ class TestCronLastSessionId:
         assert [request.method for request in agent.unary_requests].count("session.create") == 1
 
     @pytest.mark.asyncio
-    async def test_run_now_rejects_xiaoyi_target(self, tmp_path):
+    @pytest.mark.parametrize("edition", ["personal", "enterprise"])
+    async def test_run_now_rejects_xiaoyi_target(self, tmp_path, monkeypatch, edition):
+        monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="xiaoyi")
         agent = FakeAgentClient()
@@ -1139,7 +1159,9 @@ class TestReloadKeepsDueUnconsumedEvents:
         assert all(ev.run_id != stale_run_id for _, _, ev in svc.events)
 
     @pytest.mark.asyncio
-    async def test_reload_does_not_schedule_xiaoyi_target(self, tmp_path):
+    @pytest.mark.parametrize("edition", ["personal", "enterprise"])
+    async def test_reload_does_not_schedule_xiaoyi_target(self, tmp_path, monkeypatch, edition):
+        monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="xiaoyi")
         svc = _make_scheduler(store)
@@ -1663,6 +1685,38 @@ class TestTeamModeWake:
 
         env = agent.stream_requests[0]
         assert env.channel_context["cron"]["timezone"] == "Asia/Tokyo"
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_puts_tenant_on_routing(self, tmp_path):
+        """立即执行发给 Agent 时带上任务的用户、群、机器人，否则企业版会拒绝。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(
+            description="simple reminder",
+            targets="web",
+            user_id="zxy",
+            group_id="group-1",
+            bot_id="bot-1",
+        )
+
+        agent = FakeAgentClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        env = agent.stream_requests[0]
+        assert env.user_id == "zxy"
+        assert env.channel_context["user_id"] == "zxy"
+        assert env.channel_context["routing"] == {
+            "group_id": "group-1",
+            "bot_id": "bot-1",
+        }
+        assert "group_id" not in env.params
+        assert "bot_id" not in env.params
 
     @pytest.mark.asyncio
     async def test_agent_wake_passes_job_mcp_as_params_mcp(self, tmp_path):
@@ -3063,7 +3117,7 @@ class _MemoryCronStore:
 class TestCrashRecoverySkip:
     @pytest.mark.asyncio
     async def test_skips_wake_when_offset_already_passed(self):
-        from jiuwenswarm.runtime.cron.cron_job_mutations import build_new_cron_job
+        from gateway.runtime.cron.cron_job_mutations import build_new_cron_job
 
         job = build_new_cron_job(
             name="past-wake",
@@ -3089,7 +3143,7 @@ class TestCrashRecoverySkip:
 
     @pytest.mark.asyncio
     async def test_future_wake_is_scheduled(self):
-        from jiuwenswarm.runtime.cron.cron_job_mutations import build_new_cron_job
+        from gateway.runtime.cron.cron_job_mutations import build_new_cron_job
 
         job = build_new_cron_job(
             name="future-wake",
@@ -3111,12 +3165,12 @@ class TestCrashRecoverySkip:
 
 @pytest.mark.asyncio
 async def test_crash_recovery_skip_after_etcd_full_load(tmp_path, monkeypatch):
-    from jiuwenswarm.runtime.cron.etcd_store import EtcdCronJobStore
+    from gateway.runtime.cron.etcd_store import EtcdCronJobStore
     from tests.unit_tests.gateway.test_cron_etcd_store import FakeEtcdJsonClient
 
     # etcd 后端没有本地 cron 文件，生命周期归属记录会退化到默认本地路径：
     # 这里改到 tmp_path，避免测试写用户主目录。
-    import jiuwenswarm.common.utils as utils_module
+    import gateway.common.paths as utils_module
 
     monkeypatch.setattr(
         utils_module, "get_cron_jobs_path", lambda: tmp_path / "cron_jobs.json"
@@ -3336,3 +3390,390 @@ async def test_wake_execution_without_binding_omits_model_auth(tmp_path, monkeyp
     )
     assert chat_env.params["model_name"] == "GLM-5.2"
     assert "_model_auth" not in chat_env.params
+
+
+@pytest.mark.asyncio
+async def test_personal_claim_wake_skips_database(tmp_path, monkeypatch):
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    called = []
+
+    async def _claim(job, fire_at):
+        called.append(job.id)
+        return False
+
+    monkeypatch.setattr("gateway.cron.db_schedule.claim_periodic_run", _claim)
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    svc = _make_scheduler(store)
+    job = await _create_one_job(store, name="home")
+    run_id = f"{job.id}:1700000000"
+    assert await svc.claim_wake(job, run_id) is True
+    assert svc.push_allowed(run_id) is True
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_enterprise_claim_miss_skips_wake_and_push(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    claims = []
+
+    async def _claim(job, fire_at):
+        claims.append(job.id)
+        return False
+
+    monkeypatch.setattr("gateway.cron.db_schedule.claim_periodic_run", _claim)
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    svc = _make_scheduler(store)
+    job = await _create_one_job(store, name="shared")
+    svc.jobs[job.id] = job
+    run_id = f"{job.id}:1700000000"
+    await svc.handle_event(
+        _Event(at_ts=0, seq=1, kind="wake", job_id=job.id, run_id=run_id)
+    )
+    assert claims == [job.id]
+    assert run_id not in svc.runs
+    assert svc.push_allowed(run_id) is False
+
+
+@pytest.mark.asyncio
+async def test_enterprise_manual_run_now_skips_claim(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    called = []
+
+    async def _claim(job, fire_at):
+        called.append(job.id)
+        return False
+
+    monkeypatch.setattr("gateway.cron.db_schedule.claim_periodic_run", _claim)
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    svc = _make_scheduler(store)
+    job = await _create_one_job(store, name="now")
+    run_id = f"{job.id}:1700000001"
+    svc.runs[run_id] = CronRunState(
+        run_id=run_id,
+        job_id=job.id,
+        wake_at_iso="",
+        push_at_iso="",
+        manually_triggered=True,
+    )
+    assert await svc.claim_wake(job, run_id) is True
+    assert called == []
+    assert svc.push_allowed(run_id) is True
+
+
+@pytest.mark.asyncio
+async def test_stream_cron_publishes_thinking_and_deltas_on_the_live_bus(tmp_path):
+    """单人定时任务把思考、逐字正文和工具调用放进同一条会话直播。"""
+
+    class _LiveAgent(FakeAgentClient):
+        async def send_request_stream(self, envelope):
+            self.stream_requests.append(envelope)
+            payloads = [
+                {"event_type": "chat.reasoning", "content": "先想一下"},
+                {"event_type": "chat.delta", "content": "你好"},
+                {"event_type": "chat.tool_call", "tool_name": "read"},
+                {"event_type": "chat.final", "content": "你好，完成"},
+            ]
+            for payload in payloads:
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload=payload,
+                    is_complete=payload["event_type"] == "chat.final",
+                )
+
+    from gateway.cron.live_bus import cron_live_bus
+
+    session_id = "__cron___live_test"
+    cron_live_bus.clear_session(session_id)
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    svc = _make_scheduler(store, agent_client=_LiveAgent())
+    state = CronRunState(
+        run_id="run-live",
+        job_id="job-live",
+        wake_at_iso="2026-10-24T00:00:00+08:00",
+        push_at_iso="2026-10-24T00:00:00+08:00",
+        exec_session_id=session_id,
+    )
+    text, ok, completed = await svc.run_stream_cron_job(
+        envelope=SimpleNamespace(request_id="cron-run-live", channel="__cron__"),
+        timeout_seconds=5,
+        state=state,
+    )
+    assert ok is True
+    assert "完成" in text
+    assert state.live_final_forwarded is True
+    assert completed is True
+
+    queue = cron_live_bus.subscribe(session_id, replay=True)
+    events = []
+    while not queue.empty():
+        frame = queue.get_nowait()
+        events.append(frame.get("event"))
+    cron_live_bus.unsubscribe(session_id, queue)
+    cron_live_bus.clear_session(session_id)
+
+    assert events[0] == "chat.processing_status"
+    assert "chat.reasoning" in events
+    assert "chat.delta" in events
+    assert "chat.tool_call" in events
+    assert "chat.final" in events
+    assert events[-1] == "chat.processing_status"
+
+
+class _AskingStreamClient:
+    """发出一道提问后就停住，模拟智能体在等人点。"""
+
+    def __init__(self):
+        self.cancel_requests = []
+        self.stream_calls = 0
+
+    async def send_request_stream(self, envelope):
+        self.stream_calls += 1
+        yield AgentResponseChunk(
+            request_id=envelope.request_id,
+            channel_id=envelope.channel,
+            payload={
+                "event_type": "chat.ask_user_question",
+                "request_id": "req-ask-1",
+                "source": "ask_user_interrupt",
+                "questions": [{"question": "要不要继续？"}],
+            },
+            is_complete=False,
+        )
+        await asyncio.Event().wait()
+
+    async def send_request(self, envelope, *args, **kwargs):
+        self.cancel_requests.append(envelope)
+        return AgentResponse(
+            request_id=envelope.request_id,
+            channel_id=envelope.channel,
+            ok=True,
+            payload={},
+        )
+
+
+def _parked_run_state(job, *, run_id: str, session_id: str, manual: bool) -> CronRunState:
+    state = CronRunState(
+        run_id=run_id,
+        job_id=job.id,
+        wake_at_iso="2026-08-22T15:00:00+08:00",
+        push_at_iso="2026-08-22T15:00:00+08:00",
+        job_name=job.name,
+        targets=job.targets,
+        timezone=job.timezone,
+        exec_session_id=session_id,
+        exec_channel_id="__cron__",
+        execution_session_allocated=True,
+        manually_triggered=manual,
+    )
+    return state
+
+
+@pytest.mark.asyncio
+async def test_enterprise_manual_run_parks_and_writes_a_hold(tmp_path, monkeypatch):
+    """企业版里人手点的立即执行遇到提问：不停智能体，并记下还在等的会话。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    agent = _AskingStreamClient()
+    svc = _make_scheduler(store, agent_client=agent)
+    run_id = f"{job.id}:manual"
+    session_id = "cron_waiting_1"
+    svc.runs[run_id] = _parked_run_state(
+        job, run_id=run_id, session_id=session_id, manual=True,
+    )
+
+    await svc.on_wake(job, run_id)
+    await svc.run_tasks[run_id]
+    await asyncio.sleep(0)
+
+    state = svc.runs[run_id]
+    assert state.status == "awaiting_approval"
+    assert state.result_text is None
+    assert agent.cancel_requests == []
+    assert svc.local_permission_hold_session(job.id) == session_id
+
+
+@pytest.mark.asyncio
+async def test_personal_manual_run_still_fails_fast_on_interrupt(tmp_path, monkeypatch):
+    """个人版即使是人手点的立即执行，遇到提问也马上失败，不写纸条。"""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    agent = _AskingStreamClient()
+    svc = _make_scheduler(store, agent_client=agent)
+    run_id = f"{job.id}:manual"
+    svc.runs[run_id] = _parked_run_state(
+        job, run_id=run_id, session_id="cron_personal_1", manual=True,
+    )
+
+    await svc.on_wake(job, run_id)
+    await svc.run_tasks[run_id]
+
+    state = svc.runs[run_id]
+    assert state.status == "failed"
+    assert state.result_text == CRON_INTERRUPT_RESULT_TEXT
+    assert any(
+        getattr(item, "method", "") == "chat.interrupt" for item in agent.cancel_requests
+    )
+    assert svc.local_permission_hold_session(job.id) == ""
+
+
+@pytest.mark.asyncio
+async def test_run_now_reuses_the_session_that_is_still_waiting(tmp_path):
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    svc = _make_scheduler(store)
+    waiting = _parked_run_state(
+        job, run_id=f"{job.id}:waiting", session_id="cron_waiting_2", manual=True,
+    )
+    waiting.status = "awaiting_approval"
+    svc.runs[waiting.run_id] = waiting
+    svc.plant_permission_hold(job, "cron_waiting_2")
+
+    info = await svc.trigger_run_now_info(job.id)
+
+    assert info["awaiting_approval"] is True
+    assert info["reused_pending_session"] is True
+    assert info["session_id"] == "cron_waiting_2"
+    assert info["run_id"] == waiting.run_id
+
+
+@pytest.mark.asyncio
+async def test_scheduled_wake_skips_while_a_permission_hold_is_active(tmp_path):
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    agent = _AskingStreamClient()
+    svc = _make_scheduler(store, agent_client=agent)
+    waiting = _parked_run_state(
+        job, run_id=f"{job.id}:waiting", session_id="cron_waiting_3", manual=True,
+    )
+    waiting.status = "awaiting_approval"
+    svc.runs[waiting.run_id] = waiting
+    svc.plant_permission_hold(job, "cron_waiting_3")
+
+    later = f"{job.id}:later"
+    await svc.on_wake(job, later)
+
+    assert svc.runs[later].status == "skipped"
+    assert agent.stream_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_orphan_local_hold_does_not_block_a_new_run(tmp_path):
+    """纸条还在，但这台机器上已经没有停住的那一轮：清掉，不要卡住。"""
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    svc = _make_scheduler(store)
+    svc.plant_permission_hold(job, "cron_gone")
+
+    assert await svc.permission_hold_blocks(job.id) is False
+    assert svc.local_permission_hold_session(job.id) == ""
+
+
+@pytest.mark.asyncio
+async def test_resume_success_clears_the_permission_hold(tmp_path):
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    svc = _make_scheduler(store)
+    waiting = _parked_run_state(
+        job, run_id=f"{job.id}:waiting", session_id="cron_waiting_4", manual=True,
+    )
+    waiting.status = "awaiting_approval"
+    svc.runs[waiting.run_id] = waiting
+    svc.plant_permission_hold(job, "cron_waiting_4")
+
+    svc.mark_permission_resume("cron_waiting_4")
+
+    assert waiting.status == "succeeded"
+    assert svc.local_permission_hold_session(job.id) == ""
+
+
+@pytest.mark.asyncio
+async def test_distributed_hold_is_written_to_redis(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.redis.redis_runtime.get_declared_deployment_mode",
+        lambda: "distributed",
+    )
+    written = []
+
+    class _Redis:
+        async def set(self, key, value, ttl_seconds=None):
+            written.append((key, value, ttl_seconds))
+            return True
+
+        async def delete(self, key):
+            return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
+        lambda: _Redis(),
+    )
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    svc = _make_scheduler(store)
+    svc.plant_permission_hold(job, "cron_redis_1")
+    await asyncio.sleep(0)
+
+    keys = [item[0] for item in written]
+    assert any(key.endswith(job.id) for key in keys)
+    assert any("cron_redis_1" in key for key in keys)
+
+
+@pytest.mark.asyncio
+async def test_missing_redis_hold_drops_a_stale_local_note(tmp_path, monkeypatch):
+    """另一份网关已经把 Redis 纸条擦掉时，本机不能再拦着。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.redis.redis_runtime.get_declared_deployment_mode",
+        lambda: "distributed",
+    )
+
+    class _Redis:
+        async def get(self, key):
+            return None
+
+        async def set(self, key, value, ttl_seconds=None):
+            return True
+
+        async def delete(self, key):
+            return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.redis.redis_runtime.get_gateway_redis_client_if_open",
+        lambda: _Redis(),
+    )
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await _create_one_job(store, targets="web")
+    svc = _make_scheduler(store)
+    svc.plant_permission_hold(job, "cron_stale")
+
+    assert await svc.permission_hold_blocks(job.id) is False
+    assert svc.local_permission_hold_session(job.id) == ""
+
+
+def test_enterprise_db_label_does_not_create_a_folder(tmp_path, monkeypatch):
+    """企业版的 db:// 只是「任务在库里」的记号，不能在当前目录生出名叫 db: 的文件夹。"""
+    from gateway.cron.lifecycle_owners import LifecycleOwners
+    from gateway.cron.scheduler import _cron_lifecycle_source
+
+    monkeypatch.chdir(tmp_path)
+    home_jobs = tmp_path / "agent-home" / "cron_jobs.json"
+    monkeypatch.setattr(
+        "gateway.common.paths.get_cron_jobs_path",
+        lambda: home_jobs,
+    )
+    source = _cron_lifecycle_source(SimpleNamespace(path=Path("db://cron_job")))
+    assert source == home_jobs
+    LifecycleOwners(source).remember("zxy")
+    saved = tmp_path / "agent-home" / "cron_lifecycle_owners.json"
+    assert saved.is_file()
+    assert "zxy" in saved.read_text(encoding="utf-8")
+    assert not (tmp_path / "db:").exists()
+
+
+def test_real_cron_file_keeps_the_lifecycle_note_beside_it(tmp_path):
+    from gateway.cron.scheduler import _cron_lifecycle_source
+
+    jobs = tmp_path / "cron_jobs.json"
+    assert _cron_lifecycle_source(SimpleNamespace(path=jobs)) == jobs
+    assert _cron_lifecycle_source(SimpleNamespace()) != jobs

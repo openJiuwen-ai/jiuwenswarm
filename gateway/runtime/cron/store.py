@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 
 import portalocker
 
-from jiuwenswarm.common.utils import get_cron_jobs_path
+from gateway.common.paths import get_cron_jobs_path
 from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from gateway.runtime.cron.cron_job_mutations import (
     _PROACTIVE_TICK_MODE,
@@ -140,6 +140,8 @@ class FileCronJobStore:
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
         credential_ref: str = "",
     ) -> CronJob:
         """Construct and validate a ``CronJob`` without persisting it.
@@ -169,6 +171,8 @@ class FileCronJobStore:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
             credential_ref=credential_ref,
         )
 
@@ -195,6 +199,8 @@ class FileCronJobStore:
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
         credential_ref: str = "",
     ) -> CronJob:
         job = self.build_job(
@@ -218,6 +224,8 @@ class FileCronJobStore:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
             credential_ref=credential_ref,
         )
         await self._upsert_job(job)

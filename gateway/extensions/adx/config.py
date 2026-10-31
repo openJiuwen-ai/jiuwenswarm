@@ -24,7 +24,11 @@ class AdxRouterConfig:
     builtin_image: str = 'jiuwenswarm-agent-runtime:latest'
     runtime_class: str = 'runc'
     workspace_target: str = '/home/agentos'
+    ssh_user: str = 'agentos'
+    ssh_known_hosts: str = ''
+    restart_policy: dict[str, int] | None = None
     connect_timeout_seconds: float = 60.0
+    builtin_process_from_image: bool = False
 
 
 def adx_router_selected(config: dict) -> bool:
@@ -42,11 +46,29 @@ def _text_setting(settings: dict, key: str, default: str | None = None) -> str:
     return value
 
 
+def _restart_policy(value: object) -> dict[str, int] | None:
+    if value is None:
+        return None
+    error = 'gateway.adx.restart_policy requires attempts and ordered positive backoff seconds'
+    fields = {'maxAttempts', 'initialBackoffSeconds', 'maxBackoffSeconds'}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError(error)
+    for number in value.values():
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise ValueError(error)
+    if value['maxAttempts'] > 4294967295 or value['maxBackoffSeconds'] > 18446744073709551615:
+        raise ValueError(error)
+    if value['initialBackoffSeconds'] > value['maxBackoffSeconds']:
+        raise ValueError(error)
+    return dict(value)
+
+
 def load_router_config(config: dict) -> AdxRouterConfig:
     settings = (config.get('gateway') or {}).get('adx') or {}
     if not isinstance(settings, dict) or settings.keys() - {
         'ingress_url', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
-        'connect_timeout_seconds',
+        'connect_timeout_seconds', 'ssh_user', 'ssh_known_hosts', 'restart_policy',
+        'builtin_process_from_image',
     }:
         raise ValueError('gateway.adx contains invalid settings')
     url = settings.get('ingress_url', '')
@@ -70,13 +92,25 @@ def load_router_config(config: dict) -> AdxRouterConfig:
         raise ValueError('gateway.adx.connect_timeout_seconds must be in (0, 86400]')
     tenant = _text_setting(settings, 'tenant')
     builtin_image = _text_setting(settings, 'builtin_image', 'jiuwenswarm-agent-runtime:latest')
+    builtin_process_from_image = settings.get('builtin_process_from_image', False)
+    if not isinstance(builtin_process_from_image, bool):
+        raise ValueError('gateway.adx.builtin_process_from_image must be a boolean')
     runtime_class = _text_setting(settings, 'runtime_class', 'runc')
     workspace_target = _text_setting(settings, 'workspace_target', '/home/agentos')
     if not workspace_target.startswith('/') or any(part in ('.', '..') for part in workspace_target.split('/')):
         raise ValueError('gateway.adx.workspace_target must be an absolute canonical path')
+    ssh_user = _text_setting(settings, 'ssh_user', 'agentos')
+    if not ssh_user.isascii() or any(not (char.isalnum() or char in '_-.') for char in ssh_user):
+        raise ValueError('gateway.adx.ssh_user must be a valid username')
+    ssh_known_hosts = settings.get('ssh_known_hosts', '')
+    if not isinstance(ssh_known_hosts, str) or any(ord(char) < 32 for char in ssh_known_hosts):
+        raise ValueError('gateway.adx.ssh_known_hosts must be a local known_hosts path')
+    restart_policy = _restart_policy(settings.get('restart_policy'))
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
         router=load_agentos_config(config, require_frontend_endpoint=False),
         builtin_image=builtin_image, runtime_class=runtime_class,
-        workspace_target=workspace_target, connect_timeout_seconds=timeout,
+        builtin_process_from_image=builtin_process_from_image,
+        workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
+        ssh_known_hosts=ssh_known_hosts, restart_policy=restart_policy,
     )

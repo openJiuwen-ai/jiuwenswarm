@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from math import isfinite
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse, unquote
 
 DEFAULT_MAX_REDACTED_TEXT_LENGTH = 240
 DEFAULT_MAX_REDACTED_ITEMS = 5
@@ -26,14 +27,6 @@ PERMISSION_UI_TRUNCATED = "[TRUNCATED]"
 PERMISSION_UI_UNAVAILABLE = "[UNAVAILABLE]"
 
 _REVIEW_LOCATION_LIMIT = 240
-_SENSITIVE_LOCATION_PARTS = frozenset({
-    ".aws", ".gnupg", ".kube", ".ssh", "authorized_keys", "credentials",
-    "id_dsa", "id_ed25519", "id_ecdsa", "id_rsa", "passwd", "shadow",
-})
-_SENSITIVE_LOCATION_TOKENS = (
-    "credential", "password", "private_key", "secret", "token",
-)
-
 _PATH_LIKE_PATTERN = re.compile(
     r"(?:"
     r"(?:/Users/|/private/|/tmp/)[^\s\"']+"
@@ -93,7 +86,7 @@ _SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"private[_-]?key|secret|token|access[_-]?token|refresh[_-]?token|"
     r"session[_-]?token|client[_-]?secret|aws[_-]?access[_-]?key[_-]?id|"
     r"aws[_-]?secret[_-]?access[_-]?key)[\"']?\s*[:=]\s*)"
-    r"(?:\"[^\"]*\"|'[^']*'|[^\"'\s,;}]+)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\"'\s,;}&|<>`]+)"
 )
 _AUTH_VALUE_PATTERN = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}")
 _COMMON_SECRET_VALUE_PATTERNS = (
@@ -182,12 +175,25 @@ def reviewer_path_location(
 ) -> tuple[dict[str, str] | None, str]:
     """Project Smart evidence only; never change the underlying access identity."""
     try:
-        if _sensitive_location(raw_path):
+        if any(unicodedata.category(char).startswith("C") for char in raw_path):
             return None, "redacted"
+        raw_native = raw_path.replace(os.sep, "/")
+        raw_secret_parts = {
+            part for part, safe in zip(raw_native.split("/"), _redact_path_values(raw_native).split("/"))
+            if part != safe and part not in {"", ".", ".."}
+        }
         path = Path(raw_path).expanduser()
         if not path.is_absolute() or raw_path.startswith(("//", "\\\\")):
             return None, "unavailable"
         target = path.resolve(strict=False)
+        if any(unicodedata.category(char).startswith("C") for char in target.as_posix()):
+            return None, "redacted"
+        safe_target = _redact_path_values(target.as_posix())
+        # Resolving '..' or a link must not remove a surviving value's context.
+        safe_target = "/".join(
+            "[redacted]" if part == safe and part in raw_secret_parts else safe
+            for part, safe in zip(target.as_posix().split("/"), safe_target.split("/"))
+        )
         for base, raw_root in (
             ("workspace", workspace_root),
             ("platform_trusted_root", platform_trusted_root),
@@ -198,98 +204,41 @@ def reviewer_path_location(
             if not root.is_absolute():
                 continue
             try:
-                relative = target.relative_to(root.resolve(strict=False)).as_posix()
+                relative = target.relative_to(root.resolve(strict=False))
             except ValueError:
                 continue
-            # Check the full input too: resolving '..' must not reveal a secret
-            # that was carried in a discarded component of the evidence.
-            if _sensitive_location(relative):
-                return None, "redacted"
-            if len(relative) > _REVIEW_LOCATION_LIMIT:
-                return None, "omitted"
-            return {"base": base, "relative_path": relative}, "complete"
+            break
+        else:
+            base = target.anchor
+            relative = target.relative_to(target.anchor)
+        raw_relative = relative.as_posix()
+        safe_relative = "/".join(safe_target.split("/")[-len(relative.parts):]) if relative.parts else "."
+        if max(len(raw_relative), len(safe_relative)) > _REVIEW_LOCATION_LIMIT:
+            return None, "omitted"
+        status = "complete" if safe_relative == raw_relative else "redacted"
+        return {"base": base, "relative_path": safe_relative}, status
     except (OSError, RuntimeError, TypeError, ValueError):
         pass
     return None, "unavailable"
 
 
-def _sensitive_location(value: str) -> bool:
-    if any(unicodedata.category(char).startswith("C") for char in value):
-        return True
-    for part in value.replace("\\", "/").split("/"):
-        name = part.casefold()
-        sensitive_name = name in _SENSITIVE_LOCATION_PARTS or name == ".env" or name.startswith(".env.")
-        if (
-            sensitive_name
-            or name.endswith((".key", ".pem", ".p12", ".pfx"))
-            or any(token in name for token in _SENSITIVE_LOCATION_TOKENS)
-        ):
-            return True
-    return redact_secret_values(value, max_length=len(value) + 1) != value
+def _redact_path_values(value: str) -> str:
+    """Reuse secret matches without losing path components or cross-root spans."""
+    def mask_parts(secret: str) -> str:
+        return re.sub(r"[^/]+", "[redacted]", secret)
 
+    def mask_assignment(match: re.Match[str]) -> str:
+        prefix = match.group(1)
+        secret = match.group(0)[len(prefix):]
+        return prefix + mask_parts(secret)
 
-def redact_reviewer_intent(
-    value: Any, *, workspace_root: str, platform_trusted_root: str,
-    max_length: int = 1024,
-) -> str:
-    """Retain literal in-root locations in Smart intent, not path authority."""
-    text = _stringify(value)
-    # Match only known absolute roots, including quoted paths containing spaces.
-    # The existing broad redactor still owns all unknown/URI/private paths.
-    roots: list[str] = []
-    for raw_root in (workspace_root, platform_trusted_root):
-        try:
-            root = Path(raw_root).expanduser()
-            if raw_root and root.is_absolute():
-                roots.append(str(root.resolve(strict=False)).rstrip("/"))
-        except (OSError, RuntimeError, TypeError, ValueError):
-            continue
-    placeholders: dict[str, str] = {}
-    for root in sorted(set(roots), key=len, reverse=True):
-        if not root:
-            continue
-        escaped = re.escape(root)
-        pattern = re.compile(
-            r"(?<![\w:/\\])(?:"
-            r"(?P<quote>[\"'])" + escaped + r"(?=/|(?P=quote))"
-            r"[^\"'\r\n]*(?P=quote)|"
-            + escaped + r"(?=/|$|[\s\"'`,，。；、)\]}])"
-            r"(?:/[^\s\"'`;|&<>`,，。；、)\]}]*)?)"
-        )
-
-        def replace_path(match: re.Match[str]) -> str:
-            literal = match.group(0)
-            if match.group("quote"):
-                literal = literal[1:-1]
-            location, _status = reviewer_path_location(
-                literal, workspace_root=workspace_root,
-                platform_trusted_root=platform_trusted_root,
-            )
-            if location is None:
-                return "[path]"
-            # Keep the broad path redactor from erasing this already vetted view.
-            placeholder = f"\x00{len(placeholders)}\x00"
-            placeholders[placeholder] = (
-                f"[{location['base']}]/{location['relative_path']}"
-            )
-            return placeholder
-
-        text = pattern.sub(replace_path, text)
-    # Literal controls cannot spoof placeholders created inside this function.
-    # Rejecting them is preferable to guessing which path a malformed turn meant.
-    if "\x00" in _stringify(value):
-        return redact_reviewable_payload_text(value, max_length=max_length).replace("\x00", "")
-    text = redact_reviewable_payload_text(text, max_length=len(text) + 1)
-    # Unknown absolute literals remain opaque even outside the shared redactor's
-    # list of common home/system directories. Vetted locations are placeholders.
-    text = re.sub(
-        r"(?<![\w:/\\])(?:[\"']/[^\"'\r\n]*[\"']|"
-        r"/(?!/)[^\s\"'`;|&<>`,，。；、)\]}]+)",
-        "[path]", text,
+    value = _AUTH_VALUE_PATTERN.sub(
+        lambda match: match.group(1) + " " + mask_parts(match.group(0)[len(match.group(1)):].lstrip()),
+        value,
     )
-    for placeholder, location in placeholders.items():
-        text = text.replace(placeholder, location)
-    return redact_secret_values(text, max_length=max_length)
+    for pattern in _COMMON_SECRET_VALUE_PATTERNS:
+        value = pattern.sub(lambda match: mask_parts(match.group(0)), value)
+    return _SECRET_ASSIGNMENT_PATTERN.sub(mask_assignment, value)
 
 
 def redact_reviewable_payload_text(
@@ -334,19 +283,67 @@ def redact_secret_values(
 def redact_secret_values_preserve_format(
     value: Any,
     *,
-    max_length: int = DEFAULT_MAX_REDACTED_TEXT_LENGTH,
+    max_length: int | None = DEFAULT_MAX_REDACTED_TEXT_LENGTH,
+    require_literal_values: bool = False,
 ) -> str:
-    """Return bounded text with secret values redacted while preserving whitespace."""
-    text = _stringify(value).replace("\r\n", "\n").replace("\r", "\n")
+    """Redact values without changing paths or executable whitespace."""
+    def mask_assignment(match: re.Match[str]) -> str:
+        value = match.group(0)[len(match.group(1)):]
+        # Do not erase expressions under the guise of hiding a literal secret.
+        # This is a redaction eligibility check, not command interpretation.
+        if require_literal_values and not value.startswith("'") and any(
+            marker in value for marker in ("$", "`", "(", ")", "\\", "\n", "\r")
+        ):
+            raise ValueError("reviewer_redaction_incomplete")
+        return match.group(1) + "[redacted]"
+
+    text = _stringify(value)
+    if require_literal_values:
+        for match in _SECRET_ASSIGNMENT_PATTERN.finditer(text):
+            mask_assignment(match)
+    text = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>;|`(){}]+", _redact_url_values, text)
     text = _AUTH_VALUE_PATTERN.sub(lambda match: f"{match.group(1)} [redacted]", text)
     for pattern in _COMMON_SECRET_VALUE_PATTERNS:
         text = pattern.sub("[redacted]", text)
-    text = _SECRET_ASSIGNMENT_PATTERN.sub(r"\1[redacted]", text)
-    if len(text) <= max_length:
-        return text
-    if max_length <= 3:
-        return text[:max_length]
-    return f"{text[: max_length - 3]}..."
+    text = _SECRET_ASSIGNMENT_PATTERN.sub(mask_assignment, text)
+    return text if max_length is None else _truncate_text(text, max_length=max_length)
+
+
+def _redact_url_values(match: re.Match[str]) -> str:
+    """Reuse URL secret-key rules without normalizing the surrounding source."""
+    value = match.group(0)
+    try:
+        parsed = urlparse(value)
+        if "@" in parsed.netloc:
+            safe_netloc = "[redacted]@" + parsed.netloc.rsplit("@", 1)[1]
+            value = value.replace(parsed.netloc, safe_netloc, 1)
+    except ValueError:
+        return "[redacted-url]"
+    return re.sub(
+        r"([?&#])([^=&#]+)=([^&#]*)",
+        lambda item: item.group(1) + item.group(2) + "=[redacted]"
+        if _SECRET_URL_QUERY_KEY_PATTERN.fullmatch(unquote(item.group(2))) else item.group(0),
+        value,
+    )
+
+
+def redact_reviewer_value(value: Any) -> Any:
+    """Redact complete JSON evidence with the existing permission secret-key rules."""
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            normalized, compact = _normalized_permission_ui_key(key)
+            safe_key = redact_secret_values_preserve_format(key, max_length=None)
+            result[safe_key] = (
+                "[redacted]" if _is_permission_ui_secret_key(normalized, compact)
+                else redact_reviewer_value(item)
+            )
+        return result
+    if isinstance(value, list):
+        return [redact_reviewer_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_secret_values_preserve_format(value, max_length=None, require_literal_values=True)
+    return value
 
 
 def redact_json_value(

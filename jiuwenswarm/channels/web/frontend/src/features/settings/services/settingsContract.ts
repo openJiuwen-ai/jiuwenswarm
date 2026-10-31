@@ -167,6 +167,12 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'boolean',
     'modes.team.jiuwen_team.enable_member_messaging',
   ),
+  yamlField(
+    'team_member_subtasks_enabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.max_subtask_depth',
+  ),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   yamlField('task_asr_enabled', 'experimental', 'boolean', 'experimental.task_asr_enabled'),
   yamlField('symphony_evolution_enabled', 'experimental', 'boolean', 'symphony.evolution.flow.enabled'),
@@ -193,6 +199,12 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   ),
   yamlField('external_cli_agent_claude_cli_path', 'experimental', 'text', 'modes.team.jiuwen_team.external_cli_agents'),
   yamlField(
+    'external_cli_agent_claude_path_histories',
+    'experimental',
+    'text',
+    'modes.team.jiuwen_team.external_cli_path_histories',
+  ),
+  yamlField(
     'external_cli_agent_codex_enabled',
     'experimental',
     'boolean',
@@ -205,6 +217,12 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'modes.team.jiuwen_team.external_cli_agents',
   ),
   yamlField('external_cli_agent_codex_cli_path', 'experimental', 'text', 'modes.team.jiuwen_team.external_cli_agents'),
+  yamlField(
+    'external_cli_agent_codex_path_histories',
+    'experimental',
+    'text',
+    'modes.team.jiuwen_team.external_cli_path_histories',
+  ),
   yamlField('topic_recommendation_enabled', 'recommendation', 'boolean', 'recommendation.topic_enabled'),
   yamlField('prompt_suggestion_enabled', 'recommendation', 'boolean', 'recommendation.prompt_enabled'),
   yamlField('proactive_recommendation_enabled', 'experimental', 'boolean', 'proactive_recommendation.enabled'),
@@ -307,14 +325,23 @@ export function normalizePermissionsMode(value: unknown): PermissionsMode | unde
 }
 
 // Switches of uploaded custom agents: `external_cli_agent_<name>_<suffix>`.
-const CUSTOM_EXTERNAL_CLI_KEY_PATTERN = /^external_cli_agent_[a-z0-9][a-z0-9_-]*_(enabled|use_builtin|cli_path)$/;
+const CUSTOM_EXTERNAL_CLI_KEY_PATTERN =
+  /^external_cli_agent_[a-z0-9][a-z0-9_-]*_(enabled|use_builtin|cli_path|path_histories)$/;
 
 function settingsConfigField(key: string): ConfigFieldContract | undefined {
   const field = SETTINGS_CONFIG_FIELD_BY_KEY.get(key);
   if (field) return field;
   const match = CUSTOM_EXTERNAL_CLI_KEY_PATTERN.exec(key);
   if (!match) return undefined;
-  return yamlField(key, 'experimental', match[1] === 'cli_path' ? 'text' : 'boolean', 'modes.team.jiuwen_team.external_cli_agents');
+  const suffix = match[1];
+  return yamlField(
+    key,
+    'experimental',
+    suffix === 'cli_path' || suffix === 'path_histories' ? 'text' : 'boolean',
+    suffix === 'path_histories'
+      ? 'modes.team.jiuwen_team.external_cli_path_histories'
+      : 'modes.team.jiuwen_team.external_cli_agents',
+  );
 }
 
 export function normalizeSettingsConfigUpdates(updates: Record<string, string>): Record<string, string> {

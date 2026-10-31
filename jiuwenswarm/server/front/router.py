@@ -36,6 +36,7 @@ _HANDLE_CONFIG = None
 _HANDLE_HISTORY = None
 _LOAD_HISTORY_QUERY = None
 _LOAD_HISTORY_TODO_SNAPSHOT = None
+_LOAD_HISTORY_SESSION_USAGE = None
 _STREAM_HISTORY_RECORDS = None
 _INVALID_HISTORY_CURSOR = None
 _HISTORY_SNAPSHOT_CHANGED = None
@@ -70,6 +71,7 @@ def _load_config_service() -> None:
 
 def _load_history_service() -> None:
     global _HANDLE_HISTORY, _LOAD_HISTORY_QUERY, _LOAD_HISTORY_TODO_SNAPSHOT
+    global _LOAD_HISTORY_SESSION_USAGE
     global _STREAM_HISTORY_RECORDS, _INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED
     if _HANDLE_HISTORY is not None:
         return
@@ -78,6 +80,7 @@ def _load_history_service() -> None:
         InvalidHistoryCursor,
         handle_history_request,
         load_history_query,
+        load_history_session_usage,
         load_history_todo_snapshot,
         stream_history_records,
     )
@@ -85,6 +88,7 @@ def _load_history_service() -> None:
     _HANDLE_HISTORY = handle_history_request
     _LOAD_HISTORY_QUERY = load_history_query
     _LOAD_HISTORY_TODO_SNAPSHOT = load_history_todo_snapshot
+    _LOAD_HISTORY_SESSION_USAGE = load_history_session_usage
     _STREAM_HISTORY_RECORDS = stream_history_records
     _INVALID_HISTORY_CURSOR = InvalidHistoryCursor
     _HISTORY_SNAPSHOT_CHANGED = HistorySnapshotChanged
@@ -149,37 +153,47 @@ class MethodRouter:
         send_lock: Any,
     ) -> None:
         method = request.req_method.value if request.req_method is not None else ""
+        # Control-plane reads (session.list / history.get / …) must use the same
+        # tenant workspace as chat.send. Front never calls dispatch_parsed_request.
+        from jiuwenswarm.enterprise.tenant.tenant_identity import bind_control_tenant
+
         try:
-            if method in CONTROL_SESSION_METHODS:
-                _load_session_service()
-                response = await _HANDLE_SESSION(request)
-                if request.req_method == ReqMethod.SESSION_GET_METADATA and response.ok:
-                    backend = self._admission.backend
-                    snapshot_getter = getattr(backend, "get_runtime_snapshot", None)
-                    if callable(snapshot_getter):
-                        snapshot = await snapshot_getter(request)
-                        if isinstance(snapshot, dict):
-                            response.payload = {**response.payload, "runtime": snapshot}
-                            # Pending recovery is not evidence that execution
-                            # stopped. Preserve the persisted processing flag.
-                            if isinstance(snapshot.get("is_processing"), bool):
-                                response.payload["is_processing"] = snapshot["is_processing"]
-                                response.payload["status"] = "processing" if snapshot["is_processing"] else "idle"
-            elif method in CONTROL_PROJECT_METHODS:
-                _load_project_service()
-                response = await _HANDLE_PROJECT(request)
-            elif method in CONTROL_CONFIG_METHODS:
-                _load_config_service()
-                response = await _HANDLE_CONFIG(request)
-            elif method in CONTROL_HISTORY_METHODS:
-                _load_history_service()
-                response = await _HANDLE_HISTORY(request)
-            elif method in CONTROL_HEALTH_METHODS:
-                response = handle_readiness(request, self._readiness)
-            else:
-                response = build_error_response(
-                    request, f"unsupported control method: {method}", code="BAD_REQUEST"
-                )
+            with bind_control_tenant(request):
+                if method in CONTROL_SESSION_METHODS:
+                    _load_session_service()
+                    response = await _HANDLE_SESSION(request)
+                    if request.req_method == ReqMethod.SESSION_GET_METADATA and response.ok:
+                        backend = self._admission.backend
+                        snapshot_getter = getattr(backend, "get_runtime_snapshot", None)
+                        if callable(snapshot_getter):
+                            snapshot = await snapshot_getter(request)
+                            if isinstance(snapshot, dict):
+                                response.payload = {**response.payload, "runtime": snapshot}
+                                # Pending recovery is not evidence that execution
+                                # stopped. Preserve the persisted processing flag.
+                                if isinstance(snapshot.get("is_processing"), bool):
+                                    response.payload["is_processing"] = snapshot["is_processing"]
+                                    response.payload["status"] = "processing" if snapshot["is_processing"] else "idle"
+                        # Runtime may still contain child work after the Owner stops.
+                        # Keep its snapshot intact while projecting the Owner composer as idle.
+                        if response.payload.get("organization_owner_stopped") is True:
+                            response.payload["is_processing"] = False
+                            response.payload["status"] = "idle"
+                elif method in CONTROL_PROJECT_METHODS:
+                    _load_project_service()
+                    response = await _HANDLE_PROJECT(request)
+                elif method in CONTROL_CONFIG_METHODS:
+                    _load_config_service()
+                    response = await _HANDLE_CONFIG(request)
+                elif method in CONTROL_HISTORY_METHODS:
+                    _load_history_service()
+                    response = await _HANDLE_HISTORY(request)
+                elif method in CONTROL_HEALTH_METHODS:
+                    response = handle_readiness(request, self._readiness)
+                else:
+                    response = build_error_response(
+                        request, f"unsupported control method: {method}", code="BAD_REQUEST"
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[Front] control dispatch failed: method=%s", method)
             response = build_error_response(request, str(exc), code="INTERNAL_ERROR")
@@ -192,6 +206,9 @@ class MethodRouter:
         request: AgentRequest,
         send_lock: Any,
     ) -> None:
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+        from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
+
         _load_history_service()
         params = request.params if isinstance(request.params, dict) else {}
         session_id = params.get("session_id")
@@ -199,8 +216,15 @@ class MethodRouter:
         cursor_protocol = "cursor" in params
         request_cursor = params.get("cursor")
         subagent_id = params.get("subagent_id")
+        # Re-bind inside worker threads: control plane never hits Runtime bind.
+        tenant_key = extract_tenant_key(request)
+
+        def _load_history_page():
+            with TenantContext.scoped(tenant_key):
+                return _LOAD_HISTORY_QUERY(params)
+
         try:
-            data = await asyncio.to_thread(_LOAD_HISTORY_QUERY, params)
+            data = await asyncio.to_thread(_load_history_page)
         except (_INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED) as exc:
             error_code = (
                 "HISTORY_SNAPSHOT_CHANGED"
@@ -285,9 +309,13 @@ class MethodRouter:
             cursor_protocol and request_cursor is None
         ) or (not cursor_protocol and page_idx == 1)
         if is_initial_history_batch and isinstance(session_id, str) and session_id.strip():
-            todos = await asyncio.to_thread(
-                _LOAD_HISTORY_TODO_SNAPSHOT, session_id.strip()
-            )
+            sid = session_id.strip()
+
+            def _load_todos():
+                with TenantContext.scoped(tenant_key):
+                    return _LOAD_HISTORY_TODO_SNAPSHOT(sid)
+
+            todos = await asyncio.to_thread(_load_todos)
             todo_chunk = AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -312,6 +340,11 @@ class MethodRouter:
                     len(todos),
                 )
             next_seq += 1
+        session_usage = None
+        if not subagent_id and isinstance(session_id, str) and session_id.strip():
+            session_usage = await asyncio.to_thread(
+                _LOAD_HISTORY_SESSION_USAGE, session_id.strip()
+            )
         done = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -327,6 +360,7 @@ class MethodRouter:
                 "has_more": has_more,
                 "snapshot_id": snapshot_id,
                 "snapshot_end": snapshot_end,
+                **({"session_usage": session_usage} if session_usage is not None else {}),
             },
             is_complete=True,
         )

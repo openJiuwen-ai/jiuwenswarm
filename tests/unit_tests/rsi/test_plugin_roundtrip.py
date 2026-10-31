@@ -139,7 +139,7 @@ async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp
     selected._instance = _agent()
     selected._loaded_plugins = {}
     await selected._load_plugins_for_request({"plugin_names": [catalog_id]})
-    selected_record = selected._loaded_plugins[catalog_id][0]
+    selected_record = selected._rsi_harness_load_record
     assert any(ref.identity == "verification" for ref in selected_record.refs)
     assert any(ref.kind.value == "tool" for ref in selected_record.refs)
     assert any(ref.kind.value == "rail" for ref in selected_record.refs)
@@ -151,7 +151,10 @@ async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp
     await selected._load_plugins_for_request({"plugin_names": [catalog_id]})
     assert catalog_id not in selected._loaded_plugins
     await selected._apply_rsi_harness_install_local("deactivate", config_path=str(published), installation_id=catalog_id)
-    await selected._instance.unload_extension(selected._loaded_plugins[catalog_id][0])
+    # Deactivating the global default preserves an explicit session selection.
+    assert selected._rsi_harness_load_record is selected_record
+    await selected._load_plugins_for_request({"plugin_names": []})
+    assert selected._rsi_harness_load_record is None
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._instance = _agent()
     loaded = await adapter._load_rsi_active_harness()
@@ -164,6 +167,8 @@ async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp
 
     # An ordinary chat may already have the original plugin selected. Applying
     # its optimized version must replace that load, not collide with its tools.
+    catalog.import_plugin_package({"path": str(source)})
+    catalog.install_plugin_package({"id": "coding-guard"})
     live = object.__new__(JiuWenSwarmDeepAdapter)
     live._instance = _agent()
     original = await live._instance.load_plugin(material["package_path"])

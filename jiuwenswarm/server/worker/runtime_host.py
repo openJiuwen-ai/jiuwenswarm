@@ -66,6 +66,12 @@ class WorkerRuntime:
             if isinstance(result, Exception):
                 logger.warning("[Worker] optional preparation stop failed: %s", result)
         await telemetry.unbind_runtime_observability()
+        try:
+            from jiuwenswarm.server.agent_http_server import stop_http_server
+
+            await stop_http_server()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentHTTPServer] stop failed: %s", exc)
         stop = getattr(self.server, "stop", None)
         if callable(stop):
             await stop()

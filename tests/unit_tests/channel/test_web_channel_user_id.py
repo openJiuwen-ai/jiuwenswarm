@@ -320,6 +320,56 @@ async def test_web_channel_cron_push_targets_only_its_agentos_user(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_web_channel_cron_push_default_user_reaches_personal_client(monkeypatch):
+    """个人版历史误写的 default 用户仍当无主，结果要送到当前网页。"""
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    personal = FakeWebSocket(query_user_id="zhangsan")
+    monkeypatch.setattr(WebChannel, "clients", property(lambda _: {personal}))
+    sent: list[object] = []
+    monkeypatch.setattr(channel, "_enqueue_send", lambda ws, frame: sent.append(ws))
+    msg = Message(
+        id="cron-default",
+        type="event",
+        channel_id="web",
+        session_id=None,
+        params={},
+        timestamp=0,
+        ok=True,
+        payload={"content": "你好", "user_id": "default", "cron": {"job_id": "job-d"}},
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    await channel.send(msg)
+
+    assert sent == [personal]
+
+
+@pytest.mark.asyncio
+async def test_web_channel_cron_push_empty_user_reaches_personal_client(monkeypatch):
+    """个人版任务没填用户（空串）时，结果要送到当前网页。"""
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    personal = FakeWebSocket(query_user_id="zhangsan")
+    monkeypatch.setattr(WebChannel, "clients", property(lambda _: {personal}))
+    sent: list[object] = []
+    monkeypatch.setattr(channel, "_enqueue_send", lambda ws, frame: sent.append(ws))
+    msg = Message(
+        id="cron-empty",
+        type="event",
+        channel_id="web",
+        session_id=None,
+        params={},
+        timestamp=0,
+        ok=True,
+        payload={"content": "你好", "user_id": "", "cron": {"job_id": "job-e"}},
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    await channel.send(msg)
+
+    assert sent == [personal]
+
+
+@pytest.mark.asyncio
 async def test_openai_account_unexpected_error_uses_method_dispatcher(monkeypatch):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     _register_web_handlers(WebHandlersBindParams(channel=channel))
@@ -416,3 +466,21 @@ async def test_session_create_ignores_params_user_id(tmp_path, monkeypatch):
     # 请求 params 中显式携带的 user_id("victim")必须被忽略并移除，
     # 不得覆盖连接身份；envelope.user_id 始终以连接为准。
     assert "user_id" not in agent_client.requests[-1].params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["", "default"])
+async def test_enterprise_cron_missing_or_default_owner_never_broadcasts(monkeypatch, owner):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    alice = FakeWebSocket(query_user_id="alice")
+    bob = FakeWebSocket(query_user_id="bob")
+    monkeypatch.setattr(WebChannel, "clients", property(lambda _: {alice, bob}))
+    sent = []
+    monkeypatch.setattr(channel, "_enqueue_send", lambda ws, frame: sent.append(ws))
+    await channel.send(Message(
+        id="cron-default", type="event", channel_id="web", session_id=None,
+        params={}, timestamp=0, ok=True, event_type=EventType.CHAT_FINAL,
+        payload={"content": "private", "user_id": owner, "cron": {"job_id": "job-1"}},
+    ))
+    assert sent == []

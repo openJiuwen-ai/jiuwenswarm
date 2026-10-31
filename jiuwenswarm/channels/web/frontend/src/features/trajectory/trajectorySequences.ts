@@ -12,7 +12,13 @@
  */
 
 import type { TrajectoryDetailRecord } from './trajectoryClient'
-import type { OtlpExportTraceServiceRequest } from './shared/otlp'
+import type { OtlpAnyValue, OtlpExportTraceServiceRequest } from './shared/otlp'
+import {
+  sequenceBackedValue,
+  sequenceContentOf,
+  sequenceText,
+} from './shared/sequenceValue.ts'
+import type { SequenceContent } from './shared/sequenceValue.ts'
 import {
   SEQUENCE_REFERENCE_PREFIX,
   SEQUENCE_REFERENCE_VERSION,
@@ -22,10 +28,14 @@ import {
 export interface SequenceCache {
   blobs: Map<string, string>
   chains: Map<string, readonly string[]>
+  /** Chains resolved in full, shared by every record that states them. */
+  contents: Map<string, SequenceContent>
+  /** Elements parsed so far, by hash; `NOT_JSON` for one that is not JSON. */
+  parsed: Map<string, unknown>
 }
 
 export function createSequenceCache(): SequenceCache {
-  return { blobs: new Map(), chains: new Map() }
+  return { blobs: new Map(), chains: new Map(), contents: new Map(), parsed: new Map() }
 }
 
 /** Read the chain a stored attribute names, or null for a plain value. */
@@ -88,15 +98,68 @@ export function rebuildSequenceValue(
   cache: SequenceCache,
   hash: string,
 ): string | undefined {
-  const elements = cache.chains.get(hash)
-  if (elements === undefined) return undefined
-  const parts: string[] = []
-  for (const element of elements) {
+  const content = sequenceContent(cache, hash)
+  return content === undefined ? undefined : sequenceText(content.elements)
+}
+
+/**
+ * The content a chain states, once every element of it is held.
+ *
+ * Resolved once per chain and shared: a run restates the same tool list and
+ * instructions on every call, and each call's history extends the last.
+ */
+function sequenceContent(
+  cache: SequenceCache,
+  hash: string,
+): SequenceContent | undefined {
+  const known = cache.contents.get(hash)
+  if (known !== undefined) return known
+  const hashes = cache.chains.get(hash)
+  if (hashes === undefined) return undefined
+  const elements: string[] = []
+  for (const element of hashes) {
     const content = cache.blobs.get(element)
     if (content === undefined) return undefined
-    parts.push(content)
+    elements.push(content)
   }
-  return `[${parts.join(',')}]`
+  let parsedElements: readonly unknown[] | null | undefined
+  const content: SequenceContent = {
+    hash,
+    elements,
+    parsedElements: () => {
+      parsedElements ??= parseElements(cache, hashes, elements)
+      return parsedElements ?? undefined
+    },
+  }
+  cache.contents.set(hash, content)
+  return content
+}
+
+// What an element that is not JSON parses to. Not null: `null` is a JSON
+// document an element may well state.
+const NOT_JSON: unique symbol = Symbol('trajectory.notJson')
+
+function parseElements(
+  cache: SequenceCache,
+  hashes: readonly string[],
+  elements: readonly string[],
+): readonly unknown[] | null {
+  const parsed: unknown[] = []
+  for (const [index, hash] of hashes.entries()) {
+    if (!cache.parsed.has(hash)) {
+      let value: unknown
+      try {
+        value = JSON.parse(elements[index] as string) as unknown
+      } catch {
+        value = NOT_JSON
+      }
+      cache.parsed.set(hash, value)
+    }
+    const value = cache.parsed.get(hash)
+    if (value === NOT_JSON) return null
+    parsed.push(value)
+  }
+  return parsed
 }
 
 type UnknownRecord = Record<string, unknown>
@@ -118,15 +181,15 @@ function rebuildSpanAttributes(
     if (typeof value !== 'object' || value === null) return
     const reference = parseSequenceReference((value as { stringValue?: unknown }).stringValue)
     if (reference === null) return
-    const rebuilt = rebuildSequenceValue(cache, reference.hash)
-    if (rebuilt === undefined) {
+    const content = sequenceContent(cache, reference.hash)
+    if (content === undefined) {
       // Leave the reference in place and say which attribute could not be
       // rebuilt. A missing element must not cost the reader the whole span.
       unresolved.add(String(entry.key ?? ''))
       return
     }
     rebuiltAttributes ??= [...attributes]
-    rebuiltAttributes[index] = { ...entry, value: { ...value, stringValue: rebuilt } }
+    rebuiltAttributes[index] = { ...entry, value: sequenceBackedValue(content) }
   })
   return rebuiltAttributes === null ? span : { ...span, attributes: rebuiltAttributes }
 }
@@ -181,6 +244,45 @@ export function rebuildRecord(
     otlp: (changed ? { ...otlp, resourceSpans } : otlp) as unknown as OtlpExportTraceServiceRequest,
     ...(unresolved.size === 0 ? {} : { incomplete_sequences: [...unresolved] }),
   } as TrajectoryDetailRecord
+}
+
+/**
+ * The record with each value stated by reference turned into its text.
+ *
+ * Such a value assembles its text on every read. A view that walks the whole
+ * record on each render -- the raw inspector -- reads one copy made here, so
+ * a history is assembled once per record shown rather than once per render.
+ */
+export function withSequenceText(
+  otlp: OtlpExportTraceServiceRequest,
+): OtlpExportTraceServiceRequest {
+  const listOf = (value: unknown): readonly UnknownRecord[] => (
+    Array.isArray(value) ? value as UnknownRecord[] : NO_ITEMS
+  )
+  const source = otlp as unknown as UnknownRecord
+  const sourceResources = listOf(source.resourceSpans)
+  const resourceSpans = mapChanged(sourceResources, (resource) => {
+    const sourceScopes = listOf(resource.scopeSpans)
+    const scopeSpans = mapChanged(sourceScopes, (scope) => {
+      const sourceSpans = listOf(scope.spans)
+      const spans = mapChanged(sourceSpans, (span) => {
+        const sourceAttributes = listOf(span.attributes)
+        const attributes = mapChanged(sourceAttributes, (entry) => {
+          const value = entry.value as OtlpAnyValue | undefined
+          const content = value === undefined ? undefined : sequenceContentOf(value)
+          return content === undefined
+            ? entry
+            : { ...entry, value: { stringValue: sequenceText(content.elements) } }
+        })
+        return attributes === sourceAttributes ? span : { ...span, attributes }
+      })
+      return spans === sourceSpans ? scope : { ...scope, spans }
+    })
+    return scopeSpans === sourceScopes ? resource : { ...resource, scopeSpans }
+  })
+  return resourceSpans === sourceResources
+    ? otlp
+    : { ...source, resourceSpans } as unknown as OtlpExportTraceServiceRequest
 }
 
 /**

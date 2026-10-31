@@ -19,6 +19,26 @@ from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 logger = logging.getLogger(__name__)
 
 
+def _runtime_instance_token() -> str:
+    """Pod/process discriminator for IPC endpoints on a shared workspace volume.
+
+    Enterprise AgentServer Pods share one RWX PVC for workspace data. Without a
+    Pod-local token they all derive the same ``runtime-<scope>.sock`` path, so a
+    second Pod reattaches to the first Pod's resident Worker, times out on
+    HELLO, never binds :8766, and stays 1/2 Ready. K8s sets ``HOSTNAME`` to the
+    Pod name; ``JIUWENSWARM_RUNTIME_INSTANCE`` overrides when needed.
+    """
+    import hashlib
+
+    instance = (
+        os.environ.get("JIUWENSWARM_RUNTIME_INSTANCE", "").strip()
+        or os.environ.get("HOSTNAME", "").strip()
+    )
+    if not instance:
+        return ""
+    return hashlib.sha256(instance.encode()).hexdigest()[:8]
+
+
 def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
@@ -27,7 +47,10 @@ def default_socket_path() -> str:
     from jiuwenswarm.server.supervisor.identity import data_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
-    path = get_user_workspace_dir() / "run" / f"runtime-{data_scope()[:16]}.{suffix}"
+    scope = data_scope()[:16]
+    instance = _runtime_instance_token()
+    sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
+    path = get_user_workspace_dir() / "run" / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
         directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
@@ -35,7 +58,7 @@ def default_socket_path() -> str:
         if directory.is_symlink() or directory.stat().st_uid != os.getuid():
             raise RuntimeError("Runtime IPC directory has an unexpected owner")
         directory.chmod(0o700)
-        path = directory / f"runtime-{data_scope()[:16]}.sock"
+        path = directory / sock_name
     return str(path)
 
 

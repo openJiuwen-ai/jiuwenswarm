@@ -1,7 +1,8 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { useSessionStore } from '../node_modules/.cache/agent-selection/sessionStore.mjs';
+const { useSessionStore } = await import('../node_modules/.cache/agent-selection/sessionStore.mjs');
 
 test('stale send completion cannot consume a newer Agent clear intent', () => {
   const sessionId = 'agent-selection-race';

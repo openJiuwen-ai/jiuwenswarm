@@ -1815,10 +1815,10 @@ const webTarget = `http://127.0.0.1:${webPort}`
 // a second in-memory handoff implementation.
 const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
-const isElectronBuild = process.env.ELECTRON === 'true'
-
 export default defineConfig({
-  base: isElectronBuild ? './' : '/',
+  // 用户面挂在 Manager 的 /chat/ 下。绝对 base '/' 会让浏览器去拉
+  // Manager 自己的 /assets，登录后白屏。相对 './' 在 /chat/ 与直连用户面都能解析。
+  base: './',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   build: {
     rollupOptions: {
@@ -1836,6 +1836,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'virtual:login-auth-simulate-provider': path.resolve(__dirname, './src/auth/simulate/available.ts'),
       'lucide-react': path.resolve(__dirname, './node_modules/lucide-react'),
       react: path.resolve(__dirname, './node_modules/react'),
       'react-dom': path.resolve(__dirname, './node_modules/react-dom'),

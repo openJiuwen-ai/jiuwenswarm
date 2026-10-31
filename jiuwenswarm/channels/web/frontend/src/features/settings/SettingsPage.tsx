@@ -16,11 +16,14 @@ import type { SettingsModuleTarget } from './settingsNavigation';
 
 export function SettingsPage({
   definition,
+  appVersion,
   isConnected,
   connectionState,
   request,
   onHasChangesChange,
   onDetectExternalCli,
+  onValidateExternalCliPaths,
+  onPruneExternalCliPathHistories,
   onSelectExternalCliPath,
   onTrackExternalCliDependencyInstalls,
   externalCliInstallStatuses,
@@ -37,11 +40,14 @@ export function SettingsPage({
   sidebar,
 }: {
   definition: SettingsPageDefinition;
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
+  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
+  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
@@ -73,11 +79,14 @@ export function SettingsPage({
 }) {
   return (
     <SettingsServicesProvider
+      appVersion={appVersion}
       isConnected={isConnected}
       connectionState={connectionState}
       request={request}
       onHasChangesChange={onHasChangesChange}
       onDetectExternalCli={onDetectExternalCli}
+      onValidateExternalCliPaths={onValidateExternalCliPaths}
+      onPruneExternalCliPathHistories={onPruneExternalCliPathHistories}
       onSelectExternalCliPath={onSelectExternalCliPath}
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}
       externalCliInstallStatuses={externalCliInstallStatuses}

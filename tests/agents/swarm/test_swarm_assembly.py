@@ -1539,7 +1539,7 @@ def test_build_enabled_mcp_server_configs_resolves_credentials(
         lambda: [entry],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         lambda self, name: {"GITHUB_TOKEN": "ghp_real_123"} if name == "github_http" else {},
     )
 

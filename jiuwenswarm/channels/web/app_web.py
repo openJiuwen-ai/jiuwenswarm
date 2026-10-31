@@ -11,6 +11,7 @@ import argparse
 import errno
 import hmac
 import http.client
+import io
 import json
 import logging
 import mimetypes
@@ -287,6 +288,32 @@ def _uses_agentos_routing() -> bool:
         return str(client.get("type") or "").strip().lower() == "agentos_router"
     except Exception:  # noqa: BLE001
         return False
+
+
+def _runtime_web_transport() -> str:
+    """WEB_TRANSPORT 优先；没写时企业版 http，个人版 websocket。"""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    value = (os.getenv("WEB_TRANSPORT") or "").strip().lower()
+    if value in {"http", "a2"}:
+        return "http"
+    if value in {"websocket", "ws"}:
+        return "websocket"
+    return "http" if is_enterprise() else "websocket"
+
+
+def _inject_user_web_runtime_config(document: str) -> str:
+    from jiuwenswarm.enterprise import is_enterprise
+
+    edition = "enterprise" if is_enterprise() else "personal"
+    login_auth_simulate = (os.getenv("LOGIN_AUTH_SIMULATE") or "").strip().lower() or "true"
+    if login_auth_simulate not in {"true", "false"}:
+        raise ValueError("LOGIN_AUTH_SIMULATE must be true or false")
+    return (
+        document.replace("__JIUWENSWARM_EDITION_VALUE__", edition)
+        .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
+        .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
+    )
 
 
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
@@ -2415,12 +2442,28 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return None
 
         if in_base and target.exists():
+            index_file = target / "index.html" if target.is_dir() else target
+            if index_file.is_file() and index_file.resolve() == spa_index:
+                return self._injected_index(index_file)
             self._static_cache_control = self._cache_control_for_static(rel_path)
             return super().send_head()
 
         self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
         self.path = "/index.html"
+        if spa_index.is_file():
+            return self._injected_index(spa_index)
         return super().send_head()
+
+    def _injected_index(self, file_path: Path):
+        body = _inject_user_web_runtime_config(
+            file_path.read_text(encoding="utf-8")
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
+        self.end_headers()
+        return io.BytesIO(body)
 
 
 def _normalize_api_target(value: str) -> str:

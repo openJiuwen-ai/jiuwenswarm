@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jiuwenclaw-ee-runtime-management-deps"
+version = "0.1.0"
+description = "Pip dependencies for jiuwenclaw_ee extensions.runtime_management_extension"
+requires-python = ">=3.11.4,<3.14"
+license = { text = "Apache-2.0" }
+# 与 extension.yaml 一致。
+dependencies = [
+    "openjiuwen_runtime_management @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop_0708_release#subdirectory=management",
+]
+
+[tool.setuptools]
+packages = []
+py-modules = ["_ee_deps_runtime_management"]

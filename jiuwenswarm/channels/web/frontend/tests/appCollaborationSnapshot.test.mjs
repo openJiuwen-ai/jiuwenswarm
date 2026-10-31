@@ -20,9 +20,15 @@ const dependencyNames = [
   'normalizeTrajectoryDiagnosisEnabled', 'setTrajectoryDiagnosisEnabled',
   'setTeamOrganizationUiEnabled', 'setComfyuiWorkflowEnabled', 'setTeamScheduledDispatchEnabled', 'setServerConfig', 'setConfigError',
   'modelSetupGuideEvaluatedRef', 'shouldPreviewModelSetupGuide', 'isSetupGuideEnabled',
+  'isEnterprise',
   'setActiveNav', 'setModelSetupGuideStep', 'setAvailableModels', 'setAvailableModelGroups',
   'parseModelGroups', 't',
 ];
+const updateAnchor = appSource.indexOf('startupUpdateCheckRef.current = true;');
+const updateStart = appSource.lastIndexOf('useEffect(', updateAnchor) + 'useEffect('.length;
+const updateEnd = appSource.indexOf('}, [isConnected, request]);', updateStart);
+assert.ok(updateAnchor > 0 && updateEnd > updateStart, 'App startup update effect is present');
+const updateCallback = appSource.slice(updateStart, updateEnd + 1);
 await build({
   stdin: {
     contents: `
@@ -30,6 +36,8 @@ await build({
         isMultiModelCollaborationEnabled } from './src/features/multiModelCollaboration/featureConfig';
       export * from './src/features/multiModelCollaboration/featureConfig';
       export function createAppFetchConfig({ ${dependencyNames.join(', ')} }) { return ${callback}; }
+      export function createAppStartupUpdateEffect({ isEnterprise, FEATURE_APP_UPDATER_UI, isConnected,
+        startupUpdateCheckRef, window, request, CustomEvent }) { return ${updateCallback}; }
     `,
     resolveDir: process.cwd(),
     loader: 'ts',
@@ -40,7 +48,7 @@ await build({
   packages: 'external',
   outfile: 'node_modules/.cache/app-collaboration-snapshot.mjs',
 });
-const { createAppFetchConfig, isMultiModelCollaborationEnabled, setMultiModelCollaborationEnabled } =
+const { createAppFetchConfig, createAppStartupUpdateEffect, isMultiModelCollaborationEnabled, setMultiModelCollaborationEnabled } =
   await import('../node_modules/.cache/app-collaboration-snapshot.mjs');
 
 function deferred() {
@@ -48,9 +56,10 @@ function deferred() {
   const promise = new Promise((done) => { resolve = done; });
   return { resolve, promise };
 }
-function appFixture(reads) {
+function appFixture(reads, { enterprise = false, preview = false, guideEvaluated = true } = {}) {
   const serverConfigs = [];
   const dispatchSnapshots = [];
+  const guideSteps = [];
   const noop = () => {};
   const dependencies = Object.fromEntries(dependencyNames.map((name) => [name, noop]));
   let index = 0;
@@ -62,10 +71,14 @@ function appFixture(reads) {
     },
     setServerConfig: (config) => serverConfigs.push(config),
     setTeamScheduledDispatchEnabled: (enabled) => dispatchSnapshots.push(enabled),
-    modelSetupGuideEvaluatedRef: { current: true },
+    isEnterprise: () => enterprise,
+    modelSetupGuideEvaluatedRef: { current: guideEvaluated },
+    shouldPreviewModelSetupGuide: () => preview,
+    isSetupGuideEnabled: (value) => value === true,
+    setModelSetupGuideStep: (step) => guideSteps.push(step),
     parseModelGroups: (value) => value,
   });
-  return { fetchConfig: createAppFetchConfig(dependencies), serverConfigs, dispatchSnapshots };
+  return { fetchConfig: createAppFetchConfig(dependencies), serverConfigs, dispatchSnapshots, guideSteps };
 }
 
 test('late App config read cannot revert a confirmed settings save in either feature store or serverConfig', async () => {
@@ -125,3 +138,68 @@ test('App config reads retain upstream scheduled dispatch synchronization alongs
   assert.equal(app.serverConfigs.at(-1).team_scheduled_dispatch_enabled, false);
   assert.equal(isMultiModelCollaborationEnabled(), true);
 });
+
+for (const enterprise of [false, true]) {
+  for (const preview of [false, true]) {
+    test(`${enterprise ? 'enterprise skips' : 'personal retains'} model setup guide with preview=${preview}`, async () => {
+      const read = deferred();
+      const app = appFixture([read], { enterprise, preview, guideEvaluated: false });
+      const pending = app.fetchConfig();
+      read.resolve({ setup_guide_enabled: !preview });
+      await pending;
+      assert.deepEqual(app.guideSteps, enterprise ? [] : [1]);
+      assert.equal(app.serverConfigs.length, 1);
+    });
+  }
+}
+
+for (const enterprise of [false, true]) {
+  test(`${enterprise ? 'enterprise skips' : 'personal retains'} the startup update check`, async () => {
+    const requests = [];
+    const events = [];
+    const timers = new Map();
+    const ref = { current: false };
+    const effect = createAppStartupUpdateEffect({
+      isEnterprise: () => enterprise,
+      FEATURE_APP_UPDATER_UI: true,
+      isConnected: true,
+      startupUpdateCheckRef: ref,
+      window: {
+        setTimeout: (callback, delay) => {
+          assert.equal(delay, 5000);
+          timers.set(1, callback);
+          return 1;
+        },
+        clearTimeout: (id) => timers.delete(id),
+        dispatchEvent: (event) => events.push(event),
+      },
+      request: async (method, params) => {
+        requests.push({ method, params });
+        return { update_available: false };
+      },
+      CustomEvent: class {
+        constructor(type, { detail }) {
+          this.type = type;
+          this.detail = detail;
+        }
+      },
+    });
+    const cleanup = effect();
+    if (enterprise) {
+      assert.equal(ref.current, false);
+      assert.equal(timers.size, 0);
+      assert.equal(cleanup, undefined);
+      assert.deepEqual(requests, []);
+    } else {
+      assert.equal(ref.current, true);
+      assert.equal(timers.size, 1);
+      timers.get(1)();
+      await Promise.resolve();
+      assert.deepEqual(requests, [{ method: 'updater.check', params: { manual: false } }]);
+      assert.equal(events[0].type, 'jiuwenswarm:updater-status');
+      assert.equal(effect(), undefined);
+      cleanup();
+      assert.equal(timers.size, 0);
+    }
+  });
+}

@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import type { RewardPayload } from './diagnosisTypes';
 import { commentPoints, rewardOverview } from './diagnosisView';
 import type { RewardCategoryScore, RewardDimensionScore } from './diagnosisView';
+import { FoldableItem } from './DiagnosisFindings';
 import css from './DiagnosisSubpage.module.css';
 
 function categoryLabel(category: RewardCategoryScore): string {
@@ -65,52 +66,58 @@ export function RewardSummary({ reward }: { reward: RewardPayload }) {
   if (overview.comment === '' && overview.categories.length === 0 && overview.dimensionCount === 0) return null;
   const opened = overview.categories.find(category => category.name === openName) ?? null;
   return (
-    <div className={`${css.block} ${css.rewardSummary}`} data-testid="trajectory-diagnosis-reward-overall">
-      <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rewardResult')}</h4>
-      {overview.comment === '' ? null : <p className={css.rewardComment}>{overview.comment}</p>}
-      {overview.categories.length === 0 ? null : (
-        <div className={css.row}>
-          {overview.categories.map((category) => {
-            const tone = category.tier === null ? '' : css[`tier_${category.tier}`];
-            const expandable = category.comment !== '' || category.dimensions.length > 0;
-            if (!expandable) {
+    <FoldableItem
+      title={t('trajectory.diagnosis.rewardResult')}
+      className={css.rewardSummary}
+      testId="trajectory-diagnosis-reward-overall"
+      toggleTestId="trajectory-diagnosis-reward-toggle"
+    >
+      <div className={css.itemBody}>
+        {overview.comment === '' ? null : <p className={css.rewardComment}>{overview.comment}</p>}
+        {overview.categories.length === 0 ? null : (
+          <div className={css.row}>
+            {overview.categories.map((category) => {
+              const tone = category.tier === null ? '' : css[`tier_${category.tier}`];
+              const expandable = category.comment !== '' || category.dimensions.length > 0;
+              if (!expandable) {
+                return (
+                  <span
+                    key={category.name}
+                    className={`${css.tag} ${tone}`}
+                    data-testid="trajectory-diagnosis-reward-category-score"
+                  >
+                    {categoryLabel(category)}
+                  </span>
+                );
+              }
+              const expanded = category.name === openName;
+              const Chevron = expanded ? ChevronDown : ChevronRight;
               return (
-                <span
+                <button
                   key={category.name}
-                  className={`${css.tag} ${tone}`}
+                  type="button"
+                  className={`${css.tag} ${css.tagButton} ${tone}`}
+                  aria-expanded={expanded}
+                  onClick={() => setOpenName(expanded ? null : category.name)}
                   data-testid="trajectory-diagnosis-reward-category-score"
                 >
                   {categoryLabel(category)}
-                </span>
+                  <Chevron size={12} strokeWidth={2} aria-hidden />
+                </button>
               );
-            }
-            const expanded = category.name === openName;
-            const Chevron = expanded ? ChevronDown : ChevronRight;
-            return (
-              <button
-                key={category.name}
-                type="button"
-                className={`${css.tag} ${css.tagButton} ${tone}`}
-                aria-expanded={expanded}
-                onClick={() => setOpenName(expanded ? null : category.name)}
-                data-testid="trajectory-diagnosis-reward-category-score"
-              >
-                {categoryLabel(category)}
-                <Chevron size={12} strokeWidth={2} aria-hidden />
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {opened === null ? null : <CategoryDetail category={opened} />}
-      {overview.dimensionCount === 0 ? null : (
-        <p className={css.rewardComment} data-testid="trajectory-diagnosis-reward-dimensions">
-          {t('trajectory.diagnosis.rewardDimensions', {
-            count: overview.dimensionCount,
-            perfect: overview.perfectCount,
-          })}
-        </p>
-      )}
-    </div>
+            })}
+          </div>
+        )}
+        {opened === null ? null : <CategoryDetail category={opened} />}
+        {overview.dimensionCount === 0 ? null : (
+          <p className={css.rewardComment} data-testid="trajectory-diagnosis-reward-dimensions">
+            {t('trajectory.diagnosis.rewardDimensions', {
+              count: overview.dimensionCount,
+              perfect: overview.perfectCount,
+            })}
+          </p>
+        )}
+      </div>
+    </FoldableItem>
   );
 }

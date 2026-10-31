@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jiuwenswarm-gateway"
+version = "0.2.5.beta1"
+description = "JiuwenSwarm Gateway - channel/protocol front for AgentServer"
+requires-python = ">=3.11,<3.15"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
+# 全部依赖显式声明，不依赖 workswarm（jiuwenswarm）的传递依赖。
+# 过渡期 gateway 仍 import jiuwenswarm.common.*，须与 workswarm 同 venv 共存
+# 才能运行；这里不声明 workswarm 以免形成包依赖环（jiuwenswarm -> gateway）。
+dependencies = [
+    # 协议层与 Agent 内核（rev 与根 pyproject 保持一致，避免同环境双版本）
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@b2a0a248c554753ba31727415fe17a03eed60b46",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@10a03dd263c33042558bbd67a815952458a25fa9#subdirectory=openjiuwen-protocol",
+    # Web / HTTP / WebSocket 服务面
+    "fastapi>=0.115,<1.0",
+    "starlette>=0.49.1,<1",
+    "uvicorn[standard]>=0.30,<1.0",
+    "websockets>=12.0,<16",
+    "httpx[http2,socks]>=0.27,<1.0",
+    "aiohttp>=3.9,<4",
+    "requests>=2.31,<3",
+    "charset-normalizer>=3.3,<4",
+    # 配置 / 序列化 / 日志
+    "pydantic>=2.0,<3.0",
+    "pyyaml>=6.0,<7",
+    # 日志配置解析（logging 段）走 ruamel 的 safe load
+    "ruamel.yaml>=0.18.0,<0.20",
+    "python-dotenv>=1.0,<2",
+    "json-repair>=0.30.0,<0.60",
+    "loguru>=0.7.3,<0.8",
+    # 本地持久化 / 进程 / 调度
+    "aiosqlite>=0.22.1,<0.23",
+    "portalocker>=3.2.0,<4",
+    "croniter>=3.0.0,<7",
+    "psutil>=7.2.2,<8",
+    # IM / 渠道适配
+    "lark-oapi>=1.5.3,<2",
+    "dingtalk-stream>=0.24.3,<0.25",
+    "wecom-aibot-sdk>=1.0.5,<2",
+    "slack-bolt>=1.30.0,<2",
+    "python-telegram-bot>=20.0,<23",
+    "discord.py>=2.4.0,<3",
+]
+
+[project.optional-dependencies]
+# A2A 协议端（代码内 try/except ImportError 降级）
+a2a = ["a2a-sdk[http-server]==1.0.0"]
+# SSH 协议端（代码内 try/except ImportError 降级）
+ssh = ["asyncssh>=2.14.0,<2.24"]
+test = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.0.0",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=7.0.0",
+    "a2a-sdk[http-server]==1.0.0",
+    "asyncssh>=2.14.0,<2.24",
+]
+
+[project.scripts]
+jiuwenswarm-gateway = "gateway.app_gateway:main"
+jiuwenswarm-acp = "gateway.channel_manager.protocol.acp.acp_connect:main"
+
+# pyproject 与包目录同层，需向上一层定位包，保证 wheel 顶层为 gateway/
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["gateway*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+gateway = [
+    "extensions/**/*.yaml",
+    "extensions/**/*.yml",
+    "extensions/**/*.md",
+]

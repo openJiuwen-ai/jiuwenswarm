@@ -34,7 +34,7 @@ DEFAULT_DISCARD_FINAL_SPAN_FRAMES = True
 
 @dataclass(frozen=True, slots=True)
 class TrajectoryStoreSettings:
-    """Resolved settings shared by the AgentServer writer and Gateway reader."""
+    """Resolved writer/reader settings; zero retention days keeps data forever."""
 
     enabled: bool
     database_path: Path
@@ -142,6 +142,7 @@ def load_trajectory_store_settings(
         retention_days=_positive_int(
             section.get("retention_days"),
             DEFAULT_RETENTION_DAYS,
+            minimum=0,
         ),
         queue_size=_positive_int(section.get("queue_size"), DEFAULT_QUEUE_SIZE),
         batch_size=_positive_int(section.get("batch_size"), DEFAULT_BATCH_SIZE),

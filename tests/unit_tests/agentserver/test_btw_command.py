@@ -47,12 +47,18 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
     async def handle_command_btw_for_test(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
-        await self._handle_command_btw(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.commands import handle_command_btw
+
+        await handle_command_btw(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_command_recap_for_test(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
-        await self._handle_command_recap(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.commands import handle_command_recap
+
+        await handle_command_recap(build_ws_request_context(self, ws, request, send_lock))
 
     def get_agent_manager_for_test(self) -> Any:
         return self._agent_manager
@@ -83,6 +89,10 @@ def _patch_wire_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
 
@@ -1033,8 +1043,7 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            agent_ws_server_module,
-            "resolve_request_project_dir",
+            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1107,8 +1116,7 @@ class TestHandleCommandBtw:
             mock_get_agent_none,
         )
         monkeypatch.setattr(
-            agent_ws_server_module,
-            "resolve_request_project_dir",
+            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1145,8 +1153,7 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            agent_ws_server_module,
-            "resolve_request_project_dir",
+            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1188,8 +1195,7 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            agent_ws_server_module,
-            "resolve_request_project_dir",
+            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1225,8 +1231,7 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            agent_ws_server_module,
-            "resolve_request_project_dir",
+            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1271,8 +1276,7 @@ class TestHandleCommandBtw:
             mock_get_agent,
         )
         monkeypatch.setattr(
-            agent_ws_server_module,
-            "resolve_request_project_dir",
+            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
             lambda _req: None,
         )
 
@@ -1441,8 +1445,7 @@ class TestHandleCommandRecap:
         get_agent = AsyncMock(return_value=mock_agent)
         monkeypatch.setattr(server.get_agent_manager_for_test(), "get_agent", get_agent)
         monkeypatch.setattr(
-            agent_ws_server_module,
-            "resolve_request_project_dir",
+            "jiuwenswarm.server.handlers.commands.resolve_request_project_dir",
             lambda _request: None,
         )
         request = AgentRequest(

@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 from contextvars import ContextVar
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
@@ -145,10 +146,13 @@ class WorkerGatewayBridge:
             if future is not None and not future.done():
                 future.set_result(False)
 
-    async def replay(self, frames: list[dict[str, Any]], generation: int) -> None:
+    async def replay(self, frames: list[dict[str, Any]], generation: int,
+                     include: Callable[[dict[str, Any]], bool] | None = None) -> None:
         for index, frame in enumerate(frames):
             if self._holder.generation != generation or self._holder.conn is None:
                 return
+            if include is not None and not include(frame):
+                continue
             frame["payload"]["metadata"]["runtime_event"]["replayed"] = True
             await self._holder.conn.send({**frame, "kind": KIND_WIRE,
                                          "generation": generation, "replayed": True})

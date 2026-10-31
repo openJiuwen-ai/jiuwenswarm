@@ -1,4 +1,5 @@
-import {
+
+import { isEnterprise } from '../../edition';import {
   useState,
   useRef,
   useCallback,
@@ -36,12 +37,14 @@ import { useMultiModelCollaborationEnabled } from '../../features/multiModelColl
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
+import { isReachableTeamMemberStatus } from '../../features/teamMemberDeparture';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
 import { OverwriteGoalConfirmModal } from '../GoalBar/OverwriteGoalConfirmModal';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
+import { attachmentDraftsBySession, useAttachmentDraftClearNonce } from '../../features/sessionAssets/attachmentDraftRegistry';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
@@ -256,6 +259,9 @@ type InputAreaTeamMember = {
   name?: string;
   status?: string;
 };
+
+const EMPTY_SKILLS: string[] = [];
+const EMPTY_TEAM_MEMBERS: InputAreaTeamMember[] = [];
 
 type ComposerSuggestionKind = 'member' | 'role' | 'slash' | 'skill';
 type WorkIconName = 'add' | 'arrow' | 'check' | 'close' | 'collapse' | 'expand' | 'folder' | 'search';
@@ -522,7 +528,9 @@ interface AttachmentDraft {
 // unsent attachment drafts at module scope so that navigation does not discard
 // a session's composer state. The persisted image itself already lives under
 // that session's uploads directory; this map preserves only the pending UI draft.
-const attachmentDraftsBySession = new Map<string, AttachmentDraft[]>();
+// Lives in a shared module (not declared here) so multi-session/state/newConversationLifecycle.ts
+// can clear the 'new' entry when a genuinely fresh new conversation starts, without
+// an import cycle (that module is itself imported below for NEW_CONVERSATION_ID).
 
 interface AttachmentAlert {
   id: string;
@@ -787,8 +795,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentDraft[]>(() =>
-    activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : [],
+    activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
   );
+  // 当前 `attachments` state 实际对应的 session（和 activeSessionId 分开追踪）：切换会话时
+  // activeSessionId 在本次渲染就已经更新，但 attachments 还要等切换 session 的 effect 跑完
+  // 才会重置成目标会话的草稿。切会话瞬间两者短暂不一致，谁依赖 attachments 做跨会话操作
+  // （比如把它们注册成任务素材）都要先核对这个 ref，否则会把上一个会话的草稿误登记到新会话。
+  const attachmentSessionIdRef = useRef(activeSessionId);
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
   const attachmentAlertTimersRef = useRef<Map<string, number>>(new Map());
   const [attachmentMenuId, setAttachmentMenuId] = useState<string | null>(null);
@@ -830,6 +843,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     () => useAgentCatalogStore.getState().catalog ?? [],
   );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [agentPodNotice, setAgentPodNotice] = useState<'starting' | 'timeout' | null>(null);
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
   const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>(
     () => [getSelectedAgentGroup()].filter((group): group is AgentGroupCatalogItem => group !== null),
@@ -1038,8 +1052,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       return;
     let cancelled = false;
     setAgentOptionsStatus('loading');
+    setAgentPodNotice(null);
     void agentManagementClient
-      .listCatalog({ filter: 'mine' })
+      .listCatalog({
+        filter: 'mine',
+        onPodStarting: () => {
+          if (!cancelled) setAgentPodNotice('starting');
+        },
+      })
       .then((items) => {
         if (cancelled) return;
         const selectedItem = selectedAgentId ? items.find((item) => isSameAgentOption(item, selectedAgentId)) : null;
@@ -1055,10 +1075,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         setAgentOptions(items);
         seedAgentCatalog(items);
+        setAgentPodNotice(null);
         setAgentOptionsStatus('success');
       })
-      .catch(() => {
-        if (!cancelled) setAgentOptionsStatus('error');
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+        setAgentPodNotice(code === 'pod_start_timeout' ? 'timeout' : null);
+        setAgentOptionsStatus('error');
       });
     return () => {
       cancelled = true;
@@ -1103,9 +1127,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
-  const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
+  const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? EMPTY_SKILLS);
   const teamMembers = useSessionStore(
-    (s) => s.runtimes[conversationId]?.teamMembers ?? [],
+    (s) => s.runtimes[conversationId]?.teamMembers ?? EMPTY_TEAM_MEMBERS,
   ) as InputAreaTeamMember[];
   const currentSession = useSessionStore((s) => s.currentSession);
   const activeSession = useSessionStore((s) => {
@@ -1137,6 +1161,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isInterruptible = isProcessing || isPaused || isGoalActive;
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
+  const enterprise = isEnterprise();
+  const modeLocked = enterprise || hasHistory || isProcessing;
+
+  useEffect(() => {
+    if (enterprise && activeSessionId === NEW_CONVERSATION_ID && mode !== 'agent') {
+      onSwitchMode('agent');
+    }
+  }, [enterprise, activeSessionId, mode, onSwitchMode]);
   const isAutoHarnessMode = mode === 'auto_harness';
   const existingTeamGroupSelectionDisabled = Boolean(
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
@@ -1155,9 +1187,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [isAgentMode, isTeamMode]);
 
   const isWorkContextLocked = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
-  const showWorkContextRow = activeSessionId === NEW_CONVERSATION_ID;
+  const showWorkContextRow = !enterprise && activeSessionId === NEW_CONVERSATION_ID;
   /** Goal 入口是否适用于当前上下文（agent 模式 + 已接入 onSetGoal，如欢迎页新会话就不适用） */
-  const canUseGoalMenu = isAgentMode && Boolean(onSetGoal);
+  const canUseGoalMenu = !enterprise && isAgentMode && Boolean(onSetGoal);
   // bugfix 2026092201 bug001 第2轮修订：原来只跟 armed 挂钩（发送后 armed 变 false 就消失，
   // 理由是"目标是否存在"已由 GoalBar 覆盖，工具栏不需要重复常驻）。但这样一来目标在真正执行
   // 期间（armed 已经变 false、hasUnfinishedGoal 才是 true）这个 tag 会凭空消失，跟 Plan 的
@@ -1228,7 +1260,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return teamMembers
       .filter((member) => {
         const id = member.member_id?.trim();
-        return id && id !== 'user';
+        // 离队 / 退役中的成员接不到消息，@ 出去也没人接。
+        return id && id !== 'user' && isReachableTeamMemberStatus(member.status);
       })
       .map((member) => ({
         id: member.member_id,
@@ -1338,6 +1371,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [activeSessionId, canPersistAttachments]);
   useEffect(() => {
     if (!canPersistAttachments || !activeSessionId) return;
+    // 切换会话那一次渲染里，activeSessionId 已经是新会话，但 attachments 还是上一个会话的草稿
+    // （要等下面"切会话"那个 effect 跑完才会重置）。这一轮先跳过，避免把上一个会话还没发送的
+    // 附件误登记成这个新会话的素材；下一轮渲染 attachments 跟 activeSessionId 对齐后会重新触发。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
     const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string }> = [];
     const consider = (path: string | undefined, source: 'upload' | 'generated', name?: string) => {
       const value = path?.trim();
@@ -1654,6 +1691,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     for (const path of plan.paths) {
       requestImageDiscard(sessionId, path);
     }
+    // A removed chip that had already been auto-registered as a session material
+    // (session.assets.register fires as soon as the upload completes, well before
+    // send) must drop that material too, unless another still-attached draft needs
+    // the same path kept. Only 'upload' materials: agent-generated ('generated')
+    // ones are not tied to any composer draft and must survive regardless.
+    if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
+      const keptPaths = new Set(
+        remaining
+          .map((draft) => pickString(draft.persistedMediaItem?.path))
+          .filter((path): path is string => Boolean(path))
+          .map(normalizePath),
+      );
+      for (const draft of drafts) {
+        const path = pickString(draft.persistedMediaItem?.path);
+        if (!path || keptPaths.has(normalizePath(path))) continue;
+        const asset = sessionAssetsRef.current.find(
+          (item) => item.source === 'upload' && normalizePath(item.path) === normalizePath(path),
+        );
+        if (!asset) continue;
+        void useSessionAssetsStore
+          .getState()
+          .remove(sessionId, asset.asset_id)
+          .catch((error) => console.error('Failed to remove session asset:', error));
+      }
+    }
   }, [activeSessionId, requestImageDiscard]);
 
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
@@ -1726,18 +1788,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
   }, [releaseUnsentUploads]);
 
-  const attachmentSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
     const sessionId = attachmentSessionIdRef.current;
     if (sessionId) attachmentDraftsBySession.set(sessionId, attachments);
   }, [attachments]);
+
+  // 外部清空（目前只有 App.tsx enterNewConversation 对 'new' 调用 clearAttachmentDrafts）
+  // 只改了 Map，不会让 activeSessionId 变化——如果这时候本来就停留在被清的那个会话上
+  // （典型：已经在 'new' 欢迎页带着未发送附件，又点了一次"新建对话"），下面"切换会话"
+  // 那个 effect 不会跑，本地 attachments state 就不会跟着清空，残留的附件之后一发送
+  // 还是会被注册成新会话自己的素材——清空形同虚设。这个 effect 专门补上这种"没有发生
+  // 会话切换"的清空场景。
+  const attachmentDraftClearNonce = useAttachmentDraftClearNonce(activeSessionId);
+  const attachmentDraftClearNonceRef = useRef(attachmentDraftClearNonce);
+  useEffect(() => {
+    if (attachmentDraftClearNonce === attachmentDraftClearNonceRef.current) return;
+    attachmentDraftClearNonceRef.current = attachmentDraftClearNonce;
+    // ref 还没等于 activeSessionId 说明一次真正的会话切换正在进行中，下面那个 effect
+    // 本来就会用（已经清空的）Map 内容重新同步本地 state，这里不用重复处理。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
+    releaseUnsentUploads(attachmentsRef.current);
+    setAttachments([]);
+    setAttachmentAlerts([]);
+    setAttachmentMenuId(null);
+    clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
+  }, [attachmentDraftClearNonce, activeSessionId, releaseUnsentUploads]);
 
   useEffect(() => {
     if (attachmentSessionIdRef.current === activeSessionId) return;
     const previousSessionId = attachmentSessionIdRef.current;
     if (previousSessionId) attachmentDraftsBySession.set(previousSessionId, attachments);
     attachmentSessionIdRef.current = activeSessionId;
-    setAttachments(activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : []);
+    setAttachments(
+      activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
+    );
     setAttachmentAlerts([]);
     setAttachmentMenuId(null);
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
@@ -3680,7 +3764,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleModeSwitch = useCallback(
     async (targetMode: AgentMode) => {
-      if (isProcessing || hasHistory || mode === targetMode) return;
+      if (modeLocked || mode === targetMode) return;
       // Draft-session in-place mode switch: skills picked for the previous
       // mode no longer apply, so drop them from the store and remove their
       // inline chips from the editor. (Switching from a real session enters a
@@ -3847,6 +3931,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         <div
           className={cx(
             'chat-input-container',
+            enterprise && 'chat-input-container--enterprise',
             showWorkContextRow && 'chat-input-container--work-home',
             (isModeMenuOpen || workMenuOpen) && 'chat-input-container--menu-open',
             composerSuggestion && !showSlashSuggestionBelow && 'chat-input-container--suggestion-open',
@@ -4243,6 +4328,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         </button>
                         {!isDesignLanding && (
                         <>
+                        {!enterprise && (
                         <div className="chat-attach-menu-item-anchor">
                           <button
                             type="button"
@@ -4325,7 +4411,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       data-testid="chat-panel-agent-picker-state"
                                       data-variant="loading"
                                     >
-                                      {t('common.loading')}
+                                      {agentPodNotice === 'starting' ? t('experts.podStarting') : t('common.loading')}
                                     </div>
                                   ) : pickerTab === 'agent' && agentOptionsStatus === 'error' ? (
                                 <div
@@ -4333,7 +4419,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   data-testid="chat-panel-agent-picker-state"
                                   data-variant="error"
                                 >
-                                  {t('agentManagement.states.loadError')}
+                                  {agentPodNotice === 'timeout' ? t('experts.podStartTimeout') : t('agentManagement.states.loadError')}
                                 </div>
                               ) : pickerTab === 'agent' && filteredAgentOptions.length === 0 ? (
                                 <div
@@ -4538,6 +4624,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           ) : null}
                           {agentTooltipNode}
                         </div>
+                        )}
                         {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter
                     ._ensure_chat_extensions 对 team 模式直接短路，见
                     interface_deep.py），继续展示这个入口只会让用户以为选了插件/MCP 会生效，
@@ -4583,7 +4670,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!isTeamMode && (
+                        {!enterprise && !isTeamMode && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"
@@ -4726,7 +4813,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           </div>
                         )}
-                        {isTeamMode &&
+                        {!enterprise &&
+                          isTeamMode &&
                           (() => {
                             const toggleSwarmflow = (next: boolean) => {
                               if (!activeSessionId || swarmflowToggleDisabled) return;
@@ -4853,7 +4941,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
-                        {personalContextMasterEnabled && (
+                          {!enterprise && personalContextMasterEnabled && (
                           <div
                             className="chat-mode-select__option"
                             role="menuitem"
@@ -4906,7 +4994,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     data-testid="chat-panel-mode-select-trigger"
                     data-variant={currentMode.value}
                     onClick={() => {
-                      if (hasHistory || isProcessing) return;
+                      if (modeLocked) return;
                       if (!isModeMenuOpen && modeMenuRef.current) {
                         const rect = modeMenuRef.current.getBoundingClientRect();
                         setMenuDirection(resolveMenuDirection(rect.bottom, 160));
@@ -4914,9 +5002,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       }
                       setIsModeMenuOpen((open) => !open);
                     }}
-                    aria-haspopup="menu"
-                    aria-expanded={isModeMenuOpen}
-                    style={hasHistory || isProcessing ? { cursor: 'default' } : undefined}
+                    disabled={enterprise}
+                    aria-haspopup={enterprise ? undefined : 'menu'}
+                    aria-expanded={enterprise ? undefined : isModeMenuOpen}
+                    style={modeLocked ? { cursor: 'default' } : undefined}
                   >
                     <span className="chat-mode-select__value" data-testid="chat-panel-mode-select-value">
                       <span className="chat-mode-select__icon" aria-hidden="true">
@@ -4924,7 +5013,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       </span>
                       <span className="chat-mode-select__label">{t(currentMode.i18nKey)}</span>
                     </span>
-                    {!hasHistory && !isProcessing && (
+                    {!modeLocked && (
                       <svg
                         className="chat-mode-select__chevron"
                         viewBox="0 0 20 20"
@@ -4938,7 +5027,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                   </button>
 
-                  {isModeMenuOpen &&
+                  {!enterprise &&
+                    isModeMenuOpen &&
                     modeMenuAnchor &&
                     createPortal(
                       <div
@@ -5008,7 +5098,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       </div>,
                       document.body,
                     )}
-                  {isModeMenuOpen &&
+                  {!enterprise &&
+                    isModeMenuOpen &&
                     hoveredOptionDesc &&
                     hoveredOptionRect &&
                     createPortal(
@@ -5027,7 +5118,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       document.body,
                     )}
                 </div>
-                {!isTeamMode && (
+                {!enterprise && !isTeamMode && (
                   <PermissionSelector
                     mode={mode}
                     permissionProfile={permissionProfile}

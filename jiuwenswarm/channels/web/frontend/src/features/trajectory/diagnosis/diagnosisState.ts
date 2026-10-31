@@ -16,6 +16,7 @@ import type {
   StepRef,
   TtseTriggerResult,
 } from './diagnosisTypes';
+import { artifactCauseGroups } from './diagnosisView';
 
 export interface EventOutcome {
   /** The record after applying the event; the same reference when ignored. */
@@ -33,6 +34,16 @@ function keysOf(refs: readonly StepRef[]): string[] {
   return refs.map(stepRefKey);
 }
 
+/** A focused cause pulls in the other causes of the same problem, so one highlight covers them all. */
+function causeIdsOfProblems(record: DiagnosisRecord, findingIds: readonly string[]): Set<string> {
+  const wanted = new Set(findingIds);
+  for (const group of artifactCauseGroups(record.reward_failure_causes ?? [])) {
+    if (!group.causes.some(cause => wanted.has(cause.id))) continue;
+    for (const cause of group.causes) wanted.add(cause.id);
+  }
+  return wanted;
+}
+
 /**
  * Return the span keys named by a diagnosis.
  *
@@ -43,7 +54,7 @@ function keysOf(refs: readonly StepRef[]): string[] {
 export function highlightKeysOf(record: DiagnosisRecord | null, findingIds?: readonly string[]): Set<string> {
   const keys = new Set<string>();
   if (record === null) return keys;
-  const wanted = findingIds === undefined ? null : new Set(findingIds);
+  const wanted = findingIds === undefined ? null : causeIdsOfProblems(record, findingIds);
   for (const cause of record.reward_failure_causes ?? []) {
     if (wanted !== null && !wanted.has(cause.id)) continue;
     for (const key of keysOf(cause.evidence)) keys.add(key);
@@ -102,6 +113,12 @@ export function applyProgressEvent(record: DiagnosisRecord, event: DiagnosisProg
   if (event.diagnosis_id !== record.diagnosis_id) return { record, refetch: false };
   if (event.seq <= record.seq) return { record, refetch: false };
   if (event.seq !== record.seq + 1) return { record, refetch: true };
+  if (event.kind === 'reward') {
+    return {
+      record: { ...record, seq: event.seq, reward: event.reward ?? null },
+      refetch: false,
+    };
+  }
   if (event.kind === 'reward_failure_causes') {
     return {
       record: { ...record, seq: event.seq, reward_failure_causes: event.reward_failure_causes ?? [] },

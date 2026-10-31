@@ -22,13 +22,13 @@ from openjiuwen_protocol.e2a.wire_codec import (
 )
 from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
+from gateway.common.moa_config import redact_moa_credentials
 from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
 from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.common.moa_config import redact_moa_credentials
 
 logger = logging.getLogger(__name__)
 _STREAM_TRAILING_MESSAGE_GRACE_SECONDS = 0.7
@@ -104,14 +104,28 @@ def _build_ws_origin(uri: str) -> str | None:
     return f"{scheme}://{parsed.netloc}"
 
 
-# AgentServerClient 抽象契约已下沉 ``jiuwenswarm.common.client.agent_client``
-# （保留侧与 Gateway 仓共用契约）。此处 re-export 保持既有 import 路径兼容。
-from jiuwenswarm.common.client.agent_client import AgentServerClient  # noqa: F401
+# AgentServerClient 抽象契约以 gateway.common.client.agent_client 为唯一实现。
+# 此处 re-export 保持既有 import 路径兼容。
+from gateway.common.client.agent_client import AgentServerClient  # noqa: F401
 
 
 def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:
     """E2AEnvelope → WebSocket JSON（与 AgentServer from_dict 对齐）。"""
     return envelope.to_dict()
+
+
+async def _stamp_package_allowlist(envelope: E2AEnvelope) -> None:
+    """企业版用库里的名单覆盖 channel_context。个人版不读库。"""
+    from gateway.enterprise import is_enterprise
+
+    if not is_enterprise():
+        return
+    from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
+        read_package_allowlist_packages,
+    )
+    from jiuwenswarm.server.runtime.package_allowlist import apply_allowlist_to_envelope
+
+    apply_allowlist_to_envelope(envelope, await read_package_allowlist_packages())
 
 
 class WebSocketAgentServerClient(AgentServerClient):
@@ -548,6 +562,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         timeout: float | None = None,
     ) -> AgentResponse:
         await self._ensure_connected_for_request()
+        await _stamp_package_allowlist(envelope)
         # 非流式 API 必须与 AgentServer 的 unary 路径一致；忽略信封上误带的 is_stream=True。
         envelope.is_stream = False
         rid = _wire_request_id_key(envelope.request_id)
@@ -612,6 +627,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
         await self._ensure_connected_for_request()
+        await _stamp_package_allowlist(envelope)
         envelope.is_stream = True
         rid = _wire_request_id_key(envelope.request_id)
         sid = str(envelope.session_id or "")

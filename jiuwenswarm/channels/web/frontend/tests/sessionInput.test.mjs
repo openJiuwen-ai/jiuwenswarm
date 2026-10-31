@@ -1,3 +1,4 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test, { before } from 'node:test';
 import { join } from 'node:path';

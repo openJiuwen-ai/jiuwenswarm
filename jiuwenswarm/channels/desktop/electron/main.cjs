@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { reserveLoopbackPortSync, waitForOwnedCdpTarget } = require('./cdp_port.cjs');
 const { createShareImageExporter } = require('./share_image_export.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
@@ -92,43 +93,7 @@ async function findAvailablePorts(scanRange = 10) {
   throw new Error(`No available port group within scan_range=${scanRange}`);
 }
 
-// 打包版 CDP 端口获取：--remote-debugging-port=0 让 Chromium 自选临时端口并
-// 自行绑定（无"预留给竞态留窗口"，也无需同步 spawn 自身 exe 预留——后者冷启动
-// 会被杀软扫描拖到数秒且完全串行阻塞首屏），选定的端口由 Chromium 写入用户
-// 数据目录的 DevToolsActivePort 文件，首行即端口号。
-const DEVTOOLS_ACTIVE_PORT_FILENAME = 'DevToolsActivePort';
-const CDP_PORT_FILE_TIMEOUT_MS = 5_000;
-// packaged port=0 模式标记；轮询在 whenReady 后才启动，避免极端冷启动下
-// Chromium 初始化时间吃掉超时预算（文件通常在 ready 前就已写好）。
-let cdpPortPending = false;
-let cdpPortResolution = null;
-
-function devToolsActivePortPath() {
-  return path.join(app.getPath('userData'), DEVTOOLS_ACTIVE_PORT_FILENAME);
-}
-
-function removeStaleDevToolsActivePortFile() {
-  // 文件跨启动残留；在 Chromium 重写前删掉，避免读到上一次的陈旧端口。
-  try {
-    fsSync.rmSync(devToolsActivePortPath(), { force: true });
-  } catch { /* best effort */ }
-}
-
-async function resolveCdpPortFromDevToolsActivePort() {
-  const file = devToolsActivePortPath();
-  const deadline = Date.now() + CDP_PORT_FILE_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const content = fsSync.readFileSync(file, 'utf8');
-      const port = Number.parseInt(content.split('\n')[0], 10);
-      if (Number.isInteger(port) && port >= 1 && port <= 65535) return port;
-    } catch { /* not written yet */ }
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  return 0;
-}
-
-let hasCdp = cdpPort > 0;
+let hasCdp = false;
 
 function mainLogPath() {
   return path.join(app.getPath('home'), '.jiuwenswarm', 'logs', 'electron-main.log');
@@ -159,27 +124,23 @@ function installMainConsoleTee() {
   } catch { /* best effort */ }
 }
 
-if (app.isPackaged) {
-  if (hasCdp) {
-    app.commandLine.appendSwitch('remote-debugging-address', BACKEND_HOST);
-    app.commandLine.appendSwitch('remote-debugging-port', String(cdpPort));
-  } else {
-    removeStaleDevToolsActivePortFile();
-    app.commandLine.appendSwitch('remote-debugging-address', BACKEND_HOST);
-    app.commandLine.appendSwitch('remote-debugging-port', '0');
-    // 先乐观启用 sideview；端口文件超时未出现时降级禁用（沿用预留失败语义）。
-    hasCdp = true;
-    cdpPortPending = true;
+installMainConsoleTee();
+
+if (app.isPackaged && cdpPort === 0) {
+  try {
+    // Port 0 enables Chromium's AutomationControlled feature in every window,
+    // including human-operated OAuth windows. Pass an allocated non-zero port.
+    cdpPort = reserveLoopbackPortSync();
+  } catch (error) {
+    console.error('[electron] failed to reserve CDP port; browser sideview disabled', error);
   }
-} else {
-  if (!hasCdp) {
-    throw new Error('Electron must be started through launch.cjs with a valid loopback CDP port');
-  }
+}
+if (cdpPort > 0) {
   app.commandLine.appendSwitch('remote-debugging-address', BACKEND_HOST);
   app.commandLine.appendSwitch('remote-debugging-port', String(cdpPort));
+} else if (!app.isPackaged) {
+  throw new Error('Electron must be started through launch.cjs with a valid loopback CDP port');
 }
-
-installMainConsoleTee();
 
 let mainWindow = null;
 let tray = null;
@@ -295,7 +256,7 @@ function spawnService(name, ports, extraArgs = []) {
     JIUWENSWARM_DESKTOP: '1',
     JIUWENSWARM_ELECTRON: '1',
   };
-  if (browserTargetResolver && !forceManagedBrowser) {
+  if (hasCdp && browserTargetResolver && !forceManagedBrowser) {
     const targetMcpDiagnosticLog = path.join(
       app.getPath('home'),
       '.jiuwenswarm',
@@ -1200,6 +1161,25 @@ async function waitForCdpTarget(targetId, timeoutMs = CDP_TARGET_TIMEOUT_MS) {
   );
 }
 
+async function initializeBrowserCdp() {
+  hasCdp = false;
+  const window = mainWindow;
+  if (!(cdpPort > 0) || !window || window.isDestroyed()) return false;
+  try {
+    // A free port is only a candidate: Chromium may lose the bind race. Match
+    // an ID obtained directly from our window, rather than any CDP listener.
+    await waitForOwnedCdpTarget({
+      port: cdpPort,
+      targetId: window.webContents.getOrCreateDevToolsTargetId(),
+    });
+    if (shuttingDown || mainWindow !== window || window.isDestroyed()) return false;
+    hasCdp = true;
+  } catch (error) {
+    console.error('[electron] CDP verification failed; browser sideview disabled', error);
+  }
+  return hasCdp;
+}
+
 function normalizeBrowserSessionId(rawValue) {
   const normalized = String(rawValue || '').trim();
   return normalized || 'default';
@@ -1550,6 +1530,7 @@ function browserEndpointsFilePath() {
 }
 
 function buildBrowserEndpointsPayload() {
+  if (!hasCdp || !browserTargetResolver) throw new Error('Electron CDP has not been verified');
   const cdpEndpoint = `http://${BACKEND_HOST}:${cdpPort}`;
   const targetResolver = `http://${BACKEND_HOST}:${browserTargetResolver.port}`;
   const envJson = {
@@ -1576,6 +1557,7 @@ function buildBrowserEndpointsPayload() {
 }
 
 function writeBrowserEndpointsFile() {
+  if (!hasCdp || !browserTargetResolver) return;
   const target = browserEndpointsFilePath();
   const tmp = `${target}.tmp-${process.pid}`;
   try {
@@ -1589,6 +1571,7 @@ function writeBrowserEndpointsFile() {
 }
 
 function startBrowserEndpointsPublisher() {
+  if (!hasCdp || !browserTargetResolver) return;
   writeBrowserEndpointsFile();
   if (browserEndpointsTimer) clearInterval(browserEndpointsTimer);
   browserEndpointsTimer = setInterval(writeBrowserEndpointsFile, BROWSER_ENDPOINTS_HEARTBEAT_MS);
@@ -1609,6 +1592,7 @@ function stopBrowserEndpointsPublisher() {
 }
 
 function startBrowserTargetResolver() {
+  if (!hasCdp) return Promise.reject(new Error('Electron CDP has not been verified'));
   return new Promise((resolve, reject) => {
     const server = nodeHttp.createServer(createTargetHandler({
       token: browserResolverToken,
@@ -3079,16 +3063,8 @@ async function createMainWindow() {
     webStartup = await startWebService(onWebReady);
   }
 
-  // Packaged port=0 mode: finalize the Chromium-chosen CDP port (must precede
-  // the target resolver's ensureBrowserView and any agent/gateway spawn).
-  if (cdpPortResolution) {
-    cdpPort = await cdpPortResolution;
-    cdpPortResolution = null;
-    if (!(cdpPort > 0)) {
-      hasCdp = false;
-      console.warn('[electron] DevToolsActivePort did not appear; browser sideview disabled');
-    }
-  }
+  await initializeBrowserCdp();
+  if (shuttingDown) return;
   if (hasCdp) {
     console.log('[electron] starting browser target resolver...');
     browserTargetResolver = await startBrowserTargetResolver();
@@ -3098,7 +3074,7 @@ async function createMainWindow() {
     // 发布发现文件（dev / 完整包 / FrontendOnly 一致）：外部后端据此绑定壳内浏览器。
     startBrowserEndpointsPublisher();
   } else {
-    console.log('[electron] CDP port not configured; browser sideview disabled (packaged mode)');
+    console.log('[electron] CDP unavailable or unverified; browser sideview disabled');
   }
 
   if (isFrontendOnly) {
@@ -3147,9 +3123,6 @@ if (!app.requestSingleInstanceLock()) {
     // 先读回上次运行保存的会话页面 URL（重启还原），再进入启动流程。
     Menu.setApplicationMenu(null);
     loadSessionLastUrls();
-    if (cdpPortPending) {
-      cdpPortResolution = resolveCdpPortFromDevToolsActivePort();
-    }
     if (VITE_DEV_MODE) {
       await session.defaultSession.clearCache();
       await session.defaultSession.clearStorageData({ storages: ['serviceworkers'] });

@@ -30,6 +30,7 @@ from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_workspace_dir,
     get_config_file,
+    get_user_home,
     get_user_workspace_dir,
 )
 
@@ -449,6 +450,46 @@ def _build_yuanrong_extra_params() -> dict[str, Any]:
     return extra_params
 
 
+def _build_adx_extra_params() -> dict[str, Any]:
+    """Map the AgentOS workspaces to the tool Environment."""
+    endpoint = get_sandbox_endpoint()
+    workspace = _resolve_workspace_dir()
+    if workspace is None:
+        raise ValueError("ADX sandbox requires a workspace directory")
+    setting_keys = (
+        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "user",
+        "group", "network", "connection", "env", "create_timeout", "schedule_timeout",
+    )
+    extra = {key: endpoint[key] for key in setting_keys if key in endpoint}
+    mounts = list(endpoint.get("mounts") or [])
+    if is_agentos_runtime():
+        user_dir = os.environ.get("JIUWENSWARM_USER_DIRECTORY", "").strip()
+        if (not user_dir.startswith("/") or user_dir == "/"
+                or any(part in (".", "..") for part in user_dir.split("/"))):
+            raise ValueError("ADX sandbox requires an absolute AgentOS user directory")
+        workspace_mounts, _ = _build_agentos_yuanrong_mounts()
+        home = get_user_home()
+        if not home.is_absolute() or home == Path(home.anchor):
+            raise ValueError("ADX sandbox requires an absolute AgentOS home")
+        task_root = home / "Documents" / "JiuwenSwarm"
+        task_root.mkdir(parents=True, exist_ok=True)
+        workspace_mounts.append({
+            "source": str(Path(user_dir) / "Documents" / "JiuwenSwarm"),
+            "target": str(task_root), "readonly": False,
+        })
+        for mount in reversed(workspace_mounts):
+            target = mount["target"]
+            if any(isinstance(item, dict) and item.get("target") == target for item in mounts):
+                raise ValueError("ADX sandbox mounts cannot replace an AgentOS workspace")
+            mounts.insert(0, {
+                "host_path": mount["source"], "target": target, "options": ["rw"],
+            })
+    extra["mounts"] = mounts
+    extra["workdir"] = str(endpoint.get("workdir") or workspace)
+    _apply_tool_sandbox_env_overrides(extra)
+    return extra
+
+
 _TOOL_SANDBOX_ENV_OVERRIDES = (
     ("TOOL_SANDBOX_CPU", "cpu"),
     ("TOOL_SANDBOX_MEMORY", "memory"),
@@ -704,6 +745,25 @@ def create_sandbox_sysop_card(
             )
 
             install_no_host_fallback_jiuwenbox_providers()
+
+        if normalized_type == "adx-environment":
+            gateway_config = SandboxGatewayConfig(
+                isolation=SandboxIsolationConfig(
+                    container_scope=ContainerScope.CUSTOM,
+                    custom_id=_sandbox_isolation_custom_id(project_dir),
+                ),
+                launcher_config=PreDeployLauncherConfig(
+                    base_url=sandbox_url,
+                    sandbox_type="adx-environment",
+                    idle_ttl_seconds=idle_ttl_seconds,
+                    extra_params=_build_adx_extra_params(),
+                ),
+            )
+            return SysOperationCard(
+                mode=OperationMode.SANDBOX,
+                work_config=LocalWorkConfig(shell_allowlist=None),
+                gateway_config=gateway_config,
+            )
 
         if normalized_type == "yuanrong":
             extra_params = _build_yuanrong_extra_params()

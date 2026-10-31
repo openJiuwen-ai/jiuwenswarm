@@ -140,7 +140,7 @@ async def _interrupt(h, monkeypatch, *, mode, kind, count=1):
     answer = {"selected_options": ["allow_once"]}
     keys = h.adapter._root_permission_queue.snapshot_scope(root_session_id=h.adapter._parent_session_id)
     if mode == "auto":
-        assert len(keys) == 1
+        assert len(keys) == count
         answer["card_id"] = keys[0].invocation_id
     return {"source": "permission_interrupt", "request_id": request_id, "answers": [answer]}
 
@@ -309,3 +309,54 @@ async def test_manual_to_smart_rejects_answer_without_exact_locator(answer_host,
     assert len(h.script.calls) == 1 and len(h.dispatches) == 1 and h.executions == []
     assert (await _request(h, **valid_answer)).ok
     assert len(h.script.calls) == 2 and h.executions == [{"value": "once"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["empty", "multiple", "multiple_without_alias"])
+@pytest.mark.parametrize("action", ["allow_once", "reject"])
+async def test_smart_stream_preparation_rejection_can_retry(answer_host, monkeypatch, invalid, action):
+    from jiuwenswarm.agents.harness import agent_observability
+    from jiuwenswarm.extensions.video_duplex.backend import conversation_context
+
+    h = answer_host
+    answer = await _interrupt(h, monkeypatch, mode="auto", kind="permission")
+    monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
+    sync = AsyncMock(side_effect=AssertionError("an approval must not sync fresh context"))
+    monkeypatch.setattr(conversation_context, "sync_conversation_context", sync)
+    state = deepcopy(h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY))
+    keys = h.adapter._root_permission_queue.snapshot_scope(root_session_id=h.adapter._parent_session_id)
+    before_dispatches = len(h.dispatches)
+
+    async def stream(payload):
+        h.request_count += 1
+        request = AgentRequest(
+            request_id=f"request-{h.request_count}", session_id=h.adapter._parent_session_id,
+            channel_id="web", req_method=ReqMethod.CHAT_SEND, is_stream=True,
+            params={"mode": "agent", "project_dir": str(h.root), **payload},
+        )
+        inputs, _, _ = h.facade.build_inputs(request)
+        return [chunk async for chunk in h.adapter.process_message_stream_impl(request, inputs)]
+
+    bad = deepcopy(answer)
+    bad["answers"] = [] if invalid == "empty" else bad["answers"] * 2
+    if invalid == "multiple_without_alias":
+        for item in bad["answers"]:
+            item.pop("card_id", None)
+    with pytest.raises(RootPermissionQueueError, match="permission_queue_one_answer_required"):
+        await asyncio.wait_for(stream(bad), 10)
+    assert h.executions == [] and len(h.script.calls) == 1
+    assert len(h.dispatches) == before_dispatches
+    assert h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY) == state
+    assert h.adapter._root_permission_queue.snapshot_scope(root_session_id=h.adapter._parent_session_id) == keys
+    assert all(h.adapter._root_permission_queue.get(key).state == "pending" for key in keys)
+    assert not h.adapter._permission_dispatch.lock.locked()
+    sync.assert_not_awaited()
+
+    answer["answers"][0]["selected_options"] = [action]
+    chunks = await asyncio.wait_for(stream(answer), 10)
+    assert not any(isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.error"
+                   for chunk in chunks)
+    assert h.executions == ([{"value": "once"}] if action == "allow_once" else [])
+    assert len(h.script.calls) == 2
+    assert h.adapter._root_permission_queue.snapshot_scope(root_session_id=h.adapter._parent_session_id) == ()
+    assert not +h.adapter._active_session_ids

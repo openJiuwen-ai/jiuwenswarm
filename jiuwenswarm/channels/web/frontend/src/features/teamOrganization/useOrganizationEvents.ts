@@ -233,6 +233,8 @@ export function useOrganizationEvents(): void {
             timestamp: new Date().toISOString(),
             teamId,
           });
+          // Request bookkeeping above owns busy state; a stale error must not
+          // clear another active request for the same expert.
         }
       }),
     );

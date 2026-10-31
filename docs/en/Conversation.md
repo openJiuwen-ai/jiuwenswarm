@@ -29,6 +29,12 @@ The conversation page is JiuwenSwarm's core interaction interface. It is not onl
 | **Tool Orchestration** | Automatically choose and combine suitable tools to complete tasks |
 | **Result Feedback** | Clearly present the execution process and final results |
 
+**Context and cumulative tokens**
+
+Click the context bubble at the bottom right of the chat to view context occupancy, the reported KV hit rate, and cumulative tokens for the current session. The Skills category measures skill-related system-prompt sections separately from other system instructions. Totals are grouped into “Main Agent” (the Leader in team mode) and “Subagents / team members”, each showing cumulative input and output tokens in K (1K = 1,000 tokens), with one decimal place.
+
+Totals use model-reported usage and persist across refreshes, rewinds, and trajectory changes. A fork starts accumulating its own new usage. Consumption before this feature was enabled is not backfilled. Missing metrics remain unknown, and a note identifies totals with incomplete reporting. Use the totals alongside the KV hit rate to estimate consumption; the interface does not calculate a price.
+
 ---
 
 ### 1.2 How to Start a Conversation

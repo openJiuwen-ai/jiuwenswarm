@@ -54,6 +54,9 @@ import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
+import { isEnterprise } from '../../edition';
+import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownload';
+import { useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
@@ -75,7 +78,6 @@ import {
   resolveTeamLeaderDisplayName,
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
-import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 
 const CHAT_FILE_CATEGORY_LABEL_KEY: Record<ChatFileCategory, string> = {
   skill: 'chatUi.fileTypeSkill',
@@ -153,7 +155,7 @@ export function TeamMemberMessageFrame({
     const id = member?.trim() ?? '';
     if (!id) return '';
     if (isTeamLeaderMember(id)) {
-      return resolveTeamGroupDisplayName(teamGroupIdentity, i18n.language)
+      return teamGroupIdentity?.displayName?.trim()
         || resolveTeamLeaderDisplayName(teamLeaderIdentity, i18n.language)
         || 'Jiuwen';
     }
@@ -165,7 +167,7 @@ export function TeamMemberMessageFrame({
     ? teamGroupIdentity
       ? {
           agentTemplateId: teamGroupIdentity.id,
-          displayName: resolveTeamGroupDisplayName(teamGroupIdentity, i18n.language),
+          displayName: teamGroupIdentity.displayName,
           ...(teamGroupIdentity.avatarUrl ? { avatar: teamGroupIdentity.avatarUrl } : {}),
         }
       : teamLeaderIdentity ?? undefined
@@ -388,6 +390,7 @@ export const MessageItem = memo(function MessageItem({
   onForkFromMessage,
 }: MessageItemProps) {
   const { t } = useTranslation();
+  const agentCatalog = useAgentCatalogStore((state) => state.catalog);
   const {
     id,
     role,
@@ -887,6 +890,13 @@ export const MessageItem = memo(function MessageItem({
         )}
         data-testid="chat-panel-bubble-wrapper"
       >
+        {!isUser && message.agentTemplateName && (
+          <div className="chat-message-expert">
+            {agentCatalog?.find(
+              (item) => item.id === message.agentTemplateName || item.runtimePackageName === message.agentTemplateName,
+            )?.displayName || message.agentTemplateName}
+          </div>
+        )}
         {!isUser && (
           <div className="hidden" data-testid="chat-panel-thinking-summary" aria-hidden="true" />
         )}
@@ -1119,14 +1129,19 @@ function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fetch(file.download_url, { method: 'HEAD' })
+      fileDownloadHead(file.download_url)
         .then((res) => {
-          if (!cancelled && !res.ok) {
-            setExpiredSet((prev) => new Set(prev).add(index));
+          if (!cancelled) {
+            setExpiredSet((prev) => {
+              const next = new Set(prev);
+              if (res.ok && isEnterprise()) next.delete(index);
+              else if (!res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) next.add(index);
+              return next;
+            });
           }
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!cancelled && !isEnterprise()) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1148,6 +1163,10 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
+    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
+      window.alert(t('artifacts.downloadFailed', { name: file.name }));
+      return;
+    }
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
@@ -1172,7 +1191,7 @@ function FileDownloadList({
     const downloadToken = resolveFileDownloadToken(file);
     if (!downloadToken) return;
     if (!sessionId) {
-      window.alert('当前无活跃会话，无法保存 Skill');
+      window.alert(t('chatUi.saveSkillNoSession'));
       return;
     }
 
@@ -1192,7 +1211,7 @@ function FileDownloadList({
     } catch (error) {
       if (isImportOverwriteRequired(error)) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        const overwrite = window.confirm(`${errorMsg}\n是否覆盖保存？`);
+        const overwrite = window.confirm(t('chatUi.saveSkillOverwriteConfirm', { message: errorMsg }));
         if (!overwrite) return;
         try {
           await webRequest('skills.import_local', importParams(true));
@@ -1288,7 +1307,7 @@ function FileDownloadList({
             {isSkill ? (
               <div className="flex-shrink-0 flex items-center gap-2">
                 {saveSuccessIndex === index && (
-                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">保存成功</span>
+                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">{t('chatUi.saveSkillSuccess')}</span>
                 )}
                 <button
                   type="button"
@@ -1305,9 +1324,9 @@ function FileDownloadList({
                     event.stopPropagation();
                     void handleSaveSkill(file, index);
                   }}
-                  title={isSaved ? '已保存' : '保存'}
+                  title={isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 >
-                  {isSaving ? '保存中...' : isSaved ? '已保存' : '保存'}
+                  {isSaving ? t('chatUi.saveSkillSaving') : isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 </button>
               </div>
             ) : (

@@ -40,7 +40,7 @@ import stat
 import time
 import zipfile
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler
@@ -49,6 +49,7 @@ from ruamel.yaml import YAML
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+from jiuwenswarm.enterprise import is_enterprise
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
@@ -1763,16 +1764,39 @@ def get_root_dir() -> Path:
     return _root_dir
 
 
-def get_agent_workspace_dir() -> Path:
+def get_agent_workspace_dirname() -> str:
+    """Agent workspace directory name under ``agent/``.
+
+    - 个人版: ``workspace``
+    - 企业版: ``jiuwenclaw_workspace``
+    """
+    return "jiuwenclaw_workspace" if is_enterprise() else "workspace"
+
+
+def get_agent_workspace_dir(tenant_key: str | None = None) -> Path:
     """Get the agent workspace directory path.
 
     This is the DeepAgent standard workspace directory under the agent root.
     It contains standard nodes like skills, memory, todo, messages, etc.
 
-    Returns:
-        Path to agent workspace: ~/.jiuwenswarm/agent/workspace
+    - 个人版: ``~/.jiuwenswarm/agent/workspace``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/jiuwenclaw_workspace``
+
+    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
+    ``TenantContext`` 绑定路径，再兜底 ``get_agent_root_dir() / dirname``。
     """
-    return get_agent_root_dir() / "workspace"
+    if tenant_key is None:
+        try:
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            bound = TenantContext.current_agent_workspace_root()
+            if bound is not None:
+                return bound
+        except ImportError:
+            logger.debug(
+                "tenant_context unavailable for workspace bind", exc_info=True
+            )
+    return get_agent_root_dir(tenant_key) / get_agent_workspace_dirname()
 
 
 def get_default_project_workspace_dir() -> Path:
@@ -1809,8 +1833,28 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
-def get_agent_root_dir() -> Path:
-    return get_user_workspace_dir() / "agent"
+def get_agent_root_dir(tenant_key: str | None = None) -> Path:
+    """Get the agent root directory path.
+
+    - 个人版: ``~/.jiuwenswarm/agent/``
+    - 企业版: ``~/.jiuwenswarm/workspace_{tenant_key}/agent/``
+
+    ``tenant_key`` 可选：显式传入时按该租户解析；未传时优先读
+    ``TenantContext`` 绑定路径，再兜底 ``get_multi_tenant_user_workspace_dir()``
+    （个人版即 ``get_user_workspace_dir()``，企业版未绑定则为 default 三元组）。
+    """
+    if tenant_key is None:
+        try:
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+            bound = TenantContext.current_agent_root()
+            if bound is not None:
+                return bound
+        except ImportError:
+            logger.debug(
+                "tenant_context unavailable for agent root bind", exc_info=True
+            )
+    return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
 
 
 def get_agent_home_dir() -> Path:
@@ -3078,6 +3122,103 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     return root
 
 
+
+_FILE_HANDLER_LEVEL_MAP: dict[str, str] = {
+    "gateway.log": "gateway",
+    "gateway.json": "gateway",
+    "channel.log": "channel",
+    "channel.json": "channel",
+    "agent_server.log": "agent_server",
+    "agent_server.json": "agent_server",
+    "full.log": "full",
+    "full.json": "full",
+    "permissions.log": "agent_server",
+}
+
+
+def update_log_levels(
+    log_level: Optional[str] = None,
+    *,
+    console_level: Optional[str] = None,
+    gateway: Optional[str] = None,
+    channel: Optional[str] = None,
+    agent_server: Optional[str] = None,
+    full: Optional[str] = None,
+) -> logging.Logger:
+    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别，无需重建 handler。"""
+    levels = _resolve_logging_levels(log_level)
+
+    if console_level is not None:
+        levels = replace(levels, console=_parse_log_level(console_level, levels.console))
+    if gateway is not None:
+        levels = replace(levels, gateway=_parse_log_level(gateway, levels.gateway))
+    if channel is not None:
+        levels = replace(levels, channel=_parse_log_level(channel, levels.channel))
+    if agent_server is not None:
+        levels = replace(levels, agent_server=_parse_log_level(agent_server, levels.agent_server))
+    if full is not None:
+        levels = replace(levels, full=_parse_log_level(full, levels.full))
+
+    logger_level = min(levels.gateway, levels.channel, levels.agent_server, levels.full)
+    levels = replace(levels, logger=logger_level)
+
+    root = logging.getLogger("jiuwenswarm")
+    root.setLevel(levels.logger)
+
+    from jiuwenswarm.common.background_logging import _QueuedHandler
+
+    def update_handler(h: logging.Handler) -> None:
+        if isinstance(h, _QueuedHandler):
+            for target in h.handlers:
+                update_handler(target)
+            h.setLevel(min(target.level for target in h.handlers))
+        elif isinstance(h, SafeRotatingFileHandler):
+            attr = _FILE_HANDLER_LEVEL_MAP.get(Path(h.baseFilename).name)
+            if attr is not None:
+                h.setLevel(getattr(levels, attr))
+        elif isinstance(h, logging.StreamHandler):
+            h.setLevel(levels.console)
+
+    for h in root.handlers:
+        update_handler(h)
+    return root
+
+
+def _logging_config_row_to_dict(obj: dict[str, Any] | Any) -> dict[str, Any]:
+    if isinstance(obj, dict):
+        return {
+            "level": obj.get("level", "INFO"),
+            "console_level": obj.get("console_level"),
+            "gateway": obj.get("gateway"),
+            "channel": obj.get("channel"),
+            "agent_server": obj.get("agent_server"),
+            "full": obj.get("full"),
+        }
+    return {
+        "level": getattr(obj, "level", "INFO"),
+        "console_level": getattr(obj, "console_level", None),
+        "gateway": getattr(obj, "gateway", None),
+        "channel": getattr(obj, "channel", None),
+        "agent_server": getattr(obj, "agent_server", None),
+        "full": getattr(obj, "full", None),
+    }
+
+
+def apply_logging_config_payload(payload: dict[str, Any] | None) -> None:
+    """将 DB 行 / WS payload 转为 :func:`update_log_levels` 调用。"""
+    if not payload or payload.get("op") == "delete":
+        update_log_levels()
+        return
+
+    kwargs: dict[str, Any] = {}
+    if payload.get("level") is not None:
+        kwargs["log_level"] = str(payload["level"])
+    for key in ("console_level", "gateway", "channel", "agent_server", "full"):
+        if payload.get(key) is not None:
+            kwargs[key] = str(payload[key])
+    update_log_levels(**kwargs)
+
+
 def wait_for_tcp_port(
     host: str,
     port: int,
@@ -3164,6 +3305,18 @@ def wait_for_pid_exit(pid: int, timeout: float = 60.0) -> None:
             time.sleep(0.5)
     logger.warning("process %d did not exit within %.1f seconds", pid, timeout)
 
+
+
+# 多租户路径实现在 enterprise.tenant.tenant_paths；此处再导出以兼容既有调用方。
+from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
+    build_tenant_key,
+    get_agent_root_relative_dir,
+    get_agent_sessions_relative_dir,
+    get_agent_workspace_relative_dir,
+    get_multi_tenant_user_workspace_dir,
+    normalize_tenant_key_part,
+    seed_tenant_agent_workspace,
+)
 
 logger = logging.getLogger(__name__)
 setup_logger()

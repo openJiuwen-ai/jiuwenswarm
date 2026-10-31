@@ -37,6 +37,7 @@ from jiuwenswarm.diagnosis.service import (
     PROGRESS_EVENT,
     STATUS_EVENT,
     DiagnosisService,
+    _dominant_subject_id,
     derive_mode_profile,
     filter_engine_result,
 )
@@ -178,6 +179,29 @@ class _StreamingTablesEngine:
             trajectory_summary="final",
             reward_failure_causes=[_cause("rfc-final")],
             evolution_judge=[_skill("evo-final"), _experience("evo-exp")],
+            reward=_reward_payload("stub"),
+        )
+
+
+class _RewardThenFindingsEngine:
+    """Scores first, then holds the run open while a finding arrives underneath."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.reported = asyncio.Event()
+
+    async def run(self, inputs: EngineInputs, emit: Any) -> EngineResult:
+        del inputs
+        await emit(EngineEvent("diagnose", "reward", reward=_reward_payload("stub")))
+        await emit(EngineEvent("diagnose", "stage_finished", status="completed", summary="scored"))
+        await emit(EngineEvent("attribute", "stage_started", title="Attribute"))
+        await emit(EngineEvent("attribute", "reward_failure_causes", reward_failure_causes=[_cause("rfc-1")]))
+        self.reported.set()
+        await self.release.wait()
+        await emit(EngineEvent("attribute", "stage_finished", status="completed"))
+        return EngineResult(
+            trajectory_summary="final",
+            reward_failure_causes=[_cause("rfc-1")],
             reward=_reward_payload("stub"),
         )
 
@@ -345,6 +369,93 @@ async def test_filter_team_keeps_skill_but_not_experience() -> None:
 
 
 @pytest.mark.asyncio
+async def test_filter_keeps_skill_evidence_that_spans_subjects() -> None:
+    reader = FakeReader(
+        {
+            "main": [make_row([make_span(2, 210, 300, tool_name="shell")])],
+            "member": [make_row([make_span(1, 100, 200, operation="chat", output_text="done")])],
+        },
+    )
+    snapshot, _excluded = await load_trajectory_snapshot(reader, SESSION_ID)
+    index = ScopeIndex.build(snapshot, resolve_ranges(snapshot, FullScope()))
+    skill = EvolutionJudge(
+        id="evo-skill",
+        category="skill",
+        summary="improve the skill",
+        evidence=[_ref(2, subject="main"), _ref(1, subject="member")],
+        suggestion=["advice"],
+        score=0.4,
+        target="team-skill",
+    )
+    cause = RewardFailureCause(
+        id="rfc-cross",
+        dimension="r1",
+        summary="cross",
+        evidence=[_ref(2, subject="main"), _ref(1, subject="member")],
+        suggestion=["fix"],
+    )
+
+    filtered = filter_engine_result(
+        EngineResult(
+            trajectory_summary="summary",
+            reward=_reward_payload("r1"),
+            reward_failure_causes=[cause],
+            evolution_judge=[skill],
+        ),
+        index=index,
+        profile=ModeProfile.TEAM,
+    )
+
+    assert [item.id for item in filtered.evolution_judge] == ["evo-skill"]
+    assert {ref.subject_id for ref in filtered.evolution_judge[0].evidence} == {"main", "member"}
+    assert filtered.reward_failure_causes == []
+
+
+@pytest.mark.asyncio
+async def test_filter_drops_experience_evidence_that_spans_subjects() -> None:
+    reader = FakeReader(
+        {
+            "main": [make_row([make_span(2, 210, 300, tool_name="shell")])],
+            "member": [make_row([make_span(1, 100, 200, operation="chat", output_text="done")])],
+        },
+    )
+    snapshot, _excluded = await load_trajectory_snapshot(reader, SESSION_ID)
+    index = ScopeIndex.build(snapshot, resolve_ranges(snapshot, FullScope()))
+    experience = EvolutionJudge(
+        id="evo-exp",
+        category="experience",
+        summary="what to keep",
+        evidence=[_ref(2, subject="main"), _ref(1, subject="member"), _ref(3, subject="member")],
+        suggestion=["tip"],
+        score=0.0,
+        outcome="fail",
+    )
+
+    filtered = filter_engine_result(
+        EngineResult(
+            trajectory_summary="summary",
+            reward=_reward_payload("r1"),
+            reward_failure_causes=[],
+            evolution_judge=[experience],
+        ),
+        index=index,
+        profile=ModeProfile.AGENT_WORK,
+    )
+
+    assert filtered.evolution_judge == []
+
+
+def test_dominant_subject_id_prefers_the_most_cited_subject() -> None:
+    assert _dominant_subject_id([
+        _ref(2, subject="main"),
+        _ref(1, subject="member"),
+        _ref(3, subject="member"),
+    ]) == "member"
+    assert _dominant_subject_id([_ref(2, subject="main"), _ref(1, subject="member")]) == "main"
+    assert _dominant_subject_id([]) == ""
+
+
+@pytest.mark.asyncio
 async def test_filter_drops_refs_without_a_valid_node_id() -> None:
     cause = RewardFailureCause(
         id="rfc-1",
@@ -450,6 +561,30 @@ async def test_tables_are_visible_and_pushed_while_the_run_goes_on(tmp_path: Pat
     assert [cause.id for cause in finished.reward_failure_causes] == ["rfc-final"]
     assert [judge.id for judge in finished.evolution_judge] == ["evo-final", "evo-exp"]
     assert finished.trajectory_summary == "final"
+
+
+@pytest.mark.asyncio
+async def test_reward_is_visible_before_findings_arrive(tmp_path: Path) -> None:
+    engine = _RewardThenFindingsEngine()
+    service, push = _service(tmp_path, engine=engine)
+
+    started = await service.start(SESSION_ID, _full_request())
+    await asyncio.wait_for(engine.reported.wait(), _ENGINE_DONE_TIMEOUT)
+
+    live = service.get_record(SESSION_ID, started.diagnosis_id)
+    assert live.status is DiagnosisStatus.RUNNING
+    assert live.reward == _reward_payload("stub")
+    assert [cause.id for cause in live.reward_failure_causes] == ["rfc-1"]
+
+    kinds = [payload["kind"] for payload in push.of(PROGRESS_EVENT)]
+    assert kinds.index("reward") < kinds.index("reward_failure_causes")
+    stored = DiagnosisStore(tmp_path).load(SESSION_ID, started.diagnosis_id)
+    assert stored is not None and stored.reward == _reward_payload("stub")
+
+    engine.release.set()
+    finished = await _wait_finished(service, started.diagnosis_id)
+    assert finished.reward == _reward_payload("stub")
+    assert finished.status is DiagnosisStatus.COMPLETED
 
 
 @pytest.mark.asyncio

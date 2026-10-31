@@ -72,7 +72,7 @@ async def test_init_one_mcp_failure_does_not_starve_the_rest(tmp_path, monkeypat
     def fake_build(self, entry):
         return _mk_cfg(str(entry.get("name", "")))
 
-    async def fake_register(self, cfg, *, tag):
+    async def fake_register(self, cfg, *, tag, dynamic_token_url=None):
         calls.append(cfg.server_name)
         if cfg.server_name == "bad":
             raise RuntimeError("bad host unreachable")
@@ -118,7 +118,7 @@ async def test_init_preflight_false_degrades_to_disconnected(tmp_path, monkeypat
     def fake_build(self, entry):
         return _mk_cfg(str(entry.get("name", "")))
 
-    async def fake_register(self, cfg, *, tag):
+    async def fake_register(self, cfg, *, tag, dynamic_token_url=None):
         return False  # preflight unreachable
 
     monkeypatch.setattr(type(adapter), "_build_mcp_server_config", fake_build)
@@ -154,7 +154,7 @@ async def test_init_promotes_connecting_to_connected(tmp_path, monkeypatch) -> N
     def fake_build(self, entry):
         return _mk_cfg(str(entry.get("name", "")))
 
-    async def fake_register(self, cfg, *, tag):
+    async def fake_register(self, cfg, *, tag, dynamic_token_url=None):
         return True  # registered OK
 
     monkeypatch.setattr(type(adapter), "_build_mcp_server_config", fake_build)
@@ -190,7 +190,7 @@ async def test_init_connected_stays_connected_no_promote(tmp_path, monkeypatch) 
     def fake_build(self, entry):
         return _mk_cfg(str(entry.get("name", "")))
 
-    async def fake_register(self, cfg, *, tag):
+    async def fake_register(self, cfg, *, tag, dynamic_token_url=None):
         return True
 
     monkeypatch.setattr(type(adapter), "_build_mcp_server_config", fake_build)

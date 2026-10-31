@@ -453,7 +453,10 @@ class RuntimeSupervisor:
             try:
                 await self._bring_up()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[Supervisor] worker bring-up failed: %s", exc)
+                logger.warning(
+                    "[Supervisor] worker bring-up failed: %s",
+                    exc if str(exc) else type(exc).__name__,
+                )
                 if not await self._schedule_restart(str(exc)):
                     break
                 continue

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,7 @@ from jiuwenswarm.agents.harness.team.event_types import (
     resolve_team_event,
 )
 from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import BaseMonitorHandler
+from jiuwenswarm.agents.harness.team.member_status import is_departed_member
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,22 @@ def _task_text_field(name: str, value: str | None) -> dict[str, Any]:
         field[f"{name}_truncated"] = True
         field[f"{name}_original_size"] = original_size
     return field
+
+
+def _split_roster(members: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Split snapshot member dicts into the roster and the departed directory.
+
+    ``members`` is the roster the frontend restores its panel and @ candidates
+    from, so a departed member must never be in it. ``departed_members`` keeps
+    their identity (name / avatar fields) for task cards that still reference
+    them, and lets a reconnecting client drop members whose shutdown event it
+    missed.
+    """
+    roster: list[dict[str, Any]] = []
+    departed: list[dict[str, Any]] = []
+    for member in members:
+        (departed if is_departed_member(member.get("status")) else roster).append(member)
+    return {"members": roster, "departed_members": departed}
 
 
 # 框架模板消息（SDK ``message_template``）的模板 key → 前端交接类型。
@@ -487,7 +505,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 members = [m for m in members if m.member_name != leader_name]
             tasks = await self._monitor.get_tasks() or []
             return {
-                "members": [
+                **_split_roster(
                     {
                         "member_id": m.member_name,
                         "name": m.display_name,
@@ -502,7 +520,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
                         "cli_agent": getattr(m, "cli_agent", None),
                     }
                     for m in members
-                ],
+                ),
                 "tasks": [
                     {
                         "task_id": t.task_id,
@@ -688,7 +706,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             tasks = await db.task.get_team_tasks(tname) or []
 
             return {
-                "members": [
+                **_split_roster(
                     {
                         "member_id": m.member_name,
                         "name": m.display_name,
@@ -701,7 +719,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
                         "cli_agent": load_member_options(getattr(m, "options", None)).cli_agent,
                     }
                     for m in members
-                ],
+                ),
                 "tasks": [
                     {
                         "task_id": t.task_id,

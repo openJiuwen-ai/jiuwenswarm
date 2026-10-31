@@ -281,7 +281,7 @@ function normalizeTaskListItem(value: unknown): RsiTaskListItem | null {
   const bestArtifact = normalizeBestArtifact(raw.best_artifact);
   return {
     task_id: asString(raw.task_id),
-    name: asString(raw.name, asString(raw.task_id, 'RSI 实验')),
+    name: asString(raw.name, asString(raw.task_id, 'RSI')),
     scenario: normalizeRsiScenario(raw.scenario),
     artifact_type: normalizeRsiArtifactType(raw.artifact_type),
     status,
@@ -305,7 +305,7 @@ function normalizeTask(value: unknown): RsiTaskGetResult {
   const progress = normalizeProgress(raw.progress, { total: asNumber(config.max_iterations) });
   return {
     task_id: asString(raw.task_id),
-    name: asString(raw.name, asString(raw.task_id, 'RSI 实验')),
+    name: asString(raw.name, asString(raw.task_id, 'RSI')),
     scenario: normalizeRsiScenario(raw.scenario),
     artifact_type: normalizeRsiArtifactType(raw.artifact_type),
     status: normalizeRsiStatus(raw.status),

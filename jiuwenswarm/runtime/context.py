@@ -56,6 +56,12 @@ def get_current_runtime() -> AgentRuntime | None:
 
 
 def get_current_agent_manager() -> AgentManager | None:
+    """Return the Manager bound on the current Runtime execution slice.
+
+    多租户下 Manager 由 ``AgentRuntime`` 局部持有，经 ``set_runtime_context``
+    传给下游；不为 Manager 单独维护请求级 ContextVar。
+    """
+
     context = get_runtime_context()
     return context.agent_manager if context is not None else None
 

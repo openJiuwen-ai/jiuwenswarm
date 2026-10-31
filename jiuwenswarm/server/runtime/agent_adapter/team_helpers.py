@@ -25,7 +25,6 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
-from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamMonitor, TeamStreamLogger
 from openjiuwen.core.runner import Runner
@@ -39,6 +38,7 @@ from jiuwenswarm.server.runtime.session.history_io import (
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
+from jiuwenswarm.agents.harness.team.member_status import is_departed_member
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRoute,
     session_messaging_route_context,
@@ -2051,7 +2051,12 @@ async def _broadcast_team_state_snapshot(
         if get_wf_handler is not None:
             wf_handler = get_wf_handler(session_id)
             if wf_handler is not None:
-                db_member_ids = {m.get("member_id", "") for m in snapshot.get("members", [])}
+                # Departed members keep their DB row too, so their ids stay
+                # reserved even though they are off the roster.
+                db_member_ids = {
+                    m.get("member_id", "")
+                    for m in (*snapshot.get("members", []), *snapshot.get("departed_members", []))
+                }
                 # Iterative loops reuse an agent id across phases of one run;
                 # like the live path's session-wide spawned_members, each
                 # mirrored member is emitted exactly once per replay.
@@ -2182,8 +2187,7 @@ async def _announce_team_roster(
         fresh: list[dict[str, Any]] = []
         for member in members:
             candidate_id = str(member.get("member_id") or "").strip()
-            member_status = str(member.get("status") or "").strip().lower()
-            if member_status == MemberStatus.SHUTDOWN.value:
+            if is_departed_member(member.get("status")):
                 continue
             if not candidate_id or candidate_id in announced_members:
                 continue
@@ -4385,6 +4389,20 @@ async def _consume_stream_with_query(
     async def _deliver(event: dict[str, Any]) -> None:
         """Broadcast one event and persist it when no waiter received it."""
         nonlocal writer
+        if event.get("event_type") == "chat.final" or (
+            event.get("event_type") == "chat.processing_status"
+            and event.get("is_processing") is False
+        ):
+            try:
+                from jiuwenswarm.server.runtime.session.session_token_usage import (
+                    get_session_token_usage,
+                )
+
+                usage = await asyncio.to_thread(get_session_token_usage, session_id)
+                if usage["revision"] > 0:
+                    event = {**event, "session_usage": usage}
+            except Exception:
+                logger.warning("[TeamHelpers] cumulative session usage unavailable", exc_info=True)
         delivered = await _broadcast_event(channel_id, session_id, event)
         if writer is None:
             return

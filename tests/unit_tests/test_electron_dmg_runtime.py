@@ -94,7 +94,7 @@ def test_architecture_checks_use_real_lipo(tmp_path, caller):
     """Verify command syntax against Apple's lipo, not a permissive stub."""
     binary = tmp_path / "Fixture.app/Contents/MacOS/fixture"
     binary.parent.mkdir(parents=True)
-    shutil.copyfile("/usr/bin/true", binary)
+    shutil.copyfile(sys.executable, binary)
     if caller == "build":
         source = (ROOT / "scripts/build-electron-exe.sh").read_text(encoding="utf-8")
         check = source.split("check_arch() {", 1)[1].split('\n}', 1)[0]

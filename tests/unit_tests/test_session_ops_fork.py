@@ -6,6 +6,25 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
+def test_fork_history_drops_parent_cumulative_usage_but_keeps_turn_usage():
+    from jiuwenswarm.agents.harness.common.session_ops_service import _copy_fork_history_value
+
+    source = {
+        "event_type": "chat.usage_summary",
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+        "session_usage": {"session_id": "source", "revision": 9},
+    }
+    copied = _copy_fork_history_value(
+        source,
+        source_session_id="source",
+        target_session_id="fork",
+    )
+
+    assert "session_usage" not in copied
+    assert copied["usage"] == {"input_tokens": 10, "output_tokens": 2}
+    assert source["session_usage"]["session_id"] == "source"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

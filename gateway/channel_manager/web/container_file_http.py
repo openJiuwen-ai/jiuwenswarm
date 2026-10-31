@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any, Mapping
 from urllib.parse import quote
 
@@ -25,8 +26,7 @@ FILE_API_PREFIX = "/file-api"
 MAX_UPLOAD_COUNT = 20
 _STREAM_CHUNK = 65536
 _VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
-# 与 AgentServer ``workspace_file_adapter._VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES``
-# 对齐的分块上限（跨进程协议常量，原 embedded/runtime/file_download.py，A5 内联）。
+# Keep the verified-download wire chunk bound aligned with AgentServer.
 _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES = 512 * 1024
 
 
@@ -480,13 +480,153 @@ def _decode_verified_chunk(
     return data, total_size, name or "download", mime_type, bool(payload.get("eof"))
 
 
+async def serve_verified_download(
+    request: Request, channel: Any, uid: str, token: str, token_payload: dict[str, Any],
+    *, routing_identity: dict[str, str] | None = None,
+) -> Response:
+    """Stream the existing signed, sealed asset over any AgentServer transport."""
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.common.request_identity import apply_routing_metadata
+    from gateway.routing.e2a_proxy import fetch_agent_unary
+
+    session_id_value = token_payload.get("sid")
+    if not isinstance(session_id_value, str):
+        return _error_json(
+            error="invalid_download_token",
+            code="BAD_REQUEST",
+            status_code=400,
+        )
+    agent_client = getattr(channel, "agent_client", None)
+
+    async def _verified_chunk(
+        offset: int,
+        limit: int,
+    ) -> tuple[bytes, int, str, str, bool] | JSONResponse:
+        ok, result = await fetch_agent_unary(
+            agent_client=agent_client,
+            req_method=ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            params={"token": token, "offset": offset, "limit": limit},
+            metadata=apply_routing_metadata(None, routing_identity),
+            session_id=session_id_value,
+            user_id=uid,
+            channel_id=channel.channel_id,
+            label="file.download_verified_chunk",
+        )
+        if not ok:
+            return _error_json(
+                error=str(result.get("error") or "verified download failed"),
+                code=str(result.get("code") or "BAD_REQUEST"),
+            )
+        decoded = _decode_verified_chunk(
+            result,
+            expected_offset=offset,
+            expected_limit=limit,
+        )
+        if decoded is None:
+            return _error_json(
+                error="invalid verified download response",
+                code="INTERNAL_ERROR",
+                status_code=502,
+            )
+        return decoded
+
+    return await serve_file_chunks(request, _verified_chunk)
+
+
+async def serve_file_chunks(
+    request: Request,
+    read_chunk: Callable[[int, int], Awaitable[tuple[bytes, int, str, str, bool] | JSONResponse]],
+    *, inline: bool | None = None,
+) -> Response:
+    """Stream a bounded AgentServer reader with shared HEAD/Range semantics."""
+
+    first_result = await read_chunk(0, 1)
+    if isinstance(first_result, JSONResponse):
+        return first_result
+    _, total_size, file_name, mime_type, _ = first_result
+    range_header = str(request.headers.get("Range") or "").strip()
+    byte_range = (
+        _parse_single_byte_range(range_header, total_size)
+        if range_header
+        else None
+    )
+    if range_header and byte_range is None:
+        return Response(
+            status_code=416,
+            headers={
+                "Content-Range": f"bytes */{total_size}",
+                "Content-Length": "0",
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+            },
+        )
+
+    start, end = byte_range or (0, max(total_size - 1, 0))
+    content_length = 0 if total_size == 0 else end - start + 1
+    if inline is None:
+        inline = str(request.query_params.get("inline") or "").strip().lower() in {"1", "true"}
+    safe_inline = mime_type.startswith(("image/", "audio/", "video/")) and mime_type != "image/svg+xml"
+    disposition = "inline" if inline and safe_inline else "attachment"
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        "Cache-Control": "no-store",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(content_length),
+        "Content-Disposition": (
+            f"{disposition}; filename*=UTF-8''{quote(file_name, safe='')}"
+        ),
+    }
+    status_code = 206 if byte_range is not None else 200
+    if byte_range is not None:
+        headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
+    if request.method == "HEAD" or total_size == 0:
+        return Response(
+            status_code=status_code,
+            media_type=mime_type,
+            headers=headers,
+        )
+
+    async def _stream_verified_download():
+        offset = start
+        while offset <= end:
+            limit = min(
+                _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
+                end - offset + 1,
+            )
+            result = await read_chunk(offset, limit)
+            if isinstance(result, JSONResponse):
+                raise RuntimeError("AgentServer file read failed")
+            data, size, name, content_type, _ = result
+            if size != total_size:
+                raise RuntimeError("AgentServer file changed")
+            if name != file_name:
+                raise RuntimeError("AgentServer file changed")
+            if content_type != mime_type:
+                raise RuntimeError("AgentServer file changed")
+            if not data:
+                raise RuntimeError("AgentServer file changed")
+            yield data
+            offset += len(data)
+
+    return StreamingResponse(
+        _stream_verified_download(),
+        status_code=status_code,
+        media_type=mime_type,
+        headers=headers,
+    )
+
+
 def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
-    """Mount ``/file-api`` when the backend supports container file transfer."""
-    from gateway.routing.container_files import AgentOSFileTransferError
+    """Mount ``/file-api`` when channel has an AgentOSRouterClient backend."""
+    from gateway.extensions.agentos.agentos_router.router_client import (
+        AgentOSFileTransferError,
+        AgentOSRouterClient,
+    )
     from gateway.extensions.auth.common import headers_to_dict
 
     client = getattr(channel, "container_file_client", None)
-    if client is None or not callable(getattr(client, "authenticate_http", None)):
+    if not isinstance(client, AgentOSRouterClient):
         return
 
     prefix = FILE_API_PREFIX
@@ -707,122 +847,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             return _error_json(error="user_id is required", code="BAD_REQUEST", status_code=400)
 
         if token_payload.get("kind") == _VERIFIED_ASSET_TOKEN_KIND:
-            from openjiuwen_protocol.message import ReqMethod
-            from gateway.routing.e2a_proxy import fetch_agent_unary
-            session_id_value = token_payload.get("sid")
-            if not isinstance(session_id_value, str):
-                return _error_json(
-                    error="invalid_download_token",
-                    code="BAD_REQUEST",
-                    status_code=400,
-                )
-            agent_client = getattr(channel, "agent_client", None)
-
-            async def _verified_chunk(
-                offset: int,
-                limit: int,
-            ) -> tuple[bytes, int, str, str, bool] | JSONResponse:
-                ok, result = await fetch_agent_unary(
-                    agent_client=agent_client,
-                    req_method=ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
-                    params={"token": token, "offset": offset, "limit": limit},
-                    session_id=session_id_value,
-                    user_id=uid,
-                    channel_id=channel.channel_id,
-                    label="file.download_verified_chunk",
-                )
-                if not ok:
-                    return _error_json(
-                        error=str(result.get("error") or "verified download failed"),
-                        code=str(result.get("code") or "BAD_REQUEST"),
-                    )
-                decoded = _decode_verified_chunk(
-                    result,
-                    expected_offset=offset,
-                    expected_limit=limit,
-                )
-                if decoded is None:
-                    return _error_json(
-                        error="invalid verified download response",
-                        code="INTERNAL_ERROR",
-                        status_code=502,
-                    )
-                return decoded
-
-            first_result = await _verified_chunk(0, 1)
-            if isinstance(first_result, JSONResponse):
-                return first_result
-            _, total_size, file_name, mime_type, _ = first_result
-            range_header = str(request.headers.get("Range") or "").strip()
-            byte_range = (
-                _parse_single_byte_range(range_header, total_size)
-                if range_header
-                else None
-            )
-            if range_header and byte_range is None:
-                return Response(
-                    status_code=416,
-                    headers={
-                        "Content-Range": f"bytes */{total_size}",
-                        "Content-Length": "0",
-                        "Accept-Ranges": "bytes",
-                        "Cache-Control": "no-store",
-                    },
-                )
-
-            start, end = byte_range or (0, max(total_size - 1, 0))
-            content_length = 0 if total_size == 0 else end - start + 1
-            inline = str(request.query_params.get("inline") or "").strip().lower() in {
-                "1",
-                "true",
-            }
-            disposition = "inline" if inline else "attachment"
-            headers = {
-                "Cache-Control": "no-store",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(content_length),
-                "Content-Disposition": (
-                    f"{disposition}; filename*=UTF-8''{quote(file_name, safe='')}"
-                ),
-            }
-            status_code = 206 if byte_range is not None else 200
-            if byte_range is not None:
-                headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
-            if request.method == "HEAD" or total_size == 0:
-                return Response(
-                    status_code=status_code,
-                    media_type=mime_type,
-                    headers=headers,
-                )
-
-            async def _stream_verified_download():
-                offset = start
-                while offset <= end:
-                    limit = min(
-                        _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
-                        end - offset + 1,
-                    )
-                    result = await _verified_chunk(offset, limit)
-                    if isinstance(result, JSONResponse):
-                        raise RuntimeError("verified download authorization expired")
-                    data, size, name, content_type, _ = result
-                    if size != total_size:
-                        raise RuntimeError("verified download asset changed")
-                    if name != file_name:
-                        raise RuntimeError("verified download asset changed")
-                    if content_type != mime_type:
-                        raise RuntimeError("verified download asset changed")
-                    if not data:
-                        raise RuntimeError("verified download asset changed")
-                    yield data
-                    offset += len(data)
-
-            return StreamingResponse(
-                _stream_verified_download(),
-                status_code=status_code,
-                media_type=mime_type,
-                headers=headers,
-            )
+            return await serve_verified_download(request, channel, uid, token, token_payload)
 
         location = _decode_download_token_location(token)
         if location is None:

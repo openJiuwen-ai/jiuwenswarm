@@ -285,3 +285,29 @@ def test_unavailable_diagnostic_stream_does_not_stop_fanout(monkeypatch, missing
         assert writer.stop(timeout=2)
     assert output.getvalue() == "survives\n"
     assert writer.sink_failures["emit"] == writer.diagnostic_failures == 1
+
+
+def test_enterprise_level_reload_updates_queued_sinks(monkeypatch, tmp_path):
+    from jiuwenswarm.common import utils
+
+    output = io.StringIO()
+    console = logging.StreamHandler(output)
+    file_handler = utils.SafeRotatingFileHandler(str(tmp_path / "gateway.log"))
+    console.setLevel(logging.WARNING)
+    file_handler.setLevel(logging.WARNING)
+    target = logging.Logger("jiuwenswarm", logging.WARNING)
+    target.handlers = [console, file_handler]
+    writer = BackgroundLogWriter()
+    writer.wrap(target)
+    monkeypatch.setattr(utils.logging, "getLogger", lambda name=None: target)
+    try:
+        utils.update_log_levels("DEBUG", console_level="ERROR", gateway="DEBUG")
+        target.debug("file only")
+        target.error("both sinks")
+        assert target.handlers[0].level == logging.DEBUG
+        assert file_handler.level == logging.DEBUG
+        assert console.level == logging.ERROR
+    finally:
+        assert writer.stop()
+    assert output.getvalue() == "both sinks\n"
+    assert "file only" in (tmp_path / "gateway.log").read_text()

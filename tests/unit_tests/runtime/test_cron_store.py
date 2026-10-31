@@ -6,7 +6,7 @@ import pytest
 
 from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from jiuwenswarm.runtime.cron.store import CronJobStore
+from gateway.runtime.cron.store import CronJobStore
 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
 
@@ -78,7 +78,7 @@ async def test_model_selection_preserved_when_not_overridden_by_name(
         })
         resolver = ModelSelectionResolver(catalog)
         monkeypatch.setattr(
-            "jiuwenswarm.common.model_routing_registry.ModelSelectionResolver",
+            "gateway.common.model_routing_registry.ModelSelectionResolver",
             lambda: resolver,
         )
         patch.update(model_name="new-config-model", model_selection=selection)
@@ -133,3 +133,75 @@ async def test_update_job_error_contract(tmp_path):
         await store.update_job("", {"name": "x"})
     with pytest.raises(KeyError):
         await store.update_job("no-such-job", {"name": "x"})
+
+
+async def test_create_job_writes_group_and_bot(tmp_path):
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await store.create_job(
+        name="群任务",
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="提醒",
+        targets="web",
+        group_id="g1",
+        bot_id="b1",
+        user_id="u1",
+    )
+
+    saved = await CronJobStore(path=store.path).get_job(job.id)
+    assert saved is not None
+    assert saved.group_id == "g1"
+    assert saved.bot_id == "b1"
+    assert saved.user_id == "u1"
+
+
+async def test_create_job_blank_identity_stays_empty(tmp_path):
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await store.create_job(
+        name="个人任务",
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="提醒",
+        targets="web",
+    )
+
+    assert job.group_id == ""
+    assert job.bot_id == ""
+    assert job.user_id == ""
+    saved = await CronJobStore(path=store.path).get_job(job.id)
+    assert saved is not None
+    assert (saved.group_id, saved.bot_id, saved.user_id) == ("", "", "")
+
+
+async def test_update_job_keeps_sticky_identity(tmp_path):
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    job = await store.create_job(
+        name="身份锁定",
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="提醒",
+        targets="web",
+        group_id="g1",
+        bot_id="b1",
+        user_id="u1",
+    )
+    created_at = job.created_at
+
+    saved = await store.update_job(
+        job.id,
+        {
+            "name": "改过名字",
+            "group_id": "g2",
+            "bot_id": "b2",
+            "user_id": "u2",
+            "job_id": "other-id",
+            "created_at": 1,
+        },
+    )
+
+    assert saved.id == job.id
+    assert saved.name == "改过名字"
+    assert saved.group_id == "g1"
+    assert saved.bot_id == "b1"
+    assert saved.user_id == "u1"
+    assert saved.created_at == created_at

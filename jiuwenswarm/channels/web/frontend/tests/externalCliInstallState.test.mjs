@@ -179,11 +179,11 @@ test('the persisted choice triggers a debounced auto-detection for both agents',
   // Every listed agent (built-in or uploaded) is detected after its own path
   // changes, in the CLI mode (built-in vs external) it is configured for.
   assert.match(sectionSource, /for \(const \[cliAgent, cliPath\] of currentPaths\)/);
-  assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin\] of currentPaths\)/);
+  assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin, enabled\] of currentPaths\)/);
   // Automatic detection stays silent; the manual detect button wraps it in
   // detectAndNotify, which toasts the outcome like the models settings'
   // connection test.
-  assert.match(sectionSource, /detect\(cliAgent, cliPath, useBuiltin\)/);
+  assert.match(sectionSource, /detect\(cliAgent, cliPath, enabled \? useBuiltin : true\)/);
   assert.match(sectionSource, /void detectAndNotify\(cliAgent, cliPath, useBuiltin\)/);
   assert.match(sectionSource, /void detectAndNotify\(cliAgent, draftValues\[cliPathKey\] \|\| ''\)/);
   assert.match(sectionSource, /result\?\.status === 'ok' \|\| result\?\.status === 'warning'/);
@@ -277,16 +277,102 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // A force install on an already-installed agent finishes silently backend-side,
   // so installNow must always toast the outcome to stay responsive.
   assert.match(sectionSource, /showHint\(t\('config\.externalCli\.installSucceeded'\)\)/);
-  assert.match(sectionSource, /!installed && enabled && \(!result \|\| !detectingNow\)/);
+  assert.match(sectionSource, /!installed && \(!result \|\| !detectingNow\)/);
   assert.doesNotMatch(sectionSource, /manualDetectAgents/);
   // Built-in mode shows the actual built-in CLI path from detection instead of
   // the generic placeholder text.
   assert.match(sectionSource, /useBuiltin && detectedPath \? \(/);
-  // MRU history entries carry a per-option remove button; the active path and
-  // the detected PATH lookup must stay non-removable.
-  assert.match(sectionSource, /for \(const path of \[cliPath, pathCandidates\[cliAgent\] \|\| '', detectedPath\]\) pushPathOption\(path, false\);/);
-  assert.match(sectionSource, /for \(const path of pathHistories\[cliAgent\] \?\? \[\]\) pushPathOption\(path, true\);/);
-  assert.match(sectionSource, /const removePathHistory = useCallback/);
+  // The path dropdown merges the persisted backend history between the saved
+  // path and the PATH-detected candidate, so switching addresses never loses
+  // the previous ones; explicit actions prune stale entries via
+  // external_cli.validate_paths (backend history, not localStorage).
+  assert.match(
+    sectionSource,
+    /for \(const path of \[cliPath, \.\.\.historyPaths, pathCandidates\[cliAgent\] \|\| '', detectedPath\]\)/,
+  );
+  assert.match(
+    sectionSource,
+    /parseExternalCliPathHistories\(draftValues\[externalCliKey\(cliAgent, 'path_histories'\)\]\)/,
+  );
+  assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
+  assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
+});
+
+test('an explicit detect or save prunes stale path-history entries through the backend', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+  const providerSource = readFileSync(
+    new URL('../src/features/settings/services/SettingsServicesProvider.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // Cleanup only runs when the caller marks the detect as an explicit user
+  // action: automatic probes (debounce, post-install, toggle) never touch it.
+  assert.match(
+    sectionSource,
+    /\(result\.status === 'ok' \|\| result\.status === 'warning'\) && options\?\.cleanupHistory/,
+  );
+  assert.match(sectionSource, /onCleanupPathHistories\?\.\(cliAgent, result\.path \|\| ''\)/);
+  assert.match(sectionSource, /detect\(cliAgent, cliPath, useBuiltin, \{ cleanupHistory: true \}\)/);
+  assert.match(sectionSource, /detect\(cliAgent, requestedPath, false, \{ cleanupHistory: true \}\)/);
+  // The settings module owns the cleanup: it validates history entries on
+  // disk and hands only the confirmed misses to the backend prune, which
+  // drops them from the on-disk history (never the whole key).
+  assert.match(settingsSource, /const cleanupPersistedPathHistories = useCallback/);
+  assert.match(settingsSource, /onValidateExternalCliPaths\(\[\.\.\.new Set\(\[\.\.\.histories, \.\.\.knownGood\]\)\]\)/);
+  // Only a confirmed miss evicts an entry; unreadable (null) stays put.
+  assert.match(settingsSource, /const removePaths = histories\.filter\(\(path\) => !knownGood\.includes\(path\) && results\[path\] === false\);/);
+  assert.match(settingsSource, /await onPruneExternalCliPathHistories\(cliAgent, removePaths\);/);
+  assert.match(settingsSource, /onCleanupPathHistories=\{cleanupPersistedPathHistories\}/);
+  // The service contract exposes the backend batch validator (three-valued)
+  // and the server-side prune used by the cleanup.
+  assert.match(
+    providerSource,
+    /onValidateExternalCliPaths\?: \(paths: string\[\]\) => Promise<Record<string, boolean \| null>>;/,
+  );
+  assert.match(
+    providerSource,
+    /onPruneExternalCliPathHistories\?: \(agent: ExternalCliAgentKind, removePaths: string\[\]\) => Promise<string\[\]>;/,
+  );
+});
+
+test('a saved cli_path change appends the previous path to the local history', () => {
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // persistUpdates mirrors the backend append so the dropdown offers the
+  // replaced path immediately, without waiting for a config reload.
+  assert.match(settingsSource, /const EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10;/);
+  assert.match(settingsSource, /if \(!oldPath \|\| oldPath === newPath\) continue;/);
+  assert.match(settingsSource, /historyPatch\[historyKey\] = JSON\.stringify\(/);
+  assert.match(settingsSource, /\[\.\.\.history, oldPath\]\.slice\(-EXTERNAL_CLI_PATH_HISTORY_LIMIT\)/);
+  // The mirrored history reaches savedValues, draftValues, and the config store.
+  assert.match(settingsSource, /for \(const \[key, value\] of Object\.entries\(historyPatch\)\) \{\s*next\[key\] = value;\s*\}/);
+});
+
+test('the replay save hands its pre-save path to the server-side prune cleanup', () => {
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // The replay flow hands the pre-save path to the cleanup so the just
+  // appended old path is treated as known-good, never pruned away.
+  assert.match(settingsSource, /options\?: \{ effectivePath\?: string \}/);
+  assert.match(settingsSource, /effectivePath: pending\.cliPath,/);
+  // Cleanup must not overwrite the whole history key from a React snapshot:
+  // the backend prune is the only writer, so entries appended by a
+  // concurrent save between the snapshot and the prune survive.
+  assert.doesNotMatch(settingsSource, /replacedPath/);
+  assert.doesNotMatch(settingsSource, /const cleanupPersistedPathHistories = useCallback\((?:[^{}]|\{[^{}]*\})*?onSave\(updates\)/);
 });
 
 test('install-now bypasses the no-change short circuit so a deleted built-in CLI can be repaired', () => {
@@ -485,10 +571,11 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
   assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
-  // The enable switch must stay clickable even when the CLI is reported
-  // missing (e.g. right after a page reload, before the auto-detect runs),
-  // otherwise the user gets locked out of re-enabling a disabled agent.
-  assert.match(section, /disabled=\{disabled \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  // The enable switch is disabled only when the CLI is not installed AND the
+  // agent is already disabled — so a page reload (installed=false until the
+  // auto-detect runs) does not lock the user out of an enabled agent, and a
+  // disabled agent cannot be turned on before installing the CLI.
+  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {

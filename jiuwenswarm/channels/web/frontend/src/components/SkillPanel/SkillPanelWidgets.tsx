@@ -12,6 +12,7 @@ import ExpandIcon from '../../assets/work-mode/expand.svg?react';
 import { PageCard, type PageCardActionProps } from '../ui';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { MarketplacePluginItem } from './types';
+import { getSourceLabel } from './skillPanelUtils';
 
 /** 表单字段问号 tooltip（position: fixed，不受 overflow 裁剪） */
 export function FormFieldTooltip({ text }: { text: string }) {
@@ -137,7 +138,8 @@ export function HubSkillCard({
 }) {
   const { t } = useTranslation();
   const displayName = skill.display_name || skill.name;
-  const tags = skill.tags && skill.tags.length > 0 ? skill.tags : undefined;
+  const sourceTag = `${t('skills.sourceLabel')}: ${getSourceLabel(skill.source || 'teamskillshub', t)}`;
+  const tags = [sourceTag, ...(skill.tags && skill.tags.length > 0 ? skill.tags : [])];
 
   return (
     <PageCard

@@ -1,6 +1,6 @@
 import { readOutputOrder, isSuppressedOutput } from './sessionOutput';
 import type { OutputOrder } from '../types/message';
-import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution, AskUserQuestionPayload, Question, UserAnswer } from '../types';
+import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution, AskUserQuestionPayload, Question, UserAnswer, SessionTokenUsageSnapshot, parseSessionTokenUsageSnapshot } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
 import { describeChatError } from './free-models/chatError';
@@ -483,7 +483,7 @@ type HistoryTimelineEntry =
   | { kind: 'message'; message: Message }
   | { kind: 'tool_call'; at: string; payload: Record<string, unknown> }
   | { kind: 'tool_result'; at: string; payload: Record<string, unknown> }
-  | { kind: 'usage_summary'; at: string; usage: UsageSummary }
+  | { kind: 'usage_summary'; at: string; usage: UsageSummary; tokenUsageSnapshot: SessionTokenUsageSnapshot | null }
   | { kind: 'context_usage'; at: string; payload: Record<string, unknown> }
   | { kind: 'file_items'; at: string; files: FileDownloadItem[] }
   | { kind: 'team_member'; at: string; payload: { event: Record<string, unknown> } }
@@ -526,6 +526,8 @@ interface BeginHistoryRestoreOptions {
   onCompactionReplay?: (info: HistoryCompactionReplay) => void;
   /** 恢复最新的完整 context.usage 快照，供刷新/续接后恢复上下文用量指示器 */
   onContextUsage?: (payload: Record<string, unknown>) => void;
+  /** 恢复最新的累计输入/输出快照，供刷新/续接后恢复累计 Token 栏目 */
+  onSessionTokenUsage?: (payload: SessionTokenUsageSnapshot) => void;
   /** 恢复问题澄清对话框（chat.ask_user_question），重新入 pendingQuestion 队列弹交互框 */
   onPendingQuestionReplay?: (items: HistoryPendingQuestionReplayItem[]) => void;
   /** Called only when the exhausted snapshot has no restorable content. */
@@ -1064,6 +1066,18 @@ function parseHistoryTimelineEntry(
   return entry;
 }
 
+function sessionTokenUsageSnapshotForHistory(
+  value: unknown,
+  sessionId: string,
+  subagentId?: string,
+): SessionTokenUsageSnapshot | null {
+  const snapshot = parseSessionTokenUsageSnapshot(value);
+  if (subagentId || snapshot?.session_id !== sessionId || snapshot.revision <= 0) {
+    return null;
+  }
+  return snapshot;
+}
+
 function parseSessionHistoryTimelineEntry(
   record: Record<string, unknown>,
   sessionId: string,
@@ -1364,7 +1378,12 @@ function parseSessionHistoryTimelineEntry(
       if (typeof rawUsage.input_cost === 'number') usage.input_cost = rawUsage.input_cost;
       if (typeof rawUsage.output_cost === 'number') usage.output_cost = rawUsage.output_cost;
       if (typeof rawUsage.total_cost === 'number') usage.total_cost = rawUsage.total_cost;
-      return { kind: 'usage_summary', at, usage };
+      return {
+        kind: 'usage_summary',
+        at,
+        usage,
+        tokenUsageSnapshot: sessionTokenUsageSnapshotForHistory(payload.session_usage, sessionId, subagentId),
+      };
     }
     return null;
   }
@@ -1587,6 +1606,7 @@ interface MaterializedHistoryTimeline {
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
   contextUsageReplay: HistoryContextUsageReplayItem[];
+  tokenUsageSnapshot: SessionTokenUsageSnapshot | null;
   pendingQuestionReplay: HistoryPendingQuestionReplayItem[];
   answeredQuestionReplay: HistoryAnsweredQuestionReplayItem[];
 }
@@ -1786,6 +1806,7 @@ function materializeHistoryTimeline(
   const subagentReplay: HistorySubagentReplayItem[] = [];
   const reasoningReplay: HistoryReasoningReplayItem[] = [];
   const contextUsageReplay: HistoryContextUsageReplayItem[] = [];
+  let tokenUsageSnapshot: SessionTokenUsageSnapshot | null = null;
   const pendingQuestionReplay: HistoryPendingQuestionReplayItem[] = [];
   const answeredQuestionReplay: HistoryAnsweredQuestionReplayItem[] = [];
 
@@ -1845,6 +1866,12 @@ function materializeHistoryTimeline(
       continue;
     }
     if (e.kind === 'usage_summary') {
+      if (
+        e.tokenUsageSnapshot
+        && (!tokenUsageSnapshot || e.tokenUsageSnapshot.revision > tokenUsageSnapshot.revision)
+      ) {
+        tokenUsageSnapshot = e.tokenUsageSnapshot;
+      }
       for (let i = messages.length - 1; i >= 0; i -= 1) {
         if (messages[i].role === 'assistant') {
           messages[i] = { ...messages[i], usageSummary: e.usage };
@@ -1933,6 +1960,7 @@ function materializeHistoryTimeline(
     subagentReplay,
     reasoningReplay,
     contextUsageReplay,
+    tokenUsageSnapshot,
     pendingQuestionReplay,
     answeredQuestionReplay,
   };
@@ -1982,6 +2010,7 @@ export interface HistoryTimelinePreview {
   }[];
   mode: 'team' | null;
   contextUsageSnapshot: Record<string, unknown> | null;
+  tokenUsageSnapshot: SessionTokenUsageSnapshot | null;
   pendingQuestions: HistoryPendingQuestionReplayItem[];
   answeredQuestions: HistoryAnsweredQuestionReplayItem[];
 }
@@ -1994,7 +2023,7 @@ export function parseHistoryJsonFileToTimelinePreview(
   sessionId: string
 ): HistoryTimelinePreview {
   if (!Array.isArray(parsed)) {
-    return { messages: [], executions: [], reasoningSegments: [], mode: null, contextUsageSnapshot: null, pendingQuestions: [], answeredQuestions: [] };
+    return { messages: [], executions: [], reasoningSegments: [], mode: null, contextUsageSnapshot: null, tokenUsageSnapshot: null, pendingQuestions: [], answeredQuestions: [] };
   }
 
   const entries: HistoryTimelineEntry[] = [];
@@ -2031,7 +2060,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     return safeTimestampMs(aAt) - safeTimestampMs(bAt);
   });
 
-  const { messages, toolReplay, reasoningReplay, contextUsageReplay, pendingQuestionReplay, answeredQuestionReplay } = materializeHistoryTimeline(entries);
+  const { messages, toolReplay, reasoningReplay, contextUsageReplay, tokenUsageSnapshot, pendingQuestionReplay, answeredQuestionReplay } = materializeHistoryTimeline(entries);
   const executions = buildToolExecutionsFromReplay(toolReplay);
   const reasoningSegments = buildReasoningSegmentsFromReplay(sessionId, reasoningReplay);
 
@@ -2041,6 +2070,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     reasoningSegments,
     mode: isTeam ? 'team' : null,
     contextUsageSnapshot: selectLatestContextUsagePayload(contextUsageReplay),
+    tokenUsageSnapshot,
     pendingQuestions: pendingQuestionReplay,
     answeredQuestions: answeredQuestionReplay,
   };
@@ -2302,6 +2332,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   const entries: HistoryTimelineEntry[] = [];
   let requestCursor: string | null = null;
   let cursorMeta: HistoryCursorMeta | null = null;
+  let completionTokenUsage: SessionTokenUsageSnapshot | null = null;
   let snapshotMeta: HistoryCursorMeta | null = null;
   let discoveredSubagentIds: string[] = [];
   let disposed = false;
@@ -2352,6 +2383,14 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     }
 
     if (isHistoryRestoreDonePayload(payload)) {
+      const usage = sessionTokenUsageSnapshotForHistory(
+        payload.session_usage,
+        options.sessionId,
+        options.subagentId,
+      );
+      if (usage) {
+        completionTokenUsage = usage;
+      }
       finalize();
       return;
     }
@@ -2440,9 +2479,11 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       subagentReplay,
       reasoningReplay,
       contextUsageReplay,
+      tokenUsageSnapshot: historyTokenUsage,
       pendingQuestionReplay,
       answeredQuestionReplay,
     } = materializeHistoryTimeline(entries);
+    const tokenUsageSnapshot = completionTokenUsage ?? historyTokenUsage;
     const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     const isEmpty = (
@@ -2476,6 +2517,20 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     stopListening();
 
     try {
+      if (tokenUsageSnapshot) {
+        options.onSessionTokenUsage?.(tokenUsageSnapshot);
+      }
+      const isEmpty = (
+        messages.length === 0
+        && toolReplay.length === 0
+        && harnessReplay.length === 0
+        && teamReplay.length === 0
+        && subagentReplay.length === 0
+        && pendingQuestionReplay.length === 0
+        && answeredQuestionReplay.length === 0
+        && !latestContextUsage
+        && (!tokenUsageSnapshot || tokenUsageSnapshot.revision === 0)
+      );
       if (discoveredSubagentIds.length > 0) {
         options.onDiscoveredSubagentIds?.(discoveredSubagentIds);
       }
@@ -2538,6 +2593,7 @@ export interface FetchHistoryCursorBatchResult {
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
   contextUsageSnapshot: Record<string, unknown> | null;
+  tokenUsageSnapshot: SessionTokenUsageSnapshot | null;
   /** Parent history.done may list on-disk subagent bucket ids (GitCode #4887). */
   discoveredSubagentIds: string[];
   cursor: HistoryCursorMeta;
@@ -2580,6 +2636,7 @@ export function fetchHistoryCursorBatch(
 
   const entries: HistoryTimelineEntry[] = [];
   let cursorMeta: HistoryCursorMeta | null = null;
+  let completionTokenUsage: SessionTokenUsageSnapshot | null = null;
   let discoveredSubagentIds: string[] = [];
   let disposed = false;
   let finalized = false;
@@ -2615,6 +2672,14 @@ export function fetchHistoryCursorBatch(
       return;
     }
     if (isHistoryRestoreDonePayload(payload)) {
+      const usage = sessionTokenUsageSnapshotForHistory(
+        payload.session_usage,
+        options.sessionId,
+        options.subagentId,
+      );
+      if (usage) {
+        completionTokenUsage = usage;
+      }
       finalize();
       return;
     }
@@ -2678,6 +2743,7 @@ export function fetchHistoryCursorBatch(
     dispose();
     options.onReady({
       ...materialized,
+      tokenUsageSnapshot: completionTokenUsage ?? materialized.tokenUsageSnapshot,
       contextUsageSnapshot,
       discoveredSubagentIds,
       cursor: cursorMeta,

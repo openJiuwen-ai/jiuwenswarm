@@ -192,13 +192,13 @@ class AuthService:
             return
         self._store.remove(session_id)
         # 清掉模型目录，避免下一个用户看到上一个用户的模型
-        from jiuwenswarm.common.auth.model_catalog import clear_cache
+        from gateway.auth.model_catalog import clear_cache
 
         clear_cache()
 
     @staticmethod
     def refresh_model_catalog(session_id: str | None = None) -> int:
-        from jiuwenswarm.common.auth.model_catalog import refresh
+        from gateway.auth.model_catalog import refresh
 
         try:
             return len(refresh(session_id))

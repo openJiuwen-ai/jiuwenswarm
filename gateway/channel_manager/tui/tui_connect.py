@@ -11,16 +11,15 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-
-from jiuwenswarm.common.config import (
+from gateway.common.config import (
     get_config,
 )
-from jiuwenswarm.common.config_panel import tui_models_handlers
-from gateway.routing.route_binding import GatewayRouteBinding
+from gateway.common.config_panel import tui_models_handlers
 from gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
 )
+from gateway.routing.route_binding import GatewayRouteBinding
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +486,7 @@ def build_tui_session_create_channel_metadata(
         return None
     meta: dict[str, Any] = {"project_dir": seed, "cwd": seed}
     try:
-        from jiuwenswarm.common.utils import resolve_git_branch
+        from gateway.common.paths import resolve_git_branch
 
         meta["git_branch"] = resolve_git_branch(seed)
     except Exception:  # noqa: BLE001
@@ -520,6 +519,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_list(ws, req_id, params, session_id, user_id=None):
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import fetch_agent_unary
 
         limit = 20
@@ -639,7 +639,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 s["active_in_window"] = True
 
         # 当前项目的 git 分支，供前端 Ctrl+B 过滤对比（非 git/失败为哨兵 "HEAD"）
-        from jiuwenswarm.common.utils import resolve_git_branch
+        from gateway.common.paths import resolve_git_branch
 
         current_branch = resolve_git_branch(project_dir or None)
 
@@ -657,6 +657,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         create_params = dict(params)
@@ -772,6 +773,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         SessionAdapter 删除路径。
         """
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(params, dict):
@@ -1173,6 +1175,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         """优先经 E2A 转发至 AgentServer；单用户共享目录不可达时由薄代理跑
         SessionAdapter（``apply_session_rename`` 同一中立门面）本地回退。"""
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1195,6 +1198,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         同一适配器（共享目录），保持迁移前的离线可用性。
         """
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1212,6 +1216,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _session_preview(ws, req_id, params, session_id, user_id=None):
         """获取 session 预览信息（统一薄代理：AgentServer 注入目录 history 白名单过滤）。"""
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1375,8 +1380,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         async def _run_harmonyos_dev_init_operation() -> None:
             try:
-                from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+                from openjiuwen_protocol.e2a.gateway_normalize import (
+                    e2a_from_agent_fields,
+                )
                 from openjiuwen_protocol.message import ReqMethod
+
                 from gateway.routing.e2a_proxy import (
                     is_legacy_shared_directory_client,
                 )
@@ -1529,6 +1537,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         不可达时由薄代理跑同一适配器（保持离线可用）。
         """
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(params, dict):
@@ -1721,7 +1730,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         resolved_client = _resolve_agent_client(agent_client)
         if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            from jiuwenswarm.common.hooks_config import load_hooks_config
+            from gateway.common.hooks_config import load_hooks_config
 
             try:
                 hooks_config = load_hooks_config(get_config())
@@ -1739,6 +1748,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
 
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1816,10 +1826,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
         try:
-            # 连接带 user_id 时只列该用户的任务:过滤在 controller 内先于
-            # 准入闸门执行,既避免跨用户数据可见,也避免替别人的沙箱付超时。
+            raw = params if isinstance(params, dict) else {}
             uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
-            jobs = await cc.list_jobs(user_id=uid or None)
+            jobs = await cc.list_jobs(
+                project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
+                user_id=str(raw.get("user_id") or uid or ""),
+                group_id=str(raw.get("group_id") or ""),
+                bot_id=str(raw.get("bot_id") or ""),
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"jobs": jobs})
         except Exception as exc:
             logger.warning("[cron.job.list] %s", exc)
@@ -1836,7 +1850,18 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning("[cron.job.meta] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
-    async def _cron_job_get(ws, req_id, params, session_id):
+    def _cron_lookup_ids(ws, params, user_id):
+        """连接上的用户优先。没有登录用户时，用请求里写的用户。"""
+        raw = params if isinstance(params, dict) else {}
+        connected = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
+        return {
+            "project_id": (str(raw.get("project_id") or "") if "project_id" in raw else None),
+            "user_id": connected or str(raw.get("user_id") or ""),
+            "group_id": str(raw.get("group_id") or ""),
+            "bot_id": str(raw.get("bot_id") or ""),
+        }
+
+    async def _cron_job_get(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
@@ -1849,7 +1874,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         try:
-            job = await cc.get_job(job_id)
+            job = await cc.get_job(job_id, **_cron_lookup_ids(ws, params, user_id))
             if job is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
@@ -1877,7 +1902,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             # AgentOS 用户 session 不在 Gateway 部署目录，不能在这里作本地反查。
             if "project_dir" not in params and session_id:
                 try:
-                    from jiuwenswarm.common.external_providers import provider
+                    from gateway.common.external_providers import provider
 
                     meta = await provider("session_metadata").get_session_metadata_async(
                         session_id, cache_bust=True, user_id=user_id,
@@ -1948,20 +1973,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
         try:
             patch = dict(patch)
-            # 归属校验：与 Web _get_owned_cron_job 语义一致（空 user_id 保持单用户旧行为；
-            # 带 user_id 时禁止跨用户读取/更新，包括归属为空的历史 job）。
+            # 先按项目和身份核对。连接上带了用户时，再对一次返回结果里的用户，
+            # 避免假控制器忽略筛选参数后仍能改别人的任务。
             uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
-            existing = None
-            if uid:
-                existing = await cc.get_job(job_id)
-                # 与 Web _get_owned_cron_job 相同的 dict/object 双态读取：
-                # 真实 CronController.get_job 返回 to_dict() 的 dict。
-                owner_field = _cron_job_field(existing, "user_id", "")
-                if existing is None or str(owner_field or "").strip() != uid:
-                    await channel.send_response(
-                        ws, req_id, ok=False, error="job not found", code="NOT_FOUND"
-                    )
-                    return
+            existing = await cc.get_job(job_id, **_cron_lookup_ids(ws, params, user_id))
+            owner_field = _cron_job_field(existing, "user_id", "")
+            if existing is None or (uid and str(owner_field or "").strip() != uid):
+                await channel.send_response(
+                    ws, req_id, ok=False, error="job not found", code="NOT_FOUND"
+                )
+                return
             # 仅当 patch 涉及 project 字段时才解析项目绑定（避免非项目字段的
             # update 因用户侧项目解析失败而被整体拒绝；单用户不 resolve）。
             has_project_fields = "project_id" in patch or "project_dir" in patch
@@ -1970,8 +1991,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     resolve_agent_cron_project_binding,
                 )
 
-                if existing is None:
-                    existing = await cc.get_job(job_id)
                 binding_params = dict(patch)
                 binding_params.setdefault(
                     "work_mode", _cron_job_field(existing, "work_mode", "") or "code"
@@ -2007,7 +2026,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 })
                 patch.pop("project_dir", None)
                 patch["_agentos_project_binding_verified"] = True
-            job = await cc.update_job(job_id, patch)
+            owner_ids = _cron_lookup_ids(ws, params, user_id)
+            job = await cc.update_job(
+                job_id,
+                patch,
+                user_id=owner_ids["user_id"],
+                group_id=owner_ids["group_id"],
+                bot_id=owner_ids["bot_id"],
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError as exc:
             # ZoneInfoNotFoundError is a subclass of KeyError; only treat
@@ -2022,7 +2048,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning("[cron.job.update] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
 
-    async def _cron_job_delete(ws, req_id, params, session_id):
+    async def _cron_job_delete(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
@@ -2035,7 +2061,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         try:
-            deleted = await cc.delete_job(job_id)
+            owner_ids = _cron_lookup_ids(ws, params, user_id)
+            deleted = await cc.delete_job(
+                job_id,
+                user_id=owner_ids["user_id"],
+                group_id=owner_ids["group_id"],
+                bot_id=owner_ids["bot_id"],
+            )
             if not deleted:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
@@ -2046,7 +2078,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning("[cron.job.delete] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
 
-    async def _cron_job_toggle(ws, req_id, params, session_id):
+    async def _cron_job_toggle(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
@@ -2063,7 +2095,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
             return
         try:
-            job = await cc.toggle_job(job_id, bool(enabled))
+            owner_ids = _cron_lookup_ids(ws, params, user_id)
+            job = await cc.toggle_job(
+                job_id,
+                bool(enabled),
+                user_id=owner_ids["user_id"],
+                group_id=owner_ids["group_id"],
+                bot_id=owner_ids["bot_id"],
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -2071,7 +2110,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning("[cron.job.toggle] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
-    async def _cron_job_preview(ws, req_id, params, session_id):
+    async def _cron_job_preview(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
@@ -2085,7 +2124,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         try:
-            next_runs = await cc.preview_job(job_id, int(count) if count is not None else 5)
+            owner_ids = _cron_lookup_ids(ws, params, user_id)
+            next_runs = await cc.preview_job(
+                job_id,
+                int(count) if count is not None else 5,
+                user_id=owner_ids["user_id"],
+                group_id=owner_ids["group_id"],
+                bot_id=owner_ids["bot_id"],
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"next": next_runs})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -2093,7 +2139,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning("[cron.job.preview] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
 
-    async def _cron_job_run_now(ws, req_id, params, session_id):
+    async def _cron_job_run_now(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
@@ -2108,7 +2154,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         try:
             # 先取 job 拿 last_session_id（回退值），再触发 run_now 取 run_id
             # 对齐 chat.send 的 {accepted, session_id} 语义
-            job = await cc.get_job(job_id)
+            job = await cc.get_job(job_id, **_cron_lookup_ids(ws, params, user_id))
             if job is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return

@@ -7,6 +7,7 @@ import base64
 import copy
 import hashlib
 import json
+import logging
 import uuid
 from typing import Any
 from urllib.parse import quote, urljoin
@@ -17,6 +18,9 @@ from gateway.extensions.adx.config import AdxRouterConfig
 from gateway.extensions.yuanrong_frontend_client import (
     SandboxInfo, YuanrongAgentApiError, YuanrongAgentTimeoutError,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class AdxControlError(YuanrongAgentApiError):
@@ -129,7 +133,8 @@ class AdxControlClient:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
         image = rootfs.get('imageurl') or rootfs.get('image_url')
-        if name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest':
+        builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
+        if builtin:
             image = self.config.builtin_image
         if not image:
             raise ValueError('runtime_spec.rootfs.imageurl is required')
@@ -139,6 +144,8 @@ class AdxControlClient:
                 'env': dict(env_vars or {}),
                 'mounts': [{'type': 'bind', 'host_path': workspace, 'target': self.config.workspace_target,
                             'options': ['rbind', 'rw']}]}
+        if self.config.restart_policy is not None:
+            body['restartPolicy'] = dict(self.config.restart_policy)
         process = {}
         if spec.get('cmds') is not None:
             process['commands'] = spec['cmds']
@@ -146,11 +153,15 @@ class AdxControlClient:
             process['user'] = rootfs['user']
         if spec.get('code_path'):
             process['cwd'] = spec['code_path']
-        if process:
+        # Some deployments own the builtin command and identity in the image
+        # binding. Only that explicit mode omits per-create process overrides.
+        if process and not (builtin and self.config.builtin_process_from_image):
             body['process'] = process
-        for mount in mounts or []:
-            body['mounts'].append({'type': 'bind', 'host_path': mount['source'], 'target': mount['target'],
-                                   'options': ['rbind', 'ro' if mount.get('readonly') else 'rw']})
+        for mount in [*rootfs.get('mounts', []), *(mounts or [])]:
+            binding = {'type': 'bind', 'host_path': mount['source'], 'target': mount['target'],
+                       'options': ['rbind', 'ro' if mount.get('readonly') else 'rw']}
+            if binding not in body['mounts']:
+                body['mounts'].append(binding)
         ports = []
         for value in rootfs.get('ports', []):
             text = str(value)
@@ -183,7 +194,7 @@ class AdxControlClient:
         instance = f'{namespace}-{name}'
         existing = await self._lookup(instance)
         if existing is not None:
-            return SandboxInfo(instance, metadata=existing)
+            return await self._ready_sandbox_info(instance)
         if instance in self._deletes:
             # A previous DELETE lost its response. Absence is the confirmation
             # that permits a new create identity for this stable Environment ID.
@@ -197,7 +208,15 @@ class AdxControlClient:
         result = await self._request('POST', '/api/environment/v1/environments', body=body, request_id=operation)
         if not isinstance(result, dict) or result.get('environmentId') != instance:
             raise AdxControlError('ADX create returned an unexpected Environment ID')
-        return SandboxInfo(instance, metadata=result)
+        return await self._ready_sandbox_info(instance)
+
+    async def _ready_sandbox_info(self, instance: str) -> SandboxInfo:
+        # Registry requires placement on the initial POST. Read the actual ADX
+        # runtime before publishing the sandbox to the business router.
+        view = await self.wait_until_running(instance)
+        metadata = {**view, 'node': view.get('node_ip') or '',
+                    'address': view.get('sandbox_ip') or ''}
+        return SandboxInfo(instance, metadata=metadata)
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
         del trace_id
@@ -206,6 +225,7 @@ class AdxControlClient:
             'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
             request_id=operation, missing_ok=True,
         )
+        logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
         self._deletes.pop(sandbox_id, None)
         self._creates.pop(sandbox_id, None)
 

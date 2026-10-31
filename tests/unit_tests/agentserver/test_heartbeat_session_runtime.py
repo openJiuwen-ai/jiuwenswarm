@@ -117,6 +117,7 @@ def make_chain(tmp_path, monkeypatch):
             pin_agent=Mock(),
             unpin_agent=Mock(),
             get_agent_for_session_nowait=Mock(return_value=agent),
+            borrow_agent_nowait=lambda candidate: candidate,
         )
         plan = SimpleNamespace(
             ensure_state=AsyncMock(return_value=PlanStateResult()),
@@ -630,7 +631,7 @@ async def test_live_heartbeat_keeps_new_question_emitted_during_answer(
             if item.work_kind is SessionWorkKind.HEARTBEAT
         )
         assert heartbeat.state.value == "running"
-        assert heartbeat.waiting_control_id == "question-2"
+        assert heartbeat.waiting_control_ids == {"question-2"}
         assert not await chain.heartbeat.admission.try_begin_heartbeat(
             SESSION, "next-run"
         )
@@ -811,7 +812,7 @@ async def test_followup_question_is_not_retained_when_answer_fails(
             SESSION, "question-2"
         )
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert heartbeat.waiting_control_id == "question-1"
+        assert heartbeat.waiting_control_ids == {"question-1"}
 
         async def complete(request):
             yield chain.agent._chunk(
@@ -1342,7 +1343,7 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
         # The follow-up answer parked the Heartbeat in waiting_for_control, so
         # no RUNNING execution is left to own a further question.
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert heartbeat.waiting_control_id == "question-2"
+        assert heartbeat.waiting_control_ids == {"question-2"}
 
         with _service_logs() as logged:
             chain.agent.answered.set()
@@ -1357,7 +1358,7 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
             for item in _executions(chain)
             if item.work_kind is SessionWorkKind.HEARTBEAT
         )
-        assert parked.waiting_control_id == "question-2"
+        assert parked.waiting_control_ids == {"question-2"}
     finally:
         release_heartbeat.set()
         await _finish(chain)
@@ -1893,5 +1894,82 @@ async def test_failed_heartbeat_prepare_stays_suspended_until_delete_retry(delet
         assert (await chain.service.session(SESSION, "delete", "web"))["ok"]
         assert chain.heartbeat.begin_session_delete.await_count == 2
         assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
+    finally:
+        await _finish(chain)
+
+
+@pytest.mark.parametrize("mode", SINGLE_AGENT_MODES)
+@pytest.mark.parametrize("behavior", ["ask_live", "ask_ended"])
+async def test_worker_recovers_real_heartbeat_root_and_followup_questions(make_chain, mode, behavior):
+    from jiuwenswarm.server.ipc.protocol import dump_agent_request
+    from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
+    from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
+
+    chain = await make_chain(mode, behavior=behavior)
+    frames = []
+
+    class Connection:
+        async def send(self, frame):
+            frames.append(frame)
+
+    conn = Connection()
+    holder = ConnHolder()
+    generation = holder.open_session(conn)
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    dispatcher._runtime = chain.runtime
+
+    def accepted(rid):
+        return AgentRequest(request_id=rid, channel_id="web", session_id=SESSION,
+                            req_method=ReqMethod.CHAT_SEND, params={"session_id": SESSION}, is_stream=True)
+
+    async def push(message):
+        rid = message["request_id"]
+        if rid not in bridge.events.records:
+            bridge.events.register(accepted(rid), rid)
+        bridge.events.append({"request_id": rid, "is_stream": True, "body": message["payload"]}, rid)
+        if message["payload"].get("event_type") == "chat.ask_user_question":
+            chain.agent.question_seen.set()
+        return True
+
+    chain.server.send_push.side_effect = push
+
+    async def recover():
+        frames.clear()
+        query = accepted("metadata")
+        await dispatcher._subscribe({"payload": dump_agent_request(query), "subscribe": True,
+                                      "after": 0}, conn, generation)
+        return [item["payload"]["body"] for item in frames if item.get("replayed")
+                and item["payload"].get("body", {}).get("event_type") == "chat.ask_user_question"]
+
+    async def deliver(request):
+        yield chain.agent._chunk(request, {"event_type": "chat.ask_user_question", "request_id": "question-2"})
+
+    chain.agent.deliver_control_input = deliver
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(chain.agent.question_seen.wait(), 2)
+        if behavior == "ask_ended":
+            await _wait_heartbeat_state(chain, "waiting_for_control")
+        root = next(item for item in _executions(chain) if item.work_kind is SessionWorkKind.HEARTBEAT)
+        initial = await recover()
+        assert [item["request_id"] for item in initial] == ["question-1"]
+        assert initial[0]["execution_id"] == root.execution_id  # Actual Runtime background output.
+
+        events = await _user_turn(chain, query="", request_id="question-1", source="ask_user_interrupt",
+                                  answers=[{"question": "continue", "selected_options": ["yes"]}])
+        bridge.events.register(accepted("answer"), "answer")
+        for event in events:
+            bridge.events.append({"request_id": "answer", "is_stream": True, "body": event.payload}, "answer")
+        child = next(item for item in _executions(chain) if item.work_kind is SessionWorkKind.CONTROL_INPUT)
+        assert child.state.terminal
+        # A past control child is not proof that a frame belongs to its live root.
+        bridge.events.append({"request_id": "answer", "is_stream": True,
+                              "body": {"event_type": "chat.ask_user_question", "request_id": "question-2",
+                                       "execution_id": child.execution_id}}, "answer")
+        recovered = await recover()
+        assert [item["request_id"] for item in recovered] == ["question-2"]
+        assert recovered[0]["execution_id"] == root.execution_id
+        assert not chain.coordinator.has_control_target(SESSION, "question-1")
     finally:
         await _finish(chain)

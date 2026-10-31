@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.auth.model_catalog import LoginModel
+from gateway.auth import model_catalog as _model_catalog
+from gateway.auth.model_catalog import LoginModel
 from gateway.cron.controller import CronController
 from gateway.cron.store import CronJobStore
 
@@ -43,7 +44,7 @@ def _patch_model_sources(
 ) -> None:
     """登录模型目录 + 自配模型查找的内存桩（测试不依赖本机登录/配置状态）。"""
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *a, **k: [
             LoginModel(model_name=name, display_name=name) for name in login_models
         ],
@@ -55,17 +56,17 @@ def _patch_model_sources(
             return entries.get(name)
 
         monkeypatch.setattr(
-            "jiuwenswarm.common.config.get_model_config", fake_get_model_config
+            "gateway.common.config.get_model_config", fake_get_model_config
         )
         monkeypatch.setattr(
-            "jiuwenswarm.common.config.get_model_names", lambda: list(config_models)
+            "gateway.common.config.get_model_names", lambda: list(config_models)
         )
     else:
         monkeypatch.setattr(
-            "jiuwenswarm.common.config.get_model_config",
+            "gateway.common.config.get_model_config",
             lambda name, index=None: None,
         )
-        monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+        monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
 
 
 def _patch_login_session(
@@ -95,7 +96,8 @@ def _patch_project_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     """项目绑定桩：模拟入口已在目标 AgentServer 完成解析并打 marker。
 
     A3g 后 controller 不再本地反查项目表；无项目字段的请求本就无需 marker，
-    保留该 helper 以最小改动既有用例。"""
+    保留该 helper 以最小改动既有用例。
+    """
     del monkeypatch
 
 

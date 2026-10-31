@@ -178,8 +178,11 @@ async def test_dev_init_installs_when_devecocli_missing_and_verifies_skills(
     assert not (tmp_path / "ignored").exists()
     assert result["skillVerification"]["baseSkillFound"] is True
     assert result["skillVerification"]["suiteSkillFound"] is True
-    assert "deveco-cli/SKILL.md" in result["skillVerification"]["skillFiles"]
-    assert "harmonyos-dev-suite/SKILL.md" in result["skillVerification"]["skillFiles"]
+    skill_files = [
+        Path(p).as_posix() for p in result["skillVerification"]["skillFiles"]
+    ]
+    assert "deveco-cli/SKILL.md" in skill_files
+    assert "harmonyos-dev-suite/SKILL.md" in skill_files
     assert result["knowledgeMcp"] == {
         "status": "available",
         "config": {

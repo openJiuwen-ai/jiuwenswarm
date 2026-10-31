@@ -9,8 +9,13 @@ from datetime import datetime
 
 from jiuwenswarm.common.e2a.gateway_normalize import E2A_INTERNAL_CONTEXT_KEY
 from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.request_identity import (
+    apply_routing_metadata,
+    web_routing_identity,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.enterprise import is_enterprise
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,25 @@ def e2a_to_agent_request(env: E2AEnvelope) -> AgentRequest:
     if isinstance(internal, dict) and internal.get("normalize_failed"):
         raise RuntimeError("e2a_to_agent_request called on fallback envelope; use legacy path")
 
+    params = dict(env.params or {})
+    # user_id → 顶层；group/bot/gateway → routing。Web 不写入业务 params。
+    identity = web_routing_identity(ctx)
+    if env.channel == "web":
+        if is_enterprise() and not identity.get("bot_id"):
+            logger.warning(
+                "[E2A][compat] web request missing bot_id in metadata.routing "
+                "request_id=%s identity=%s",
+                env.request_id,
+                identity,
+            )
+        if env.user_id and not identity.get("user_id"):
+            identity["user_id"] = env.user_id
+    else:
+        if env.user_id and not identity.get("user_id"):
+            identity["user_id"] = env.user_id
+        if env.chat_id and not identity.get("group_id"):
+            identity["group_id"] = env.chat_id
+    ctx = apply_routing_metadata(ctx, identity)
     metadata = ctx if ctx else None
     method_str = env.method
     req_method: ReqMethod | None = None
@@ -56,7 +80,7 @@ def e2a_to_agent_request(env: E2AEnvelope) -> AgentRequest:
         session_id=env.session_id,
         chat_id=env.chat_id,
         req_method=req_method,
-        params=dict(env.params or {}),
+        params=params,
         is_stream=bool(env.is_stream),
         timestamp=_e2a_timestamp_to_float(env.timestamp),
         metadata=metadata,
@@ -66,5 +90,5 @@ def e2a_to_agent_request(env: E2AEnvelope) -> AgentRequest:
         # metadata. Preserve it across E2A as a normalized string so both
         # AgentServer-owned Heartbeat and Gateway-owned Cron enforce the same
         # ownership boundary after reconnect/restart.
-        user_id=str(env.user_id or ""),
+        user_id=str(env.user_id or identity.get("user_id") or ""),
     )

@@ -13,7 +13,7 @@ await build({
   platform: 'node',
   format: 'esm',
   outfile: 'node_modules/.cache/organization-leader-identity/identity.mjs',
-  define: { 'import.meta.env.DEV': 'false' },
+  define: { 'import.meta.env': '{}' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   plugins: [
     {
@@ -28,6 +28,11 @@ await build({
     },
   ],
 });
+
+// Web transport selection reads browser configuration at module load time.
+const bootstrapDom = new JSDOM('', { url: 'http://localhost' });
+globalThis.window = bootstrapDom.window;
+globalThis.document = bootstrapDom.window.document;
 
 const {
   ChatTimelineList, MessageItem, useChatStore, useSessionStore, useTeamSelectorStore,

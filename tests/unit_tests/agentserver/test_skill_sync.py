@@ -1677,9 +1677,10 @@ async def test_full_sync_roundtrip_push_then_diff(
     skill_md_content = _skill_md("weather", description="天气查询") + "# Hi\n"
     client_dir = manager._skills_dir.parent / "client-side" / "weather"
     client_dir.mkdir(parents=True)
-    (client_dir / "SKILL.md").write_text(skill_md_content, encoding="utf-8")
+    # Windows 默认 write_text 会写成 CRLF，与 zip/解压后的 LF 校验和不一致。
+    (client_dir / "SKILL.md").write_bytes(skill_md_content.encode("utf-8"))
     (client_dir / "scripts").mkdir()
-    (client_dir / "scripts" / "tool.py").write_text("print('x')\n", encoding="utf-8")
+    (client_dir / "scripts" / "tool.py").write_bytes(b"print('x')\n")
     client_checksum = compute_content_checksum(client_dir)
 
     diff = await manager.handle_skill_sync_diff(

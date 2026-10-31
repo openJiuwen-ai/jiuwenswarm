@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from jiuwenswarm.common.hooks_config import HooksConfig, HookEvent
+from gateway.common.hooks_config import HookEvent, HooksConfig
 from gateway.hooks.executor import HookExecutor
 
 logger = logging.getLogger(__name__)

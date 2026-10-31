@@ -14,12 +14,18 @@ import { SettingsSaveQueue } from './SettingsSaveQueue';
 import { SettingsUnsavedChangesRegistry } from './SettingsUnsavedChangesRegistry';
 
 export type SettingsServices = {
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
   saveQueue: SettingsSaveQueue;
   unsavedChanges: SettingsUnsavedChangesRegistry;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
+  /** Checks which CLI paths exist on disk; keys are the requested paths. */
+  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
+  /** Server-side prune of one kind's persisted history: only the
+   * intersection with the on-disk history is dropped. Returns survivors. */
+  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
@@ -64,6 +70,7 @@ export function SettingsServicesProvider({
   const value = useMemo(
     () => ({ ...services, saveQueue: saveQueueRef.current!, unsavedChanges: changesRef.current! }),
     [
+      services.appVersion,
       services.connectionState,
       services.externalCliDetectResults,
       services.externalCliInstallStatuses,
@@ -76,6 +83,8 @@ export function SettingsServicesProvider({
       services.onGetExternalCliInstallStatus,
       services.onSelectExternalCliPath,
       services.onTrackExternalCliDependencyInstalls,
+      services.onValidateExternalCliPaths,
+      services.onPruneExternalCliPathHistories,
       services.recommendationFocus,
       services.onCorrectRecommendation,
       services.onRecommendationEnabledChange,

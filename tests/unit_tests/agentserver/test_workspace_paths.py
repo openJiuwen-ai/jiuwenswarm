@@ -3,6 +3,8 @@
 from pathlib import Path, PureWindowsPath
 from time import monotonic
 
+import pytest
+
 # TEST ONLY: URL and credential-shaped strings are synthetic redaction inputs on
 # RFC-reserved domains; this module performs no external network I/O.
 
@@ -12,6 +14,7 @@ from jiuwenswarm.agents.harness.common.workspace_paths import (
     display_workspace_path,
     resolve_workspace_path,
     sanitize_review_ui_value,
+    sanitize_visible_text,
     sanitize_visible_value,
 )
 
@@ -120,6 +123,85 @@ def test_sanitize_visible_text_preserves_current_path_when_stale_path_follows(
 
     assert str(current_path) in sanitized["command"]
     assert STALE_SANDBOX_ARTIFACT_PATH in sanitized["command"]
+
+
+@pytest.mark.parametrize(
+    "stale_path",
+    [
+        r"D:\ws\.sandbox-artifacts\old\report.txt",
+        r"D:\.sandbox-artifacts\old\report.txt",
+        r"C:\Users\John Doe\ws\.sandbox-artifacts\old\report.txt",
+        r"D:\工作 目录\.sandbox-artifacts\old\report.txt",
+        r"D:\ws/.sandbox-artifacts\old/report.txt",
+        "D:/ws/.sandbox-artifacts/old/report.txt",
+        r"D:\ws\.sandbox-artifacts\old\secret report.pdf",
+        "/tmp/.sandbox-artifacts/old/report.txt",
+        "~/.sandbox-artifacts/old/report.txt",
+    ],
+)
+def test_sanitize_visible_text_redacts_literal_sandbox_paths(stale_path: str) -> None:
+    assert sanitize_visible_text(stale_path, None) == STALE_SANDBOX_ARTIFACT_PATH
+    assert sanitize_visible_text(f'created "{stale_path}"; done', None) == (
+        f'created "{STALE_SANDBOX_ARTIFACT_PATH}"; done'
+    )
+
+
+@pytest.mark.parametrize("current_path", [r"C:\workspace\report.txt", "/tmp/report.txt"])
+@pytest.mark.parametrize(
+    "stale_path",
+    [
+        r"D:\John Doe\.sandbox-artifacts\old\report.txt",
+        "/tmp/.sandbox-artifacts/old/report.txt",
+        "~/.sandbox-artifacts/old/report.txt",
+    ],
+)
+def test_sanitize_visible_text_preserves_adjacent_current_paths(
+    current_path: str,
+    stale_path: str,
+) -> None:
+    value = f"--out {current_path} --old {stale_path}"
+
+    assert sanitize_visible_text(value, None) == (
+        f"--out {current_path} --old {STALE_SANDBOX_ARTIFACT_PATH}"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        r"C:\workspace with spaces\report.txt",
+        "/tmp/workspace/report.txt",
+        "workspace://current/.sandbox-artifacts/old/report.txt",
+        "file:///D:/ws/.sandbox-artifacts/old/report.txt",
+        r"D:\ws\prefix.sandbox-artifacts\old\report.txt",
+    ],
+)
+def test_sanitize_visible_text_preserves_non_artifact_paths(value: str) -> None:
+    assert sanitize_visible_text(value, None) == value
+
+
+def test_sanitize_visible_value_redacts_nested_windows_paths() -> None:
+    value = {
+        r"D:\ws\.sandbox-artifacts\old\key.txt": [
+            r"C:\John Doe\.sandbox-artifacts\old\report.txt",
+            (r"D:\workspace\current.txt", None),
+        ],
+    }
+
+    assert sanitize_visible_value(value, None) == {
+        STALE_SANDBOX_ARTIFACT_PATH: [
+            STALE_SANDBOX_ARTIFACT_PATH,
+            (r"D:\workspace\current.txt", None),
+        ],
+    }
+
+
+def test_sanitize_visible_text_handles_long_non_artifact_windows_path_promptly() -> None:
+    value = "C:\\" + " " * 100000 + "report.txt"
+
+    started_at = monotonic()
+    assert sanitize_visible_text(value, None) == value
+    assert monotonic() - started_at < 1.0
 
 
 def test_sanitize_review_ui_value_relativizes_workspace_paths_and_preserves_other_paths(

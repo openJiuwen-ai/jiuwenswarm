@@ -65,7 +65,7 @@ def _gateway_process(connection, directory):
 async def test_remote_query_does_not_read_agent_store(tmp_path, monkeypatch):
     from jiuwenswarm.agents.harness.common.tools.cron import cron_tools
     from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import query_authoritative_cron_job
-    from jiuwenswarm.common.host_services import install_runtime_push_handler, restore_runtime_push_handler
+    from jiuwenswarm.runtime.host_services import install_runtime_push_handler, restore_runtime_push_handler
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.e2a.models import E2AEnvelope
@@ -112,3 +112,21 @@ async def test_remote_query_does_not_read_agent_store(tmp_path, monkeypatch):
             await asyncio.to_thread(process.join, 5)
         parent.close()
     assert process.exitcode == 0
+
+
+async def test_runtime_handler_uses_shared_a4p_dispatch(monkeypatch):
+    """Runtime and WebSocket requests must use the same A4P implementation."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.common.a4p import rpc
+    from jiuwenswarm.server.handlers.organization import handle_a4p_request
+
+    request = object()
+    response = object()
+    dispatch = AsyncMock(return_value=response)
+    monkeypatch.setattr(rpc, "dispatch_a4p_request", dispatch)
+    sink = SimpleNamespace(send_response=AsyncMock())
+    await handle_a4p_request(SimpleNamespace(request=request, sink=sink))
+    dispatch.assert_awaited_once_with(request)
+    sink.send_response.assert_awaited_once_with(response)

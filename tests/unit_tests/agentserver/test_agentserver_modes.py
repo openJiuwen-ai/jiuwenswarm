@@ -8,6 +8,8 @@ from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.runtime.request import resolve_agent_request_mode
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 
 
@@ -33,7 +35,10 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         )
 
     async def handle_stream_for_test(self, ws, request, send_lock):
-        await self._handle_stream(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers._default import handle_stream
+
+        await handle_stream(build_ws_request_context(self, ws, request, send_lock))
 
 
 def fake_encode_agent_chunk_for_wire(chunk, response_id, sequence):
@@ -2355,70 +2360,45 @@ async def test_build_inputs_omits_cwd_when_workspace_dir_unset(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
-    class FakeAgent:
-        def __init__(self):
-            self.seen_request = None
-
-        def get_instance(self):
-            return self
-
-        async def process_message_stream(self, request):
-            self.seen_request = request
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload={"event_type": "chat.done"},
-                is_complete=True,
-            )
-
-    class FakeAgentManager:
-        def __init__(self):
-            self.agent = FakeAgent()
-            self.calls = []
-
-        async def get_agent(self, channel_id, mode, project_dir=None, sub_mode=None):
-            self.calls.append(
-                {
-                    "channel_id": channel_id,
-                    "mode": mode,
-                    "project_dir": project_dir,
-                    "sub_mode": sub_mode,
-                }
-            )
-            return self.agent
-
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_chunk_for_wire",
         fake_encode_agent_chunk_for_wire,
     )
+    server = AgentWebSocketServerHarness()
+    fake_ws = FakeWebSocket()
+    request = AgentRequest(
+        request_id="req-team",
+        channel_id="feishu",
+        params={"mode": "team", "query": "hello"},
+        is_stream=True,
+    )
+    streamed: list[AgentRequest] = []
 
-    async def run_case():
-        server = AgentWebSocketServerHarness()
-        fake_manager = FakeAgentManager()
-        monkeypatch.setattr(server.get_agent_manager(), "get_agent", fake_manager.get_agent)
-        fake_ws = FakeWebSocket()
-        request = AgentRequest(
-            request_id="req-team",
-            channel_id="feishu",
-            params={"mode": "team", "query": "hello"},
-            is_stream=True,
+    async def fake_stream(incoming, **kwargs):
+        del kwargs
+        streamed.append(incoming)
+        yield RuntimeEvent(
+            request_id=incoming.request_id,
+            channel_id=incoming.channel_id,
+            session_id=incoming.session_id,
+            payload={"event_type": "chat.done"},
+            is_complete=True,
         )
 
-        await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
-        return fake_manager, fake_ws, request
+    monkeypatch.setattr(server._runtime, "stream", fake_stream)
+    async def _no_resume(_request):
+        return None
 
-    fake_manager, fake_ws, request = await run_case()
+    monkeypatch.setattr(server, "_open_session_message_resume", _no_resume)
+    monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
 
-    assert fake_manager.calls == [
-        {
-            "channel_id": "feishu",
-            "mode": "team",
-            "project_dir": None,
-            "sub_mode": None,
-        }
-    ]
-    assert fake_manager.agent.seen_request is request
+    await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
+
+    mode, sub_mode, _canonical = resolve_agent_request_mode(request.params.get("mode"))
+    assert streamed == [request]
+    assert mode == "team"
+    assert sub_mode is None
     assert request.params["mode"] == "team"
     assert fake_ws.sent == [
         {
@@ -2432,70 +2412,45 @@ async def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
-    class FakeAgent:
-        def __init__(self):
-            self.seen_request = None
-
-        def get_instance(self):
-            return self
-
-        async def process_message_stream(self, request):
-            self.seen_request = request
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload={"event_type": "chat.done"},
-                is_complete=True,
-            )
-
-    class FakeAgentManager:
-        def __init__(self):
-            self.agent = FakeAgent()
-            self.calls = []
-
-        async def get_agent(self, channel_id, mode, project_dir=None, sub_mode=None):
-            self.calls.append(
-                {
-                    "channel_id": channel_id,
-                    "mode": mode,
-                    "project_dir": project_dir,
-                    "sub_mode": sub_mode,
-                }
-            )
-            return self.agent
-
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_chunk_for_wire",
         fake_encode_agent_chunk_for_wire,
     )
+    server = AgentWebSocketServerHarness()
+    fake_ws = FakeWebSocket()
+    request = AgentRequest(
+        request_id="req-code-team",
+        channel_id="tui",
+        params={"mode": "code.team", "query": "hello"},
+        is_stream=True,
+    )
+    streamed: list[AgentRequest] = []
 
-    async def run_case():
-        server = AgentWebSocketServerHarness()
-        fake_manager = FakeAgentManager()
-        monkeypatch.setattr(server.get_agent_manager(), "get_agent", fake_manager.get_agent)
-        fake_ws = FakeWebSocket()
-        request = AgentRequest(
-            request_id="req-code-team",
-            channel_id="tui",
-            params={"mode": "code.team", "query": "hello"},
-            is_stream=True,
+    async def fake_stream(incoming, **kwargs):
+        del kwargs
+        streamed.append(incoming)
+        yield RuntimeEvent(
+            request_id=incoming.request_id,
+            channel_id=incoming.channel_id,
+            session_id=incoming.session_id,
+            payload={"event_type": "chat.done"},
+            is_complete=True,
         )
 
-        await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
-        return fake_manager, fake_ws, request
+    monkeypatch.setattr(server._runtime, "stream", fake_stream)
+    async def _no_resume(_request):
+        return None
 
-    fake_manager, fake_ws, request = await run_case()
+    monkeypatch.setattr(server, "_open_session_message_resume", _no_resume)
+    monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
 
-    assert fake_manager.calls == [
-        {
-            "channel_id": "tui",
-            "mode": "code",
-            "project_dir": None,
-            "sub_mode": "team",
-        }
-    ]
-    assert fake_manager.agent.seen_request is request
+    await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
+
+    mode, sub_mode, _canonical = resolve_agent_request_mode(request.params.get("mode"))
+    assert streamed == [request]
+    assert mode == "code"
+    assert sub_mode == "team"
     assert request.params["mode"] == "code.team"
     assert fake_ws.sent == [
         {

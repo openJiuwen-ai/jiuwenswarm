@@ -685,7 +685,10 @@ test('trajectory analysis page hosts the raw trajectory and diagnosis as sub-pag
   assert.match(pageSource, /highlightStepKeys: focused\.keys/);
   // The header button enters selection mode instead of starting a run by itself.
   assert.match(pageSource, /onClick=\{enterSelection\}/);
-  assert.match(pageSource, /\{\.\.\.\(selecting \? \{ selection: \{ state: selectionState, onChange: setSelectionState \} \} : \{\}\)\}/);
+  assert.match(
+    pageSource,
+    /\{\.\.\.\(selecting\s*\?\s*\{\s*selection: \{ state: selectionState, onChange: setSelectionState \},\s*fullScopeSelection: fullScope,\s*onFullScopeChange: setFullScope,\s*\}\s*:\s*\{\}\)\}/,
+  );
   assert.match(pageSource, /<DiagnosisSelectionBar/);
   // Sub-pages stay put while a pick is open, and Esc, hiding the page or a new session end it.
   assert.match(pageSource, /disabled=\{selecting\}/);
@@ -707,7 +710,23 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   // Without the selection prop the lanes stay read-only; with it they pick per agent.
   assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
   assert.match(panelSource, /spanSelectsRange: selecting/);
+  // Browse/zoom uses grab-to-pan; diagnosis selection locks the viewport for brush drag.
+  assert.match(panelSource, /lockTimelineViewport: selecting/);
   assert.match(panelSource, /agentSelection: \{/);
+  // Include checkbox only while a shared brush / full-scope pick is active.
+  assert.match(panelSource, /shouldShowIncludeToggle\(selection\.state, fullScopeSelection, subjectId\)/);
+  // Full-trajectory pick keeps lane "select all" inactive; a click narrows to that lane.
+  assert.match(panelSource, /if \(fullScopeSelection\) return false;/);
+  assert.match(
+    panelSource,
+    /toggleSelectAllOnLane\(EMPTY_DIAGNOSIS_SELECTION, subjectId, intervals\)/,
+  );
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /showIncludeToggle === true && onToggleIncluded !== undefined/);
+  assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
 });
 
 test('diagnosis sub-page folds finished stages and offers record management', () => {

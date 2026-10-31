@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,9 @@ from jiuwenswarm.server.runtime.attachments.upload_storage import (
 )
 
 _FALLBACK = "document-1.md"
+# Windows 把 ``\`` 当路径分隔符，``Path("..\\..\\evil.md").name`` 是 ``evil.md``；
+# POSIX 上整串仍是一个名字，消毒后变成 ``.._.._evil.md``。
+_WIN_TRAVERSAL_EXPECTED = "evil.md" if os.name == "nt" else ".._.._evil.md"
 
 
 @pytest.mark.parametrize(
@@ -37,7 +41,7 @@ def test_safe_upload_filename_keeps_readable_names(filename: str):
     ("filename", "expected"),
     [
         ("../../etc/passwd", "passwd"),
-        ("..\\..\\evil.md", ".._.._evil.md"),
+        ("..\\..\\evil.md", _WIN_TRAVERSAL_EXPECTED),
         ("file:with|bad*chars?.md", "file_with_bad_chars_.md"),
         ("tab\there.md", "tab_here.md"),
         ("trailing .", "trailing"),

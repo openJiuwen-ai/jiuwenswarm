@@ -34,8 +34,9 @@ def get_memory_engine(config: Optional[Dict[str, Any]] = None) -> str:
     Controls which memory subsystems are allowed to mount.
     Default: builtin (backward-compatible with configs that predate this flag).
     """
-    cfg = config if config is not None else _load_config()
-    mem = (cfg or {}).get("memory", {}) if isinstance(cfg, dict) else {}
+    from .config import get_memory_section
+
+    mem = get_memory_section(config)
     value = str(mem.get("engine") or "builtin").strip().lower()
     return value if value in _VALID_ENGINES else "builtin"
 
@@ -54,8 +55,9 @@ def get_external_memory_config(
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return the `memory.external` section with defaults filled in."""
-    cfg = config if config is not None else _load_config()
-    mem = (cfg or {}).get("memory", {}) if isinstance(cfg, dict) else {}
+    from .config import get_memory_section
+
+    mem = get_memory_section(config)
     ext = mem.get("external", {}) if isinstance(mem, dict) else {}
     if not isinstance(ext, dict):
         ext = {}

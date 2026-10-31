@@ -11,6 +11,7 @@ from gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
 )
+from gateway.routing import agent_request_timeout as timeout_policy
 
 
 def test_resolve_timeout_skips_stream_and_non_tui_requests():
@@ -66,6 +67,21 @@ def test_resolve_timeout_extends_command_workflows_for_older_clients():
         method="command.workflows",
         is_stream=False,
     ) == 55.0
+
+
+@pytest.mark.parametrize('value, expected', [(None, 25.0), ('55', 55.0), ('30.5', 30.5), ('1', 1.0)])
+def test_load_default_tui_timeout_from_deployment(monkeypatch, value, expected):
+    monkeypatch.delenv('GATEWAY_TUI_UNARY_TIMEOUT_SECONDS', raising=False)
+    if value is not None:
+        monkeypatch.setenv('GATEWAY_TUI_UNARY_TIMEOUT_SECONDS', value)
+    assert timeout_policy._load_default_tui_timeout_seconds() == expected
+
+
+@pytest.mark.parametrize('value', ['0', '-1', '56', 'nan', 'inf', 'invalid'])
+def test_load_default_tui_timeout_rejects_invalid_windows(monkeypatch, value):
+    monkeypatch.setenv('GATEWAY_TUI_UNARY_TIMEOUT_SECONDS', value)
+    with pytest.raises(ValueError, match='GATEWAY_TUI_UNARY_TIMEOUT_SECONDS'):
+        timeout_policy._load_default_tui_timeout_seconds()
 
 
 def test_resolve_timeout_keeps_most_of_client_window_for_command_workflows():

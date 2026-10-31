@@ -24,6 +24,15 @@ def fake_encode_agent_response_for_wire(resp, response_id):
     }
 
 
+async def _team_history_get(ws, request) -> None:
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers.team import handle_team_history_get
+
+    await handle_team_history_get(
+        build_ws_request_context(object(), ws, request, asyncio.Lock())
+    )
+
+
 def make_large_tool_result_records(count: int = 20) -> list[dict]:
     large_result = "x" * 20_000
     return [
@@ -45,7 +54,9 @@ def make_large_tool_result_records(count: int = 20) -> list[dict]:
 
 
 def test_subagent_activity_history_record_is_restorable():
-    assert agent_ws_server_module._is_restorable_history_record(
+    from jiuwenswarm.server.handlers.session import _is_restorable_history_record
+
+    assert _is_restorable_history_record(
         {
             "id": "subagent-activity-1",
             "role": "assistant",
@@ -69,19 +80,19 @@ def patch_wire_encoder(monkeypatch):
         "encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
 
 
 @pytest.mark.asyncio
 async def test_team_history_get_paginates_and_bounds_large_records(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
     ws = FakeWebSocket()
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "read_team_history_records",
+        "jiuwenswarm.server.handlers.team.read_team_history_records",
         lambda session_id: records,
     )
 
@@ -92,7 +103,7 @@ async def test_team_history_get_paginates_and_bounds_large_records(monkeypatch):
         params={"session_id": "sess-large", "limit": 20, "max_bytes": 4096},
     )
 
-    await getattr(server, "_handle_team_history_get")(ws, request, asyncio.Lock())
+    await _team_history_get(ws, request)
 
     assert len(ws.sent) == 1
     frame = ws.sent[0]
@@ -109,14 +120,10 @@ async def test_team_history_get_paginates_and_bounds_large_records(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_team_history_get_cursor_continues_next_page(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
     records = make_large_tool_result_records()
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "read_team_history_records",
+        "jiuwenswarm.server.handlers.team.read_team_history_records",
         lambda session_id: records,
     )
 
@@ -127,7 +134,7 @@ async def test_team_history_get_cursor_continues_next_page(monkeypatch):
         req_method=ReqMethod.TEAM_HISTORY_GET,
         params={"session_id": "sess-large", "limit": 20, "max_bytes": 4096},
     )
-    await getattr(server, "_handle_team_history_get")(first_ws, first_request, asyncio.Lock())
+    await _team_history_get(first_ws, first_request)
     first_payload = first_ws.sent[0]["payload"]
 
     second_ws = FakeWebSocket()
@@ -142,7 +149,7 @@ async def test_team_history_get_cursor_continues_next_page(monkeypatch):
             "max_bytes": 4096,
         },
     )
-    await getattr(server, "_handle_team_history_get")(second_ws, second_request, asyncio.Lock())
+    await _team_history_get(second_ws, second_request)
     second_payload = second_ws.sent[0]["payload"]
 
     assert first_payload["has_more"] is True
@@ -169,16 +176,20 @@ def test_history_get_sanitizes_large_restorable_records(monkeypatch):
         },
     }
 
-    monkeypatch.setattr(agent_ws_server_module, "history_exists", lambda session_id, **_kwargs: True)
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "load_history_records",
+        "jiuwenswarm.server.handlers.session.history_exists",
+        lambda session_id, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.session.load_history_records",
         lambda session_id, **_kwargs: [large_record],
     )
 
     # get_conversation_history 现在返回 raw record（不在内部 sanitize）——
-    # sanitize 移到 _handle_history_get_stream 里调 split 时做。这里先验 raw 透传。
-    result = agent_ws_server_module.AgentWebSocketServer.get_conversation_history(
+    # sanitize 移到历史流里调 split 时做。这里先验 raw 透传。
+    from jiuwenswarm.server.handlers.session import get_conversation_history
+
+    result = get_conversation_history(
         "sess-large",
         1,
     )
@@ -207,9 +218,6 @@ def test_history_get_sanitizes_large_restorable_records(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_team_history_get_preserves_too_large_first_record_as_placeholder(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer.__new__(
-        agent_ws_server_module.AgentWebSocketServer
-    )
     ws = FakeWebSocket()
     huge_id = "tool-result-too-large-" + ("x" * 10_000)
     records = [
@@ -229,8 +237,7 @@ async def test_team_history_get_preserves_too_large_first_record_as_placeholder(
     ]
 
     monkeypatch.setattr(
-        agent_ws_server_module,
-        "read_team_history_records",
+        "jiuwenswarm.server.handlers.team.read_team_history_records",
         lambda session_id: records,
     )
 
@@ -241,7 +248,7 @@ async def test_team_history_get_preserves_too_large_first_record_as_placeholder(
         params={"session_id": "sess-large", "limit": 20, "max_bytes": 2048},
     )
 
-    await getattr(server, "_handle_team_history_get")(ws, request, asyncio.Lock())
+    await _team_history_get(ws, request)
 
     payload = ws.sent[0]["payload"]
     encoded_size = len(json.dumps(ws.sent[0], ensure_ascii=False).encode("utf-8"))

@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
+import { isEnterprise } from '../../edition';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore, useWorkspaceStore } from '../../stores';
 import {
   AgentMode,
@@ -1299,8 +1300,14 @@ export const ChatPanel = React.memo(function ChatPanel({
   const stickToBottomUntilStableRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
+  const hasPendingQuestion = useChatStore(
+    (s) => Boolean(s.runtimes[activeSessionId ?? '']?.pendingQuestions[0]),
+  );
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
-  const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
+  // 还在等你点选时，不能退回首页欢迎语。提问卡片要留在普通聊天页里。
+  const hasConversation = Boolean(
+    isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
+  );
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
   const historyPublishedBatchSeq = historyPager?.publishedBatchSeq ?? 0;
@@ -1425,7 +1432,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
   const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
     ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
-  const shouldShowShareExport = Boolean(onExportShare);
+  const shouldShowShareExport = !isEnterprise() && Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const isAuthorized = useAuthStore((state) => state.islogin);
@@ -1466,7 +1473,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     };
   }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
-  const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
+  const heartbeatAvailable = !isEnterprise() && Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
     const content = text.trim();
     if (!content) return;
@@ -2723,6 +2730,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             {heartbeatAvailable && (
               <button
                 type="button"
+                data-testid="chat-panel-heartbeat-trigger"
                 className={`chat-header-icon-btn ${heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
                 onClick={() => onToggleHeartbeatPanel?.()}
                 title={t('heartbeat.panel.title')}

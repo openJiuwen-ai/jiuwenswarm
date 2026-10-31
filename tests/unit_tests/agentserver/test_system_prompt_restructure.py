@@ -1107,41 +1107,96 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     ("language", "heading", "required", "forbidden"),
     [
         (
-            "en", "# A4P Intent Authorization",
+            "en",
+            "# A4P Intent Authorization",
             (
-                "FIRST: before reading, listing, searching, writing",
-                "call `request_a4p_intent_authorization`",
-                "Read-only operations also require this preparation",
-                "Do not read or explore first",
-                "A user-supplied path is not permission",
-                "Inspect permittedActions, unapprovedActions and deniedActions",
-                "Execute only permittedActions", "authorizationRequired=false",
-                "policy-allowed and valid-token-covered", "Session authorization may be staged",
-                "complete exact commands", "must not absorb whitespace",
-                "a filename glob under a fixed directory", "explicit absolute paths without '..'",
-                "Filename discovery does not authorize read_file",
-                "Choose a feasible plan once and proceed", "never placeholders",
-                "create disabled", "complete future scope using the returned cronJobId",
-                "every planned action is permitted", "Cron authorization cannot be staged",
-                "do not trial-run now",
+                'call `request_a4p_intent_authorization`',
+                'Read-only operations also require this preparation',
+                'Only tools outside this list may be',
+                'Submit multiple actions together',
+                'Ordinary parameters need not be known',
+                'complete exact commands',
+                'must not absorb whitespace, Shell operators, redirections, or extra arguments',
+                'a filename glob under a fixed directory',
+                'never a bare *',
+                'Use dedicated file tools for writes',
+                'Choose a feasible plan once and proceed',
+                'revise only for new facts',
+                'execute with resolved values, never placeholders',
+                'Do not broaden scopes or guess missing information',
+                'Reuse approved scopes',
+                'Cron authorization cannot be staged',
+                'every planned action is permitted',
+                'put execution/preparation in the future plan',
+                'actions from the same plan',
+                'system-designated default creation tool',
+                'create disabled',
+                'complete future scope using the returned cronJobId',
+                'enable after ok=true',
+                'Keep the job disabled',
+                'Do not repeat rejected or failed requests unchanged',
+                'Execute only permittedActions',
+                'unapprovedActions still lack approval',
+                'actual calls still recheck permissions',
             ),
-            ("## Planning and convergence", "may use normal permission approval"),
+            (
+                "determine and freeze the most direct future call list",
+                "use only one clearly defined read-only source for the same dynamic value",
+                "Never guess or use placeholders",
+                "ad hoc protected operation may use normal permission approval",
+                "estimate the total calls",
+                "maxExecutions",
+                "uptime",
+                "df -h",
+                "mkdir -p",
+                "系统巡检报告",
+            ),
         ),
         (
-            "cn", "# A4P 意图授权",
+            "cn",
+            "# A4P 意图授权",
             (
-                "第一步", "必须先调用", "`request_a4p_intent_authorization`",
-                "只读操作也必须先提交", "不得先读取或搜索文件来准备授权",
-                "用户提供路径不等于已授权", "只有列表外的工具可先用于获取必要信息",
-                "检查 permittedActions、unapprovedActions 和 deniedActions",
-                "只能执行 permittedActions 中的操作", "authorizationRequired=false",
-                "后端过滤规则允许", "会话允许分阶段授权", "默认授权完整精确命令",
-                "固定目录下的文件名 glob", "不得使用裸 *", "显式使用绝对路径且不含 '..'",
-                "文件名搜索不包含 read_file 权限", "选定可行计划后执行",
-                "真实值而非占位符", "create disabled", "一次性授权完整未来范围",
-                "计划内全部操作获准后 enable", "Cron 不能分阶段授权", "不额外试运行",
+                '必须先调用 `request_a4p_intent_authorization`',
+                '只读操作也必须先提交',
+                '只有列表外的工具',
+                '合并提交多个 actions',
+                '无需提前确定普通参数',
+                '默认授权完整精确命令',
+                '不得覆盖空白、Shell 运算符、重定向或额外参数',
+                '固定目录下的文件名 glob',
+                '不得使用裸 *',
+                '使用专用文件工具写入',
+                '选定可行计划后执行',
+                '仅因新事实、需求变化或实际错误调整',
+                '动态参数用有界范围表达',
+                '实际执行使用真实值而非占位符',
+                '不扩大范围或猜测缺失信息',
+                '复用已批准范围',
+                'Cron 不能分阶段授权',
+                '范围不足时保持禁用',
+                '准备和执行放入未来计划',
+                '同一计划生成 description 和 actions',
+                '使用系统指定的默认创建工具',
+                'create disabled',
+                'cronJobId 一次性授权完整未来范围',
+                'ok=true 且计划内全部操作获准后 enable',
+                '拒绝或失败后不要原样重复请求',
+                '只能执行 permittedActions 中的操作',
+                'unapprovedActions 仍缺授权',
+                '实际调用仍重新校验权限',
             ),
-            ("## 规划与收敛", "可使用普通权限审批"),
+            (
+                "确定并冻结一份最直接的未来调用清单",
+                "同一动态值只使用一个明确的只读来源",
+                "不得猜测或使用占位符",
+                "临时、非工作流型的受保护操作可使用普通权限审批",
+                "调用工具前先估计",
+                "maxExecutions",
+                "uptime",
+                "df -h",
+                "mkdir -p",
+                "系统巡检报告",
+            ),
         ),
     ],
 )
@@ -2011,6 +2066,32 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     # Runtime context is attached separately and rendered by the attachment
     # manager, rather than being part of the main system-prompt sections.
     assert "当前语言：cn" in rendered
+
+
+@pytest.mark.parametrize("language", ["cn", "en"])
+def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(language: str) -> None:
+    from openjiuwen.core.context_engine.base import ContextWindow
+    from openjiuwen.core.context_engine.token.string_length_counter import StringLengthCounter
+    from openjiuwen.core.context_engine.usage.analyzer import ContextUsageAnalyzer
+    from openjiuwen.core.foundation.llm import SystemMessage
+    from openjiuwen.core.single_agent.agents.react_agent import ReActAgent
+
+    builder = SystemPromptBuilder(language=language)
+    builder.add_section(PromptSection(name="identity", content={language: "Core rules."}, priority=10))
+    rail = SkillRetrievalPromptRail(config_base={"symphony": {"skill_retrieval": {"enabled": True}}})
+    rail.system_prompt_builder = builder
+    rail._add_prompt_builder_section(language, "Use demo Skill.")
+    sections = ReActAgent._context_usage_prompt_sections(SimpleNamespace(prompt_builder=builder))
+    snapshot = ContextUsageAnalyzer(StringLengthCounter(), context_window_limit=1000).analyze(
+        ContextWindow(system_messages=[SystemMessage(content=builder.build())]),
+        request_id="skill-classification",
+        session_id="skill-classification",
+        system_prompt_sections=sections,
+    )
+
+    assert snapshot.parts["skills"].tokens == 5
+    assert snapshot.parts["system_prompt"].tokens == 3
+    assert snapshot.context_window.input_tokens == 8
 
 
 @pytest.mark.asyncio

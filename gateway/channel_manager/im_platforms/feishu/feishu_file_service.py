@@ -9,10 +9,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import logger
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from gateway.common.paths import logger
 
 # 类型别名，用于类型提示
 FeishuConfig = Any  # 避免循环导入

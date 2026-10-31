@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import hashlib
 import zipfile
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from jiuwenswarm.server.runtime.skill.archive_store import (
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_DOWNLOAD_TOKEN_INVALID,
     ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
+    ERROR_SKILL_NAME_CONFLICT,
     ERROR_SKILL_RESERVED_PATH,
     SkillManager,
     SkillRpcError,
@@ -121,6 +123,92 @@ async def test_import_local_from_download_token(
     assert skill["source"] == "local"
     assert skill["workspace_path"].endswith("document-review")
     assert (manager._skills_dir / "document-review" / "SKILL.md").is_file()
+    # 单机版只写 local_skills，不写企业安装账本
+    assert manager.list_skill_installations() == []
+    assert any(
+        isinstance(s, dict) and s.get("name") == "document-review"
+        for s in manager.get_local_skills()
+    )
+
+
+@pytest.mark.asyncio
+async def test_enterprise_import_local_records_user_installation(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    src = tmp_path / "meeting-notes"
+    src.mkdir()
+    (src / "SKILL.md").write_text(_skill_md("meeting-notes"), encoding="utf-8")
+
+    result = await manager.handle_skills_import_local({"path": str(src)})
+
+    assert result["success"] is True
+    assert result["skill"]["name"] == "meeting-notes"
+    records = manager.list_skill_installations()
+    assert len(records) == 1
+    record = records[0]
+    assert record["name"] == "meeting-notes"
+    assert record["source_type"] == "user"
+    assert record["source"] == "local"
+    assert record["origin"] == str(src)
+    assert record["entity_dir"] == "meeting-notes"
+    assert record["installation_id"]
+    # 企业版不以 local_skills 双写；安装账本是唯一登记
+    assert all(
+        not (isinstance(s, dict) and s.get("name") == "meeting-notes")
+        for s in manager.get_local_skills()
+    )
+
+    listed = await manager.handle_skills_list({})
+    skill = next(s for s in listed["skills"] if s.get("name") == "meeting-notes")
+    assert skill["source_type"] == "user"
+    assert skill["origin"] == str(src)
+
+
+@pytest.mark.asyncio
+async def test_enterprise_import_local_clears_stale_local_skills(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """覆盖导入时清掉历史 local_skills，避免与安装账本双口径。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    src = tmp_path / "legacy-local"
+    src.mkdir()
+    (src / "SKILL.md").write_text(_skill_md("legacy-local"), encoding="utf-8")
+    # 先按单机路径写入实体 + local_skills，再模拟企业版二次导入
+    personal = await manager.handle_skills_import_local({"path": str(src)})
+    assert personal["success"] is True
+    # 上面在 enterprise env 下已走企业分支；直接注入一条残留 local_skills
+    manager._add_local_skill(
+        {"name": "legacy-local", "origin": "stale:legacy-local", "source": "local"}
+    )
+    assert any(s.get("name") == "legacy-local" for s in manager.get_local_skills())
+
+    result = await manager.handle_skills_import_local({"path": str(src), "force": True})
+    assert result["success"] is True
+    assert manager.list_skill_installations()[0]["source_type"] == "user"
+    assert all(s.get("name") != "legacy-local" for s in manager.get_local_skills())
+
+
+@pytest.mark.asyncio
+async def test_enterprise_import_local_rejects_prebuilt_overwrite(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    manager.record_skill_installation(
+        name="managed-skill",
+        source_type="prebuilt",
+        origin="https://artifacts.example/managed-skill.zip",
+        source="customer-skillhub",
+        entity_dir="managed-skill",
+    )
+    src = tmp_path / "managed-skill"
+    src.mkdir()
+    (src / "SKILL.md").write_text(_skill_md("managed-skill"), encoding="utf-8")
+
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_local({"path": str(src), "force": True})
+    assert exc.value.code == ERROR_SKILL_NAME_CONFLICT
+    assert manager.list_skill_installations()[0]["source_type"] == "prebuilt"
 
 
 @pytest.mark.asyncio
@@ -135,6 +223,45 @@ async def test_import_local_token_rejects_session_mismatch(
             {"download_token": token, "_session_id": "session-b"}
         )
     assert exc.value.code == ERROR_SKILL_DOWNLOAD_TOKEN_INVALID
+
+
+@pytest.mark.asyncio
+async def test_import_object_delivery_without_local_snapshot(manager, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from jiuwenswarm.agents.harness.common.tools.obs_file_delivery import build_object_file_download_info
+    from jiuwenswarm.common.obs_files import AttachmentStore
+    from jiuwenswarm.common.utils import build_tenant_key
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(TenantContext, "current_tenant_key", lambda: build_tenant_key("g", "b", "u"))
+    package = _zip_skill(tmp_path, name="object-delivery", filename="object-delivery.skill")
+    data = package.read_bytes()
+    restored = []
+    def download(url, tenant, session_id):
+        if session_id != "object-session":
+            raise ValueError("session mismatch")
+        restored.append(url)
+        return data
+    scoped_store = AttachmentStore(None, "bucket", "http://obs")
+    store = SimpleNamespace(bucket="bucket", upload_file=lambda *args, **kwargs: {
+        "size":len(data), "digest":"sha256:"+hashlib.sha256(data).hexdigest(), "etag":"etag"
+    }, read_download=download, download_key=scoped_store.download_key,
+        presign_download=lambda key: "http://obs/bucket/" + key)
+    monkeypatch.setattr(AttachmentStore, "from_env", lambda: store)
+    file = build_object_file_download_info(package, "object-session", "u", metadata={
+        "user_id": "u", "routing": {"group_id": "g", "bot_id": "b"},
+    })
+    package.unlink()
+    result = await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "object-session"})
+    assert result["success"] and result["skill"]["name"] == "object-delivery"
+    assert restored == [file["url"]]
+    with pytest.raises(SkillRpcError, match="无法读取"):
+        await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "another"})
+    monkeypatch.setattr(TenantContext, "current_tenant_key", lambda: build_tenant_key("g", "b", "other"))
+    with pytest.raises(SkillRpcError, match="租户不匹配"):
+        await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "object-session"})
+    assert len(restored) == 1
 
 
 @pytest.mark.asyncio
