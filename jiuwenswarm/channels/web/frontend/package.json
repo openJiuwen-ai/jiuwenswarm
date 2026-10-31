@@ -191,7 +191,9 @@
     "test:trajectory-sequences": "esbuild src/features/trajectory/trajectorySequences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-sequences/trajectorySequences.mjs && node --test tests/trajectorySequences.test.mjs",
     "test:permission-text-i18n": "tsc src/components/InteractionSlot/permissionTextI18n.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/permission-text-i18n --skipLibCheck --noEmitOnError && node --test tests/permissionTextI18n.test.mjs",
     "test:mcp-app-document": "esbuild src/features/mcpApps/mcpAppDocument.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/mcp-app-document/mcpAppDocument.mjs && node --test tests/mcpAppDocument.test.mjs",
-    "test:model-presentation": "node --test tests/modelPresentation.test.mjs"
+    "test:model-presentation": "node --test tests/modelPresentation.test.mjs",
+    "test:mcp-app-context": "esbuild src/features/mcpApps/mcpAppContext.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/mcp-app-context/mcpAppContext.mjs && node --test tests/mcpAppContext.test.mjs",
+    "test:mcp-app-view": "esbuild src/components/ChatPanel/McpAppView.tsx src/features/mcpApps/mcpAppContext.ts src/services/webClient.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/mcp-app-view --loader:.css=empty --define:import.meta.env={} && node --test tests/mcpAppView.test.mjs"
   },
   "dependencies": {
     "@a2ui/react": "0.8.0",

@@ -235,16 +235,19 @@ function DesignerNodeShell({
   );
 }
 
-function useDesignerAssetText(uri: string | null | undefined): string | null {
+/** `producedAt` changes when a rerun overwrites the output in place under the same uri. */
+function useDesignerAssetText(uri: string | null | undefined, producedAt: number): string | null {
   const url = designerAssetTextUrl(uri);
   const [text, setText] = useState<string | null>(null);
-  const [reloadAt, setReloadAt] = useState(0);
+  const [savedAt, setSavedAt] = useState(0);
+  const reloadKey = `${producedAt}-${savedAt}`;
+  const loadedUrl = useRef<string | null>(null);
 
   useEffect(() => {
     const onSaved = (event: Event) => {
       const savedUri = (event as CustomEvent<{ uri?: string }>).detail?.uri;
       if (savedUri && uri && savedUri === uri) {
-        setReloadAt(Date.now());
+        setSavedAt(Date.now());
       }
     };
     window.addEventListener(DESIGNER_MATERIAL_SAVED_EVENT, onSaved);
@@ -253,12 +256,15 @@ function useDesignerAssetText(uri: string | null | undefined): string | null {
 
   useEffect(() => {
     if (!url) {
+      loadedUrl.current = null;
       setText(null);
       return;
     }
     let cancelled = false;
-    setText(null);
-    const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${reloadAt}`;
+    // Keep the current text on screen while the same file reloads.
+    if (loadedUrl.current !== url) setText(null);
+    loadedUrl.current = url;
+    const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${reloadKey}`;
     void fetch(fetchUrl)
       .then((response) => {
         if (!response.ok) throw new Error(String(response.status));
@@ -273,7 +279,7 @@ function useDesignerAssetText(uri: string | null | undefined): string | null {
     return () => {
       cancelled = true;
     };
-  }, [url, reloadAt]);
+  }, [url, reloadKey]);
 
   return text;
 }
@@ -284,6 +290,10 @@ function useNodePreviewUri(nodeId: string): string | null {
   );
   const nodeState = useDesignerRunStore((state) => state.nodeStates[nodeId]);
   return resolveDesignerNodePreviewRef(node, nodeState)?.uri ?? null;
+}
+
+function useNodeProducedAt(nodeId: string): number {
+  return useDesignerRunStore((state) => state.nodeStates[nodeId]?.completed_at ?? 0);
 }
 
 function DocumentFitBody({
@@ -332,7 +342,7 @@ function DocumentFitBody({
 
 function TablePreviewBody({ nodeId }: { nodeId: string }) {
   const uri = useNodePreviewUri(nodeId);
-  const text = useDesignerAssetText(uri);
+  const text = useDesignerAssetText(uri, useNodeProducedAt(nodeId));
   if (!text) return <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_TABLE} />;
   return (
     <DocumentFitBody nodeId={nodeId} contentKey={text} kind="table">
@@ -343,7 +353,7 @@ function TablePreviewBody({ nodeId }: { nodeId: string }) {
 
 function TextPreviewBody({ nodeId, nodeType }: { nodeId: string; nodeType: string }) {
   const uri = useNodePreviewUri(nodeId);
-  const text = useDesignerAssetText(uri);
+  const text = useDesignerAssetText(uri, useNodeProducedAt(nodeId));
   if (!text) return <PlaceholderBody nodeType={nodeType} />;
   return (
     <DocumentFitBody nodeId={nodeId} contentKey={text}>

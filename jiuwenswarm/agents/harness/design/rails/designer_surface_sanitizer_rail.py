@@ -66,6 +66,7 @@ _KEEP_TOOL_NAMES: frozenset[str] = frozenset({
     # Design canvas (design profile / designer rails).
     "designer_graph_get",
     "designer_graph_patch",
+    "designer_story_edit",
     "designer_node_run",
     "designer_node_complete",
     "designer_graph_autorun",
