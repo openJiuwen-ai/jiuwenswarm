@@ -1,4 +1,9 @@
-"""F_02_02: one colleague configuration, one agent per connection, published together."""
+"""Legacy connection records remain supported after canonical channel binding.
+
+The seed helper reconstructs the pre-upgrade database layout; it is not a new
+binding API. Current Web/Feishu/DingTalk identity tests live in
+``test_three_channel_shared_agent.py``.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlers
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeStore, AgentMailScope
 from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
-from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection, ColleagueSettings, PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.models import CapabilitySelection, ColleagueSettings, ConnectionRecord, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_ACCESS
 from tests.unit_tests.gateway.test_app_web_handlers import FakeChannelManager, FakeWebChannel
@@ -27,6 +32,37 @@ from tests.unit_tests.server.jiuwenmate.test_persistent_agent_service import Fak
 from tests.unit_tests.server.jiuwenmate.test_web_private_chat import Host as WebHost
 
 NS = "workspace-1"
+
+
+def seed_legacy_connection(service, namespace_id, config_id, channel, connection_key):
+    """Build an old independently published IM row for backward-compatibility tests."""
+    config = service._require_config(namespace_id, config_id)
+    if channel not in {"feishu", "dingtalk"}:
+        raise PersistentAgentError("unsupported legacy platform")
+    now = service._clock()
+    definition = replace(config, agent_id=service._id_factory(), source_template_id=None,
+        is_default=False, enabled=True, revision=0, published_revision=None,
+        current_version=None, created_at=now, updated_at=now)
+    record = service._repository.insert_connection_agent(definition, ConnectionRecord(
+        namespace_id=namespace_id, agent_id=definition.agent_id, config_id=config.agent_id,
+        channel=channel, connection_key=connection_key, created_at=now,
+    ))
+    agent = service._require(namespace_id, record.agent_id)
+    published = service._published_settings(config)
+    if agent.current_version is None and published is not None:
+        try:
+            snapshot = service._prepare_version(namespace_id, agent, published, None)
+            service._repository.publish_connection_agent(namespace_id, snapshot,
+                config_id=config.agent_id, config_revision=config.published_revision,
+                settings=published, published_at=now)
+        except Exception as exc:
+            current = service._repository.get(namespace_id, agent.agent_id)
+            if current is None:
+                service.workspaces.remove(namespace_id, agent.agent_id)
+                raise PersistentAgentError("colleague not found", code="NOT_FOUND") from exc
+            if getattr(exc, "code", None) != "CONFLICT" or current.current_version is None:
+                raise
+    return record.agent_id
 
 
 def settings(**changes) -> ColleagueSettings:
@@ -54,13 +90,13 @@ def versions(service, *agent_ids: str) -> list[str | None]:
 def test_each_app_gets_its_own_agent_and_the_same_app_gets_it_again(tmp_path):
     service = make_service(tmp_path)
     colleague = service.create_colleague(NS, settings()).agent_id
-    feishu = service.attach_connection(NS, colleague, "feishu", "app-a")
-    dingtalk = service.attach_connection(NS, colleague, "dingtalk", "app-b")
+    feishu = seed_legacy_connection(service, NS, colleague, "feishu", "app-a")
+    dingtalk = seed_legacy_connection(service, NS, colleague, "dingtalk", "app-b")
     other = service.create_colleague(NS, settings(name="出纳助手")).agent_id
 
-    assert service.attach_connection(NS, colleague, "feishu", "app-a") == feishu
+    assert seed_legacy_connection(service, NS, colleague, "feishu", "app-a") == feishu
     # The same app under another colleague is another connection; the first agent stays with its colleague.
-    moved = service.attach_connection(NS, other, "feishu", "app-a")
+    moved = seed_legacy_connection(service, NS, other, "feishu", "app-a")
     assert len({colleague, feishu, dingtalk, moved}) == 4
     assert service.connection_of(NS, feishu).config_id == colleague
     assert (service.connection_of(NS, dingtalk).channel, service.connection_of(NS, dingtalk).connection_key) == (
@@ -75,7 +111,7 @@ def test_each_app_gets_its_own_agent_and_the_same_app_gets_it_again(tmp_path):
     assert (view.agent_id, view.config_id, view.name) == (feishu, colleague, "会计助手")
     assert view.workspace_dir == str(service.workspaces.path(NS, feishu))
     with pytest.raises(PersistentAgentError) as unsupported:
-        service.attach_connection(NS, colleague, "web", "web")
+        seed_legacy_connection(service, NS, colleague, "web", "web")
     assert unsupported.value.code == "BAD_REQUEST"
 
 
@@ -87,14 +123,14 @@ def test_a_new_connection_uses_the_published_settings_and_an_unpublished_colleag
     colleague = service.create_colleague(NS, settings(persona="已发布的人设。")).agent_id
     service.update_settings(NS, colleague, settings(persona="尚未发布的人设。"))
 
-    agent = service.attach_connection(NS, colleague, "dingtalk", "app-b")
+    agent = seed_legacy_connection(service, NS, colleague, "dingtalk", "app-b")
 
     assert "已发布的人设。" in prompt(service, agent) and "尚未发布的人设。" not in prompt(service, agent)
     assert service.get_colleague(NS, colleague).has_unpublished_changes
 
     unpublished = make_service(tmp_path / "unpublished", FakeModels(default=None)).ensure_default_colleague(NS)
     service = make_service(tmp_path / "unpublished", FakeModels(default=None))
-    agent = service.attach_connection(NS, unpublished.agent_id, "feishu", "app-a")
+    agent = seed_legacy_connection(service, NS, unpublished.agent_id, "feishu", "app-a")
     assert service.get_colleague(NS, agent).current_version is None
 
 
@@ -115,8 +151,8 @@ class FailingFor(FakeModels):
 def test_publication_switches_every_agent_and_a_failure_switches_none(tmp_path):
     service = make_service(tmp_path)
     colleague = service.create_colleague(NS, settings()).agent_id
-    feishu = service.attach_connection(NS, colleague, "feishu", "app-a")
-    dingtalk = service.attach_connection(NS, colleague, "dingtalk", "app-b")
+    feishu = seed_legacy_connection(service, NS, colleague, "feishu", "app-a")
+    dingtalk = seed_legacy_connection(service, NS, colleague, "dingtalk", "app-b")
     before = versions(service, colleague, feishu, dingtalk)
 
     service.update_settings(NS, colleague, settings(persona="新的人设。"))
@@ -150,7 +186,7 @@ def test_a_connection_added_during_a_publication_makes_it_retry(tmp_path, monkey
     def prepare_and_add(namespace_id, agent, chosen, models):
         if not added:
             added.append(None)
-            added[0] = service.attach_connection(NS, colleague, "feishu", "app-a")
+            added[0] = seed_legacy_connection(service, NS, colleague, "feishu", "app-a")
         return prepare(namespace_id, agent, chosen, models)
 
     monkeypatch.setattr(service, "_prepare_version", prepare_and_add)
@@ -179,7 +215,7 @@ def test_a_publication_during_a_new_connection_gives_it_the_newer_version(tmp_pa
         return prepare(namespace_id, agent, chosen, models)
 
     monkeypatch.setattr(service, "_prepare_version", publish_first)
-    agent = service.attach_connection(NS, colleague, "dingtalk", "app-b")
+    agent = seed_legacy_connection(service, NS, colleague, "dingtalk", "app-b")
 
     assert published and "新的人设。" in prompt(service, agent)
 
@@ -190,7 +226,7 @@ def test_a_publication_during_a_new_connection_gives_it_the_newer_version(tmp_pa
 def test_agents_follow_their_colleague_and_cannot_be_managed_directly(tmp_path):
     service = make_service(tmp_path)
     colleague = service.create_colleague(NS, settings()).agent_id
-    agent = service.attach_connection(NS, colleague, "feishu", "app-a")
+    agent = seed_legacy_connection(service, NS, colleague, "feishu", "app-a")
 
     service.update_settings(NS, colleague, replace(settings(), group_reply_mode="passive"))
     # A saved reply mode applies at once, as it does for the colleague itself.
@@ -202,7 +238,7 @@ def test_agents_follow_their_colleague_and_cannot_be_managed_directly(tmp_path):
         lambda: service.publish(NS, agent),
         lambda: service.set_enabled(NS, agent, enabled=True),
         lambda: service.get_config(NS, agent),
-        lambda: service.attach_connection(NS, agent, "dingtalk", "app-b"),
+        lambda: seed_legacy_connection(service, NS, agent, "dingtalk", "app-b"),
     ):
         with pytest.raises(PersistentAgentError) as refused:
             operation()
@@ -212,7 +248,7 @@ def test_agents_follow_their_colleague_and_cannot_be_managed_directly(tmp_path):
 def test_model_refresh_publishes_colleagues_with_all_their_agents(tmp_path):
     service = make_service(tmp_path)
     colleague = service.create_colleague(NS, settings()).agent_id
-    agent = service.attach_connection(NS, colleague, "feishu", "app-a")
+    agent = seed_legacy_connection(service, NS, colleague, "feishu", "app-a")
     before = versions(service, colleague, agent)
 
     rotated = FakeModels()
@@ -227,7 +263,7 @@ def test_model_refresh_publishes_colleagues_with_all_their_agents(tmp_path):
 def test_unbinding_hides_the_colleague_and_keeps_its_agents(tmp_path):
     service = make_service(tmp_path)
     colleague = service.create_colleague(NS, settings(), source_template_id="accountant").agent_id
-    agent = service.attach_connection(NS, colleague, "dingtalk", "app-b")
+    agent = seed_legacy_connection(service, NS, colleague, "dingtalk", "app-b")
     service.workspaces.ensure(NS, agent)
 
     service.hide_colleague(NS, colleague)
@@ -282,25 +318,27 @@ async def test_purging_ends_work_in_both_runtimes_before_removing_every_agent(tm
         await host.adapter.aclose()
 
 
-# F_02_02-V-08 Feishu accepts only the agent created for the receiving app
+# F_02_02-V-08 Feishu accepts its canonical ID or matching legacy app record.
 
 
 @pytest.mark.asyncio
-async def test_feishu_accepts_only_the_agent_created_for_the_receiving_app(tmp_path):
+async def test_feishu_accepts_canonical_or_matching_legacy_app_agent(tmp_path):
     host = FeishuHost(tmp_path)
     await host.start()
     try:
         colleague = host.colleague("会计助手")
-        agent = host.service.attach_connection(NS, colleague, "feishu", "app-dev")
-        dingtalk = host.service.attach_connection(NS, colleague, "dingtalk", "app-dev")
-        for bound in (colleague, dingtalk):
-            # The colleague's Web agent, or its DingTalk agent, written into the Feishu entry by hand.
-            fanout = host.fanout([_binding("app-dev", bound)])
-            assert await fanout.handle(_event()) is InboundDisposition.REJECTED
+        agent = seed_legacy_connection(host.service, NS, colleague, "feishu", "app-dev")
+        dingtalk = seed_legacy_connection(host.service, NS, colleague, "dingtalk", "app-dev")
+        # A legacy DingTalk identity still cannot serve a Feishu application.
+        fanout = host.fanout([_binding("app-dev", dingtalk)])
+        assert await fanout.handle(_event()) is InboundDisposition.REJECTED
         assert host.row_counts() == (0, 0, 0)
         moved = host.fanout([_binding("app-other", agent)])
         assert await moved.handle(_event(receiving_app_id="app-other")) is InboundDisposition.REJECTED
         assert await host.fanout([_binding("app-dev", agent)]).handle(_event()) is InboundDisposition.HANDLED
+        assert await host.fanout([_binding("app-dev", colleague)]).handle(_event(message_id="om_c")) is (
+            InboundDisposition.HANDLED
+        )
         # An enterprise bot has no recorded connection yet and keeps working, unless it borrows another agent.
         enterprise = host.fanout([_binding("app-enterprise", host.colleague("企业助手"), enterprise=True)])
         assert await enterprise.handle(_event(receiving_app_id="app-enterprise", message_id="om_e")) is (
@@ -317,7 +355,7 @@ async def test_feishu_accepts_only_the_agent_created_for_the_receiving_app(tmp_p
 def test_connections_survive_a_reopened_repository(tmp_path):
     service = make_service(tmp_path)
     colleague = service.create_colleague(NS, settings()).agent_id
-    agent = service.attach_connection(NS, colleague, "dingtalk", "app-b")
+    agent = seed_legacy_connection(service, NS, colleague, "dingtalk", "app-b")
 
     reopened = make_service(tmp_path)
 
@@ -381,7 +419,7 @@ async def test_a_purge_that_failed_once_is_finished_by_repeating_it(tmp_path, fa
         with pytest.raises((OSError, PersistentAgentError)):
             await host.adapter.remove_colleague({"config_id": colleague, "mode": "purge"})
         # Nothing reports the colleague as removed while its agent is still there to be found.
-        assert service.connection_of("local", agent).config_id == colleague
+        assert service.get_colleague("local", agent).config_id == colleague
         assert [item.agent_id for item in service.list_colleagues("local")] == [colleague]
 
         assert await host.adapter.remove_colleague({"config_id": colleague, "mode": "purge"}) == {"removed": True}
@@ -489,7 +527,7 @@ def test_a_connection_is_not_added_to_a_colleague_deleted_after_the_check(tmp_pa
 
     service._repository.insert_connection_agent = paused
     with ThreadPoolExecutor(max_workers=1) as pool:
-        attaching = pool.submit(service.attach_connection, NS, colleague, "dingtalk", "app-race")
+        attaching = pool.submit(seed_legacy_connection, service, NS, colleague, "dingtalk", "app-race")
         assert reached.wait(5)
         make_service(tmp_path).delete_colleague(NS, colleague, record_removal=True)
         resume.set()
@@ -514,7 +552,7 @@ def test_a_new_agent_deleted_while_its_version_is_prepared_leaves_no_office(tmp_
 
     service._prepare_version = paused
     with ThreadPoolExecutor(max_workers=1) as pool:
-        attaching = pool.submit(service.attach_connection, NS, colleague, "dingtalk", "app-race")
+        attaching = pool.submit(seed_legacy_connection, service, NS, colleague, "dingtalk", "app-race")
         assert reached.wait(5)
         other = make_service(tmp_path)
         agent = other.connections(NS, colleague)[0].agent_id
@@ -532,19 +570,18 @@ def test_a_new_agent_deleted_while_its_version_is_prepared_leaves_no_office(tmp_
 async def test_a_connection_added_while_its_colleague_is_purged_is_purged_too(tmp_path):
     host = WebHost(tmp_path)
     colleague = await host.colleague()
-    first = (await host.adapter.attach_connection(
-        {"config_id": colleague, "channel": "feishu", "connection_key": "app-a"},
-    ))["agent_id"]
+    service = host._service()
+    first = seed_legacy_connection(service, "local", colleague, "feishu", "app-a")
     purge = host.adapter._purge_agent
     added = []
 
     async def add_during_purge(manager, agent_id, im_runtime, *, record_removal=False):
-        # The purge has read the connections; another app is bound before the colleague's row goes.
+        # Reconstruct an old database writer, outside the serialized current binding API.
         if not added:
             added.append(None)
-            added[0] = (await host.adapter.attach_connection(
-                {"config_id": colleague, "channel": "dingtalk", "connection_key": "app-late"},
-            ))["agent_id"]
+            added[0] = await asyncio.to_thread(
+                seed_legacy_connection, service, "local", colleague, "dingtalk", "app-late",
+            )
         await purge(manager, agent_id, im_runtime, record_removal=record_removal)
 
     host.adapter._purge_agent = add_during_purge
@@ -558,7 +595,7 @@ async def test_a_connection_added_while_its_colleague_is_purged_is_purged_too(tm
 def test_a_colleague_keeps_its_row_and_files_while_it_has_connections(tmp_path):
     service = make_service(tmp_path)
     colleague = service.create_colleague(NS, settings()).agent_id
-    agent = service.attach_connection(NS, colleague, "dingtalk", "app-b")
+    agent = seed_legacy_connection(service, NS, colleague, "dingtalk", "app-b")
 
     with pytest.raises(PersistentAgentError) as refused:
         service.delete_colleague(NS, colleague)
@@ -574,7 +611,7 @@ def test_a_colleague_keeps_its_row_and_files_while_it_has_connections(tmp_path):
 def test_deletion_tells_a_hidden_or_purged_colleague_from_an_unknown_id(tmp_path):
     service = make_service(tmp_path)
     hidden = service.create_colleague(NS, settings()).agent_id
-    agent = service.attach_connection(NS, hidden, "dingtalk", "app-b")
+    agent = seed_legacy_connection(service, NS, hidden, "dingtalk", "app-b")
     purged = service.create_colleague(NS, settings(name="出纳助手")).agent_id
     service.hide_colleague(NS, hidden)
     service.hide_colleague(NS, hidden)
@@ -586,7 +623,7 @@ def test_deletion_tells_a_hidden_or_purged_colleague_from_an_unknown_id(tmp_path
         service.removal_connections(NS, "mate_unknown")
     assert unknown.value.code == "NOT_FOUND"
     with pytest.raises(PersistentAgentError) as connected:
-        service.attach_connection(NS, hidden, "feishu", "app-new")
+        seed_legacy_connection(service, NS, hidden, "feishu", "app-new")
     assert connected.value.code == "NOT_FOUND"
 
 
@@ -662,9 +699,11 @@ class _ColleagueGateway:
                 agent_id = app.get("persistent_agent_id")
                 if agent_id:
                     connection = service.connection_of("local", agent_id)
-                    assert connection is not None
-                    assert connection.channel == platform
-                    assert connection.connection_key == app.get("app_id", app.get("client_id"))
+                    if connection is None:
+                        assert service.get_config("local", agent_id).agent_id == agent_id
+                    else:
+                        assert connection.channel == platform
+                        assert connection.connection_key == app.get("app_id", app.get("client_id"))
                     assert service.get_colleague("local", agent_id).enabled
 
     def assert_removed(self, config_id, mode):
@@ -680,7 +719,7 @@ class _ColleagueGateway:
             assert not service.get_colleague("local", config_id).enabled
             for agent_id in agent_ids:
                 assert not service.get_colleague("local", agent_id).enabled
-                assert service.connection_of("local", agent_id).config_id == config_id
+                assert service.get_colleague("local", agent_id).config_id == config_id
                 assert service.workspaces.path("local", agent_id).exists()
 
 

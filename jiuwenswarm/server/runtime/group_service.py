@@ -348,6 +348,11 @@ def _public(state: dict) -> dict:
     result = {}
     for key in keys:
         result[key] = copy.deepcopy(state[key])
+    for member in result["members"]:
+        definition = state.get("compiled", {}).get(member["member_name"], {})
+        external = definition.get("member", {}).get("external_cli") or {}
+        if external.get("cli_agent") in {"claude", "codex"}:
+            member["cli_agent"] = external["cli_agent"]
     return result
 
 
@@ -440,13 +445,18 @@ class GroupService:
             channel_id=state["channel_id"],
             request_metadata={"mode": state["mode"], "group_members": members},
         )
-        from jiuwenswarm.agents.swarm.group_chat import RUN_TEAM
+        from jiuwenswarm.agents.swarm.group_chat import RUN_TEAM, enabled_group_cli_kinds
         from jiuwenswarm.agents.swarm.group_execution import START_TASK
 
+        enabled_cli = enabled_group_cli_kinds()
         compiled = {}
         for member in spec.predefined_members:
             if member.member_name not in {item["member_name"] for item in members}:
                 continue
+            external = getattr(member, "external_cli", None)
+            if external is not None and member.member_name not in state.get("compiled", {}):
+                if external.cli_agent not in enabled_cli:
+                    raise GroupError("EXTERNAL_CLI_DISABLED", external.cli_agent)
             agent = spec.agents[member.member_name]
             template = copy.deepcopy(agent.agent_template_spec)
             if template is not None:
@@ -652,14 +662,29 @@ class GroupService:
                             requested = ExternalCliMemberSpec.model_validate(
                                 compiled[member["member_name"]]["member"]
                             ).external_cli
+                            from jiuwenswarm.agents.swarm.group_chat import (
+                                cli_launch_config,
+                            )
+
                             current = backend.external_cli_config(requested.cli_agent)
-                            if current is None or current.model_dump(
-                                mode="json"
-                            ) != requested.model_dump(mode="json"):
+                            if current is None:
+                                raise GroupError(
+                                    "GROUP_RESTART_REQUIRED",
+                                    f"CLI kind '{requested.cli_agent}' is not declared in the running group; "
+                                    "the new CLI configuration requires a cold runtime recovery",
+                                )
+                            # A running kind config launches every later member of that kind.
+                            if cli_launch_config(current) != cli_launch_config(requested):
                                 raise GroupError(
                                     "GROUP_RESTART_REQUIRED",
                                     "the new CLI configuration requires a cold runtime recovery; "
                                     "it cannot replace a running CLI configuration",
+                                )
+                            if requested.skills:
+                                logger.warning(
+                                    "Live CLI member %s joins group %s without its template skills",
+                                    member["member_name"],
+                                    group_id,
                                 )
                     # Adding a member must not silently upgrade existing experts.
                     compiled = {**compiled, **state["compiled"]}
@@ -843,9 +868,13 @@ class GroupService:
                 state["status"] = "deleting"
                 _save(state)
             try:
+                from jiuwenswarm.agents.swarm.group_chat import cancel_waiting_runs
                 from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 
-                for execution in GroupExecutions(group_id).read().values():
+                executions = GroupExecutions(group_id).read()
+                # A queued run would otherwise start once the running one stops below.
+                await cancel_waiting_runs(list(executions))
+                for execution in executions.values():
                     child_session = execution.get("team_session_id")
                     if child_session:
                         await self.manager_factory(channel_id).stop_session_runtime(

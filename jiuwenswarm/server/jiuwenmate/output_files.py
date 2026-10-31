@@ -1,4 +1,4 @@
-"""Validate and resolve PA-08 file candidates in a colleague's shared ``output/`` directory."""
+"""Validate and resolve PA-08 file candidates in their originating Session output directory."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import hashlib
 import os
 import re
 import stat
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
@@ -18,36 +20,53 @@ FILE_SHARE_MODES = frozenset({"upload", "attachment"})
 _DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _CHUNK = 1 << 20
+_TEXT_SUFFIXES = frozenset({
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml",
+    ".xml", ".html", ".htm", ".log", ".py", ".js", ".ts", ".tsx", ".jsx", ".toml",
+    ".ini", ".cfg", ".sql", ".sh", ".ps1", ".rst", ".tex",
+})
+_TEXT_SEARCH_MAX_BYTES = 2 << 20
 
 
 def shared_output_file_name(file_path: object, file_ref: object, file_size: object) -> str:
-    """Validate the JM-09 shared-output contract and return its basename."""
+    """Validate the Session-scoped output contract and return its basename."""
     parts = file_path.split("/") if isinstance(file_path, str) else []
     if (
-        len(parts) != 2
-        or parts[0] != "output"
-        or parts[1] in ("", ".", "..")
-        or any(char in parts[1] for char in ("\\", ":", "\x00"))
+        len(parts) != 4
+        or parts[0] != "sessions"
+        or not _IDENTIFIER.fullmatch(parts[1])
+        or parts[2] != "output"
+        or parts[3] in ("", ".", "..")
+        or any(char in parts[3] for char in ("\\", ":", "\x00"))
     ):
-        raise PersistentAgentError("shared files must be under output/<file name>", code="OUTPUT_FILE_INVALID")
+        raise PersistentAgentError(
+            "shared files must be under sessions/<session_id>/output/<file name>", code="OUTPUT_FILE_INVALID"
+        )
     match = _DIGEST.fullmatch(file_ref) if isinstance(file_ref, str) else None
     if match is None:
         raise PersistentAgentError("invalid shared file reference", code="OUTPUT_FILE_INVALID")
     if isinstance(file_size, bool) or not isinstance(file_size, int) or file_size < 0:
         raise PersistentAgentError("invalid shared file size", code="OUTPUT_FILE_INVALID")
-    return parts[1]
+    return parts[3]
+
+
+def _output_session_id(file_path: object) -> str | None:
+    parts = file_path.split("/") if isinstance(file_path, str) else []
+    if len(parts) != 4 or parts[0] != "sessions" or parts[2] != "output":
+        return None
+    return parts[1] if _IDENTIFIER.fullmatch(parts[1]) else None
 
 
 def workspace_output_key(
     namespace_id: str, agent_id: str, file_path: object, file_ref: object, file_size: object
 ) -> str:
-    """Build a logical workspace locator; it contains no absolute filesystem path."""
+    """Build a logical Session-scoped workspace locator, without an absolute filesystem path."""
     if not isinstance(namespace_id, str) or not _IDENTIFIER.fullmatch(namespace_id):
         raise PersistentAgentError("invalid namespace_id for an output file", code="OUTPUT_FILE_INVALID")
     if not isinstance(agent_id, str) or not _IDENTIFIER.fullmatch(agent_id):
         raise PersistentAgentError("invalid agent_id for an output file", code="OUTPUT_FILE_INVALID")
-    name = shared_output_file_name(file_path, file_ref, file_size)
-    return f"{namespace_id}/{agent_id}/output/{name}"
+    shared_output_file_name(file_path, file_ref, file_size)
+    return f"{namespace_id}/{agent_id}/{file_path}"
 
 
 def _open_regular(path: Path) -> int:
@@ -99,6 +118,10 @@ class WorkspaceOutputFiles:
             or not isinstance(output.file_size, int)
         ):
             raise PersistentAgentError("shared file candidate is incomplete", code="OUTPUT_FILE_INVALID")
+        if _output_session_id(output.file_path) != execution.session_id:
+            raise PersistentAgentError(
+                "shared file must belong to the current Session", code="OUTPUT_FILE_FORBIDDEN"
+            )
         shared_output_file_name(output.file_path, output.file_ref, output.file_size)
         access = HostWorkspaceAccess(self._workspaces, execution.namespace_id, execution.agent_id)
         try:
@@ -109,11 +132,12 @@ class WorkspaceOutputFiles:
                 "shared file is outside the colleague's read scope", code="OUTPUT_FILE_FORBIDDEN"
             ) from exc
 
-        workspace_file = self._workspaces.resolve_shared_output(
-            execution.namespace_id, execution.agent_id, output.file_path
-        )
+        workspace_file = self._workspaces.resolve_shared_output(execution.namespace_id, execution.agent_id,
+                                                                output.file_path)
         if workspace_file is None or source.resolve(strict=True) != workspace_file.resolve(strict=True):
-            raise PersistentAgentError("shared file is not available under output/", code="OUTPUT_FILE_FORBIDDEN")
+            raise PersistentAgentError(
+                "shared file is not available under this Session's output/", code="OUTPUT_FILE_FORBIDDEN"
+            )
         _verify_file(workspace_file, output.file_ref, output.file_size)
 
     def resolve(
@@ -123,11 +147,16 @@ class WorkspaceOutputFiles:
         file_path: object,
         file_ref: object,
         file_size: object,
+        *,
+        expected_session_id: str | None = None,
     ) -> Path | None:
-        """Resolve a still-matching Agent output for Web or Gateway; fail closed otherwise."""
+        """Resolve a still-matching Session output for Web or Gateway; fail closed otherwise."""
         try:
-            name = shared_output_file_name(file_path, file_ref, file_size)
-            workspace_file = self._workspaces.resolve_shared_output(namespace_id, agent_id, f"output/{name}")
+            session_id = _output_session_id(file_path)
+            if session_id is None or (expected_session_id is not None and session_id != expected_session_id):
+                return None
+            shared_output_file_name(file_path, file_ref, file_size)
+            workspace_file = self._workspaces.resolve_shared_output(namespace_id, agent_id, file_path)
             if workspace_file is None:
                 return None
             _verify_file(workspace_file, file_ref, file_size)
@@ -136,21 +165,25 @@ class WorkspaceOutputFiles:
             return None
 
     def resolve_key(self, key: object, file_ref: object, file_size: object) -> Path | None:
-        """Resolve a logical ``namespace/agent/output/name`` key for Gateway delivery."""
+        """Resolve a logical ``namespace/agent/sessions/id/output/name`` key for Gateway delivery."""
         parts = key.split("/") if isinstance(key, str) else []
-        if len(parts) != 4 or parts[2] != "output":
+        if len(parts) != 6 or parts[2] != "sessions" or parts[4] != "output":
             return None
         try:
             expected = workspace_output_key(
-                parts[0], parts[1], f"{parts[2]}/{parts[3]}", file_ref, file_size
+                parts[0], parts[1], f"{parts[2]}/{parts[3]}/{parts[4]}/{parts[5]}", file_ref, file_size
             )
         except PersistentAgentError:
             return None
         if expected != key:
             return None
-        return self.resolve(parts[0], parts[1], f"{parts[2]}/{parts[3]}", file_ref, file_size)
+        return self.resolve(
+            parts[0], parts[1], f"{parts[2]}/{parts[3]}/{parts[4]}/{parts[5]}", file_ref, file_size
+        )
 
-    def path(self, namespace_id: str, agent_id: str, output: OutputPayload) -> Path | None:
+    def path(
+        self, namespace_id: str, agent_id: str, output: OutputPayload, *, expected_session_id: str | None = None
+    ) -> Path | None:
         """Resolve a candidate's original file after checking its recorded size and digest."""
         return self.resolve(
             namespace_id,
@@ -158,4 +191,101 @@ class WorkspaceOutputFiles:
             output.file_path,
             output.file_ref,
             output.file_size,
+            expected_session_id=expected_session_id,
         )
+
+    def search_text(self, path: Path, file_name: str) -> str:
+        """Read a bounded text preview from a verified output file for literal search."""
+        suffix = Path(file_name).suffix.lower()
+        try:
+            if suffix == ".docx":
+                with zipfile.ZipFile(path) as archive:
+                    info = archive.getinfo("word/document.xml")
+                    if info.file_size > _TEXT_SEARCH_MAX_BYTES:
+                        return ""
+                    root = ET.fromstring(archive.read(info))
+                text = " ".join(item.text or "" for item in root.iter()
+                                if item.tag.rsplit("}", 1)[-1] == "t")
+                return text[:_TEXT_SEARCH_MAX_BYTES]
+            if suffix not in _TEXT_SUFFIXES or path.stat().st_size > _TEXT_SEARCH_MAX_BYTES:
+                return ""
+            raw = path.read_bytes()
+            try:
+                return raw.decode("utf-8-sig")[:_TEXT_SEARCH_MAX_BYTES]
+            except UnicodeDecodeError:
+                return raw.decode("utf-16", errors="replace")[:_TEXT_SEARCH_MAX_BYTES]
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, ET.ParseError):
+            return ""
+
+    def import_approved(
+        self,
+        namespace_id: str,
+        agent_id: str,
+        target_session_id: str,
+        artifact_id: str,
+        source_file_path: str,
+        file_ref: str,
+        file_size: int,
+    ) -> str:
+        """Copy an owner-approved source file into the target Session's private imports/."""
+        if not _IDENTIFIER.fullmatch(artifact_id):
+            raise PersistentAgentError("invalid approved artifact ID", code="OUTPUT_FILE_INVALID")
+        source_session_id = _output_session_id(source_file_path)
+        if source_session_id is None:
+            raise PersistentAgentError("approved artifact is outside Session output", code="OUTPUT_FILE_FORBIDDEN")
+        source = self.resolve(namespace_id, agent_id, source_file_path, file_ref, file_size,
+                              expected_session_id=source_session_id)
+        if source is None:
+            raise PersistentAgentError("approved artifact no longer matches its record", code="OUTPUT_FILE_MISMATCH")
+        original_name = shared_output_file_name(source_file_path, file_ref, file_size)
+        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", original_name).strip(" .")[:120] or "artifact"
+        destination_name = f"{artifact_id}_{safe_name}"
+        imports = self._workspaces.ensure_session_imports(namespace_id, agent_id, target_session_id)
+        destination = imports / destination_name
+        try:
+            metadata = destination.lstat()
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None:
+            if self._workspaces._is_redirected(metadata) or not stat.S_ISREG(metadata.st_mode):
+                raise PersistentAgentError("approved import path is not a regular file", code="OUTPUT_FILE_MISMATCH")
+            _verify_file(destination, file_ref, file_size)
+            return f"sessions/{target_session_id}/imports/{destination_name}"
+
+        source_fd = _open_regular(source)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        try:
+            target_fd = os.open(destination, flags, 0o600)
+        except FileExistsError:
+            os.close(source_fd)
+            return self.import_approved(
+                namespace_id, agent_id, target_session_id, artifact_id, source_file_path, file_ref, file_size
+            )
+        except BaseException:
+            os.close(source_fd)
+            raise
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            while size <= file_size:
+                chunk = os.read(source_fd, min(_CHUNK, file_size + 1 - size))
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size <= file_size:
+                    digest.update(chunk)
+                    view = memoryview(chunk)
+                    while view:
+                        view = view[os.write(target_fd, view):]
+            os.fsync(target_fd)
+            if size != file_size or "sha256:" + digest.hexdigest() != file_ref:
+                raise PersistentAgentError("approved artifact changed during import", code="OUTPUT_FILE_MISMATCH")
+        except BaseException:
+            os.close(source_fd)
+            os.close(target_fd)
+            destination.unlink(missing_ok=True)
+            raise
+        else:
+            os.close(source_fd)
+            os.close(target_fd)
+        return f"sessions/{target_session_id}/imports/{destination_name}"

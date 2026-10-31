@@ -563,6 +563,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
             data-testid="group-chat-member" data-variant={member.member_name}>
             <TeamMemberAvatar member={member.member_name} className="group-chat-member-avatar" alt="" />
             <span>{member.display_name || member.member_name}</span>
+            {member.cli_agent && <small className="group-chat-provider" data-testid="group-chat-member-provider">
+              {member.cli_agent === 'claude' ? 'Claude Code' : 'Codex'}
+            </small>}
             {member.kind === 'agent_group' && <small className="group-chat-tag is-team">{t('groupChat.team')}</small>}
           </button>)}
           {!showSelf && !visibleMembers.length && <p className="group-chat-muted" data-testid="group-chat-no-member-match">

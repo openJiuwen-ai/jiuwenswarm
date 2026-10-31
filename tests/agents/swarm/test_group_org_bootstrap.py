@@ -340,7 +340,7 @@ def test_expert_teams_with_a_single_expert_stay_off_the_organization(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_an_older_organization_finishes_before_the_direct_reply(monkeypatch):
+async def test_a_direct_reply_is_not_deferred_behind_an_older_organization(monkeypatch):
     calls = []
     group = _MemoryGroup(monkeypatch)
     bootstrap.record_organization_plan(
@@ -356,9 +356,9 @@ async def test_an_older_organization_finishes_before_the_direct_reply(monkeypatc
         plan_id="message-mixed",
     )
     assert [item["plan_id"] for item in group.state["organization_plans"]] == ["message-org"]
-    assert bootstrap._deferred_direct[(SESSION, "message-mixed", "business")]["body"] == (
-        "这条上线说明写得清不清楚"
-    )
+    # The proxy answers the mixed message itself now, beside the organization.
+    assert not [key for key in bootstrap._deferred_direct if key[1] == "message-mixed"]
+    assert bootstrap.direct_route_for_member(SESSION, "business", "message-mixed")
 
     async def _organization(**kwargs):
         calls.append(("organization", kwargs["plan"]["plan_id"]))
@@ -393,25 +393,6 @@ async def test_an_older_organization_finishes_before_the_direct_reply(monkeypatc
     assert first == "organization-result"
     assert calls == [("organization", "message-org")]
 
-    second = await tool.invoke({"run_id": "r-mixed", "task": "说明写得清不清楚"})
-    assert second.data["status"] == "queued"
-    assert calls == [("organization", "message-org")]
-
-    scheduled = []
-    monkeypatch.setattr(
-        bootstrap,
-        "_schedule_direct_member",
-        lambda session_id, job: scheduled.append(
-            (session_id, job["message_id"], job["member"], job["body"])
-        ),
-    )
-    group.state["organization_plans"][0]["status"] = "done"
-    bootstrap.release_deferred_direct(SESSION, "message-org")
-    assert scheduled == [
-        (SESSION, "message-mixed", "business", "这条上线说明写得清不清楚"),
-        (SESSION, "message-mixed", "insight", "这条上线说明写得清不清楚"),
-    ]
-
 
 @pytest.mark.asyncio
 async def test_deferred_direct_reply_reuses_the_proxy_tool():
@@ -438,7 +419,7 @@ async def test_deferred_direct_reply_reuses_the_proxy_tool():
     ]
 
 
-def test_direct_reply_waits_until_the_older_organization_posts(monkeypatch):
+def test_only_the_organization_message_holds_a_member_reply(monkeypatch):
     now = bootstrap._now_ms()
     _MemoryGroup(
         monkeypatch,
@@ -462,13 +443,18 @@ def test_direct_reply_waits_until_the_older_organization_posts(monkeypatch):
             }
         ],
     )
+    # Without a known message the proxy stays held while the organization runs.
     assert bootstrap.group_reply_block_reason(SESSION, "insight")
-    assert bootstrap.group_reply_block_reason(
-        SESSION, "insight", message_id="message-mixed"
-    )
     assert bootstrap.group_reply_block_reason(
         SESSION, "insight", message_id="round-2"
     )
+    # Any other message is answered normally, direct or single-@.
+    assert bootstrap.group_reply_block_reason(
+        SESSION, "insight", message_id="message-mixed"
+    ) is None
+    assert bootstrap.group_reply_block_reason(
+        SESSION, "insight", message_id="message-single"
+    ) is None
     assert bootstrap.group_reply_block_reason(
         SESSION,
         "team-leader",
@@ -2656,8 +2642,10 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
     async def _backend(*_args, **_kwargs):
         return SimpleNamespace(org_task_manager=_Pool())
 
-    async def _post(*_args, **_kwargs):
-        raise AssertionError("a failed organization must not post")
+    posts = []
+
+    async def _post(sender, content, **kwargs):
+        posts.append((sender, content, kwargs["client_message_id"]))
 
     monkeypatch.setattr(bootstrap, "publish_organization_card", _publish)
     monkeypatch.setattr(bootstrap, "_round_state", _round)
@@ -2680,6 +2668,8 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
     assert calls[-1]["fail_unfinished"] is True
     assert plan["status"] == "failed"
     assert plan.get("error") == "organization root task failed"
+    # The Owner tells the group the organization failed instead of going silent.
+    assert posts == [("business", "执行失败：organization root task failed", f"expert-error-{plan['plan_id']}")]
     assert released == ["running", "pool_dissolve"]
     assert "organization_id" not in group.state
     assert group.state["organization_teams"] == []

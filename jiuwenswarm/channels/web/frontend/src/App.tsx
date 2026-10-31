@@ -4385,11 +4385,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 initialSelectedSkills: ['agent-creator'],
               });
             }}
-            onCreateGroupViaChat={() => requestSessionNavigation('new', {
-              initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
-              initialSelectedSkills: ['agent-group-creator'],
-              forceMode: 'agent',
-            })}
+            onCreateGroupViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-group-creator'],
+                forceMode: 'agent',
+              });
+            }}
             navigationRequest={agentManagementNavigationRequest}
           />
         </div>

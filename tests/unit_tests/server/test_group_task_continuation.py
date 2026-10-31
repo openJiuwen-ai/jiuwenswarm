@@ -44,11 +44,14 @@ async def private_run(service, tmp_path, monkeypatch):
     proxy = gc.RunTeam(backend, context, child_spec)
     value = SimpleNamespace(proxy=proxy, backend=backend, context=context, store=store, manager=manager, pushes=pushes)
     yield value
+    workers = list(gc._execution_workers.values())
     for record in store.read().values():
         worker = manager.get_stream_task(record.get("team_session_id"))
-        if worker is not None and not worker.done():
-            worker.cancel()
-            await asyncio.gather(worker, return_exceptions=True)
+        if worker is not None:
+            workers.append(worker)
+    for worker in workers:
+        worker.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
 
 
 def private_session(run, output):
@@ -59,6 +62,10 @@ async def wait_worker(run, accepted):
     worker = run.manager.get_stream_task(private_session(run, accepted))
     await asyncio.wait_for(asyncio.shield(worker), 2)
     return run.store.get(accepted.data["execution_id"])
+
+
+def posted_errors(run):
+    return [call.args[1] for call in run.backend.append_group_message.await_args_list]
 
 
 async def submit_private(child, *, task=False):
@@ -253,7 +260,11 @@ async def test_background_failure_and_pause_failure_are_not_success(private_run,
     monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
     accepted = await run.proxy.invoke({"run_id": "one", "task": "First"})
     assert (await wait_worker(run, accepted))["status"] == "failed"
-    run.backend.append_group_message.assert_not_awaited()
+    # The proxy reports the failure in the group instead of going silent.
+    assert posted_errors(run) == ["执行失败：expert-team execution failed"]
+    assert run.backend.append_group_message.await_args.kwargs["client_message_id"] == (
+        f"execution-error-{accepted.data['execution_id']}"
+    )
 
     async def success(child, inputs, *, session):
         await submit_private(child)
@@ -264,11 +275,129 @@ async def test_background_failure_and_pause_failure_are_not_success(private_run,
     monkeypatch.setattr(gc.Runner, "pause_agent_team", AsyncMock(return_value=False))
     second = await run.proxy.invoke({"run_id": "two", "task": "Second"})
     assert (await wait_worker(run, second))["status"] == "failed"
-    run.backend.append_group_message.assert_not_awaited()
+    assert posted_errors(run)[-1] == "执行失败：private team could not be paused"
+    assert all(text.startswith("执行失败") for text in posted_errors(run))
 
 
 @pytest.mark.asyncio
-async def test_busy_member_does_not_create_another_card(private_run, monkeypatch):
+async def test_one_proxy_runs_unrelated_tasks_in_concurrent_private_sessions(private_run, monkeypatch):
+    run = private_run
+    started, release = {}, {}
+
+    async def stream(child, inputs, *, session):
+        started[inputs["query"]].set()
+        await release[inputs["query"]].wait()
+        await submit_private(child)
+        await asyncio.Event().wait()
+        yield None
+
+    for task in ("First", "Second", "Third"):
+        started[task], release[task] = asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    first = await run.proxy.invoke({"run_id": "one", "task": "First"})
+    second = await run.proxy.invoke({"run_id": "two", "task": "Second"})
+    third = await run.proxy.invoke({"run_id": "three", "task": "Third"})
+    assert first.success and second.success and third.success
+    await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), 2)
+    ids = [output.data["execution_id"] for output in (first, second, third)]
+    assert len(set(ids)) == 3
+    assert len({private_session(run, output) for output in (first, second, third)}) == 3
+    assert [record["execution_id"] for record in run.store.background_runs("advisor")] == ids
+    assert run.store.active("advisor") is None
+
+    cancelled = await run.proxy.invoke({"execution_id": ids[1], "action": "cancel"})
+    assert cancelled.success and cancelled.data["status"] == "cancelled"
+    assert run.store.get(ids[0])["status"] == "running"
+    assert run.store.get(ids[2])["status"] == "running"
+
+    release["Third"].set()
+    assert (await wait_worker(run, third))["status"] == "completed"
+    assert run.store.get(ids[0])["status"] == "running"
+    release["First"].set()
+    assert (await wait_worker(run, first))["status"] == "completed"
+    assert run.store.background_runs("advisor") == []
+
+
+@pytest.mark.asyncio
+async def test_continuation_of_a_busy_private_team_queues_on_its_session(private_run, monkeypatch):
+    run = private_run
+    release = {"Implement": asyncio.Event(), "Test": asyncio.Event()}
+    queries, sessions = [], []
+
+    async def stream(child, inputs, *, session):
+        queries.append(inputs["query"])
+        sessions.append(session)
+        task = inputs["query"].split("\n", 1)[0]
+        if task in release:
+            await release[task].wait()
+        await submit_private(child)
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    first = await run.proxy.invoke({"run_id": "one", "task": "Analyse"})
+    await wait_worker(run, first)
+    source = first.data["execution_id"]
+    follow = await run.proxy.invoke({"action": "continue", "run_id": "two", "content": "Implement", "execution_id": source})
+    await asyncio.sleep(0)
+    later = await run.proxy.invoke({"action": "continue", "run_id": "three", "content": "Test", "execution_id": source})
+    assert follow.success and not follow.data["queued"]
+    assert later.success and later.data["queued"]
+    assert run.store.get(later.data["execution_id"])["phase"] == "waiting_for_team"
+    retry = await run.proxy.invoke({"action": "continue", "run_id": "three", "content": "Test", "execution_id": source})
+    assert retry.success and retry.data["queued"]
+
+    # An adjustment to a queued run is delivered with its task once the session is free.
+    adjusted = await run.proxy.invoke({
+        "action": "update", "execution_id": later.data["execution_id"], "content": "Cover edge cases",
+    })
+    assert adjusted.success and adjusted.data["queued"] and not adjusted.data["instruction_delivered"]
+    assert queries == ["Analyse", "Implement"]
+
+    release["Implement"].set()
+    assert (await wait_worker(run, follow))["status"] == "completed"
+    for _ in range(100):
+        if len(queries) == 3:
+            break
+        await asyncio.sleep(0.01)
+    assert queries[2] == "Test\n\nAdditional instructions:\n- Cover edge cases"
+    assert len(set(sessions)) == 1
+    release["Test"].set()
+    done = await wait_worker(run, later)
+    assert done["status"] == "completed"
+    assert all(item["delivered"] for item in done["adjustments"])
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_queued_run_leaves_the_running_one(private_run, monkeypatch):
+    run = private_run
+    release = asyncio.Event()
+    queries = []
+
+    async def stream(child, inputs, *, session):
+        queries.append(inputs["query"])
+        if inputs["query"] != "Analyse":
+            await release.wait()
+        await submit_private(child)
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    first = await run.proxy.invoke({"run_id": "one", "task": "Analyse"})
+    await wait_worker(run, first)
+    source = first.data["execution_id"]
+    running = await run.proxy.invoke({"action": "continue", "run_id": "two", "content": "Implement", "execution_id": source})
+    queued = await run.proxy.invoke({"action": "continue", "run_id": "three", "content": "Test", "execution_id": source})
+    cancelled = await run.proxy.invoke({"action": "cancel", "execution_id": queued.data["execution_id"]})
+    assert cancelled.success and cancelled.data["status"] == "cancelled"
+    assert run.store.get(running.data["execution_id"])["status"] == "running"
+    release.set()
+    assert (await wait_worker(run, running))["status"] == "completed"
+    assert queries == ["Analyse", "Implement"]
+
+
+@pytest.mark.asyncio
+async def test_proxy_holds_at_most_five_unfinished_private_runs(private_run, monkeypatch):
     run = private_run
 
     async def stream(child, inputs, *, session):
@@ -276,14 +405,81 @@ async def test_busy_member_does_not_create_another_card(private_run, monkeypatch
         yield None
 
     monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
-    accepted = await run.proxy.invoke({"run_id": "one", "task": "First"})
-    result = await run.proxy.invoke({"run_id": "two", "task": "Different"})
-    assert not result.success
-    assert len(run.store.read()) == 1
-    cancelled = await run.proxy.invoke({
-        "execution_id": accepted.data["execution_id"], "action": "cancel",
-    })
-    assert cancelled.success and cancelled.data["status"] == "cancelled"
+    accepted = [await run.proxy.invoke({"run_id": f"run-{index}", "task": f"Task {index}"}) for index in range(5)]
+    assert all(output.success for output in accepted)
+    sixth = await run.proxy.invoke({"run_id": "run-5", "task": "Task 5"})
+    assert not sixth.success and "limit" in sixth.error
+    assert len(run.store.read()) == 5
+    # A retry of an accepted run is not a new task.
+    assert (await run.proxy.invoke({"run_id": "run-0", "task": "Task 0"})).success
+    await run.proxy.invoke({"action": "cancel", "execution_id": accepted[0].data["execution_id"]})
+    assert (await run.proxy.invoke({"run_id": "run-5", "task": "Task 5"})).success
+
+
+@pytest.mark.asyncio
+async def test_outer_delivery_failure_does_not_fail_a_queued_private_run(private_run, monkeypatch):
+    run = private_run
+    release = asyncio.Event()
+
+    async def stream(child, inputs, *, session):
+        if inputs["query"] != "Analyse":
+            await release.wait()
+        await submit_private(child)
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    first = await run.proxy.invoke({"run_id": "one", "task": "Analyse"})
+    await wait_worker(run, first)
+    source = first.data["execution_id"]
+    await run.proxy.invoke({"action": "continue", "run_id": "two", "content": "Implement", "execution_id": source})
+    queued = await run.proxy.invoke({"action": "continue", "run_id": "three", "content": "Test", "execution_id": source})
+    await run.store.fail_pending(list(run.store.read()), "delivery_failed", include_accepted=True)
+    assert run.store.get(queued.data["execution_id"])["status"] == "queued"
+    await gc.cancel_waiting_runs([queued.data["execution_id"]])
+    assert queued.data["execution_id"] not in gc._execution_workers
+
+
+@pytest.mark.asyncio
+async def test_proxy_prompt_lists_every_running_private_run(private_run, monkeypatch):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    first = await run.proxy.invoke({"run_id": "one", "task": "First"})
+    second = await run.proxy.invoke({"run_id": "two", "task": "Second"})
+    sections = {}
+    builder = SimpleNamespace(
+        remove_section=lambda name: sections.pop(name, None),
+        add_section=lambda section: sections.__setitem__(section.name, section),
+    )
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder, ability_manager=None))
+    await GroupTaskPolicyRail(run.context).before_invoke(ctx)
+    content = sections["group_task_policy"].content["en"]
+    assert "run concurrently" in content
+    assert first.data["execution_id"] in content and second.data["execution_id"] in content
+    assert "Assigned execution" not in content
+
+
+@pytest.mark.asyncio
+async def test_run_binds_the_assigned_task_and_runs_other_tasks_beside_it(private_run, monkeypatch):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    assigned = (await run.store.create(["advisor"], "Assigned work", "client-message", defer_card=True))[0]
+    other = await run.proxy.invoke({"run_id": "side", "task": "Unrelated work"})
+    assert other.success and other.data["execution_id"] != assigned["execution_id"]
+    bound = await run.proxy.invoke({"run_id": "main", "task": "Assigned work"})
+    assert bound.success and bound.data["execution_id"] == assigned["execution_id"]
+    assert run.store.get(assigned["execution_id"])["background"]
+    assert len(run.store.read()) == 2
 
 
 @pytest.mark.asyncio
@@ -563,3 +759,187 @@ async def test_private_leader_question_waits_for_answer_without_ending_execution
     assert result["status"] == "completed" and result["presentation"] == "card"
     assert GroupQuestions(run.context.session_id).pending() == []
     run.backend.append_group_message.assert_awaited_once()
+
+
+def _join_live_organization(run, monkeypatch, *, direct_message=None):
+    """Put the proxy in a running organization it has already joined."""
+    from jiuwenswarm.agents.swarm import group_org_bootstrap as bootstrap
+
+    monkeypatch.setattr(bootstrap, "_accepted_plans", set())
+    monkeypatch.setattr(bootstrap, "_member_turns", {})
+
+    gid = run.context.session_id
+    gs.add_group_organization_plan(gid, {
+        "plan_id": "msg-org", "members": ["lead", "advisor"], "owner_member": "lead",
+        "organization_id": "org-1", "body": "Joint launch review", "status": "running",
+        "created_at": bootstrap._now_ms(),
+    })
+    bootstrap.claim_organization_plan(gid, "msg-org", "advisor")
+    if direct_message is not None:
+        gs.add_group_direct_route(gid, {"plan_id": direct_message, "members": ["advisor"]})
+    return bootstrap
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direct", [False, True])
+async def test_unrelated_task_during_organization_opens_a_private_run(private_run, monkeypatch, direct):
+    run = private_run
+    bootstrap = _join_live_organization(run, monkeypatch, direct_message="msg-mixed" if direct else None)
+    joined = AsyncMock(side_effect=AssertionError("must not join the organization again"))
+    monkeypatch.setattr(bootstrap, "run_organization_member", joined)
+    bootstrap.bind_member_turn(run.context.session_id, "advisor", "msg-mixed" if direct else "msg-single")
+
+    async def stream(child, inputs, *, session):
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    output = await run.proxy.invoke({"run_id": "side", "task": "Unrelated research"})
+    assert output.success and output.data["accepted"]
+    record = run.store.get(output.data["execution_id"])
+    assert record["background"] and record["task"] == "Unrelated research"
+    # The proxy may answer this message in the group while the organization runs.
+    assert bootstrap.group_reply_block_reason(
+        run.context.session_id, "advisor", message_id="msg-mixed" if direct else "msg-single",
+    ) is None
+    assert bootstrap.group_reply_block_reason(run.context.session_id, "advisor", message_id="msg-org")
+
+
+@pytest.mark.asyncio
+async def test_related_request_reaches_the_proxys_own_organization_instance(private_run, monkeypatch):
+    run = private_run
+    bootstrap = _join_live_organization(run, monkeypatch)
+    gid = run.context.session_id
+    card_id = bootstrap.organization_execution_id(gid, "msg-org")
+    records = run.store.read()
+    records[card_id] = {
+        "execution_id": card_id, "execution_kind": "organization", "member_name": None,
+        "owner_member": "lead", "presentation": "card", "task": None, "title": "Joint launch review",
+        "status": "running", "phase": "executing", "revision": 1, "created_at": 1.0, "updated_at": 1.0,
+    }
+    run.store.save(records)
+    delivered = AsyncMock(return_value=SimpleNamespace(ok=True, reason=None))
+    monkeypatch.setattr(gc.Runner, "interact_agent_team", delivered)
+
+    sections = {}
+    builder = SimpleNamespace(
+        remove_section=lambda name: sections.pop(name, None),
+        add_section=lambda section: sections.__setitem__(section.name, section),
+    )
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder, ability_manager=None))
+    await GroupTaskPolicyRail(run.context).before_invoke(ctx)
+    assert card_id in sections["group_task_policy"].content["en"]
+
+    updated = await run.proxy.invoke({"action": "update", "execution_id": card_id, "content": "Add a rollback plan"})
+    assert updated.success and updated.data["instruction_delivered"]
+    assert delivered.await_args.kwargs == {
+        "team_name": bootstrap.instance_team_id(gid, "advisor"), "session_id": gid,
+    }
+    assert delivered.await_args.args[0].body == "Add a rollback plan"
+    cancelled = await run.proxy.invoke({"action": "cancel", "execution_id": card_id})
+    assert not cancelled.success
+    # A proxy outside that organization cannot steer it.
+    bootstrap.release_organization_plan_claim(gid, "msg-org", "advisor")
+    rejected = await run.proxy.invoke({"action": "update", "execution_id": card_id, "content": "Hijack"})
+    assert not rejected.success and delivered.await_count == 1
+
+
+def _leader(chunk_type, **payload):
+    return SimpleNamespace(type=chunk_type, role=gc.TeamRole.LEADER, payload=payload)
+
+
+IDLE = SimpleNamespace(type="message", role=gc.TeamRole.LEADER, payload={"event_type": "team.idle"})
+
+
+@pytest.mark.asyncio
+async def test_plain_text_leader_reply_completes_the_task(private_run, monkeypatch):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        yield _leader("llm_output", content="Let me check. ")
+        yield _leader("tool_call", name="read_file")
+        yield _leader("tool_result", result="done")
+        yield _leader("llm_output", content="Already ")
+        yield _leader("llm_output", content="delivered.")
+        yield IDLE
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    accepted = await run.proxy.invoke({"run_id": "one", "task": "Anything left?"})
+    record = await wait_worker(run, accepted)
+    assert record["status"] == "completed"
+    assert record["result"] == "Already delivered."
+    # A direct answer stays an ordinary group message, with no task card.
+    assert record["presentation"] == "message"
+    assert run.backend.append_group_message.await_args.args[1] == "Already delivered."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunks", [
+    [_leader("llm_output", content="Working on it."), _leader("tool_call", name="read_file")],
+    [_leader("llm_output", content="\n\n[Retry 1/3] rate limited\n\n", retrying=True)],
+    [SimpleNamespace(type="llm_output", role=gc.TeamRole.TEAMMATE, payload={"content": "Teammate note"})],
+    [],
+])
+async def test_idle_without_any_leader_reply_still_fails(private_run, monkeypatch, chunks):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        for chunk in chunks:
+            yield chunk
+        yield IDLE
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    accepted = await run.proxy.invoke({"run_id": "one", "task": "Research"})
+    assert (await wait_worker(run, accepted))["status"] == "failed"
+    assert posted_errors(run) == ["执行失败：expert team became idle without submitting a result"]
+
+
+
+@pytest.mark.asyncio
+async def test_update_racing_the_queued_runs_start_is_not_lost(private_run, monkeypatch):
+    run = private_run
+    release = asyncio.Event()
+    queries = []
+
+    async def stream(child, inputs, *, session):
+        queries.append(inputs["query"])
+        if inputs["query"] == "Implement":
+            await release.wait()
+        await submit_private(child)
+        await asyncio.Event().wait()
+        yield None
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    first = await run.proxy.invoke({"run_id": "one", "task": "Analyse"})
+    await wait_worker(run, first)
+    source = first.data["execution_id"]
+    running = await run.proxy.invoke({"action": "continue", "run_id": "two", "content": "Implement", "execution_id": source})
+    queued = await run.proxy.invoke({"action": "continue", "run_id": "three", "content": "Test", "execution_id": source})
+
+    # Hold the queued update between its "still waiting" check and its write.
+    writing, gate = asyncio.Event(), asyncio.Event()
+    original = GroupExecutions.update
+
+    async def slow_update(self, execution_id, **changes):
+        if any(not item["delivered"] for item in changes.get("adjustments", [])):
+            writing.set()
+            await gate.wait()
+        return await original(self, execution_id, **changes)
+
+    monkeypatch.setattr(GroupExecutions, "update", slow_update)
+    update = asyncio.create_task(run.proxy.invoke({
+        "action": "update", "execution_id": queued.data["execution_id"], "content": "Cover edge cases",
+    }))
+    await asyncio.wait_for(writing.wait(), 2)
+    release.set()
+    assert (await wait_worker(run, running))["status"] == "completed"
+    await asyncio.sleep(0.05)
+    gate.set()
+    assert (await update).data["queued"]
+    for _ in range(100):
+        if len(queries) == 3:
+            break
+        await asyncio.sleep(0.01)
+    assert queries[2] == "Test\n\nAdditional instructions:\n- Cover edge cases"

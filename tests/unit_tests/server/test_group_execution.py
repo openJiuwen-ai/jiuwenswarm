@@ -842,3 +842,61 @@ async def test_public_members_cannot_send_private_messages(service, kind):
     ctx.extra.clear()
     await rail.before_tool_call(ctx)
     assert not ctx.extra
+
+
+def _posting_backend(row=None):
+    return SimpleNamespace(
+        db=SimpleNamespace(message=SimpleNamespace(get_message=AsyncMock(return_value=row))),
+        append_group_message=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "text"), [
+    ("failed", "执行失败：处理消息时出错，详情见服务日志"),
+    ("timed_out", "执行失败：处理超时"),
+    ("cancelled", None),
+])
+async def test_failed_member_turn_is_reported_in_the_group_by_that_member(service, monkeypatch, status, text):
+    group = await make_group(service)
+    backend = _posting_backend()
+    monkeypatch.setattr(gs, "resolve_group_backend", AsyncMock(return_value=backend))
+    for member in ("advisor", "team_leader"):
+        await ge.project_group_stream_event(group["group_id"], {
+            "event_type": "team.member", "event": {
+                "type": "team.member.execution_changed", "member_id": member, "new_status": status,
+            },
+        })
+    # Only a public member reports; a cancellation is not a failure.
+    posts = [(call.args[0], call.args[1]) for call in backend.append_group_message.await_args_list]
+    assert posts == ([("advisor", text)] if text else [])
+
+
+@pytest.mark.asyncio
+async def test_cli_member_failure_sent_to_the_leader_is_reported_in_the_group(service, monkeypatch):
+    import json
+
+    group = await make_group(service)
+    failure = {
+        "type": "external_runtime_failed", "failure_id": "f-1", "member_name": "advisor",
+        "summary": "codex turn failed", "reason": {"message": "model 'gpt-6.1-sol' is not supported"},
+    }
+    row = SimpleNamespace(protocol="json", content=json.dumps(failure), meta={})
+    backend = _posting_backend(row)
+    monkeypatch.setattr(gs, "resolve_group_backend", AsyncMock(return_value=backend))
+    event = {"event_type": "team.message", "event": {"message_id": "leader-dm"}}
+    assert await ge.project_group_stream_event(group["group_id"], event) is None
+    call = backend.append_group_message.await_args
+    assert call.args[:2] == ("advisor", "执行失败：model 'gpt-6.1-sol' is not supported")
+    assert call.kwargs["client_message_id"] == "member-error-f-1"
+    # A failure of a member outside the public roster stays with its own leader.
+    backend.append_group_message.reset_mock()
+    row.content = json.dumps({**failure, "member_name": "private-coder"})
+    assert await ge.project_group_stream_event(group["group_id"], event) is None
+    backend.append_group_message.assert_not_awaited()
+
+
+def test_member_error_text_keeps_the_cause_short():
+    assert ge.member_error_text(None) == "执行失败，请稍后重试。"
+    assert ge.member_error_text(" line one\n line two ") == "执行失败：line one line two"
+    assert len(ge.member_error_text("x" * 2000)) == len("执行失败：") + 500

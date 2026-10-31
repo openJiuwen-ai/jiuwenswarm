@@ -35,5 +35,6 @@ await esbuild.build({
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl', '.webp': 'dataurl' },
   plugins: [svgReact],
   jsx: 'automatic',
-  define: { 'import.meta.env.DEV': 'false' },
+  define: { 'import.meta.env.DEV': 'false', 'import.meta.glob': '__testAssetGlob' },
+  banner: { js: 'var __testAssetGlob = () => ({});' },
 });

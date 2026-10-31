@@ -444,7 +444,8 @@ async def prepare_dingtalk_cli_invocation(
     if service is None:
         return spec
     execution = context.execution
-    scope = DingTalkCliScope(execution.namespace_id, execution.agent_id)
+    app_id = getattr(route_snapshot, "app_id", None) if getattr(route_snapshot, "channel", None) == "dingtalk" else None
+    scope = DingTalkCliScope(execution.namespace_id, execution.agent_id, app_id=app_id)
     if not await asyncio.to_thread(service.is_available, scope):
         return spec
     context.extras[_CONTEXT_KEY] = (

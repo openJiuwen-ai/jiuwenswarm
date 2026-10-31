@@ -29,6 +29,9 @@ from tests.agents.swarm.test_agent_group import _minimal_group
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
+    from jiuwenswarm.agents.swarm import group_chat
+
+    monkeypatch.setattr(group_chat, "enabled_group_cli_kinds", lambda: {"claude", "codex"})
     from jiuwenswarm.server.runtime import extension_package_manager as packages
 
     monkeypatch.setattr(gs, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
@@ -321,10 +324,7 @@ async def test_parallel_additions_do_not_lose_roster_entries(service):
     }
 
 
-@pytest.mark.asyncio
-async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
-    service, tmp_path, monkeypatch
-):
+def _codex_expert(tmp_path, monkeypatch, config):
     from jiuwenswarm.server.runtime import extension_package_manager as packages
 
     package = _minimal_group(tmp_path)
@@ -333,18 +333,31 @@ async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
     manifest["runtime"] = {
         "provider_name": "codex",
         "provider_version": "0.1.0",
-        "config": {"skill_conflict": "replace"},
+        "config": config,
     }
     manifest_path.write_text(json.dumps(manifest))
     monkeypatch.setattr(
         packages, "resolve_agent_template_dir", lambda _: manifest_path.parent
     )
-    group = await create(service)
-    member = dict(kind="agent_template", id="cli-expert", member_name="coding")
+    return dict(kind="agent_template", id="cli-expert", member_name="coding")
+
+
+def _cli_backend(kind_config):
     backend = live_backend()
-    backend.external_cli_config = Mock(return_value=None)
-    service.backend_resolver.return_value = backend
-    with pytest.raises(gs.GroupError, match="CLI configuration"):
+    backend.external_cli_config = Mock(return_value=kind_config)
+    backend.group_chat_spec.predefined_members = []
+    backend.spawn_external_cli_agent = AsyncMock(return_value=MemberOpResult.success())
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
+    service, tmp_path, monkeypatch
+):
+    member = _codex_expert(tmp_path, monkeypatch, {"skill_conflict": "replace"})
+    group = await create(service)
+    service.backend_resolver.return_value = _cli_backend(None)
+    with pytest.raises(gs.GroupError, match="CLI kind 'codex' is not declared"):
         await service.add_member(
             group["group_id"],
             {"member": member},
@@ -364,6 +377,82 @@ async def test_cli_expert_keeps_runtime_config_and_rejects_unsafe_live_upgrade(
     raw = gs.read_group(group["group_id"])["compiled"]["coding"]["member"]
     assert raw["role_type"] == "external_cli"
     assert raw["external_cli"]["skill_conflict"] == "replace"
+
+
+@pytest.mark.asyncio
+async def test_live_cli_expert_joins_declared_kind_despite_member_only_fields(
+    service, tmp_path, monkeypatch
+):
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+
+    member = _codex_expert(tmp_path, monkeypatch, {"skill_conflict": "replace"})
+    group = await create(service)
+    backend = _cli_backend(ExternalCliAgentSpec(cli_agent="codex", skill_conflict="append"))
+    service.backend_resolver.return_value = backend
+    result = await service.add_member(
+        group["group_id"],
+        {"member": member},
+        user_id="owner",
+        channel_id="web",
+        request_id="cli",
+    )
+    assert result["status"] == "registered"
+    backend.spawn_external_cli_agent.assert_awaited_once()
+    assert backend.spawn_external_cli_agent.await_args.kwargs["cli_agent"] == "codex"
+    assert [m["member_name"] for m in gs.read_group(group["group_id"])["members"]] == ["coding"]
+
+
+@pytest.mark.asyncio
+async def test_live_cli_expert_with_different_launch_config_requires_recovery(
+    service, tmp_path, monkeypatch
+):
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+
+    member = _codex_expert(tmp_path, monkeypatch, {"codex_turn_idle_timeout_s": 30})
+    group = await create(service)
+    backend = _cli_backend(ExternalCliAgentSpec(cli_agent="codex", skill_conflict="append"))
+    service.backend_resolver.return_value = backend
+    with pytest.raises(gs.GroupError, match="cannot replace a running CLI configuration"):
+        await service.add_member(
+            group["group_id"],
+            {"member": member},
+            user_id="owner",
+            channel_id="web",
+            request_id="cli",
+        )
+    backend.spawn_external_cli_agent.assert_not_awaited()
+    assert gs.read_group(group["group_id"])["members"] == []
+
+
+def test_group_assembly_declares_installed_cli_kinds_without_overriding_host(monkeypatch):
+    from openjiuwen.agent_teams.external.cli_agent import backends
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+    from jiuwenswarm.agents.swarm.group_chat import declare_group_cli_kinds
+
+    from jiuwenswarm.agents.swarm import group_chat
+
+    enabled = {"claude", "codex"}
+    monkeypatch.setattr(group_chat, "enabled_group_cli_kinds", lambda: enabled)
+    missing = {"codex": object()}
+    monkeypatch.setattr(backends, "missing_sdk_requirement", lambda kind: missing.get(kind))
+    host = ExternalCliAgentSpec(cli_agent="claude", cwd="/host/workspace")
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec(), "teammate": DeepAgentSpec()},
+        team_name="team-cli",
+        leader=LeaderSpec(member_name="host"),
+        external_cli_agents=[host],
+    )
+    declare_group_cli_kinds(spec)
+    assert spec.external_cli_agents == [host]
+    missing.clear()
+    enabled.remove("codex")
+    declare_group_cli_kinds(spec)
+    assert spec.external_cli_agents == [host]
+    enabled.add("codex")
+    declare_group_cli_kinds(spec)
+    declare_group_cli_kinds(spec)
+    assert [config.cli_agent for config in spec.external_cli_agents] == ["claude", "codex"]
+    assert spec.external_cli_agents[1].skill_conflict == "append"
 
 
 @pytest.mark.asyncio
@@ -835,3 +924,68 @@ def test_agent_attachment_aliases_support_preview_and_file_operations():
     assert renamed[0]["name"] == "new.md"
     canonical = {**attachment, "path": "/team/other.md", "name": "other.md"}
     assert gs.group_files.apply_file_overrides([canonical], {}) == [canonical]
+
+
+@pytest.mark.parametrize("cli_agent", ["claude", "codex"])
+@pytest.mark.asyncio
+async def test_public_group_member_exposes_cli_provider_without_runtime_secrets(service, cli_agent):
+    group = await create(service)
+    state = gs.read_group(group["group_id"])
+    member = {"kind": "agent_template", "id": "external", "member_name": "cli", "display_name": "11"}
+    state["members"] = [member]
+    state["compiled"] = {"cli": {"member": {
+        "role_type": "external_cli", "external_cli": {"cli_agent": cli_agent, "env": {"TOKEN": "secret"}},
+    }}}
+    public = gs._public(state)
+    assert public["members"] == [{**member, "cli_agent": cli_agent}]
+    assert "cli_agent" not in state["members"][0]
+    assert "compiled" not in public
+
+
+@pytest.mark.parametrize("configured", [[], ["claude"], [{"cli_agent": "codex"}]])
+def test_group_cli_kinds_follow_current_config_switches(monkeypatch, configured):
+    from jiuwenswarm.common import config
+    from jiuwenswarm.agents.swarm.group_chat import enabled_group_cli_kinds
+
+    monkeypatch.setattr(config, "get_config", lambda: {
+        "modes": {"team": {"jiuwen_team": {"external_cli_agents": configured}}},
+    })
+    expected = {item if isinstance(item, str) else item["cli_agent"] for item in configured}
+    assert enabled_group_cli_kinds() == expected
+
+
+@pytest.mark.asyncio
+async def test_disabled_cli_cannot_join_even_when_live_backend_declares_it(service, tmp_path, monkeypatch):
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+    from jiuwenswarm.agents.swarm import group_chat
+
+    member = _codex_expert(tmp_path, monkeypatch, {})
+    group = await create(service)
+    backend = _cli_backend(ExternalCliAgentSpec(cli_agent="codex", skill_conflict="append"))
+    service.backend_resolver.return_value = backend
+    monkeypatch.setattr(group_chat, "enabled_group_cli_kinds", lambda: set())
+    with pytest.raises(gs.GroupError) as error:
+        await service.add_member(
+            group["group_id"], {"member": member}, user_id="owner", channel_id="web", request_id="disabled",
+        )
+    assert error.value.code == "EXTERNAL_CLI_DISABLED"
+    assert str(error.value) == "codex"
+    assert gs.read_group(group["group_id"])["members"] == []
+    backend.spawn_external_cli_agent.assert_not_awaited()
+    with pytest.raises(gs.GroupError) as create_error:
+        await create(service, token="disabled-create", members=[member])
+    assert create_error.value.code == "EXTERNAL_CLI_DISABLED"
+
+
+def test_empty_group_does_not_declare_disabled_installed_clis(monkeypatch):
+    from openjiuwen.agent_teams.external.cli_agent import backends
+    from jiuwenswarm.common import config
+
+    monkeypatch.setattr(config, "get_config", lambda: {})
+    monkeypatch.setattr(backends, "missing_sdk_requirement", lambda _: None)
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec(), "teammate": DeepAgentSpec()},
+        team_name="empty-group", leader=LeaderSpec(member_name="host"),
+    )
+    assemble_group_members(spec, [])
+    assert spec.external_cli_agents == []
