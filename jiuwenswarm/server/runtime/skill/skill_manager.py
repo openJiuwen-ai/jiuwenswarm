@@ -2521,7 +2521,7 @@ class SkillManager:
         if backup.exists():
             _safe_rmtree(backup)
         logger.info(
-            "[SkillManager] source_install commit name=%s total_ms=%.1f lock_wait_ms=%.1f",
+            "[SkillManager] source_install commit name=%s txn_ms=%.1f lock_wait_ms=%.1f",
             skill_name,
             (time.perf_counter() - _commit_t0) * 1000.0,
             _lock_wait_ms,
@@ -3962,7 +3962,7 @@ class SkillManager:
                 "error_message": str(exc)[:500],
             }
         logger.info(
-            "[SkillManager] enterprise_install commit name=%s total_ms=%.1f lock_wait_ms=%.1f",
+            "[SkillManager] enterprise_install commit name=%s txn_ms=%.1f lock_wait_ms=%.1f",
             installed_name,
             (time.perf_counter() - _commit_t0) * 1000.0,
             _lock_wait_ms,
