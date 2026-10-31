@@ -243,6 +243,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_runtime_prompt_rail",
         "_response_prompt_rail",
         "_stream_event_rail",
+        # 上传图片进主模型：MultimodalImageRail 把引用行物化为像素并写入历史；
+        # 漏掉它 flash 只能靠 read_file 现读上传图。
+        "_multimodal_image_rail",
         
          # deepresearch_execute 依赖此 rail 绑定执行上下文并桥接原生 HITL。
         "_deepresearch_execution_rail",

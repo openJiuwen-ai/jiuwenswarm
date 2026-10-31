@@ -27,6 +27,11 @@ from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
+    VISION_TOOL_NAMES,
+    build_native_image_tool_error,
+    is_vision_tool,
+)
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
     InvokeToolInput,
     InvokeToolTool,
@@ -176,6 +181,7 @@ class ProgressiveToolRail(DeepAgentRail):
 
         self._deep_agent: Any = None
         self._runtime_agent: Any = None
+        self._config_agent: Any = None
         self._meta_tools: list[Any] | None = None
         self._meta_active = False
         self._owned_tool_ids: set[str] = set()
@@ -518,12 +524,17 @@ class ProgressiveToolRail(DeepAgentRail):
             self.update_agent_card_id(resolved_card_id)
         self._deep_agent = agent
         self._runtime_agent = agent
+        # init() 注入的是持有 ``deep_config`` 的 DeepAgent；``_deep_agent`` 会在
+        # _resolve_runtime_agent 里被 ctx.agent（可能是包装对象）覆盖，这里单独
+        # 留一份稳定引用给模型能力判定使用。
+        self._config_agent = agent
         self.invalidate_deferred_tool_cache()
 
     def uninit(self, agent: Any) -> None:
         self._set_meta_tools_active(False)
         self._deep_agent = None
         self._runtime_agent = None
+        self._config_agent = None
         self._meta_tools = None
 
     def invalidate_deferred_tool_cache(self) -> None:
@@ -560,6 +571,47 @@ class ProgressiveToolRail(DeepAgentRail):
             self._deep_agent = agent
             self.invalidate_deferred_tool_cache()
         return agent
+
+    def _native_image_input_enabled(self, agent: Any = None) -> bool:
+        """当前模型是否原生接收图片像素。
+
+        ``deep_config.enable_read_image_multimodal`` 由当前模型能力解析得出，
+        是单一真源。该值开启时视觉理解工具（VQA/image_reading）只是降级替代，
+        必须从模型可见工具中移除并在调用点拦截。
+
+        注意：``ctx.agent`` 可能是包装对象，不持有 ``deep_config``；而
+        ``init()`` 注入的 agent 与 MultimodalImageRail 用的是同一个 DeepAgent，
+        那里才有每次请求刷新的 ``deep_config``。``_deep_agent`` 会被
+        ``_resolve_runtime_agent`` 改写成运行期 agent，因此优先用
+        ``_config_agent`` 这个稳定引用。
+        """
+        candidates: list[Any] = [
+            getattr(self, "_config_agent", None),
+            self._deep_agent,
+            self._runtime_agent,
+        ]
+        if agent is not None:
+            candidates.append(agent)
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            owners = (
+                candidate,
+                getattr(candidate, "react_agent", None),
+                getattr(candidate, "_react_agent", None),
+            )
+            for owner in owners:
+                if owner is None:
+                    continue
+                deep_config = getattr(owner, "deep_config", None) or getattr(
+                    owner, "_deep_config", None
+                )
+                if deep_config is None:
+                    continue
+                value = getattr(deep_config, "enable_read_image_multimodal", None)
+                if isinstance(value, bool):
+                    return value
+        return False
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         """Enforce skill gates, then bind trusted direct-tool context."""
@@ -639,6 +691,15 @@ class ProgressiveToolRail(DeepAgentRail):
                 ),
             ]
         return self._meta_tools
+
+    def _meta_tool_names(self) -> set[str]:
+        """tools_search / invoke_tool 的名称集合。"""
+        names: set[str] = set()
+        for tool in self._meta_tool_instances():
+            name = str(getattr(getattr(tool, "card", None), "name", "") or "")
+            if name:
+                names.add(name)
+        return names
 
     def _register_meta_tool_in_resource_mgr(self, tool: Any) -> None:
         """Register or replace session-scoped meta tool in resource_mgr."""
@@ -776,6 +837,11 @@ class ProgressiveToolRail(DeepAgentRail):
 
         original_count = len(tools)
         active_skill = self._current_active_skill()
+        native_image = self._native_image_input_enabled(agent)
+        # 绕过 lazy load 时 meta 工具已从 resource_mgr 卸载，但 inputs.tools 里
+        # 仍带着它们；模型调用会得到 "Ability not found: invoke_tool"。直接从
+        # schema 摘掉，避免一次必然失败的往返。
+        unavailable_meta = set() if lazy_load_active else self._meta_tool_names()
         active_gated_names: list[str] = []
         filtered_tools = []
         for tool in tools:
@@ -785,6 +851,12 @@ class ProgressiveToolRail(DeepAgentRail):
                 continue
             declared, required_skill = _required_skill_requirement(live_card)
             if name in disabled:
+                continue
+            if name in unavailable_meta:
+                continue
+            if native_image and name in VISION_TOOL_NAMES:
+                # 当前模型原生看图，像素已随消息提供；视觉理解工具是降级替代，
+                # 不放进 schema，避免模型绕过流程去走 VQA。
                 continue
             if declared:
                 if (
@@ -1526,6 +1598,16 @@ class ProgressiveToolRail(DeepAgentRail):
             return {
                 "success": False,
                 "error": f"工具 '{tool_name}' 已禁用，无法通过 invoke_tool 调用。",
+                "tool_name": tool_name,
+            }
+
+        # 主模型支持原生看图时，图片像素已随消息提供，视觉理解工具只是不支持
+        # 看图时的降级替代。ProgressiveToolRail 直接 invoke 目标工具，不经过
+        # agent 的 before_tool_call 链路，因此必须在这里拦一次。
+        if is_vision_tool(tool_name) and self._native_image_input_enabled():
+            return {
+                "success": False,
+                "error": build_native_image_tool_error(language=self.language),
                 "tool_name": tool_name,
             }
 

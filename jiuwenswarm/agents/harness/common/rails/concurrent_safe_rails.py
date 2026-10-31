@@ -66,7 +66,7 @@ class ConcurrentSafeSysOperationRail(SysOperationRail):
         if enable_read_image_multimodal is None:
             deep_config = getattr(agent, "deep_config", None)
             enable_read_image_multimodal = bool(
-                getattr(deep_config, "enable_read_image_multimodal", True)
+                getattr(deep_config, "enable_read_image_multimodal", False)
             )
         read_tool = ReadFileTool(
             self.sys_operation,

@@ -167,6 +167,16 @@ def test_ask_user_rail_is_in_keep_to_avoid_churn():
     assert "_ask_user_rail" in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
 
 
+def test_multimodal_image_rail_is_in_keep():
+    """上传图片必须由 MultimodalImageRail 直接送入主模型，而不是退化成 read_file。"""
+
+    adapter = JiuwenSwarmFlashAdapter()
+    assert "_multimodal_image_rail" in adapter._FLASH_RAIL_KEEP
+
+    filtered = adapter._filter_rail_infos_by_keep([_info("_multimodal_image_rail")])
+    assert [info.attr_name for info in filtered] == ["_multimodal_image_rail"]
+
+
 # ---------------------------------------------------------------------------
 # #4 _update_rails_for_mode does not penetrate the whitelist
 # ---------------------------------------------------------------------------

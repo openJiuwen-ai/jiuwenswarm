@@ -6857,7 +6857,12 @@ class JiuWenSwarmDeepAdapter:
             self._last_reload_system_prompt_fingerprint = prompt_fingerprint
 
     @staticmethod
-    def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
+    def _build_model_from_entry(
+        mcc: dict,
+        mco: dict,
+        modalities: Any = None,
+        supports_image: Any = None,
+    ) -> Model:
         """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
         name = mcc.get("model_name", "")
         # models.json 在 relay spawn 前落盘；未登录时 maas 条目 api_base/api_key 为空，
@@ -6950,7 +6955,11 @@ class JiuWenSwarmDeepAdapter:
                 model_name=name,
             )
         )
-        return Model(model_client_config=ModelClientConfig(**mcc_fields), model_config=m_config)
+        model = Model(model_client_config=ModelClientConfig(**mcc_fields), model_config=m_config)
+        model.modalities = modalities
+        # 单模型「是否支持看图」显式配置；None 表示按 modalities / 内置能力表解析。
+        model.supports_image = supports_image if isinstance(supports_image, bool) else None
+        return model
 
     def _register_model_cache_entry(
         self,
@@ -6970,6 +6979,8 @@ class JiuWenSwarmDeepAdapter:
             model = self._build_model_from_entry(
                 mcc,
                 entry.get("model_config_obj") or {},
+                entry.get("modalities"),
+                entry.get("supports_image"),
             )
         except Exception as exc:
             logger.warning(
@@ -7173,7 +7184,12 @@ class JiuWenSwarmDeepAdapter:
             mcc = entry.get("model_client_config") or {}
             model_name = str(mcc.get("model_name") or "")
             try:
-                model = self._build_model_from_entry(mcc, entry.get("model_config_obj") or {})
+                model = self._build_model_from_entry(
+                    mcc,
+                    entry.get("model_config_obj") or {},
+                    entry.get("modalities"),
+                    entry.get("supports_image"),
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] 保留重载前模型失败 %s: %s", model_name, exc
@@ -7410,12 +7426,13 @@ class JiuWenSwarmDeepAdapter:
             raise RuntimeError("No model configured for request")
         return model
 
-    @staticmethod
     def _prepare_multimodal_image_inputs(
+        self,
         request: AgentRequest,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            build_image_reference_line,
             extract_multimodal_image_files,
         )
 
@@ -7425,6 +7442,31 @@ class JiuWenSwarmDeepAdapter:
 
         updated = dict(inputs)
         updated["_multimodal_image_files"] = image_files
+
+        query = updated.get("query")
+        if isinstance(query, str):
+            # 会话级引用行写入：序号按图片首次出现顺序递增，同一 path 只写一次。
+            # Adapter 是 session-scoped（每次进入会话都会新建 child adapter），
+            # 因此把计数器和已引用 path 集合挂在 self 上即可按会话隔离。
+            next_index = int(getattr(self, "_image_reference_index", 0))
+            referenced_paths = getattr(self, "_referenced_image_paths", None)
+            if not isinstance(referenced_paths, set):
+                referenced_paths = set()
+                self._referenced_image_paths = referenced_paths
+
+            lines: list[str] = []
+            for image_file in image_files:
+                path = str(image_file.get("path") or "").strip()
+                if not path or path in referenced_paths:
+                    continue
+                next_index += 1
+                referenced_paths.add(path)
+                lines.append(build_image_reference_line(image_file, next_index))
+
+            if lines:
+                self._image_reference_index = next_index
+                updated["query"] = (query + "\n" + "\n".join(lines)).strip()
+
         logger.info(
             "[JiuWenSwarmDeepAdapter] Prepared %d image attachment(s) "
             "for Core multimodal context-window injection",
@@ -7433,75 +7475,39 @@ class JiuWenSwarmDeepAdapter:
         return updated
 
     @staticmethod
+    def _model_supports_image(model: Any | None) -> bool:
+        """Whether the model can receive native image input (None/unknown → False).
+
+        优先级：模型条目显式 supports_image → modalities → 内置模型能力表。
+        """
+        if model is None:
+            return False
+        from jiuwenswarm.agents.harness.common.tools.model_capabilities import (
+            resolve_model_supports_image,
+        )
+
+        model_config = getattr(model, "model_config", None)
+        model_name = getattr(model_config, "model_name", None)
+        return resolve_model_supports_image(
+            getattr(model, "modalities", None),
+            model_name,
+            getattr(model, "supports_image", None),
+        )
+
+    @staticmethod
     def _prepare_react_image_tool_prompt(
         request: AgentRequest,
         inputs: dict[str, Any],
         *,
         enable_read_image_multimodal: bool,
+        model: Any | None = None,
     ) -> dict[str, Any]:
-        """Add image file paths to the ReAct prompt when native image input is off."""
-        if enable_read_image_multimodal:
-            return inputs
+        """图片理解指令改由 MultimodalImageRail 注入临时系统提示，不再拼进 query。
 
-        query = inputs.get("query")
-        if not isinstance(query, str) or "jiuwenswarm_image_tool_context" in query:
-            return inputs
-
-        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-            extract_multimodal_image_files,
-        )
-
-        image_files = inputs.get("_multimodal_image_files")
-        if not isinstance(image_files, list) or not image_files:
-            image_files = extract_multimodal_image_files(request.params)
-        if not image_files:
-            return inputs
-
-        params = request.params if isinstance(request.params, dict) else {}
-        raw_question = params.get("query")
-        if not isinstance(raw_question, str) or not raw_question.strip():
-            raw_question = params.get("content")
-        question = raw_question.strip() if isinstance(raw_question, str) else ""
-        first_path = str(image_files[0].get("path") or "").strip()
-        if not first_path:
-            return inputs
-
-        media_items = []
-        for image_file in image_files:
-            path = str(image_file.get("path") or "").strip()
-            if not path:
-                continue
-            media_items.append(
-                {
-                    "type": "image",
-                    "filename": image_file.get("filename") or Path(path).name,
-                    "mediaPath": path,
-                    "mimeType": image_file.get("mime_type") or image_file.get("mimeType"),
-                }
-            )
-        if not media_items:
-            return inputs
-
-        tool_context = {
-            "marker": "jiuwenswarm_image_tool_context",
-            "mediaPath": first_path,
-            "mediaItems": media_items,
-            "question": question,
-            "toolHint": (
-                "当前主模型未启用原生图片输入。如果需要理解图片内容，请调用图片理解工具；"
-                "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
-                "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
-            ),
-        }
-
-        updated = dict(inputs)
-        updated.pop("_multimodal_image_files", None)
-        updated["query"] = (
-            query
-            + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
-            + json.dumps(tool_context, ensure_ascii=False)
-        )
-        return updated
+        保留此方法仅为兼容调用点；原生 vs VQA 的多模态策略在
+        MultimodalImageRail.before_model_call 中按模型能力写入 system prompt。
+        """
+        return inputs
 
     @staticmethod
     def _build_image_tool_fallback_notice(
@@ -7509,20 +7515,24 @@ class JiuWenSwarmDeepAdapter:
         *,
         enable_read_image_multimodal: bool,
         model: Any | None,
+        query: str | None = None,
     ) -> dict[str, Any] | None:
-        if enable_read_image_multimodal:
+        model_config = getattr(model, "model_config", None)
+        model_name = str(getattr(model_config, "model_name", "") or "").strip()
+        model_supports_image = JiuWenSwarmDeepAdapter._model_supports_image(model)
+        # 回退 notice 只在「未走原生图片内联」时触发：模型不能收图，或
+        # enable_read_image_multimodal 被显式关掉（即便模型声明收图也被强制走工具）。
+        if enable_read_image_multimodal and model_supports_image:
             return None
 
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-            extract_multimodal_image_files,
+            parse_image_references,
         )
 
-        image_files = extract_multimodal_image_files(request.params)
-        if not image_files:
+        image_references = parse_image_references(query) if isinstance(query, str) else []
+        if not image_references:
             return None
 
-        model_config = getattr(model, "model_config", None)
-        model_name = str(getattr(model_config, "model_name", "") or "").strip()
         model_label = f"（{model_name}）" if model_name else ""
         content = f"当前模型{model_label}不支持原生图片理解，已切换为图片理解工具处理。"
         notice = {
@@ -7532,7 +7542,7 @@ class JiuWenSwarmDeepAdapter:
             "content": content,
             "request_id": request.request_id,
             "session_id": request.session_id,
-            "image_count": len(image_files),
+            "image_count": len(image_references),
         }
         if model_name:
             notice["model_name"] = model_name
@@ -7540,15 +7550,20 @@ class JiuWenSwarmDeepAdapter:
 
     def _native_image_input_enabled(self, config: dict[str, Any], model: Any | None) -> bool:
         # read_file 默认不读取图片：不把图片字节内联进主模型对话，改走 image_reading / VQA 工具。
-        # 仅当 config.yaml 显式设置 enable_read_image_multimodal 时遵从配置；模型名启发式已移除。
-        return self._resolve_enable_read_image_multimodal(config)
+        # 显式 enable_read_image_multimodal 强制；缺失时按模型能力解析（未声明能力视为不收图）。
+        return self._resolve_enable_read_image_multimodal(config, model)
 
     @staticmethod
-    def _resolve_enable_read_image_multimodal(config: dict[str, Any]) -> bool:
+    def _resolve_enable_read_image_multimodal(
+        config: dict[str, Any], model: Any | None = None
+    ) -> bool:
+        # 单模型显式配置优先：切换模型后按该模型自己的「是否支持看图」决定。
+        if model is not None and isinstance(getattr(model, "supports_image", None), bool):
+            return bool(getattr(model, "supports_image"))
         configured = config.get("enable_read_image_multimodal")
         if isinstance(configured, bool):
             return configured
-        return DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
+        return JiuWenSwarmDeepAdapter._model_supports_image(model)
 
     def _apply_model_to_react_agent(self, model: Model) -> None:
         """将指定模型应用到 react_agent 实例（替换 _llm 和 _config 字段）。
@@ -7608,6 +7623,15 @@ class JiuWenSwarmDeepAdapter:
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] failed to sync deep_config.model",
+                    exc_info=True,
+                )
+            try:
+                deep_config.enable_read_image_multimodal = self._resolve_enable_read_image_multimodal(
+                    self._config_cache, model
+                )
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] failed to sync deep_config.enable_read_image_multimodal",
                     exc_info=True,
                 )
 
@@ -10003,11 +10027,18 @@ class JiuWenSwarmDeepAdapter:
     @staticmethod
     def _build_multimodal_image_rail(
         enable_image_multimodal: bool | None = None,
+        *,
+        max_total_bytes: int = 0,
+        max_visual_tokens: int = 0,
+        max_count: int = 0,
     ) -> MultimodalImageRail | None:
         """Build MultimodalImageRail."""
         try:
             multimodal_image_rail = MultimodalImageRail(
                 enable_image_multimodal=enable_image_multimodal,
+                max_total_bytes=max_total_bytes,
+                max_visual_tokens=max_visual_tokens,
+                max_count=max_count,
             )
             logger.info("[JiuWenSwarmDeepAdapter] MultimodalImageRail create success")
         except Exception as exc:
@@ -10983,7 +11014,12 @@ class JiuWenSwarmDeepAdapter:
                 "_multimodal_image_rail",
                 self._build_multimodal_image_rail,
                 {
-                    "enable_image_multimodal": self._resolve_enable_read_image_multimodal(config),
+                    # 请求时回退到 deep_config.enable_read_image_multimodal（由 _apply_model_to_react_agent / create_deep_agent 解析模型能力后写入）。
+                    "enable_image_multimodal": None,
+                    # 单次请求图片预算：优先按张数裁剪最老的图，再按视觉 token / 总字节裁剪。
+                    "max_total_bytes": config.get("multimodal_image_budget"),
+                    "max_visual_tokens": config.get("multimodal_image_token_budget"),
+                    "max_count": config.get("multimodal_image_max_count"),
                 },
             ),
             _RailBuildInfo(
@@ -11312,7 +11348,7 @@ class JiuWenSwarmDeepAdapter:
             rails=rails,
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
-            enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
+            enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config, model),
             completion_timeout=config.get("completion_timeout", 21600.0),
             **_optional_enable_subagent_runtime(
                 self._resolve_enable_subagent_runtime(config_base),
@@ -12326,7 +12362,7 @@ class JiuWenSwarmDeepAdapter:
                     kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
                     vision_model_config=self._vision_model_config,
                     audio_model_config=self._audio_model_config,
-                    enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
+                    enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config, model),
                     enable_llm_retry_rail=((config_base.get("execution_guard") or {}).get("llm_retry_rail") or {}).get(
                         "enabled", False
                     ),
@@ -14162,6 +14198,33 @@ class JiuWenSwarmDeepAdapter:
                 return checkpointer
         return CheckpointerFactory.get_checkpointer()
 
+    @staticmethod
+    def _validate_checkpointer_consistency(
+        freeze_checkpointer: Any,
+        recover_checkpointer: Any,
+    ) -> None:
+        """冻结侧（实例级）与恢复侧（session/进程默认）checkpointer 不一致时告警。
+
+        纯检查 + 日志，不改变任何赋值/绑定/创建逻辑。实例相同或底层 ``_kv_store``
+        相同视为一致，不告警。
+        """
+        if freeze_checkpointer is None or recover_checkpointer is None:
+            return
+        if freeze_checkpointer is recover_checkpointer:
+            return
+        freeze_kv = getattr(freeze_checkpointer, "_kv_store", None)
+        recover_kv = getattr(recover_checkpointer, "_kv_store", None)
+        if freeze_kv is None or recover_kv is None:
+            return
+        if freeze_kv is recover_kv:
+            return
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] checkpointer consistency mismatch on "
+            "freeze/recover: freeze_kv=%r recover_kv=%r",
+            freeze_kv,
+            recover_kv,
+        )
+
     def _read_session_interrupt_state(self) -> Any:
         """当前交互会话里的工具暂停。没有则返回 None。"""
         instance = getattr(self, "_instance", None)
@@ -14236,6 +14299,10 @@ class JiuWenSwarmDeepAdapter:
             return
         if not self._cron_session_has_context(cron_inner):
             try:
+                self._validate_checkpointer_consistency(
+                    self._get_adapter_checkpointer(),
+                    self._cron_execution_checkpointer(cron_inner),
+                )
                 await self._cron_execution_checkpointer(cron_inner).pre_agent_execute(
                     cron_inner, None
                 )
@@ -15040,6 +15107,13 @@ class JiuWenSwarmDeepAdapter:
                 if context_engine is not None and freeze_session is not None:
                     actual_session = getattr(freeze_session, "_parent", freeze_session) or freeze_session
                     await context_engine.save_contexts(actual_session)
+                    recover_inner = getattr(
+                        getattr(self._instance, "_interaction_session", None), "_inner", None
+                    )
+                    self._validate_checkpointer_consistency(
+                        self._get_adapter_checkpointer(),
+                        self._cron_execution_checkpointer(recover_inner),
+                    )
                     await post_agent_execute_for_session(freeze_session, self._checkpointer)
             except Exception as exc:
                 logger.warning(
@@ -19999,6 +20073,7 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 inputs,
                 enable_read_image_multimodal=enable_read_image_multimodal,
+                model=resolved_model,
             )
             from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
                 set_current_multimodal_image_files,
@@ -20621,6 +20696,7 @@ class JiuWenSwarmDeepAdapter:
                     request,
                     inputs,
                     enable_read_image_multimodal=enable_read_image_multimodal,
+                    model=resolved_model,
                 )
                 resolved_language = self._resolve_runtime_language()
                 resolved_channel = str(cid or self._resolve_prompt_channel(session_id) or "web").strip() or "web"
@@ -21243,11 +21319,13 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 enable_read_image_multimodal=enable_read_image_multimodal,
                 model=resolved_model,
+                query=inputs.get("query") if isinstance(inputs.get("query"), str) else None,
             )
             inputs = self._prepare_react_image_tool_prompt(
                 request,
                 inputs,
                 enable_read_image_multimodal=enable_read_image_multimodal,
+                model=resolved_model,
             )
             if image_tool_fallback_notice is not None:
                 yield AgentResponseChunk(

@@ -328,6 +328,11 @@ models:
         # 值取自环境变量 LLM_MAX_TOKENS
         # 未设置时回落 32768；jiuwenswarm 自身 .env 的同名变量优先级更高
         max_tokens: ${LLM_MAX_TOKENS:-32768}
+      # 该主模型是否支持看图（原生图片输入）：true/false 显式指定；
+      # 不设时按 modalities 声明判定，仍未声明则回退内置模型能力表
+      # （见 jiuwenswarm/agents/harness/common/tools/model_capabilities.py）。
+      # supports_image: true
+      # modalities: ["text", "image"]
       is_default: true
   video:
     model_client_config:
@@ -614,6 +619,16 @@ react:
   enable_task_execution_rail: true
   max_iterations: 100
   model_name: ${MODEL_NAME}
+  # 原生图片输入三态开关：不设 = 按当前模型能力解析（模型条目 supports_image >
+  # modalities > 内置模型能力表）。显式 true/false 仅在模型条目未配置时作为兜底覆盖。
+  # enable_read_image_multimodal: false
+  # 单次请求图片预算（与模型无关）：超出时把最老的图片替换成文字说明并写入历史，
+  # 之后不再自动加回。字节数 0 = 不限；张数 0 = 不限（默认 8 张）。
+  multimodal_image_budget: 0
+  # 图片视觉 token 预算：按分辨率（OpenAI tile 算法）计量图片在上下文窗口的占用，
+  # 而不是按 base64 字符长度。0 = 不限。
+  multimodal_image_token_budget: 0
+  multimodal_image_max_count: 8
   skill_mode: all
   # Per-skill credential env vars injected into shell tools when a skill is active.
   # OfficeClaw sync writes real values here (e.g. hwocr HWOCR_AK/HWOCR_SK). Empty {} is a

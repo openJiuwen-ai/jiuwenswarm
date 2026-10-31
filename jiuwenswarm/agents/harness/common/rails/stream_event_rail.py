@@ -37,9 +37,6 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
 )
-from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-    strip_image_content_from_model_context,
-)
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
@@ -49,10 +46,16 @@ from jiuwenswarm.agents.harness.common.rails.path_whitespace_fix import (
     fix_whitespace_path_arguments,
 )
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
+    build_provided_image_read_error,
     extract_path_from_arguments,
+    extract_paths_from_arguments,
     handle_read_file_before_tool_call,
+    is_image_file_path,
     is_read_file_tool,
+    is_vision_tool,
     normalize_read_file_tool_outcome,
+    reject_read_file,
+    reject_vision_tool_for_native_image,
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
@@ -657,10 +660,16 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             "language", None,
         ) or "cn"
 
-    def _read_image_multimodal_enabled(self) -> bool:
-        deep_config = (
-            getattr(self._deep_agent, "deep_config", None)
-            or getattr(self._deep_agent, "_deep_config", None)
+    def _native_read_image_enabled(self) -> bool:
+        """Whether read_file should inline image bytes into the main model.
+
+        ``deep_config.enable_read_image_multimodal`` is the single resolved
+        source of truth (already derived from the model's declared image
+        capability).  When it is on, the read_file_validation pre-check must
+        not reject image paths — the actual ReadFileTool will attach pixels.
+        """
+        deep_config = getattr(self._deep_agent, "deep_config", None) or getattr(
+            self._deep_agent, "_deep_config", None
         )
         return bool(getattr(deep_config, "enable_read_image_multimodal", False))
 
@@ -1043,8 +1052,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._ensure_tool_call_goal_prompt()
 
         if ctx.context is not None:
-            if not self._read_image_multimodal_enabled():
-                strip_image_content_from_model_context(ctx.context)
             await self._fix_incomplete_tool_context(ctx)
 
         await self._maybe_early_checkpoint(ctx)
@@ -1258,8 +1265,45 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     ctx.extra.setdefault(_WHITESPACE_PATH_FIXES_EXTRA_KEY, {})[tool_call_id] = fixes
             if is_read_file_tool(tool_name):
                 path = extract_path_from_arguments(getattr(tc, "arguments", {}))
-                if path:
+                # 原生多模态开启时放行 read_file 对图片的读取，交给 ReadFileTool
+                # 内联像素；其余读文件工具与二进制路径仍沿用 read_file_validation
+                # 的「图片/二进制文件拒绝纯文本读取」。
+                allow_image_inline = (
+                    tool_name == "read_file"
+                    and is_image_file_path(path)
+                    and self._native_read_image_enabled()
+                )
+                if path and allow_image_inline:
+                    from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+                        is_current_multimodal_image_path,
+                    )
+
+                    provided_paths = [
+                        item
+                        for item in extract_paths_from_arguments(
+                            getattr(tc, "arguments", {})
+                        )
+                        if is_current_multimodal_image_path(item)
+                    ]
+                    if provided_paths:
+                        # 本次请求已随消息提供像素，禁止重复读取同一张图（含 file_paths 批量读）。
+                        reject_read_file(
+                            ctx,
+                            build_provided_image_read_error(
+                                provided_paths[0],
+                                language=self._get_prompt_language(),
+                            ),
+                        )
+                elif path:
                     handle_read_file_before_tool_call(ctx, path)
+            if is_vision_tool(tool_name) and self._native_read_image_enabled():
+                # 主模型能原生看图时，图片像素已随消息提供，VQA/图片理解工具
+                # 只会让模型拿不到图（工具结果里没有像素），必须跳过。
+                # 这里只按模型能力判定，不依赖请求级图片路径：工具执行可能跨
+                # 任务/线程，ContextVar 不可靠，路径匹配会漏拦。
+                reject_vision_tool_for_native_image(
+                    ctx, language=self._get_prompt_language()
+                )
             # 主模型随 tool_call 产出的目标文案（call_goal）：取出后剥掉，避免 schema 拒收。
             # 绝不碰 display_name（team 成员名等业务字段）。
             model_display, cleaned_args = extract_call_goal(
