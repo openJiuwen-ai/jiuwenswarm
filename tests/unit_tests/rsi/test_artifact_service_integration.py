@@ -197,9 +197,13 @@ async def test_paper_provider_closes_instruction_only_service_loop(artifact_cont
     downloaded = handlers.handle(FakeRequest(ReqMethod.RSI_ARTIFACT_DOWNLOAD, {"task_id": task_id}))
     assert downloaded["ok"] is True
     assert downloaded["payload"]["kind"] == "artifact_package"
-    assert downloaded["payload"]["is_directory"] is True
-    assert Path(downloaded["payload"]["path"]).is_dir()
-    assert "download_url" not in downloaded["payload"]
+    assert downloaded["payload"]["is_directory"] is False
+    download_path = Path(downloaded["payload"]["path"])
+    assert download_path.is_file()
+    assert download_path.suffix == ".zip"
+    assert downloaded["payload"]["download_url"]
+    with zipfile.ZipFile(download_path) as archive:
+        assert any(name.endswith("README.md") for name in archive.namelist())
     await _stop_worker(context)
 
 
