@@ -3613,6 +3613,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
         if (!sessionId) return;
+        // live 订约已把同一终稿画进执行会话后，web push / 回放再来一份会「到期两遍」
+        if (cronMeta && cronMeta.is_placeholder !== true) {
+          const existingContent = normalizeFinalContent(payload).trim();
+          if (existingContent) {
+            const runtime = useChatStore.getState().getRuntime(sessionId);
+            if (runtime?.messages.some(
+              (message) => message.role === 'assistant'
+                && String(message.content || '').trim() === existingContent,
+            )) {
+              return;
+            }
+          }
+        }
         // cron 最终结果（非占位）广播到达：自动跳转到执行会话，加载完整历史
         // （含用户消息、agent 回复、session 标题），避免用户手动点击左侧 session。
         // handleRestoreSession 通过队列异步执行，不会干扰当前消息处理。

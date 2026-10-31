@@ -8,6 +8,9 @@
  *
  * 切走页面时不能停订：后台继续盯 lastRunSessionId，直到 processing 结束，
  * 否则侧边栏会一直转圈，蓝点也标不上。
+ *
+ * 重要：live_bus 会回放近一段帧。后台已订过再点进会话、或 effect 重建订阅时，
+ * 若不去重就会把同一份终稿画两遍。用跨订阅的 live_seq + 终稿正文去重挡住。
  */
 import { isEnterprise } from '../../edition';
 import { consumeSseBuffer, sseFrameToWsEvent } from '../../services/webHttpClient';
@@ -38,12 +41,41 @@ const CRON_LIVE_EVENTS = new Set([
   'cron.run.updated',
 ]);
 
+/** 跨 watch 实例保留：同一浏览器页里换订阅也不会把回放帧再画一遍。 */
+const seenLiveSeqBySession = new Map<string, Set<number>>();
+
+function rememberLiveSeq(sessionId: string, sequence: number): boolean {
+  // true = 新帧，应画；false = 已见过，跳过
+  let bucket = seenLiveSeqBySession.get(sessionId);
+  if (!bucket) {
+    bucket = new Set<number>();
+    seenLiveSeqBySession.set(sessionId, bucket);
+  }
+  if (bucket.has(sequence)) return false;
+  bucket.add(sequence);
+  if (bucket.size > 4096) {
+    const first = bucket.values().next().value;
+    if (typeof first === 'number') bucket.delete(first);
+  }
+  return true;
+}
+
 function isCronExecutionSession(sessionId: string): boolean {
   return sessionId.startsWith('cron_') || sessionId.startsWith('__cron__');
 }
 
 /** 历史（或已完成的回复）已覆盖回放时，这些帧仍然要画：提问卡片、错误、执行状态更新。 */
 const CRON_LIVE_KEEP_AFTER_HISTORY = new Set(['chat.ask_user_question', 'chat.error', 'cron.run.updated']);
+
+function finalContentAlreadyShown(sessionId: string, payload: Record<string, unknown>): boolean {
+  const content = String(payload.content || '').trim();
+  if (!content) return false;
+  const runtime = useChatStore.getState().getRuntime(sessionId);
+  if (!runtime?.messages?.length) return false;
+  return runtime.messages.some(
+    (message) => message.role === 'assistant' && String(message.content || '').trim() === content,
+  );
+}
 
 function authenticatedFetch(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
   if (isEnterprise() && hasManagerSessionCredentials()) {
@@ -222,14 +254,11 @@ export function watchCronExecutionSession(
             );
             if (isPlaceholder) continue;
             const sequence = event.payload.live_seq;
-            if (typeof sequence === 'number') {
-              if (sequence <= lastLiveSequence) continue;
-              lastLiveSequence = sequence;
-            }
             if (typeof sequence === 'number' && Number.isSafeInteger(sequence) && sequence > 0) {
-              if (seenSequences.has(sequence)) continue;
+              // 模块级去重：订阅重建 / 点进会话时回放不会再画一遍
+              if (!rememberLiveSeq(sessionId, sequence)) continue;
+              if (sequence > lastLiveSequence) lastLiveSequence = sequence;
               seenSequences.add(sequence);
-              if (seenSequences.size > 4096) seenSequences.delete(seenSequences.values().next().value!);
             }
             const runtime = useChatStore.getState().getRuntime(sessionId);
             // A restored timeline already contains the initial backlog. New
@@ -259,6 +288,10 @@ export function watchCronExecutionSession(
               } else if (!CRON_LIVE_KEEP_AFTER_HISTORY.has(event.event)) {
                 continue;
               }
+            }
+            // 后台已画过终稿后，再点进会话触发回放：正文已在 messages 里就跳过
+            if (event.event === 'chat.final' && finalContentAlreadyShown(sessionId, event.payload)) {
+              continue;
             }
             if (!event.payload.session_id) {
               event.payload.session_id = sessionId;
