@@ -208,9 +208,11 @@ const workspaceMocks = {
   './ExecutionCard': `export const ExecutionCard = () => null;`,
   './GroupFileRow': `export const GroupFilePreviewPanel = () => null; export const GroupFileRow = () => null;
     export const groupFileTarget = () => ({});`,
+  'agentManagement/groupClient': `export const createAgentGroupManagementClient = () => ({ listGroups: async () => [] });`,
   '/InteractionPrompt': `export const InteractionPrompt = () => null;`,
   '/MarkdownRenderer': `export const MarkdownRenderer = ({ content }) => content;`,
-  'react-i18next': `const t = (key) => key; export const useTranslation = () => ({ t });`,
+  'react-i18next': `const t = (key) => key; export const initReactI18next = { type: '3rdParty' };
+    export const useTranslation = () => ({ t, i18n: { language: 'zh' } });`,
 };
 await build({
   entryPoints: ['src/features/groupChat/GroupChatWorkspace.tsx'], outfile: workspaceBundle,
