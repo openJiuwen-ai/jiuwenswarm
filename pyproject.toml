@@ -191,6 +191,8 @@ jiuwenswarm = [
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",
+    # 运行期按 __file__ 同目录读取的 Playwright init-page 网络守卫脚本
+    "server/runtime/agent_adapter/*.js",
     # config / env 模板放在 resources 目录
     "resources/**/*",
     "resources/*",
