@@ -13,13 +13,13 @@
 
 | 唯一查询 Ops | 对应 Event | 独立特性文档 |
 | --- | --- | --- |
-| ops.session.cwd() | session.cwd | [F_13](../features/F_13_session-workspace-ops.md) |
-| ops.session.root() | session.root | [F_28](../features/F_28_session-root-query.md) |
-| ops.session.model() | session.model | [F_14](../features/F_14_session-model-ops.md) |
-| ops.session.repo() | session.repo | [F_15](../features/F_15_session-repo-ops.md) |
-| ops.session.messages() | session.messages | [F_23](../features/F_23_session-messages-ops.md) |
-| ops.session.turns() | session.turns | [F_29](../features/F_29_session-turns-query.md) |
-| ops.session.usage() | session.usage | [F_21](../features/F_21_session-usage-ops.md) |
+| ops.session.cwd() | session.cwd | [F_13](../features/F_13_session-cwd.md) |
+| ops.session.root() | session.root | [F_28](../features/F_28_session-root.md) |
+| ops.session.model() | session.model | [F_14](../features/F_14_session-model.md) |
+| ops.session.repo() | session.repo | [F_15](../features/F_15_session-repo.md) |
+| ops.session.messages() | session.messages | [F_23](../features/F_23_session-messages.md) |
+| ops.session.turns() | session.turns | [F_29](../features/F_29_session-turns.md) |
+| ops.session.usage() | session.usage | [F_21](../features/F_21_session-usage.md) |
 
 ## 2. 能力说明与 Claude 对照
 

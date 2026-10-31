@@ -3,10 +3,10 @@
 | 项 | 值 |
 | --- | --- |
 | 编号 | S_06 / session-history-ops |
-| 最近修订日期 | 2026-10-29 |
-| 关联特性与字段填写手册 | [F_16 追加](../features/F_16_session-history-ops.md) / [F_23 查询](../features/F_23_session-messages-ops.md) |
+| 最近修订日期 | 2026-10-31 |
+| 关联特性与字段填写手册 | [F_16 追加](../features/F_16_session-append.md) / [F_23 查询](../features/F_23_session-messages.md) |
 
-本规约维护稳定边界和不变量。[F_16 第 3 节](../features/F_16_session-history-ops.md#3-事件契约)逐字段说明事件输入、message/origin 嵌套字段和输出；[第 4 节](../features/F_16_session-history-ops.md#4-方法契约)说明 append 参数、默认值、填写示例和迁移。[F_23 第 4 节](../features/F_23_session-messages-ops.md#4-方法契约)独立说明 messages 的无参数调用、消息数组字段和错误；两份 feature 共用本规约，不复制另一套不变量。追加类型实现于 event_types/session_history.py，查询协议实现于 event_types/session_queries.py，不另维护一份完整 Schema。
+本规约维护稳定边界和不变量。[F_16 第 3 节](../features/F_16_session-append.md#3-事件契约)逐字段说明事件输入、message/origin 嵌套字段和输出；[第 4 节](../features/F_16_session-append.md#4-方法契约)说明 append 参数、默认值、填写示例和迁移。[F_23 第 4 节](../features/F_23_session-messages.md#4-方法契约)独立说明 messages 的无参数调用、消息数组字段和错误；两份 feature 共用本规约，不复制另一套不变量。追加类型实现于 event_types/session_history.py，查询协议实现于 event_types/session_queries.py，不另维护一份完整 Schema。
 
 ## 1. 公开接口
 

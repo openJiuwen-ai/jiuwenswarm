@@ -1,15 +1,6 @@
 # session.cwd / session.root 与会话工作区 Ops 规约
 
-| 项 | 值 |
-| --- | --- |
-| 编号 | S_03 / session-workspace-ops |
-| 最近修订日期 | 2026-10-29 |
-| 主责模块 | `jiuwenswarm/extensions_v2/handler_ops/session_ops.py` |
-| 关联特性 | [F_13 会话工作区查询能力](../features/F_13_session-workspace-ops.md) |
-
-最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，使用说明见 [F_13](../features/F_13_session-workspace-ops.md)。本规约维护字段和默认语义，特性文档解释填写方式。
-
-最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，cwd 使用说明见 [F_13](../features/F_13_session-workspace-ops.md)，root 使用说明见 [F_28](../features/F_28_session-root-query.md)。本规约维护字段和默认语义，特性文档解释填写方式。
+最近修订 2026-10-31。七项查询公共机制见 [S_16](S_16_session-query-events.md)，cwd 使用说明见 [F_13](../features/F_13_session-cwd.md)，root 使用说明见 [F_28](../features/F_28_session-root.md)。本规约维护字段和默认语义，特性文档解释填写方式。
 
 ## 1. 能力与默认来源
 
