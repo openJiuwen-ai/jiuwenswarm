@@ -1096,7 +1096,7 @@ export class CliPiAppState {
       return ex?.tool.status === "running";
     });
     const hasActiveSubtasks = [...this.activeSubtasks.values()].some(
-      (s) => s.status !== "completed" && s.status !== "error",
+      (s) => s.status !== "completed" && s.status !== "error" && s.status !== "cancelled",
     );
     // swarmflow 后台 run 独立于 leader round：round 收尾后 isProcessing/工具/成员
     // 全部归零，但 run 仍在烧 token。Esc（cancellableWork）与 Ctrl+C
