@@ -2511,3 +2511,43 @@ class TestCronBilling:
         await svc.handle_event(ev)
 
         assert calls == []
+
+
+class TestCronUnattendedUserInteraction:
+    """cron 无人值守：派发时必须关闭用户交互能力（不暴露 ask_user）。
+
+    cron 单 agent 走 unary 通道，没有「提问→等待回答→续跑」回路；一旦模型调用
+    ask_user，本轮只会产出交互帧、正文为空，被 gateway 降级为
+    「任务执行完成但未返回结果内容」失败。
+    """
+
+    @pytest.mark.asyncio
+    async def test_single_agent_wake_disables_user_interaction(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="reminder", targets="tui")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        chat_env = next(e for e in agent.unary_requests if e.method == "chat.send")
+        assert chat_env.params["supports_user_interaction"] is False
+        assert chat_env.channel_context["supports_user_interaction"] is False
+
+    @pytest.mark.asyncio
+    async def test_team_wake_disables_user_interaction(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(mode="team", targets="tui", description="run swarmflow")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        assert len(agent.stream_requests) == 1
+        env = agent.stream_requests[0]
+        assert env.params["supports_user_interaction"] is False
+        assert env.channel_context["supports_user_interaction"] is False
