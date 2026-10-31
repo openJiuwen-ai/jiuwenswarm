@@ -36,6 +36,8 @@ export interface CronJobDTO {
   timeout_seconds?: number;
   project_id: string;
   last_session_id?: string;
+  /** 正在执行的会话（企业版 list 挂载，供前端订 live） */
+  active_session_id?: string;
   model_name?: string;
 }
 

@@ -5,6 +5,9 @@
  * 这里盯着 Gateway 的 /sessions/{id}/live，把过程写进当前会话。
  * 加载历史不代表执行已结束，后续直播帧继续交给现有聊天处理；
  * 历史（或已完成的回复）已经覆盖的回放帧不再重复上屏。
+ *
+ * 切走页面时不能停订：后台继续盯 lastRunSessionId，直到 processing 结束，
+ * 否则侧边栏会一直转圈，蓝点也标不上。
  */
 import { isEnterprise } from '../../edition';
 import { consumeSseBuffer, sseFrameToWsEvent } from '../../services/webHttpClient';
@@ -16,6 +19,7 @@ import {
 import { buildRuntimeIdentityHeaders } from '../../services/runtimeScope';
 import { webClient } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
+import { useCronStore } from '../../stores/cronStore';
 import { normalizeFinalContent } from '../../utils/finalContent';
 import { getGatewayHttpBase, getWebTransport } from '../../utils/env';
 
@@ -96,16 +100,81 @@ export function watchCronRunUpdates(onDisconnect: () => void): () => void {
   return () => controller.abort();
 }
 
+function lookupJobIdForSession(sessionId: string): string {
+  const map = useCronStore.getState().lastRunSessionId;
+  for (const [jobId, sid] of Object.entries(map)) {
+    if (sid === sessionId) return jobId;
+  }
+  return '';
+}
+
+/**
+ * 只在「整趟收尾」帧上补 job_id（processing=false / error）。
+ * 不要补到中间段 chat.final 上——企业版一段回复结束也会发 final，
+ * 补上 job_id 会被误标成未读蓝点，而会话其实还在跑。
+ */
+function ensureCronMetaOnSettle(
+  sessionId: string,
+  eventName: string,
+  payload: Record<string, unknown>,
+): void {
+  const isSettle =
+    eventName === 'chat.error' ||
+    (eventName === 'chat.processing_status' && payload.is_processing === false);
+  if (!isSettle) return;
+  const existing = payload.cron;
+  if (
+    existing &&
+    typeof existing === 'object' &&
+    typeof (existing as { job_id?: unknown }).job_id === 'string' &&
+    String((existing as { job_id: string }).job_id).trim()
+  ) {
+    return;
+  }
+  const jobId = lookupJobIdForSession(sessionId);
+  if (!jobId) return;
+  const base =
+    existing && typeof existing === 'object'
+      ? { ...(existing as Record<string, unknown>) }
+      : {};
+  payload.cron = {
+    ...base,
+    job_id: jobId,
+    exec_session_id: sessionId,
+    is_placeholder: false,
+  };
+}
+
+function isCronLiveSettledEvent(eventName: string, payload: Record<string, unknown>): boolean {
+  if (eventName === 'chat.error') return true;
+  return eventName === 'chat.processing_status' && payload.is_processing === false;
+}
+
+export type WatchCronExecutionOptions = {
+  /**
+   * 后台盯梢：收到 processing=false / error 后停订，避免切走页面后无限重连。
+   * 当前正在看的会话不要开：人还在页上时保持重连。
+   */
+  stopOnSettled?: boolean;
+  /** develop：统一会话未必是 cron_ 前缀，靠 cron_id 元数据放行。 */
+  hasCronMetadata?: boolean;
+};
+
 /**
  * 企业版 HTTP 下，盯住定时任务执行会话。
  * 思考、逐字正文、工具调用和终稿都交给现有的聊天处理去画。
  * 历史只抑制已覆盖的首次回放；新输出、提问和执行结束状态继续转发。
  * 其它传输、其它会话直接返回空的停止函数。
  */
-export function watchCronExecutionSession(sessionId: string, hasCronMetadata = false): () => void {
+export function watchCronExecutionSession(
+  sessionId: string,
+  options?: WatchCronExecutionOptions,
+): () => void {
+  const hasCronMetadata = Boolean(options?.hasCronMetadata);
   if (getWebTransport() !== 'http' || (!hasCronMetadata && !isCronExecutionSession(sessionId))) {
     return () => undefined;
   }
+  const stopOnSettled = Boolean(options?.stopOnSettled);
   const controller = new AbortController();
   let stopped = false;
   const seenSequences = new Set<number>();
@@ -138,6 +207,7 @@ export function watchCronExecutionSession(sessionId: string, hasCronMetadata = f
           buffer += decoder.decode(value, { stream: true });
           const consumed = consumeSseBuffer(buffer);
           buffer = consumed.rest;
+          let settled = false;
           for (const frame of consumed.frames) {
             const event = sseFrameToWsEvent(frame);
             if (!event || (
@@ -190,7 +260,16 @@ export function watchCronExecutionSession(sessionId: string, hasCronMetadata = f
             if (!event.payload.session_id) {
               event.payload.session_id = sessionId;
             }
+            ensureCronMetaOnSettle(sessionId, event.event, event.payload);
             webClient.injectEvent(event);
+            if (stopOnSettled && isCronLiveSettledEvent(event.event, event.payload)) {
+              settled = true;
+            }
+          }
+          if (settled) {
+            stopped = true;
+            controller.abort();
+            return;
           }
         }
       } catch {
@@ -207,5 +286,26 @@ export function watchCronExecutionSession(sessionId: string, hasCronMetadata = f
   return () => {
     stopped = true;
     controller.abort();
+  };
+}
+
+/**
+ * 同时盯多个 cron 执行会话：当前打开的 + 立即执行记下的后台会话。
+ * 后台会话在收尾后停订；前台会话保持原样（人还在看就继续重连）。
+ */
+export function watchCronExecutionSessions(
+  sessionIds: string[],
+  foregroundSessionId?: string,
+  foregroundHasCronMetadata = false,
+): () => void {
+  const unique = [...new Set(sessionIds.map((id) => String(id || '').trim()).filter(Boolean))];
+  const stoppers = unique.map((id) =>
+    watchCronExecutionSession(id, {
+      stopOnSettled: id !== foregroundSessionId,
+      hasCronMetadata: id === foregroundSessionId ? foregroundHasCronMetadata : false,
+    }),
+  );
+  return () => {
+    for (const stop of stoppers) stop();
   };
 }

@@ -11,9 +11,9 @@ import {
   useWorkspaceStore,
   useCronStore,
   filterJobsForProject,
-  shouldUseCronUnreadListFallback,
   type SidebarCronJob,
 } from '../../stores';
+import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
   getProjectNewLabel,
@@ -833,14 +833,14 @@ export function ConversationSidebar({
     void loadCronJobs();
   }, [peek, loadCronJobs]);
 
-  // 企业 HTTP：没有常驻 WS 收 cron 终稿，侧边栏轻量轮询 list，靠 last_session_id
-  // 变化标未读蓝点。个人版 / websocket 不轮询，仍只靠推送。
+  // 企业 HTTP：轻量轮询 list，只为发现 active_session_id（到点跑起来），
+  // 再交给后台 live；不在这里根据 last_session_id 标未读。
   useEffect(() => {
-    if (peek || !shouldUseCronUnreadListFallback()) return;
+    if (peek || !shouldDiscoverCronActiveSessions()) return;
     const reload = () => {
       void loadCronJobs();
     };
-    const intervalId = window.setInterval(reload, 15000);
+    const intervalId = window.setInterval(reload, 5000);
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') reload();
     };

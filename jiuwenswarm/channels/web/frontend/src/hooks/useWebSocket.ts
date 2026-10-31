@@ -85,6 +85,7 @@ import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { getWebTransport } from '../utils/env';
+import { shouldMarkCronUnreadFromFinal } from '../features/cron/cronUnreadFallback';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -3550,8 +3551,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             const cronProjectId = cronJob?.project_id || 'default';
             void useCronStore.getState().loadCronSessions(cronProjectId, cronJobId);
           }
-          // 非占位（最终结果）广播到达时标记定时任务未读
-          if (cronJobId && !isPlaceholder) {
+          // 只有整趟终态推送才亮蓝点。企业版直播中间段 chat.final 也会带上来，
+          // 见 final 就标会「会话还在跑、蓝点已经亮了」。
+          if (
+            cronJobId &&
+            shouldMarkCronUnreadFromFinal({
+              is_placeholder: isPlaceholder,
+              status: cronStatus,
+            })
+          ) {
             useCronStore.getState().markCronJobUnread(cronJobId);
           }
         }
@@ -4819,6 +4827,33 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         };
         updateSession(sessionId, sessionPatch);
         useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
+        // 企业版 cron 整趟结束以 processing=false 为准（中间段 chat.final 不亮蓝点）
+        if (!isProcessingNow) {
+          const cronMeta = payload.cron as Record<string, unknown> | undefined;
+          let cronJobId =
+            cronMeta && typeof cronMeta.job_id === 'string' ? cronMeta.job_id.trim() : '';
+          if (!cronJobId) {
+            const lastRun = useCronStore.getState().lastRunSessionId;
+            for (const [jobId, sid] of Object.entries(lastRun)) {
+              if (sid === sessionId) {
+                cronJobId = jobId;
+                break;
+              }
+            }
+          }
+          if (
+            !cronJobId &&
+            (sessionId.startsWith('cron_') || sessionId.startsWith('__cron__'))
+          ) {
+            const matched = useCronStore.getState().jobs.find(
+              (job) => String(job.last_session_id || '').trim() === sessionId,
+            );
+            if (matched) cronJobId = matched.id;
+          }
+          if (cronJobId) {
+            useCronStore.getState().markCronJobUnread(cronJobId);
+          }
+        }
         if (!isProcessingNow) {
           useChatStore.getState().setThinking(sessionId, false);
           // 轮次终态兜底：思考段若因「思考后无文本增量/无工具调用」而未关闭，

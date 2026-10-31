@@ -2,17 +2,9 @@ import { create } from 'zustand';
 import { webRequest } from '../services/webClient';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
 import { jobBelongsToProject } from '../components/CronPanel/cronProjectDisplay';
-import {
-  reconcileCronUnreadFromJobs,
-  shouldUseCronUnreadListFallback,
-} from '../features/cron/cronUnreadFallback';
+import { adoptActiveCronSessions } from '../features/cron/cronActiveSessionDiscovery';
 import type { Session } from '../types';
 import type { CronRunUpdate } from '../types/cron';
-
-export {
-  reconcileCronUnreadFromJobs,
-  shouldUseCronUnreadListFallback,
-} from '../features/cron/cronUnreadFallback';
 
 export interface SidebarCronJob {
   id: string;
@@ -22,8 +14,13 @@ export interface SidebarCronJob {
   cron_expr: string;
   project_id: string;
   session_id?: string;
-  /** 最近一次成功执行的会话；企业 HTTP 未读兜底靠它与本地「已读水位」对比 */
+  /** 最近一次成功执行的会话 */
   last_session_id?: string;
+  /**
+   * 正在执行的会话号（企业 list 挂载）。
+   * 前端发现后写入 lastRunSessionId 并后台订 live；不在此字段上直接标未读。
+   */
+  active_session_id?: string;
   // 推送频道 ID,字符串或逗号分隔的多个(对齐后端 CronJob.to_dict().targets);空串按后端默认 web
   targets?: string;
   created_at: number | string | null;
@@ -38,7 +35,6 @@ export function isWebChannelJob(targets?: string): boolean {
 }
 
 const CRON_UNREAD_KEY = 'jiuwenswarm_cron_unread';
-const CRON_SEEN_LAST_SESSION_KEY = 'jiuwenswarm_cron_seen_last_session';
 
 interface CronState {
   runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
@@ -51,13 +47,11 @@ interface CronState {
   cronSessions: Record<string, Session[]>;
   // cron_id → 加载中状态
   cronSessionsLoading: Record<string, boolean>;
-  // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由
+  // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由 / 后台 live
   lastRunSessionId: Record<string, string>;
   setLastRunSessionId: (jobId: string, sessionId: string) => void;
-  // 定时任务未读状态（is_placeholder=false 的广播到达时标记，点击后清除）
+  // 定时任务未读状态（整趟收尾时标记，点击后清除）
   unreadCronJobs: Record<string, boolean>;
-  /** 企业 HTTP 兜底：已读到的 last_session_id 水位 */
-  seenCronLastSessionByJob: Record<string, string>;
   markCronJobUnread: (jobId: string) => void;
   clearCronJobUnread: (jobId: string) => void;
   /** @returns 是否拉取成功；失败时保留已有列表，方便调用方重试。 */
@@ -76,45 +70,18 @@ function persistCronUnread(state: Record<string, boolean>) {
   });
 }
 
-function persistCronSeenLastSession(state: Record<string, string>) {
-  queueMicrotask(() => {
-    try { localStorage.setItem(CRON_SEEN_LAST_SESSION_KEY, JSON.stringify(state)); } catch { /* ignore */ }
-  });
-}
-
-function readJsonRecord(key: string): Record<string, unknown> {
+function readUnreadCronJobs(): Record<string, boolean> {
   try {
-    const value = JSON.parse(localStorage.getItem(key) || '{}');
-    return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+    const value = JSON.parse(localStorage.getItem(CRON_UNREAD_KEY) || '{}');
+    if (typeof value !== 'object' || value === null) return {};
+    const out: Record<string, boolean> = {};
+    for (const [jobId, flag] of Object.entries(value as Record<string, unknown>)) {
+      if (flag === true) out[jobId] = true;
+    }
+    return out;
   } catch {
     return {};
   }
-}
-
-function readUnreadCronJobs(): Record<string, boolean> {
-  const raw = readJsonRecord(CRON_UNREAD_KEY);
-  const out: Record<string, boolean> = {};
-  for (const [jobId, flag] of Object.entries(raw)) {
-    if (flag === true) out[jobId] = true;
-  }
-  return out;
-}
-
-function readSeenCronLastSession(): Record<string, string> {
-  const raw = readJsonRecord(CRON_SEEN_LAST_SESSION_KEY);
-  const out: Record<string, string> = {};
-  for (const [jobId, sid] of Object.entries(raw)) {
-    const text = String(sid || '').trim();
-    if (text) out[jobId] = text;
-  }
-  return out;
-}
-
-function seenMapsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  return aKeys.every((key) => a[key] === b[key]);
 }
 
 export const useCronStore = create<CronState>((set, get) => ({
@@ -161,7 +128,6 @@ export const useCronStore = create<CronState>((set, get) => ({
   setLastRunSessionId: (jobId, sessionId) =>
     set((s) => ({ lastRunSessionId: { ...s.lastRunSessionId, [jobId]: sessionId } })),
   unreadCronJobs: readUnreadCronJobs(),
-  seenCronLastSessionByJob: readSeenCronLastSession(),
   markCronJobUnread: (jobId) => {
     set((s) => {
       if (s.unreadCronJobs[jobId]) return s;
@@ -172,25 +138,11 @@ export const useCronStore = create<CronState>((set, get) => ({
   },
   clearCronJobUnread: (jobId) => {
     set((s) => {
-      const sid = String(
-        s.jobs.find((job) => job.id === jobId)?.last_session_id || '',
-      ).trim();
-      const nextUnread = { ...s.unreadCronJobs };
-      const hadUnread = Boolean(nextUnread[jobId]);
-      if (hadUnread) delete nextUnread[jobId];
-      const nextSeen = { ...s.seenCronLastSessionByJob };
-      let seenChanged = false;
-      if (sid && nextSeen[jobId] !== sid) {
-        nextSeen[jobId] = sid;
-        seenChanged = true;
-      }
-      if (!hadUnread && !seenChanged) return s;
-      if (hadUnread) persistCronUnread(nextUnread);
-      if (seenChanged) persistCronSeenLastSession(nextSeen);
-      return {
-        unreadCronJobs: hadUnread ? nextUnread : s.unreadCronJobs,
-        seenCronLastSessionByJob: seenChanged ? nextSeen : s.seenCronLastSessionByJob,
-      };
+      if (!s.unreadCronJobs[jobId]) return s;
+      const next = { ...s.unreadCronJobs };
+      delete next[jobId];
+      persistCronUnread(next);
+      return { unreadCronJobs: next };
     });
   },
 
@@ -200,37 +152,13 @@ export const useCronStore = create<CronState>((set, get) => ({
       const payload = await webRequest<{ jobs: SidebarCronJob[] }>('cron.job.list');
       // 侧边栏是 Web 端工作区,只展示 targets 含 "web" 的定时任务
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
-      if (!shouldUseCronUnreadListFallback()) {
-        set({ jobs: webJobs, isLoading: false });
-        return true;
-      }
-      const { nextSeen, unreadJobIds } = reconcileCronUnreadFromJobs(
+      set({ jobs: webJobs, isLoading: false });
+      // 到点触发：list 带上 active_session_id → 记入 lastRunSessionId → App 后台 live
+      adoptActiveCronSessions(
         webJobs,
-        get().seenCronLastSessionByJob,
+        get().setLastRunSessionId,
+        () => get().lastRunSessionId,
       );
-      set((s) => {
-        const seenChanged = !seenMapsEqual(nextSeen, s.seenCronLastSessionByJob);
-        let nextUnread = s.unreadCronJobs;
-        let unreadChanged = false;
-        if (unreadJobIds.length > 0) {
-          nextUnread = { ...s.unreadCronJobs };
-          for (const jobId of unreadJobIds) {
-            if (!nextUnread[jobId]) {
-              nextUnread[jobId] = true;
-              unreadChanged = true;
-            }
-          }
-        }
-        // 首次种子只推进水位、不标未读时也要落盘，否则刷新会反复当「首次」
-        if (seenChanged) persistCronSeenLastSession(nextSeen);
-        if (unreadChanged) persistCronUnread(nextUnread);
-        return {
-          jobs: webJobs,
-          isLoading: false,
-          seenCronLastSessionByJob: seenChanged ? nextSeen : s.seenCronLastSessionByJob,
-          unreadCronJobs: unreadChanged ? nextUnread : s.unreadCronJobs,
-        };
-      });
       return true;
     } catch {
       // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，

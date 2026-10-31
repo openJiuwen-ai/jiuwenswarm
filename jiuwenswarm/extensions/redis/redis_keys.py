@@ -67,3 +67,11 @@ def cron_permission_hold_by_session_rel(session_id: str) -> str:
     if not sid:
         raise ValueError("session_id is required")
     return f"gateway:cron_permission_hold_by_session:{sid}"
+
+
+def cron_active_sessions_hash_rel() -> str:
+    """``gateway:cron_active_sessions`` Hash：job_id → 正在执行的 cron 会话号。
+
+    企业多副本下列表可能打到非执行 Pod；前端靠这个字段发现到点会话并订 live。
+    """
+    return "gateway:cron_active_sessions"
