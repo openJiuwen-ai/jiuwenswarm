@@ -164,8 +164,8 @@ Tests are in `tests/agents/swarm/test_group_org_bootstrap.py`. The single-team t
 
 - A repeated `run_team` for the same multi-@ message stays on the organization path while that run is live. After that plan has ended, another `run_team` does not open a single-team execution and does not post to the group. A different message is routed by the proxy: an organization update, a new private run, or a follow-up.
 - Whether a message belongs to the organization is the model's judgement, with no rule behind it. A wrong call turns an organization addition into a new task, or sends an unrelated task into the organization instance.
-- The Owner background waits at most 3600 seconds. On timeout the plan becomes `failed`, no `expert-result-` message is written, and the Owner proxy posts a failure message (`expert-error-{plan_id}`).
-- Member join keeps waiting while a proxy is still handling the message, up to the 3600-second result wait. If that turn has ended without `run_team`, or the proxy status cannot be read, the round fails at 120 seconds instead of starting short-handed.
+- The Owner background waits until the round finishes or fails, with no time limit. On failure, cancellation, an unbound Owner instance, or a queue task that exits with an error or is cancelled, the plan becomes `failed` and no `expert-result-` message is written. On failure the Owner proxy posts `expert-error-{plan_id}`. A killed process cannot write that status; the plan still becomes `expired` after 62 minutes when neither an Owner background nor a queue task is alive.
+- Member join keeps waiting while a proxy is still handling the message, with no further time limit. If that turn has ended without `run_team`, or the proxy status cannot be read, the round fails at 120 seconds instead of starting short-handed.
 - The panel shows the organization execution card after the organization is created, with one row per expert team. The behavior is in the next section.
 
 ## 10. Organization execution card
@@ -180,7 +180,7 @@ The title is the parent task: the user text stored on the plan. After root `groo
 
 Leave `member_name` empty and store `owner_member`. Single-team lookup and `team.task` attachment use `member_name`. An organization card that used the Owner's name would collide with the Owner's single-team execution, and internal tasks would be written into its rows.
 
-Exceptions use the card's existing failed status. There is no new error-text area. A failed child row is `failed`. If Owner setup fails or the result wait times out, the card is `failed` and every unfinished row is `failed`, so the existing failure icon and status label show it. The Owner proxy also posts one "执行失败：<cause>" message, so the group never goes silent.
+Exceptions use the card's existing failed status. There is no new error-text area. A failed child row is `failed`. If Owner setup fails, the organization root fails, or the Owner wait is cancelled, the card is `failed` and every unfinished row is `failed`, so the existing failure icon and status label show it. When setup or the root fails, the Owner proxy also posts one "执行失败：<cause>" message (`expert-error-{plan_id}`), so the group never goes silent.
 
 After the Owner posts, the card becomes `completed` and stores that message's `message_id`. View result stays the current in-page link. Besides matching the sender to `member_name`, also match a sender equal to `owner_member` when the message id equals the card's `message_id`.
 
