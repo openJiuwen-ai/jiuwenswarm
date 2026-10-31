@@ -22,6 +22,7 @@ from jiuwenswarm.common.utils import logger
 
 ACTIVE_BEHAVIOR: contextvars.ContextVar[tuple | None] = contextvars.ContextVar("active_behavior", default=None)
 PENDING_SKILL = "behavior_security.pending_skill"
+REPORT_OWNER_ID = "behavior.report_owner_id"
 _OUTPUT_CHUNK_CHARS = 5500
 _OUTPUT_CHUNK_OVERLAP = 256
 _MAX_OUTPUT_INSPECTION_CHARS = 64 * 1024
@@ -92,7 +93,7 @@ class BehaviorSecurityBridge:
         self.config = config
         self.transport = transport
         self.tasks: set[asyncio.Task] = set()
-        self._report_sessions: dict[asyncio.Task, str] = {}
+        self._report_owners: dict[asyncio.Task, str] = {}
         self.decisions: OrderedDict[str, PermissionResult] = OrderedDict()
         self.local_decisions: OrderedDict[str, PermissionResult] = OrderedDict()
 
@@ -136,21 +137,22 @@ class BehaviorSecurityBridge:
             logger.warning("[behavior-security] %s %s unavailable", event["stage"], event["mode"])
             return {"decision": "unavailable", "reason": "request_failed"}
 
-    def report(self, event: dict) -> None:
+    def report(self, event: dict, *, owner_id: str | None = None) -> None:
         if len(self.tasks) >= 64:
             logger.warning("[behavior-security] local report queue full")
             return
         task = asyncio.create_task(self._send({**event, "mode": "report"}))
         self.tasks.add(task)
-        self._report_sessions[task] = event.get("sessionId", "")
+        if owner_id:
+            self._report_owners[task] = owner_id
         task.add_done_callback(self.tasks.discard)
-        task.add_done_callback(lambda completed: self._report_sessions.pop(completed, None))
+        task.add_done_callback(lambda completed: self._report_owners.pop(completed, None))
 
-    def cancel_reports(self, session_id: str) -> None:
+    def cancel_reports(self, owner_id: str | None) -> None:
         """Retire only reports owned by the agent being unloaded."""
-        if session_id:
-            for task, owner in list(self._report_sessions.items()):
-                if owner == session_id:
+        if owner_id:
+            for task, owner in list(self._report_owners.items()):
+                if owner == owner_id:
                     task.cancel()
 
     @staticmethod
@@ -202,17 +204,19 @@ class BehaviorSecurityBridge:
                 )
         return PermissionResult(PermissionLevel.ALLOW, reason="cloud:allow")
 
-    async def decide(self, event: dict, local: PermissionResult) -> PermissionResult:
+    async def decide(
+        self, event: dict, local: PermissionResult, *, owner_id: str | None = None,
+    ) -> PermissionResult:
         revision = self.policy_revision()
         key = event["eventId"]
         if key in self.decisions:
             return self.decisions[key]
         cloud_enabled = cloud_authorization_enabled(self.config)
         if not local.is_undetermined:
-            self.report(event)
+            self.report(event, owner_id=owner_id)
             result = local
         elif not cloud_enabled:
-            self.report(event)
+            self.report(event, owner_id=owner_id)
             # Normal tool checks already use Core defaults when cloud is off.
             # Installation hooks may still arrive without a prior local result.
             tool = event["tool"]
@@ -259,14 +263,16 @@ class BehaviorSecurityBridge:
         self.local_decisions[_event_id(ctx, "tool.before")] = request.result
         if len(self.local_decisions) > 512:
             self.local_decisions.popitem(last=False)
-        return await self.decide(raw_event(ctx, "tool.before"), request.result)
+        return await self.decide(
+            raw_event(ctx, "tool.before"), request.result, owner_id=ctx.extra.get(REPORT_OWNER_ID),
+        )
 
     async def close(self):
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.tasks.clear()
-        self._report_sessions.clear()
+        self._report_owners.clear()
 
 
 def skill_confirmation_pending(ctx: Any) -> bool:
@@ -317,7 +323,7 @@ async def check_agent_skill_install(staged: Path, destination: Path, name: str, 
         # Explicit ASK was already confirmed for this install tool invocation.
         if local.needs_approval:
             local = PermissionResult(PermissionLevel.ALLOW, reason="local_install_confirmation")
-        return await bridge.decide(event, local)
+        return await bridge.decide(event, local, owner_id=ctx.extra.get(REPORT_OWNER_ID))
 
     result = await before_skill_install(context, evaluate)
     if ctx.extra.get("behavior.finished"):
