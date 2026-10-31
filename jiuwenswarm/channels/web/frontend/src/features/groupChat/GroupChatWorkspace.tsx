@@ -17,6 +17,8 @@ import { FileDownloadList } from '../../components/ChatPanel/MessageItem';
 import { getFileIdentityKey } from '../../utils/fileDownloadDedup';
 import { groupChatClient, type GroupExecution, type GroupInfo, type GroupMessage, type GroupQuestion } from './client';
 import { MemberPicker } from './MemberPicker';
+import { createAgentGroupManagementClient } from '../agentManagement/groupClient';
+import type { AgentGroupCatalogItem } from '../agentManagement/types';
 import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
@@ -43,8 +45,23 @@ const FINISHED_EXECUTIONS = new Set(['completed', 'failed', 'cancelled', 'interr
 export function GroupChatWorkspace({ groupId, directory, onBack }: {
   groupId: string; directory: GroupDirectory; onBack?: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [group, setGroup] = useState<GroupInfo | null>(null);
+  const [expertTeams, setExpertTeams] = useState<AgentGroupCatalogItem[]>([]);
+  const expertTeamIds = JSON.stringify(group?.members
+    .filter((member) => member.kind === 'agent_group').map((member) => member.id).sort() ?? []);
+
+  useEffect(() => {
+    let active = true;
+    setExpertTeams([]);
+    if (expertTeamIds === '[]') return;
+    void createAgentGroupManagementClient().listGroups({ filter: 'all' }).then((teams) => {
+      if (active) setExpertTeams(teams);
+    }).catch(() => {
+      // Keep the original member description if the optional catalog cannot be loaded.
+    });
+    return () => { active = false; };
+  }, [expertTeamIds, i18n.language]);
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [executions, setExecutions] = useState<GroupExecution[]>([]);
   const [questions, setQuestions] = useState<GroupQuestion[]>([]);
@@ -600,8 +617,18 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
             <TeamMemberAvatar member="user" className="group-chat-member-avatar" alt="" />
             <span>{t('groupChat.you')}</span>
           </div>}
-          {visibleMembers.map((member) => <button type="button" className="group-chat-member-row" key={member.member_name}
-            disabled={sending} onClick={() => mention(member.member_name)} title={member.description || t('groupChat.mention')}
+          {visibleMembers.map((member) => {
+            const team = member.kind === 'agent_group' ? expertTeams.find((item) =>
+              item.id === member.id || item.name === member.id) : undefined;
+            const expertNames = team?.members.map((expert) => expert.displayName.trim()
+              || expert.agentTemplateId || expert.id) ?? [];
+            const description = member.description || team?.description || '';
+            const tooltip = expertNames.length ? [
+              description,
+              `${t('groupChat.teamMembers', { count: expertNames.length })}\n${expertNames.join('\n')}`,
+            ].filter(Boolean).join('\n\n') : description || t('groupChat.mention');
+            return <button type="button" className="group-chat-member-row" key={member.member_name}
+            disabled={sending} onClick={() => mention(member.member_name)} title={tooltip}
             data-testid="group-chat-member" data-variant={member.member_name}>
             <TeamMemberAvatar member={member.member_name} className="group-chat-member-avatar" alt="" />
             <span>{member.display_name || member.member_name}</span>
@@ -609,7 +636,8 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
               {member.cli_agent === 'claude' ? 'Claude Code' : 'Codex'}
             </small>}
             {member.kind === 'agent_group' && <small className="group-chat-tag is-team">{t('groupChat.team')}</small>}
-          </button>)}
+          </button>;
+          })}
           {!showSelf && !visibleMembers.length && <p className="group-chat-muted" data-testid="group-chat-no-member-match">
             {t('groupChat.noMemberMatch')}</p>}
         </div>
