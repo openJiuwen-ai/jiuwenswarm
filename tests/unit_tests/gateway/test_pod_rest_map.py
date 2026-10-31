@@ -126,7 +126,19 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         assert sent.used_rpc_fallback is False
 
 
-def test_agent_templates_list_uses_the_dedicated_url() -> None:
+def test_personal_agent_templates_list_has_no_dedicated_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    with pytest.raises(HttpMethodNotHandled, match="还没有 HTTP 处理"):
+        assemble_rest_request(
+            _envelope("agent_templates.list"),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+def test_agent_templates_list_uses_the_dedicated_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     sent = assemble_rest_request(
         _envelope("agent_templates.list"),
         base_url="http://10.0.0.8:8766",

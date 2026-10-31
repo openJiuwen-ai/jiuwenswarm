@@ -13,7 +13,7 @@ from gateway.storage.revision import (
     revision_of,
 )
 from gateway.config.enterprise.tables.application_config_models import LOG_MASKING_RULE_TABLE_DEF
-from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
+from gateway.common.log_masking.engine import LogMaskingEngine
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import format_ts, parse_iso_datetime, utc_now
 from ...schemas.application_config_schemas import (
@@ -88,7 +88,7 @@ async def _upsert_log_masking_rule_once(
     repo: EnterpriseRecordRepository,
     request: LogMaskingRuleCreateRequest,
 ) -> dict[str, Any]:
-    from jiuwenswarm.infrastructure.log_masking.engine import (
+    from gateway.common.log_masking.engine import (
         normalize_replacement,
         normalize_rule_id,
         normalize_source,
@@ -163,7 +163,7 @@ async def _update_log_masking_rule_once(
     rule_id: str,
     request: LogMaskingRuleUpdateRequest,
 ) -> dict[str, Any] | None:
-    from jiuwenswarm.infrastructure.log_masking.engine import (
+    from gateway.common.log_masking.engine import (
         normalize_replacement,
         normalize_rule_id,
         normalize_source,
@@ -226,7 +226,7 @@ async def _delete_log_masking_rule_record(
     repo: EnterpriseRecordRepository,
     rule_id: str,
 ) -> bool:
-    from jiuwenswarm.infrastructure.log_masking.engine import normalize_rule_id
+    from gateway.common.log_masking.engine import normalize_rule_id
 
     rid = normalize_rule_id(rule_id)
     return await repo.delete(rule_id=rid)

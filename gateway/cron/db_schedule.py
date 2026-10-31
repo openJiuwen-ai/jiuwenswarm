@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from gateway.enterprise import is_enterprise
 from gateway.cron.models import CronJob
-from jiuwenswarm.runtime.cron.cron_expr import (
+from gateway.runtime.cron.cron_expr import (
     is_croniter_no_next_date,
     next_cron_datetime,
 )

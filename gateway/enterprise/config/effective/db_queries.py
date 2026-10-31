@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.utils import logger
+from gateway.common.utils import logger
 from gateway.storage.backends.db import reader as _db_reader
 
 from .schemas import SLOT_ENTITY_TABLE, TemplateRefSlot

@@ -212,6 +212,53 @@ async def test_idle_input_owns_normal_execution_and_output(setup_runtime, unary)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("unary", [False, True])
+@pytest.mark.parametrize("query", ["", "Compare this screenshot"])
+async def test_idle_image_steer_is_rejected_before_ack_or_execution(setup_runtime, tmp_path, monkeypatch, unary, query):
+    from jiuwenswarm.runtime.session_input import SessionInputTargetError
+    from jiuwenswarm.server.runtime.attachments import steer_images
+
+    runtime, agent, _ = setup_runtime
+    other_upload = tmp_path / "agent" / "sessions" / "other-session" / "uploads" / "private.png"
+    other_upload.parent.mkdir(parents=True)
+    other_upload.write_bytes(b"private image bytes must not be read")
+    resolve_images = Mock(side_effect=AssertionError("idle image references must not be read"))
+    monkeypatch.setattr(steer_images, "resolve_steer_image_references", resolve_images)
+    req = request(query=query, media_items=[{
+        "type": "image", "path": str(other_upload), "filename": other_upload.name,
+        "mime_type": "image/png",
+    }])
+    req.is_stream = not unary
+    received = []
+    with pytest.raises(SessionInputTargetError, match="requires an active execution") as rejected:
+        if unary:
+            received.extend(await runtime.invoke(req))
+        else:
+            async for event in runtime.stream(req):
+                received.append(event)
+    assert rejected.value.code == "SESSION_INPUT_TARGET_CHANGED"
+    assert received == []
+    runtime._prepare_chat_turn.assert_not_awaited()
+    resolve_images.assert_not_called()
+    assert not agent.entered.is_set() and not agent.delivered
+    assert other_upload.read_bytes() == b"private image bytes must not be read"
+
+
+@pytest.mark.asyncio
+async def test_image_only_steer_still_routes_to_current_execution(setup_runtime):
+    runtime, agent, _ = setup_runtime
+    original = asyncio.create_task(collect(runtime.stream(request("original", input_mode=None))))
+    await asyncio.wait_for(agent.entered.wait(), 2)
+    images = [{"type": "image", "path": "/session/uploads/shot.png", "filename": "shot.png", "mime_type": "image/png"}]
+    events = await collect(runtime.stream(request("image-supplement", query="", media_items=images)))
+    assert [event.event_type for event in events] == ["runtime.accepted"]
+    assert agent.delivered[-1].params["media_items"] == images
+    assert not original.done() and not agent.cancelled
+    agent.release.set()
+    await original
+
+
+@pytest.mark.asyncio
 async def test_input_does_not_answer_or_supersede_pending_interaction(setup_runtime):
     runtime, agent, _ = setup_runtime
     agent.question = True

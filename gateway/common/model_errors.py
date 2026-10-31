@@ -1,16 +1,22 @@
-# Gateway 侧副本，源文件 jiuwenswarm/common/model_errors.py；改动请同步两侧。
-# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 """Stable model-selection error codes shared by runtime and RPC layers."""
 
 from __future__ import annotations
 
 from typing import Any
 
+
 MODEL_SELECTION_NOT_FOUND = "MODEL_SELECTION_NOT_FOUND"
 MODEL_SELECTION_DISABLED = "MODEL_SELECTION_DISABLED"
 MODEL_SELECTION_FORBIDDEN = "MODEL_SELECTION_FORBIDDEN"
 MODEL_GROUP_INVALID = "MODEL_GROUP_INVALID"
+MODEL_GROUP_NO_AVAILABLE_ROUTE = "MODEL_GROUP_NO_AVAILABLE_ROUTE"
+MODEL_REQUEST_CONFIG_INVALID = "MODEL_REQUEST_CONFIG_INVALID"
+MODEL_ROUTE_FAILED = "MODEL_ROUTE_FAILED"
+MODEL_STREAM_INTERRUPTED = "MODEL_STREAM_INTERRUPTED"
+MODEL_OUTCOME_UNKNOWN = "MODEL_OUTCOME_UNKNOWN"
+MODEL_SELECTION_REFERENCED = "MODEL_SELECTION_REFERENCED"
 MODEL_RUNTIME_UNAVAILABLE = "MODEL_RUNTIME_UNAVAILABLE"
+TEAM_MODEL_SELECTION_STALE = "TEAM_MODEL_SELECTION_STALE"
 
 
 class ModelSelectionError(RuntimeError):
@@ -21,3 +27,4 @@ class ModelSelectionError(RuntimeError):
 
     def to_payload(self) -> dict[str, Any]:
         return {"code": self.code, "message": str(self), **self.details}
+

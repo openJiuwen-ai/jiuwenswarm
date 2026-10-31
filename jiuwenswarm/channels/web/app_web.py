@@ -2390,6 +2390,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _IMMUTABLE_ASSET_RE = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$")
     _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
     _REVALIDATE_CACHE_CONTROL = "no-cache"
+    _STATIC_EXTENSIONS = frozenset({
+        ".js", ".mjs", ".css", ".map", ".svg", ".png", ".jpg", ".jpeg",
+        ".ico", ".webp", ".gif", ".woff", ".woff2", ".ttf", ".eot",
+        ".json", ".webmanifest",
+    })
 
     @classmethod
     def _cache_control_for_static(cls, rel_path: str) -> str:
@@ -2427,9 +2432,33 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             base_dir = Path(self.directory or os.getcwd()).resolve()
             target = (base_dir / rel_path).resolve()
             in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+
+            # Relative Vite URLs on nested SPA routes resolve to /chat/assets/...
+            # (or deeper prefixes). Match the nginx deployment's assets alias.
+            asset_request = "/assets/" in req_path
+            if in_base and not target.exists() and asset_request:
+                asset_rel_path = "assets/" + req_path.split("/assets/", 1)[1]
+                asset_root = (base_dir / "assets").resolve()
+                asset_target = (base_dir / asset_rel_path).resolve()
+                in_assets = os.path.commonpath([str(asset_root), str(asset_target)]) == str(asset_root)
+                asset_in_base = os.path.commonpath([str(base_dir), str(asset_target)]) == str(base_dir)
+                if in_assets and asset_in_base and asset_target.is_file():
+                    rel_path = asset_rel_path
+                    target = asset_target
+                    self.path = quote("/" + rel_path, safe="/")
+                    if parsed.query:
+                        self.path += "?" + parsed.query
         except (OSError, ValueError):
             self._static_cache_control = None
             self._write_json(400, {"error": "invalid_path"})
+            return None
+
+        # Missing assets must never receive an HTML document with status 200.
+        if (asset_request or Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS) and not (
+            in_base and target.is_file()
+        ):
+            self._static_cache_control = None
+            self.send_error(404, "File not found")
             return None
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。

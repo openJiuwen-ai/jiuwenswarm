@@ -1125,6 +1125,7 @@ class WebChannel(BaseWsChannel):
                 # 不能把它的流式输出复用到上一轮用户消息上。
                 "request_id", "turn_request_id", "execution_id", "final_mode", "segment_id",
                 "output_phase_id", "output_suppressed", "output_order", "timestamp",
+                "delivery_reconciled",
                 "message_origin", "session_message_id", "cross_session",
                 "team_name", "team_id",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
@@ -1648,7 +1649,7 @@ class WebChannel(BaseWsChannel):
         if not baseline or self.agent_client is None:
             return
         from gateway.routing.e2a_proxy import fetch_agent_unary
-        from jiuwenswarm.common.request_identity import apply_routing_metadata
+        from gateway.common.request_identity import apply_routing_metadata
 
         try:
             ok, payload = await fetch_agent_unary(
@@ -1733,7 +1734,7 @@ class WebChannel(BaseWsChannel):
             ws, _flat_query, remote, route_type="ws",
         )
         # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
-        from jiuwenswarm.common.request_identity import normalize_routing_identity
+        from gateway.common.request_identity import normalize_routing_identity
         from gateway.enterprise import is_enterprise
 
         _routing = normalize_routing_identity(
@@ -2089,7 +2090,7 @@ class WebChannel(BaseWsChannel):
             sessions.add(session_id)
 
         if method == "chat.send":
-            from jiuwenswarm.common.request_identity import apply_routing_metadata
+            from gateway.common.request_identity import apply_routing_metadata
 
             try:
                 params = await self._process_files(
@@ -2123,7 +2124,7 @@ class WebChannel(BaseWsChannel):
         # Preserve client top-level is_stream (e.g. command.goal set/resume).
         # chat.send / history.get still become stream in _normalize_gateway_message
         # even when the client omits this field.
-        from jiuwenswarm.common.request_identity import (
+        from gateway.common.request_identity import (
             apply_routing_metadata,
             normalize_routing_identity,
         )

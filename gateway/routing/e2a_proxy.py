@@ -30,7 +30,7 @@ from typing import Any
 
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import ReqMethod
-from jiuwenswarm.common.request_identity import apply_routing_metadata
+from gateway.common.request_identity import apply_routing_metadata
 from gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,

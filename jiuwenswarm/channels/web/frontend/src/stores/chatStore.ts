@@ -33,6 +33,7 @@ import {
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs } from '../utils/timestamp';
+import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   consumePendingQuestion as consumeQueuedQuestion,
   clearPermissionQuestions as clearQueuedPermissionQuestions,
@@ -106,6 +107,7 @@ type TaskInputStatus = 'queued' | 'sending' | 'failed' | 'unknown';
 export interface TaskInputReceipt {
   taskId: string;
   content: string;
+  mediaItems?: MediaItem[];
   requestId?: string;
   status: 'sending' | 'accepted' | 'failed' | 'unknown';
   error?: string;
@@ -1914,7 +1916,10 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       )
         return state;
       const task = runtime.taskQueue.find((item) => item.id === taskId);
-      if (!task || !['queued', 'failed'].includes(task.status) || !task.content.trim() || task.mediaItems?.length)
+      if (
+        !task || !['queued', 'failed'].includes(task.status) ||
+        (!task.content.trim() && !task.mediaItems?.length) || !areSteerImagesReady(task.mediaItems)
+      )
         return state;
       claimed = task;
       return {
@@ -1930,6 +1935,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               [taskId]: {
                 taskId,
                 content: task.content,
+                ...(task.mediaItems?.length ? { mediaItems: task.mediaItems } : {}),
                 status: 'sending',
                 timestamp: new Date().toISOString(),
                 supplementalInput: {
@@ -1987,6 +1993,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (status === 'accepted' && delivery === 'chat') {
         chatMessage = {
           id: `user-steer-${taskId}`, role: 'user', content: receipt.content, timestamp: receipt.timestamp,
+          ...(receipt.mediaItems?.length ? { mediaItems: receipt.mediaItems } : {}),
         };
       }
       const acceptedMessages = status === 'accepted' && !chatMessage && delivery !== 'stream'
@@ -1994,6 +2001,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             id: `user-steer-${taskId}`,
             role: 'user',
             content: receipt.content,
+            ...(receipt.mediaItems?.length ? { mediaItems: receipt.mediaItems } : {}),
             timestamp: receipt.timestamp,
             supplementalInput: receipt.supplementalInput,
           }])

@@ -17,14 +17,14 @@ try {
 const t = (key) => `<${key}>`;
 const RAW = "[181001] model call failed: Error code: 401 - {'error_code': 'APIG.0305'}";
 
-test('upstream free-model failures get an actionable hint and keep the raw text', () => {
+test('upstream free-model failures show actionable guidance without raw diagnostics', () => {
   for (const [code, key] of [
     ['login_required', 'auth.huawei.modelError.loginRequired'],
     ['quota_exhausted', 'auth.huawei.quota.exhaustedHint'],
     ['rate_limited', 'auth.huawei.modelError.rateLimited'],
     ['free_model_unavailable', 'auth.huawei.modelError.unavailable'],
   ]) {
-    assert.equal(describeChatError({ code, upstream: true }, RAW, t), `<${key}>（${RAW}）`);
+    assert.equal(describeChatError({ code, upstream: true }, RAW, t), `<${key}>`);
   }
 });
 
@@ -35,6 +35,13 @@ test('precheck login_required already reads well and is not wrapped', () => {
 
 test('model_not_configured is replaced by the setup guidance', () => {
   assert.equal(describeChatError({ code: 'model_not_configured' }, 'x', t), '<chat.modelNotConfigured>');
+});
+
+test('supplemental delivery failure explains that the original task and supplement are incomplete', () => {
+  assert.equal(
+    describeChatError({ code: 'SESSION_INPUT_DELIVERY_FAILED' }, 'private reconciliation diagnostics', t),
+    '<chat.steerDeliveryFailed>',
+  );
 });
 
 test('errors without a known code are shown as-is', () => {

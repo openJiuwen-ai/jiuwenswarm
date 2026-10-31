@@ -56,7 +56,7 @@ from gateway.common.config import (
     update_preferred_language_in_config,
     update_updater_in_config,
 )
-from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
+from gateway.common.config_panel import config_set_handlers, models_handlers
 from gateway.common.model_catalog import ModelCatalog
 from gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -2385,7 +2385,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """按请求 bot_id 从 Gateway 企业库解析对话模型，不下发凭据。"""
         from types import SimpleNamespace
 
-        from jiuwenswarm.common.request_identity import (
+        from gateway.common.request_identity import (
             apply_routing_metadata,
             normalize_routing_identity,
         )
@@ -2484,10 +2484,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _config_validate_model(ws, req_id, params, session_id)
 
     async def _model_resource_rpc(ws, req_id, params, session_id, operation):
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             delete_model_resource, upsert_model_group_resource, upsert_model_resource,
         )
-        from jiuwenswarm.common.model_errors import (
+        from gateway.common.model_errors import (
             MODEL_SELECTION_NOT_FOUND, MODEL_SELECTION_REFERENCED, ModelSelectionError,
         )
         from gateway.common.model_selection import ModelSelection
@@ -4953,7 +4953,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _cron_agent_routing_metadata(ws):
         """把这次网页连接上的三个身份交给 Agent，用来打开对应工作区。"""
-        from jiuwenswarm.common.request_identity import apply_routing_metadata
+        from gateway.common.request_identity import apply_routing_metadata
 
         routing = getattr(ws, "_web_routing", None)
         if not isinstance(routing, dict):
@@ -5766,7 +5766,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
-    from jiuwenswarm.common.schema.message import ReqMethod as _FileReq
+    from openjiuwen_protocol.message import ReqMethod as _FileReq
 
     for file_method in (
         _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,

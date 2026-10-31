@@ -116,6 +116,8 @@ export interface Message {
    * 仅作为「任务用时」终点，避免 live 一直停在首包 delta 时间、刷新后变成 final 落盘时间。
    */
   completedAt?: string;
+  /** Server completion time before ISO rounding, bounding output already restored from history. */
+  outputReplayUntil?: number;
   /** 前端渲染身份，避免业务 id 重复或历史 prepend 导致 React key 抖动 */
   renderKey?: string;
   /** 仅用于大历史渐进发布；实时消息没有该标记。 */

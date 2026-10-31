@@ -36,7 +36,7 @@ from gateway.message_handler.message_handler import MessageHandler
 from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
 from gateway.runtime.cron.cron_expr import is_croniter_no_next_date, next_cron_datetime
 from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.common.request_identity import apply_routing_metadata
+from gateway.common.request_identity import apply_routing_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ class CronSchedulerService:
     def _redis_hold_required() -> bool:
         """多份网关一起跑时，这张纸条必须以 Redis 为准。Redis 读不到就先别开新的一轮。"""
         try:
-            from jiuwenswarm.extensions.redis.redis_runtime import get_declared_deployment_mode
+            from gateway.extensions.redis.redis_runtime import get_declared_deployment_mode
 
             mode = str(get_declared_deployment_mode() or "").strip().lower()
             return mode in {"distributed", "active-standby"}
@@ -492,8 +492,8 @@ class CronSchedulerService:
             return "", ""
         # 三份网关里，人可能在另一份上点完。Redis 没了，本机这份也作废。
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import cron_permission_hold_rel
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_keys import cron_permission_hold_rel
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 
@@ -618,11 +618,11 @@ class CronSchedulerService:
         if not self._redis_hold_required():
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_permission_hold_by_session_rel,
                 cron_permission_hold_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 
@@ -668,11 +668,11 @@ class CronSchedulerService:
         if not self._redis_hold_required():
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_permission_hold_by_session_rel,
                 cron_permission_hold_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 
@@ -708,11 +708,11 @@ class CronSchedulerService:
         if not sid:
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_permission_hold_by_session_rel,
                 cron_permission_hold_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import (
+            from gateway.extensions.redis.redis_runtime import (
                 get_gateway_redis_client_if_open,
             )
 
@@ -1274,14 +1274,18 @@ class CronSchedulerService:
             return False
         if not project_id or project_id in {"default", "default_code"}:
             return True
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
         _t0 = time.monotonic()
+        # 企业版冷启动 Agent Pod 启动常超过 10s；超时会取消在飞部署并删除正在启动的 Agent Pod。
+        # 个人版保持 10s；企业版放宽到 60s 盖过冷启。
+        gate_timeout_s = 60.0 if is_enterprise() else 10.0
         # 三个身份一起带上，Agent 才打开这个用户的工作区，而不是 default 空目录。
         ok, payload = await fetch_agent_unary(
             agent_client=self._agent_client, req_method=ReqMethod.PROJECT_LIFECYCLE,
             params={"project_id": project_id}, session_id=None, user_id=user_id,
-            channel_id="__cron__", timeout_seconds=10,
+            channel_id="__cron__", timeout_seconds=gate_timeout_s,
             metadata=apply_routing_metadata(
                 None,
                 {
@@ -1453,6 +1457,9 @@ class CronSchedulerService:
             raise ValueError(
                 f"scheduled tasks are not supported for target: {job.targets}"
             )
+        # 新建任务后立刻「立即执行」：本机 _jobs 可能还没 reload。
+        # 先塞进字典，否则马上到期的 wake 会在 _handle_event 里因查不到而静默丢掉。
+        self._jobs[job.id] = job
         if (
             not self._use_db_schedule()
             and not await self.project_execution_allowed(
@@ -1867,6 +1874,19 @@ class CronSchedulerService:
 
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
+        # 多副本 / 新建后立刻 run_now：事件堆里已有 wake，但本机 _jobs 还没
+        # reload。旧逻辑在下面「job is None 直接 return」，会静默丢掉整轮执行
+        # （会话已建、页面空白、last_run_at 仍空）。先回源读库再决定是否丢弃。
+        if job is None and ev.kind in ("wake", "push", "push_update"):
+            job = await self._store.get_job(ev.job_id)
+            if job is not None:
+                self._jobs[job.id] = job
+                logger.info(
+                    "[Cron] hydrated job from store into _jobs job=%s kind=%s run_id=%s",
+                    job.id,
+                    ev.kind,
+                    ev.run_id,
+                )
         if job is not None and not is_scheduled_task_supported(job.targets):
             logger.info(
                 "[Cron] dropping unsupported target event job=%s target=%s",
@@ -1999,6 +2019,13 @@ class CronSchedulerService:
             return
 
         if job is None and ev.kind != "push_update":
+            # 上面已回源读库仍没有：任务确实不存在（或从未写进本机可见的 store）。
+            logger.info(
+                "[Cron] %s skipped: job %s not in memory or store run_id=%s",
+                ev.kind,
+                ev.job_id,
+                ev.run_id,
+            )
             return
         # For wake/push/push_update events: if the job no longer exists in the
         # persistent store (e.g. cron_jobs.json was deleted), skip execution.

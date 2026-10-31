@@ -82,6 +82,9 @@ def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
         fields["input_request_id"] = "input-1"
     if event_type == "chat.output_phase":
         fields["applied_input_ids"] = ["input-1", "input-2"]
+        fields["delivery_reconciliation_pending"] = True
+    if event_type == "chat.final":
+        fields["delivery_reconciled"] = True
     chunk = AgentResponseChunk(request_id="original", channel_id="web", is_complete=False,
                                payload={"event_type": event_type, "content": "text", **fields})
     restored = e2a_response_to_agent_chunk(e2a_response_from_agent_chunk(chunk, response_id="original", sequence=42))

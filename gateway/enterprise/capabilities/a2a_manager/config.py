@@ -201,7 +201,7 @@ class A2AIngressConfigRepository:
 
     def __init__(self, env_path: Path | None = None) -> None:
         if env_path is None:
-            from jiuwenswarm.common.utils import get_env_file
+            from gateway.common.utils import get_env_file
 
             env_path = get_env_file()
         self._env_path = Path(env_path)
@@ -249,7 +249,7 @@ class A2AOutboundSettingsRepository:
 
     def __init__(self, env_path: Path | None = None) -> None:
         if env_path is None:
-            from jiuwenswarm.common.utils import get_env_file
+            from gateway.common.utils import get_env_file
 
             env_path = get_env_file()
         self._env_path = Path(env_path)

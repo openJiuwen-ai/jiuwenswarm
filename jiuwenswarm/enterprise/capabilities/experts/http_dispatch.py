@@ -1,9 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""把 AgentServer 已有的专家包处理挂到 HTTP 专用网址上。
+"""企业版把专家包 HTTP 登记到 AgentServer。
 
-专家目录由 JiuWenSwarm 门面处理。WebSocket 走 process_message，企业版南向是
-HTTP，所以同一条路径也要从专用网址进来。
+个人版 WebSocket 不经过这里。本模块不依赖 Gateway 企业包。
 """
 
 from __future__ import annotations
@@ -11,11 +10,24 @@ from __future__ import annotations
 import logging
 
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.expert_http_routes import expert_http_routes
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
 
 logger = logging.getLogger(__name__)
 
 _BOOL_PARAMS = ("include_team_compatibility",)
+
+
+def expert_http_route_rows() -> tuple[tuple[str, str, str], ...]:
+    """AgentServer 要挂出的 (方法, 动词, 路径)。"""
+    return tuple((row.method, row.verb, row.path) for row in expert_http_routes())
+
+
+def install_expert_http_handlers(handlers: dict) -> None:
+    """把专家包方法写进调用方的处理表。重复调用覆盖同一项。"""
+    for row in expert_http_routes():
+        handlers[ReqMethod(row.method)] = handle_agent_templates_request
 
 
 def _coerce_bool_params(params: dict) -> None:

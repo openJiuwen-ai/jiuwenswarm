@@ -1236,10 +1236,7 @@ for (const [format, supplementalFields] of [
 }
 
 test('history restores chat.error as a system message with the error text', () => {
-  // 后端 interface.py:4040 把 chat.error 落盘为 role=assistant, event_type=chat.error,
-  // content=str(data), error_type 在顶层（code 未落盘）。历史恢复转成 role=system 消息，
-  // 与实时 useWebSocket.ts chat.error 分支对齐（实时加 t('network.errorPrefix') 前缀，
-  // 历史层无 i18n，直接用错误原文）。刷新后错误不再凭空消失。
+  // Legacy records without a stable code retain their original diagnostic text.
   const messages = parseHistoryJsonFileToPreviewMessages([
     {
       id: 'err-1:assistant',
@@ -1253,6 +1250,31 @@ test('history restores chat.error as a system message with the error text', () =
   assert.equal(messages.length, 1);
   assert.equal(messages[0].role, 'system');
   assert.equal(messages[0].content, '模型调用失败：超时');
+});
+
+for (const nested of [false, true]) {
+  test(`history localizes persisted delivery failure from ${nested ? 'event payload' : 'top-level code'}`, () => {
+    const details = {
+      code: 'SESSION_INPUT_DELIVERY_FAILED', error_type: 'SessionInputDeliveryError',
+    };
+    const messages = parseHistoryJsonFileToPreviewMessages([{
+      id: 'req_mvqat7h5_81:assistant', role: 'assistant', event_type: 'chat.error',
+      content: 'Supplemental delivery reconciliation failed.', timestamp: 1793082219.4158866,
+      ...(nested ? { event_payload: details } : details),
+    }], sessionId);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].role, 'system');
+    assert.equal(messages[0].content, '补充后的结果整理失败，未能完整回答原问题和补充内容。请重试。');
+    assert.equal(messages[0].timestamp, '2026-10-27T06:23:39.415Z');
+  });
+}
+
+test('history preserves diagnostics for an unknown stable error code', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([{
+    id: 'unknown-error', role: 'assistant', event_type: 'chat.error',
+    content: 'Unrecognized diagnostic text', code: 'FUTURE_ERROR_CODE', timestamp: 1,
+  }], sessionId);
+  assert.equal(messages[0].content, 'Unrecognized diagnostic text');
 });
 
 test('history skips chat.error with empty content', () => {

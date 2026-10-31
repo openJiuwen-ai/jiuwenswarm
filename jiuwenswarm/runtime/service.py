@@ -48,6 +48,8 @@ from jiuwenswarm.runtime.session.model import (
 )
 from jiuwenswarm.runtime.session_delete import TeamDeleteResult
 from jiuwenswarm.runtime.session_input import (
+    SessionInputMode,
+    SessionInputTargetError,
     resolve_session_input_mode,
     validate_session_input,
 )
@@ -2274,6 +2276,16 @@ class AgentRuntime:
                 async def idle_input():
                     from jiuwenswarm.runtime.events import RuntimeEvent
 
+                    # Image supplements are validated against the active
+                    # owner's tools and uploads. They must never bypass that
+                    # path by becoming a new turn or receiving an early ACK.
+                    if (
+                        resolve_session_input_mode(request.params) is SessionInputMode.STEER
+                        and request.params.get("media_items")
+                    ):
+                        raise SessionInputTargetError(
+                            "image supplemental input requires an active execution; supplemental input was not sent"
+                        )
                     self._require_cross_session_input_admission(request)
                     # Web stream clients need the idle disposition before ordinary output.
                     # Unary clients must retain their single final response.
