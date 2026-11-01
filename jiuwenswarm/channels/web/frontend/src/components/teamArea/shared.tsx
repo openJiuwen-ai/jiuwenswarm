@@ -229,14 +229,34 @@ export const getMemberExpertHint = (member: TeamMember): string | null => {
 
 const resolveMemberIdentity = (member: TeamMember | string): { memberId: string; displayName: string } => {
   const memberId = (typeof member === 'string' ? member : member.member_id).trim();
-  const known = typeof member === 'string' ? getSessionTeamRoster().find(item => item.member_id === memberId) : member;
+  const known = typeof member === 'string' ? findSessionTeamMember(memberId) : member;
   return { memberId, displayName: known?.name?.trim() ?? '' };
 };
 
-const getSessionTeamRoster = (): TeamMember[] => {
+const getSessionTeamRuntime = () => {
   const activeSessionId = useChatStore.getState().activeSessionId ?? '';
   const key = conversationKey(activeSessionId, selectedExpertTeamId(activeSessionId));
-  return useSessionStore.getState().runtimes[key]?.teamMembers ?? [];
+  return useSessionStore.getState().runtimes[key];
+};
+
+const getSessionTeamRoster = (): TeamMember[] => getSessionTeamRuntime()?.teamMembers ?? [];
+
+/** 按 member_id 查成员身份：先查名册，查不到再查离队目录（离队成员做过的任务还在）。 */
+const findSessionTeamMember = (memberId: string): TeamMember | undefined => {
+  const runtime = getSessionTeamRuntime();
+  return (
+    runtime?.teamMembers.find(item => item.member_id === memberId) ??
+    runtime?.teamDepartedMembers?.find(item => item.member_id === memberId)
+  );
+};
+
+/**
+ * 任务负责人是否是已知成员（在册或已离队）。离队成员的任务卡片仍显示其头像，
+ * 不能退化成"未分配"。
+ */
+export const isKnownTaskAssignee = (assignee: string | undefined, members: TeamMember[]): boolean => {
+  if (!assignee) return false;
+  return members.some(member => member.member_id === assignee) || Boolean(findSessionTeamMember(assignee));
 };
 
 // 名册引用没变就复用上次的统计结果：本函数在成员列表里逐行调用，每次重扫是 O(N²)。
@@ -371,6 +391,24 @@ const truncate = (text: string, max = 72): string => {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (normalized.length <= max) return normalized;
   return `${normalized.slice(0, max)}...`;
+};
+
+/** 工具调用摘要优先取参数里的 description（如 bash 的意图说明），完整参数仍在展开详情里。 */
+const getToolCallSummary = (content: string): string => {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{')) return content;
+  try {
+    const args: unknown = JSON.parse(trimmed);
+    if (args && typeof args === 'object' && !Array.isArray(args)) {
+      const description = (args as Record<string, unknown>).description;
+      if (typeof description === 'string' && description.trim()) {
+        return description;
+      }
+    }
+  } catch {
+    // 非 JSON（formatted_args 等展示串）原样返回
+  }
+  return content;
 };
 
 const isGenericTaskTitle = (title: string): boolean => {
@@ -557,7 +595,7 @@ export function buildProcessItems(
           type: 'execution',
           timestamp: event.timestamp,
           title: getExecutionEventTitle(event, t),
-          subtitle: truncate(event.content || ''),
+          subtitle: truncate(getToolCallSummary(event.content || '')),
           status: 'execution',
           kind: event.kind,
           execution: event,

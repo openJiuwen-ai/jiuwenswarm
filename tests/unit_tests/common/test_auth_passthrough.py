@@ -39,7 +39,7 @@ def apig_env(monkeypatch):
 def login_model(monkeypatch):
     seen: list = []
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
 
@@ -154,7 +154,7 @@ def test_catalog_lookup_never_triggers_a_network_refresh(apig_env, monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models", _get_models
+        "gateway.auth.model_catalog.get_models", _get_models
     )
     passthrough.normalize_model_auth({"model_name": "glm-5"}, session_id="sess-1")
     assert seen["allow_refresh"] is False
@@ -171,7 +171,7 @@ def test_request_without_session_gets_nothing_even_if_someone_is_logged_in(apig_
     store = store_mod.AuthSessionStore()
     monkeypatch.setattr(service_mod, "_service", service_mod.AuthService(store=store))
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
     session = store.create(LoginOutcome(
@@ -200,7 +200,7 @@ def test_logging_in_again_keeps_the_credential_ref(apig_env, monkeypatch, tmp_pa
     store = store_mod.AuthSessionStore()
     monkeypatch.setattr(service_mod, "_service", service_mod.AuthService(store=store))
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
 
@@ -234,7 +234,7 @@ def test_first_message_after_idle_gets_a_refreshed_token(apig_env, monkeypatch, 
     auth = service_mod.AuthService(store=store)
     monkeypatch.setattr(service_mod, "_service", auth)
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
     refreshed: list = []

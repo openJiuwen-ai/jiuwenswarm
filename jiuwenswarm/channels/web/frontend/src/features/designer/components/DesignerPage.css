@@ -1250,6 +1250,12 @@
   height: 26px;
 }
 
+.designer-chat-panel__stop-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
 .designer-chat-panel__send:hover:not(:disabled) {
   filter: brightness(1.12);
 }
@@ -1260,10 +1266,10 @@
 }
 
 /*
- * Running state: the leader round is still processing (e.g. the graph autorun
- * tool is in flight), so the button must not look like the idle send plane
- * (#5410). It stays disabled — the panel has no cancel affordance — but the
- * spinner and the darker glyph make "working" unambiguous.
+ * Running state: the message is sent but the round has not reported processing
+ * yet (the stop button replaces this once it does), so the button must not
+ * look like the idle send plane (#5410). It stays disabled, but the spinner
+ * and the darker glyph make "working" unambiguous.
  */
 .designer-chat-panel__send[data-variant='running']:disabled {
   color: var(--color-text-primary);

@@ -32,12 +32,14 @@ async def test_extension_registers_only_when_adx_backend_is_selected(monkeypatch
         }
     monkeypatch.setattr(extension, "get_config", lambda: settings)
     registered = []
-    registry = SimpleNamespace(register_agent_server_client=registered.append)
+    third_agents = []
+    registry = SimpleNamespace(register_agent_server_client=registered.append,register_third_agent=third_agents.append)
     extensions = await extension.register_extensions(registry)
     if backend == "agentos_router":
         assert extensions == registered == []
         return
-    assert len(extensions) == 1 and extensions == registered
+    assert len(extensions) == 1 and extensions == registered == third_agents
+    assert extensions[0].metadata.id == "adx_router"
     assert isinstance(extensions[0].get_client(), AdxRouterClient)
     await extensions[0].shutdown()
 
@@ -94,6 +96,7 @@ async def test_extension_reuses_agentos_business_authenticator(monkeypatch):
     registered = []
     extensions = await extension.register_extensions(SimpleNamespace(
         register_agent_server_client=registered.append,
+        register_third_agent=lambda extension: None,
     ))
     try:
         assert created[:1] == [("http://agentos-iam", 7.0, created[0][2])]

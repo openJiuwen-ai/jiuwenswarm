@@ -13,6 +13,7 @@ import type { TrajectoryTurnModel } from '../trajectory/model.ts'
 import type { AssistantMetricDetail, TrajectoryCellKind, TrajectoryCellProps } from '../trajectory/record.ts'
 import { formatTokenCount, liveElapsedSeconds } from '../trajectory/record.ts'
 import {
+  alignPrepSpansBeforeModel,
   deriveTrajectoryTimeline,
   formatTimelineOffset,
   panTrajectoryTimelineViewport,
@@ -407,14 +408,21 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   sharedViewportRef,
   rangeAppearance = 'focus',
 }: TrajectoryTimelineProps) {
-  const model = useMemo(
-    () => withSharedWallClockDomain(
+  const model = useMemo(() => {
+    const projected = withSharedWallClockDomain(
       deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
       sharedDomain,
       mapTime,
-    ),
-    [mapTime, mode, nowMilliseconds, sharedDomain, turns],
-  )
+    )
+    // Wall-clock modes keep absolute span times while the viewport is locked
+    // for diagnosis brush → toWall selection. Browse mode may still slide late
+    // prep for ledger-phase readability; duration mode already relocates inside
+    // deriveTimedTimeline.
+    if (projected === null || lockViewport || mode === 'duration' || mode === 'tokens' || mode === 'sequence') {
+      return projected
+    }
+    return alignPrepSpansBeforeModel(projected, turns)
+  }, [lockViewport, mapTime, mode, nowMilliseconds, sharedDomain, turns])
   const detailByIndex = useMemo(
     () => new Map(turns.flatMap(turn =>
       turn.groups.flatMap(group =>

@@ -309,7 +309,7 @@ class WhatsAppChannel(BaseChannel):
         )
 
         try:
-            from jiuwenswarm.common.config import update_channel_in_config
+            from gateway.common.config import update_channel_in_config
 
             update_channel_in_config(
                 "whatsapp",

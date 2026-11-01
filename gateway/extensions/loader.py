@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
+from gateway.common.paths import logger
 from gateway.extensions.registry import ExtensionRegistry
 from gateway.extensions.sdk.application_plugin import (
     ApplicationPluginExtension,
     ManifestApplicationPlugin,
 )
-from jiuwenswarm.common.utils import logger
 
 MANIFEST_FILENAME = "extension.yaml"
 ENTRY_FILENAME = "extension.py"
@@ -107,7 +109,6 @@ class ExtensionLoader:
 
         import shutil
         import subprocess
-        import sys
 
         uv_path = shutil.which("uv")
         use_uv = uv_path is not None
@@ -152,14 +153,25 @@ class ExtensionLoader:
             )
 
         module_name = root.name
-        spec = importlib.util.spec_from_file_location(
-            f"gateway.loaded_extension.{module_name}",
-            entry,
-        )
+        full_name = f"gateway.loaded_extension.{module_name}"
+        # Relative imports (from .provider) need parent package
+        # gateway.loaded_extension in sys.modules, and this module
+        # needs __path__ so same-dir submodules resolve.
+        parent = "gateway.loaded_extension"
+        if parent not in sys.modules:
+            pkg = types.ModuleType(parent)
+            pkg.__path__ = []
+            sys.modules[parent] = pkg
+
+        spec = importlib.util.spec_from_file_location(full_name, entry)
         if spec is None or spec.loader is None:
             raise ImportError(f"无法加载扩展: {module_name}")
 
         module = importlib.util.module_from_spec(spec)
+        root_str = str(root.resolve())
+        module.__path__ = [root_str]
+        module.__package__ = full_name
+        sys.modules[full_name] = module
         spec.loader.exec_module(module)
         return module
 

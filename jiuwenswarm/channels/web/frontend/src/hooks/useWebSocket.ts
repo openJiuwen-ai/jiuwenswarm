@@ -7,8 +7,11 @@
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
-import { readOutputOrder } from '../features/sessionOutput';
+import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
+import { isEnterprise } from '../edition';
+import { persistEnterpriseAttachments } from '../services/obsUpload';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   assetKindFromMime,
   findReferencedAssets,
@@ -18,6 +21,7 @@ import {
   type NamedAsset,
 } from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { toast } from '../components/ui/Toast/toastStore';
 import { useTranslation } from 'react-i18next';
 import {
   ConnectionAckPayload,
@@ -80,6 +84,7 @@ import {
 import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
+import { getWebTransport } from '../utils/env';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -148,8 +153,10 @@ import { useAgentCatalogStore } from '../stores/agentCatalogStore';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
+import { isDepartedTeamMemberStatus, reconcileSnapshotRoster } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
+import { getMcpAppContexts } from '../features/mcpApps/mcpAppContext';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -706,6 +713,7 @@ function applyTeamTaskToolCall(_sessionId: string, _toolCall: ToolCall) {
 
 interface UseWebSocketOptions {
   activeSessionId?: string;
+  isActiveSessionVisible?: boolean;
   provider?: string;
   apiKey?: string;
   apiBase?: string;
@@ -1001,6 +1009,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const { t } = useTranslation();
   const {
     activeSessionId,
+    isActiveSessionVisible = true,
     provider,
     apiKey,
     apiBase,
@@ -1082,6 +1091,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const previousActiveSessionIdRef = useRef(activeSessionId);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const activeSessionVisibleRef = useRef(isActiveSessionVisible);
+  activeSessionVisibleRef.current = isActiveSessionVisible;
   const lastTeamConnectionSessionRef = useRef(activeSessionId);
   const lastTeamConnectionModeRef = useRef(activeSessionMode);
   const teamMemberSnapshotRequestRef = useRef(
@@ -1173,11 +1184,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     (payload: Record<string, unknown>, eventType?: string): string | null => {
       const payloadSessionId = getPayloadSessionId(payload);
       if (!payloadSessionId) return null;
-      const stoppedRootOutput = String(payload.source ?? '').startsWith('org_root_')
-        && isOrganizationOwnerStopped(payloadSessionId);
+      const stoppedOwnerOutput = isOrganizationOwnerStopped(payloadSessionId);
       const incrementalOutput = ['chat.delta', 'chat.reasoning', 'chat.tool_call', 'chat.tool_result']
         .includes(eventType ?? '');
-      if (stoppedRootOutput && incrementalOutput) return null;
+      if (stoppedOwnerOutput && incrementalOutput) return null;
       if (expertTeamId(payload, payloadSessionId)) return null;
       ensureSessionRuntimes(payloadSessionId);
       if (typeof payload.execution_id === 'string' && payload.execution_id) {
@@ -1333,7 +1343,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const requestState = { revision: 0, changedMemberIds: new Set<string>() };
     teamMemberSnapshotRequestRef.current.set(sessionId, requestState);
     try {
-      const response = await request<{ members?: unknown; members_source?: string }>(
+      const response = await request<{ members?: unknown; departed_members?: unknown; members_source?: string }>(
         'team.snapshot',
         { session_id: sessionId },
         { timeoutMs: 5000 },
@@ -1343,12 +1353,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         requestState.revision !== 0
       ) return;
       if (response?.members_source !== 'live') return;
-      if (!Array.isArray(response?.members) || response.members.length === 0) return;
+      if (!Array.isArray(response?.members)) return;
+      // 旧后端不带 departed_members；新后端在队友全部离队时 members 为空，靠它收敛。
+      const rawDepartedMembers = Array.isArray(response.departed_members) ? response.departed_members : [];
+      if (response.members.length === 0 && rawDepartedMembers.length === 0) return;
       const runtime = useSessionStore.getState().getRuntime(sessionId);
       if (runtime?.mode !== 'team') return;
 
       const timestamp = Date.now();
-      const snapshotMembers = response.members.flatMap((item) => {
+      const knownMembers = [...runtime.teamMembers, ...(runtime.teamDepartedMembers ?? [])];
+      const toSnapshotMembers = (items: unknown[]) => items.flatMap((item) => {
         if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
         const snapshotMember = item as Record<string, unknown>;
         const memberId = typeof snapshotMember.member_id === 'string'
@@ -1356,7 +1370,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           : '';
         const status = typeof snapshotMember.status === 'string' ? snapshotMember.status : '';
         if (!memberId || !status) return [];
-        const existing = runtime.teamMembers.find((member) => member.member_id === memberId);
+        const existing = knownMembers.find((member) => member.member_id === memberId);
         return [{
           id: existing?.id ?? `team-snapshot-${memberId}`,
           member_id: memberId,
@@ -1387,31 +1401,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               : existing?.display_name,
         }];
       });
-      if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
+      const snapshotMembers = toSnapshotMembers(response.members);
+      if (snapshotMembers.length !== response.members.length) return;
+      // 旧后端把离队成员混在 members 里，这里与 departed_members 合成同一份离队目录。
+      const departedMembers = [
+        ...toSnapshotMembers(rawDepartedMembers),
+        ...snapshotMembers.filter((member) => isDepartedTeamMemberStatus(member.status)),
+      ];
 
       const changedMemberIds = requestState.changedMemberIds;
-      const reconciledMemberIds = snapshotMembers
-        .filter((member) => !changedMemberIds.has(member.member_id))
-        .map((member) => member.member_id);
-      if (reconciledMemberIds.length === 0) return;
-
-      const snapshotMemberIds = new Set(snapshotMembers.map((member) => member.member_id));
-      const members = snapshotMembers.flatMap((member) => {
-        if (!changedMemberIds.has(member.member_id)) return [member];
-        const currentMember = runtime.teamMembers.find(
-          (candidate) => candidate.member_id === member.member_id
-        );
-        return currentMember ? [currentMember] : [];
-      });
-      for (const member of runtime.teamMembers) {
-        if (changedMemberIds.has(member.member_id) && !snapshotMemberIds.has(member.member_id)) {
-          members.push(member);
-        }
-      }
+      const reconciled = reconcileSnapshotRoster(
+        snapshotMembers,
+        new Set(departedMembers.map((member) => member.member_id)),
+        runtime.teamMembers,
+        changedMemberIds,
+      );
+      if (!reconciled) return;
+      const { members, reconciledMemberIds } = reconciled;
 
       const currentRuntime = useSessionStore.getState().getRuntime(sessionId);
       if (currentRuntime?.mode !== 'team') return;
       useSessionStore.getState().setTeamMembers(sessionId, members);
+      for (const member of departedMembers) {
+        useSessionStore.getState().rememberDepartedTeamMember(sessionId, member);
+      }
       if (changedMemberIds.size === 0) {
         useSessionStore.getState().clearTeamConnectionPresentation(sessionId);
       } else {
@@ -1755,6 +1768,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const persistMedia = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
+      if (isEnterprise()) {
+        return persistEnterpriseAttachments(request, content, sessionId, mediaItems, 'image');
+      }
       return request<PersistMediaResponse>(
         'media.persist',
         {
@@ -1781,6 +1797,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const persistDocuments = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
+      if (isEnterprise()) {
+        return persistEnterpriseAttachments(request, content, sessionId, mediaItems, 'document');
+      }
       return request<PersistMediaResponse>(
         'document.persist',
         {
@@ -2007,13 +2026,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (taskId) {
         const store = useChatStore.getState();
         const queuedTask = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
-        if (queuedTask && ['queued', 'failed'].includes(queuedTask.status) && queuedTask.mediaItems?.length) {
+        if (queuedTask && !areSteerImagesReady(queuedTask.mediaItems)) {
           store.setInterruptResult(sessionId, {
-            intent: 'supplement',
-            success: false,
-            message: t('network.supplementAttachmentsUnsupported'),
+            intent: 'supplement', success: false, message: t('chat.steerImagesOnly'),
           });
           return false;
+        }
+        if (queuedTask?.mediaItems?.length && ['queued', 'failed'].includes(queuedTask.status)) {
+          store.setInterruptResult(sessionId, null);
         }
         // The button supplies input intent; Runtime decides whether it can steer the target.
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
@@ -2024,6 +2044,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const task = runtime?.taskQueue.find((item) => item.id === taskId);
+        const receipt = runtime?.taskInputReceipts[taskId];
+        if (receipt?.mediaItems?.length && ['failed', 'unknown'].includes(receipt.status)) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement', success: false, message: receipt.error || t('network.supplementFailed'),
+          });
+        }
         if (task?.status === 'queued') {
           store.setInterruptResult(sessionId, {
             intent: 'supplement', success: false,
@@ -2128,6 +2154,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 不再预先创建助手消息，而是在收到第一个 content_chunk 时创建
       // 这样工具调用会先显示，然后才是助手的回复
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
       // 标记本地发起的发送，用于 processing_status 处理器区分"旧任务被打断"
@@ -2236,6 +2266,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const inputMode = activeGoal?.status === 'active' ? 'steer' : undefined;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
         const sessionMetadata = useSessionStore.getState().getRuntime(sessionId)?.metadata;
+        const mcpAppContexts = getMcpAppContexts(sessionId);
+        const requestMetadata = sessionMetadata || mcpAppContexts.length > 0
+          ? {
+              ...(sessionMetadata ?? {}),
+              ...(mcpAppContexts.length > 0 ? { mcp_app_contexts: mcpAppContexts } : {}),
+            }
+          : undefined;
         const sessionRt = useSessionStore.getState().getRuntime(sessionId);
         await request('chat.send', {
           session_id: sessionId,
@@ -2257,7 +2294,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
-          ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
+          ...(requestMetadata ? { metadata: requestMetadata } : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
@@ -2348,6 +2385,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       userInputVersionRef.current += 1;
       stopAllTts();
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
 
@@ -2492,6 +2533,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           timestamp: new Date().toISOString(),
         });
       }
+      let restoreOwnerProcessing: (() => void) | undefined;
       try {
         const params: Record<string, unknown> = {
           session_id: sessionId,
@@ -2505,6 +2547,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           params.intent = 'cancel';
           params.target_team_id = ownerStopTarget;
           params.organization_owner_stop = true;
+          const foregroundWasProcessing = Boolean(
+            useChatStore.getState().getRuntime(sessionId)?.foregroundIsProcessing,
+          );
+          const ownerWasStopped = isOrganizationOwnerStopped(sessionId);
+          restoreOwnerProcessing = () => {
+            setOrganizationOwnerStopped(sessionId, ownerWasStopped);
+            useChatStore.getState().setProcessing(sessionId, foregroundWasProcessing);
+          };
+          // Stop the Owner composer immediately while children finish independently.
+          setOrganizationOwnerStopped(sessionId, true, true);
+          closeActiveTeamLeaderMessages(sessionId);
         }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
@@ -2527,7 +2580,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           Object.assign(params, useSessionStore.getState().getOutgoingModelParams(sessionId));
         }
         const result = await request<{ success?: boolean }>('chat.interrupt', params);
-        if (result?.success === false) return false;
+        if (result?.success === false) {
+          restoreOwnerProcessing?.();
+          return false;
+        }
+        if (ownerStopTarget) setOrganizationOwnerStopped(sessionId, true);
         if (intent === 'supplement' || intent === 'resume') {
           setOrganizationOwnerStopped(sessionId, false);
           clearConnectionPresentationForUserAction(sessionId);
@@ -2538,6 +2595,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         return true;
       } catch (error) {
+        restoreOwnerProcessing?.();
         const webError = error as WebError;
         onErrorRef.current?.(webError.message || t('network.interruptFailed'));
         return false;
@@ -2568,8 +2626,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const cancel = useCallback(
     async (sessionId: string) => {
       try {
+        const ownerOnly = Boolean(organizationOwnerStopTarget(sessionId));
         const succeeded = await interrupt(sessionId, 'cancel');
-        if (succeeded) {
+        if (succeeded && !ownerOnly) {
           useSubagentStore.getState().markRunningSubagentsCancelled(sessionId);
         }
       } catch (error) {
@@ -2843,6 +2902,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...evolutionMetaPayload,
           });
         }
+        if (effectiveSource === 'ask_user_interrupt') {
+          // 后端快照可能仍带着这道题，恢复执行时会重新派发；登记后不再入队。
+          useChatStore.getState().markQuestionsAnswered(sessionId, [requestId]);
+        }
         if (pendingMatches && pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
         }
@@ -3029,12 +3092,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const sessionStore = useSessionStore.getState();
       const runtime = sessionStore.getRuntime(sessionId);
       const currentMembers = runtime?.teamMembers ?? [];
+      const departed = currentMembers.find((member) => member.member_id === normalizedMemberId);
+      if (!departed) {
+        return;
+      }
       const nextMembers = currentMembers.filter(
         (member) => member.member_id !== normalizedMemberId
       );
-      if (nextMembers.length === currentMembers.length) {
-        return;
-      }
+      // 离开名册但保留身份：它做过的任务卡片还要按 member_id 显示名字 / 头像。
+      sessionStore.rememberDepartedTeamMember(sessionId, { ...departed, status: 'shut_down' });
       clearPendingTeamMemberContextCompressionStart(sessionId, normalizedMemberId);
       clearTeamMemberContextCompressionStatus(sessionId, normalizedMemberId);
       sessionStore.setTeamMembers(sessionId, nextMembers);
@@ -3141,6 +3207,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     };
 
     const unsubs = [
+      webClient.on('cron.run.updated', ({ payload }) => {
+        const store = useCronStore.getState();
+        const update = store.applyRunUpdate(payload);
+        if (!update) return;
+        void store.loadCronSessions(update.project_id || 'default', update.job_id);
+        if (update.phase !== 'started' || !store.jobs.some((job) => job.id === update.job_id)) void store.reload();
+        if (update.notify) {
+          if (update.status === 'failed' && !update.session_id) {
+            toast.open({
+              id: `cron-start-failed-${update.run_id}`, variant: 'error',
+              testId: 'cron-start-failed-toast',
+              content: t('cron.execution.startFailed', {
+                name: update.job_name || update.job_id,
+                reason: update.error || t('network.unknownError'),
+              }),
+            });
+          }
+          if (activeSessionVisibleRef.current && update.session_id === activeSessionIdRef.current && document.visibilityState === 'visible') {
+            store.clearCronJobUnread(update.job_id);
+          } else {
+            store.markCronJobUnread(update.job_id);
+          }
+        }
+      }),
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
       }),
@@ -3181,6 +3271,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }),
       ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
+        const targetSessionId = getPayloadSessionId(payload);
+        const messages = targetSessionId ? useChatStore.getState().getRuntime(targetSessionId)?.messages : undefined;
+        if (isRestoredOutputReplay(messages ?? [], payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
@@ -3427,6 +3520,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.final', ({ payload }) => {
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
+        }
         if (shouldIgnoreSessionOutput(payload)) return;
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
@@ -3435,7 +3531,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // makes each final safe to replay, while the latest one replaces the text.
         if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
 
-        const cronMeta = payload.cron as Record<string, unknown> | undefined;
+        const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
 
         // 达上限通知不绑定具体会话（后端 _send_notification_cb 不带 session_id），
         // 必须在下方 session 守卫（if (!sessionId) return）之前拦截，否则会被该守卫
@@ -3876,7 +3972,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         if (assistantStreamSplit && content) {
-          const cronMetaEarly = payload.cron as Record<string, unknown> | undefined;
+          const cronMetaEarly = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunIdEarly =
             typeof cronMetaEarly?.run_id === 'string' ? cronMetaEarly.run_id.trim() : '';
           if (!cronRunIdEarly && !cronMetaEarly && !isProactiveRecommendation) {
@@ -3976,13 +4072,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useChatStore.getState().stopStreaming(sessionId);
         }
         if (content) {
-          const cronMeta = payload.cron as Record<string, unknown> | undefined;
+          const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunId =
             typeof cronMeta?.run_id === 'string' ? cronMeta.run_id.trim() : '';
           const isCronPlaceholderContent =
             cronMeta?.is_placeholder === true ||
             /正在执行中，结果稍后补发/.test(content) ||
             /^\[cron\].*正在执行中/.test(content);
+
+          const messageTimestampIso = completedAtIso;
 
           if (!isCronPlaceholderContent) {
             let placeholderId: string | null = null;
@@ -4114,23 +4212,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             return;
           }
 
-          const rewriteId = findAssistantSegmentIdForFinal(
-            messages,
-            content,
-            preferredSegmentId || streamId
-          );
-          if (rewriteId) {
-            useChatStore.getState().updateMessage(sessionId, rewriteId, {
+          // 定时任务推送的终稿不要并进历史里较早的助手气泡：执行中途拉过半截
+          // 历史时，findAssistantSegmentIdForFinal 可能改到上面某条，页面底部仍
+          // 像「没出结果」，一刷新才按完整历史排对。
+          if (!cronMeta) {
+            const rewriteId = findAssistantSegmentIdForFinal(
+              messages,
               content,
-              isStreaming: false,
-              completedAt: completedAtIso,
-              ...agentIdentityPatch,
-              ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
-            });
-            if (!content.includes('MEDIA:')) {
-              handleTtsPlayback(sessionId, rewriteId, content);
+              preferredSegmentId || streamId
+            );
+            if (rewriteId) {
+              useChatStore.getState().updateMessage(sessionId, rewriteId, {
+                content,
+                isStreaming: false,
+                completedAt: completedAtIso,
+                ...agentIdentityPatch,
+                ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
+              });
+              if (!content.includes('MEDIA:')) {
+                handleTtsPlayback(sessionId, rewriteId, content);
+              }
+              return;
             }
-            return;
           }
           const last = messages[messages.length - 1];
           if (last?.role === 'assistant' && last.content === content) {
@@ -4146,7 +4249,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             id: messageId,
             role: 'assistant',
             content,
-            timestamp: completedAtIso,
+            timestamp: messageTimestampIso,
             completedAt: completedAtIso,
             ...agentIdentityPatch,
             isProactiveRecommendation,
@@ -4477,6 +4580,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             skillTree: toolResult.skillTree,
             beamSearch: toolResult.beamSearch,
             ...(toolResult.mermaid ? { mermaid: toolResult.mermaid } : {}),
+            ...(toolResult.mcpApp ? { mcpApp: toolResult.mcpApp } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
             reviewer: toolResult.reviewer,
           },
@@ -4617,6 +4721,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
+        }
         // Organization background rounds own their lifecycle in useOrganizationEvents.
         // They must not close a concurrent foreground Owner request.
         if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
@@ -4634,6 +4741,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 加载历史消息时忽略处理状态更新
         if (useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) return;
         const isProcessingNow = Boolean(payload.is_processing);
+        // Delayed foreground status must not relight an explicitly stopped Owner.
+        if (isProcessingNow && isOrganizationOwnerStopped(sessionId)) return;
 
         // 服务器在跨会话执行前先推送带原始问题的 processing=true。把它显式
         // 追加为一个新 user turn，并关闭可能残留的旧 stream 游标；历史消息本身
@@ -4865,6 +4974,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setGlobalTaskRunning(Boolean(payload?.running));
       }),
       webClient.on('chat.error', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.error', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -5131,6 +5241,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.subtask_update', ({ payload }) => {
+        useSessionStore.getState().receiveSessionTokenUsage((payload as { session_usage?: unknown }).session_usage);
         const event = normalizeSubagentStatusEvent(payload);
         if (!event) return;
         let pendingAssignment = pendingSubagentAssignmentRef.current.get(event.subagent.subagent_id);
@@ -5439,9 +5550,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             clearPendingTeamConnectionMember(sessionId, memberId);
             useSessionStore.getState().clearTeamConnectionPresentation(sessionId, memberId);
           }
-          if (e.type === 'team.task.created' && e.task_id) {
-            useSessionStore.getState().registerConfirmedTeamTaskCreation(sessionId, e.task_id);
-          }
           useSessionStore.getState().addTeamTaskEvent(sessionId, {
             id: `task-${Date.now()}`,
             type: e.type || '',
@@ -5561,6 +5669,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) {
           console.log('[usage_summary] filtered by session check');
           return;
+        }
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
         }
         const usage = payload.usage as UsageSummary | undefined;
         if (!usage) {
@@ -5865,6 +5976,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const connected = state === 'ready';
       setIsConnected(connected);
       setConnected(connected);
+      if (!connected) useCronStore.getState().clearUnconfirmedRuns();
       if (connected && teamConnectionGraceTimerRef.current) {
         const pending = teamConnectionGraceTimerRef.current;
         if (pending.timerId !== null) window.clearTimeout(pending.timerId);

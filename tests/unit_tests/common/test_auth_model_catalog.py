@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.auth import apig
-from jiuwenswarm.common.auth import model_catalog
+from gateway.auth import model_catalog
 from jiuwenswarm.common.auth.model_catalog import (
     LOGIN_MODEL_SOURCE,
     build_model_entry,

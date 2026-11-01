@@ -466,7 +466,7 @@ class FeishuChannel(BaseChannel):
         if hasattr(self._message_storage, 'set_platform_adapter'):
             self._message_storage.set_platform_adapter(self._im_platform_adapter)
         # 初始化文件服务
-        from jiuwenswarm.common.utils import get_agent_workspace_dir
+        from gateway.common.paths import get_agent_workspace_dir
         workspace_dir = self.config.temp_file_dir or str(get_agent_workspace_dir())
         self._file_service = FeishuFileService(
             api_client=self._api_client,
@@ -537,7 +537,7 @@ class FeishuChannel(BaseChannel):
                 )
                 # 持久化到配置文件（多应用模式下写入对应 app 条目）
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
+                    from gateway.common.config import update_channel_app_field
                     ok = update_channel_app_field(
                         "feishu", self.config.app_id,
                         {"bot_open_id": bot_open_id},
@@ -2088,7 +2088,7 @@ class FeishuChannel(BaseChannel):
         1. 完整绝对路径：/home/xxx/.jiuwenswarm/agent/workspace/xxx.docx
         2. 仅文件名：'xxx.docx' 或 "xxx.docx"——在 workspace 目录下查找
         """
-        from jiuwenswarm.common.utils import get_agent_workspace_dir
+        from gateway.common.paths import get_agent_workspace_dir
         workspace_dir = str(get_agent_workspace_dir())
 
         seen: set[str] = set()
@@ -2821,7 +2821,7 @@ class FeishuChannel(BaseChannel):
             # V2 多应用：写入对应 app 条目，避免多 app 争抢同一个平铺字段
             if self.config.channel_id == "feishu" and not self.config.bot_key:
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
+                    from gateway.common.config import update_channel_app_field
 
                     update_channel_app_field(
                         "feishu",
@@ -2837,7 +2837,7 @@ class FeishuChannel(BaseChannel):
                     pass
             elif self.channel_id.startswith("feishu_enterprise:") and self.config.bot_key:
                 try:
-                    from jiuwenswarm.common.config import (
+                    from gateway.common.config import (
                         update_channel_subsection_in_config,
                     )
 

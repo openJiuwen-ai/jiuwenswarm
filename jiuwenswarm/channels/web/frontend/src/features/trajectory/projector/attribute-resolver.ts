@@ -19,6 +19,7 @@ import {
 } from '../semconv/constants.ts'
 import type { OtlpAttributeMap } from '../semconv/attributes.ts'
 import type { OtlpAnyValue, OtlpKeyValue, OtlpSpanEvent } from '../shared/otlp.ts'
+import { sequenceContentOf } from '../shared/sequenceValue.ts'
 
 /** Stable facts consumed by the projector after profile-specific fallback. */
 export interface NormalizedTrajectoryAttributes {
@@ -171,6 +172,10 @@ function parsedJson(value: string): unknown {
 }
 
 function flexibleValue(value: OtlpAnyValue): unknown {
+  // A value restated by reference parses element by element, and each
+  // element once: records restating the same message share its parse.
+  const elements = sequenceContentOf(value)?.parsedElements()
+  if (elements !== undefined) return [...elements]
   if ('stringValue' in value) return parsedJson(value.stringValue)
   return structuredOtlpValue(value)
 }
@@ -456,22 +461,16 @@ function systemFromMessages(value: unknown): readonly NormalizedPart[] | undefin
  * above all -- need them back in one sequence, instructions first.
  */
 function composedRequestMessages(
-  attributes: OtlpAttributeMap,
+  history: Resolved<unknown> | undefined,
+  instructions: Resolved<unknown> | undefined,
 ): Resolved<unknown> | undefined {
-  const rawInput = attributes.get(STANDARD_ATTRIBUTES.inputMessages)
-  if (rawInput === undefined) return undefined
-  const history = normalizedStructuredMessages(flexibleValue(rawInput), 'user')
-  if (history === undefined) return undefined
-
-  const instructions = resolveStructuredParts(attributes, [
-    STANDARD_ATTRIBUTES.systemInstructions,
-  ])
+  if (history === undefined || !Array.isArray(history.value)) return undefined
   const leading = instructions === undefined
     ? []
     : [{ role: 'system', parts: instructions.value }]
   return {
-    key: STANDARD_ATTRIBUTES.inputMessages,
-    value: [...leading, ...history],
+    key: history.key,
+    value: [...leading, ...history.value],
     complete: true,
   }
 }
@@ -480,6 +479,117 @@ function composedRequestMessages(
 function withoutSystemMessages(value: unknown): unknown {
   if (!Array.isArray(value)) return value
   return value.filter((candidate) => object(candidate)?.role !== 'system')
+}
+
+// What a model call was sent. Every call restates the whole conversation, its
+// instructions and its tools, so a long run holds that content once per call,
+// and parsed it is several times the size of its text.
+const LAZY_MESSAGE_FIELDS = [
+  'requestMessages',
+  'requestMessagesComplete',
+  'systemInstructions',
+  'inputMessages',
+  'inputMessagesComplete',
+] as const satisfies readonly (keyof NormalizedTrajectoryAttributes)[]
+
+const LAZY_TOOL_FIELDS = [
+  'toolDefinitions',
+] as const satisfies readonly (keyof NormalizedTrajectoryAttributes)[]
+
+function resolveMessageFields(raw: OtlpAttributeMap): MutableNormalized {
+  const target: MutableNormalized = { raw, sources: {} }
+  const history = resolveMessages(raw, [STANDARD_ATTRIBUTES.inputMessages], 'user')
+  const explicitSystem = resolveStructuredParts(raw, [
+    STANDARD_ATTRIBUTES.systemInstructions,
+  ])
+
+  const requestMessages = composedRequestMessages(history, explicitSystem)
+  assign(target, 'requestMessages', requestMessages)
+  if (requestMessages !== undefined) {
+    target.requestMessagesComplete = requestMessages.complete ?? true
+  }
+
+  if (history !== undefined) {
+    const inferredSystem = systemFromMessages(history.value)
+    const system = explicitSystem ?? (
+      inferredSystem === undefined
+        ? undefined
+        : { key: history.key, value: inferredSystem }
+    )
+    assign(target, 'systemInstructions', system)
+    assign(target, 'inputMessages', {
+      key: history.key,
+      value: withoutSystemMessages(history.value),
+    })
+    target.inputMessagesComplete = history.complete ?? true
+  } else {
+    assign(target, 'systemInstructions', explicitSystem)
+  }
+  return target
+}
+
+// A run restates the same few tool lists on every model call, so parsed lists
+// are shared: by the chain they were restated through, or else by their text.
+// Bounded, since a list that changed is not asked for again.
+const TOOL_DEFINITIONS_CACHE_LIMIT = 32
+const toolDefinitionsByText = new Map<string, Resolved<unknown> | null>()
+
+function resolveToolFields(raw: OtlpAttributeMap): MutableNormalized {
+  const target: MutableNormalized = { raw, sources: {} }
+  const keys = [STANDARD_ATTRIBUTES.toolDefinitions]
+  const value = raw.get(STANDARD_ATTRIBUTES.toolDefinitions)
+  if (value === undefined || !('stringValue' in value)) {
+    assign(target, 'toolDefinitions', resolveStructuredArray(raw, keys))
+    return target
+  }
+  // JSON text never starts with NUL, so a chain key cannot collide with a text.
+  const chain = sequenceContentOf(value)
+  const text = chain === undefined ? value.stringValue : `\u0000${chain.hash}`
+  let resolved = toolDefinitionsByText.get(text)
+  if (resolved === undefined) {
+    resolved = resolveStructuredArray(raw, keys) ?? null
+  } else {
+    toolDefinitionsByText.delete(text)
+  }
+  toolDefinitionsByText.set(text, resolved)
+  if (toolDefinitionsByText.size > TOOL_DEFINITIONS_CACHE_LIMIT) {
+    const oldest = toolDefinitionsByText.keys().next().value
+    if (oldest !== undefined) toolDefinitionsByText.delete(oldest)
+  }
+  assign(target, 'toolDefinitions', resolved ?? undefined)
+  return target
+}
+
+/**
+ * Resolve a group of fields only once something reads one of them.
+ *
+ * Turn assignment normalizes every span of every subject, while only the
+ * projection of model calls reads what they were sent. Parsing it up front
+ * kept a parsed copy of the full history per model call alive for as long as
+ * the record, which is what exhausted the page's heap on long Team runs.
+ */
+function defineLazyFields(
+  target: MutableNormalized,
+  fields: readonly (keyof NormalizedTrajectoryAttributes)[],
+  resolveFields: () => MutableNormalized,
+): void {
+  let resolved: MutableNormalized | undefined
+  const resolve = (): MutableNormalized => {
+    resolved ??= resolveFields()
+    return resolved
+  }
+  for (const field of fields) {
+    Object.defineProperty(target, field, {
+      configurable: true,
+      enumerable: true,
+      get: () => resolve()[field],
+    })
+    Object.defineProperty(target.sources, field, {
+      configurable: true,
+      enumerable: true,
+      get: () => resolve().sources[field],
+    })
+  }
 }
 
 // Records are immutable once received and a projection pass reads each span's
@@ -678,40 +788,8 @@ function normalizeAttributeEntries(
     OPENJIUWEN_ATTRIBUTES.executionSubjectRequestNumber,
   ]))
 
-  const requestMessages = composedRequestMessages(raw)
-  assign(target, 'requestMessages', requestMessages)
-  if (requestMessages !== undefined) {
-    target.requestMessagesComplete = requestMessages.complete ?? true
-  }
-
-  const inputMessages = resolveMessages(
-    raw,
-    [
-      STANDARD_ATTRIBUTES.inputMessages,
-    ],
-    'user',
-  )
-  if (inputMessages !== undefined) {
-    const explicitSystem = resolveStructuredParts(raw, [
-      STANDARD_ATTRIBUTES.systemInstructions,
-    ])
-    const inferredSystem = systemFromMessages(inputMessages.value)
-    const system = explicitSystem ?? (
-      inferredSystem === undefined
-        ? undefined
-        : { key: inputMessages.key, value: inferredSystem }
-    )
-    assign(target, 'systemInstructions', system)
-    assign(target, 'inputMessages', {
-      key: inputMessages.key,
-      value: withoutSystemMessages(inputMessages.value),
-    })
-    target.inputMessagesComplete = inputMessages.complete ?? true
-  } else {
-    assign(target, 'systemInstructions', resolveStructuredParts(raw, [
-      STANDARD_ATTRIBUTES.systemInstructions,
-    ]))
-  }
+  defineLazyFields(target, LAZY_MESSAGE_FIELDS, () => resolveMessageFields(raw))
+  defineLazyFields(target, LAZY_TOOL_FIELDS, () => resolveToolFields(raw))
   assign(target, 'inputMessageProvenance', resolveFlexible(raw, [
     OPENJIUWEN_ATTRIBUTES.inputMessageProvenance,
   ]))
@@ -727,9 +805,6 @@ function normalizeAttributeEntries(
     assign(target, 'outputMessages', outputMessages)
   }
 
-  assign(target, 'toolDefinitions', resolveStructuredArray(raw, [
-    STANDARD_ATTRIBUTES.toolDefinitions,
-  ]))
   assign(target, 'toolName', resolveString(raw, [
     STANDARD_ATTRIBUTES.toolName,
   ]))

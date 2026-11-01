@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for AgentWebSocketServer._handle_team_snapshot.
+"""Tests for handle_team_snapshot.
 
 History restore must not keep a truthy-but-empty live monitor board
 (``{tasks: [], members: [], team_id: ...}``) when ``team.db`` still has the
@@ -103,9 +103,10 @@ async def _invoke(
             ),
         ),
     ):
-        await agent_ws_server.AgentWebSocketServer._handle_team_snapshot(
-            None, ws, request, lock
-        )
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.team import handle_team_snapshot
+
+        await handle_team_snapshot(build_ws_request_context(object(), ws, request, lock))
 
     assert len(ws.sent) == 1
     resp = parse_agent_server_wire_unary(json.loads(ws.sent[0]))

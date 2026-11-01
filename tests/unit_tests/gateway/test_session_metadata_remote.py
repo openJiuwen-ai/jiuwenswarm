@@ -17,8 +17,8 @@ from gateway.routing.session_metadata_remote import (
     bind_agent_client,
     install,
 )
-from jiuwenswarm.common import external_providers
-from jiuwenswarm.common.external_providers import provider
+from gateway.common import external_providers
+from gateway.common.external_providers import provider
 
 
 class _FakeUnary:

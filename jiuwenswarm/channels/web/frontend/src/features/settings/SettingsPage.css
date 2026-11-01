@@ -739,7 +739,8 @@
   gap: 40px;
 }
 
-.settings-models__tabs.tabs > button {
+.settings-models__tabs.tabs > button,
+.settings-models__tabs.tabs > .tabs__item {
   padding-right: 0;
   padding-bottom: 10px;
   padding-left: 0;

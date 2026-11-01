@@ -111,20 +111,26 @@ async def _run(host: str, port: int) -> None:
     )
 
     front = AgentServerFront(host=host, port=port)
-    await front.start()
-    logger.info(
-        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
-        host,
-        port,
-        time.monotonic() - startup_t0,
-    )
-    logger.info(
-        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
-        "agent_ws_listening",
-        time.monotonic() - _PROCESS_START_T0,
-        time.monotonic() - startup_t0,
-        front.readiness.snapshot().get("control_ready"),
-    )
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
+
+    websocket_enabled = resolve_websocket_enabled(config_section=ws_server_config())
+    if websocket_enabled:
+        await front.start()
+        logger.info(
+            "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+            host,
+            port,
+            time.monotonic() - startup_t0,
+        )
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+            "agent_ws_listening",
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
+            front.readiness.snapshot().get("control_ready"),
+        )
+    else:
+        logger.info("[AgentServer] WebSocket 门关闭，不听端口")
 
     stop_event = asyncio.Event()
     supervisor: object | None = None

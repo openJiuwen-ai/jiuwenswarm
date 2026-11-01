@@ -67,7 +67,7 @@ async def shutdown_resident_worker(*, timeout: float = 30.0) -> dict:
     while connection is None and time.monotonic() < deadline:
         try:
             connection = await asyncio.wait_for(connect(socket_path), min(.2, deadline - time.monotonic()))
-        except (OSError, RuntimeError, asyncio.TimeoutError):
+        except (OSError, RuntimeError):
             await asyncio.sleep(.025)
     if connection is None:
         raise TimeoutError("Worker shutdown could not acquire its detached IPC connection")
@@ -89,7 +89,7 @@ async def shutdown_resident_worker(*, timeout: float = 30.0) -> dict:
                     raise RuntimeError(f"Worker reported incomplete shutdown: {frame.get('error', '')}")
                 return frame
         raise TimeoutError("Worker shutdown exceeded its application deadline")
-    except (asyncio.TimeoutError, OSError, RuntimeError):
+    except (OSError, RuntimeError):
         if worker is not None:
             import psutil
             try:

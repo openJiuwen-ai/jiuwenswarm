@@ -36,7 +36,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from gateway.auth.account_kit import OAuthError
-from jiuwenswarm.common.auth.model_catalog import (
+from gateway.auth.model_catalog import (
     get_models,
     model_whitelist,
 )

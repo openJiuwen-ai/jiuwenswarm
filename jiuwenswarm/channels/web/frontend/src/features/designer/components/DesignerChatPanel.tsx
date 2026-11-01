@@ -1,4 +1,4 @@
-import { LoaderCircle, PanelRight, X } from 'lucide-react';
+import { LoaderCircle, PanelRight, Square, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
@@ -18,6 +18,7 @@ import {
   sendDesignerLeaderMessage,
 } from '../designerEntry';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import {
@@ -115,6 +116,7 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
+  const stopRequestedRef = useRef(false);
   // The canvas owns exactly one session: read and write the model against that
   // session id. `activeSessionId` follows the app route and can point at
   // another conversation while this panel stays mounted (#5394, #8995).
@@ -145,6 +147,12 @@ export function DesignerChatPanel() {
   useEffect(() => {
     if (sessionId) bindDesignerChatSession(sessionId);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (isProcessing || !stopRequestedRef.current) return;
+    stopRequestedRef.current = false;
+    useDesignerRunStore.getState().applyLeaderActivity(null);
+  }, [isProcessing]);
 
   const limitError = useCallback(
     (kind: DesignerReferenceKind) => {
@@ -245,6 +253,24 @@ export function DesignerChatPanel() {
         setSending(false);
       });
   }, [attachments, chatBusy, domainGraph, draft, sessionId, t]);
+
+  const handleStop = useCallback(() => {
+    if (!sessionId) return;
+    setAttachError('');
+    stopRequestedRef.current = true;
+    const runStore = useDesignerRunStore.getState();
+    const leaderRunActive = runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
+    // Cancel through the engine first: pausing the leader kills its trigger
+    // task outright, skipping the abort that unwinds the run cleanly.
+    void (leaderRunActive ? runStore.cancel(domainGraph) : Promise.resolve())
+      .then(() =>
+        webClient.request('chat.interrupt', { session_id: sessionId, intent: 'pause', mode: DESIGNER_TEAM_MODE }),
+      )
+      .catch(() => {
+        stopRequestedRef.current = false;
+        setAttachError(t('designer.chat.stopError'));
+      });
+  }, [domainGraph, sessionId, t]);
 
   const handleUserAnswer = useCallback(
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
@@ -352,7 +378,7 @@ export function DesignerChatPanel() {
             className="designer-chat-panel__input"
             placeholder={t('designer.chat.inputPlaceholder')}
             value={draft}
-            disabled={chatBusy}
+            disabled={sending}
             data-testid="designer-chat-panel-input"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
@@ -361,29 +387,42 @@ export function DesignerChatPanel() {
             {sessionId ? (
               <ChatModelSelector sessionId={sessionId} disabled={chatBusy} />
             ) : null}
-            <button
-              type="button"
-              className="designer-chat-panel__send"
-              disabled={chatBusy || !canSend}
-              onClick={handleSend}
-              aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
-              aria-busy={chatBusy}
-              title={chatBusy ? t('designer.chat.running') : undefined}
-              data-testid="designer-chat-panel-send"
-              data-variant={chatBusy ? 'running' : 'idle'}
-            >
-              {/* A leader round can run for minutes (graph autorun); the button
-                  must read as "working", never as the idle send plane (#5410). */}
-              {chatBusy ? (
-                <LoaderCircle
-                  className="designer-chat-panel__send-spinner animate-spin"
-                  size={18}
-                  aria-hidden
-                />
-              ) : (
-                <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-              )}
-            </button>
+            {isProcessing ? (
+              <button
+                type="button"
+                className="designer-chat-panel__send"
+                onClick={handleStop}
+                aria-label={t('designer.chat.stop')}
+                title={t('designer.chat.stop')}
+                data-testid="designer-chat-panel-stop"
+              >
+                <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="designer-chat-panel__send"
+                disabled={chatBusy || !canSend}
+                onClick={handleSend}
+                aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
+                aria-busy={chatBusy}
+                title={chatBusy ? t('designer.chat.running') : undefined}
+                data-testid="designer-chat-panel-send"
+                data-variant={chatBusy ? 'running' : 'idle'}
+              >
+                {/* Between send and the round reporting processing, the button
+                    must read as "working", never as the idle send plane (#5410). */}
+                {chatBusy ? (
+                  <LoaderCircle
+                    className="designer-chat-panel__send-spinner animate-spin"
+                    size={18}
+                    aria-hidden
+                  />
+                ) : (
+                  <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>

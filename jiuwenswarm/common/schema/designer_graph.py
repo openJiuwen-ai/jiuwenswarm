@@ -345,6 +345,11 @@ RUN_STATUSES: frozenset[str] = frozenset(
     }
 )
 
+# ``run.metadata.trigger_source``: who started the latest trigger. A leader
+# trigger lives on the leader's async-tool runtime and dies with the leader.
+RUN_TRIGGER_SOURCE_CANVAS = "canvas"
+RUN_TRIGGER_SOURCE_LEADER = "leader"
+
 # ── ID helpers ────────────────────────────────────────────────────────────────
 
 _GRAPH_ID_PREFIX = "graph_"

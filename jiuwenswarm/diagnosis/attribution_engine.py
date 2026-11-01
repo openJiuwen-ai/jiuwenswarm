@@ -112,6 +112,8 @@ _TEXTS: dict[str, dict[str, str]] = {
         "trajectory_summary_no_signals": "本次没有可归因的信号，无需归因",
         "trajectory_summary_unavailable": "未能生成轨迹摘要（模型调用失败或超时）",
         "attribute_skipped_no_signals": "诊断分析没有产出可归因的信号，已跳过归因",
+        "attribute_summary_skipped": "已跳过归因 · 轨迹摘要已生成",
+        "attribute_summary_skipped_failed": "已跳过归因 · 未能生成轨迹摘要",
         "diagnose_summary_reward": "信号 {count} 条（Reward 模式）",
         "diagnose_summary_rule": "信号 {count} 条（规则模式）",
         "diagnose_summary_rule_reason": "信号 {count} 条（规则模式 · {reason}）",
@@ -160,6 +162,8 @@ _TEXTS: dict[str, dict[str, str]] = {
         "trajectory_summary_no_signals": "No signals to attribute this run; nothing to attribute",
         "trajectory_summary_unavailable": "Could not generate a trajectory summary (model call failed or timed out)",
         "attribute_skipped_no_signals": "Diagnosis produced no signals to attribute; attribution was skipped",
+        "attribute_summary_skipped": "Attribution skipped · trajectory summary generated",
+        "attribute_summary_skipped_failed": "Attribution skipped · trajectory summary was not generated",
         "diagnose_summary_reward": "{count} signals (reward mode)",
         "diagnose_summary_rule": "{count} signals (rule mode)",
         "diagnose_summary_rule_reason": "{count} signals (rule mode · {reason})",
@@ -1031,6 +1035,11 @@ class AttributionCoreEngine:
             )
         else:
             summary = text["diagnose_summary_rule"].format(count=len(diagnosis.signals))
+        # Publish the scorecard before this stage closes, so the host can show
+        # it before attribution streams findings underneath it.
+        payload = diagnosis.reward_payload
+        if isinstance(payload, Mapping):
+            queue.put_nowait(EngineEvent("diagnose", "reward", reward=dict(payload)))
         queue.put_nowait(EngineEvent("diagnose", "stage_finished", status="completed", summary=summary))
         return diagnosis
 
@@ -1040,19 +1049,33 @@ class AttributionCoreEngine:
         task_parse: Any,
         diagnosis: Any,
     ) -> EngineResult:
-        """Finish normally when diagnosis produced no signal: the attribute stage is skipped."""
+        """Skip attribution when diagnosis produced no signal, then still write the summary.
+
+        The stage stays running while the summary model works, so the process
+        does not look finished before that call returns.
+        """
         text = context.text
         queue = context.queue
         queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
+        queue.put_nowait(
+            EngineEvent("attribute", "output_delta", text_delta=text["summary_generating"]),
+        )
+        summary = await self._summary_only(context, task_description=task_parse.task_description)
+        unavailable = text["trajectory_summary_unavailable"]
+        headline = (
+            text["attribute_summary_skipped_failed"]
+            if summary == unavailable
+            else text["attribute_summary_skipped"]
+        )
         queue.put_nowait(
             EngineEvent(
                 "attribute",
                 "stage_finished",
                 status="skipped",
+                summary=headline,
                 skip_reason=text["attribute_skipped_no_signals"],
             ),
         )
-        summary = await self._summary_only(context, task_description=task_parse.task_description)
         return EngineResult(trajectory_summary=summary, reward=diagnosis.reward_payload)
 
     async def _stage_attribute(self, context: _StageContext, task_parse: Any, diagnosis: Any) -> EngineResult:

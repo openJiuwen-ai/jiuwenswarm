@@ -129,17 +129,19 @@ async def test_cross_channel_query_preserves_other_session_owners(identity):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owner_stopped", [False, True])
 @pytest.mark.parametrize("persisted_processing", [False, True])
 @pytest.mark.parametrize("processing", [False, True, None, "missing"])
 async def test_metadata_status_tracks_known_runtime_state_and_preserves_pending_recovery(
-    monkeypatch, processing, persisted_processing,
+    monkeypatch, processing, persisted_processing, owner_stopped,
 ):
     persisted_status = "processing" if persisted_processing else "idle"
 
     async def persisted_metadata(request):
         return AgentResponse(
             request_id=request.request_id, channel_id="web",
-            payload={"status": persisted_status, "is_processing": persisted_processing},
+            payload={"status": persisted_status, "is_processing": persisted_processing,
+                     "organization_owner_stopped": owner_stopped},
         )
 
     monkeypatch.setattr(router, "_HANDLE_SESSION", persisted_metadata)
@@ -155,7 +157,10 @@ async def test_metadata_status_tracks_known_runtime_state_and_preserves_pending_
     await method_router._dispatch_control(None, query, None)
 
     result = method_router._send.call_args.args[2]["body"]["result"]
-    expected_processing = processing if isinstance(processing, bool) else persisted_processing
+    expected_processing = False if owner_stopped else (
+        processing if isinstance(processing, bool) else persisted_processing
+    )
+    assert result["runtime"] == snapshot
     assert result["is_processing"] is expected_processing
     assert result["status"] == ("processing" if expected_processing else "idle")
 

@@ -22,6 +22,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from openjiuwen_protocol.message import ReqMethod
 
 from gateway.common.mode_matrix import (
     canonicalize_mode_text,
@@ -34,7 +35,6 @@ from gateway.common.security.ws_origin import (
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from jiuwenswarm.common.schema.message import ReqMethod
 
 if TYPE_CHECKING:
     from gateway.channel_manager.web.web_connect import WebChannel
@@ -817,7 +817,7 @@ async def _load_session_metadata(
     session_id: str,
     user_id: str | None = None,
 ) -> Mapping[str, Any]:
-    from jiuwenswarm.common.external_providers import provider
+    from gateway.common.external_providers import provider
 
     return await provider("session_metadata").get_session_metadata_async(
         session_id,

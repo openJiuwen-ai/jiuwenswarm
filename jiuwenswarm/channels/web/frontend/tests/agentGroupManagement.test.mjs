@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { transformSync } from 'esbuild';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import {
@@ -260,23 +261,38 @@ test('catalog filtering keeps description matches while mine excludes them', () 
   assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'mine' }).totalItems, 0);
 });
 
-test('chat group picker submits runtime package names and keeps selection checked', () => {
+test('chat group picker submits runtime names only after runtime availability checks', async () => {
   const source = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
   const picker = source.slice(source.indexOf('filteredGroupOptions.map((item) => {'));
-  const handler = picker.match(/onClick=\{\(\) => \{([\s\S]*?)\}\}/)[1];
+  const body = picker.match(/onClick=\{async \(\) => \{([\s\S]*?)\}\}/)[1];
+  const handler = transformSync(`async function select() {${body}}`, { loader: 'ts' }).code;
   const selectedExpression = picker.match(/const isSelected = ([^;]+);/)[1];
-  for (const item of [
-    { id: 'hub-asset-uuid', name: 'presentation-generation' },
-    { id: 'local-team', name: 'local-team' },
-  ]) {
-    let intent;
-    new Function('item', 'agentGroupSelectionDisabled', 'activeSessionId', 'useSessionStore',
-      'setAgentGroupSelectionIntent', 'setAgentSelectionIntent', 'clearSelectedSkills', 'setAttachMenuOpen', handler)(
-      item, false, 'new', { getState: () => ({ setMode() {} }) },
-      (_session, value) => { intent = value; }, () => {}, () => {}, () => {},
-    );
-    assert.deepEqual(buildAgentGroupSelectionPayloadForMode('team', intent), { agent_group_name: item.name });
-    assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
+  for (const disabled of [[], ['codex']]) {
+    for (const item of [
+      { id: 'hub-asset-uuid', name: 'presentation-generation' },
+      { id: 'local-team', name: 'local-team' },
+    ]) {
+      let intent;
+      let notice;
+      const requests = [];
+      const select = new Function('item', 'agentGroupSelectionDisabled', 'activeSessionId', 'useSessionStore',
+        'setAgentGroupSelectionIntent', 'setAgentSelectionIntent', 'clearSelectedSkills', 'setAttachMenuOpen',
+        'webRequest', 'setGroupRuntimeNotice', 't', `${handler}; return select;`)(
+        item, false, 'new', { getState: () => ({ setMode() {} }) },
+        (_session, value) => { intent = value; }, () => {}, () => {}, () => {},
+        async (method, params) => { requests.push([method, params]); return { group: { disabledRuntimes: disabled } }; },
+        (value) => { notice = value; }, (key) => key,
+      );
+      await select();
+      assert.deepEqual(requests, [['agent_groups.show', { id: item.id }]]);
+      if (disabled.length) {
+        assert.equal(intent, undefined);
+        assert.equal(notice, 'chat.agentGroupRuntimeDisabled');
+      } else {
+        assert.deepEqual(buildAgentGroupSelectionPayloadForMode('team', intent), { agent_group_name: item.name });
+        assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
+      }
+    }
   }
 });
 

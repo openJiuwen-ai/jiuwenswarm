@@ -142,7 +142,15 @@ def _apply_agent_group(
     agent_group_name: str,
     package: LoadedAgentGroupPackage | None = None,
 ) -> None:
-    """Seed a hybrid roster from one resolved AgentGroup package."""
+    """Seed the team from one resolved AgentGroup package.
+
+    The leader always takes the group's leader template. Under scheduled
+    dispatch the team starts with an empty roster: the group's other members
+    are not assembled here, and the leader spawns the ones a task needs, which
+    core loads from the installed package on demand (``spawn_expert``, inline
+    ``create_task`` members, swarmflow ``agent_template``). Otherwise they
+    become a hybrid predefined roster.
+    """
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_member_display_name,
     )
@@ -181,6 +189,8 @@ def _apply_agent_group(
         }
     )
     spec.agents["leader"] = leader_member.spec
+    if spec.dispatch_mode == "scheduled":
+        return
 
     predefined_members: list[TeamMemberSpec] = []
     for agent_name, template in templates.items():
@@ -239,6 +249,12 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "把用户的完整需求原文传给 prompt 参数——导演链（分析→简报→审核→分镜→审核→建图→校验）在服务端完成，产出带完整锁体系的图。不要自己用 graph_patch 从零拼整图。"
     "designer_graph_autorun 返回 error 时，把错误原因转告用户并等用户决定，不要改用 graph_patch 手动拼图。"
     "\n2. designer_graph_patch 只用于用户要求的小改：加减个别节点、改 config.prompt、连线/断连、删节点。"
+    "用户修改故事层面的事实（人物的性别/身份/外貌/服装、地点、时间、情节、出现在镜头里的道具或场景细节等，"
+    "如\"把全片的女店员改成男店员\"\"把白色杯子改成红色杯子\"）时，"
+    "先调 designer_story_edit（edit=用户的修改要求原话）同步修订大纲（Brief）、角色设定和分镜表——只 patch 下游节点改不到它们，"
+    "镜头（clip）的视频提示词每次运行都按分镜表对应行重新生成；"
+    "再用 graph_patch 改仍写着旧事实的角色/场景/镜头节点 config.prompt（改过的镜头提示词按用户编辑对待，运行时不会被分镜覆盖）；"
+    "最后从大纲节点起重跑：swarmflow(node_id=大纲节点 id, cascade=true)（用户明确说先不要跑时除外）。"
     "patch 字段是 {\"upsert_nodes\": [...], \"upsert_edges\": [{\"id\",\"source\",\"target\"}], \"remove_node_ids\": [], "
     "\"remove_edge_ids\": []}。\n3. 节点 type 只能是五种模态之一：text、table、image、video、"
     "audio——outline/character/storyboard/script/scene/clip/film 等叙事角色绝不是 type，一律 type=\"text\"。"

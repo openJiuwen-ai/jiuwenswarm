@@ -2954,13 +2954,17 @@ function appendDelta(rid, text) {
     if (pt.activeUsageRow) pt.activeUsageRow.firstTokenAt = pt.firstTokenTime;
   }
   pt.textContent += text;
-  // Append raw text to the stream (interleaved with tool cards)
+  // Append raw text to the stream (interleaved with tool cards). Keep the raw
+  // markdown source on each chunk so the finished turn can be re-rendered with
+  // links without touching the interleaved tool cards.
   var lastChild = pt.streamEl.lastElementChild;
   if (lastChild && lastChild.classList.contains('chunk-text')) {
+    lastChild.__markdownSource = (lastChild.__markdownSource || '') + text;
     lastChild.textContent += text;
   } else {
     var span = document.createElement('span');
     span.className = 'chunk-text';
+    span.__markdownSource = text;
     span.textContent = text;
     pt.streamEl.appendChild(span);
   }
@@ -3668,15 +3672,20 @@ function displayTextFromFinalPayload(payload) {
 
 function appendRawTurnText(pt, text) {
   if (!text) return;
+  var target;
   var lastChild = pt.streamEl.lastElementChild;
   if (lastChild && lastChild.classList.contains('chunk-text')) {
-    lastChild.textContent += text;
+    target = lastChild;
+    target.__markdownSource = (target.__markdownSource || '') + text;
   } else {
-    var span = document.createElement('span');
-    span.className = 'chunk-text';
-    span.textContent = text;
-    pt.streamEl.appendChild(span);
+    target = document.createElement('span');
+    target.className = 'chunk-text';
+    target.__markdownSource = text;
+    pt.streamEl.appendChild(target);
   }
+  // This path is used for final text that never streamed (and team leader
+  // segments), so render it immediately instead of waiting for finalize.
+  renderChunkMarkdown(target);
   pt.textContent += text;
 }
 
@@ -3883,6 +3892,7 @@ function finalizeTurn(rid, payload) {
       if (state.pendingTurns[k] === pt) delete state.pendingTurns[k];
     });
   }
+  if (pt) renderStreamMarkdown(pt);
   setStreaming(false);
   scrollToBottom();
 }
@@ -5070,6 +5080,18 @@ function toolFilePath(name, input) {
 // ─────────────────────────────────────────────
 // Minimal markdown renderer (no external deps)
 // ─────────────────────────────────────────────
+function renderChunkMarkdown(el) {
+  if (!el || typeof el.__markdownSource !== 'string') return;
+  var html = renderMarkdown(el.__markdownSource);
+  if (el.innerHTML !== html) el.innerHTML = html;
+}
+
+function renderStreamMarkdown(pt) {
+  if (!pt || !pt.streamEl) return;
+  var chunks = pt.streamEl.querySelectorAll('.chunk-text');
+  for (var i = 0; i < chunks.length; i++) renderChunkMarkdown(chunks[i]);
+}
+
 function renderMarkdown(text) {
   let out = '';
   const lines = text.split('\n');
@@ -5134,30 +5156,42 @@ function applyInlineEmphasis(html) {
 }
 
 function renderInline(line) {
-  // Pattern 1: backtick-wrapped file paths — run before generic backtick handler
-  line = line.replace(/`([^`\n]+)`/g, function(_, raw) {
-    var text = raw.trim();
-    if (!text || text.indexOf('://') !== -1) {
-      return '<code>' + escapeHtml(raw) + '</code>';
-    }
-    var m = text.match(/^(.*?):(\d+)$/);
-    var filePath = m ? m[1] : text;
-    var lineNum = m ? m[2] : '0';
-    var hasSlash = /[\/\\]/.test(filePath);
-    var hasLine = !!m;
-    var looksLikeFile = /\.[A-Za-z0-9]{2,10}$/.test(filePath);
-    if (!looksLikeFile || (!hasSlash && !hasLine)) {
-      return '<code>' + escapeHtml(raw) + '</code>';
-    }
-    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
-         + '" onclick="openFileLink(this)"><code>' + escapeHtml(raw) + '</code></a>';
-  });
-  // Pattern 2: bare path/to/file.ext:N outside backticks and existing HTML
-  line = line.replace(/(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g, function(_, filePath, lineNum) {
-    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
-         + '" onclick="openFileLink(this)">' + escapeHtml(filePath) + ':' + lineNum + '</a>';
-  });
-  return applyInlineEmphasis(line);
+  function renderText(text) {
+    return escapeHtml(text)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>');
+  }
+
+  var out = '';
+  var cursor = 0;
+  // Consume code spans and bare file references in one pass. Never process
+  // generated HTML again: underscores and slashes belong to paths literally.
+  line.replace(/`([^`]+)`|(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g,
+    function(match, code, filePath, lineNum, offset) {
+      out += renderText(line.slice(cursor, offset));
+      cursor = offset + match.length;
+      var label;
+      if (code !== undefined) {
+        label = '<code>' + escapeHtml(code) + '</code>';
+        var ref = code.match(/^(.*?)(?::(\d+))?$/);
+        filePath = ref[1];
+        lineNum = ref[2] || '0';
+        // Backticks delimit paths containing spaces, Unicode, drive letters or
+        // backslashes. Exclude URL schemes and non-file code expressions.
+        var isPath = /^(?:[A-Za-z]:)?[^:*?"<>|`\r\n]+\.[A-Za-z0-9]{1,10}$/.test(filePath);
+        if (!isPath || (!/[\/\\]/.test(filePath) && !ref[2])) {
+          out += label;
+          return match;
+        }
+      } else {
+        label = escapeHtml(filePath + ':' + lineNum);
+      }
+      out += '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
+           + '" onclick="openFileLink(this)">' + label + '</a>';
+      return match;
+    });
+  return out + renderText(line.slice(cursor));
 }
 
 // ─────────────────────────────────────────────

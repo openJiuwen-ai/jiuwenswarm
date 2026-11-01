@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import types
 from unittest.mock import AsyncMock
 
 import pytest
@@ -242,6 +243,11 @@ def capture_wire(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(server_module, "send_wire_payload", _capture)
     monkeypatch.setattr(ws_handler, "send_wire_payload", _capture)
+    # WSSink imports send_wire_payload from ws_send by name; patch that binding too.
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.send_wire_payload",
+        _capture,
+    )
 
 
 def _server() -> tuple[AgentWebSocketServer, _FakeHost]:
@@ -883,14 +889,16 @@ async def test_graph_requires_stream_request(capture_wire: None) -> None:
 @pytest.mark.asyncio
 async def test_canonical_personal_context_bypasses_chat_hooks_and_agent_creation(
     capture_wire: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server, host = _server()
     server._trigger_before_chat_request_hook = AsyncMock(
         side_effect=AssertionError("PersonalContext must bypass chat hooks")
     )
-    server._handle_unary = AsyncMock(
+    unary = AsyncMock(
         side_effect=AssertionError("PersonalContext must bypass Agent creation")
     )
+    monkeypatch.setattr("jiuwenswarm.server.handlers._default.handle_unary", unary)
     ws = _FakeWebSocket()
 
     await server._handle_message(
@@ -901,7 +909,7 @@ async def test_canonical_personal_context_bypasses_chat_hooks_and_agent_creation
 
     assert host.calls == [("get_status", None)]
     server._trigger_before_chat_request_hook.assert_not_awaited()
-    server._handle_unary.assert_not_awaited()
+    unary.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -947,6 +955,7 @@ async def test_canonical_wire_round_trip_for_query_methods(
 @pytest.mark.asyncio
 async def test_personal_context_failure_keeps_connection_and_ordinary_request_available(
     capture_wire: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server, host = _server()
     host.failure = RuntimeError("PersonalContext start failed")
@@ -964,23 +973,28 @@ async def test_personal_context_failure_keeps_connection_and_ordinary_request_av
     server._trigger_before_chat_request_hook = AsyncMock()
     server._ensure_auto_team_binding_for_chat = AsyncMock()
 
-    async def ordinary_response(
-        target_ws: _FakeWebSocket,
-        request: AgentRequest,
-        _send_lock: asyncio.Lock,
-    ) -> None:
-        wire = server_module.encode_agent_response_for_wire(
+    async def ordinary_response(ctx) -> None:
+        await ctx.sink.send_response(
             AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
                 ok=True,
                 payload={"content": "ordinary agent still works"},
-            ),
-            response_id=request.request_id,
+            )
         )
-        await server_module.send_wire_payload(target_ws, wire)
 
-    server._handle_unary = AsyncMock(side_effect=ordinary_response)
+    async def ordinary_unary(_ws, request, send_lock) -> None:
+        from jiuwenswarm.server.transports.ws_sink import WSSink
+
+        await ordinary_response(
+            types.SimpleNamespace(
+                request=request,
+                sink=WSSink(_ws, send_lock),
+            )
+        )
+
+    monkeypatch.setattr(server, "_handle_unary", ordinary_unary)
+    monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
     await server._handle_message(
         ws,
         json.dumps(
@@ -995,8 +1009,17 @@ async def test_personal_context_failure_keeps_connection_and_ordinary_request_av
         asyncio.Lock(),
     )
 
-    assert ws.sent[1]["status"] == "succeeded"
-    server._handle_unary.assert_awaited_once()
+    ordinary_responses = [
+        parse_agent_server_wire_unary(item)
+        for item in ws.sent
+        if item.get("response_id") == "ordinary-1"
+    ]
+    assert any(response.ok for response in ordinary_responses)
+    assert any(
+        response.payload == {"content": "ordinary agent still works"}
+        for response in ordinary_responses
+        if response.ok
+    )
 
 
 @pytest.mark.asyncio

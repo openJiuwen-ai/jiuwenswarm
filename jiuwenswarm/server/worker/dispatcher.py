@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from enum import Enum
 from typing import Any
@@ -69,6 +69,7 @@ class WorkerDispatcher:
         self._attached = False
         self._queued: list[tuple[int, AgentRequest, str]] = []
         self._tasks: dict[asyncio.Task[None], int] = {}
+        self._request_tasks: dict[str, asyncio.Task[Any]] = {}
         self._state_lock = asyncio.Lock()
         self.shutdown_requested = False
         self._draining = False
@@ -275,7 +276,7 @@ class WorkerDispatcher:
                     self._bridge.events.finish(record.dispatch_id)
                 continue
             ongoing = [item for item in executions if not item.state.terminal]
-            waiting = {item.waiting_control_id for item in ongoing if item.waiting_control_id}
+            waiting = {control_id for item in ongoing for control_id in item.waiting_control_ids}
             record.interactions = {key: value for key, value in record.interactions.items() if key in waiting}
             record.is_processing = any(self._execution_is_processing(item) for item in ongoing)
             if ongoing:
@@ -339,7 +340,8 @@ class WorkerDispatcher:
 
     async def _drop_queued_cancel(self, request: AgentRequest) -> bool:
         """Drop a cancel that arrived before Runtime exists. Return True when handled."""
-        target = str((request.params or {}).get("request_id") or "")
+        target = str((request.params or {}).get("target_request_id")
+                     or (request.params or {}).get("request_id") or "")
         session_id = request.session_id or ""
         async with self._state_lock:
             if self._ready or self._draining:
@@ -412,6 +414,8 @@ class WorkerDispatcher:
             )
             self._bridge.events.complete(dispatch_id, state="failed", error=self._failure or "worker queue is full")
             return
+        if request.req_method == ReqMethod.CHAT_CANCEL:
+            await self._cancel_target_dispatch(request)
         # A resident worker outlives SDK installs made from the settings panel
         # (the gateway process), so refresh the managed paths before this turn;
         # team members backed by external CLIs probe and import them here.
@@ -431,8 +435,15 @@ class WorkerDispatcher:
         token, box = begin_delivery_tracking()
         error = ""
         ok = True
+        cancelled = False
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._request_tasks[dispatch_id] = current_task
         try:
             await runtime.dispatch_parsed_request(self._bridge, request, self._lock)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except Exception as exc:  # noqa: BLE001
             ok = False
             error = str(exc)
@@ -440,6 +451,7 @@ class WorkerDispatcher:
                 "[Worker] dispatch failed: request_id=%s", request.request_id
             )
         finally:
+            self._request_tasks.pop(dispatch_id, None)
             self._release_startup_priority(dispatch_id)
             execution_entry_sink.reset(entry_token)
             sdk_entry_sink.reset(minimum_token)
@@ -447,6 +459,25 @@ class WorkerDispatcher:
             end_request_generation(gen_token)
             end_request_dispatch(dispatch_token)
             self._bridge.events.finish(dispatch_id)
+            if cancelled:
+                # A targeted cancel may stop this dispatch before Runtime admits
+                # it. Front still awaits request.done for this request, so report
+                # the terminal here instead of leaving that waiter until the
+                # connection closes. The canceling side owns the visible
+                # interrupt result, so do not turn this into a gateway error.
+                logger.info(
+                    "[Worker] dispatch cancelled: request_id=%s generation=%s",
+                    request.request_id,
+                    generation,
+                )
+                await self._finish(
+                    generation,
+                    str(request.request_id or ""),
+                    ok=True,
+                    error="request cancelled",
+                    delivered=False,
+                    dispatch_id=dispatch_id,
+                )
         await self._finish(
             generation,
             str(request.request_id or ""),
@@ -455,6 +486,32 @@ class WorkerDispatcher:
             delivered=bool(box),
             dispatch_id=dispatch_id,
         )
+
+    async def _cancel_target_dispatch(self, request: AgentRequest) -> None:
+        """Cancel the exact response owner even before Runtime allocates execution."""
+        params = request.params or {}
+        target = str(params.get("target_request_id") or "")
+        if not target or params.get("expected_execution_id"):
+            return
+        state = self._reconcile_execution_state(request)
+        if state is not None and any(
+            item.request_id == target or item.root_request_id == target for item in state.executions
+        ):
+            # Once admitted, Runtime must stop the domain producer before the
+            # response task exits (particularly for Team streams).
+            return
+        scope = request_scope(request)
+        matches = [
+            record for record in self._bridge.events.records.values()
+            if record.scope == scope and record.request.request_id == target and record.active
+        ]
+        for record in matches:
+            task = self._request_tasks.get(record.dispatch_id)
+            if task is None or task is asyncio.current_task() or task.done():
+                continue
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._bridge.events.complete(record.dispatch_id, state="cancelled", error="request cancelled")
 
     async def _finish(
         self,
@@ -543,6 +600,74 @@ class WorkerDispatcher:
                 return
             await self._subscribe_locked(message, conn, generation)
 
+    def _question_recovery_filter(
+        self, request: AgentRequest, snapshot: dict[str, Any], frames: list[dict[str, Any]],
+    ) -> Callable[[dict[str, Any]], bool]:
+        runtime_getter = getattr(self._runtime, "_execution_runtime", None)
+        runtime = runtime_getter() if callable(runtime_getter) else self._runtime
+        resolve = getattr(runtime, "recoverable_control", None)
+        session_id = request.params.get("session_id") or request.session_id or ""
+
+        def question(body: Any, event: str | None = "") -> dict[str, Any] | None:
+            if not isinstance(body, dict):
+                return None
+            nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
+            body = {**body, **nested} if isinstance(nested, dict) else body
+            return body if (body.get("event_type") or event) == "chat.ask_user_question" else None
+
+        def owner(body: dict[str, Any], dispatch_id: str) -> tuple[int, str, str] | None:
+            if not callable(resolve):
+                snapshot["recovery_pending"] = True
+                snapshot["recovery_reason"] = "control_authority_unavailable"
+                return None
+            record = self._bridge.events.records.get(dispatch_id)
+            execution_id = body.get("execution_id") or (record.last_execution_id if record else "")
+            control_id = str(body.get("interaction_id") or body.get("control_id") or body.get("request_id") or "")
+            if not execution_id or not control_id:
+                snapshot["recovery_pending"] = True
+                snapshot["recovery_reason"] = "control_owner_unavailable"
+                return None
+            current = resolve(session_id, control_id, execution_id)
+            return (current.generation, current.execution_id, control_id) if current else None
+
+        # Use all retained scoped frames to select the latest current question,
+        # even when that version lies before the requested replay cursor.
+        latest = {}
+        for frame in frames:
+            wire = frame["payload"]
+            body = question(wire.get("body") or wire.get("payload") or {}, wire.get("response_kind"))
+            key = owner(body, frame["dispatch_id"]) if body is not None else None
+            if key is not None:
+                latest[key] = frame
+
+        seen = set()
+        for dispatch in reversed(snapshot["dispatches"]):
+            pending = []
+            for body in dispatch["pending_interactions"]:
+                item = question(body)
+                if item is None:
+                    pending.append(body)
+                    continue
+                key = owner(item, dispatch["dispatch_id"])
+                newest = latest.get(key)
+                if key is None or key in seen:
+                    continue
+                if newest is not None and newest["dispatch_id"] != dispatch["dispatch_id"]:
+                    continue
+                seen.add(key)
+                pending.append(body)
+            dispatch["pending_interactions"] = pending
+
+        def include(frame: dict[str, Any]) -> bool:
+            wire = frame["payload"]
+            body = question(wire.get("body") or wire.get("payload") or {}, wire.get("response_kind"))
+            if body is None:
+                return True
+            key = owner(body, frame["dispatch_id"])
+            return key is not None and latest.get(key) is frame
+
+        return include
+
     async def _subscribe_locked(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
         request = load_agent_request(message.get("payload") or {})
         after = max(0, int(message.get("after") or 0))
@@ -569,7 +694,10 @@ class WorkerDispatcher:
                           if item.request_id in allowed or item.root_request_id in allowed]
             snapshot["executions"] = json.loads(
                 json.dumps(
-                    executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)
+                    executions, default=lambda value: (
+                        value.value if isinstance(value, Enum)
+                        else sorted(value) if isinstance(value, frozenset) else str(value)
+                    )
                 )
             )
             # A known execution owns activity, not its response handler:
@@ -594,20 +722,25 @@ class WorkerDispatcher:
                         generation=state.generation,
                     )
                 )
-            waiting = {item.waiting_control_id for item in state.executions
-                       if not item.state.terminal and item.waiting_control_id}
+            ongoing = [item for item in state.executions if not item.state.terminal]
+            waiting = {control_id for item in ongoing for control_id in item.waiting_control_ids}
             for record in self._bridge.events.records.values():
                 if record.scope != request_scope(request):
                     continue
                 record.interactions = {key: value for key, value in record.interactions.items()
-                                       if key in waiting}
+                                       if key in waiting or value.get("event_type") == "chat.ask_user_question"}
             snapshot["dispatches"] = self._bridge.events.snapshot(request, after=after)["dispatches"]
         # Copy the replay before the first await: other scopes can publish and
         # evict journal frames while this scope's snapshot is being delivered.
-        frames = self._bridge.events.replay(request, after=after) if message.get("subscribe") else []
+        needs_questions = message.get("subscribe") or any(
+            item["pending_interactions"] for item in snapshot["dispatches"]
+        )
+        frames = self._bridge.events.replay(request, after=0) if needs_questions else []
+        include = self._question_recovery_filter(request, snapshot, frames)
+        frames = [frame for frame in frames if frame["sequence"] > after] if message.get("subscribe") else []
         await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
                          "generation": generation, "payload": snapshot})
-        await self._bridge.replay(frames, generation)
+        await self._bridge.replay(frames, generation, include=include)
 
 
 def _is_session_work_request(request: AgentRequest) -> bool:

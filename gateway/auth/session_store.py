@@ -27,7 +27,7 @@ from typing import Any
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from gateway.auth.account_kit import Credential, LoginOutcome, mask
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from gateway.common.paths import get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 

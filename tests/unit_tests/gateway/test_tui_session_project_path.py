@@ -88,7 +88,7 @@ class TestTuiSessionMatchesProjectDir:
 class TestBuildTuiSessionCreateChannelMetadata:
     def test_uses_resolved_project_dir(self, monkeypatch):
         monkeypatch.setattr(
-            "jiuwenswarm.common.utils.resolve_git_branch",
+            "gateway.common.paths.resolve_git_branch",
             lambda _path: "main",
         )
         meta = build_tui_session_create_channel_metadata(
@@ -103,7 +103,7 @@ class TestBuildTuiSessionCreateChannelMetadata:
 
     def test_falls_back_to_params_cwd(self, monkeypatch):
         monkeypatch.setattr(
-            "jiuwenswarm.common.utils.resolve_git_branch",
+            "gateway.common.paths.resolve_git_branch",
             lambda _path: "HEAD",
         )
         meta = build_tui_session_create_channel_metadata(
@@ -115,6 +115,39 @@ class TestBuildTuiSessionCreateChannelMetadata:
 
     def test_returns_none_without_path(self):
         assert build_tui_session_create_channel_metadata({}, resolved_project_dir="") is None
+
+
+class TestInitSessionMetadataChannelMetadata:
+    @pytest.fixture()
+    def sessions_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "sessions"
+        d.mkdir()
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: d,
+        )
+        from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
+
+        _METADATA_CACHE.clear()
+        return d
+
+    def test_persists_channel_metadata_on_init(self, sessions_dir: Path):
+        from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
+
+        init_session_metadata(
+            session_id="tui_new",
+            channel_id="tui",
+            project_dir=r"E:\jiuwenswarm",
+            channel_metadata={
+                "project_dir": r"E:\jiuwenswarm",
+                "cwd": r"E:\jiuwenswarm",
+            },
+        )
+        data = json.loads(
+            (sessions_dir / "tui_new" / "metadata.json").read_text(encoding="utf-8")
+        )
+        assert data["project_dir"] == r"E:\jiuwenswarm"
+        assert data["channel_metadata"]["cwd"] == r"E:\jiuwenswarm"
 
 
 @pytest.mark.asyncio
@@ -130,7 +163,7 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
     project_dir = str(project)
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root
+        "gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
@@ -141,7 +174,7 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
     _METADATA_CACHE.clear()
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.resolve_git_branch",
+        "gateway.common.paths.resolve_git_branch",
         lambda _path: "HEAD",
     )
 

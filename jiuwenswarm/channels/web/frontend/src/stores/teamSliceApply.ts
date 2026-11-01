@@ -10,6 +10,7 @@ import { useTeamSelectorStore } from './teamSelectorStore';
 import type { TeamTask, TeamTaskStatus } from './sessionStore';
 import type { TeamSnapshotPayload } from './teamSelectorStore';
 import { resolveOrganizationTeamIdentity } from '../features/teamOrganization/teamIdentity';
+import { isDepartedTeamMemberStatus } from '../features/teamMemberDeparture';
 
 const TEAM_TASK_STATUSES = new Set<TeamTaskStatus>([
   'pending',
@@ -52,6 +53,7 @@ export function clearTeamSnapshotProjection(sessionId: string): void {
   const store = useSessionStore.getState();
   if (!store.getRuntime(sessionId)) return;
   store.setTeamMembers(sessionId, []);
+  store.setTeamDepartedMembers(sessionId, []);
   store.setTeamTasks(sessionId, []);
   store.setTeamTaskEvents(sessionId, []);
   store.setTeamTaskTimeline(sessionId, []);
@@ -77,9 +79,11 @@ export function applyTeamSnapshotToSession(
 
   const now = Date.now();
   const rawMembers = Array.isArray(snapshot?.members) ? snapshot.members : [];
+  const rawDepartedMembers = Array.isArray(snapshot?.departed_members) ? snapshot.departed_members : [];
   const rawTasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
 
-  const members = rawMembers
+  // 旧后端把离队成员混在 members 里，按状态再拆一次。
+  const allMembers = [...rawMembers, ...rawDepartedMembers]
     .filter((member) => str(member?.member_id))
     .map((member, index) => ({
       id: `snapshot-${teamId}-${member.member_id}-${index}`,
@@ -92,6 +96,8 @@ export function applyTeamSnapshotToSession(
       role: member.role,
       cli_agent: member.cli_agent ?? null,
     }));
+  const members = allMembers.filter((member) => !isDepartedTeamMemberStatus(member.status));
+  const departedMembers = allMembers.filter((member) => isDepartedTeamMemberStatus(member.status));
 
   // 快照项不带 team_name 时（老后端）按当前选中的 team 归属，
   // 这样切换后的过滤/展示仍然一致。
@@ -111,5 +117,6 @@ export function applyTeamSnapshotToSession(
   // 替换（包括空快照），不能与上一个 Team 的内容合并。
   const currentStore = useSessionStore.getState();
   currentStore.setTeamMembers(sessionId, members);
+  currentStore.setTeamDepartedMembers(sessionId, departedMembers);
   currentStore.setTeamTasks(sessionId, tasks);
 }

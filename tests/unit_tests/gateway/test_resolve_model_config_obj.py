@@ -1,6 +1,6 @@
 import pytest
 
-from jiuwenswarm.common.config_panel.models_handlers import (
+from gateway.common.config_panel.models_handlers import (
     resolve_model_config_obj_for_validate as _resolve_model_config_obj_for_validate,
 )
 
@@ -20,11 +20,11 @@ class TestResolveModelConfigObjForValidate:
                 return entries
 
             monkeypatch.setattr(
-                "jiuwenswarm.common.config_panel.models_handlers.get_config",
+                "gateway.common.config_panel.models_handlers.get_config",
                 fake_get_config,
             )
             monkeypatch.setattr(
-                "jiuwenswarm.common.config_panel.models_handlers.get_default_models",
+                "gateway.common.config_panel.models_handlers.get_default_models",
                 fake_get_default_models,
             )
 
@@ -72,7 +72,7 @@ class TestResolveModelConfigObjForValidate:
             raise RuntimeError("config broken")
 
         monkeypatch.setattr(
-            "jiuwenswarm.common.config_panel.models_handlers.get_config",
+            "gateway.common.config_panel.models_handlers.get_config",
             raise_exc,
         )
         result = _resolve_model_config_obj_for_validate("any", {})

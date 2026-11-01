@@ -74,10 +74,10 @@ def test_feishu_reply_uses_the_session_owners_credentials(monkeypatch):
 
 
 def test_owner_auth_uses_the_existing_refresh_path(monkeypatch):
-    from jiuwenswarm.common.auth.model_catalog import LoginModel
+    from gateway.auth.model_catalog import LoginModel
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel("GLM-5.2", "GLM-5.2")],
     )
     monkeypatch.setattr(

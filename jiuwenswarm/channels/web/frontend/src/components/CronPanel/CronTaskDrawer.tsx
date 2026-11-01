@@ -15,6 +15,7 @@ import { isDefaultLikeProject } from './cronProjectDisplay';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentMode } from '../../types';
 import '../ChatPanel/ChatPanel.css';
 
@@ -190,6 +191,10 @@ export default function CronTaskDrawer({
 }: CronTaskDrawerProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
+  const models = useSessionStore((state) => state.chatAvailableModels);
+  const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
+  const modelUnavailable =
+    modelsLoaded && Boolean(form.modelName) && !models.some((model) => model.model_name === form.modelName);
   // 修复"在名称/描述输入框里选中文字、拖动选区移出抽屉后松开鼠标，抽屉被误关"：
   // 该手势的 mousedown 在抽屉内、mouseup 在遮罩上，浏览器会把产生的 click 派发到
   // 两者的最近公共祖先（即遮罩层本身），click 不经过抽屉冒泡，抽屉上的
@@ -447,6 +452,15 @@ export default function CronTaskDrawer({
                       disabled={proactiveLocked}
                     />
                   </div>
+                  {modelUnavailable && (
+                    <p
+                      className="min-w-0 break-words text-xs text-warn"
+                      role="status"
+                      data-testid="cron-drawer-model-unavailable-hint"
+                    >
+                      {t('cron.drawer.modelUnavailable', { model: form.modelName })}
+                    </p>
+                  )}
                 </div>
               )}
             />

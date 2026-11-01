@@ -31,9 +31,21 @@ logger = logging.getLogger(__name__)
 def resolve_agent_cron_model(raw: Any) -> str | None:
     """Validate a cron model in the AgentServer process.
 
-    Configured and login models use :func:`validate_cron_model`. A miss then
-    checks the Zen free-model cache that lives in this process.
+    企业版只做空白规范化：真正的名单在 Gateway 企业库，由
+    ``resolve_enterprise_cron_model`` 核对。这里若再读本机 config，会把
+    会话里正在用的企业模型（如 GLM-5.2）误判成未知。
+
+    个人版：配置与登录模型走 :func:`validate_cron_model`；未命中再查本进程
+    的 Zen 免费模型缓存。
     """
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if is_enterprise():
+        if raw is None:
+            return None
+        value = str(raw).strip()
+        return value or None
+
     from jiuwenswarm.runtime.cron.models import validate_cron_model
 
     try:
@@ -156,6 +168,8 @@ class CronToolRoute:
     work_mode: str = ""  # 当前会话锁定工作模式，用于 project_dir 归属消歧
     model_name: str = ""  # 当前会话模型；创建任务时缺省继承，保证定时执行一致
     user_id: str = ""  # 发起会话的用户路由键；AgentOS 下随 E2A 请求透传，供 job 归属创建者
+    group_id: str = ""  # 企业版群身份；随 E2A metadata.routing 透传，供 Gateway 查企业模型库
+    bot_id: str = ""  # 企业版机器人身份；缺省保持空，企业创建路径必须由 Gateway 用真实 routing 盖回
 
 
 class CronTools:
@@ -310,10 +324,25 @@ class CronTools:
         # not get persisted with an empty ``user_id`` and disappear from the
         # Web user's task list.  This is derived solely from the runtime route,
         # never from an LLM-supplied tool parameter.
-        push_metadata: dict[str, Any] = {}
+        #
+        # list/get/update 等工具参数经常是 {}，不带 group/bot；企业版 Gateway
+        # 会把空身份当成 default 筛任务 → 列表永远空。创建时会从路由写入
+        # params；这里对所有 action 同样补齐，并塞进 push metadata 兜底。
+        params = dict(params or {})
         route_user_id = str(r.user_id or "").strip()
+        route_group_id = str(r.group_id or "").strip()
+        route_bot_id = str(r.bot_id or "").strip()
+        if route_group_id and not str(params.get("group_id") or "").strip():
+            params["group_id"] = route_group_id
+        if route_bot_id and not str(params.get("bot_id") or "").strip():
+            params["bot_id"] = route_bot_id
+        push_metadata: dict[str, Any] = {}
         if route_user_id:
             push_metadata["_jiuwenswarm_cron_owner_user_id"] = route_user_id
+        if route_group_id:
+            push_metadata["_jiuwenswarm_cron_owner_group_id"] = route_group_id
+        if route_bot_id:
+            push_metadata["_jiuwenswarm_cron_owner_bot_id"] = route_bot_id
         command_id = f"cron-{uuid.uuid4().hex}"
         payload = {
             "request_id": r.request_id,
@@ -325,7 +354,7 @@ class CronTools:
                 "command_id": command_id,
                 "action": action,
                 "status": "ok",
-                "data": dict(params or {}),
+                "data": params,
                 "message": "",
             },
         }
@@ -630,6 +659,8 @@ class CronTools:
         # 用 build_job（不落盘）拿到规范化视图（含 round-trip 校验）供返回与转发。
         # user_id：优先工具参数，其次当前请求路由上下文（AgentOS 随 E2A 请求透传），
         # 保证 agent 创建的任务归属发起会话的用户，web 端按 user_id 隔离时可见。
+        # group_id/bot_id：企业版必须带真实路由；空串不再收成 default，
+        # Gateway 会用 chat routing 盖回，否则企业创建会因缺身份失败。
         job = self._local_store.build_job(
             job_id=str(normalized.get("id") or "").strip() or None,
             name=str(normalized.get("name") or "").strip(),
@@ -643,6 +674,8 @@ class CronTools:
             project_id=resolved_project_id,
             work_mode=work_mode,
             user_id=str(normalized.get("user_id") or "").strip() or r.user_id,
+            group_id=str(normalized.get("group_id") or "").strip() or r.group_id,
+            bot_id=str(normalized.get("bot_id") or "").strip() or r.bot_id,
             **session_kw,
             **mode_kw,
             **model_kw,

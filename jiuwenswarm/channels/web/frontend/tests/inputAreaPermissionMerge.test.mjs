@@ -4,6 +4,7 @@ import { act, createElement, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
+import { loadCallback } from './loadProductionCallback.mjs';
 
 // Reserved, non-resolving DOM origin only; fetch rejects network access and the WebSocket fixture returns picker data.
 const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="root"></div></div>', {
@@ -12,11 +13,12 @@ const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="roo
 });
 const slashRequests = [];
 let completeCompact;
-class MockWebSocket {
+class MockWebSocket extends dom.window.EventTarget {
   static OPEN = 1;
   static CLOSED = 3;
 
   constructor(url) {
+    super();
     this.url = url;
     this.readyState = 0;
     queueMicrotask(() => {
@@ -84,7 +86,9 @@ class MockWebSocket {
 
   close() {
     this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.({ code: 1000, reason: 'test', wasClean: true });
+    const event = new dom.window.CloseEvent('close', { code: 1000, reason: 'test', wasClean: true });
+    this.onclose?.(event);
+    this.dispatchEvent(event);
   }
 }
 
@@ -108,8 +112,13 @@ const globals = {
     unobserve() {}
     disconnect() {}
   },
-  fetch: () => {
-    throw new Error('InputArea permission interactions must not perform HTTP requests');
+  fetch: async (url) => {
+    // Login availability is probed by the model picker; this fixture has no
+    // auth service. A definite 404 avoids the production startup retry loop.
+    if (String(url).endsWith('/auth/status')) {
+      return new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }
+    throw new Error(`Unexpected InputArea HTTP request: ${url}`);
   },
   WebSocket: MockWebSocket,
 };
@@ -117,7 +126,8 @@ const descriptors = new Map(Object.keys(globals).map((key) => [key, Object.getOw
 for (const [key, value] of Object.entries(globals)) {
   Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 }
-after(() => {
+after(async () => {
+  await webClient.disconnect();
   dom.window.close();
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -146,6 +156,57 @@ const typeInput = async (value) => act(async () => {
   const editor = byId('chat-panel-input');
   editor.textContent = value;
   editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+});
+
+test('enterprise composer keeps only upload, skills and plan, with single Agent locked', async () => {
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  try {
+    await mount({ sessionId: 'new', mode: 'team' }, async ({ props, render, switched }) => {
+      props.onSetGoal = () => {};
+      await render();
+      assert.deepEqual(switched, ['agent']);
+      const mode = byId('chat-panel-mode-select-trigger');
+      assert.ok(mode.closest('.chat-input-container--enterprise'));
+      assert.equal(mode.dataset.variant, 'agent');
+      assert.equal(mode.disabled, true);
+      assert.equal(mode.querySelector('.chat-mode-select__chevron'), null);
+      await click(mode);
+      assert.equal(document.querySelector('[data-testid="chat-panel-mode-select-menu"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-permission-selector-root"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-work-context-wrapper"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-work-select-trigger"]'), null);
+      await click(byId('chat-panel-input-attach-trigger'));
+      assert.deepEqual(
+        [...byId('chat-panel-input-attach-menu').querySelectorAll('[role="menuitem"]')].map((node) => node.dataset.testid),
+        ['chat-panel-input-attach-menu-file', 'chat-panel-input-attach-menu-skill', 'chat-panel-input-attach-menu-plan'],
+      );
+      await click(byId('chat-panel-input-attach-menu-plan'));
+      assert.equal(usePlanStore.getState().isActive('new'), true);
+    });
+  } finally {
+    delete window.__JIUWENSWARM_EDITION__;
+  }
+});
+
+test('personal composer retains mode, permissions and extra menu entries', async () => {
+  await mount({}, async ({ props, render }) => {
+    props.onSetGoal = () => {};
+    await render();
+    assert.equal(byId('chat-panel-mode-select-trigger').disabled, false);
+    assert.ok(byId('chat-panel-mode-select-trigger').querySelector('.chat-mode-select__chevron'));
+    assert.ok(byId('chat-panel-permission-selector-root'));
+    await click(byId('chat-panel-input-attach-trigger'));
+    for (const entry of ['agent', 'extension', 'goal']) {
+      assert.ok(byId(`chat-panel-input-attach-menu-${entry}`));
+    }
+  });
+});
+
+test('personal new conversation retains the project directory selector', async () => {
+  await mount({ sessionId: 'new' }, async () => {
+    assert.ok(byId('chat-panel-work-select-trigger'));
+    assert.equal(byId('chat-panel-input-container').classList.contains('chat-input-container--enterprise'), false);
+  });
 });
 
 for (const queuePaused of [false]) {
@@ -1050,6 +1111,93 @@ test('paused Owner retains its pause state while organization work exposes stop 
     } finally {
       await act(async () => {
         finishExpertRequest(`${sessionId}::expert`, 'background');
+        setTeamOrganizationUiEnabled(false);
+      });
+    }
+  });
+});
+
+
+test('actual Owner composer remains disabled after stop and metadata refresh while child runs', async () => {
+  const { startExpertRequest, clearOrganizationRequests, setOrganizationOwnerStopped,
+    isOrganizationOwnerStopped, organizationOwnerStateRevision } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
+  );
+  const { organizationOwnerStopTarget, selectedExpertTeamId } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/conversation.js'
+  );
+  await mount({ mode: 'team' }, async ({ sessionId, props, render }) => {
+    const chat = useChatStore.getState();
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore,
+      request: async () => ({ session_id: sessionId, is_processing: true, status: 'processing' }),
+      sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata() {},
+      useWorkspaceStore,
+      setProcessing: (id, value) => { chat.setProcessing(id, value); props.isProcessing = value; },
+      setThinking: chat.setThinking,
+      isOrganizationOwnerStopped,
+      setOrganizationOwnerStopped,
+      organizationOwnerStateRevision,
+    });
+    const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+      selectedExpertTeamId, organizationOwnerStopTarget, useSessionStore, useChatStore,
+      setOrganizationOwnerStopped, isOrganizationOwnerStopped,
+      getSessionWorkContext: () => ({}),
+      resolveOutgoingMode: (_id, mode) => mode,
+      closeActiveTeamLeaderMessages() {},
+      request: async (_method, params) => {
+        assert.equal(params.organization_owner_stop, true);
+        return { success: true };
+      },
+      onErrorRef: { current: error => assert.fail(error) },
+      t: key => key,
+    });
+    const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
+      interrupt, organizationOwnerStopTarget,
+      useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: () => assert.fail('child cancelled') }) },
+      onErrorRef: { current: error => assert.fail(error) }, t: key => key,
+    });
+    const handleCancel = loadCallback('App.tsx', 'handleCancel', {
+      sessionIdRef: { current: sessionId }, NEW_CONVERSATION_ID: 'new',
+      useGoalStore: { getState: () => ({ runtimes: {} }) },
+      mode: 'team', organizationOwnerStopTarget, cancel, pause: () => assert.fail('Owner paused'),
+    });
+    props.onCancel = () => {
+      handleCancel();
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+    };
+    try {
+      await act(async () => {
+        setTeamOrganizationUiEnabled(true);
+        chat.setProcessing(sessionId, true);
+        useTeamSelectorStore.setState(state => ({ runtimes: {
+          ...state.runtimes, [sessionId]: { selectedTeamId: 'owner', teams: [
+            { team_id: 'owner', is_owner: true, organization_id: 'org' },
+            { team_id: 'expert', is_owner: false, organization_id: 'org' },
+          ] },
+        } }));
+        startExpertRequest(`${sessionId}::expert`, 'child-running', 'org_expert_background');
+      });
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+      await render();
+      assert.equal(byId('chat-panel-input-send').dataset.variant, 'stop');
+      await click(byId('chat-panel-input-send'));
+      await render();
+      assert.equal(byId('chat-panel-input-send').disabled, true);
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          assert.ok(await refresh(sessionId));
+          startExpertRequest(`${sessionId}::expert`, `late-child-${i}`, 'org_expert_background');
+        });
+        await render();
+        assert.equal(byId('chat-panel-input-send').dataset.variant, 'send');
+        assert.equal(byId('chat-panel-input-send').disabled, true);
+        assert.equal(chat.getRuntime(`${sessionId}::expert`).isProcessing, true);
+      }
+    } finally {
+      await act(async () => {
+        clearOrganizationRequests(sessionId);
         setTeamOrganizationUiEnabled(false);
       });
     }

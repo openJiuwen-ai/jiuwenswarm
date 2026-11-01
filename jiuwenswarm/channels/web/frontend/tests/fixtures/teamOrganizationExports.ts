@@ -16,4 +16,5 @@ export { useSettingsConfig } from '../../src/features/settings/services/useSetti
 export { SettingsServicesProvider } from '../../src/features/settings/services/SettingsServicesProvider';
 export { parseHistoryJsonFileToPreviewMessages } from '../../src/features/historyRestore';
 export { parseOrganizationHistoryPanelRecords } from '../../src/features/teamHistoryPanelRestore';
+export { isReachableTeamMemberStatus } from '../../src/features/teamMemberDeparture';
 export { MemberToolEventProjector } from '../../src/features/teamOrganization/memberToolEvents';

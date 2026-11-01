@@ -43,7 +43,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +326,7 @@ def build_login_model_entry(params: Mapping[str, Any] | None, model_name: str) -
     login_auth = login_auth_from_params(params)
     if login_auth is None:
         return None
-    from jiuwenswarm.common.auth.model_catalog import build_model_entry
+    from gateway.auth.model_catalog import build_model_entry
 
     return build_model_entry(model_name=bare_name, api_base=login_auth.api_base, api_key=login_auth.api_key)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+from importlib import import_module
 import threading
 import time
 from pathlib import Path
@@ -38,6 +39,43 @@ def sessions_dir(tmp_path, monkeypatch):
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("backend", ["server.runtime"])
+@pytest.mark.parametrize("identity", [{}, {"session_id": None}, {"session_id": ""}])
+@pytest.mark.parametrize("reader", ["single", "paged", "aggregate"])
+def test_partial_metadata_readers_restore_identity_without_writing(tmp_path, monkeypatch, backend, identity, reader):
+    metadata = import_module(f"jiuwenswarm.{backend}.session.session_metadata")
+    lifecycle = import_module(f"jiuwenswarm.{backend}.session.lifecycle")
+    monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(metadata, "_build_project_lookup", lambda: ({}, {}))
+    session_dir = tmp_path / "partial-session"
+    session_dir.mkdir()
+    original = json.dumps({
+        **identity,
+        "title": "Partial session",
+        "project_id": "default",
+        "work_mode": "work",
+        "last_user_message_at": 1,
+    })
+    path = session_dir / "metadata.json"
+    path.write_text(original, encoding="utf-8")
+
+    if reader == "single":
+        loaded = metadata.get_session_metadata("partial-session", cache_bust=True, enable_writeback=False)
+    elif reader == "paged":
+        sessions, total = metadata.get_all_sessions_metadata()
+        assert total == 1
+        loaded = sessions[0]
+    else:
+        sessions = metadata._collect_all_sessions_metadata()
+        assert len(sessions) == 1
+        loaded = sessions[0]
+
+    assert loaded["session_id"] == "partial-session"
+    assert loaded["title"] == "Partial session"
+    assert path.read_text(encoding="utf-8") == original
 
 
 # ===========================================================================
@@ -3341,3 +3379,30 @@ class TestGetAllSessionsMetadataLifecycleVisibility:
         sessions, total = get_all_sessions_metadata()
         assert total == 1
         assert [item["session_id"] for item in sessions] == ["live"]
+
+
+def test_session_equipment_survives_full_metadata_write(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _enqueue_write,
+        get_session_equipment,
+        get_session_metadata,
+        init_session_metadata,
+        save_session_equipment,
+    )
+
+    init_session_metadata(
+        session_id="sess_expert",
+        channel_id="web",
+        user_id="user_1",
+        title="expert",
+    )
+    save_session_equipment("sess_expert", agent_template_name="pkg-a")
+    assert get_session_equipment("sess_expert")["agent_template_name"] == "pkg-a"
+
+    current = dict(get_session_metadata("sess_expert", cache_bust=True, enable_writeback=False))
+    current.pop("session_equipment", None)
+    current["title"] = "renamed"
+    _enqueue_write("sess_expert", current, sync_write=True, preserve_equipment=True)
+
+    assert get_session_equipment("sess_expert", cache_bust=True)["agent_template_name"] == "pkg-a"
+    assert _read_json(sessions_dir / "sess_expert" / "metadata.json")["title"] == "renamed"

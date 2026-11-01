@@ -317,10 +317,17 @@ async def cached_asset_catalog(port, kind, *, refresh=False, preload=False):
         # Sanitization may remove a text field containing a signed URL. Rebuild
         # the required card schema with safe defaults; one malformed disk card
         # must never make an otherwise usable catalog fail.
-        fields = {
-            name: item.get(name) if isinstance(item.get(name), str) else ""
-            for name in ("display_name", "short_description", "public_latest_version", "icon_uri", "package_name")
-        }
+        fields = {}
+        for name in (
+            "display_name",
+            "short_description",
+            "public_latest_version",
+            "icon_uri",
+            "package_name",
+            "category_name",
+        ):
+            value = item.get(name)
+            fields[name] = value if isinstance(value, str) else ""
         tags = item.get('tags')
         fields['tags'] = tuple(tag for tag in tags if isinstance(tag, str)) if isinstance(tags, (list, tuple)) else ()
         items.append(HubAssetSummary(kind=kind, asset_id=asset_id, **fields))

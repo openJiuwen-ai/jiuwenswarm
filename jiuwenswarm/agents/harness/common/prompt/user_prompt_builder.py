@@ -72,6 +72,108 @@ def extract_multimodal_image_files(params: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def image_input_status_message(status: str, model_label: str = "") -> str:
+    """Describe the same image-input capability in prompts and fallback notices."""
+    model = f"当前模型{model_label}"
+    messages = {
+        "disabled": f"{model}已在配置中关闭原生图片输入。",
+        "unsupported": f"{model}的当前接口经检测不支持原生图片输入。",
+    }
+    return messages.get(status, f"尚未确认{model}的接口是否支持原生图片输入。")
+
+
+def _image_tool_hint(image_input_status: str, vision_tool_available: bool, steer_image_tool: str | None) -> str:
+    if steer_image_tool:
+        invocation = (
+            "read_file(file_path=mediaPath)"
+            if steer_image_tool == "read_file"
+            else "visual_question_answering(image_path_or_url=mediaPath, question=question)"
+        )
+        return (
+            "This is supplemental input for the current task. The steering queue carries text only; "
+            "the uploaded images have not yet been read. For every entry in mediaItems, call "
+            f"{invocation} using that entry's mediaPath before describing or comparing the images. "
+            "If reading fails or returns only metadata, explain the failure; do not guess image contents."
+        )
+    if vision_tool_available:
+        tool_hint = (
+            "请调用已配置的图片理解工具；"
+            "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
+            "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
+        )
+    else:
+        tool_hint = (
+            "没有配置可用的视觉模型工具。"
+            "请根据上述状态向用户说明本次无法直接读图的原因，不要猜测图片内容。"
+            "能力未确认不等于模型不支持读图。"
+        )
+    return image_input_status_message(image_input_status) + "本次图片未作为原生图片输入发送给主模型。" + tool_hint
+
+
+def prepare_image_tool_inputs(
+    params: Any,
+    inputs: dict[str, Any],
+    *,
+    enable_read_image_multimodal: bool,
+    vision_tool_available: bool,
+    image_input_status: str = "unknown",
+    steer_image_tool: str | None = None,
+) -> dict[str, Any]:
+    """Serialize image-tool context for both ordinary chat and text-only steer."""
+    if enable_read_image_multimodal and steer_image_tool is None:
+        return inputs
+    query = inputs.get("query")
+    if not isinstance(query, str) or (
+        steer_image_tool is None and "jiuwenswarm_image_tool_context" in query
+    ):
+        return inputs
+    image_files = inputs.get("_multimodal_image_files")
+    if not isinstance(image_files, list) or not image_files:
+        image_files = extract_multimodal_image_files(params)
+    if not image_files:
+        return inputs
+
+    params = params if isinstance(params, dict) else {}
+    raw_question = params.get("query")
+    if not isinstance(raw_question, str) or not raw_question.strip():
+        raw_question = params.get("content")
+    question = raw_question.strip() if isinstance(raw_question, str) else ""
+    if steer_image_tool and not question:
+        question = "Read the attached images and use them to continue the current task."
+    first_path = str(image_files[0].get("path") or "").strip()
+    if not first_path:
+        return inputs
+    media_items = []
+    for image_file in image_files:
+        path = str(image_file.get("path") or "").strip()
+        if not path:
+            continue
+        media_items.append({
+            "type": "image",
+            "filename": image_file.get("filename") or Path(path).name,
+            "mediaPath": path,
+            "mimeType": image_file.get("mime_type") or image_file.get("mimeType"),
+        })
+    if not media_items:
+        return inputs
+    tool_context = {
+        "marker": "jiuwenswarm_image_tool_context",
+        "mediaPath": first_path,
+        "mediaItems": media_items,
+        "question": question,
+        "imageInputStatus": image_input_status,
+        "toolHint": _image_tool_hint(image_input_status, vision_tool_available, steer_image_tool),
+    }
+    updated = dict(inputs)
+    updated.pop("_multimodal_image_files", None)
+    updated["query"] = (
+        query
+        + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
+        + json.dumps(tool_context, ensure_ascii=False)
+    )
+    return updated
+
+
 def set_current_multimodal_image_files(image_files: list[dict[str, Any]]) -> Any:
     """Bind request image files to the current Core model-call task."""
 

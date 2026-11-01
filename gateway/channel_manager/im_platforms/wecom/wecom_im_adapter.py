@@ -8,8 +8,7 @@ import json
 from typing import Any
 
 from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
-
-from jiuwenswarm.common.utils import logger
+from gateway.common.paths import logger
 from gateway.im_pipeline.im_inbound import IMHistoryMessage
 
 
@@ -154,7 +153,7 @@ class WecomIMPlatformAdapter:
         if not name:
             return ""
         try:
-            from jiuwenswarm.common.utils import get_interactions_dir
+            from gateway.common.paths import get_interactions_dir
 
             interactions_dir = get_interactions_dir()
             for fp in interactions_dir.glob("*.json"):

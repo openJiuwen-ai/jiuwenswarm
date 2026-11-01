@@ -37,6 +37,18 @@ When the template still has information gaps, perform additional exploration and
 2. Generate the document to the designated location (the skill caller will specify the output path).
 3. Output a document summary for the user to review quickly.
 
+### Chunked Write Protection
+
+A single `write_file` call encodes its `content` as a JSON string — every newline and quote is escaped, inflating the payload. When the document is large, the model's `max_output_tokens` runs out mid-string, producing a truncated JSON (`Unterminated string ...`) that the harness rejects — the file is never written.
+
+**Hard rule**: a single `write_file` content MUST NOT exceed **3000 characters**. When the document is longer, split it:
+
+1. First `write_file` call: write the front matter + early sections (≤3000 chars), creating the file.
+2. Follow-up `read_file` (required before edit) + `edit_file` calls: append each remaining section, one per call, each ≤3000 chars. Use `edit_file` with `old_string=""` and `new_string="<next section>"` to append, or re-read and use a section-anchored `old_string`/`new_string` pair.
+3. Never put an entire mermaid diagram or a large table inside a single `edit_file` `new_string` if it would exceed 3000 chars — split the section further.
+
+This keeps every tool call's JSON well within the output budget and guarantees the file is actually written.
+
 </instruct>
 
 <constraint>

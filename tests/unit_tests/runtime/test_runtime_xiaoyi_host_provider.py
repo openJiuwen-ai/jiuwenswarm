@@ -8,12 +8,15 @@ from typing import Any
 
 import pytest
 
+# 生产侧 xiaoyi_connect 使用 gateway.common.host_services 注册/读取 provider；
+# 母仓 phone tools 走 jiuwenswarm.common.host_services，两侧互不相通，按执行侧分别引用。
+from gateway.channel_manager.im_platforms.xiaoyi import xiaoyi_connect
+from gateway.common import host_services
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     utils,
     xiaoyi_gui_tool,
 )
-from gateway.channel_manager.im_platforms.xiaoyi import xiaoyi_connect
-from jiuwenswarm.common import host_services
+from jiuwenswarm.common import host_services as server_host_services
 
 
 @pytest.fixture(autouse=True)
@@ -21,8 +24,9 @@ def _isolate_runtime_xiaoyi_channel_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Keep the process-global provider isolated from every other test."""
-    monkeypatch.setattr(host_services, "_runtime_xiaoyi_channel_provider", None)
-    monkeypatch.setattr(host_services, "_runtime_xiaoyi_channel_providers", [])
+    for module in (host_services, server_host_services):
+        monkeypatch.setattr(module, "_runtime_xiaoyi_channel_provider", None)
+        monkeypatch.setattr(module, "_runtime_xiaoyi_channel_providers", [])
     monkeypatch.setattr(xiaoyi_connect, "_xiaoyi_channel_instances", {})
     monkeypatch.setattr(xiaoyi_connect, "_xiaoyi_channel_owners", {})
     monkeypatch.setattr(
@@ -152,7 +156,8 @@ async def test_device_command_rejects_missing_runtime_xiaoyi_channel(
     def unexpected_config_lookup() -> dict[str, Any]:
         pytest.fail("session config must not be read without an active Xiaoyi channel")
 
-    host_services.install_runtime_xiaoyi_channel_provider(no_active_channel)
+    # 该用例执行母仓 phone tools，其 get_runtime_xiaoyi_channel 绑定母仓模块全局。
+    server_host_services.install_runtime_xiaoyi_channel_provider(no_active_channel)
     monkeypatch.setattr(utils, "get_config", unexpected_config_lookup)
 
     with pytest.raises(RuntimeError, match="No active XY session found"):
@@ -174,7 +179,8 @@ async def test_gui_tool_rejects_missing_runtime_xiaoyi_channel(
     def unexpected_config_lookup() -> dict[str, Any]:
         pytest.fail("session config must not be read without an active Xiaoyi channel")
 
-    host_services.install_runtime_xiaoyi_channel_provider(no_active_channel)
+    # 同上：gui tool 也在母仓进程内执行。
+    server_host_services.install_runtime_xiaoyi_channel_provider(no_active_channel)
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
         unexpected_config_lookup,

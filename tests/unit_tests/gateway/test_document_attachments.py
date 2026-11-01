@@ -67,7 +67,7 @@ def test_browser_document_100_mib_boundary(tmp_path: Path, monkeypatch, extra_by
         "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
         lambda: tmp_path,
     )
-    content = b"x" * (_MAX_DOCUMENT_BYTES + extra_bytes)
+    content = b"x" * (100 * 1024 * 1024 + extra_bytes)
     result = persist_and_parse_documents(
         {"documents": [{"filename": "boundary.txt", "base64_data": base64.b64encode(content).decode("ascii")}]},
         session_id="size-boundary",

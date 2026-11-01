@@ -4,10 +4,10 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+from gateway.common.config import get_config
+from gateway.common.paths import get_root_dir, logger
 from gateway.extensions.loader import ExtensionLoader
 from gateway.extensions.registry import ExtensionRegistry
-from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.utils import get_root_dir, logger
 
 _DEFAULT_PACKAGE_EXTENSION_DIR = ("gateway", "extensions")
 _DEFAULT_EXTENSION_DIR = "/".join(_DEFAULT_PACKAGE_EXTENSION_DIR)

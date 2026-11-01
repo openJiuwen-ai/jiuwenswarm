@@ -14,12 +14,16 @@ from typing import Any, Callable
 
 import aiohttp
 from aiohttp.client_exceptions import ContentTypeError
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from gateway.channel_manager.base import (
+    BaseChannel,
+    ChannelMetadata,
+    RobotMessageRouter,
+)
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
-from gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
 
 logger = logging.getLogger(__name__)
 
@@ -1209,7 +1213,7 @@ class WechatChannel(BaseChannel):
 
         # 持久化 last_user_id 和 context_token 供 cron/心跳推送使用
         try:
-            from jiuwenswarm.common.config import update_channel_in_config
+            from gateway.common.config import update_channel_in_config
 
             updates: dict[str, str] = {"last_user_id": user_id}
             if context_token:

@@ -3,11 +3,12 @@
 import asyncio
 
 import pytest
-
-from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from openjiuwen_protocol.message import ReqMethod
-from jiuwenswarm.common.config_panel import tui_models_handlers
+
+from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
+from gateway.common.config_panel import tui_models_handlers
+from jiuwenswarm.common.config_panel import tui_models_handlers as _server_tui_models_handlers
 from gateway.channel_manager.tui import tui_connect as tui_connect_module
 from gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
@@ -909,7 +910,7 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
                 return {"content": "", "reasoning_content": ""}
             return {"content": "hello"}
 
-    monkeypatch.setattr(tui_models_handlers, "Model", FakeModel)
+    monkeypatch.setattr(_server_tui_models_handlers, "Model", FakeModel)
 
     await server.local_handlers["/tui"]["config.validate_model"](
         object(),
@@ -1535,6 +1536,7 @@ async def test_session_rebind_project_falls_back_to_shared_dir_when_agent_offlin
     pytest.skip("A2g deleted legacy local rebind fallback; E2A-only")
 
 
+@pytest.mark.asyncio
 async def test_session_rebind_project_does_not_read_gateway_state_for_remote_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1576,10 +1578,10 @@ class _DictOwnedCronController:
         }
         self.update_calls: list[tuple[str, dict]] = []
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **_kwargs):
         return dict(self.job) if job_id == self.job["id"] else None
 
-    async def update_job(self, job_id, patch):
+    async def update_job(self, job_id, patch, **_kwargs):
         self.update_calls.append((job_id, dict(patch)))
         return {"id": job_id, **self.job, **patch}
 
@@ -1644,10 +1646,10 @@ async def test_cron_job_update_accepts_matching_owner_with_object_job() -> None:
             self.job = SimpleNamespace(id="cron-obj-owner", user_id="user-owner")
             self.update_calls = 0
 
-        async def get_job(self, job_id):
+        async def get_job(self, job_id, **_kwargs):
             return self.job if job_id == self.job.id else None
 
-        async def update_job(self, job_id, patch):
+        async def update_job(self, job_id, patch, **_kwargs):
             self.update_calls += 1
             return {"id": job_id, **patch}
 
@@ -1736,8 +1738,8 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch):
             seen["on_event_loop"] = False
         return [{"model_client_config": {"model_name": "m", "api_key": "k"}}]
 
-    monkeypatch.setattr(tui_models_handlers, "get_config", lambda: {})
-    monkeypatch.setattr(tui_models_handlers, "get_available_models", fake_available)
+    monkeypatch.setattr(_server_tui_models_handlers, "get_config", lambda: {})
+    monkeypatch.setattr(_server_tui_models_handlers, "get_available_models", fake_available)
 
     await server.local_handlers["/tui"]["models.list"](object(), "req-models", {}, "sess-1")
 

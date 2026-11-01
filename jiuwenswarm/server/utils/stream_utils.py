@@ -362,7 +362,7 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
             if isinstance(payload, dict)
             else str(payload)
         )
-        if not content or not content.strip():
+        if not content:
             return None
         return {"event_type": "chat.delta", "content": content}
 
