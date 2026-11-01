@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -411,15 +412,28 @@ async def test_close_during_prepare_waits_for_thread_and_removes_output(
 
 
 @pytest.mark.asyncio
-async def test_expiry_maintenance_runs_without_more_requests(setup):
+async def test_expiry_maintenance_runs_without_more_requests(setup, monkeypatch):
+    from jiuwenswarm.server.runtime.marketplace import (
+        asset_publish_service as service_module,
+        asset_publish_store as store_module,
+    )
+
+    now = 1_700_000_000.0
+    clock = SimpleNamespace(time=lambda: now)
+    monkeypatch.setattr(service_module, "time", clock)
+    monkeypatch.setattr(store_module, "time", clock)
     service, store, _, _ = setup
-    service._draft_ttl = 0.02
+    service._draft_ttl = 60
     service._cleanup_interval = 0.01
     draft = await prepare(service)
     path = store.get_draft(
         "trusted-user-workspace-hub", draft["draft_id"]
     ).artifact_path
-    async with asyncio.timeout(1):
+    assert path.is_file()
+    assert store.pending_draft_count() == 1
+    # Expire only after observing the draft; keep the real background loop.
+    now += service._draft_ttl + 1
+    async with asyncio.timeout(5):
         while path.exists():
             await asyncio.sleep(0.01)
     assert store.pending_draft_count() == 0

@@ -52,7 +52,7 @@ export function resolveAuthorizationActions(questions: Question[]): ResolvedActi
     .map((option) => ({
       semantic: optionSemantic(option),
       option,
-      label: option.label,
+      label: option.label ?? option.value ?? '',
       tip: (option.description || '').trim(),
     }));
   const rank = (semantic: AuthSemantic) => {
@@ -204,15 +204,20 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   // 其余后端文案继续走已有翻译，保留自定义选项的含义。
   const actions = useMemo<ResolvedAction[]>(
     () =>
-      resolveAuthorizationActions(questions).map((action) => ({
-        ...action,
-        label: action.label.trim() === '会话内记住'
-          ? t('chatUi.inlineQuestion.sessionAllow')
-          : action.label.trim() === '永久记住'
-            ? t('chatUi.inlineQuestion.alwaysAllow')
-            : translatePermissionText(action.label, i18n.language),
-        tip: translatePermissionText(action.tip, i18n.language),
-      })),
+      resolveAuthorizationActions(questions).map((action) => {
+        const rawLabel = action.label.trim();
+        let label = translatePermissionText(action.label, i18n.language);
+        if (rawLabel === '会话内记住') {
+          label = t('chatUi.inlineQuestion.sessionAllow');
+        } else if (rawLabel === '永久记住') {
+          label = t('chatUi.inlineQuestion.alwaysAllow');
+        }
+        return {
+          ...action,
+          label,
+          tip: translatePermissionText(action.tip, i18n.language),
+        };
+      }),
     [questions, i18n.language, t],
   );
 

@@ -118,6 +118,19 @@ for (const language of ['zh', 'en']) for (const withValue of [true, false]) for 
   });
 }
 
+for (const label of [undefined, null]) {
+  test(`missing permission label (${label}) falls back to its stable value and remains actionable`, async () => mounted(async ({ socket, observed }) => {
+    await deliver(socket, payload([question({ options: [{ value: 'allow_once', label }] })]));
+    const button = document.querySelector('[data-variant="allow-once"]');
+    assert.equal(button.textContent, 'allow_once');
+    await act(async () => button.click());
+    const request = socket.requests.at(-1);
+    assert.deepEqual(request.params.answers[0].selected_options, ['allow_once']);
+    await respond(socket, request);
+    assert.deepEqual(observed.results, [true]);
+  }));
+}
+
 for (const count of [1, 2]) for (const action of ['allow-once', 'reject']) {
   test(`legacy ${count}-question ${action}: actual event → prompt → hook → res consumes pending`, async () => mounted(async ({ socket, observed }) => {
     await deliver(socket, payload(Array.from({ length: count }, () => question())));
