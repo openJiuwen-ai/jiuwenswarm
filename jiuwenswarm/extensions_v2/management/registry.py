@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
+
+import yaml
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
@@ -22,7 +24,7 @@ from openjiuwen.core.extension import (
     ExtensionFailure,
     Registry,
 )
-from openjiuwen.core.extension.errors import OperationError
+from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.management import (
     PACKAGE_QUERY_EVENT,
@@ -39,6 +41,21 @@ from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface
 logger = logging.getLogger(__name__)
 
 CODE_MANAGER_NOT_INITIALIZED = "EXTENSION_MANAGER_NOT_INITIALIZED"
+DOMAIN_AGENT = "agent"
+MANIFEST_NAME = "manifest.yaml"
+
+
+def _manifest_domain(root: Path) -> str:
+    """Read the host split from the raw manifest; Core does not model it."""
+
+    try:
+        raw = yaml.safe_load((root / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return DOMAIN_AGENT
+    if not isinstance(raw, Mapping):
+        return DOMAIN_AGENT
+    domain = raw.get("domain")
+    return domain.strip().lower() if isinstance(domain, str) else DOMAIN_AGENT
 
 
 class ExtensionManager:
@@ -114,15 +131,20 @@ class ExtensionManager:
                                          is_interactive=is_interactive, surface=surface)
 
     async def install(self, paths: Sequence[Path]) -> list[ActivationReport]:
-        """Install each source through ``package.install``."""
+        """Install each source through ``package.install``.
+
+        Gateway packages share the install store but never activate here; they
+        are reported as failed so the caller does not create an orphan copy.
+        """
 
         async with self._operation_lock:
             self._require_ready()
             package_manager = self._registry.package_manager
             before = set(package_manager.list_installed())
-            reports = list(await self._registry.install(list(paths)))
+            accepted, rejected = self._reject_foreign(paths)
+            reports = list(await self._registry.install(list(accepted)))
             self._remove_failed_copies(reports, set(package_manager.list_installed()) - before)
-            return reports
+            return rejected + reports
 
     async def load_installed(self) -> list[ActivationReport]:
         """Activate the highest installed version of every inactive package."""
@@ -241,6 +263,8 @@ class ExtensionManager:
         active = {record.package_id for record in self._registry.runtime.active_packages()}
         highest: dict[str, tuple[Version, Path]] = {}
         for root in self._registry.package_manager.list_installed():
+            if _manifest_domain(root) != DOMAIN_AGENT:
+                continue
             try:
                 manifest = load_manifest(root)
                 version = parse_version(manifest.version)
@@ -253,6 +277,38 @@ class ExtensionManager:
             if current is None or version > current[0]:
                 highest[manifest.package_id] = (version, root)
         return [root for _, root in highest.values()]
+
+    def _reject_foreign(
+        self,
+        paths: Sequence[Path],
+    ) -> tuple[list[Path], list[ActivationReport]]:
+        """Keep agent packages; report gateway packages without copying them."""
+
+        package_manager = self._registry.package_manager
+        accepted: list[Path] = []
+        rejected: list[ActivationReport] = []
+        for path in paths:
+            try:
+                with package_manager.open_source(Path(path)) as opened:
+                    domain = _manifest_domain(opened.root)
+                    package_id = opened.manifest.package_id
+            except Exception:  # noqa: BLE001 - let the Core installer report the real error
+                accepted.append(path)
+                continue
+            if domain == DOMAIN_AGENT:
+                accepted.append(path)
+                continue
+            rejected.append(
+                _failure(
+                    package_id,
+                    "install",
+                    operation_error(
+                        StatusCode.EXTENSION_SOURCE_INVALID,
+                        reason=f"{package_id} is a {domain} package; it is not an AgentServer package",
+                    ),
+                )
+            )
+        return accepted, rejected
 
     def _remove_inactive(self, package_id: str) -> tuple[bool, OperationError | None]:
         manager = self._registry.package_manager
