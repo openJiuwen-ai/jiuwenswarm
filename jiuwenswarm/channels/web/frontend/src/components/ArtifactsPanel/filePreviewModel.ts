@@ -90,6 +90,30 @@ export function artifactTextPreviewUrl(resource: PreviewResource, origin: string
   return resource.path ? `/file-api/file-content?path=${encodeURIComponent(resource.path)}&encoding=auto` : null;
 }
 
+const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
+const GBK = new TextDecoder('gbk');
+const UTF16LE = new TextDecoder('utf-16le');
+const UTF16BE = new TextDecoder('utf-16be');
+
+/**
+ * Decode artifact text: UTF-16 BOM, else strict UTF-8, else GBK.
+ *
+ * The inline download URL declares no charset, so `response.text()` would turn
+ * legacy GBK artifacts into U+FFFD; GBK is a never-throwing last resort.
+ */
+export function decodeTextBytes(bytes: ArrayBuffer | Uint8Array): string {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (view.length >= 2) {
+    if (view[0] === 0xff && view[1] === 0xfe) return UTF16LE.decode(view);
+    if (view[0] === 0xfe && view[1] === 0xff) return UTF16BE.decode(view);
+  }
+  try {
+    return UTF8_STRICT.decode(view);
+  } catch {
+    return GBK.decode(view);
+  }
+}
+
 export function previewKind(file: PreviewFile): PreviewKind {
   const mime = (file.mimeType ?? '').toLowerCase();
   const ext = fileExtension(file.name);
