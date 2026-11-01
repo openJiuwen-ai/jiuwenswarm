@@ -93,6 +93,31 @@ const assertPlanToggleAllowed = (allowed) => {
   for (const next of [false, true]) assert.equal(evaluatePlanToggle(sessionId, next).ok, allowed);
 };
 
+for (const language of ['zh', 'en']) for (const withValue of [true, false]) for (const action of [
+  { label: '会话内记住', value: 'session_allow', semantic: 'session-allow', zh: '本会话允许', en: 'Allow for this session' },
+  { label: '永久记住', value: 'always_allow', semantic: 'allow-always', zh: '始终允许', en: 'Always allow' },
+]) {
+  test(`${language} ${action.semantic} clarifies scope and preserves ${withValue ? 'stable value' : 'legacy label'} on the wire`, async () => {
+    const previousLanguage = i18n.language;
+    await i18n.changeLanguage(language);
+    try {
+      await mounted(async ({ socket, observed }) => {
+        const option = { label: action.label, ...(withValue ? { value: action.value } : {}) };
+        await deliver(socket, payload([question({ options: [option, { value: 'reject', label: '拒绝' }] })]));
+        const button = document.querySelector(`[data-variant="${action.semantic}"]`);
+        assert.equal(button.textContent, action[language]);
+        await act(async () => button.click());
+        const request = socket.requests.at(-1);
+        assert.deepEqual(request.params.answers[0].selected_options, [withValue ? action.value : action.label]);
+        await respond(socket, request);
+        assert.deepEqual(observed.results, [true]);
+      });
+    } finally {
+      await i18n.changeLanguage(previousLanguage);
+    }
+  });
+}
+
 for (const count of [1, 2]) for (const action of ['allow-once', 'reject']) {
   test(`legacy ${count}-question ${action}: actual event → prompt → hook → res consumes pending`, async () => mounted(async ({ socket, observed }) => {
     await deliver(socket, payload(Array.from({ length: count }, () => question())));

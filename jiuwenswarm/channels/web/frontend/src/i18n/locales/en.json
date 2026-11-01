@@ -4442,7 +4442,7 @@
       "accept": "Accept",
       "reject": "Reject",
       "allowOnce": "Allow once",
-      "sessionAllow": "Session allow",
+      "sessionAllow": "Allow for this session",
       "alwaysAllow": "Always allow",
       "acceptAll": "Accept all",
       "submit": "Submit",

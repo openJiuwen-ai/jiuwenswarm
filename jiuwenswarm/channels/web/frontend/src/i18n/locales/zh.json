@@ -4379,8 +4379,8 @@
       "accept": "接收",
       "reject": "拒绝",
       "allowOnce": "本次允许",
-      "sessionAllow": "会话内记住",
-      "alwaysAllow": "永久记住",
+      "sessionAllow": "本会话允许",
+      "alwaysAllow": "始终允许",
       "acceptAll": "全部接收",
       "submit": "确认提交",
       "entryCount": "共 {{count}} 条演进经验"

@@ -200,17 +200,20 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
-  // 按钮的 label/description 原样使用后端下发的文案；semantic 判定用的是
-  // option.value（如 "allow_once"，与 label 无关），排序与语义分类不受影响。
-  // 展示层再叠一层已知短语的前端翻译（非中文语言下），查不到的原样显示。
+  // 旧的“记住”按钮明确展示允许范围；回传仍使用原始 option 的 value/label。
+  // 其余后端文案继续走已有翻译，保留自定义选项的含义。
   const actions = useMemo<ResolvedAction[]>(
     () =>
       resolveAuthorizationActions(questions).map((action) => ({
         ...action,
-        label: translatePermissionText(action.label, i18n.language),
+        label: action.label.trim() === '会话内记住'
+          ? t('chatUi.inlineQuestion.sessionAllow')
+          : action.label.trim() === '永久记住'
+            ? t('chatUi.inlineQuestion.alwaysAllow')
+            : translatePermissionText(action.label, i18n.language),
         tip: translatePermissionText(action.tip, i18n.language),
       })),
-    [questions, i18n.language],
+    [questions, i18n.language, t],
   );
 
   /** 把选中的语义应用到所有 question（多条时统一处理）。 */
