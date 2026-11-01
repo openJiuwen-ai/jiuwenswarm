@@ -48,6 +48,8 @@ from jiuwenswarm.runtime.session.model import (
 )
 from jiuwenswarm.runtime.session_delete import TeamDeleteResult
 from jiuwenswarm.runtime.session_input import (
+    SessionInputMode,
+    SessionInputTargetError,
     resolve_session_input_mode,
     validate_session_input,
 )
@@ -1048,6 +1050,12 @@ class AgentRuntime:
         """Read the authoritative execution state without attaching a consumer."""
         return self._session_coordinator.snapshot_session(session_id)
 
+    def recoverable_control(
+        self, session_id: str, request_id: str, execution_id: str,
+    ) -> SessionExecutionSnapshot | None:
+        """Read recovery eligibility without claiming or resuming control input."""
+        return self._session_coordinator.recoverable_control(session_id, request_id, execution_id)
+
     async def prepare_session_fork(
         self,
         provision_input: SessionForkInput,
@@ -1290,6 +1298,90 @@ class AgentRuntime:
         )
         is_team_request = self._request_targets_team(request)
         team_paused = False
+        target_request_id = str(params.get("target_request_id") or "").strip()
+        # Only the web cron path fences a specific execution. Other transports
+        # (for example process-cli request-scoped cancels) must keep the
+        # adapter's semantic-interrupt path before the coordinator cancel.
+        if target_request_id and request.channel_id == "web":
+            from jiuwenswarm.common.schema.agent import AgentResponse
+            from jiuwenswarm.runtime.session.model import CancelExecutionResult
+
+            expected_id = str(params.get("expected_execution_id") or "").strip()
+            executions = snapshot.executions if snapshot is not None else ()
+            owners = []
+            for item in executions:
+                if item.request_id != target_request_id:
+                    continue
+                if expected_id and item.execution_id != expected_id:
+                    continue
+                owners.append(item)
+            owned_ids = {item.execution_id for item in owners}
+            if snapshot is not None:
+                # A completed response owner may still have live control or
+                # supplement children. Keep the execution fence while tracing
+                # those children, rather than treating an absent live root as stopped.
+                if not expected_id:
+                    owned_ids.update(item.execution_id for item in snapshot.executions
+                                     if item.root_request_id == target_request_id)
+                while True:
+                    descendants = {item.execution_id for item in snapshot.executions
+                                   if item.parent_execution_id in owned_ids}
+                    if descendants.issubset(owned_ids):
+                        break
+                    owned_ids.update(descendants)
+            targets = [item for item in (snapshot.executions if snapshot is not None else ())
+                       if item.execution_id in owned_ids and not item.state.terminal]
+            producer_stopped = True
+            if targets and is_team_request:
+                from jiuwenswarm.server.runtime.agent_manager import get_team_manager
+
+                producer_stopped = await get_team_manager(request.channel_id).stop_session_runtime(
+                    request.session_id, reason="cron request cancellation",
+                    generation=snapshot.generation, expected_request_id=target_request_id,
+                )
+            result = None
+            if targets:
+                results = []
+                for target in targets:
+                    results.append(await self._session_coordinator.cancel_execution(
+                        request.session_id, execution_id=target.execution_id,
+                        generation=snapshot.generation,
+                    ))
+                result = CancelExecutionResult(
+                    matched=sum(item.matched for item in results),
+                    cancelled=sum(item.cancelled for item in results),
+                    timed_out=tuple(eid for item in results for eid in item.timed_out),
+                )
+            # Admission tracks control IDs, not the enclosing chat request ID.
+            # Capture them from the pre-cancel snapshot: cancellation clears the
+            # handles, and a late/mismatched cancel must leave newer prompts alone.
+            # A timed-out execution is still live, so its prompt stays valid;
+            # skip only those, rather than keeping every cleared prompt around.
+            if targets and result is not None:
+                timed_out_ids = set(result.timed_out)
+                for execution in snapshot.executions:
+                    if (
+                        execution.waiting_control_ids
+                        and execution.execution_id in owned_ids
+                        and execution.execution_id not in timed_out_ids
+                    ):
+                        for control_id in execution.waiting_control_ids:
+                            await self._clear_pending_interaction(
+                                request.session_id, control_id,
+                            )
+            stop_confirmed = (
+                producer_stopped and not result.timed_out
+                if result is not None else bool(owners)
+            )
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=True,
+                payload={
+                    "event_type": "chat.interrupt_result", "success": stop_confirmed,
+                    "matched": result.matched if result is not None else 0,
+                    "stop_confirmed": stop_confirmed,
+                    "target_request_id": target_request_id,
+                },
+            )
         if is_team_request and snapshot is not None:
             context = SessionLifecycleContext(
                 session_id=snapshot.session_id,
@@ -1583,6 +1675,7 @@ class AgentRuntime:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
         request = self.normalize_request(request)
+        self._validate_permission_answer(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -1939,6 +2032,12 @@ class AgentRuntime:
             for event in events:
                 yield event
             return
+        execution_id = None
+
+        def remember_execution(execution: SessionExecutionSnapshot) -> None:
+            nonlocal execution_id
+            execution_id = execution.execution_id
+
         if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT and not (
             self._defer_stale_ask_user_to_chat(request)
         ):
@@ -1948,6 +2047,7 @@ class AgentRuntime:
                 self._control_ids(request),
                 lambda: self._stream_control_started(request),
                 interaction_ids=interaction_ids,
+                on_execution=remember_execution,
             ))
         else:
             stream = self.stream(
@@ -1960,6 +2060,8 @@ class AgentRuntime:
             self._stream_with_runtime_context(stream, request=request)
         ) as events:
             async for event in events:
+                if execution_id is not None and isinstance(event.payload, dict):
+                    event.payload["execution_id"] = execution_id
                 yield event
 
     async def _stream_with_runtime_context(
@@ -2096,6 +2198,7 @@ class AgentRuntime:
         )
 
         request = self.normalize_request(request)
+        self._validate_permission_answer(request)
         is_session_input = self._is_session_input_request(request)
         is_team_session_message = (
             self._request_targets_team(request)
@@ -2173,6 +2276,16 @@ class AgentRuntime:
                 async def idle_input():
                     from jiuwenswarm.runtime.events import RuntimeEvent
 
+                    # Image supplements are validated against the active
+                    # owner's tools and uploads. They must never bypass that
+                    # path by becoming a new turn or receiving an early ACK.
+                    if (
+                        resolve_session_input_mode(request.params) is SessionInputMode.STEER
+                        and request.params.get("media_items")
+                    ):
+                        raise SessionInputTargetError(
+                            "image supplemental input requires an active execution; supplemental input was not sent"
+                        )
                     self._require_cross_session_input_admission(request)
                     # Web stream clients need the idle disposition before ordinary output.
                     # Unary clients must retain their single final response.
@@ -2470,6 +2583,10 @@ class AgentRuntime:
                     # nested output stream. Single-agent interaction answers
                     # must still find its execution before the stream ends.
                     if managed_heartbeat:
+                        def remember_heartbeat(execution: SessionExecutionSnapshot) -> None:
+                            if isinstance(event.payload, dict):
+                                event.payload["execution_id"] = execution.execution_id
+
                         control_ids = interaction_ids(event)
                         if (
                             control_ids
@@ -2477,6 +2594,7 @@ class AgentRuntime:
                                 request.session_id or "default",
                                 request.request_id,
                                 control_ids,
+                                on_execution=remember_heartbeat,
                             )
                         ):
                             # No live Heartbeat execution owns this question, so
@@ -2662,15 +2780,24 @@ class AgentRuntime:
         admitted = callable(begin_control) and callable(end_control)
         if admitted:
             await begin_control(session_id)
+        execution_id = None
+
+        def remember_execution(execution: SessionExecutionSnapshot) -> None:
+            nonlocal execution_id
+            execution_id = execution.execution_id
+
         try:
             stream = self._released_after(request, self._session_coordinator.deliver_control_stream(
                 session_id,
                 self._control_ids(request),
                 lambda: self._stream_control_started(request),
                 interaction_ids=interaction_ids,
+                on_execution=remember_execution,
             ))
             async with aclosing(stream):
                 async for event in stream:
+                    if execution_id is not None and isinstance(event.payload, dict):
+                        event.payload["execution_id"] = execution_id
                     if on_control_event is not None and self._is_permission_control_ack(request, event):
                         await on_control_event(event)
                     else:
@@ -2700,6 +2827,19 @@ class AgentRuntime:
             await begin_control(session_id)
         cleared: list[str] = []
         paused = self.resumed_interactions(request)
+        execution_id = None
+
+        def remember_execution(execution: SessionExecutionSnapshot) -> None:
+            nonlocal execution_id
+            # Unary Heartbeat continuations hand their controls back to the
+            # live root instead of retaining this control child as the owner.
+            while heartbeat_control and execution.work_kind is not SessionWorkKind.HEARTBEAT:
+                parent = self._session_coordinator.get_execution(execution.parent_execution_id or "")
+                if parent is None or parent.generation != execution.generation or parent.session_id != session_id:
+                    return
+                execution = parent
+            execution_id = execution.execution_id
+
         try:
             events = await self._session_coordinator.deliver_control(
                 session_id,
@@ -2708,7 +2848,11 @@ class AgentRuntime:
                     request, on_control_event=on_control_event, cleared=cleared,
                 ),
                 interaction_ids=asked_interaction_ids,
+                on_execution=remember_execution,
             )
+            for event in events:
+                if execution_id is not None and isinstance(event.payload, dict):
+                    event.payload["execution_id"] = execution_id
             if not heartbeat_control:
                 for event in events:
                     if self._has_control_target(session_id, tuple(interaction_ids(event))):
@@ -3392,6 +3536,26 @@ class AgentRuntime:
         from jiuwenswarm.runtime.request import CHAT_TURN_METHODS
 
         return CHAT_TURN_METHODS
+
+    @classmethod
+    def _validate_permission_answer(cls, request: AgentRequest) -> None:
+        """Reject malformed approvals before they can supersede waiting work."""
+        params = request.params if isinstance(request.params, dict) else {}
+        if (
+            request.req_method is not ReqMethod.CHAT_SEND
+            or str(params.get("source") or "").strip() != "permission_interrupt"
+        ):
+            return
+        if cls._request_targets_team(request) or not cls._is_single_agent_session_mode(
+            params.get("mode"), work_mode=params.get("work_mode"),
+        ):
+            return
+        from jiuwenswarm.runtime.interaction import InteractionAnswerError, validate_answer_items
+
+        answers = params.get("answers")
+        if not isinstance(answers, list):
+            raise InteractionAnswerError("answers must be a list")
+        validate_answer_items(answers)
 
     @staticmethod
     def _is_interrupt_resume_request(request: AgentRequest) -> bool:

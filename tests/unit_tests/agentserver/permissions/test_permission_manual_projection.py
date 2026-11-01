@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
+from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.interrupt.response import ToolCallInterruptRequest
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
@@ -26,6 +29,7 @@ from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 from tests.unit_tests.agentserver.permissions import test_permission_answer_cutover as continuation
 from tests.unit_tests.agentserver.permissions.test_permission_answer_cutover import answer_host  # noqa: F401
 from tests.unit_tests.agentserver.permissions.test_permission_cold_build import cold  # noqa: F401
+from tests.unit_tests.runtime.test_stream_interaction_answer import harness, isolated_agent_dirs  # noqa: F401
 
 
 async def _stream_request(h, **params):
@@ -34,11 +38,13 @@ async def _stream_request(h, **params):
         request_id=f"projection-{h.request_count}",
         session_id=h.adapter._parent_session_id, channel_id="web",
         req_method=ReqMethod.CHAT_SEND,
-        params={"mode": "agent", "project_dir": str(h.root), **params},
+        is_stream=True,
+        params={"mode": "agent.code.normal", "project_dir": str(h.root), **params},
     )
-    inputs, _, _ = h.facade.build_inputs(request)
-
     async def collect():
+        if getattr(h, "runtime", None) is not None:
+            return [event async for event in h.runtime.stream(request, trigger_hook=False)]
+        inputs, _, _ = h.facade.build_inputs(request)
         return [chunk async for chunk in h.adapter.process_message_stream_impl(request, inputs)]
 
     chunks = await asyncio.wait_for(collect(), 10)
@@ -47,7 +53,7 @@ async def _stream_request(h, **params):
     errors = [payload for payload in payloads if payload.get("event_type") in (
         "chat.error", "error", "execution.error",
     )]
-    assert not errors, (errors, len(h.script.calls), h.projection_diagnostics)
+    assert not errors, (errors, len(h.script.calls))
     h.projected = [
         deepcopy(payload) for payload in payloads
         if payload.get("event_type") == "chat.ask_user_question"
@@ -74,25 +80,13 @@ async def _start(h, monkeypatch, *, mode="manual", kind="permission", count=1):
     from jiuwenswarm.agents.harness import agent_observability
     monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
     h.verified_projection = Mock(wraps=stream_producers.build_verified_permission_ask_user_question)
-    h.ask_projection = Mock(wraps=stream_producers._ask_user_question_payload_from_interrupt)
     monkeypatch.setattr(stream_producers, "build_verified_permission_ask_user_question", h.verified_projection)
-    monkeypatch.setattr(stream_producers, "_ask_user_question_payload_from_interrupt", h.ask_projection)
-    h.projection_diagnostics = []
-    original_parser = h.adapter._parse_stream_chunk
-
-    def parse(chunk, **kwargs):
-        parsed = original_parser(chunk, **kwargs)
-        if getattr(chunk, "type", None) in ("__interaction__", "controller_output", "answer"):
-            h.projection_diagnostics.append((chunk.type, repr(chunk.payload), parsed))
-        return parsed
-
-    monkeypatch.setattr(h.adapter, "_parse_stream_chunk", parse)
     monkeypatch.setattr(continuation, "_request", _stream_request)
     # The existing helper also inspects SDK state for its own assertions. Its
     # state-derived answer is deliberately discarded: only public output below
     # may supply the locator and selected option for this test's continuation.
     await continuation._interrupt(h, monkeypatch, mode=mode, kind=kind, count=count)
-    return _questions_once(h, count)[0]
+    return _questions_once(h, 1)[0]
 
 
 @pytest.mark.asyncio
@@ -139,7 +133,6 @@ async def test_public_ask_question_keeps_independent_continuation(answer_host, m
     h = answer_host
     question = await _start(h, monkeypatch, mode=mode, kind="ask")
     assert question["source"] == "ask_user_interrupt"
-    assert h.ask_projection.call_count >= 1
     item = question["questions"][0]
     assert "card_id" not in item
     await _stream_request(h, source=question["source"], request_id=question["request_id"],
@@ -251,3 +244,171 @@ def test_permission_presentation_identity_separates_smart_manual_and_invalid(que
     original = deepcopy(payload)
     assert JiuWenSwarmDeepAdapter._ask_user_event_identity(payload) == expected
     assert payload == original
+
+
+async def _connect_runtime(h, harness):
+    h.runtime = harness.runtime
+    sid = h.adapter._parent_session_id
+    await harness.coordinator.register_session(sid, "web")
+
+    async def stream(request):
+        inputs, _, _ = h.facade.build_inputs(request)
+        async for chunk in h.adapter.process_message_stream_impl(request, inputs):
+            yield chunk
+
+    harness.agent.process_message_stream = stream
+    harness.agent.deliver_control_input = stream
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 2, 3])
+@pytest.mark.parametrize("action", ["allow_once", "session_allow", "always_allow", "reject"])
+async def test_runtime_resumes_each_manual_batch_head(answer_host, harness, monkeypatch, count, action):
+    """Use public questions, real SDK continuation and Runtime target matching."""
+    h = answer_host
+    await _connect_runtime(h, harness)
+    sid = h.adapter._parent_session_id
+    first = await _start(h, monkeypatch, count=count)
+    question = first
+    answered = set()
+    while question is not None:
+        request_id = question["request_id"]
+        assert request_id not in answered
+        assert harness.coordinator.has_control_target(sid, request_id)
+        waiting = [control_id for item in harness.coordinator.snapshot_session(sid).executions
+                   if not item.state.terminal for control_id in item.waiting_control_ids]
+        assert waiting == [request_id]
+        answered.add(request_id)
+        await _stream_request(h, **_answer(question, action))
+        assert len(h.projected) <= 1
+        question = h.projected[0] if h.projected else None
+    expected = [] if action == "reject" else [
+        {"value": "once" if count == 1 else f"once-{index}"} for index in range(count)
+    ]
+    assert h.executions == expected
+    assert len(h.script.calls) == 2
+    assert all(item.state.terminal for item in harness.coordinator.snapshot_session(sid).executions)
+    assert not harness.coordinator.has_control_target(sid, first["request_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ask_first", [False, True])
+async def test_manual_and_ask_batch_uses_one_current_question(answer_host, harness, monkeypatch, ask_first):
+    h = answer_host
+    await _connect_runtime(h, harness)
+    await _start(h, monkeypatch)
+    # Finish the initial probe, then issue a fresh mixed SDK tool-call batch.
+    await _stream_request(h, **_answer(h.projected[0], "allow_once"))
+    h.executions.clear()
+    calls = [
+        ToolCall(id="mixed-permission", type="function", name=h.tool.card.name,
+                 arguments=json.dumps({"value": "mixed"})),
+        ToolCall(id="mixed-ask", type="function", name="ask_user",
+                 arguments=json.dumps({"query": "Which colour?"})),
+    ]
+    if ask_first:
+        calls.reverse()
+    h.script.responses = [AssistantMessage(content="", tool_calls=calls), AssistantMessage(content="done")]
+    await _stream_request(h, query="Run mixed tools")
+    ask = _questions_once(h, 1)[0]
+    assert ask["request_id"] == "mixed-ask" and ask["source"] == "ask_user_interrupt"
+    assert harness.coordinator.has_control_target(h.adapter._parent_session_id, ask["request_id"])
+    assert h.executions == []
+    await _stream_request(h, source=ask["source"], request_id=ask["request_id"],
+                          answers=[{"question": "Which colour?", "custom_input": "blue"}])
+    permission = _questions_once(h, 1)[0]
+    assert permission["request_id"] == "mixed-permission"
+    assert harness.coordinator.has_control_target(h.adapter._parent_session_id, permission["request_id"])
+    assert h.executions == []
+    await _stream_request(h, **_answer(permission, "allow_once"))
+    _questions_once(h, 0)
+    assert h.executions == [{"value": "mixed"}]
+
+
+@pytest.mark.asyncio
+async def test_smart_to_manual_keeps_runtime_batch_projection(answer_host, harness, monkeypatch):
+    h = answer_host
+    await _connect_runtime(h, harness)
+    smart = await _start(h, monkeypatch, mode="auto")
+    await _stream_request(h, **_answer(smart, "allow_once"))
+    _questions_once(h, 0)
+    old_rail = h.adapter._stream_event_rail
+    h.raw["permissions"]["mode"] = "manual"
+    h.change()
+    h.executions.clear()
+    h.script.responses = [AssistantMessage(content="", tool_calls=[
+        ToolCall(id=f"after-switch-{index}", type="function", name=h.tool.card.name,
+                 arguments=json.dumps({"value": str(index)})) for index in range(2)
+    ]), AssistantMessage(content="done")]
+    await _stream_request(h, query="Run a new manual batch")
+    assert h.adapter._stream_event_rail is not old_rail
+    assert h.adapter._stream_event_rail.project_interruption_snapshots
+    sid = h.adapter._parent_session_id
+    for index in range(2):
+        question = _questions_once(h, 1)[0]
+        assert question["request_id"] == f"after-switch-{index}"
+        assert harness.coordinator.has_control_target(sid, question["request_id"])
+        assert "card_id" not in question["questions"][0]
+        await _stream_request(h, **_answer(question, "allow_once"))
+    _questions_once(h, 0)
+    assert h.executions == [{"value": "0"}, {"value": "1"}]
+    assert len(h.script.calls) == 4
+    assert all(item.state.terminal for item in harness.coordinator.snapshot_session(sid).executions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,interrupt_ids", [
+    ([], []),
+    ([_manual_interaction("pending")], ["different"]),
+])
+async def test_snapshot_projection_reports_unusable_snapshot(state, interrupt_ids):
+    rail = stream_producers.JiuSwarmStreamEventRail(project_interruption_snapshots=True)
+    session = SimpleNamespace(write_stream=AsyncMock())
+    ctx = SimpleNamespace(inputs=SimpleNamespace(result={
+        "result_type": "interrupt", "state": state, "interrupt_ids": interrupt_ids,
+    }), session=session)
+    await rail._project_ordinary_interruption(ctx)
+    emitted = session.write_stream.call_args.args[0]
+    assert emitted.type == "error" and emitted.payload["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirm_first", [False, True])
+async def test_complete_snapshot_preserves_mixed_confirmation_order(confirm_first):
+    rail = stream_producers.JiuSwarmStreamEventRail(project_interruption_snapshots=True)
+    pending = [
+        _manual_interaction("permission"),
+        {"id": "confirm", "value": ToolCallInterruptRequest(
+            tool_call_id="confirm", tool_name="switch_mode", message="Please approve or reject?",
+        )},
+    ]
+    if confirm_first:
+        pending.reverse()
+    for expected_source in (
+        ["confirm_interrupt", "permission_interrupt"] if confirm_first
+        else ["permission_interrupt", "confirm_interrupt"]
+    ):
+        session = SimpleNamespace(write_stream=AsyncMock())
+        ctx = SimpleNamespace(inputs=SimpleNamespace(result={
+            "result_type": "interrupt",
+            "state": [OutputSchema(type="__interaction__", index=0, payload=pending)],
+            "interrupt_ids": [item["id"] for item in pending],
+        }), session=session, extra={})
+        await rail._project_complete_interruption(ctx)
+        session.write_stream.assert_awaited_once()
+        question = session.write_stream.call_args.args[0].payload
+        assert question["source"] == expected_source
+        assert question["request_id"] == pending.pop(0)["id"]
+
+
+@pytest.mark.parametrize("serialized", [False, True])
+def test_complete_sdk_schemas_reuse_existing_question_converter(serialized):
+    interaction = _manual_interaction("first")
+    schema = {"type": "__interaction__", "payload": interaction} if serialized else OutputSchema(
+        type="__interaction__", index=0, payload=interaction,
+    )
+    question = convert_interactions_to_ask_user_question([schema, _manual_interaction("second")])
+    assert question["request_id"] == "first"
+    # Standalone callers still receive raw SDK questions without a projector.
+    if not serialized:
+        assert _project("deep", [interaction])["request_id"] == "first"

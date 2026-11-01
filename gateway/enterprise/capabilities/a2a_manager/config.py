@@ -17,7 +17,7 @@ from .models import A2AIngressConfig, A2AIngressError
 def _encrypt(name: str, text: str) -> str:
     """Prefer ``local_env_config.encrypt`` when available; otherwise store plaintext."""
     try:
-        from jiuwenswarm.common.local_env_config import encrypt
+        from gateway.common.local_env_config import encrypt
     except ImportError:
         return text
     return encrypt(name, text)
@@ -26,7 +26,7 @@ def _encrypt(name: str, text: str) -> str:
 def _decrypt(name: str, cipher: str) -> str:
     """Prefer ``local_env_config.decrypt`` when available; otherwise return as-is."""
     try:
-        from jiuwenswarm.common.local_env_config import decrypt
+        from gateway.common.local_env_config import decrypt
     except ImportError:
         return cipher
     return decrypt(name, cipher)
@@ -201,7 +201,7 @@ class A2AIngressConfigRepository:
 
     def __init__(self, env_path: Path | None = None) -> None:
         if env_path is None:
-            from jiuwenswarm.common.utils import get_env_file
+            from gateway.common.utils import get_env_file
 
             env_path = get_env_file()
         self._env_path = Path(env_path)
@@ -249,7 +249,7 @@ class A2AOutboundSettingsRepository:
 
     def __init__(self, env_path: Path | None = None) -> None:
         if env_path is None:
-            from jiuwenswarm.common.utils import get_env_file
+            from gateway.common.utils import get_env_file
 
             env_path = get_env_file()
         self._env_path = Path(env_path)

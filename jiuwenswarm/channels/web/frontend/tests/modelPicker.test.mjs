@@ -298,6 +298,9 @@ test('限时免费模型：活动没在跑时，这一栏整个不出现', async
 
 test('selecting a scheduled-task model submits its ID and leaves the active chat unchanged', async () => {
   await withFixture(async ({ mount, click, byId }) => {
+    useSessionStore.setState({ modelGroups: [{
+      model_group_id: 'cron-hidden-group', display_name: 'Cron hidden group', enabled: true, routes: [],
+    }] });
     let submitted;
     await mount(
       createElement(ChatModelSelector),
@@ -308,6 +311,7 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
       }),
     );
     await click(byId('cron-model-picker-trigger'));
+    assert.equal(byId('cron-model-picker-menu').textContent.includes('Cron hidden group'), false);
     await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
     assert.equal(byId('cron-model-picker-menu'), null);
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
@@ -315,6 +319,7 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
     assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-a');
     await click(byId('cron-drawer-submit-btn'));
     assert.deepEqual(submitted, { ...initialForm, modelName: 'configured-b' });
+    assert.equal(Object.hasOwn(submitted, 'modelSelection'), false);
   });
 });
 
@@ -336,6 +341,41 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured A');
     await click(byId('cron-drawer-submit-btn'));
     assert.deepEqual(submitted, initialForm);
+  });
+});
+
+test('run now waits for navigation and reports a session restore failure', async (t) => {
+  const job = {
+    id: 'run-now-job', name: 'Run now', description: 'Run now', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [job] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.run_now') return { accepted: true, run_id: 'run', session_id: 'cron-session' };
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  let releaseNavigation;
+  const navigation = new Promise((resolve) => { releaseNavigation = resolve; });
+  await withFixture(async ({ mount, click, byId }) => {
+    await mount(createElement(CronPanel, {
+      sessionId, onCreateViaChat() {},
+      async onSelectSession(id) {
+        assert.equal(id, 'cron-session');
+        await navigation;
+        throw new Error('metadata missing');
+      },
+    }));
+    await click(byId('cron-job-run-now-btn'));
+    await click(byId('cron-confirm-submit-btn'));
+    assert.equal(byId('cron-confirm-submit-btn').disabled, true);
+    await act(async () => { releaseNavigation(); });
+    assert.equal(byId('cron-confirm-dialog'), null);
+    assert.match(byId('cron-error-toast').textContent, /task was triggered.*session list/);
+    assert.equal(byId('cron-success-toast'), null);
   });
 });
 
@@ -391,24 +431,83 @@ test('opening a stored team task from the list preserves its mode and model', as
   });
 });
 
-test('an unavailable saved task model stays visible and is not replaced during catalog refresh', async () => {
+for (const language of ['zh', 'en']) {
+  test(`an unavailable saved task model is explained in ${language} without replacing its value`, async () => {
+    await withFixture(async ({ mount, click, byId }) => {
+      let submitted;
+      await mount(
+        cronDrawer({
+          initial: { ...initialForm, modelName: 'removed-model' },
+          onSubmit(value) {
+            submitted = value;
+          },
+        }),
+      );
+      await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
+      assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+      const hint = byId('cron-drawer-model-unavailable-hint');
+      assert.ok(hint);
+      assert.equal(hint.getAttribute('role'), 'status');
+      assert.equal(
+        hint.textContent,
+        resources[language].translation.cron.drawer.modelUnavailable.replace('{{model}}', 'removed-model'),
+      );
+      await click(byId('cron-model-picker-trigger'));
+      assert.equal(document.querySelector('[aria-checked="true"]'), null);
+      await click(document.body);
+      await click(byId('cron-drawer-submit-btn'));
+      assert.equal(submitted.modelName, 'removed-model');
+    }, language);
+  });
+}
+
+test('task model availability waits for a successful catalog load, including an empty result', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    useSessionStore.setState({ modelsLoaded: false, availableModels: [], chatAvailableModels: [] });
+    await mount(cronDrawer());
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+  });
+});
+
+test('deleting the last task model shows a warning until the user selects an available model', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     let submitted;
+    useSessionStore.getState().setAvailableModels([catalog[1]]);
     await mount(
       cronDrawer({
-        initial: { ...initialForm, modelName: 'removed-model' },
         onSubmit(value) {
           submitted = value;
         },
       }),
     );
-    await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
-    assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[3]]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
     await click(byId('cron-model-picker-trigger'));
-    assert.equal(document.querySelector('[aria-checked="true"]'), null);
-    await click(document.body);
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
     await click(byId('cron-drawer-submit-btn'));
-    assert.equal(submitted.modelName, 'removed-model');
+    assert.equal(submitted.modelName, 'configured-b');
+  });
+});
+
+test('a task model remains available when only a same-name non-default connection survives', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    await mount(cronDrawer());
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[2]]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Secondary connection');
   });
 });
 
@@ -425,6 +524,8 @@ test('a new task keeps an unselected model instead of borrowing the active chat 
       }),
     );
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Select Model');
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
     await click(byId('cron-drawer-submit-btn'));
     assert.equal(submitted.modelName, null);
   });
@@ -571,7 +672,7 @@ for (const language of ['zh', 'en']) {
 }
 
 for (const source of ['current', 'list']) {
-  test(`scheduled ${source} metadata and team selections retain upstream groups with the feature off`, async () => {
+  test(`scheduled ${source} metadata hides groups while ordinary team sessions retain groups`, async () => {
     await withFixture(async ({ mount, click, byId }) => {
       setupStableCatalog();
       const session = { session_id: sessionId, title: 'Scheduled', mode: 'agent', cron_id: 'job',
@@ -580,7 +681,7 @@ for (const source of ['current', 'list']) {
       else useSessionStore.getState().setSessions([session]);
       await mount(createElement(ChatModelSelector));
       await click(byId('chat-panel-model-selector-trigger'));
-      assert.ok(byId('chat-panel-model-selector-group-option'));
+      assert.equal(byId('chat-panel-model-selector-group-option'), null);
       assert.equal(byId('chat-panel-model-selector-moa-option'), null);
       await click(document.body);
       await act(async () => useSessionStore.getState().setCurrentSession({ ...session, mode: 'team', cron_id: null }));

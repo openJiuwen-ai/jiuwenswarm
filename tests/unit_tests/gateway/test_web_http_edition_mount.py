@@ -39,11 +39,12 @@ def mapped_mod() -> ModuleType:
 def test_mapped_routes_for_edition_strips_a2a_ingress(mapped_mod: ModuleType) -> None:
     personal = mapped_mod.mapped_routes_for_edition(enterprise=False)
     enterprise = mapped_mod.mapped_routes_for_edition(enterprise=True)
-    assert len(personal) > len(enterprise)
     assert any("/a2a/ingress" in r.path for r in personal)
     assert not any("/a2a/ingress" in r.path for r in enterprise)
     assert not any("/a2a/outbound" in r.path for r in personal)
     assert not any("/a2a/outbound" in r.path for r in enterprise)
+    assert not any(r.path.startswith("/agent-templates") for r in personal)
+    assert any(r.path == "/agent-templates" for r in enterprise)
 
 
 def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatch) -> None:

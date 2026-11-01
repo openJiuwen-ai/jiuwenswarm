@@ -20,10 +20,12 @@ import {
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
 import { AutoReviewerDetails } from './AutoReviewerStatus';
+import { McpAppView } from './McpAppView';
 import { isSensitiveQuestion } from '../InteractionSlot/qaSummary';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
+  sessionId?: string | null;
   notices?: string[];
   showAvatar?: boolean;
   teamLayout?: boolean;
@@ -389,6 +391,7 @@ export { formatDurationPrecise, useNow } from './chatTimelineClock';
 
 export function ToolGroupDisplay({
   executions,
+  sessionId = null,
   notices = [],
   showAvatar = true,
   teamLayout = false,
@@ -417,6 +420,7 @@ export function ToolGroupDisplay({
     .reverse()
     .find((execution) => execution.result?.beamSearch)
     ?.result?.beamSearch;
+  const mcpAppExecutions = visibleExecutions.filter((execution) => execution.result?.mcpApp);
   const viewedSkillIds = Array.from(new Set([
     ...turnViewedSkillIds,
     ...collectViewedSkillIds(executions),
@@ -525,6 +529,15 @@ export function ToolGroupDisplay({
             );
           })}
         </div>
+
+        {mcpAppExecutions.map((execution) => (
+          <McpAppView
+            key={execution.toolCallId}
+            app={execution.result!.mcpApp!}
+            sessionId={sessionId}
+            appInstanceId={execution.toolCallId}
+          />
+        ))}
 
         {skillTrees.length > 0 && (
           <SkillTreePath

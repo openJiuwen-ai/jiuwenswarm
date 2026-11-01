@@ -1956,6 +1956,9 @@
     },
     "uploading": "上传中...",
     "uploadFailed": "上传失败",
+    "steerImagesOnly": "立即输入仅支持已上传的图片。请等待图片上传完成，其他文件请保留在队列中发送。",
+    "steerImageUnavailable": "当前 Agent 没有可用的读图能力，请启用主模型图片输入或配置图片理解工具后重试。",
+    "steerDeliveryFailed": "补充后的结果整理失败，未能完整回答原问题和补充内容。请重试。",
     "retry": "重试",
     "deleteLongPress": "删除，长按显示更多操作",
     "deleteAttachment": "删除附件",
@@ -2454,6 +2457,14 @@
     }
   },
   "cron": {
+    "execution": {
+      "pending": "等待执行",
+      "running": "正在执行",
+      "awaiting_approval": "等待审批",
+      "succeeded": "最近执行已完成",
+      "failed": "最近执行失败",
+      "startFailed": "定时任务“{{name}}”启动失败：{{reason}}"
+    },
     "title": "定时任务管理",
     "subtitle": "使用 cron 表达式管理定时任务，支持添加、启用和删除操作",
     "createJob": "创建任务",
@@ -2557,6 +2568,7 @@
       "placeholderProject": "-",
       "placeholderEffectiveDate": "请选择生效日期",
       "missingFieldsHint": "还需要填写：{{fields}}",
+      "modelUnavailable": "所选模型“{{model}}”已不可用，请检查模型配置。",
       "scheduleAlreadyExpiredHint": "所选的执行时间已经过去，请重新选择",
       "charCount": "{{count}}/{{max}}",
       "maxLengthReachedHint": "已达到最大长度限制（{{max}} 字）"
@@ -2722,6 +2734,7 @@
       "toggleFailed": "更新任务状态失败",
       "previewFailed": "预览触发时间失败",
       "runNowFailed": "立即执行失败",
+      "sessionOpenFailed": "任务已触发，但会话暂时无法打开，请从该任务的触发会话列表进入。",
       "expiredCannotRunNow": "任务过期，无法执行",
       "disabledCannotRunNow": "任务已停止，无法执行",
       "expiredCannotEnable": "任务过期，无法启动",
@@ -3124,16 +3137,19 @@
       "disabled": "禁用",
       "builtin": "内置",
       "prebuilt": "预置",
-      "user": "用户自装"
+      "user": "用户自装",
+      "local": "本地"
     },
     "mySkillsGroups": {
       "added": "已添加技能",
       "prebuilt": "预置技能",
       "builtin": "内置技能",
+      "local": "本地",
       "skillPack": "技能包"
     },
     "noPrebuiltSkills": "暂无预置技能",
     "noUserSkills": "暂无用户自装技能",
+    "noLocalSkills": "暂无本地技能",
     "skillTypes": {
       "skill": "技能包",
       "skillpack": "技能包",
@@ -5517,5 +5533,17 @@
     "reject": "拒绝",
     "approve": "授权",
     "waiting": "处理中..."
+  },
+  "mcpApp": {
+    "loading": "正在加载应用…",
+    "loadFailed": "无法加载应用",
+    "approvalPrompt": "应用请求运行",
+    "messagePrompt": "{{app}} 请求向 Agent 发送以下消息",
+    "sendMessage": "发送",
+    "cancelMessage": "取消",
+    "allow": "允许",
+    "deny": "拒绝",
+    "allowAlways": "在此应用中始终允许",
+    "readOnlyHint": "服务器将此工具标记为只读（未经验证）。"
   }
 }

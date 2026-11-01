@@ -155,7 +155,7 @@ async def test_create_job_writes_group_and_bot(tmp_path):
     assert saved.user_id == "u1"
 
 
-async def test_create_job_blank_identity_becomes_default(tmp_path):
+async def test_create_job_blank_identity_stays_empty(tmp_path):
     store = CronJobStore(path=tmp_path / "cron_jobs.json")
     job = await store.create_job(
         name="个人任务",
@@ -165,16 +165,12 @@ async def test_create_job_blank_identity_becomes_default(tmp_path):
         targets="web",
     )
 
-    assert job.group_id == "default"
-    assert job.bot_id == "default"
-    assert job.user_id == "default"
+    assert job.group_id == ""
+    assert job.bot_id == ""
+    assert job.user_id == ""
     saved = await CronJobStore(path=store.path).get_job(job.id)
     assert saved is not None
-    assert (saved.group_id, saved.bot_id, saved.user_id) == (
-        "default",
-        "default",
-        "default",
-    )
+    assert (saved.group_id, saved.bot_id, saved.user_id) == ("", "", "")
 
 
 async def test_update_job_keeps_sticky_identity(tmp_path):

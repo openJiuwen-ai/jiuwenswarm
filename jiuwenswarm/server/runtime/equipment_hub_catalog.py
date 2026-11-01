@@ -82,13 +82,4 @@ async def list_hub_equipment_catalog(
     except Exception as exc:
         logger.warning("failed to list Hub equipment catalog", exc_info=True)
         return {"items": [], "error": str(exc)}
-    from jiuwenswarm.server.runtime.enterprise_connector_packages import (
-        hidden_from_enterprise,
-    )
-
-    rows = [
-        row
-        for row in catalog_rows_from_summaries(collected)
-        if not hidden_from_enterprise(str(row.get("id") or ""))
-    ]
-    return {"items": rows, "error": ""}
+    return {"items": catalog_rows_from_summaries(collected), "error": ""}

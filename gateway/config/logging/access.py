@@ -44,7 +44,7 @@ def _apply_runtime_levels(payload: dict[str, Any] | None) -> None:
 
 
 def _legacy_persist_logging_levels(updates: dict[str, Any]) -> None:
-    from jiuwenswarm.common.config import update_config
+    from gateway.common.config import update_config
 
     cleaned = {
         key: value
@@ -78,7 +78,7 @@ def _runtime_kwargs_from_updates(updates: dict[str, Any]) -> dict[str, Any]:
 async def get_logging_body_in_config() -> dict[str, Any]:
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         raw = (get_config() or {}).get("logging")
         return dict(raw) if isinstance(raw, dict) else {}
@@ -125,7 +125,7 @@ async def replace_logging_in_config(body: dict[str, Any]) -> None:
 
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         def _mutate(data: dict[str, Any]) -> dict[str, Any]:
             data["logging"] = dict(cleaned)
@@ -143,7 +143,7 @@ async def delete_logging_in_config() -> bool:
     """删除 ``logging`` 段 / 企业行，并恢复代码默认级别。"""
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         found = {"value": False}
 

@@ -34,8 +34,8 @@ import {
 } from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
-import { watchCronExecutionSession } from './features/cron/cronSessionLive';
-import { ensureCronUserSeedFirst } from './features/cron/cronSeedMessage';
+import { watchCronExecutionSession, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
@@ -52,6 +52,8 @@ import {
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
+import { DesignerPage } from './features/designer/components/DesignerPage';
+import { submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -82,6 +84,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webClient, webRequest } from './services/webClient';
+import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
@@ -170,6 +173,7 @@ import {
   buildA2UIClientEventContent,
   setA2UIActionHandler,
 } from './features/a2ui/actionBridge';
+import { setMcpAppMessageHandler } from './features/mcpApps/mcpAppContext';
 import { executeDesktopSave } from './utils/desktopSave';
 import { restoreSessionEquipment } from './utils/enabledExtensions';
 import { generateUuidV4 } from './utils/uuid';
@@ -179,12 +183,17 @@ import { useApplicationPlugins } from './applicationPlugins/useApplicationPlugin
 import type { ApplicationPluginNavKey } from './applicationPlugins/types';
 import {
   findShareImageJobForSession,
+  fetchShareImageJobStatus,
   forgetPendingShareImageJob,
   readPendingShareImageJobId,
   readShareImageJobResponse,
   rememberPendingShareImageJob,
+  resumeBrowserShareImageJob,
+  waitForShareImageJobTransfer,
+  startShareImageJobDownload,
   type ShareImageExportJobStatus,
 } from './features/shareImageJob';
+import { cancelShareImageJobForClosedTab, openShareImageExportTab } from './features/shareImageBrowserExport';
 import {
   ModelSetupGuide,
   type ModelSetupGuideStep,
@@ -428,6 +437,20 @@ function ErrorFallback({ error }: { error: Error | null }) {
 }
 
 const SHARE_IMAGE_EXPORT_POLL_MS = 500;
+const SHARE_IMAGE_EXPORT_MAX_QUERY_FAILURES = 3;
+const SHARE_IMAGE_EXPORT_ERROR_KEYS: Record<string, string> = {
+  share_export_popup_blocked: 'share.popupBlocked',
+  share_export_tab_closed: 'share.browserTabClosed',
+  share_export_download_start_timeout: 'share.downloadStartFailed',
+  share_export_download_interrupted: 'share.downloadInterrupted',
+  share_export_status_timeout: 'share.statusTimeout',
+};
+
+function shareImageExportErrorKey(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  const key = SHARE_IMAGE_EXPORT_ERROR_KEYS[message];
+  return typeof key === 'string' ? key : 'share.exportFailed';
+}
 
 async function saveShareImageJob(jobId: string, filename: string): Promise<boolean> {
   const downloadUrl = `/share-api/jobs/${encodeURIComponent(jobId)}/download`;
@@ -457,15 +480,24 @@ async function saveShareImageJob(jobId: string, filename: string): Promise<boole
 async function waitForShareImageJob(
   initialStatus: ShareImageExportJobStatus,
   isCurrentMonitor: () => boolean,
+  onStatus: (status: ShareImageExportJobStatus) => Promise<ShareImageExportJobStatus>,
+  onQueryInterrupted: () => void,
 ): Promise<ShareImageExportJobStatus | null> {
-  let status = initialStatus;
+  let status = await onStatus(initialStatus);
+  let queryFailures = 0;
   while (status.state === 'queued' || status.state === 'running') {
     if (!isCurrentMonitor()) return null;
     await new Promise(resolve => window.setTimeout(resolve, SHARE_IMAGE_EXPORT_POLL_MS));
-    status = await readShareImageJobResponse(await fetch(
-      `/share-api/jobs/${encodeURIComponent(status.job_id)}`,
-      { cache: 'no-store' },
-    ));
+    try {
+      status = await fetchShareImageJobStatus(status.job_id);
+      status = await onStatus(status);
+      queryFailures = 0;
+    } catch (error) {
+      if (!(error instanceof TypeError) && !(error instanceof Error && error.message === 'share_export_status_timeout')) throw error;
+      if (++queryFailures >= SHARE_IMAGE_EXPORT_MAX_QUERY_FAILURES) throw new Error('share_export_status_timeout');
+      onQueryInterrupted();
+      continue;
+    }
   }
   return isCurrentMonitor() ? status : null;
 }
@@ -511,6 +543,10 @@ function AppContent({
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
   const [exportingShareSessionIds, setExportingShareSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [shareExportProgress, setShareExportProgress] = useState<Record<string, string>>({});
+  const [waitingShareExportSessionIds, setWaitingShareExportSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  const waitingBrowserExportsRef = useRef(new Map<string, { status: ShareImageExportJobStatus; locale: string }>());
+  const browserExportTabsRef = useRef(new Map<string, Window>());
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
@@ -545,6 +581,7 @@ function AppContent({
   } = useResponsiveLayout();
 
   const [secondarySidebarCollapsed, setSecondarySidebarCollapsed] = useSecondarySidebarPreference();
+  const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(true);
   const {
     target: sidebarPeek,
     open: openSidebarPeek,
@@ -652,6 +689,21 @@ function AppContent({
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
+  const pendingSessionEventReleasesRef = useRef(new Map<string, () => void>());
+  const pendingCronUserSeedsRef = useRef(new Map<string, string>());
+  const releasePendingSessionEvents = useCallback((sid: string) => {
+    const release = pendingSessionEventReleasesRef.current.get(sid);
+    pendingSessionEventReleasesRef.current.delete(sid);
+    release?.();
+  }, []);
+  useEffect(() => () => {
+    for (const release of pendingSessionEventReleasesRef.current.values()) release();
+    pendingSessionEventReleasesRef.current.clear();
+  }, []);
+  useEffect(() => webClient.onStateChange((state) => {
+    if (state === 'ready') return;
+    for (const sid of pendingSessionEventReleasesRef.current.keys()) releasePendingSessionEvents(sid);
+  }), [releasePendingSessionEvents]);
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreRevisionRef = useRef(new Map<string, string>());
   const subagentToolReplayBySessionRef = useRef(new Map<string, HistoryToolReplayItem[]>());
@@ -753,6 +805,24 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
+    } else if (route.kind === 'design-project' && !isEnterprise()) {
+      let cancelled = false;
+      const nextSessionId = route.sessionId ?? NEW_CONVERSATION_ID;
+      sessionIdRef.current = nextSessionId;
+      setSessionId(nextSessionId);
+      setActiveNav('chat');
+      void useWorkspaceStore.getState().setWorkMode('design').then(() => {
+        if (cancelled) return;
+        const project = useWorkspaceStore.getState().projects.find(
+          (item) => item.project_id === route.projectId,
+        );
+        useWorkspaceStore.getState().setSelectedProject(project ?? null);
+      });
+      setDesignSidebarCollapsed(true);
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+      setToolPanelHidden(true);
+      return () => { cancelled = true; };
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
         navigate({ kind: 'chat-new' }, { replace: true });
@@ -769,7 +839,7 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -778,7 +848,12 @@ function AppContent({
   }, [sessionId]);
 
   // 企业版「立即执行」打开的是执行会话。结果不走长连接，改由这条监听写进页面。
-  useEffect(() => watchCronExecutionSession(sessionId), [sessionId]);
+  const activeCronId = useSessionStore((state) =>
+    state.currentSession?.session_id === sessionId
+      ? state.currentSession.cron_id
+      : state.sessions.find((session) => session.session_id === sessionId)?.cron_id,
+  );
+  useEffect(() => watchCronExecutionSession(sessionId, Boolean(activeCronId)), [sessionId, activeCronId]);
 
   const {
     setCurrentSession,
@@ -1180,12 +1255,17 @@ function AppContent({
 
   const { shouldFullscreen, sidebarAutoCollapsed } = useResponsivePanelResize({
     isTeamAreaExpanded,
-    conversationSidebarCollapsed: secondarySidebarCollapsed,
+    conversationSidebarCollapsed: designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed,
     setSingleAgentPanelExpanded,
     setTeamAreaExpanded,
     mode,
   });
-  const conversationSidebarCollapsed = secondarySidebarCollapsed || isMobile || sidebarAutoCollapsed;
+  const conversationSidebarCollapsed = (designCanvasOpen ? designSidebarCollapsed : secondarySidebarCollapsed) || isMobile || sidebarAutoCollapsed;
+  const toggleConversationSidebar = useCallback(() => {
+    closeSidebarPeek();
+    if (designCanvasOpen) setDesignSidebarCollapsed(value => !value);
+    else setSecondarySidebarCollapsed(value => !value);
+  }, [closeSidebarPeek, designCanvasOpen, setSecondarySidebarCollapsed]);
   const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
   const hasFixedSecondarySidebar =
     ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
@@ -1227,13 +1307,19 @@ function AppContent({
     drainTaskQueueIfIdle,
   } = useWebSocket({
     activeSessionId: sessionId,
+    isActiveSessionVisible: activeNav === 'chat',
     onConnect: () => {
       console.log('Connected');
-      // 连接建立/断线重连后重拉侧边栏定时任务列表（useCronStore）：web 先行
-      // 导航时首屏挂载早于 gateway 就绪，挂载期的 cron.job.list 会失败并被
-      // store 静默清空，且无其它重试入口，导致 project 页签定时任务空白直到
-      // 侧边栏重新挂载。这里在每次连接可用后补齐拉取。
-      void useCronStore.getState().loadJobs();
+      resetTeamAttachments();
+      // 连接建立/断线重连后重拉侧边栏定时任务：首屏常早于 Gateway/Agent Pod 就绪。
+      // 失败时 store 不再清空已有列表；这里再按间隔重试，避免「会话已出、定时任务仍空」。
+      void (async () => {
+        if (await useCronStore.getState().loadJobs()) return;
+        for (const delayMs of [2000, 5000, 10000, 15000, 30000]) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (await useCronStore.getState().loadJobs()) return;
+        }
+      })();
     },
     onDisconnect: () => {
       console.log('Disconnected');
@@ -1267,7 +1353,18 @@ function AppContent({
       }
     },
   });
+  useEffect(() => {
+    if (!isConnected || !isTeamAgentMode(mode)) return;
+    void attachTeamSession(sessionId, mode).catch((error) => {
+      console.warn('[teamAttach] failed to attach session:', sessionId, error);
+    });
+  }, [isConnected, mode, sessionId]);
+
   const applicationPluginState = useApplicationPlugins(isConnected);
+  useEffect(() => {
+    if (!isConnected) return;
+    return watchCronRunUpdates(() => useCronStore.getState().clearUnconfirmedRuns());
+  }, [isConnected]);
   const applicationPlugins = applicationPluginState.plugins;
   const visibleApplicationPlugins = enabledApplicationPlugins(applicationPlugins);
   const settingsRequest = useMemo(() => resolveSettingsRequest(request), [request, resolveSettingsRequest]);
@@ -1613,6 +1710,7 @@ function AppContent({
             summary: n.summary,
             skillTree: n.skillTree,
             ...(n.mermaid ? { mermaid: n.mermaid } : {}),
+            ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
             ...(n.timedOut ? { timedOut: true } : {}),
             ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
             reviewer: n.reviewer,
@@ -2429,9 +2527,21 @@ function AppContent({
     }
     let cancelled = false;
     const retryDelaysMs = [2000, 5000, 10000, 15000, 30000];
+    const reloadCronJobs = async () => {
+      // 项目列表重试成功 ≈ 路由/Agent 侧已可用；顺带补拉定时任务，
+      // 覆盖「WS 已连上但 Agent Pod 更晚就绪」时 onConnect 那一次失败的情况。
+      if (cancelled) return;
+      if (await useCronStore.getState().loadJobs()) return;
+      for (const delayMs of retryDelaysMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        if (await useCronStore.getState().loadJobs()) return;
+      }
+    };
     const run = async () => {
       if (await loadProjects()) {
         if (!cancelled) initialProjectsLoadedRef.current = true;
+        await reloadCronJobs();
         return;
       }
       for (const delayMs of retryDelaysMs) {
@@ -2439,6 +2549,7 @@ function AppContent({
         if (cancelled) return;
         if (await loadProjects()) {
           if (!cancelled) initialProjectsLoadedRef.current = true;
+          await reloadCronJobs();
           return;
         }
       }
@@ -2520,10 +2631,13 @@ function AppContent({
 
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
+    // The canvas restores its own director history through DesignerPage.
+    if (route.kind === 'design-project') return;
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
     if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+      releasePendingSessionEvents(sessionId);
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -2533,6 +2647,7 @@ function AppContent({
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().runtimes[sessionId]?.isNewSession ?? false;
     if (isNew && !forceRefresh) {
+      releasePendingSessionEvents(sessionId);
       useChatStore.getState().setNewSession(sessionId, false);
       setHistoryPagerMeta(sessionId, null);  // 新会话无历史，不显示分页栏
       setLoadingHistory(sessionId, false);
@@ -2550,6 +2665,7 @@ function AppContent({
       } else {
         setLoadingHistory(sessionId, false);
         startBackgroundHistoryPrefetch(sessionId);
+        releasePendingSessionEvents(sessionId);
         return;
       }
     }
@@ -2619,6 +2735,8 @@ function AppContent({
         limit: 50,
       }),
       onReady: (messages, cursorMeta) => {
+        const seed = pendingCronUserSeedsRef.current.get(sessionId);
+        pendingCronUserSeedsRef.current.delete(sessionId);
         historyRestoreFromPanelHintRef.current = false;
         // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
         // messages 里不会有它——按时间戳把本地持久化的记录补回去，见
@@ -2631,7 +2749,7 @@ function AppContent({
             sessionId,
             mergePersistedGoalCompletionMessages(
               sessionId,
-              messages.map((message) => ({ ...message, historyBatchSeq: 1 })),
+              mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
             ),
           )
         );
@@ -2660,7 +2778,11 @@ function AppContent({
         useSessionStore.getState().receiveSessionTokenUsage(payload);
       },
       onEmpty: (cursorMeta) => {
-        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, []));
+        const seed = pendingCronUserSeedsRef.current.get(sessionId);
+        pendingCronUserSeedsRef.current.delete(sessionId);
+        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(
+          sessionId, mergeCronRunUserSeed([], sessionId, seed),
+        ));
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
           hasMore: cursorMeta.hasMore,
@@ -2726,6 +2848,7 @@ function AppContent({
                 summary: n.summary,
                 skillTree: n.skillTree,
                 ...(n.mermaid ? { mermaid: n.mermaid } : {}),
+                ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
                 ...(n.timedOut ? { timedOut: true } : {}),
                 ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
                 reviewer: n.reviewer,
@@ -2812,6 +2935,12 @@ function AppContent({
           chatStore.enqueuePendingQuestion(sessionId, item.payload);
         }
       },
+      onAnsweredQuestionReplay: (items) => {
+        // 运行中的会话可能先从 runtime 快照收到已答问题，历史到达后再清理。
+        const chatStore = useChatStore.getState();
+        chatStore.ensureRuntime(sessionId);
+        chatStore.markQuestionsAnswered(sessionId, items.map((item) => item.payload.request_id));
+      },
       onError: (message) => {
         console.warn('[history.restore]', message);
       },
@@ -2835,6 +2964,8 @@ function AppContent({
       },
     });
     historyRestoreHandlesRef.current.set(sessionId, restoreHandle);
+    // beginHistoryRestore now owns the gate until history has been merged.
+    releasePendingSessionEvents(sessionId);
 
     // 调用历史会话接口
     void (async () => {
@@ -2869,6 +3000,7 @@ function AppContent({
     isConnected,
     sessionId,
     historyBootstrapKey,
+    route.kind,
     request,
     addMessage,
     addToolCall,
@@ -2879,6 +3011,7 @@ function AppContent({
     settleHistoricalToolExecutions,
     clearMessages,
     disposeInFlightHistoryHandles,
+    releasePendingSessionEvents,
     setLoadingHistory,
     setHistoryPagerMeta,
     replaceHistoryMessages,
@@ -3304,7 +3437,7 @@ function AppContent({
     const currentMetadata = currentState.currentSession?.session_id === currentSessionId
       ? currentState.currentSession
       : currentState.sessions.find((session) => session.session_id === currentSessionId);
-    const isDesignLanding = currentSessionId === NEW_CONVERSATION_ID
+    const isDesignLanding = !isEnterprise() && route.kind === 'chat-new' && currentSessionId === NEW_CONVERSATION_ID
       && useWorkspaceStore.getState().workMode === 'design';
     if (
       !isDesignLanding &&
@@ -3329,6 +3462,50 @@ function AppContent({
       if (creatingSessionRef.current) return;
       creatingSessionRef.current = true;
       useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
+      if (isDesignLanding) {
+        try {
+          const created = await submitDesignComposer({
+            prompt: messageContent,
+            mediaItems,
+          });
+          const store = useWorkspaceStore.getState();
+          if (!store.expandedProjectIds[created.projectId]) {
+            store.toggleProjectExpanded(created.projectId);
+          }
+          await store.loadProjects();
+          await store.loadProjectSessions(created.projectId);
+          const project = useWorkspaceStore.getState().projects.find(
+            (item) => item.project_id === created.projectId,
+          );
+          if (project && !project.is_default) store.setSelectedProject(project);
+          navigate({
+            kind: 'design-project',
+            projectId: created.projectId,
+            sessionId: created.sessionId,
+          });
+        } catch (error) {
+          const code = error instanceof Error ? error.message : '';
+          const referenceError = code === 'image_limit'
+            ? t('designer.chat.limitImages')
+            : code === 'video_limit'
+              ? t('designer.chat.limitVideo')
+              : code === 'audio_limit'
+                ? t('designer.chat.limitAudio')
+                : code === 'too_large'
+                  ? t('designer.chat.tooLarge')
+                  : code === 'unsupported'
+                    ? t('designer.chat.unsupported')
+                    : '';
+          toast.open({
+            content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
+            variant: 'error',
+          });
+        } finally {
+          creatingSessionRef.current = false;
+          useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        }
+        return;
+      }
       const newRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
       const runtimeSettings = {
         mode: newRuntime?.mode ?? mode,
@@ -3506,7 +3683,7 @@ function AppContent({
       restoreUnsentInput(currentSessionId, content);
     }
     return sent === true ? currentSessionId : undefined;
-  }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+  }, [disposeInFlightHistoryHandles, mode, navigate, request, route.kind, sendMessage, setGoalObjective, t]);
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -3541,6 +3718,13 @@ function AppContent({
       );
     });
   }, [sendStructuredChatContent]);
+
+  useEffect(() => setMcpAppMessageHandler(async (targetSessionId, content) => {
+    if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return false;
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (runtime?.isProcessing || runtime?.queuePaused) return false;
+    return sendMessage(content, targetSessionId);
+  }), [sendMessage]);
 
   const handleInterrupt = useCallback((newInput?: string) => {
     const currentSessionId = sessionIdRef.current;
@@ -3655,7 +3839,26 @@ function AppContent({
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean; seedUserMessage?: string }) => {
+    async (targetSessionId: string, targetMode?: string, targetSession?: Session, seedUserMessage?: string) => {
+      for (const sid of pendingSessionEventReleasesRef.current.keys()) {
+        if (sid !== targetSessionId) releasePendingSessionEvents(sid);
+      }
+      const release = webClient.suspendSessionEvents(targetSessionId);
+      releasePendingSessionEvents(targetSessionId);
+      pendingSessionEventReleasesRef.current.set(targetSessionId, release);
+      if (!targetSession) {
+        try {
+          targetSession = await loadSessionMetadata(targetSessionId) ?? undefined;
+        } catch (error) {
+          releasePendingSessionEvents(targetSessionId);
+          throw error;
+        }
+        if (!targetSession) {
+          releasePendingSessionEvents(targetSessionId);
+          throw new Error(t('sessions.errors.restoreFailed', { sessionId: targetSessionId }));
+        }
+        targetMode = targetSession.mode;
+      }
       setChatWelcomeVariant(null);
       const previousSessionId = sessionIdRef.current;
       const previousMode =
@@ -3676,6 +3879,7 @@ function AppContent({
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
+            releasePendingSessionEvents(targetSessionId);
             console.error('Failed to switch team session:', error);
             window.alert(t('sessions.errors.switchSession'));
             return;
@@ -3684,6 +3888,10 @@ function AppContent({
         }
       }
 
+      if (seedUserMessage?.trim()) {
+        pendingCronUserSeedsRef.current.set(targetSessionId, seedUserMessage);
+        forcedHistoryRefreshRef.current.add(targetSessionId);
+      }
       setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
       if (!existingRuntime) {
@@ -3695,19 +3903,7 @@ function AppContent({
         clearMessages(targetSessionId);
         clearTodos(targetSessionId);
         resetHarnessStore(targetSessionId);
-        historyRestoreFromPanelHintRef.current = true;
-      }
-      if (options?.skipHistoryLoad) {
-        // The session returned by cron.run_now can precede its first persisted
-        // message. The sessionId effect must skip its initial history request too.
-        // 先把任务原话放进会话，否则一条消息都没有，页面会落到首页欢迎语上。
-        useChatStore.getState().setNewSession(targetSessionId, true);
-        historyRestoreFromPanelHintRef.current = false;
-        const seed = String(options.seedUserMessage || '').trim();
-        if (seed) {
-          // 占位若已先到，必须把原话挪到最前，不能只在「还没有用户消息」时 append。
-          ensureCronUserSeedFirst(targetSessionId, seed);
-        }
+        historyRestoreFromPanelHintRef.current = !targetSession?.cron_id;
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
@@ -3738,9 +3934,7 @@ function AppContent({
       }
       setActiveNav('chat');
       navigate({ kind: 'chat-session', sessionId: targetSessionId });
-      if (!options?.skipHistoryLoad) {
-        setHistoryBootstrapKey((k) => k + 1);
-      }
+      setHistoryBootstrapKey((k) => k + 1);
       requestComposerFocus();
       // 始终拉一次 metadata——targetSession 从会话列表来（summary，无 swarmflow config），
       // 需要完整 metadata 才能恢复 session_swarmflow_config。
@@ -3754,6 +3948,7 @@ function AppContent({
       mode,
       navigate,
       loadSessionMetadata,
+      releasePendingSessionEvents,
       request,
       requestComposerFocus,
       resetHarnessStore,
@@ -3775,7 +3970,7 @@ function AppContent({
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean; seedUserMessage?: string },
+      seedUserMessage?: string,
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -3786,7 +3981,7 @@ function AppContent({
           targetSessionId,
           targetMode,
           targetSession,
-          options,
+          seedUserMessage,
         ));
       sessionRestoreQueueRef.current = queuedRestore.catch(() => undefined);
       return queuedRestore;
@@ -3883,10 +4078,8 @@ function AppContent({
       projectId: project.project_id,
       sessionId: nextSessionId,
     });
-    void handleRestoreSession(nextSessionId);
   }, [
     confirmLeaveSettings,
-    handleRestoreSession,
     isToolPanelAutoHideViewport,
     navigate,
     setSelectedProject,
@@ -4015,7 +4208,8 @@ function AppContent({
 
   const pinSecondarySidebar = (target: SecondarySidebar) => {
     if (!handleNavigate(target === 'chat' && activeNav === 'cron' ? 'cron' : target)) return;
-    setSecondarySidebarCollapsed(false);
+    if (target === 'chat' && designCanvasOpen) setDesignSidebarCollapsed(false);
+    else setSecondarySidebarCollapsed(false);
     if (target === 'chat' && sidebarAutoCollapsed) {
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
@@ -4064,6 +4258,19 @@ function AppContent({
   }, [request]);
 
   const setShareExportSessionActive = useCallback((targetSessionId: string, active: boolean) => {
+    if (!active) {
+      waitingBrowserExportsRef.current.delete(targetSessionId);
+      setWaitingShareExportSessionIds(current => {
+        const next = new Set(current);
+        next.delete(targetSessionId);
+        return next;
+      });
+    }
+    if (!active) setShareExportProgress(current => {
+      const next = { ...current };
+      delete next[targetSessionId];
+      return next;
+    });
     setExportingShareSessionIds(current => {
       const next = new Set(current);
       if (active) next.add(targetSessionId);
@@ -4072,28 +4279,114 @@ function AppContent({
     });
   }, []);
 
+  const closeShareExportTab = useCallback((targetSessionId: string) => {
+    browserExportTabsRef.current.get(targetSessionId)?.close();
+    browserExportTabsRef.current.delete(targetSessionId);
+  }, []);
+
+  const shareExportPhaseText = useCallback((phase?: string, progress?: number | null) => (
+    phase === 'rendering' && progress != null
+      ? t('share.renderingProgress', { percent: progress })
+      : phase === 'download_started' ? t('share.downloading')
+        : phase === 'saving' || phase === 'completed' || phase === 'download_sent'
+        ? t(window.jiuwenDesktop?.isElectron ? 'share.savingDesktop' : 'share.saving')
+        : phase === 'rendering' ? t('share.preparingDocument')
+          : phase === 'loading_snapshot' ? t('share.loadingHistory') : t('share.preparing')
+  ), [t]);
+
+  useEffect(() => {
+    if (!window.jiuwenDesktop?.isElectron || typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') return;
+    return window.jiuwenDesktop.onShareImageExportProgress(({ sessionId: targetSessionId, phase, progress }) => {
+      if (!shareExportMonitorTokensRef.current.has(targetSessionId)) return;
+      setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(phase, progress) }));
+    });
+  }, [shareExportPhaseText]);
+
   const monitorAndSaveShareImageJob = useCallback(async (
     initialStatus: ShareImageExportJobStatus,
     targetSessionId: string,
     token: symbol,
+    startBrowser = false,
   ) => {
-    const status = await waitForShareImageJob(
-      initialStatus,
+    const resumedStatus = await resumeBrowserShareImageJob(initialStatus, targetSessionId, window.sessionStorage);
+    let startedBrowser = false;
+    let status = await waitForShareImageJob(
+      resumedStatus,
       () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+      async snapshot => {
+        const current = await cancelShareImageJobForClosedTab(
+          { ...snapshot, client_token: resumedStatus.client_token },
+          browserExportTabsRef.current.get(targetSessionId),
+        );
+        const text = shareExportPhaseText(current.phase, current.progress);
+        setShareExportProgress(previous => ({ ...previous, [targetSessionId]: text }));
+        if (current.state !== 'queued') {
+          waitingBrowserExportsRef.current.delete(targetSessionId);
+          setWaitingShareExportSessionIds(previous => {
+            if (!previous.has(targetSessionId)) return previous;
+            const next = new Set(previous); next.delete(targetSessionId); return next;
+          });
+        }
+        if (current.renderer === 'browser' && current.state === 'queued' && !startedBrowser) {
+          startedBrowser = true;
+          const browserJob = { status: { ...current, client_token: resumedStatus.client_token }, locale: resumedStatus.locale ?? i18n.resolvedLanguage ?? i18n.language };
+          rememberPendingShareImageJob(window.sessionStorage, targetSessionId, browserJob.status, browserJob.locale);
+          const tab = startBrowser ? openShareImageExportTab(browserJob.status, browserJob.locale) : null;
+          if (tab) browserExportTabsRef.current.set(targetSessionId, tab);
+          else {
+            waitingBrowserExportsRef.current.set(targetSessionId, browserJob);
+            setWaitingShareExportSessionIds(previous => new Set(previous).add(targetSessionId));
+          }
+        }
+        return current;
+      },
+      () => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: tRef.current('share.statusReconnecting') })),
     );
     if (status === null) return;
     if (status.state === 'failed') {
+      closeShareExportTab(targetSessionId);
       forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
+      if (status.error === 'share_export_tab_closed') {
+        const sessionState = useSessionStore.getState();
+        const exportedSession = sessionState.currentSession?.session_id === targetSessionId
+          ? sessionState.currentSession
+          : sessionState.sessions.find(session => session.session_id === targetSessionId);
+        const exportedSessionTitle = toDisplaySessionTitle(exportedSession?.title ?? '') || targetSessionId;
+        toast.open({
+          id: `share-export-stopped:${status.job_id}`,
+          content: tRef.current('share.exportStopped', { sessionTitle: exportedSessionTitle }),
+          duration: 5,
+          wide: true,
+          testId: 'app-share-export-stopped-toast',
+          dataVariant: targetSessionId,
+        });
+        return;
+      }
       throw new Error(status.error || 'share_export_job_failed');
     }
 
-    const saved = await saveShareImageJob(status.job_id, status.filename.trim());
+    if (status.renderer === 'browser' && resumedStatus.state === 'completed' && status.phase !== 'download_started' && status.phase !== 'download_sent') {
+      // A reloaded chat can resume a published artifact after its renderer has gone.
+      status = await startShareImageJobDownload({ ...status, client_token: resumedStatus.client_token });
+    }
+    let saved: boolean;
+    try {
+      saved = status.renderer === 'browser'
+        ? await waitForShareImageJobTransfer(status, () => shareExportMonitorTokensRef.current.get(targetSessionId) === token,
+          current => setShareExportProgress(previous => ({ ...previous, [targetSessionId]: shareExportPhaseText(current.phase, current.progress) }))) !== null
+        : await saveShareImageJob(status.job_id, status.filename.trim());
+    } catch (error) {
+      if (error instanceof Error && ['share_export_download_start_timeout', 'share_export_download_interrupted'].includes(error.message)) closeShareExportTab(targetSessionId);
+      throw error;
+    }
+    if (saved) closeShareExportTab(targetSessionId);
     forgetPendingShareImageJob(window.sessionStorage, targetSessionId, status.job_id);
     if (saved) showSaveToast();
-  }, [showSaveToast]);
+  }, [closeShareExportTab, showSaveToast, shareExportPhaseText, i18n.language, i18n.resolvedLanguage]);
 
   useEffect(() => {
     const targetSessionId = sessionId;
+    if (isEnterprise() || window.jiuwenDesktop?.isElectron) return;
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
     if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
@@ -4108,6 +4401,9 @@ function AppContent({
         return;
       }
       if (status === null) return;
+      // A failed transfer is retried by the user's next export click. Reloading
+      // preserves its artifact without repeating the failure dialog or download.
+      if (status.renderer === 'browser' && status.state === 'completed' && status.phase === 'download_failed') return;
       if (shareExportMonitorTokensRef.current.has(targetSessionId)) return;
 
       const token = Symbol(targetSessionId);
@@ -4121,7 +4417,7 @@ function AppContent({
         );
       } catch (error) {
         console.error('Failed to monitor share image export:', error);
-        window.alert(tRef.current('share.exportFailed'));
+        window.alert(tRef.current(shareImageExportErrorKey(error)));
       } finally {
         if (shareExportMonitorTokensRef.current.get(targetSessionId) === token) {
           shareExportMonitorTokensRef.current.delete(targetSessionId);
@@ -4132,7 +4428,25 @@ function AppContent({
   }, [monitorAndSaveShareImageJob, sessionId, setShareExportSessionActive]);
 
   const handleExportShare = useCallback(async () => {
+    if (isEnterprise()) return;
     const currentSessionId = sessionIdRef.current;
+    if (window.jiuwenDesktop?.isElectron && typeof window.jiuwenDesktop.onShareImageExportProgress !== 'function') {
+      window.alert(t('share.desktopRestartRequired'));
+      return;
+    }
+    const waitingJob = waitingBrowserExportsRef.current.get(currentSessionId);
+    if (waitingJob) {
+      const tab = openShareImageExportTab(waitingJob.status, waitingJob.locale);
+      if (!tab) { window.alert(t('share.popupBlocked')); return; }
+      browserExportTabsRef.current.set(currentSessionId, tab);
+      waitingBrowserExportsRef.current.delete(currentSessionId);
+      setWaitingShareExportSessionIds(previous => {
+        const next = new Set(previous);
+        next.delete(currentSessionId);
+        return next;
+      });
+      return;
+    }
     if (
       !currentSessionId
       || currentSessionId === NEW_CONVERSATION_ID
@@ -4142,8 +4456,10 @@ function AppContent({
       return;
     }
     const token = Symbol(currentSessionId);
+    const plainWeb = !window.jiuwenDesktop?.isElectron && !window.pywebview;
     shareExportMonitorTokensRef.current.set(currentSessionId, token);
     setShareExportSessionActive(currentSessionId, true);
+    setShareExportProgress(current => ({ ...current, [currentSessionId]: t('share.preparing') }));
     try {
       if (window.jiuwenDesktop?.isElectron) {
         const saved = await window.jiuwenDesktop.exportShareImage(
@@ -4153,6 +4469,11 @@ function AppContent({
         if (saved) showSaveToast();
         return;
       }
+      const pending = await findShareImageJobForSession(currentSessionId, window.sessionStorage);
+      if (pending && pending.state === 'completed') {
+        await monitorAndSaveShareImageJob(pending, currentSessionId, token);
+        return;
+      }
       const createResponse = await fetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
@@ -4160,18 +4481,20 @@ function AppContent({
         body: JSON.stringify({
           session_id: currentSessionId,
           locale: i18n.resolvedLanguage ?? i18n.language,
+          allow_browser_render: plainWeb,
         }),
       });
       const created = await readShareImageJobResponse(createResponse);
-      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created.job_id);
+      rememberPendingShareImageJob(window.sessionStorage, currentSessionId, created, i18n.resolvedLanguage ?? i18n.language);
       await monitorAndSaveShareImageJob(
         created,
         currentSessionId,
         token,
+        plainWeb,
       );
     } catch (error) {
       console.error('Failed to export share image:', error);
-      window.alert(t('share.exportFailed'));
+      window.alert(t(shareImageExportErrorKey(error)));
     } finally {
       if (shareExportMonitorTokensRef.current.get(currentSessionId) === token) {
         shareExportMonitorTokensRef.current.delete(currentSessionId);
@@ -4313,9 +4636,30 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
-                onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
+                onToggleCollapse={toggleConversationSidebar}
                 hideCollapseButton={designCanvasOpen}
               />
+              {!isEnterprise() && workspaceWorkMode === 'design' && route.kind === 'design-project' ? (
+                  <DesignerPage
+                    projectId={route.projectId}
+                    sessionId={route.sessionId}
+                    sidebarCollapsed={conversationSidebarCollapsed}
+                    onToggleSidebarCollapse={() => {
+                      if (isMobile) {
+                        if (sidebarPeek === 'chat') closeSidebarPeek();
+                        else openSidebarPeek('chat');
+                        return;
+                      }
+                      toggleConversationSidebar();
+                    }}
+                    onOpenSession={(nextProjectId, nextSessionId, options) => {
+                      navigate(
+                        { kind: 'design-project', projectId: nextProjectId, sessionId: nextSessionId },
+                        options,
+                      );
+                    }}
+                  />
+              ) : (
               <div
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
               >
@@ -4365,6 +4709,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onUserAnswer={handleUserAnswer}
                         onExportShare={handleExportShare}
                         isExportingShare={isExportingShare}
+                        shareExportProgress={shareExportProgress[sessionId]}
+                        isWaitingShareExportTab={waitingShareExportSessionIds.has(sessionId)}
                         canExportShare={Boolean(sessionId && sessionId !== NEW_CONVERSATION_ID && (!isProcessing || isPaused))}
                         sessionTitle={sessionTitle}
                         sessionProjectName={sessionProjectName}
@@ -4491,6 +4837,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   <HeartbeatPanel sessionId={sessionId} onClose={() => setHeartbeatPanelOpen(false)} />
                 )}
               </div>
+              )}
             </div>
           </>
         )}
@@ -4553,35 +4900,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               <CronPanel
                   sessionId={sessionId}
                   onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
-                  onSelectSession={(session, selectOptions) => {
+                  onSelectSession={(session, seedUserMessage) => {
                   if (typeof session === 'string') {
-                    // 立即执行返回的 session_id 可能还未在后端创建（agent 刚开始执行），
-                    // 构造最小 Session 占位对象，让 upsertSessionMetadata 直接加入会话列表，
-                    // 避免 loadSessionMetadata 立即失败导致"对话不存在或已删除"。
-                    // 后续 cron 广播到达时会刷新会话列表补全完整元数据。
-                    // 全新执行先不拉历史：空的历史结果会把后面直播来的内容盖掉。
-                    // 任务原话先放进会话，页面才是普通聊天，而不是首页欢迎语。
-                    // 上一轮还在等点选时，打开原来的会话并拉取已有记录。
-                    const reusePending = Boolean(selectOptions?.reusePendingApproval);
-                    const cronJob = useCronStore.getState().jobs.find((item) => {
-                      const lastSid = useCronStore.getState().lastRunSessionId[item.id];
-                      return lastSid === session;
-                    });
-                    void handleRestoreSession(session, undefined, {
-                      session_id: session,
-                      title: selectOptions?.title || '',
-                      project_id: cronJob?.project_id || '',
-                      project_dir: '',
-                      mode: 'agent',
-                      status: 'active',
-                      message_count: 0,
-                      created_at: new Date().toISOString(),
-                      updated_at: new Date().toISOString(),
-                    }, {
-                      skipHistoryLoad: !reusePending,
-                      seedUserMessage: reusePending ? undefined : selectOptions?.seedUserMessage,
-                    });
-                    return;
+                    return handleRestoreSession(session, undefined, undefined, seedUserMessage);
                   }
                   requestSessionNavigation(session);
                   }}

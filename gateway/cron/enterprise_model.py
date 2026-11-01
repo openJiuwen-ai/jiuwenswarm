@@ -19,7 +19,7 @@ async def list_enterprise_default_models(
     user_id: str = "",
 ) -> list[dict[str, str]]:
     """返回当前身份可用的对话模型（只有名字和别名，不含密钥）。"""
-    from jiuwenswarm.common.request_identity import (
+    from gateway.common.request_identity import (
         apply_routing_metadata,
         normalize_routing_identity,
     )
@@ -76,7 +76,7 @@ async def resolve_enterprise_cron_model(
         return None
 
     try:
-        from jiuwenswarm.common.auth.login_credentials import bare_model_name
+        from gateway.auth.login_credentials import bare_model_name
 
         bare = bare_model_name(value)
     except Exception:  # noqa: BLE001 — 后缀剥离失败时仍用原名匹配

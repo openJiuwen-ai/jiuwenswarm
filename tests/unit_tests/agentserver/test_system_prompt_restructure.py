@@ -52,7 +52,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
-from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
+from jiuwenswarm.runtime.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -319,7 +319,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=True),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -784,7 +784,7 @@ async def test_symphony_orchestration_rail_clears_when_unavailable(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=True),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -815,7 +815,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.config.load_symphony_config",
+        "jiuwenswarm.common.symphony_config.load_symphony_config",
         lambda: SimpleNamespace(enabled=False),
     )
     builder = SystemPromptBuilder(language="cn")
@@ -1322,7 +1322,8 @@ def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, cha
 
 
 @pytest.mark.asyncio
-async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
+@pytest.mark.parametrize("channel", ["__cron__", "web"])
+async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch, channel):
     class _Runtime:
         @staticmethod
         def cron_intent_authorization_summary(job_id):
@@ -1348,7 +1349,7 @@ async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
     )
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
-    rail = RuntimePromptRail(language="en", channel="__cron__")
+    rail = RuntimePromptRail(language="en", channel=channel)
     rail.init(agent)
     rail.set_request_metadata({"cron": {"job_id": "job-1"}})
     ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})

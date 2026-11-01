@@ -10,7 +10,7 @@ from typing import Any
 from gateway.config.enterprise.tables.application_config_models import (
     PACKAGE_ALLOWLIST_TABLE_DEF,
 )
-from jiuwenswarm.server.runtime.package_allowlist import (
+from jiuwenswarm.common.schema.package_allowlist import (
     ensure_packages_fit,
     normalize_packages,
 )
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def read_package_allowlist_packages() -> list[dict[str, Any]]:
     """企业版读出当前行。没有行、读失败或内容非法时为空列表。个人版不读库。"""
-    from gateway.enterprise import is_enterprise
+    from gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return []
@@ -43,6 +43,16 @@ async def read_package_allowlist_packages() -> list[dict[str, Any]]:
         logger.warning("[package_allowlist] stored packages rejected, sending empty")
         return []
     return packages
+
+
+def _require_valid_match_exprs(packages: list[dict[str, Any]]) -> None:
+    """写入前拒绝不能求值的范围。非法项让整次写入失败。"""
+    from gateway.config.enterprise.expressions import validate_match_expr
+
+    for item in packages:
+        match_expr = item.get("match_expr")
+        if match_expr is not None:
+            validate_match_expr(match_expr)
 
 
 def _row_to_dict(row: dict[str, Any], packages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -67,6 +77,7 @@ class PackageAllowlistService:
             payload = dict(payload["package_allowlist"])
         packages = normalize_packages(payload.get("packages"))
         ensure_packages_fit(packages)
+        _require_valid_match_exprs(packages)
         repo = require_enterprise_repository(_TABLE)
         now = utc_now()
         existing = await repo.get()

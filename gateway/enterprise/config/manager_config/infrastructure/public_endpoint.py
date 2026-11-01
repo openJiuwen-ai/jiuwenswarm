@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+from gateway.common.security.link_mtls import LinkMTLSConfig
 
 from .config import Settings, get_settings
 

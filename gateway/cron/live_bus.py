@@ -52,7 +52,7 @@ def _process_unique_suffix() -> str:
 def _gateway_origin_id() -> str:
     base = ""
     try:
-        from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_instance_id
+        from gateway.extensions.redis.redis_runtime import get_gateway_instance_id
 
         iid = get_gateway_instance_id()
         if iid:
@@ -73,7 +73,7 @@ def _redis_client() -> Any | None:
     global _warned_no_redis
     client: Any | None = None
     try:
-        from jiuwenswarm.extensions.redis.redis_runtime import (
+        from gateway.extensions.redis.redis_runtime import (
             get_declared_deployment_mode,
             get_gateway_redis_client_if_open,
         )
@@ -105,13 +105,13 @@ def _redis_client() -> Any | None:
 
 
 def _channel_rel(session_id: str) -> str:
-    from jiuwenswarm.extensions.redis.redis_keys import cron_live_channel_rel
+    from gateway.extensions.redis.redis_keys import cron_live_channel_rel
 
     return cron_live_channel_rel(session_id)
 
 
 def _replay_key_rel(session_id: str) -> str:
-    from jiuwenswarm.extensions.redis.redis_keys import cron_live_replay_key_rel
+    from gateway.extensions.redis.redis_keys import cron_live_replay_key_rel
 
     return cron_live_replay_key_rel(session_id)
 
@@ -148,6 +148,8 @@ def _frame_fingerprint(frame: dict[str, Any]) -> str:
     """
     event = str(frame.get("event") or "")
     payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    if event == "cron.run.updated" and payload.get("event_id"):
+        return f"{event}|{payload['event_id']}"
     rid = str(payload.get("request_id") or "")
     proc = payload.get("is_processing")
     proc_part = "" if proc is None else f"|p={proc}"
@@ -325,7 +327,9 @@ class CronLiveBus:
     ) -> None:
         if mark_seen and self._frame_already_seen(sid, frame):
             return
-        if not _queue_put(queue, frame):
+        # Only replay copies carry this marker; live fanout and the stored
+        # frame stay unchanged so clients can distinguish backlog from new output.
+        if not _queue_put(queue, {**frame, "replay": True}):
             return
         if mark_seen:
             self._remember_frame(sid, frame)

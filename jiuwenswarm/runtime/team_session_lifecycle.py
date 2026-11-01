@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -11,6 +12,8 @@ from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
     SessionLifecycleContext,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _TeamLifecycleManager(Protocol):
@@ -165,6 +168,13 @@ class TeamSessionLifecycleAdapter:
         """Park surviving observers and publish the authoritative pause terminal."""
         if generation is not None:
             self._coordinator.mark_session_waiting_for_input(session_id, generation)
+        logger.info(
+            "[TeamProcessingStatus] generated: source=pause_completed channel_id=%s "
+            "session_id=%s generation=%s is_processing=False is_complete=True",
+            channel_id,
+            session_id,
+            generation,
+        )
         await self._team_manager.broadcast_event(
             session_id,
             {

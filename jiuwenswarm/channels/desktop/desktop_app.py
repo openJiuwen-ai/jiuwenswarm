@@ -774,6 +774,21 @@ class _WindowApi:
         return bool(webbrowser.open(url))
 
     @staticmethod
+    def open_app_link(url: str) -> bool:
+        """Open an MCP App's ``ui/open-link`` URL in the system browser.
+
+        Only plain http(s) URLs without embedded credentials are accepted.
+        """
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(str(url))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        return bool(webbrowser.open(parsed.geturl()))
+
+    @staticmethod
     def capture_oauth_token(options: dict) -> dict | None:
         """隐式授权一键授权（对齐 Electron 的 desktop:capture-oauth-token）。
 

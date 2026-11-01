@@ -141,6 +141,13 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     attach_diagnosis_routes(app, channel)
     # register auth http routes for huawei account login
     register_auth_routes(app)
+    # MCP Apps sandbox proxy (separate origin from the UI for app iframes)
+    from gateway.channel_manager.web.mcp_app_sandbox_http import (
+        register_mcp_app_sandbox_routes,
+    )
+
+    register_mcp_app_sandbox_routes(app)
+
     # 企业能力：依赖 Gateway 平面。个人版跳过；企业版组装/挂载失败必须报错，
     # 禁止静默回退成个人版行为。
     from gateway.enterprise import is_enterprise, try_build_enterprise_plane

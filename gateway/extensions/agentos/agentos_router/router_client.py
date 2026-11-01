@@ -551,6 +551,10 @@ class AgentOSRouterClient(AgentServerClient):
         self._ssh_relay = ssh_relay
         self._ssh_channel_endpoint = ssh_channel_endpoint
         self._key_issuer = key_issuer
+        self._ssh_key_ready = asyncio.Event()
+        self._ssh_key_ready_timeout = 30.0
+        if key_issuer is not None:
+            self._ssh_key_ready.set()
         self._ephemeral_key_ttl_sec = float(ephemeral_key_ttl_sec)
         self._workspace_root = (
             str(workspace_root or "").strip() or DEFAULT_AGENT_WORKSPACE_ROOT
@@ -761,6 +765,10 @@ class AgentOSRouterClient(AgentServerClient):
     ) -> None:
         """Inject or clear the northbound SSH ephemeral key issuer."""
         self._key_issuer = key_issuer
+        if key_issuer is None:
+            self._ssh_key_ready.clear()
+        else:
+            self._ssh_key_ready.set()
         self._ephemeral_key_ttl_sec = float(ephemeral_key_ttl_sec)
 
     async def _on_channel_event(self, event: Any) -> None:
@@ -2177,6 +2185,25 @@ class AgentOSRouterClient(AgentServerClient):
         ssh_fields = self._ssh_endpoint_fields()
         if ssh_fields is None:
             return self._missing_ssh_endpoint_error()
+        # Web/TUI can accept requests before background SSH setup finishes.
+        # Authenticated switches must not succeed without a usable key.
+        if self._ssh_channel_endpoint.auth_enabled and self._key_issuer is None:
+            try:
+                await asyncio.wait_for(
+                    self._ssh_key_ready.wait(), timeout=self._ssh_key_ready_timeout
+                )
+            except asyncio.TimeoutError:
+                return {
+                    "ok": False,
+                    "error": "SSH key issuer is not ready",
+                    "code": "SSH_NOT_READY",
+                }
+            if self._key_issuer is None:
+                return {
+                    "ok": False,
+                    "error": "SSH key issuer was cleared during channel reconfiguration",
+                    "code": "SSH_NOT_READY",
+                }
         # Fail fast before create: without the key the client cannot pass
         # SSH public-key auth, so a "successful" switch would be unusable.
         try:
@@ -2847,6 +2874,10 @@ class AgentOSRouterClient(AgentServerClient):
                     "type", "enabled", "startup_mode", "url", "template_name",
                     "user", "group",
                 ))
+                if sandbox_config.get("type") == "adx-environment":
+                    deployment.update(_pick_keys(sandbox_config, (
+                        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network",
+                    )))
                 conch = sandbox_config.get("conch")
                 if isinstance(conch, dict):
                     deployment["conch"] = _pick_keys(conch, (
