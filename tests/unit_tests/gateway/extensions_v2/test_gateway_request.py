@@ -1,0 +1,297 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Gateway runtime bootstrap and the ``gateway.request`` trigger point."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from openjiuwen.core.events import Event, SessionContext
+
+from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
+from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage
+from jiuwenswarm.gateway.extensions_v2.models import (
+    EVENT_GATEWAY_REQUEST,
+    GatewayRequestInput,
+    GatewayRequestOutput,
+)
+from jiuwenswarm.gateway.extensions_v2.registry import HandlerDeclaration
+from jiuwenswarm.gateway.extensions_v2.runtime import GatewayRuntime
+
+
+class FakeChannel:
+    """Minimal stand-in for WebChannel used by the runtime."""
+
+    channel_id = "web"
+
+    def __init__(self) -> None:
+        self.responses: list[dict] = []
+        self._ids: dict[int, str] = {}
+
+    async def ensure_ws_id(self, ws) -> str:
+        key = id(ws)
+        if key not in self._ids:
+            self._ids[key] = f"ws-{len(self._ids) + 1}"
+            setattr(ws, "_jiuwen_ws_id", self._ids[key])
+        return self._ids[key]
+
+    def connection_user_id(self, ws):
+        return getattr(ws, "_user", None)
+
+    async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
+        self.responses.append(
+            {"id": req_id, "ok": ok, "payload": payload or {}, "error": error, "code": code}
+        )
+
+
+def _ws(user: str | None = None) -> SimpleNamespace:
+    ws = SimpleNamespace(closed=False)
+    if user is not None:
+        ws._user = user
+    return ws
+
+
+def _package(handler, event_type: str = EVENT_GATEWAY_REQUEST) -> LoadedPackage:
+    return LoadedPackage(
+        package_id="demo",
+        version="1.0.0",
+        root=Path("/tmp/demo"),
+        handlers=(HandlerDeclaration(event_type, handler, {}, "local-1"),),
+        auth_provider=True,
+    )
+
+
+async def _runtime(tmp_path: Path, channel: FakeChannel | None = None) -> GatewayRuntime:
+    runtime = GatewayRuntime(
+        channel=channel or FakeChannel(),
+        config=GatewayExtensionConfig(install_dir=tmp_path),
+    )
+    await runtime.start()
+    return runtime
+
+
+def _authenticate(runtime: GatewayRuntime, connection_id: str = "ws-1") -> None:
+    runtime.store.set(
+        scope="connection",
+        scope_id=connection_id,
+        key="auth.session",
+        value={"user": "alice"},
+    )
+
+
+async def test_no_user_handler_keeps_the_frame_untouched(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+    ws = _ws()
+
+    visited, params = await runtime.intercept(ws, "r1", "chat.send", {"session_id": "s1"})
+
+    assert visited is False
+    assert params == {"session_id": "s1"}
+    assert runtime.active is False
+    assert not hasattr(ws, "_jiuwen_ws_id")
+    assert channel.responses == []
+
+
+async def test_core_defaults_to_forward(tmp_path):
+    runtime = await _runtime(tmp_path)
+
+    result = await runtime.bus.trigger(
+        Event(EVENT_GATEWAY_REQUEST, GatewayRequestInput(method="ping", connection_id="ws-1")),
+        SessionContext("gateway:ws-1"),
+    )
+
+    assert isinstance(result, GatewayRequestOutput)
+    assert result.handled is False
+    assert result.route == "forward"
+
+
+async def test_core_denies_an_empty_method(tmp_path):
+    runtime = await _runtime(tmp_path)
+
+    result = await runtime.bus.trigger(
+        Event(EVENT_GATEWAY_REQUEST, GatewayRequestInput(method="  ", connection_id="ws-1")),
+        SessionContext("gateway:ws-1"),
+    )
+
+    assert result.handled is True
+    assert result.route == "deny"
+    assert result.error == {"code": "BAD_REQUEST", "message": "method is required"}
+
+
+async def test_handler_can_rewrite_params_and_continue(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+
+    async def handler(event, ops, next_handler):
+        params = dict(event.event_input.params)
+        params["rewritten"] = True
+        return GatewayRequestOutput(route="forward", params=params)
+
+    runtime.publish(_package(handler))
+    ws = _ws(user="alice")
+
+    visited, params = await runtime.intercept(ws, "r1", "chat.send", {"session_id": "s1"})
+
+    assert visited is False
+    assert params == {"session_id": "s1", "rewritten": True}
+    assert channel.responses == []
+
+
+async def test_handler_can_consume_the_frame(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+
+    async def handler(event, ops, next_handler):
+        if event.event_input.method != "config.get":
+            return await next_handler(event)
+        return GatewayRequestOutput(handled=True, route="consume", response={"source": "gateway"})
+
+    runtime.publish(_package(handler))
+    ws = _ws()
+
+    visited, _ = await runtime.intercept(ws, "r9", "config.get", {})
+
+    assert visited is True
+    assert channel.responses == [
+        {"id": "r9", "ok": True, "payload": {"source": "gateway"}, "error": None, "code": None}
+    ]
+
+
+async def test_handler_can_deny_the_frame(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+
+    async def handler(event, ops, next_handler):
+        return GatewayRequestOutput(
+            handled=True,
+            route="deny",
+            error={"code": "AUTH_REQUIRED", "message": "login first"},
+        )
+
+    runtime.publish(_package(handler))
+
+    visited, _ = await runtime.intercept(_ws(), "r2", "chat.send", {})
+
+    assert visited is True
+    assert channel.responses[0]["ok"] is False
+    assert channel.responses[0]["code"] == "AUTH_REQUIRED"
+    assert channel.responses[0]["error"] == "login first"
+
+
+async def test_local_route_is_answered_by_the_builtin_router(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+
+    async def handler(event, ops, next_handler):
+        return GatewayRequestOutput(handled=True, route="local")
+
+    runtime.publish(_package(handler))
+    _authenticate(runtime)
+
+    visited, _ = await runtime.intercept(_ws(), "r3", "auth.status", {})
+
+    assert visited is True
+    assert channel.responses == [
+        {"id": "r3", "ok": True, "payload": {"authenticated": True}, "error": None, "code": None}
+    ]
+
+
+async def test_local_route_rejects_an_unknown_method(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+
+    async def handler(event, ops, next_handler):
+        return GatewayRequestOutput(handled=True, route="local")
+
+    runtime.publish(_package(handler))
+    _authenticate(runtime)
+
+    visited, _ = await runtime.intercept(_ws(), "r3", "chat.send", {})
+
+    assert visited is True
+    assert channel.responses[0]["ok"] is False
+    assert channel.responses[0]["code"] == "ROUTE_UNSUPPORTED"
+    assert channel.responses[0]["error"] == "no gateway builtin for method: chat.send"
+
+
+async def test_ops_gateway_request_triggers_a_nested_event(tmp_path):
+    runtime = await _runtime(tmp_path)
+
+    async def handler(event, ops, next_handler):
+        if event.event_input.method == "inner":
+            return await next_handler(event)
+        nested = await ops.gateway.request(
+            GatewayRequestInput(method="inner", connection_id=event.event_input.connection_id)
+        )
+        return GatewayRequestOutput(
+            handled=True,
+            route="consume",
+            response={"nested_route": nested.route},
+        )
+
+    runtime.publish(_package(handler))
+    _authenticate(runtime)
+    channel = runtime.channel
+
+    visited, _ = await runtime.intercept(_ws(), "r4", "chat.send", {})
+
+    assert visited is True
+    assert channel.responses[0]["payload"] == {"nested_route": "forward"}
+
+
+async def test_disconnect_drops_connection_state(tmp_path):
+    runtime = await _runtime(tmp_path)
+    runtime.store.set(scope="connection", scope_id="ws-1", key="token", value="abc")
+
+    await runtime.on_disconnect(SimpleNamespace(_jiuwen_ws_id="ws-1"))
+
+    assert runtime.store.get(scope="connection", scope_id="ws-1", key="token") is None
+
+
+async def test_broken_handler_does_not_break_the_frame(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+
+    async def handler(event, ops, next_handler):
+        raise RuntimeError("boom")
+
+    runtime.publish(_package(handler))
+
+    visited, params = await runtime.intercept(_ws(), "r5", "chat.send", {"a": 1})
+
+    assert visited is False
+    assert params == {"a": 1}
+    assert channel.responses == []
+
+
+async def test_shutdown_unregisters_every_handler(tmp_path):
+    runtime = await _runtime(tmp_path)
+
+    async def handler(event, ops, next_handler):
+        return await next_handler(event)
+
+    runtime.publish(_package(handler))
+    assert runtime.user_handler_count == 1
+
+    await runtime.shutdown()
+
+    assert runtime.user_handler_count == 0
+    assert runtime.active is False
+
+
+async def test_unknown_route_falls_back_to_forward(tmp_path):
+    channel = FakeChannel()
+    runtime = await _runtime(tmp_path, channel)
+
+    async def handler(event, ops, next_handler):
+        return GatewayRequestOutput(handled=True, route="nonsense")
+
+    runtime.publish(_package(handler))
+
+    visited, params = await runtime.intercept(_ws(), "r6", "chat.send", {"k": 1})
+
+    assert visited is False
+    assert params == {"k": 1}
+    assert channel.responses == []
