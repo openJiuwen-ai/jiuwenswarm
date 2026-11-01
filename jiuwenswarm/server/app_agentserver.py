@@ -48,6 +48,7 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.version import __version__
 
+_t_first_log = time.perf_counter()
 logger.info(
     "[startup] AgentServer begin: version=%s python=%s edition=%s pid=%d prelude_ms=%.0f",
     __version__,
@@ -55,6 +56,15 @@ logger.info(
     "enterprise" if is_enterprise() else "community",
     os.getpid(),
     (time.perf_counter() - _STARTUP_T0) * 1000.0,
+)
+# 进程首条日志会在 logger.info 内部惰性支付日志管道的导入税（logging 记录工厂
+# 惰性导入 openjiuwen span_context 链 + IdentityFieldFilter 内联导入
+# extensions identity 链，均发生在调用线程上）。该税落在 prelude_ms（调用前
+# 求值）与首个 import 分段（调用返回后才起表）之间，不显式计价的话分段加总
+# 对不上窗口墙钟，故单独计一行。第二条日志起管道已缓存，本行自身 ~0ms。
+logger.info(
+    "[startup] first-log pipeline cost_ms=%.0f",
+    (time.perf_counter() - _t_first_log) * 1000.0,
 )
 
 
@@ -280,10 +290,9 @@ apply_task_tool_debug_patch()
 # Loading this module earlier changes startup ordering, so keep it deferred
 # until the compatibility patches above are installed.
 _t_import = time.perf_counter()
-importlib.import_module(
-    "openjiuwen.harness.observability"
-).install_subagent_observability_hook()
+_observability = importlib.import_module("openjiuwen.harness.observability")
 _log_import_elapsed("openjiuwen.harness.observability", _t_import)
+_observability.install_subagent_observability_hook()
 
 # Subagent thinking control (task_tool optional ``thinking`` param).
 # Requires openjiuwen core with llm_call_kwargs + thinking_hook; otherwise no-op.
@@ -553,11 +562,11 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         raise RuntimeError("AgentServer enforce requires a working HTTPS listener")
 
     if link_mtls.enforced:
-        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled  startup_total_ms=%.0f",
+        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled  [startup] startup_total_ms=%.0f",
                     host, http_server.port, _startup_total_ms())
     elif http_server is not None:
         logger.info(
-            "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop  startup_total_ms=%.0f",
+            "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop  [startup] startup_total_ms=%.0f",
             host,
             port,
             host,
@@ -565,7 +574,7 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
             _startup_total_ms(),
         )
     else:
-        logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop  startup_total_ms=%.0f", host, port, _startup_total_ms())
+        logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop  [startup] startup_total_ms=%.0f", host, port, _startup_total_ms())
 
     stop_event = asyncio.Event()
     teammate_bootstrap_task: asyncio.Task | None = None

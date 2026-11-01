@@ -9,6 +9,9 @@ monkeypatch logger 捕获输出，不触发真实服务启动。埋点动机：e
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 
 import jiuwenswarm.server.app_agentserver as app_agentserver
@@ -43,3 +46,37 @@ def test_startup_anchor_recorded_at_module_import() -> None:
     # 模块体导入期即记录锚点（进程启动早期），且经 begin 行/ready 行消费。
     assert app_agentserver._STARTUP_T0 > 0.0
     assert app_agentserver._startup_total_ms() > 0.0
+
+
+def test_first_log_pipeline_cost_line_emitted_after_begin(monkeypatch, tmp_path) -> None:
+    # begin 行是进程首条日志，logger.info 内部惰性支付日志管道导入税（记录工厂
+    # span_context 链 + IdentityFieldFilter identity 链），紧随其后计价的
+    # first-log pipeline cost_ms 行负责把这段无主时间显式归因。本测试在子进程里
+    # 重新走一遍模块导入（进程内模块已缓存，无法重放模块级 begin 块），断言
+    # 两行成对出现、且 first-log 行在 begin 行之后。
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("JIUWENSWARM_CONFIG_DIR", str(tmp_path / "conf"))
+    code = (
+        "import jiuwenswarm.common.utils as u\n"
+        "seen = []\n"
+        "_orig = u.logger.info\n"
+        "def _cap(msg, *args):\n"
+        "    seen.append(msg % args if args else msg)\n"
+        "    _orig(msg, *args)\n"
+        "u.logger.info = _cap\n"
+        "import jiuwenswarm.server.app_agentserver\n"
+        "begin = next(i for i, m in enumerate(seen) if m.startswith('[startup] AgentServer begin'))\n"
+        "first = next(i for i, m in enumerate(seen) if m.startswith('[startup] first-log'))\n"
+        "print('ORDERED', first > begin)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ORDERED True" in result.stdout
