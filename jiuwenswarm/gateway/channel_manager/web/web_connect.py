@@ -515,6 +515,15 @@ class WebChannel(BaseWsChannel):
         text = str(uid).strip()
         return text or None
 
+    def ws_by_id(self, ws_id: str) -> Any | None:
+        """按 ws_id 返回仍存活的连接（扩展运行时按物理地址下发帧）。"""
+        if not isinstance(ws_id, str) or not ws_id:
+            return None
+        ws = self._ws_by_id.get(ws_id)
+        if ws is None or bool(getattr(ws, "closed", False)):
+            return None
+        return ws
+
     @staticmethod
     def _connection_user_id(ws: Any) -> str | None:
         return WebChannel.connection_user_id(ws)
@@ -721,8 +730,14 @@ class WebChannel(BaseWsChannel):
             return
 
         try:
+            from jiuwenswarm.gateway.extensions_v2 import init_gateway_extensions
+
+            await init_gateway_extensions(self)
             await self._start_uvicorn_server()
         finally:
+            from jiuwenswarm.gateway.extensions_v2 import shutdown_gateway_extensions
+
+            await shutdown_gateway_extensions()
             self._stop_trajectory_hints()
 
     async def _start_uvicorn_server(self) -> None:
@@ -766,6 +781,9 @@ class WebChannel(BaseWsChannel):
         """停止 WebSocket 服务并清理连接."""
         self._running = False
         self._stop_trajectory_hints()
+        from jiuwenswarm.gateway.extensions_v2 import shutdown_gateway_extensions
+
+        await shutdown_gateway_extensions()
 
         all_clients = list(self.clients)
         close_tasks = [client.close(code=1001, reason="server shutdown") for client in all_clients]
@@ -1871,6 +1889,14 @@ class WebChannel(BaseWsChannel):
                     code="BAD_REQUEST",
                 )
                 return
+
+        # ── Gateway 扩展运行时：原生分发前拦截本帧 ──
+        # 无 USER handler 时直接返回 (False, params)，路径与未接入扩展一致。
+        from jiuwenswarm.gateway.extensions_v2 import intercept_gateway_frame
+
+        _visited, params = await intercept_gateway_frame(ws, req_id, method, params)
+        if _visited:
+            return
 
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。
