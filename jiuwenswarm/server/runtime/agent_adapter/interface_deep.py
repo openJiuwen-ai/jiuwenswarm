@@ -349,6 +349,25 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.ttse_rail import (
     _ttse_bank_path as _ttse_bank_path_impl,
     _unconfigure_ttse_rail as _unconfigure_ttse_rail_impl,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.context_commands import (
+    _call_model_for_recap as _call_model_for_recap_impl,
+    compact_partial as compact_partial_impl,
+    compress_context as compress_context_impl,
+    generate_recap as generate_recap_impl,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.memory_rails import (
+    _build_external_memory_rail as _build_external_memory_rail_impl,
+    _build_memory_rail as _build_memory_rail_impl,
+    _build_office_ace_user_profile_rail as _build_office_ace_user_profile_rail_impl,
+    _do_memory_reindex as _do_memory_reindex_impl,
+    _get_current_memory_manager as _get_current_memory_manager_impl,
+    _get_memory_workspace as _get_memory_workspace_impl,
+    _handle_external_memory_rail_by_config as _handle_external_memory_rail_by_config_impl,
+    _handle_memory_rail_by_config as _handle_memory_rail_by_config_impl,
+    _handle_office_ace_user_profile_rail_by_config as _handle_office_ace_user_profile_rail_by_config_impl,
+    _schedule_memory_reindex as _schedule_memory_reindex_impl,
+    shutdown_context_session_memory as shutdown_context_session_memory_impl,
+)
 
 if TYPE_CHECKING:
     from openjiuwen.harness.schema.config import SubAgentConfig
@@ -7446,76 +7465,13 @@ class JiuWenSwarmDeepAdapter:
 
 
     def _schedule_memory_reindex(self) -> None:
-        """延时后对记忆重新索引（debounce：多次触发只跑最后一次）。
-
-        前提：调用前 MemoryRail 已按新 embedding 配置重建（_embedding_config 已刷新），
-        且 openjiuwen lite 的 INDEX_CACHE 已清（aclose_memory_manager_cache）。
-        这样延时到期时 init_memory_manager_async 会用新配置建新 manager + 新 provider。
-        """
-        workspace = os.path.normcase(os.path.abspath(self._workspace_dir or ""))
-        reindex_key = (workspace, self._memory_embedding_fingerprint)
-        with self._MEMORY_REINDEX_KEYS_LOCK:
-            if reindex_key in self._MEMORY_REINDEX_KEYS:
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] memory reindex coalesced: workspace=%s",
-                    workspace,
-                )
-                return
-            self._MEMORY_REINDEX_KEYS.add(reindex_key)
-        if self._memory_reindex_task is not None and not self._memory_reindex_task.done():
-            self._memory_reindex_task.cancel()
-        self._memory_reindex_task = asyncio.create_task(
-            self._do_memory_reindex(reindex_key)
-        )
+        return _schedule_memory_reindex_impl(self)
 
     async def _do_memory_reindex(self, reindex_key: tuple[str, str]) -> None:
-        try:
-            await asyncio.sleep(self._MEMORY_REINDEX_DELAY_SECONDS)
-            rail = self._memory_rail
-            if rail is None:
-                return
-            manager = await self._get_current_memory_manager()
-            if manager is None:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] memory reindex skipped: manager unavailable"
-                )
-                return
-            await manager.sync(reason="embed_config_changed", force=True)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] memory reindexed after embedding config change"
-            )
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning("[JiuWenSwarmDeepAdapter] memory reindex failed: %s", e)
-        finally:
-            with self._MEMORY_REINDEX_KEYS_LOCK:
-                self._MEMORY_REINDEX_KEYS.discard(reindex_key)
+        return await _do_memory_reindex_impl(self, reindex_key)
 
     async def _get_current_memory_manager(self):
-        """获取当前 MemoryRail 对应的 memory manager（必要时按新配置重建）。
-
-        rail 重建后其 _embedding_config 已是最新值；但 manager 在 rail 首次 invoke
-        前可能尚未 init，这里主动调 init_memory_manager_async 触发初始化/复用。
-        """
-        from openjiuwen.core.memory.lite.memory_tools import init_memory_manager_async
-
-        rail = self._memory_rail
-        if rail is None:
-            return None
-        embedding_config = getattr(rail, "_embedding_config", None)
-        workspace = self._get_memory_workspace()
-        agent_id = getattr(getattr(self._instance, "card", None), "id", None) or "default"
-        try:
-            return await init_memory_manager_async(
-                workspace=workspace,
-                agent_id=agent_id,
-                embedding_config=embedding_config,
-                sys_operation=self._sys_operation,
-            )
-        except Exception as e:
-            logger.warning("[JiuWenSwarmDeepAdapter] init memory manager failed: %s", e)
-            return None
+        return await _get_current_memory_manager_impl(self)
 
     def _build_agent_workspace(self, *, language: str | None = None) -> Workspace:
         from jiuwenswarm.common.path_provider import PathCategory
@@ -7538,50 +7494,10 @@ class JiuWenSwarmDeepAdapter:
         return workspace
 
     def _get_memory_workspace(self):
-        """构造记忆用的 Workspace 对象（与 _make_deep_agent_config 中构造方式一致）。"""
-        resolved_language = getattr(self, "_resolved_language", None) or "zh"
-        return self._build_agent_workspace(language=resolved_language)
+        return _get_memory_workspace_impl(self)
 
     def _build_memory_rail(self, mode: str) -> MemoryRail | None:
-        try:
-            config = (
-                self._startup_config_base
-                if isinstance(self._startup_config_base, dict)
-                else get_config()
-            )
-            embed_config = get_embed_config()
-            has_api_key = embed_config.get("api_key") if isinstance(embed_config, dict) else None
-            has_base_url = embed_config.get("base_url") if isinstance(embed_config, dict) else None
-            has_model = embed_config.get("model") if isinstance(embed_config, dict) else None
-            if not all([has_api_key, has_base_url, has_model]):
-                embed_cfg = config.get("embed") if isinstance(config, dict) else None
-                embed_cfg = embed_cfg if isinstance(embed_cfg, dict) else {}
-                embed_config = {
-                    "api_key": embed_cfg.get("embed_api_key"),
-                    "base_url": embed_cfg.get("embed_base_url") or embed_cfg.get("embed_api_base"),
-                    "model": embed_cfg.get("embed_model"),
-                }
-                has_api_key = embed_config.get("api_key")
-                has_base_url = embed_config.get("base_url")
-                has_model = embed_config.get("model")
-            if not all([has_api_key, has_base_url, has_model]):
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] MemoryRail create failed: No available embedding config"
-                )
-            self._is_proactive_memory = is_proactive_memory(mode, config)
-            memory_rail = MemoryRail(
-                embedding_config=EmbeddingConfig(
-                    model_name=embed_config.get("model"),
-                    base_url=embed_config.get("base_url"),
-                    api_key=embed_config.get("api_key"),
-                ),
-                is_proactive=self._is_proactive_memory,
-            )
-            logger.info("[JiuWenSwarmDeepAdapter] MemoryRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] MemoryRail create failed: %s", exc)
-            memory_rail = None
-        return memory_rail
+        return _build_memory_rail_impl(self, mode)
 
 
 
@@ -7767,49 +7683,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def shutdown_context_session_memory(context_processor_rail: ContextProcessorRail) -> bool:
-        """Stop overlapping semantic session memory through a stable Adapter API.
-
-        三态区分（CR-5），保证日志不失实：
-
-        - manager 在位：shutdown 并置 None，返回 True；
-        - 属性为 None：未配置（框架默认，仅在
-          session_memory_compressor_config.enabled=true 时创建）或已
-          关闭的合法幂等态，debug 即可，不告警；
-        - 属性缺失（agent-core 私有属性被改名 / rail 类型不符）：
-          保留 CR-2 加固的 WARNING——SessionMemoryManager 可能仍在
-          eternal conversation 旁 unnoticed 运行（双记忆后端风险）。
-
-        上游 02957a531 对两种非在位状态都是静默 False；缺失属性告警
-        是本地有意的加强。
-        """
-        session_memory_manager = getattr(
-            context_processor_rail, "_session_memory_mgr", _MISSING_SESSION_MEMORY_MGR
-        )
-        if session_memory_manager is _MISSING_SESSION_MEMORY_MGR:
-            # _session_memory_mgr is a private agent-core attribute; a renamed
-            # attribute or a wrong rail type would otherwise fail silently
-            # and leave SessionMemoryManager writing beside eternal conversation.
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory found no "
-                "_session_memory_mgr attribute on %r; the framework may have renamed "
-                "it and SessionMemoryManager may keep running beside eternal "
-                "conversation (double memory backend)",
-                type(context_processor_rail).__name__,
-            )
-            return False
-        if session_memory_manager is None:
-            # 合法幂等态：未配置或已成功关闭。上游在 None 时也静默返回
-            # False；这里只留 debug 便于排障，不打 WARNING（CR-5）。
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory: "
-                "no active SessionMemoryManager on %r (not configured or "
-                "already shut down)",
-                type(context_processor_rail).__name__,
-            )
-            return False
-        session_memory_manager.shutdown()
-        setattr(context_processor_rail, "_session_memory_mgr", None)
-        return True
+        return shutdown_context_session_memory_impl(context_processor_rail)
 
     def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
         """Build lightweight agentic skill retrieval prompt guidance."""
@@ -17089,218 +16963,20 @@ class JiuWenSwarmDeepAdapter:
             return False
 
     async def _handle_memory_rail_by_config(self, mode: str):
-        config = (
-            self._startup_config_base
-            if isinstance(self._startup_config_base, dict)
-            else get_config()
-        )
-        if get_memory_mode(config) == "local":
-            # 引擎门禁：memory.engine 未放行内置时，等同于禁用
-            builtin_on = (
-                not getattr(self, "_eternal_conversation_enabled", False)
-                and is_builtin_memory_allowed(config)
-                and is_memory_enabled(mode, config)
-            )
-            if builtin_on:
-                # 开启记忆
-                new_embed_fp = _embedding_config_fingerprint(config)
-                previous_embed_fp = self._memory_embedding_fingerprint
-                if self._memory_rail is not None:
-                    cur_memory_type = is_proactive_memory(mode, config)
-                    if self._is_proactive_memory != cur_memory_type:
-                        # 当前记忆类型（主动/被动）和之前注册的不一致，重新注册
-                        await self._instance.unregister_rail(self._memory_rail)
-                        self._memory_rail = None
-                    elif self._memory_embedding_fingerprint != new_embed_fp:
-                        # 记忆类型没变，但 embedding 配置（base_url/api_key/model）变了：
-                        # 必须重建 rail 才能刷新 MemoryRail._embedding_config，否则换 endpoint
-                        # 时 rail 仍持旧配置，新 manager 仍用旧 provider。
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] embedding config changed, rebuilding MemoryRail"
-                        )
-                        await self._instance.unregister_rail(self._memory_rail)
-                        self._memory_rail = None
-                    else:
-                        # 已经注册，且记忆类型与 embedding 配置均未变，无需其他操作
-                        return
-                if self._memory_rail is None:
-                    self._memory_rail = self._build_memory_rail(mode)
-                if self._memory_rail is not None:
-                    # 重建（或首次注册）后记录新指纹，作为下次比对的基线
-                    self._memory_embedding_fingerprint = new_embed_fp
-                    try:
-                        await self._instance.register_rail(self._memory_rail)
-                    except Exception as e:
-                        # register_rail 失败：回滚指纹与 rail，避免留下"指纹已是新值、
-                        # 但 rail 未成功注册"的不一致状态——否则下次比对会认为"没变"而
-                        # 走 return，让这个孤儿 rail 既不注册也不重建，记忆静默失效。
-                        self._memory_embedding_fingerprint = ""
-                        self._memory_rail = None
-                        logger.warning(
-                            "[JiuWenSwarmDeepAdapter] register MemoryRail failed: %s", e
-                        )
-                    else:
-                        logger.info(f"[JiuWenSwarmDeepAdapter] MemoryRail registered for {mode} mode")
-                        # 重建后触发延时重索引（debounce），使新 embedding 配置对历史记忆文件生效
-                        if previous_embed_fp and previous_embed_fp != new_embed_fp:
-                            self._schedule_memory_reindex()
-            elif not builtin_on and self._memory_rail is not None:
-                await self._instance.unregister_rail(self._memory_rail)
-                self._memory_rail = None
-                logger.info(f"[JiuWenSwarmDeepAdapter] MemoryRail unregistered for {mode} mode")
+        return await _handle_memory_rail_by_config_impl(self, mode)
 
     def _build_external_memory_rail(self):
-        from jiuwenswarm.agents.harness.common.memory.external_memory_builder import (
-            build_external_memory_rail,
-        )
-
-        return build_external_memory_rail(
-            config=get_config(),
-            workspace_dir=self._workspace_dir,
-            session_id=self._parent_session_id,
-            thread_id=self._parent_thread_id,
-        )
+        return _build_external_memory_rail_impl(self)
 
     async def _handle_external_memory_rail_by_config(self):
-        """Register / unregister ExternalMemoryRail based on config.
-
-        External memory is mode-independent — configured once and active in
-        the merged agent mode. `_external_memory_rail_registered` dedups
-        repeated calls from `_update_agent_rails()`.
-        Not part of `_get_current_agent_rails()`, so it is not torn down on
-        config hot-reload (preserves prefetch cache + circuit breaker state).
-        """
-        from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
-            is_external_memory_enabled,
-        )
-
-        config = get_config()
-        if is_external_memory_enabled(config) and not getattr(
-            self, "_eternal_conversation_enabled", False
-        ):
-            if self._external_memory_rail_registered:
-                return
-            if self._external_memory_rail is None:
-                self._external_memory_rail = self._build_external_memory_rail()
-            if self._external_memory_rail is None:
-                return
-            try:
-                await self._instance.register_rail(self._external_memory_rail)
-                self._external_memory_rail_registered = True
-                logger.info("[JiuWenSwarmDeepAdapter] ExternalMemoryRail registered")
-            except Exception as exc:
-                logger.error("[JiuWenSwarmDeepAdapter] ExternalMemoryRail register failed: %s", exc)
-                self._external_memory_rail = None
-        elif self._external_memory_rail is not None and self._external_memory_rail_registered:
-            # Call on_session_end BEFORE unregister_rail: unregister -> uninit()
-            # is sync, and run_coroutine_threadsafe from the same event loop
-            # thread would deadlock.
-            provider = getattr(self._external_memory_rail, "_provider", None)
-            if provider is not None and hasattr(provider, "on_session_end"):
-                try:
-                    await provider.on_session_end()
-                except Exception as exc:
-                    logger.debug("[JiuWenSwarmDeepAdapter] on_session_end failed: %s", exc)
-            try:
-                await self._instance.unregister_rail(self._external_memory_rail)
-                logger.info("[JiuWenSwarmDeepAdapter] ExternalMemoryRail unregistered")
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] ExternalMemoryRail unregister failed: %s", exc
-                )
-            self._external_memory_rail = None
-            self._external_memory_rail_registered = False
+        return await _handle_external_memory_rail_by_config_impl(self)
 
     @staticmethod
     def _build_office_ace_user_profile_rail():
-        """Build OfficeAceUserProfileRail from config, or None if disabled/failed.
-
-        启用条件由 external memory 开关 + provider=officeace_cloud + 凭证齐全隐含控制
-        （``get_office_ace_user_profile_config`` 综合判定，``cfg["enabled"]`` 为结果）。
-        不满足 → 返回 None（rail 不挂载，零残留）。
-        """
-        from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
-            get_office_ace_user_profile_config,
-        )
-        from jiuwenswarm.agents.harness.common.rails.office_ace_user_profile import (
-            OfficeAceUserProfileRail,
-            UserProfileConfig,
-        )
-
-        cfg = get_office_ace_user_profile_config(get_config())
-        if not cfg["enabled"]:
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail disabled "
-                "(external memory off / provider not officeace_cloud / credentials incomplete)",
-            )
-            return None
-        try:
-            rail = OfficeAceUserProfileRail(UserProfileConfig(**cfg))
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail create success "
-                "(user=%s, endpoint=%s)",
-                cfg["user_id"],
-                cfg["endpoint"],
-            )
-            return rail
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail create failed: %s",
-                exc,
-            )
-            return None
+        return _build_office_ace_user_profile_rail_impl()
 
     async def _handle_office_ace_user_profile_rail_by_config(self):
-        """Register / unregister OfficeAceUserProfileRail based on config.
-
-        Mode-independent（同 ExternalMemoryRail），不随 config 热重载销毁。
-        画像按需拉取：rail 的 before_model_call 在本地缓存失效时才 fetch
-        （per-agent user_id）。
-        """
-        from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
-            is_office_ace_user_profile_enabled,
-        )
-
-        config = get_config()
-        if is_office_ace_user_profile_enabled(config):
-            if self._office_ace_user_profile_rail_registered:
-                return
-            if self._office_ace_user_profile_rail is None:
-                self._office_ace_user_profile_rail = (
-                    self._build_office_ace_user_profile_rail()
-                )
-            if self._office_ace_user_profile_rail is None:
-                return
-            try:
-                await self._instance.register_rail(self._office_ace_user_profile_rail)
-                self._office_ace_user_profile_rail_registered = True
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail registered",
-                )
-            except Exception as exc:
-                logger.error(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail register failed: %s",
-                    exc,
-                )
-                self._office_ace_user_profile_rail = None
-        elif (
-            self._office_ace_user_profile_rail is not None
-            and self._office_ace_user_profile_rail_registered
-        ):
-            try:
-                await self._instance.unregister_rail(
-                    self._office_ace_user_profile_rail,
-                )
-                self._office_ace_user_profile_rail_registered = False
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail unregistered",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] OfficeAceUserProfileRail unregister failed: %s",
-                    exc,
-                )
-            self._office_ace_user_profile_rail = None
+        return await _handle_office_ace_user_profile_rail_by_config_impl(self)
 
     async def compress_context(
             self,
@@ -17309,88 +16985,7 @@ class JiuWenSwarmDeepAdapter:
             *,
             return_state: bool = False,
     ) -> dict[str, Any]:
-        """主动触发上下文压缩。
-
-        Args:
-            session_id: 会话ID
-            session: Session 对象（可选）
-
-        Returns:
-            包含压缩结果的字典:
-            - result: "busy" | "compressed" | "noop"
-            - stats: 压缩统计信息（仅当 result == "compressed" 时）
-        """
-        if not self._is_session_scoped_adapter:
-            session_adapter = await self._get_or_create_session_adapter(session_id)
-            try:
-                return await session_adapter.compress_context(
-                    session_id=session_id,
-                    session=session,
-                    return_state=return_state,
-                )
-            finally:
-                await self._evict_idle_session_adapters()
-
-        if self._instance is None or self._instance.react_agent is None:
-            raise ValueError("Agent instance not available")
-
-        context_engine = self._instance.react_agent.context_engine
-        react_agent = self._instance.react_agent
-
-        context = context_engine.get_context(session_id=session_id)
-        if context is None:
-            return {"result": "noop", "stats": None}
-
-        raw_total_tokens = await self._count_full_context_tokens(
-            context, react_agent, session_id
-        )
-
-        compact_result = await context_engine.compress_context(
-            session=session,
-            session_id=session_id,
-            return_state=True,
-        )
-        summary: str | None = None
-        state: dict[str, Any] | None = None
-        if isinstance(compact_result, dict):
-            result = compact_result.get("result") or compact_result.get("status")
-            raw_state = compact_result.get("state")
-            if isinstance(raw_state, dict):
-                state = raw_state
-            raw_summary = compact_result.get("compact_summary")
-            if raw_summary is None:
-                if isinstance(state, dict):
-                    raw_summary = state.get("compact_summary")
-            if isinstance(raw_summary, str) and raw_summary.strip():
-                summary = raw_summary.strip()
-        else:
-            result = compact_result
-
-        response: dict[str, Any] = {"result": result}
-        if return_state and state:
-            response["state"] = state
-            compact_summary = state.get("compact_summary")
-            if isinstance(compact_summary, str) and compact_summary.strip():
-                response["compact_summary"] = compact_summary.strip()
-
-        if result == "compressed":
-            context = context_engine.get_context(session_id=session_id)
-            if context:
-                total_tokens = await self._count_full_context_tokens(
-                    context, react_agent, session_id
-                )
-
-                stats = context.statistic()
-                response["stats"] = {
-                    "total_messages": stats.total_messages,
-                    "total_tokens": total_tokens,
-                    "raw_total_tokens": raw_total_tokens,
-                }
-                if summary:
-                    response["summary"] = summary
-                    response.setdefault("compact_summary", summary)
-
-        return response
+        return await compress_context_impl(self, session_id, session, return_state=return_state)
 
     async def get_context_usage(self, session_id: str) -> dict[str, Any]:
         """获取当前上下文窗口占用统计。
@@ -17513,41 +17108,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str,
         request: AgentRequest | None = None,
     ) -> dict[str, Any]:
-        """生成会话快速回顾（read-only，不修改对话历史）。
-
-        取最近30条消息 → fast model → 1-3句摘要。
-        """
-        if not self._is_session_scoped_adapter:
-            session_adapter = await self._get_or_create_session_adapter(
-                session_id,
-                request=request,
-            )
-            try:
-                return await session_adapter.generate_recap(
-                    session_id=session_id,
-                    request=request,
-                )
-            finally:
-                await self._evict_idle_session_adapters()
-
-        from jiuwenswarm.server.runtime.agent_adapter.recap_prompts import (
-            RECENT_MESSAGE_WINDOW,
-            build_recap_prompt,
-        )
-
-        messages = self._get_recent_messages(session_id, window=RECENT_MESSAGE_WINDOW)
-        if not messages:
-            return {"status": "no_turn"}
-
-        # 透传主 agent tools schema 保 cache key（工具执行由单轮 + tool_use 丢弃禁止）
-        tools = await self._get_agent_tools(session_id)
-
-        prompt = build_recap_prompt(memory=None, language=self._resolve_prompt_language())
-        summary_text = await self._call_model_for_recap(messages, prompt, tools=tools or None)
-        if not summary_text:
-            return {"status": "failed", "error": "Model returned empty response"}
-
-        return {"status": "ok", "summary": summary_text.strip()}
+        return await generate_recap_impl(self, session_id, request)
 
     def _get_recent_messages(self, session_id: str, window: int = 30) -> list[Any]:
         """从当前 agent 对话上下文中提取最近N条消息。
@@ -17727,100 +17288,7 @@ class JiuWenSwarmDeepAdapter:
         enable_prompt_caching: bool = True,
         tools: list[Any] | None = None,
     ) -> str | None:
-        """调用 model 生成简短回答（单轮、禁工具执行）。
-
-        - system_prompt 非空时以 SystemMessage 形式前置
-        - prompt 作为最后一条 user message 追加到对话末尾
-        - tools 非空时透传给模型以保 cache key（与主 agent 一致），但单轮 +
-          tool_use 检测丢弃 = 工具不被执行（对齐 claude-code canUseTool:deny）
-        - 不设置 temperature（继承模型默认值，与主 agent 保持一致以复用 prompt cache）
-
-        prompt cache 策略：
-        - 保持消息原始格式（保留 structured content blocks，包括 tool_use/tool_result）
-        - 最后一条 pre-prompt 消息添加 cache_control: {type: "ephemeral"} marker
-        - btw prompt 不添加 cache_control（skipCacheWrite — 侧问题响应不写入 cache）
-        """
-        from openjiuwen.core.foundation.llm.schema.message import (
-            AssistantMessage,
-            SystemMessage,
-            UserMessage,
-        )
-
-        if self._model is None:
-            logger.error("[oneshot] no model instance available")
-            return None
-
-        recap_messages: list[Any] = []
-
-        if system_prompt:
-            recap_messages.append(SystemMessage(content=system_prompt))
-
-        for msg in messages:
-            role = getattr(msg, "role", None) or ""
-            content = getattr(msg, "content", None) or ""
-
-            # Skip truly empty messages
-            if isinstance(content, str) and not content.strip():
-                continue
-            if isinstance(content, (list, tuple)) and len(content) == 0:
-                continue
-            if content is None:
-                continue
-
-            # Keep original content format (string or list of structured blocks).
-            # This is critical for prompt cache prefix matching — converting to
-            # plain text with str() would strip tool_use/tool_result blocks and
-            # break byte-identical prefix matching with the main agent's calls.
-            if role == "user":
-                recap_messages.append(UserMessage(content=content))
-            elif role == "assistant":
-                recap_messages.append(AssistantMessage(content=content))
-            else:
-                recap_messages.append(UserMessage(content=content))
-
-        # Mark the last pre-prompt message for prompt caching.
-        # The btw prompt itself does NOT carry a cache_control marker
-        # skipCacheWrite — the side-question
-        # response doesn't create a new cache entry.
-        if enable_prompt_caching and recap_messages:
-            _try_add_cache_control(recap_messages[-1])
-
-        # Append btw prompt as final user message (no cache_control → skipCacheWrite)
-        recap_messages.append(UserMessage(content=prompt))
-
-        try:
-            # No temperature override — inherit model default to match main agent
-            # API params (thinking config is part of the Anthropic cache key).
-            result = await self._model.invoke(recap_messages, tools=tools)
-            # Tool-use guard: tools schema is passed only to preserve the cache
-            # key (matches the main agent). Single turn + discard any tool_use
-            # the model emits → tools are never executed. Aligned with
-            # claude-code's canUseTool:{behavior:'deny'} + tool_use fallback.
-            tool_calls = getattr(result, "tool_calls", None)
-            if tool_calls:
-                names = ", ".join(getattr(tc, "name", "tool") for tc in tool_calls)
-                logger.info(
-                    "[btw/recap] model emitted tool_use despite no-tool constraint: %s",
-                    names,
-                )
-                return (
-                    f"(模型尝试调用工具 {names} 而非直接回答。"
-                    "请重新措辞或在主对话中提问。)"
-                )
-            content = getattr(result, "content", None) or str(result)
-            # Log cache metrics for observability
-            usage = getattr(result, "usage_metadata", None)
-            if usage and getattr(usage, "cache_tokens", 0) > 0:
-                logger.info(
-                    "[btw/recap] cache hit: cache_tokens=%s, input_tokens=%s, output_tokens=%s",
-                    getattr(usage, "cache_tokens", 0),
-                    getattr(usage, "input_tokens", 0),
-                    getattr(usage, "output_tokens", 0),
-                )
-            return content
-        except Exception:
-            logger.exception("[generate_recap] model call failed")
-            return None
+        return await _call_model_for_recap_impl(self, messages, prompt, system_prompt, enable_prompt_caching, tools)
 
     async def generate_btw_answer(self, session_id: str, question: str) -> dict[str, Any]:
         """回答 /btw 侧问题：独立、无工具、单轮 LLM 查询。
@@ -17903,95 +17371,7 @@ class JiuWenSwarmDeepAdapter:
         turn_index: int,
         direction: str = "from",
     ) -> dict[str, Any]:
-        """部分对话压缩 — /rewind summarize from here 的核心实现。
-
-        从 history.json 读取消息，找到指定 turn 的 pivot 位置，将对应范围的消息
-        发送给 LLM 生成结构化摘要（9 节：Primary Request, Technical Concepts,
-        Files, Errors, Problem Solving, User Messages, Pending Tasks,
-        Current Work, Optional Next Step）。
-
-        Args:
-            session_id: 会话ID
-            turn_index: 基准 turn 号（1-based）
-            direction: "from" (摘要 turn 及之后) 或 "up_to" (摘要 turn 之前)
-
-        Returns:
-            - status: "ok" | "no_turn" | "failed"
-            - summary: 摘要文本
-            - summarized_count: 被摘要的消息 record 数
-        """
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            get_agent_sessions_dir,
-        )
-        from jiuwenswarm.server.runtime.session.session_history import _read_history
-        from jiuwenswarm.server.runtime.agent_adapter.compact_partial_prompts import (
-            NO_TOOLS_PREAMBLE,
-            PARTIAL_COMPACT_PROMPT,
-            PARTIAL_COMPACT_UP_TO_PROMPT,
-        )
-
-        sessions_dir = get_agent_sessions_dir()
-        history_path = sessions_dir / session_id / "history.json"
-        history = _read_history(history_path)
-        if not history:
-            return {"status": "no_turn"}
-
-        user_positions = []
-        for i, record in enumerate(history):
-            if record.get("role") == "user":
-                user_positions.append(i)
-
-        total_turns = len(user_positions)
-        if total_turns == 0 or turn_index > total_turns:
-            return {"status": "no_turn"}
-
-        pivot_idx = user_positions[turn_index - 1]
-
-        if direction == "from":
-            messages_to_summarize = history[pivot_idx:]
-        elif direction == "up_to":
-            messages_to_summarize = history[:pivot_idx]
-        else:
-            return {"status": "failed", "error": f"unknown direction: {direction}"}
-
-        if not messages_to_summarize:
-            return {"status": "no_turn"}
-
-        summarized_count = len(messages_to_summarize)
-
-        prompt = (
-            NO_TOOLS_PREAMBLE + PARTIAL_COMPACT_UP_TO_PROMPT
-            if direction == "up_to"
-            else NO_TOOLS_PREAMBLE + PARTIAL_COMPACT_PROMPT
-        )
-
-        recap_messages = _build_messages_for_model(messages_to_summarize)
-        if not recap_messages:
-            return {"status": "no_turn"}
-
-        # Add the prompt as the final user message
-        from openjiuwen.core.foundation.llm.schema.message import UserMessage
-        recap_messages.append(UserMessage(content=prompt))
-
-        try:
-            result = await self._model.invoke(recap_messages, temperature=0)
-            raw = getattr(result, "content", None) or str(result)
-        except Exception:
-            logger.exception("[compact_partial] model call failed")
-            return {"status": "failed", "error": "Model call failed"}
-
-        summary = raw if isinstance(raw, str) else str(raw)
-        if not summary.strip():
-            return {"status": "failed", "error": "Model returned empty response"}
-
-        # Strip <analysis> block to get clean summary
-        cleaned = re.sub(r"<analysis>.*?</analysis>", "", summary, flags=re.DOTALL).strip()
-
-        return {
-            "status": "ok",
-            "summary": cleaned or summary.strip(),
-            "summarized_count": summarized_count,
-        }
+        return await compact_partial_impl(self, session_id, turn_index, direction)
 
 
     async def _count_full_context_tokens(
