@@ -237,6 +237,10 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
   const generating = (showCliQr || showAssistantQr) && !error && (starting || (pending && !qrUrl && !qrPayload) || (Boolean(qrUrl) && !qrBroken && !qrReady));
   const showRetry = Boolean(error) && !created && !pending && !starting;
 
+  const errorText = /^无法启动 welink-cli[：:]\s*\[(?:Errno|WinError) 2\]/i.test(error)
+    ? t('jiuwenmate.im.welinkRedEditionHint')
+    : error;
+
   let title = t('jiuwenmate.im.welinkTitle');
   let hint = t('jiuwenmate.im.welinkHint');
   if (created) {
@@ -442,7 +446,7 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
             <a href={qrUrl} target="_blank" rel="noreferrer">{qrUrl}</a>
           </p>
         ) : null}
-        {error ? <p className="jiuwenmate-welink-error" role="alert">{error}</p> : null}
+        {error ? <p className="jiuwenmate-welink-error" role="alert">{errorText}</p> : null}
       </div>
     </JiuwenMateDialog>
   );

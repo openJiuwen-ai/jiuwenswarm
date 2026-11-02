@@ -370,6 +370,7 @@
       "welinkSwitchAccount": "切换账号",
       "welinkAccountMissing": "还没有识别到 WeLink 账号，请先完成第一次扫码",
       "welinkQr": "WeLink 登录二维码",
+      "welinkRedEditionHint": "当前环境暂不支持绑定 WeLink，请切换至红版 WeLink 体验。",
       "welinkFailed": "WeLink 登录失败",
       "appId": "API ID",
       "appIdPlaceholder": "请输入API ID",
