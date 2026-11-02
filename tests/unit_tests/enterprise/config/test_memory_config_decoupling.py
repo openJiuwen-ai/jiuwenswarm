@@ -91,7 +91,7 @@ async def test_receiver_writes_without_importing_execution_memory(memory_environ
     assert saved["revision"] == 2
     assert saved["body"] == {"enabled": False}
     await task_service.TaskMemoryConfigService().upsert({
-        "task_memory": {"enabled": True, "llm_model": "enterprise-model"},
+        "enabled": True, "llm_model": "enterprise-model",
     })
     assert memory_environment.rows["task_memory_config"]["llm_model"] == "enterprise-model"
     assert memory.get_memory_config_overlay() is None
