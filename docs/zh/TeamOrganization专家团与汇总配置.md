@@ -151,9 +151,9 @@ JiuwenSwarm 的 Summary Team 是一个固定的持久 Team：
 
 | 成员 | 职责 |
 |------|------|
-| `summary-leader` | 校验来源、协调汇总并提交最终结果 |
-| `source-integrator` | 把只读来源整理为带来源归属的结构化提纲 |
-| `delivery-drafter` | 根据来源和提纲生成面向用户的最终稿 |
+| `summary-leader` | 校验来源。短文本直接整合并提交；复杂交付才协调大纲和成稿 |
+| `source-integrator` | 复杂交付时，把本次绑定来源整理为成稿所需的大纲 |
+| `delivery-drafter` | 复杂交付时，根据来源和大纲生成面向用户的最终稿 |
 
 它使用默认 Team 模型，但不会复制用户 Team 的成员、工具或模板提示词。内部 transport 固定为 `inprocess`，成员使用 `build_mode`；中间稿写入自身 Team workspace，最终交付写入 Organization workspace 的 `summary/`。
 
@@ -161,13 +161,13 @@ JiuwenSwarm 的 Summary Team 是一个固定的持久 Team：
 
 每个 Organization 最多有一个共享 Summary Team。第一次创建 `SUMMARY_TEAM` execution 时懒加载，后续根任务复用；完成一次汇总不会立即停止它。
 
-Summary 输入在既有绑定来源外提供 `root_task`（ID、标题、描述和输出规范），用于确定交付格式与验收要求；事实依据仍仅来自绑定来源。保留来源分歧、限制与已有成品入口，不默认另写报告。需要把已有成品作为最终文件发布时，原样复制到组织 `summary/` 后设置 `result_uri`，`result_type` 与实际格式一致，原目录权限校验保持不变。
+Summary 输入在既有绑定来源外提供 `root_task`（ID、标题、描述和输出规范），用于确定交付格式与验收要求；事实依据仍仅来自本次绑定来源。来源正文已经覆盖交付要求时直接使用正文；来源明确引用了文件、且汇总需要其中内容时，才读取该文件，不扫描本次执行以外的旧文件。大纲只保留成稿需要的结构、来源归属，以及会改变结论的分歧，不补充用户未要求的研究、风险清单或验证项。最终文件只写入本轮给出的组织 `summary/` 绝对目录，`result_uri` 使用同一绝对路径；没有最终文件时，全文放在 `output_context.description`。需要把已有成品作为最终文件发布时，原样复制到该目录后再设置 `result_uri`，`result_type` 与实际格式一致。
 
 使用 `SUMMARY_TEAM` 时，汇总与最终交付按以下流程推进：
 
 1. 根任务负责人先认领根任务，再设置 `SUMMARY_TEAM` 汇总模式，并通过 `org_create_summary_execution` 创建绑定来源子任务的 Summary Execution；不是仅在用户提示词中声明模式就会自动创建汇总。
 2. 作为汇总来源的子任务需要完成并通过验收。`COMPLETED` 但验收仍为 `PENDING` 时不能开始汇总；提前创建的汇总任务会等待来源就绪，根任务负责人仍需处理验收。
-3. Summary Team 只读取绑定的来源快照，整理提纲和最终稿，不新增领域研究。两个成员交付提纲或稿件后结束各自内部任务，`summary-leader` 核验最终稿、摘要和交付路径后，通过 `org_summary_complete` 正式提交汇总结果。仅写出文件或口头回复“已完成”不算汇总完成。
+3. Summary Team 只读取本次绑定来源，不新增领域研究。用户要的是单篇短文本，且没有要求代码、多个文件或长篇研究时，`summary-leader` 直接整合成文，对照交付要求核验一次后用 `org_summary_complete` 提交，不经过另外两名成员。来源之间有会改变结论的分歧，或用户要求文件、代码、多段专业成果时，才由 `source-integrator` 整理大纲、`delivery-drafter` 成稿。工作通过内部消息派发。只有确实存在指派给自己的内部任务时才更新该任务状态；没有内部任务时不调用 `claim_task`。`summary-leader` 核验最终稿、摘要和交付路径后正式提交。仅写出文件或口头回复“已完成”不算汇总完成。
 4. 汇总任务正式完成时联动完成根任务，根任务负责人收到结果后继续面向用户交付；使用指南的两个用例均由 Owner 在当前会话展示报告正文，不应再直接调用根任务完成操作。
 
 Summary Team 各角色继承默认 Team 对应角色的有限 `max_iterations` 预算；预算无效时使用 200，不会无限重试。达到预算上限或成员报错不等于汇总完成，应检查执行状态、已有稿件及失败日志，不能仅靠增加轮数代替正式提交结果。
