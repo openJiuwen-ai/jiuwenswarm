@@ -34,8 +34,12 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
 export default function ChatModelSelector({
   disabled = false,
   sessionId,
+  includeModelGroups: modelGroupsOverride,
+  testIdPrefix = 'chat-panel-model-selector',
 }: {
   disabled?: boolean;
+  includeModelGroups?: boolean;
+  testIdPrefix?: string;
   /** Session this selector edits. Surfaces that own a session (the design
    * canvas) pass it explicitly: `activeSessionId` follows the app route and can
    * point at another conversation while the surface stays mounted (#5394). */
@@ -64,7 +68,7 @@ export default function ChatModelSelector({
   );
   const collaborationEnabled = useMultiModelCollaborationEnabled();
   const singleAgent = supportsMultiModelCollaboration(mode, cronId);
-  const includeModelGroups = !singleAgent || collaborationEnabled;
+  const includeModelGroups = modelGroupsOverride ?? (!singleAgent || collaborationEnabled);
   const groupBlocked = isConversationModelGroupBlocked({
     mode,
     cronId,
@@ -147,9 +151,9 @@ export default function ChatModelSelector({
   };
 
   return (
-    <div className="chat-model-selector" data-testid="chat-panel-model-selector-wrap">
+    <div className="chat-model-selector" data-testid={`${testIdPrefix}-wrap`}>
       <ModelPicker
-        testIdPrefix="chat-panel-model-selector"
+        testIdPrefix={testIdPrefix}
         value={selected?.model_name ?? selectedModelName}
         selection={pickerSelection}
         includeModelGroups={includeModelGroups}
@@ -166,7 +170,7 @@ export default function ChatModelSelector({
         onAddModel={openModelSettings}
       />
       {selectionError ? (
-        <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">
+        <div className="chat-model-selector__error" role="alert" data-testid={`${testIdPrefix}-error`}>
           {selectionError}
         </div>
       ) : null}
