@@ -10,6 +10,7 @@ import {
   HTML_PREVIEW_SANDBOX,
   artifactBinaryPreviewUrl,
   artifactTextPreviewUrl,
+  decodeTextBytes,
   formatArtifactPreviewText,
   previewKind,
   type PreviewKind,
@@ -52,7 +53,7 @@ function TextPreview({ artifact, kind }: { artifact: PreviewArtifact; kind: Text
       .then(async response => {
         const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
         if (!response.ok || contentType.includes('text/html')) throw new Error('read_failed');
-        return response.text();
+        return decodeTextBytes(await response.arrayBuffer());
       })
       .then(content => {
         if (!cancelled) setState({ content, error: false, loading: false });
