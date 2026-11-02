@@ -142,7 +142,6 @@ TOOL_WHITELIST = frozenset({
     "search_alarms",
     "modify_alarm",
     "delete_alarm",
-    "xiaoyi_collection",
     "image_reading",
     "xiaoyi_gui_agent",
     "web_search",

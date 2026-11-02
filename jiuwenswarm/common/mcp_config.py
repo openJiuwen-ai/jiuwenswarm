@@ -11,7 +11,6 @@ import ipaddress
 import json
 import os
 import re
-import sys
 import threading
 import time
 import weakref
@@ -336,6 +335,9 @@ def _safe_id_part(value: str, *, default: str) -> str:
     return (normalized or default)[:48]
 
 
+_PYTHON_COMMAND_RE = re.compile(r"pythonw?(\d+(\.\d+)*t?)?(\.exe|\.cmd|\.bat)?")
+
+
 def _normalize_stdio_command_kind(command: str) -> str:
     """将 command 归一化为 'node'、'python'、'npx' 或 'uvx'。
 
@@ -349,7 +351,7 @@ def _normalize_stdio_command_kind(command: str) -> str:
     normalized = raw.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if normalized in ("node", "node.exe"):
         return "node"
-    if normalized.startswith("python"):
+    if _PYTHON_COMMAND_RE.fullmatch(normalized):
         return "python"
     if normalized in ("npx", "npx.exe", "npx.cmd", "npx.bat"):
         return "npx"
@@ -415,131 +417,15 @@ def _check_dangerous_args(tool_name: str, args: list) -> None:
         arg_str = str(arg).strip()
         if arg_str in _DANGEROUS_ARGS_PATTERN:
             raise ValueError(
-                f"安全拦截阻断：工具 '{tool_name}' 的 args 包含危险标志 '{arg_str}'，"
-                "禁止通过参数注入执行任意代码。"
+                f"MCP 配置校验未通过：工具 '{tool_name}' 的 args 包含不允许的标志 '{arg_str}'，"
+                "不支持通过参数内联执行代码。"
             )
         for dangerous_prefix in ("-e=", "--eval=", "-c=", "--command="):
             if arg_str.lower().startswith(dangerous_prefix):
                 raise ValueError(
-                    f"安全拦截阻断：工具 '{tool_name}' 的 args 包含危险标志 '{arg_str}'，"
-                    "禁止通过参数注入执行任意代码。"
+                    f"MCP 配置校验未通过：工具 '{tool_name}' 的 args 包含不允许的标志 '{arg_str}'，"
+                    "不支持通过参数内联执行代码。"
                 )
-
-
-def _trusted_cat_cafe_stdio_roots() -> list[Path]:
-    roots: list[Path] = []
-    raw = (os.getenv("CAT_CAFE_MCP_CWD") or "").strip()
-    if raw:
-        try:
-            roots.append(Path(raw).expanduser().resolve())
-        except OSError:
-            pass
-    try:
-        roots.append((Path.home() / ".office-claw").resolve())
-    except OSError:
-        pass
-    try:
-        roots.append(Path(sys.executable).resolve().parent)
-    except OSError:
-        pass
-    lp = (os.getenv("LOCALAPPDATA") or "").strip()
-    if lp:
-        inst = Path(lp) / "Programs" / "OfficeClaw"
-        try:
-            if inst.exists():
-                roots.append(inst.resolve())
-        except OSError:
-            pass
-    for env_key in ("ProgramFiles", "ProgramFiles(x86)"):
-        base = os.getenv(env_key, "").strip()
-        if not base:
-            continue
-        inst = Path(base) / "OfficeClaw"
-        try:
-            if inst.exists():
-                roots.append(inst.resolve())
-        except OSError:
-            pass
-    seen: set[str] = set()
-    out: list[Path] = []
-    for r in roots:
-        key = os.path.normcase(str(r))
-        if key not in seen:
-            seen.add(key)
-            out.append(r)
-    return out
-
-
-def _path_is_under_trusted_root(path: Path, roots: list[Path]) -> bool:
-    try:
-        rp = path.resolve()
-    except OSError:
-        return False
-    for root in roots:
-        try:
-            rp.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-def _validate_cat_cafe_request_scoped_stdio(params: dict[str, Any]) -> None:
-    """限制请求级 stdio：禁止内联代码执行面，脚本路径须在受信根目录下。
-
-    npx/uvx 为包运行器，参数为包名及其参数，不适用本地脚本路径受信根校验
-    （代码来源为包仓库而非本地文件，信任决策在于包名而非路径）。
-    """
-    cmd = str(params.get("command") or "").strip()
-    args = params.get("args") or []
-    if not isinstance(args, list):
-        raise ValueError("stdio MCP 的 args 须为列表")
-
-    kind = _normalize_stdio_command_kind(cmd)
-    flat = [str(a) for a in args]
-    lowered = [a.strip().lower() for a in flat]
-    if any(x == "-c" or x == "--command" for x in lowered):
-        raise ValueError("请求级 cat_cafe_mcp 禁止使用 python -c / --command")
-    if kind == "node" and any(x in ("-e", "--eval") for x in lowered):
-        raise ValueError("请求级 cat_cafe_mcp 禁止使用 node -e / --eval")
-
-    if kind in ("npx", "uvx"):
-        return
-
-    cwd_path: Path | None = None
-    cwd_raw = params.get("cwd")
-    if isinstance(cwd_raw, str) and cwd_raw.strip():
-        try:
-            cwd_path = Path(cwd_raw).expanduser().resolve()
-        except OSError as exc:
-            raise ValueError(f"请求级 cat_cafe_mcp cwd 无效: {cwd_raw}") from exc
-        if not _path_is_under_trusted_root(cwd_path, _trusted_cat_cafe_stdio_roots()):
-            raise ValueError(f"请求级 cat_cafe_mcp cwd 不在受信根目录下: {cwd_path}")
-
-    roots = _trusted_cat_cafe_stdio_roots()
-    for a in flat:
-        s = a.strip()
-        if not s or s.startswith("-"):
-            continue
-        path_like_suffix = s.lower().endswith((".js", ".mjs", ".cjs", ".py"))
-        if "/" not in s and "\\" not in s and not path_like_suffix:
-            continue
-        candidate = Path(s).expanduser()
-        if not candidate.is_absolute() and cwd_path is None:
-            raise ValueError(
-                "请求级 cat_cafe_mcp 使用相对脚本路径时必须提供位于受信根下的 cwd"
-            )
-        try:
-            if cwd_path is not None and not candidate.is_absolute():
-                resolved = (cwd_path / candidate).resolve()
-            else:
-                resolved = candidate.resolve()
-        except OSError:
-            continue
-        if not _path_is_under_trusted_root(resolved, roots):
-            raise ValueError(
-                f"请求级 cat_cafe_mcp 参数路径不在受信根目录下: {resolved}"
-            )
 
 
 _REQUEST_REMOTE_BLOCKED_HOSTS = frozenset(
@@ -2748,8 +2634,5 @@ __all__ = [
     "_optional_auth_dict",
     "_pick_mcp_url",
     "_check_dangerous_args",
-    "_path_is_under_trusted_root",
-    "_trusted_cat_cafe_stdio_roots",
-    "_validate_cat_cafe_request_scoped_stdio",
     "_validate_request_scoped_remote_mcp",
 ]

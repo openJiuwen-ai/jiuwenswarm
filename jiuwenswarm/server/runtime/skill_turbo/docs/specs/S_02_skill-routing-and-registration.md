@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-10-29 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联 feature | F_03_multi-deliverable-todo-guide.md；F_05_enable-turbo-switch.md |
 
 ## 范围 / 边界
@@ -141,7 +141,7 @@ def get_tool_function(self, tool_name) -> Callable | None
 | 维度 | enable_for_models | vendor_map |
 |---|---|---|
 | 机制 | DeepAgent 层 ProgressiveToolRail 工具**懒加载**白名单（`progressive_tool_rail.py` 构造参数，`_is_lazy_load_enabled_for_model`） | thinking 参数**注入**的模型白名单（`common/thinking/vendor_map.py`） |
-| 配置 | `config.yaml react.tool_lazy_load.enable_for_models`，当前默认 `["glm"]` | 代码内 GLM-5.x 窄正则（防误匹配 glm-4 / glm-50）+ DeepSeek keyword 全版本 |
+| 配置 | `config.yaml react.tool_lazy_load.enable_for_models`，当前默认 `["glm", "deepseek"]` | 代码内 GLM-5.x 窄正则（防误匹配 glm-4 / glm-50）+ DeepSeek keyword 全版本 |
 | 匹配语义 | **空白名单 = 全部模型启用懒加载**；非空对 model_name 做小写子串匹配，不匹配 → 懒加载整体 bypass（全部工具常驻） | 白名单外模型不注入 thinking kwargs |
 | 影响 | 不影响 thinking | 不影响工具加载 |
 
