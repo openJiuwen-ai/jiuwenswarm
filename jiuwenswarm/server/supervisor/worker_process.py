@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from jiuwenswarm.server.ipc.client import try_connect
+from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
 from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ def default_socket_path() -> str:
 
 
 def build_worker_command(
-    socket_path: str,
+    socket_path: str | None,
     *,
     host: str,
     port: int,
@@ -41,13 +42,13 @@ def build_worker_command(
         sys.executable,
         "-m",
         "jiuwenswarm.server.worker.main",
-        "--socket",
-        socket_path,
         "--host",
         host,
         "--port",
         str(port),
     ]
+    if socket_path is not None:
+        command.extend(["--socket", socket_path])
     if stub:
         command.append("--stub")
         command.extend(["--stub-ready-delay", str(stub_ready_delay)])
@@ -105,6 +106,7 @@ class WorkerProcess:
         stub: bool = False,
         stub_ready_delay: float = 0.0,
         stub_exit_on_request: bool = False,
+        ipc_listener: FrontLoopbackListener | None = None,
     ) -> None:
         self.socket_path = socket_path
         self._host = host
@@ -112,6 +114,8 @@ class WorkerProcess:
         self._stub = stub
         self._stub_ready_delay = stub_ready_delay
         self._stub_exit_on_request = stub_exit_on_request
+        self._ipc_listener = ipc_listener
+        self.launch_identity: str | None = None
         self._proc: subprocess.Popen[bytes] | None = None
         self._stderr_path = (
             Path(socket_path).parent
@@ -136,26 +140,49 @@ class WorkerProcess:
         return self._proc.poll()
 
     async def spawn(self) -> None:
+        payload = None
+        if self._ipc_listener is not None:
+            from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, launch_identity_payload
+
+            self.launch_identity = await asyncio.to_thread(code_identity)
+            await self._ipc_listener.start(code_identity=self.launch_identity, data_scope=data_scope())
+            payload = launch_identity_payload(self.launch_identity, runtime_ipc=self._ipc_listener.launch_payload())
         command = build_worker_command(
-            self.socket_path,
+            self.socket_path if self._ipc_listener is None else None,
             host=self._host,
             port=self._port,
             stub=self._stub,
             stub_ready_delay=self._stub_ready_delay,
             stub_exit_on_request=self._stub_exit_on_request,
         )
+        if self._ipc_listener is not None:
+            command.append("--identity-from-parent")
         logger.info("[Supervisor] spawning runtime worker: %s", " ".join(command))
         # Popen, not asyncio's subprocess transport: that transport kills the
         # child when the Front event loop closes. A new session keeps the
         # Worker alive across Front restarts.
-        self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._stderr_path.open("ab") as stderr:
-            self._proc = subprocess.Popen(
-                command,
-                env=os.environ.copy(),
-                start_new_session=True,
-                stderr=stderr,
-            )
+        try:
+            self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._stderr_path.open("ab") as stderr:
+                self._proc = subprocess.Popen(
+                    command,
+                    env=os.environ.copy(),
+                    start_new_session=self._ipc_listener is None,
+                    stdin=subprocess.PIPE if self._ipc_listener is not None else None,
+                    stderr=stderr,
+                )
+        except OSError as exc:
+            if self._ipc_listener is not None:
+                raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=spawn errno={exc.errno}") from None
+            raise
+        if payload is not None:
+            try:
+                self._proc.stdin.write(payload)
+                self._proc.stdin.close()
+            except OSError as exc:
+                self._proc.kill()
+                await self.wait(timeout=5)
+                raise OSError(exc.errno, f"runtime_ipc=front_loopback stage=launch-pipe errno={exc.errno}") from None
         logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)
 
     async def wait(self, *, timeout: float | None = None) -> int | None:

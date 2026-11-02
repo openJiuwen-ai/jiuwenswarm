@@ -29,6 +29,8 @@ KIND_READINESS = "readiness"
 KIND_CANCEL = "cancel"
 KIND_HEARTBEAT = "heartbeat"
 KIND_SHUTDOWN = "shutdown"
+# Optional completion used only by authenticated front_loopback peers.
+KIND_SHUTDOWN_DONE = "shutdown.done"
 KIND_GATEWAY_ATTACH = "gateway.attach"
 KIND_GATEWAY_DETACH = "gateway.detach"
 KIND_ERROR = "error"

@@ -237,6 +237,11 @@
       <td width="50%">Windows 与 macOS 桌面端自动更新方案、流程与关键模块（含预发布版推送）。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>鸿蒙 Runtime IPC</strong></td>
+      <td width="28%"><a href="zh/HarmonyOS_Runtime_IPC.md">启用与测试说明</a></td>
+      <td width="50%">Front-owned loopback IPC、Worker 生命周期和鸿蒙打包验收。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>开发者文档</strong></td>
       <td width="28%"><a href="zh/developer_guide.md">开发者文档</a></td>
       <td width="50%">源码搭建、调试流程与二次开发资料。</td>
