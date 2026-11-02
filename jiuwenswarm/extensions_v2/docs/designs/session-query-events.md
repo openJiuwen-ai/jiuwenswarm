@@ -9,17 +9,31 @@
 交付 PR：[!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100)，目标分支 rsi_native_agent_os；本 PR 不修改原 Token Weather 渲染代码。
 
 
-本页由 PR !100 尚未合入的 F_27 公共说明移入 designs，保留共享实现、迁移和验收记录。F_27 编号已使用，不再复用。每个查询的使用契约、字段解释、注册示例和独立验收分别在以下七篇特性中维护；本页作为公共机制与导航。第 6 节保留事件化实现阶段的既有验证，本次文档拆分只检查内容、示例、链接和差异，不重新执行其中的业务测试。
+本页最初由 PR !100 编写阶段的 F_27 公共说明移入 designs，保留共享实现、迁移和验收记录。F_27 编号已使用，不再复用。每个查询的使用契约、字段解释、注册示例和独立验收分别在以下七篇特性中维护；本页作为公共机制与导航。第 6 节保留事件化实现阶段的既有验证，本次文档拆分只检查内容、示例、链接和差异，不重新执行其中的业务测试。
 
 | 唯一查询 Ops | 对应 Event | 独立特性文档 |
 | --- | --- | --- |
 | ops.session.cwd() | session.cwd | [F_13](../features/F_13_session-cwd.md) |
-| ops.session.root() | session.root | [F_28](../features/F_28_session-root.md) |
+| ops.session.root() | session.root | [F_19](../features/F_19_session-root.md) |
 | ops.session.model() | session.model | [F_14](../features/F_14_session-model.md) |
 | ops.session.repo() | session.repo | [F_15](../features/F_15_session-repo.md) |
-| ops.session.messages() | session.messages | [F_23](../features/F_23_session-messages.md) |
-| ops.session.turns() | session.turns | [F_29](../features/F_29_session-turns.md) |
-| ops.session.usage() | session.usage | [F_21](../features/F_21_session-usage.md) |
+| ops.session.messages() | session.messages | [F_18](../features/F_18_session-messages.md) |
+| ops.session.turns() | session.turns | [F_20](../features/F_20_session-turns.md) |
+| ops.session.usage() | session.usage | [F_17](../features/F_17_session-usage.md) |
+
+
+### 特性文档编号调整（2026-11-02）
+
+按当前 `docs/features/` 目录整体核对编号：保留 F_01～F_16（其中 F_16 为 session.append），将四份尾部查询文档归整为 F_17～F_20，当前 20 份特性文档连续且无重号。正文编号、验收场景 ID、规约、开发计划和用户示例的引用均使用新编号；事件名、Ops 名、七章结构、结果获取说明及历史验收日期和数量保持。
+
+| 历史编号 | 当前编号与文件 | 特性 |
+| --- | --- | --- |
+| `F_21` | [F_17_session-usage.md](../features/F_17_session-usage.md) | session.usage / ops.session.usage |
+| `F_23` | [F_18_session-messages.md](../features/F_18_session-messages.md) | session.messages / ops.session.messages |
+| `F_28` | [F_19_session-root.md](../features/F_19_session-root.md) | session.root / ops.session.root |
+| `F_29` | [F_20_session-turns.md](../features/F_20_session-turns.md) | session.turns / ops.session.turns |
+
+历史编号仅在本表用于追溯，旧文件已由对应新文件替代。PR !99 尚在途的四份生命周期文档编号仍为 F_22、F_24、F_25、F_26，与本次 F_17～F_20 不冲突；本次不调整其编号。后续新增仍须核对在途占用，避免复用历史身份。
 
 ## 2. 能力说明与 Claude 对照
 

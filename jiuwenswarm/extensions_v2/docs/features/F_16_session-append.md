@@ -4,13 +4,13 @@
 | --- | --- |
 | 编号 | F_16 / session-append |
 | 归档日期 | 2026-10-27 |
-| 后续修订 | 2026-10-29，完整消息、door/origin、行级 uuid；历史查询已拆至 F_23；2026-10-30，合并目标分支并验证历史与统计 Ops 共存；2026-10-31，按事件名对齐文件名与引用，契约与字段不变 |
+| 后续修订 | 2026-10-29，完整消息、door/origin、行级 uuid；历史查询已拆至 F_18；2026-10-30，合并目标分支并验证历史与统计 Ops 共存；2026-10-31，按事件名对齐文件名与引用，契约与字段不变 |
 | 关联计划 | [EXTV2-16 / Server PR-04](../designs/extensions-v2-development-plan.md#extv2-16-会话历史读写与追加前扩展) |
 | 主责规约 | [S_06](../specs/S_06_session-history-ops.md) |
 
 ## 1. 范围、状态与依据
 
-本文只说明追加前事件和追加方法。历史消息查询 `ops.session.messages` 的事件、返回数组字段、错误和独立只读用户示例已拆至 [F_23](F_23_session-messages.md)，不再与写入契约合写；两份文档仍属于同一个 PR04 / EXTV2-16，不新增开发任务。
+本文只说明追加前事件和追加方法。历史消息查询 `ops.session.messages` 的事件、返回数组字段、错误和独立只读用户示例已拆至 [F_18](F_18_session-messages.md)，不再与写入契约合写；两份文档仍属于同一个 PR04 / EXTV2-16，不新增开发任务。
 
 本特性在 [PR !83](https://gitcode.com/huenrui_/jiuwenswarm/pull/83) 内升级事件契约，原编号不变。实现位置为 Worker；Front/Supervisor 沿用既有路由，agent-core 不修改。依赖既有 Core EventBus、Registry、Ops Builder 和 USER 故障隔离，验证使用 Core `ead700d7d18a247968d64de54918cf5d201a207a`。
 
@@ -24,7 +24,7 @@
 
 `session.append` 是一条主会话历史记录保存前的扩展点。平台先确定会话、待存消息、行身份与来源，再触发事件。USER 可以查看完整公开消息结构、按来源筛选并改写允许的文本；默认 CORE 校验并实际提交。仅扩展自己发起的 note 可显式拒绝。一次处理一条通过原前置过滤的记录尝试，重试也进入事件链，提交层负责去重。
 
-`await ops.session.append(note)` 为扩展追加 transcript_only 留档消息，使用绑定会话和真实包身份，另起 session.append 事件链，返回实际提交、重复或拒绝的回执。需要读回历史时，使用 [F_23 的独立查询方法](F_23_session-messages.md)；读取不要求先执行追加。
+`await ops.session.append(note)` 为扩展追加 transcript_only 留档消息，使用绑定会话和真实包身份，另起 session.append 事件链，返回实际提交、重复或拒绝的回执。需要读回历史时，使用 [F_18 的独立查询方法](F_18_session-messages.md)；读取不要求先执行追加。
 
 | 项 | 本次实现 | 与固定 Claude 定义的关系 |
 | --- | --- | --- |
@@ -222,11 +222,11 @@ await run_history_io(
 
 该异步入口收到原生 BaseMessage 时，在过滤/提交之前适配为公开消息，同时将原生 JSON 快照留在 native_message 中。工具关联、metadata、工具参数由宿主保留，允许的 content 改写合并回待存快照，原调用者的 BaseMessage 实例不被就地修改。原有产品流式事件入口继续适配，不要求把全系统历史迁移为 BaseMessage 存储。
 
-启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 append 等共享方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；[历史查询的同名事件链](F_23_session-messages.md#51-启动登记上下文绑定与-core-分工) 独立说明。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
+启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 append 等共享方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；[历史查询的同名事件链](F_18_session-messages.md#51-启动登记上下文绑定与-core-分工) 独立说明。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
 
 生命周期预检在 Hook 前捕获 generation，提交锁内复验；不持文件/队列锁执行 USER。文件关闭后才成功回执，同一次调用的重复 next 复用真实结果；回执深拷贝，后置篡改不改变已经保存的事实。写入开始后取消先排空，再传播 CancelledError。写入与元数据仍非跨存储原子事务，不承诺 fsync 断电耐久。
 
-主要失败：INVALID_MESSAGE（输入/参数非法）、INVALID_SESSION/SESSION_NOT_FOUND（会话非法/追加目标不存在）、APPEND_ID_CONFLICT、APPEND_REENTRANT、HISTORY_IO_FAILED、APPEND_OUTCOME_UNKNOWN。历史查询的参数、游标和快照错误见 F_23。USER 内未捕获的 Ops 异常仍可能被外层 Core 隔离；必须查看真实返回/自行捕获，不能把外层回合继续当作追加成功。
+主要失败：INVALID_MESSAGE（输入/参数非法）、INVALID_SESSION/SESSION_NOT_FOUND（会话非法/追加目标不存在）、APPEND_ID_CONFLICT、APPEND_REENTRANT、HISTORY_IO_FAILED、APPEND_OUTCOME_UNKNOWN。历史查询的参数、游标和快照错误见 F_18。USER 内未捕获的 Ops 异常仍可能被外层 Core 隔离；必须查看真实返回/自行捕获，不能把外层回合继续当作追加成功。
 
 卸载/重载撤销用户 Handler，不删除已提交历史或平台 CORE；共享 Ops 在有效 SessionContext 下可供其他事件 Handler 使用。无需用户调用 notify_context_usage 来创建新入口；已有示例仅选用量通知展示接入。
 
@@ -238,7 +238,7 @@ await run_history_io(
 
 本次完整命令、源码路径和 Core 版本、pytest XML 见 `D:\work_space\.codex-temp\pr83-conflicts-20261030` 的 regression-command.json、regression.xml、coexist-command.json、coexist.xml。新增用例的定向命令为 `python -m pytest -o addopts= -q tests/unit_tests/extensions_v2/test_session_history_ops.py::test_history_and_statistics_ops_coexist_in_one_user_handler --asyncio-mode=auto -o log_cli=false`。本次未重跑下述真实模型或浏览器验收，历史真实服务证据仍对应其原始日期。
 
-2026-10-29 本次仅按职责拆分文档，未改运行代码，未重跑下述业务或真实模型验收。以下保留 PR04 读写联合验证的日期、总数与范围；查询单独的场景和证据归属见 [F_23 第 6 节](F_23_session-messages.md#6-验收与未决问题)。
+2026-10-29 本次仅按职责拆分文档，未改运行代码，未重跑下述业务或真实模型验收。以下保留 PR04 读写联合验证的日期、总数与范围；查询单独的场景和证据归属见 [F_18 第 6 节](F_18_session-messages.md#6-验收与未决问题)。
 
 本轮 定向回归 388 项通过、1 项跳过；模型兼容回归 74 项通过。命令与证据目录：`D:\work_space\.codex-temp\server-pr04-message-contract-20261029`，对应 regression.xml、model-regression.xml、各 command.json；未运行格式化或静态检查工具。
 
@@ -259,7 +259,7 @@ await run_history_io(
 
 ## 7. 参考资料
 
-- [F_23 历史查询](F_23_session-messages.md)：无参数查询、消息数组、只读用户包与查询证据。
+- [F_18 历史查询](F_18_session-messages.md)：无参数查询、消息数组、只读用户包与查询证据。
 - [S_06 主责规约](../specs/S_06_session-history-ops.md)：不变量、兼容与错误范围。
 - [内置事件接入说明](../designs/builtin-event-development-guide.md)：公共 EventBus/Handler/Ops 机制。
 - [事件类型](../../event_types/session_history.py)、[平台触发](../../../server/runtime/session/history_events.py)、[消息映射](../../../server/runtime/session/history_message.py)、[默认 CORE](../../event_handlers/session_history.py)。

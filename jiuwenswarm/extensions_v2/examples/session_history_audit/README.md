@@ -38,7 +38,7 @@ recent = messages[-5:]  # 只在返回数组上切片，不再传 limit/cursor
 
 成功仅表示产品历史落盘，不发送新 Agent 输入、不自动 ui.render、不保证改写活跃模型上下文。原始工具 result/私有元数据仍由平台保留，不宣称彻底脱敏所有存储。
 
-追加事件/方法的完整字段、默认值、拒绝和迁移见 [F_16](../../docs/features/F_16_session-append.md)；messages 的无参数调用、消息数组字段、查询事件、错误和独立用户包见 [F_23](../../docs/features/F_23_session-messages.md)。本示例仍展示读写联合使用，不要求查询方先安装或使用追加功能。旧 `{id, role, content:str}` 方法参数仍支持；旧事件顶层 content/source 与旧回执 message 的产品记录形态已迁移。
+追加事件/方法的完整字段、默认值、拒绝和迁移见 [F_16](../../docs/features/F_16_session-append.md)；messages 的无参数调用、消息数组字段、查询事件、错误和独立用户包见 [F_18](../../docs/features/F_18_session-messages.md)。本示例仍展示读写联合使用，不要求查询方先安装或使用追加功能。旧 `{id, role, content:str}` 方法参数仍支持；旧事件顶层 content/source 与旧回执 message 的产品记录形态已迁移。
 
 ## English
 
@@ -46,7 +46,7 @@ Install this directory as an extension ZIP through the existing management inter
 
 Use a stable id and `{message: {type: "assistant", content: [{type: "text", text: "..."}]}}`. Retry the entire original request unchanged. The host supplies session/package identity, origin, door and row uuid. The receipt contains status, session_id, message_id, structured message, uuid, history_record and reason. Compare history_record with the product history page; message.content is an array, not a legacy string. Rejection has no stored message/uuid/history_record.
 
-The Ops are shared with any platform event carrying a valid SessionContext. Appending does not run an Agent, inject a live model message, or render UI. Uninstall removes the user policy, not stored history. See [F_16](../../docs/features/F_16_session-append.md) for the append event/method, allowed edits and migration. See [F_23](../../docs/features/F_23_session-messages.md) for the read-only messages event, chronological message-array fields and a standalone reader package. Querying history does not require appending a note or registering an append handler.
+The Ops are shared with any platform event carrying a valid SessionContext. Appending does not run an Agent, inject a live model message, or render UI. Uninstall removes the user policy, not stored history. See [F_16](../../docs/features/F_16_session-append.md) for the append event/method, allowed edits and migration. See [F_18](../../docs/features/F_18_session-messages.md) for the read-only messages event, chronological message-array fields and a standalone reader package. Querying history does not require appending a note or registering an append handler.
 
 
 2026-10-31：messages() 的项不是原产品历史行；使用 row["text"]，不读取 content、extension_message_id 或页游标。要核对刚追加的行身份，使用 append 的真实提交回执；本例仅在最近返回项中核对保存正文，不把正文相同当作全局行身份。
