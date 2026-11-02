@@ -405,6 +405,20 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 
 独立进程验收使用真实 ZIP 安装、真实 JSONL/Git、平台 notify 和实际 Registry/Bus/Builder；模型为受控的已绑定运行快照，没有新增模型 API 请求。返回参数逐字段核对后卸载包、关闭装配。ui.render 被设置为一旦进入就失败，最终调用 0 次。未执行的浏览器、Claude 宿主和 Front/Supervisor 跨进程验收不列为通过。
 
+### EXTV2-23 跨会话发送前扩展
+
+- **特性与契约：** [F_25 session.send](../features/F_25_session-send.md)、[S_13](../specs/S_13_session-send.md)。沿用本轮确认的连续编号基线；!99 的 F_21～F_24、S_09～S_12 保留，新增接续 F_25/F_26、S_13/S_14，旧迁移表仅作历史别名追溯。
+- **范围：** 在既有 SessionMessageService 完成归属校验后触发源会话发送链，允许正文改写或显式拒绝；放行由 CORE 接入目标 receive 和原持久队列。Claude send 尚为 reserved，本地字段和差异明确写入特性。
+- **必要前置：** 已合入的 Worker EventBus/Registry/Builder，本轮基于已合入 !99 的平台继续接入，不新增 Core API。
+- **验证入口：** 新增投递测试、相关回归及独立进程 ZIP/磁盘元数据/SQLite/后台回调/卸载证据见 F_25 第 6 节；状态和负责人统一见第 4 节。
+
+### EXTV2-24 跨会话接收入队前扩展
+
+- **特性与契约：** [F_26 session.receive](../features/F_26_session-receive.md)、[S_14](../specs/S_14_session-receive.md)。
+- **范围：** 目标持久消息入队前触发 receive，origin/text/event 和 consumed 对齐 Claude 2.1.277；仅接入现有持久跨会话服务，不以类型枚举宣称其它渠道已实现。具体字段和案例在 feature 维护，不在 designs 另建文档。
+- **必要前置：** EXTV2-23 的原服务调用封装；与发送同 PR 交付，两份独立 feature/spec。
+- **验证入口：** 接收改写/消费、目标上下文和取消边界见 F_26 第 6 节；与发送共用同一组证据，不重复计数，状态和负责人统一见第 4 节。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -448,6 +462,8 @@ flowchart TB
     A3 --> S20["EXTV2-20 界面主会话关联通知"]
     B1 --> S20
     S20 --> S21["EXTV2-21 界面主会话关联解除通知"]
+    B1 --> S23["EXTV2-23 跨会话发送前扩展"]
+    S23 --> S24["EXTV2-24 跨会话接收入队前扩展"]
     A4 --> B3
     B3 --> C1
 
@@ -484,6 +500,7 @@ flowchart LR
 | B 事件与 WebUI 服务 | EXTV2-05 → 06 → 07 | 05 依赖 01；06 依赖 05；07 依赖 04 与 06 | M1、M2 |
 | C Web 前端 | EXTV2-08 | 模拟帧可先行，联调依赖 07 | M1、M2 |
 | Server 能力 | EXTV2-13～16 | 13、14、16 依赖已有装配 / Ops 接线；15 依赖 13 的可信 cwd | 各特性独立验收，不据此完成 M1～M3 |
+| Server 跨会话投递 | EXTV2-23 → 24 | 基于已合入平台基座；共享原服务调用封装，两项同 PR；无需新增生命周期或 Core API | send / receive / 原消息队列联合验收 |
 
 顺序限制：`ops.build` 必须先于任何包安装；候选发布必须先于界面项发现；渲染服务必须先于上行回执校验。软依赖不写入硬前置，只在节点验收中体现。
 
@@ -525,6 +542,8 @@ flowchart LR
 | EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_25 / S_14 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_26 / S_15 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见本计划 EXTV2-22 历史验证记录 / S_08 | 2026-10-31 |
+| EXTV2-23 跨会话发送前扩展 | 已开发 | 刘瑜 | 本 PR，待合入 | 42 项新增测试、1514 项相关回归通过（2 项平台跳过）；独立 ZIP/磁盘元数据/SQLite/后台回调及卸载验收通过，见 F_25 第 6 节 | 2026-11-02 |
+| EXTV2-24 跨会话接收入队前扩展 | 已开发 | 刘瑜 | 与 EXTV2-23 同 PR，待合入 | 同一组证据，覆盖改写/消费、目标上下文、来源保护和取消，不重复计数；见 F_26 第 6 节 | 2026-11-02 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
