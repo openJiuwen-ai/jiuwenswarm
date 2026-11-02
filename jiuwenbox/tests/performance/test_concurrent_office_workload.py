@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import pytest
 
+from tests.performance.conftest import process_create_body
+
 pytestmark = [pytest.mark.performance, pytest.mark.slow, pytest.mark.asyncio]
 
 logger = logging.getLogger(__name__)
@@ -130,7 +132,7 @@ def _record_summary(
 
 
 async def _create_ready_sandbox(client) -> dict:
-    response = await client.post("/api/v1/sandboxes", json={})
+    response = await client.post("/api/v1/sandboxes", json=process_create_body())
     assert response.status_code == 201, response.text
     sandbox = response.json()
     assert sandbox["phase"] == "ready", sandbox
