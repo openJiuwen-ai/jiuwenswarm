@@ -20,15 +20,14 @@ import shutil
 import sys
 from dataclasses import dataclass, replace
 from logging.handlers import BaseRotatingHandler, QueueHandler
+from pathlib import Path
+from typing import Any, Optional
 
 from openjiuwen_protocol.logging_config import (
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,
     LOGGING_LEVEL_FIELDS,
 )
-from pathlib import Path
-from typing import Any, Optional
-
 from ruamel.yaml import YAML
 
 from gateway.common.log_sanitize import (
@@ -480,7 +479,9 @@ def logging_config_row_to_dict(obj: dict[str, Any] | Any) -> dict[str, Any]:
     if isinstance(obj, dict):
         get = obj.get
     else:
-        get = lambda key, default=None: getattr(obj, key, default)  # noqa: E731
+
+        def get(key: str, default: Any = None) -> Any:
+            return getattr(obj, key, default)
     return {
         key: get(key, "INFO" if key == "level" else None)
         for key in LOGGING_LEVEL_FIELDS
