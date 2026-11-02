@@ -1,7 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""兼容封装：优先转调 ``telemetry.audit``；无则直调 foundation ``log_audit``。
+"""兼容封装：优先转调经 ``external_providers`` 注入的企业版审计实现。
 
-新代码请使用 ``jiuwenswarm.telemetry.audit.audit_claw_log``。
+实现域 ``audit_emit``（见 ``gateway.common.external_providers``）；未注册或调用
+失败时回退 foundation ``log_audit``（no-op 语义）。
 """
 
 from __future__ import annotations
@@ -51,6 +52,16 @@ def capture_audit_caller() -> str:
         del frame
 
 
+def _resolve_audit_claw_log() -> Any | None:
+    """取企业版审计实现；域未注册或实现不含该接口时返回 None。"""
+    try:
+        from gateway.common.external_providers import AUDIT_EMIT_DOMAIN, provider
+
+        return getattr(provider(AUDIT_EMIT_DOMAIN), "audit_claw_log")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def emit_audit(
     event_type: str,
     *,
@@ -78,40 +89,40 @@ def emit_audit(
     except Exception:  # noqa: BLE001
         return
 
-    try:
-        from jiuwenswarm.telemetry.audit import audit_claw_log
-
-        keyword = str(event_type or "").strip().upper()
-        success = keyword != AUDIT_EVENT_EVENT
-        desc = fields.get("UA") or fields.get("EVT") or fields.get("MSG")
-        # UID / session_id / request_id 必须进 audit_claw_log 顶层映射入参，
-        # 不能只塞 extra（否则无 ContextVar 时 trace_id/txn_seq/UID 仍为占位，
-        # 且会把 session_id/request_id 原名泄漏到 attributes）。
-        _lift = AUDIT_LIFTED_FIELDS
-        rest = {k: v for k, v in fields.items() if k not in _lift}
-        raw_uid = fields.get("UID", fields.get("uid"))
-        uid = str(raw_uid).strip() if raw_uid is not None else ""
-        raw_sid = fields.get("session_id")
-        raw_rid = fields.get("request_id")
-        sid = str(raw_sid).strip() if raw_sid is not None else ""
-        rid = str(raw_rid).strip() if raw_rid is not None else ""
-        audit_claw_log(
-            submdl=SUBMDL,
-            proc=PROC,
-            success=success,
-            uid=uid or None,
-            session_id=sid or None,
-            request_id=rid or None,
-            rspcd=RSPCD,
-            desc=str(desc) if desc is not None else None,
-            message=str(fields.get("MSG") or ""),
-            level=level,
-            caller=caller,
-            extra=rest,
-        )
-        return
-    except Exception:  # noqa: BLE001
-        pass
+    audit_claw_log = _resolve_audit_claw_log()
+    if audit_claw_log is not None:
+        try:
+            keyword = str(event_type or "").strip().upper()
+            success = keyword != AUDIT_EVENT_EVENT
+            desc = fields.get("UA") or fields.get("EVT") or fields.get("MSG")
+            # UID / session_id / request_id 必须进 audit_claw_log 顶层映射入参，
+            # 不能只塞 extra（否则无 ContextVar 时 trace_id/txn_seq/UID 仍为占位，
+            # 且会把 session_id/request_id 原名泄漏到 attributes）。
+            _lift = AUDIT_LIFTED_FIELDS
+            rest = {k: v for k, v in fields.items() if k not in _lift}
+            raw_uid = fields.get("UID", fields.get("uid"))
+            uid = str(raw_uid).strip() if raw_uid is not None else ""
+            raw_sid = fields.get("session_id")
+            raw_rid = fields.get("request_id")
+            sid = str(raw_sid).strip() if raw_sid is not None else ""
+            rid = str(raw_rid).strip() if raw_rid is not None else ""
+            audit_claw_log(
+                submdl=SUBMDL,
+                proc=PROC,
+                success=success,
+                uid=uid or None,
+                session_id=sid or None,
+                request_id=rid or None,
+                rspcd=RSPCD,
+                desc=str(desc) if desc is not None else None,
+                message=str(fields.get("MSG") or ""),
+                level=level,
+                caller=caller,
+                extra=rest,
+            )
+            return
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         from openjiuwen_runtime.foundation.audit import log_audit
