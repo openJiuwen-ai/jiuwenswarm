@@ -66,7 +66,8 @@ async def test_selected_judger_evaluates_response_with_configured_threshold(tmp_
     ], "forbidden_hits": []})
     invoke = AsyncMock(return_value=response)
     monkeypatch.setattr(llm_as_judge, "run_judge_agent", invoke)
-    runner = CaseRunner(backend=object(), judger=build_judger(EvaluatorConfig.from_dict(config["evaluator"])))
+    evaluator_config = EvaluatorConfig.from_dict(config["evaluator"])
+    runner = CaseRunner(backend=object(), judger=build_judger(evaluator_config))
     result = await runner._judge(
         case={"case_id": "probe", "input": "Reply with the result", "reference": {
             "required_behaviors": [{"id": "criterion", "description": "Result is correct"}],
@@ -76,8 +77,9 @@ async def test_selected_judger_evaluates_response_with_configured_threshold(tmp_
     )
     invoke.assert_awaited_once()
     assert result.method == "llm_as_judge"
-    # Continuous scoring preserves the grade independently of the pass threshold.
-    assert result.score == score
+    # Older SDKs expose the thresholded verdict; newer ones honor continuous mode.
+    continuous = getattr(evaluator_config, "score_mode", "binary") == "continuous"
+    assert result.score == (score if continuous else float(passed))
     assert result.passed is passed
     assert result.metadata["optimization_signals"]["continuous_score"]["value"] == score
     assert result.metadata["pass_threshold"] == 0.8

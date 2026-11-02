@@ -80,3 +80,21 @@ Swarm 合并后的 RSI、Symphony、依赖来源及 adapter 定向验证共 524 
 `8827ad7b5` 的版本，不再使用本 PR 的 fork core pin，也不携带重新解析锁文件的变化。
 此前兼容 core 和定向测试记录保留为历史证据，不能当作恢复依赖后的验证结果。
 连续晋级的运行支持仍需官方 core 后续提供；本次仅按用户要求收敛依赖文件差异，未重跑 UT。
+
+
+## 2026-11-02 流水线报告七项 UT 断言修复
+
+本地提供的 unit_test_report (4).html 对应提交 3d05a1b75，流水线为 20332 passed、101 skipped、7 failed。
+用户本轮明确只修复该报告中的 UT，不处理上一条 SDK 能力兼容意见，不改业务代码或依赖文件。
+当前官方 pin c8c621b2 没有 promotion / score_mode，且裁判 score 为按阈值产生的 0/1，
+连续原始分仍保存在 optimization_signals。原测试将新 SDK 的属性和返回形式无条件套用到旧 pin，导致七项失败。
+
+测试改为无条件验证物化 YAML 的连续策略、score_mode 与 0.05 阈值；支持这些字段的 SDK
+继续验证真实解析和编排器构造语义，不支持时显式验证其现有 epoch 策略。
+裁判测试根据真实 EvaluatorConfig 的评分模式验证二值或连续结果，并继续断言 0.8 通过阈值、
+passed 标记和连续评分信号。没有 skip / xfail，没有放宽评分门槛。
+
+使用真实 c8 普通安装先复现 7 failed、25 passed；修复后 RSI 整组 285 passed。
+临时以真实兼容 core 8a2dfe6e9 复验，新 SDK 下同为 285 passed；随后恢复流水线 pin c8，复跑仍为 285 passed。
+两代 SDK 复验仅调整本地安装包，不写入 pyproject.toml / uv.lock。只读复核确认测试契约符合两代 SDK。
+本轮未重跑完整 UT；测试通过不表示旧 pin 已实现连续晋级，也不替代已取消的产品兼容处理。
