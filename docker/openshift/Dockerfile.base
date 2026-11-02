@@ -34,4 +34,4 @@ RUN curl -fL https://openjiuwen-ci.obs.cn-north-4.myhuaweicloud.com/jiuwenclaw/s
       -o /usr/local/bin/yq \
     && chmod +x /usr/local/bin/yq
 
-RUN pip install --progress-bar off "uv>=0.9,<1.0" ${PIP_EXTRA_ARGS}
+RUN pip install --progress-bar off "uv>=0.12.1,<1.0" ${PIP_EXTRA_ARGS}
