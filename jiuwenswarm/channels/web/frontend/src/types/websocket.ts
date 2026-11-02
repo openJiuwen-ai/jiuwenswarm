@@ -160,6 +160,7 @@ export interface Question {
  */
 export interface AskUserQuestionPayload {
   duplexJobId?: string;
+  interruptId?: string;
   request_id: string;
   questions: Question[];
   source?: string; // 来源标识，用于区分自进化确认和工具权限确认

@@ -543,10 +543,12 @@ def _answer_request(
     payload = interaction.payload or {}
     source = str(payload.get("source") or "")
     interaction_request_id = str(payload.get("request_id") or "")
+    interrupt_id = str(payload.get("interrupt_id") or "")
     resume = source in INTERRUPT_RESUME_SOURCES and bool(interaction_request_id)
     params = {
         "session_id": original.session_id,
         "request_id": interaction_request_id,
+        **({"interrupt_id": interrupt_id} if interrupt_id else {}),
         "answers": answers,
         "source": source,
         "mode": original.params.get("mode"),

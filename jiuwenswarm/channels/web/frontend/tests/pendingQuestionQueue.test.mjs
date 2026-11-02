@@ -188,3 +188,15 @@ test('answered request ids ignore blank values and stay bounded', () => {
   assert.equal(isAnsweredAskUserQuestion('session-bounded', askUser('call-oldest')), false);
   assert.equal(isAnsweredAskUserQuestion('session-bounded', askUser('call-599')), true);
 });
+
+test('a re-delivered question replaces the stored interrupt id', () => {
+  const ask = (interruptId) => ({
+    request_id: 'ask-request',
+    source: 'ask_user_interrupt',
+    interruptId,
+    questions: [{ header: 'Question', question: 'Continue?', options: [] }],
+  });
+  const queue = enqueuePendingQuestions(enqueuePendingQuestions([], ask('a')), ask('b'));
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].interruptId, 'b');
+});

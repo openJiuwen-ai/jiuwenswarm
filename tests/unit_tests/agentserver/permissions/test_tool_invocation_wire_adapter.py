@@ -240,3 +240,42 @@ def test_ask_user_does_not_accept_original_request_legacy_argument() -> None:
             source="ask_user_interrupt",
             original_request="legacy authorization text",
         )
+
+
+@pytest.mark.parametrize(
+    "source,answers,expected",
+    [
+        ("ask_user_interrupt", [{"question": "Which?", "selected_options": ["blue"]}], {"answers": {"Which?": "blue"}}),
+        ("permission_interrupt", [{"selected_options": ["本次允许"]}], {"approved": True, "auto_confirm": False, "feedback": ""}),
+        ("confirm_interrupt", [{"selected_options": ["本次允许"]}], {"approved": True, "auto_confirm": False, "feedback": ""}),
+        ("evolution_interrupt", [{"selected_options": ["allow_once"]}], {"action": "allow_once"}),
+    ],
+)
+def test_an_answer_with_an_interrupt_id_is_addressed_to_the_interrupt(source, answers, expected) -> None:
+    interactive = JiuWenSwarm._build_interactive_input_from_answers(
+        "call-1", answers, source=source, interrupt_id="intr-1",
+    )
+
+    assert interactive.interrupt_answers == {"intr-1": expected}
+    assert interactive.user_inputs == {}
+
+
+def test_an_answer_without_an_interrupt_id_is_addressed_to_the_tool_call() -> None:
+    interactive = JiuWenSwarm._build_interactive_input_from_answers(
+        "call-1", [{"question": "Which?", "selected_options": ["blue"]}], source="ask_user_interrupt",
+    )
+
+    assert interactive.user_inputs == {"call-1": {"answers": {"Which?": "blue"}}}
+    assert interactive.interrupt_answers == {}
+
+
+def test_a_smart_card_answer_stays_keyed_by_its_card_id() -> None:
+    interactive = JiuWenSwarm._build_interactive_input_from_answers(
+        "batch-call-1",
+        [{"selected_options": ["本次允许"], "card_id": "batch-invocation-1"}],
+        source="permission_interrupt",
+        interrupt_id="intr-1",
+    )
+
+    assert set(interactive.user_inputs) == {"batch-invocation-1"}
+    assert interactive.interrupt_answers == {}

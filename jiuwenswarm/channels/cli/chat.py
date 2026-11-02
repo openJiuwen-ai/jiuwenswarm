@@ -767,6 +767,7 @@ async def _run_interactive_loop(
                 renderer.clear_loading()
                 if supports_user_interaction and sys.stdin.isatty():
                     request_id = payload.get("request_id", "")
+                    interrupt_id = str(payload.get("interrupt_id") or "")
                     source = payload.get("source", "")
                     questions = payload.get("questions", [])
                     primary = (
@@ -841,6 +842,7 @@ async def _run_interactive_loop(
                                     "session_id": request["params"]["session_id"],
                                     "query": "",
                                     "request_id": request_id,
+                                    **({"interrupt_id": interrupt_id} if interrupt_id else {}),
                                     "answers": answers,
                                     "source": source,
                                     "mode": request["params"]["mode"],

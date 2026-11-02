@@ -114,3 +114,22 @@ async def test_an_answer_to_an_unknown_interrupt_id_is_refused_during_smart_cuto
 
     assert h.executions == []
     assert h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY).interrupted_tools
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("kind", ["permission", "ask"])
+async def test_a_wire_answer_naming_the_interrupt_id_resumes_by_that_id(answer_host, monkeypatch, mode, kind):
+    h = answer_host
+    answer = await _interrupt(h, monkeypatch, mode=mode, kind=kind)
+    answer["interrupt_id"] = _pending_interrupt_id(h)
+
+    result = await _request(h, **answer)
+
+    assert result.ok, result.payload
+    assert h.executions == ([{"value": "once"}] if kind == "permission" else [])
+    assert len(h.script.calls) == 2
+    state = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    assert not state or not state.interrupted_tools
+    sent = h.dispatches[-1].inputs["query"]
+    smart_card = mode == "auto" and kind == "permission"
+    assert bool(sent.interrupt_answers) is not smart_card

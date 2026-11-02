@@ -2037,6 +2037,7 @@ class JiuWenSwarm:
                     request_id,
                     answers,
                     source,
+                    interrupt_id=str(params.get("interrupt_id") or ""),
                 )
                 if interactive_input is not None:
                     final_query = interactive_input
@@ -2239,6 +2240,8 @@ class JiuWenSwarm:
             request_id: str,
             answers: list[dict],
             source: str = "",
+            *,
+            interrupt_id: str = "",
     ) -> Any:
         """从用户答案构建 InteractiveInput.
 
@@ -2246,6 +2249,10 @@ class JiuWenSwarm:
             request_id: 工具调用 ID
             answers: 用户答案列表，每个答案对应一个问题
             source: 中断来源，用于区分 PermissionRail 和 AskUserRail
+            interrupt_id: 所答中断的 id（chat.ask_user_question 事件携带）。
+                没有时按工具调用 ID 回答：升级前挂起的中断、agent-core 分配
+                id 之前流出的 ask_user 问题都没有 id，单独发布的旧版 IDE 插件
+                也不会带
 
         Returns:
             InteractiveInput 实例
@@ -2255,6 +2262,12 @@ class JiuWenSwarm:
         )
 
         interactive_input = InteractiveInput()
+
+        def address(value: Any) -> None:
+            if interrupt_id:
+                interactive_input.answer(interrupt_id, value)
+            else:
+                interactive_input.update(request_id, value)
 
         if source == "ask_user_interrupt":
             answers_dict = {}
@@ -2307,7 +2320,7 @@ class JiuWenSwarm:
                         )
             if not answers_dict and free_text_answer:
                 answers_dict["__free_text__"] = free_text_answer
-            interactive_input.update(request_id, {"answers": answers_dict})
+            address({"answers": answers_dict})
             logger.info(
                 "[JiuWenSwarm] AskUserRail InteractiveInput.update: request_id=%s "
                 "answer_count=%s",
@@ -2344,7 +2357,7 @@ class JiuWenSwarm:
             payload = {"action": action}
             if custom_input:
                 payload["feedback"] = custom_input
-            interactive_input.update(request_id, payload)
+            address(payload)
             logger.info(
                 "[JiuWenSwarm] SkillEvolutionApproval InteractiveInput.update: request_id=%s payload=%s",
                 request_id, payload
@@ -2437,8 +2450,9 @@ class JiuWenSwarm:
             if source == "permission_interrupt" else []
         )
         if not card_ids:
-            interactive_input.update(request_id, confirm_payload)
+            address(confirm_payload)
             return interactive_input
+        # A Smart queue card is answered by its own id; the queue re-keys it.
         interactive_input.update(card_ids[0], confirm_payload)
         logger.info(
             "[JiuWenSwarm] PermissionRail card InteractiveInput.update: "
