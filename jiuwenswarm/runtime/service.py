@@ -84,6 +84,7 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
+from jiuwenswarm.server.middleware.chat import trigger_before_chat_request
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 if TYPE_CHECKING:
@@ -4366,28 +4367,7 @@ class AgentRuntime:
 
     @staticmethod
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
-        if request.req_method not in AgentRuntime._chat_turn_methods():
-            return
-        from gateway.extensions.registry import ExtensionRegistry
-        from jiuwenswarm.common.hook_event import AgentServerHookEvents
-        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
-
-        params = request.params if isinstance(request.params, dict) else {}
-        if not isinstance(request.params, dict):
-            request.params = params
-        context = AgentServerChatHookContext(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            session_id=request.session_id,
-            req_method=(
-                request.req_method.value if request.req_method is not None else None
-            ),
-            params=params,
-        )
-        await ExtensionRegistry.get_instance().trigger(
-            AgentServerHookEvents.BEFORE_CHAT_REQUEST,
-            context,
-        )
+        await trigger_before_chat_request(request)
 
 
 __all__ = ["AgentRuntime", "RuntimeStateError"]
