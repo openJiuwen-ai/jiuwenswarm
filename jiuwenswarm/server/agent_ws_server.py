@@ -2168,7 +2168,7 @@ class AgentWebSocketServer:
 
         owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
-        registry = RuntimeParticipantRegistry(host_delete=(ExtensionSessionEndParticipant(),))
+        registry = RuntimeParticipantRegistry(host_run_end=(ExtensionSessionEndParticipant(),))
         self._session_association_participant = ExtensionSessionAttachParticipant()
         registry.register_host_foreground(self._session_association_participant)
         lease = owner.attach_runtime(registry)

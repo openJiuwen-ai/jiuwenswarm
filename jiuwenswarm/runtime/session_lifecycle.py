@@ -36,7 +36,7 @@ class SessionDescriptor:
 
 @dataclass(frozen=True, slots=True)
 class SessionLifecycleTarget:
-    """Resolved identity shared by activity and permanent-delete events."""
+    """Resolved identity shared by activity, run-end and delete events."""
 
     descriptor: SessionDescriptor
     kind: SessionKind
@@ -78,6 +78,30 @@ class SessionExecutionFinishedEvent:
 @dataclass(frozen=True, slots=True)
 class SessionInactiveEvent:
     target: SessionLifecycleTarget
+
+
+class SessionRunEndReason(str, Enum):
+    """Host-owned reasons matching Claude Mods session.end."""
+
+    CLEAR = "clear"
+    RESUME = "resume"
+    LOGOUT = "logout"
+    PROMPT_INPUT_EXIT = "prompt_input_exit"
+    OTHER = "other"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRunEndEvent:
+    """One quiesced Runtime session generation, independent of history deletion."""
+
+    target: SessionLifecycleTarget
+    generation: int
+    reason: SessionRunEndReason
+
+
+class SessionRunEndParticipant(Protocol):
+    async def session_run_ended(self, event: SessionRunEndEvent) -> None:
+        ...
 
 
 class SessionInputIntentDisposition(str, Enum):
@@ -136,16 +160,24 @@ class SessionDeleteParticipant(Protocol):
 
 
 class RuntimeParticipantRegistry:
-    """Compose fixed host deletion observers with replaceable derived ones.
+    """Compose fixed host lifecycle observers with replaceable derived ones.
 
     Args:
         host_delete: Runtime-lifetime observers unaffected by dynamic provider
             publication, suspension or lease release. They run before the
             replaceable delete participants.
+        host_run_end: Runtime-lifetime observers of quiesced session runs,
+            independent of dynamic activity and delete provider publication.
     """
 
-    def __init__(self, *, host_delete: tuple[SessionDeleteParticipant, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        host_delete: tuple[SessionDeleteParticipant, ...] = (),
+        host_run_end: tuple[SessionRunEndParticipant, ...] = (),
+    ) -> None:
         self._host_delete = tuple(host_delete)
+        self._host_run_end = tuple(host_run_end)
         self._host_foreground: tuple[SessionForegroundParticipant, ...] = ()
         self._activity: tuple[SessionActivityParticipant, ...] = ()
         self._delete: tuple[SessionDeleteParticipant, ...] = ()
@@ -162,6 +194,14 @@ class RuntimeParticipantRegistry:
 
     def snapshot_activity(self) -> tuple[SessionActivityParticipant, ...]:
         return self._activity
+
+    def register_host_run_end(self, participant: SessionRunEndParticipant) -> None:
+        """Keep run-end observers outside replaceable activity/delete providers."""
+        if not any(current is participant for current in self._host_run_end):
+            self._host_run_end += (participant,)
+
+    def snapshot_run_end(self) -> tuple[SessionRunEndParticipant, ...]:
+        return self._host_run_end
 
     def register_host_foreground(self, participant: SessionForegroundParticipant) -> None:
         """Register a Runtime-lifetime observer unaffected by provider toggles."""
@@ -240,6 +280,9 @@ class SessionRuntimeLifecyclePort(Protocol):
 
 
 __all__ = [
+    "SessionRunEndEvent",
+    "SessionRunEndParticipant",
+    "SessionRunEndReason",
     "RuntimeParticipantRegistry",
     "RuntimeResourceLease",
     "SessionRuntimeLifecyclePort",

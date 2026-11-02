@@ -352,11 +352,11 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 
 ### EXTV2-19 主会话结束通知与用户资源清理
 
-- **目标与范围：** 交付 `session.end`，在主会话明确的永久删除收尾阶段通知 USER 清理自己的资源；普通断连、归档和临时 Worker 回收不触发。归入 10/30 第一批会话状态，Server PR10。
-- **责任与契约：** [S_13](../specs/S_13_session-end.md)、[F_24](../features/F_24_session-end.md)。event_types 只定义/校验/注册，event_handlers 默认 CORE 确认通知，Server 平台参与者实际 trigger；原 Runtime 继续唯一执行原资源释放和删除。
-- **必要前置：** 现有 Worker EventBus/Registry/Ops Build 与 Runtime 删除参与者协议；不依赖未合入 PR04/05/06 或 Core !110。不与 session.start 按包激活实例一一配对。
-- **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、断连/归档非触发、卸载与真实 Worker 接线；证据唯一入口见 [F_24 第 6 节](../features/F_24_session-end.md#6-验收与未决问题)。
-- **独立验证：** `test_session_end.py` 及 Runtime 删除/参与者回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
+- **目标与范围：** 交付 `session.end`，在主会话真实运行结束时通知 USER 保存状态、释放资源；覆盖 Runtime 资源清理与正常停机，历史独立保留。普通回合完成、切页和 Supervisor 临时断连不触发。归入 10/30 第一批会话状态，Server PR10。
+- **责任与契约：** [S_13](../specs/S_13_session-end.md)、[F_24](../features/F_24_session-end.md)。event_types 只定义/校验/注册，event_handlers 默认 CORE 确认通知，Server 固定运行结束参与者实际 trigger；原 Runtime 继续唯一执行资源释放，通知不自动删除历史。
+- **必要前置：** 现有 Worker EventBus/Registry/Ops Build 与 Runtime 会话代次/固定结束参与者协议；不依赖未合入 PR04/05/06 或 Core !110。不与 session.start 按包激活实例一一配对。
+- **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、回合/切页非触发、历史保留、同 ID 新代次、卸载前通知与真实 Worker 接线；证据唯一入口见 [F_24 第 6 节](../features/F_24_session-end.md#6-验收与未决问题)。
+- **独立验证：** `test_session_end.py` 及 Runtime/Worker 结束与删除回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
 
 ### EXTV2-20 界面与主会话关联建立通知
 
@@ -382,7 +382,7 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 | --- | --- | --- |
 | 1 | !92 | cwd/root/model/repo 的字段说明与用户接入文档 |
 | 2 | !91 | session.start、激活实例初始化门和 Core handler_ids 消费方 |
-| 3 | !93 | session.end 与主会话永久删除前的清理通知 |
+| 3 | !93 | session.end 与主会话运行结束通知（2026-11-02 调整） |
 | 4 | !95 | session.attach/session.detach、关联表与固定 foreground 观察者 |
 
 **整个 Server 合并 PR 的硬前置是 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110)，先合入 Core，再合入 Server。** end/attach/detach 单项本身不需要 handler_ids；合并交付并不取消 start 的跨仓依赖。Core !110 同步合并最新目标分支，保留已合入的 EV-06/F_06 包信息能力，待合入的限定派发文档改为 EV-07/F_07。
@@ -506,7 +506,7 @@ flowchart LR
 | EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_21 第 6.2 节 / S_11；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
 | EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见本计划 EXTV2-22 历史验证记录 / S_08 | 2026-10-31 |
 | EXTV2-18 激活实例首次输入前初始化 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91)） / [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) | 不依赖 PR04/05；Server 253 项、Core 568 项通过（1 项权限跳过）；补验真实 Worker 7 个模型回合、初始化/用量 USER Handler、只读 Ops 及清理全部通过，见 F_22 / S_12 | 2026-10-29 |
-| EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 404 项回归、19 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker 与两个模型回合、用户资源清理、并发/重复删除、断连/归档非触发、卸载及进程端口清理通过，见 F_24 / S_13 | 2026-10-29 |
+| EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 2026-11-02 运行结束修订：1362 项回归通过，含 29 项定向；真实两个 Worker / 3 轮模型对话、用户资源收尾、历史保留、同 ID 恢复后再次结束、start 粒度保持和进程清理通过；见 F_24 / S_13 | 2026-11-02 |
 | EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_25 / S_14 | 2026-10-29 |
 | EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_26 / S_15 | 2026-10-29 |
 
