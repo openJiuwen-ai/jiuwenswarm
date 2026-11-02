@@ -1761,6 +1761,22 @@ def _is_heartbeat_request(request: Any) -> bool:
     return isinstance(automation, dict) and automation.get("kind") == "heartbeat"
 
 
+def _is_group_heartbeat_request(request: Any) -> bool:
+    """Whether ``request`` is a heartbeat firing inside a group chat session.
+
+    The heartbeat prompt is the leader's own scheduled instruction, not a
+    public message: it must reach the leader privately instead of being
+    posted into the group conversation as the user.
+    """
+    if not _is_heartbeat_request(request):
+        return False
+    session_id = getattr(request, "session_id", None)
+    if not session_id:
+        return False
+    metadata = get_session_metadata(session_id, enable_writeback=False) or {}
+    return metadata.get("type") == "group_chat"
+
+
 async def _wait_for_bounded_team_round_events(
     *,
     request_queue: asyncio.Queue,
@@ -3076,8 +3092,9 @@ async def _process_team_message_stream(
     # the leader receives exactly the envelope a single agent would.
     turn = _resolve_user_turn(inputs, channel_id=channel_id, language=language)
     query = turn.text
+    private_group_heartbeat = _is_group_heartbeat_request(request)
     try:
-        group_input = _group_chat_input(request, query)
+        group_input = None if private_group_heartbeat else _group_chat_input(request, query)
     except ValueError as exc:
         yield AgentResponseChunk(
             request_id=rid, channel_id=channel_id,
@@ -3322,6 +3339,24 @@ async def _process_team_message_stream(
         if preparation.recovered_runtime:
             is_first_request = False
             await startup.aclose()
+        elif private_group_heartbeat:
+            # A cold start would build the runtime from a team-mode input and
+            # lose the group conversation mode; the next group message starts
+            # it properly, so this heartbeat round is skipped.
+            logger.warning(
+                "[TeamHelpers] group heartbeat skipped without a live runtime: "
+                "channel_id=%s session_id=%s request_id=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+                rid,
+            )
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload=None,
+                is_complete=True,
+            )
+            return
         else:
             query = preparation.query
             interrupt_input = preparation.interrupt_input
@@ -3788,6 +3823,12 @@ async def _process_team_message_stream(
                     )
                     query = turn.text if isinstance(turn.text, str) else query
                 followup_payload = _deliverable(turn, query)
+                if private_group_heartbeat:
+                    from openjiuwen.agent_teams.interaction.payload import GodViewMessage
+
+                    # Private leader wake: bypasses the group mode lock and
+                    # never enters the public conversation.
+                    followup_payload = GodViewMessage(body=followup_payload)
                 await _begin_team_round()
                 success, reason = await _interact_with_team_context(
                     team_manager,
