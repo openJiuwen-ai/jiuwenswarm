@@ -1907,9 +1907,9 @@ def test_deep_adapter_registers_evolution_interrupt_rail_before_skill_evolution(
         await agent.register_rail(FakeEvolutionInterruptRail())
         await agent.register_rail(FakeSkillEvolutionRail())
 
+    # Evolution logic lives in deep.evolution; patch the use-site import.
     monkeypatch.setattr(
-        interface_deep_module,
-        "configure_skill_evolution_runtime",
+        "jiuwenswarm.server.runtime.agent_adapter.deep.evolution.configure_skill_evolution_runtime",
         _fake_configure,
     )
 

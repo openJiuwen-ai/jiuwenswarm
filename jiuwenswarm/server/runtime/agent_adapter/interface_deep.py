@@ -318,6 +318,37 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.request_mcp import (
     cleanup_request_scoped_office_claw_mcp as _cleanup_request_scoped_office_claw_mcp,
     register_request_scoped_office_claw_mcp as _register_request_scoped_office_claw_mcp,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.cron_runtime import (
+    _CRON_TOOL_NAMES,
+    _bind_runtime_cron_context as _bind_runtime_cron_context_impl,
+    _block_stale_cron_permission_resume as _block_stale_cron_permission_resume_impl,
+    _build_cron_tools as _build_cron_tools_impl,
+    _ensure_cron_tools_registered as _ensure_cron_tools_registered_impl,
+    _persist_cron_checkpoint as _persist_cron_checkpoint_impl,
+    _recover_cron_session_context as _recover_cron_session_context_impl,
+    _rehydrate_empty_cron_context as _rehydrate_empty_cron_context_impl,
+    _reload_cron_interrupt as _reload_cron_interrupt_impl,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.skill_sleep_rail import (
+    _build_skill_sleep_rail as _build_skill_sleep_rail_impl,
+    _forget_skill_sleep_session as _forget_skill_sleep_session_impl,
+    _reconcile_skill_sleep_rail as _reconcile_skill_sleep_rail_impl,
+    _resolve_skill_sleep_skills_dirs as _resolve_skill_sleep_skills_dirs_impl,
+    _resolve_skill_sleep_state_dir as _resolve_skill_sleep_state_dir_impl,
+    _skill_sleep_model_spec as _skill_sleep_model_spec_impl,
+    _track_skill_sleep_task as _track_skill_sleep_task_impl,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.ttse_rail import (
+    _build_ttse_rail as _build_ttse_rail_impl,
+    _cleanup_ttse_background_tasks as _cleanup_ttse_background_tasks_impl,
+    _ensure_ttse_rail_registered as _ensure_ttse_rail_registered_impl,
+    _merge_ttse_config,
+    _on_ttse_cleanup_done as _on_ttse_cleanup_done_impl,
+    _resolved_ttse_config as _resolved_ttse_config_impl,
+    _sync_ttse_rail_config as _sync_ttse_rail_config_impl,
+    _ttse_bank_path as _ttse_bank_path_impl,
+    _unconfigure_ttse_rail as _unconfigure_ttse_rail_impl,
+)
 
 if TYPE_CHECKING:
     from openjiuwen.harness.schema.config import SubAgentConfig
@@ -1494,19 +1525,6 @@ class _RailBuildInfo:
         """Normalize the optional params mapping to an empty dict."""
         self.params = self.params or {}
 
-_CRON_TOOL_NAMES = frozenset(
-    {
-        "cron",
-        "cron_list_jobs",
-        "cron_get_job",
-        "cron_create_job",
-        "cron_update_job",
-        "cron_delete_job",
-        "cron_toggle_job",
-        "cron_preview_job",
-    }
-)
-
 _DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
     "tools_search",
     "invoke_tool",
@@ -1551,25 +1569,6 @@ def _ensure_progressive_meta_tools(eager_tools: list[str]) -> list[str]:
         eager_tools.insert(1, "invoke_tool")
     return eager_tools
 
-
-def _merge_ttse_config(runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Yaml ``react.ttse`` plus runtime overlay (runtime keys win).
-
-    Same merge used by TTSERail mount and ``ttse_consult`` eager gating so a
-    sparse runtime cache (OfficeAce sync snapshot omitting ``ttse``) still
-    inherits the on-disk default. An explicit runtime ``enabled: false`` wins.
-    """
-    merged: dict[str, Any] = {}
-    try:
-        yaml_ttse = _get_ttse_config(get_config())
-    except Exception:
-        yaml_ttse = {}
-    if isinstance(yaml_ttse, dict):
-        merged.update(yaml_ttse)
-    runtime = _get_ttse_config(runtime_config)
-    if isinstance(runtime, dict):
-        merged.update(runtime)
-    return merged
 
 
 def _ttse_consult_should_be_eager(react_config: dict[str, Any] | None) -> bool:
@@ -7091,145 +7090,29 @@ class JiuWenSwarmDeepAdapter:
 
 
     def _resolve_skill_sleep_skills_dirs(self) -> list[Path]:
-        """All registered skills dirs, so sleep finds each skill where it lives."""
-        dirs = [Path(d) for d in self._resolve_skill_dirs() if str(d or "").strip()]
-        return dirs or [get_agent_skills_dir()]
+        return _resolve_skill_sleep_skills_dirs_impl(self)
 
     def _resolve_skill_sleep_state_dir(self, sleep_cfg: dict[str, Any]) -> Path:
-        raw = str(sleep_cfg.get("state_dir") or "").strip()
-        if raw:
-            return Path(raw).expanduser()
-        root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return root / ".skill_sleep"
+        return _resolve_skill_sleep_state_dir_impl(self, sleep_cfg)
 
     def _build_skill_sleep_rail(self, config: dict[str, Any]) -> SkillSleepRail | None:
-        """Build SkillSleepRail; per-skill selfEvolution gating happens in the runner."""
-        try:
-            sleep_cfg = get_skill_sleep_config(config)
-            state_dir = self._resolve_skill_sleep_state_dir(sleep_cfg)
-            counter = SkillCallCounter(state_dir / "call_counts.json")
-            skills_dirs = self._resolve_skill_sleep_skills_dirs()
-            runner = SkillSleepRunner(
-                counter=counter,
-                trajectory_dir=_resolve_skill_sleep_traces_dir(),
-                skills_base_dir=skills_dirs,
-                state_dir=state_dir,
-                backend=str(sleep_cfg.get("backend") or "model"),
-                gate_mode=str(sleep_cfg.get("gate_mode") or "on"),
-                rubric_synthesis=str(sleep_cfg.get("rubric_synthesis") or "off"),
-                on_task_created=self._track_skill_sleep_task,
-                model_provider=self._skill_sleep_model_spec,
-                skills_dirs_provider=self._resolve_skill_sleep_skills_dirs,
-                on_published=_push_skill_sleep_published,
-                on_suggest=_push_skill_sleep_suggest,
-            )
-            rail = SkillSleepRail(
-                counter=counter,
-                runner=runner,
-                call_threshold=get_skill_sleep_call_threshold(config),
-                last_skills_path=state_dir / "last_skills.json",
-            )
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillSleepRail create success "
-                "threshold=%s trajectory=%s skills=%s state=%s",
-                rail.call_threshold,
-                _resolve_skill_sleep_traces_dir(),
-                ";".join(str(d) for d in skills_dirs),
-                state_dir,
-            )
-            traces_dir = _resolve_skill_sleep_traces_dir()
-            if not traces_dir.exists():
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] SkillSleepRail trajectory dir %s does not "
-                    "exist yet; sleep cycles are skipped until traces are exported "
-                    "(check agent_observability file exporter)",
-                    traces_dir,
-                )
-            return rail
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] SkillSleepRail create failed: %s",
-                exc,
-            )
-            return None
+        return _build_skill_sleep_rail_impl(self, config)
 
 
 
     def _skill_sleep_model_spec(self) -> SleepModelSpec | None:
-        """Resolve the sleep-training model from the main conversation config.
-
-        ``evolution.skill_sleep.model_name`` / ``model_tier`` override the
-        adapter default. Returns None (env fallback) when no model is set.
-        """
-        if self._model is None:
-            return None
-        sleep_cfg = get_skill_sleep_config(self._config_cache)
-        model, _ = self._resolve_model(
-            model_name=str(sleep_cfg.get("model_name") or ""),
-            model_tier=str(sleep_cfg.get("model_tier") or ""),
-        )
-        request_config = model.model_config
-        model_name = str(
-            getattr(request_config, "model_name", "")
-            or getattr(request_config, "model", "")
-            or self._default_model_name
-            or ""
-        )
-        return SleepModelSpec(
-            client_config=model.model_client_config,
-            request_config=request_config,
-            model_name=model_name,
-        )
+        return _skill_sleep_model_spec_impl(self)
 
     def _forget_skill_sleep_session(
         self, session_id: str, adapter: "JiuWenSwarmDeepAdapter | None" = None
     ) -> None:
-        """Drop SkillSleepRail per-session state held by this and *adapter*."""
-        if not session_id:
-            return
-        rails: dict[int, Any] = {}
-        for rail in (
-            getattr(self, "_skill_sleep_rail", None),
-            getattr(adapter, "_skill_sleep_rail", None),
-        ):
-            if rail is not None:
-                rails[id(rail)] = rail
-        for rail in rails.values():
-            try:
-                rail.forget_session(session_id)
-            except Exception:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] SkillSleepRail forget_session failed: "
-                    "session_id=%s",
-                    session_id,
-                    exc_info=True,
-                )
+        return _forget_skill_sleep_session_impl(self, session_id, adapter)
 
     def _track_skill_sleep_task(self, task: asyncio.Task) -> None:
-        """Track background sleep tasks with evolution watcher set."""
-        task.add_done_callback(lambda task: _on_evolution_watcher_done(self, task))
-        self._evolution_watcher_tasks.add(task)
+        return _track_skill_sleep_task_impl(self, task)
 
     async def _reconcile_skill_sleep_rail(self) -> None:
-        """Register SkillSleepRail when it is not mounted yet."""
-        if self._instance is None or self._skill_sleep_rail is not None:
-            return
-        rail = self._build_skill_sleep_rail(self._config_cache)
-        if rail is None:
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillSleepRail build returned None; skip register"
-            )
-            return
-        try:
-            await self._instance.register_rail(rail)
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] SkillSleepRail register failed: %s",
-                exc,
-            )
-            return
-        self._skill_sleep_rail = rail
-        logger.info("[JiuWenSwarmDeepAdapter] SkillSleepRail registered")
+        return await _reconcile_skill_sleep_rail_impl(self)
 
     def _build_skill_credential_injection_rail(
         self,
@@ -7256,236 +7139,23 @@ class JiuWenSwarmDeepAdapter:
             return None
 
     def _ttse_bank_path(self) -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob.
-
-        Uses ``self._workspace_dir`` (same tenant root as memory rails). Sync
-        and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
-        :func:`get_agent_workspace_dir` would fall back to the default-tenant
-        shared workspace and mix FACT/TIP banks across tenants.
-        """
-        root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return str(root / ".ttse" / "bank.json")
+        return _ttse_bank_path_impl(self)
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
-        """User yaml ``react.ttse`` plus adapter cache (runtime cache wins).
-
-        File yaml supplies defaults. The adapter cache / passed config overlays
-        it so a runtime ``enabled: false`` is not clobbered by the on-disk
-        default. ``store_path`` is not a user setting; the bank is always under
-        workspace. FACT/TIP disclosure is always catalog + ``ttse_consult``.
-        """
-        return _merge_ttse_config(config if config is not None else self._config_cache)
+        return _resolved_ttse_config_impl(self, config)
 
 
     def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
-        """Build TTSERail for FACT/TIP dual-track self-evolution.
-
-        Returns None when agent-core lacks TTSE, construction fails, or
-        the feature is unavailable. Does not register the rail.
-        """
-        if TTSERail is None or TTSEConfig is None:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] TTSERail unavailable: agent-core missing ttse"
-            )
-            return None
-        try:
-            from openjiuwen.core.memory.lite.embeddings import OpenAICompatibleEmbeddingProvider
-
-            ttse_cfg = self._resolved_ttse_config(config)
-            store_path = self._ttse_bank_path()
-            evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
-            inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
-            trajectory_export_enabled = coerce_config_bool(
-                ttse_cfg.get("trajectory_export_enabled"), False
-            )
-            trajectory_export_path = str(ttse_cfg.get("trajectory_export_path") or "").strip()
-            dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
-            try:
-                dream_interval = int(ttse_cfg.get("dream_interval", 50))
-            except (TypeError, ValueError):
-                dream_interval = 50
-            try:
-                dream_min_hours = float(ttse_cfg.get("dream_min_hours", 24.0))
-            except (TypeError, ValueError):
-                dream_min_hours = 24.0
-            try:
-                dream_ttl_days = int(ttse_cfg.get("dream_ttl_days", 90))
-            except (TypeError, ValueError):
-                dream_ttl_days = 90
-            consult_top_k, consult_retrieve_mode = _ttse_consult_knobs(ttse_cfg)
-            try:
-                consult_rrf_k = int(ttse_cfg.get("consult_rrf_k", 60) or 60)
-            except (TypeError, ValueError):
-                consult_rrf_k = 60
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] TTSEConfig: store_path=%s evolve_enabled=%s "
-                "inject_enabled=%s trajectory_export_enabled=%s dream_enabled=%s "
-                "dream_interval=%s dream_min_hours=%s dream_ttl_days=%s",
-                store_path,
-                evolve_enabled,
-                inject_enabled,
-                trajectory_export_enabled,
-                dream_enabled,
-                dream_interval,
-                dream_min_hours,
-                dream_ttl_days,
-            )
-            emb_cfg = get_ttse_embedding_config({"react": {"ttse": ttse_cfg}})
-            embedding = None
-            if emb_cfg:
-                embedding = OpenAICompatibleEmbeddingProvider(
-                    api_key=emb_cfg["api_key"],
-                    base_url=emb_cfg["base_url"],
-                    model=emb_cfg["model"],
-                )
-            from openjiuwen.extensions.observability.demand import (
-                get_trajectory_span_processor,
-            )
-
-            trajectory_span_processor = get_trajectory_span_processor()
-            if trajectory_span_processor is None:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] TTSERail create skipped: "
-                    "TrajectorySpanProcessor unavailable"
-                )
-                return None
-            # TTSERail defaults to SignalBasedSuccessDetector(llm=..., model=..., config=...).
-            # Do not construct the detector without those required kwargs.
-            ttse_rail = TTSERail(
-                llm=self._model,
-                model=self._default_model_name or config.get("model_name", "gpt-4"),
-                ttse_config=TTSEConfig(
-                    store_path=store_path,
-                    evolve_enabled=evolve_enabled,
-                    inject_enabled=inject_enabled,
-                    trajectory_export_enabled=trajectory_export_enabled,
-                    trajectory_export_path=trajectory_export_path,
-                    embedding=embedding,
-                    dream_enabled=bool(dream_enabled),
-                    dream_interval=dream_interval,
-                    dream_min_hours=dream_min_hours,
-                    dream_ttl_days=dream_ttl_days,
-                    consult_top_k=consult_top_k,
-                    consult_retrieve_mode=consult_retrieve_mode,
-                    consult_rrf_k=consult_rrf_k,
-                ),
-                trajectory_span_processor=trajectory_span_processor,
-            )
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] TTSERail create success, "
-                "store_path=%s evolve_enabled=%s inject_enabled=%s has_embedding=%s",
-                store_path,
-                evolve_enabled,
-                inject_enabled,
-                embedding is not None,
-            )
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] TTSERail create failed: %s", exc)
-            ttse_rail = None
-        return ttse_rail
+        return _build_ttse_rail_impl(self, config)
 
     def _sync_ttse_rail_config(self, config: dict[str, Any] | None = None) -> None:
-        """Refresh live TTSERail flags/store from current react.ttse (no remount)."""
-        rail = self._ttse_rail
-        if rail is None:
-            return
-        ttse_cfg = self._resolved_ttse_config(config)
-        store_path = self._ttse_bank_path()
-        evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
-        inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
-        trajectory_export_enabled = coerce_config_bool(
-            ttse_cfg.get("trajectory_export_enabled"), False
-        )
-        trajectory_export_path = str(ttse_cfg.get("trajectory_export_path") or "").strip()
-        apply_config = getattr(rail, "apply_runtime_config", None)
-        if callable(apply_config):
-            # Older agent-core apply_runtime_config only accepts store/evolve/inject.
-            # Trajectory export flags are synced via _ttse_config below.
-            apply_config(
-                store_path=store_path,
-                evolve_enabled=evolve_enabled,
-                inject_enabled=inject_enabled,
-            )
-        cfg_obj = getattr(rail, "_ttse_config", None)
-        if cfg_obj is not None:
-            cfg_obj.trajectory_export_enabled = trajectory_export_enabled
-            cfg_obj.trajectory_export_path = trajectory_export_path
-            consult_top_k, consult_retrieve_mode = _ttse_consult_knobs(ttse_cfg)
-            for attr, value in (
-                ("consult_top_k", consult_top_k),
-                ("consult_retrieve_mode", consult_retrieve_mode),
-            ):
-                if hasattr(cfg_obj, attr):
-                    setattr(cfg_obj, attr, value)
-            store = getattr(rail, "_ttse_store", None)
-            store_cfg = getattr(store, "_config", None) if store is not None else None
-            if store_cfg is not None and store_cfg is not cfg_obj:
-                if hasattr(store_cfg, "consult_top_k"):
-                    store_cfg.consult_top_k = consult_top_k
-                if hasattr(store_cfg, "consult_retrieve_mode"):
-                    store_cfg.consult_retrieve_mode = consult_retrieve_mode
-            emb_cfg = get_ttse_embedding_config({"react": {"ttse": ttse_cfg}})
-            embedding = None
-            if emb_cfg:
-                from openjiuwen.core.memory.lite.embeddings import (
-                    OpenAICompatibleEmbeddingProvider,
-                )
-
-                embedding = OpenAICompatibleEmbeddingProvider(
-                    api_key=emb_cfg["api_key"],
-                    base_url=emb_cfg["base_url"],
-                    model=emb_cfg["model"],
-                )
-            if embedding is not None:
-                if store is not None:
-                    attach = getattr(store, "attach_embedding", None)
-                    if callable(attach):
-                        attach(embedding)
-                if hasattr(cfg_obj, "embedding"):
-                    cfg_obj.embedding = embedding
-        else:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] TTSERail._ttse_config missing; "
-                "trajectory export flags not synced"
-            )
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
-            "store_path=%s evolve_enabled=%s inject_enabled=%s "
-            "trajectory_export_enabled=%s",
-            store_path,
-            evolve_enabled,
-            inject_enabled,
-            trajectory_export_enabled,
-        )
+        return _sync_ttse_rail_config_impl(self, config)
 
     async def _ensure_ttse_rail_registered(self) -> None:
-        """Build and register TTSERail when missing; else refresh flags from yaml."""
-        if self._instance is None:
-            return
-        if self._ttse_rail is not None:
-            self._sync_ttse_rail_config(self._config_cache)
-            return
-        rail = self._build_ttse_rail(self._config_cache)
-        if rail is None:
-            return
-        await self._instance.register_rail(rail)
-        self._ttse_rail = rail
-        logger.info("[JiuWenSwarmDeepAdapter] TTSERail registered for agent mode")
+        return await _ensure_ttse_rail_registered_impl(self)
 
     async def _unconfigure_ttse_rail(self) -> None:
-        """Unregister TTSERail if it is currently mounted."""
-        rail = self._ttse_rail
-        self._ttse_rail = None
-        if self._instance is None or rail is None:
-            return
-        unregister = getattr(self._instance, "unregister_rail", None)
-        if not callable(unregister):
-            return
-        try:
-            await unregister(rail)
-            logger.info("[JiuWenSwarmDeepAdapter] TTSERail unregistered")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] TTSERail unregister failed: %s", exc)
+        return await _unconfigure_ttse_rail_impl(self)
 
     async def refresh_enabled_skills_from_db(self) -> bool:
         """workspace Skill 状态变更后刷新启用集并热替换 ``SkillUseRail``。
@@ -9416,14 +9086,7 @@ class JiuWenSwarmDeepAdapter:
         return tool_cards
 
     def _build_cron_tools(self) -> list[Any]:
-        """Build cron tools from the shared runtime bridge."""
-        return self._cron_runtime.build_tools(
-            context=self._runtime_cron_tool_context,
-            agent_id=self._tool_owner_id(),
-            language=self._resolve_runtime_language(),
-            service_id=getattr(self, "_env_service_id", None),
-            tenant_agent_id=getattr(self, "_env_agent_id", None),
-        )
+        return _build_cron_tools_impl(self)
 
     async def _proc_context_compaction(self) -> None:
         """Backward-compatible no-op hook for tests and legacy call sites."""
@@ -10184,150 +9847,7 @@ class JiuWenSwarmDeepAdapter:
         project_dir: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> _RuntimeCronContextTokens:
-        from openjiuwen.core.sys_operation.shell_process_registry import (
-            set_shell_session_id,
-        )
-        from jiuwenswarm.common.request_identity import (
-            apply_routing_metadata,
-            web_routing_identity,
-        )
-        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
-
-        normalized_channel = str(channel_id or "").strip() or CronTargetChannel.WEB.value
-        normalized_mode = str(mode).strip() if isinstance(mode, str) and mode.strip() else None
-        normalized_metadata = dict(metadata) if isinstance(metadata, dict) else None
-        if normalized_metadata is None:
-            normalized_metadata = {}
-        if isinstance(request_id, str) and request_id.strip():
-            normalized_metadata["request_id"] = request_id.strip()
-        # 权威：顶层 user_id + metadata.routing；params 仅作本地 cron 已 merge 的补充。
-        g, b, u = extract_routing_triple(normalized_metadata, params)
-        routing = web_routing_identity(normalized_metadata)
-        if g:
-            routing["group_id"] = g
-        if b:
-            routing["bot_id"] = b
-        if u:
-            routing["user_id"] = u
-        normalized_metadata = apply_routing_metadata(normalized_metadata, routing)
-
-        session_metadata: dict[str, Any] = {}
-        if isinstance(session_id, str) and session_id.strip():
-            try:
-                from jiuwenswarm.server.runtime.session.session_metadata import (
-                    get_session_metadata,
-                )
-
-                loaded_metadata = get_session_metadata(session_id.strip(), cache_bust=True)
-                if isinstance(loaded_metadata, dict):
-                    session_metadata = loaded_metadata
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "[JiuWenSwarmDeepAdapter] failed to load session metadata for cron context: %s",
-                    exc,
-                )
-        # 注入 project_dir 供 cron tool 路由解析任务归属项目（设计文档 §5.1）
-        if isinstance(project_dir, str) and project_dir.strip():
-            normalized_metadata.setdefault("project_dir", project_dir.strip())
-        for key in ("project_id", "project_dir", "work_mode"):
-            value = normalized_metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                continue
-            session_value = session_metadata.get(key)
-            if isinstance(session_value, str) and session_value.strip():
-                normalized_metadata[key] = session_value.strip()
-
-        channel_token = _CRON_TOOL_CHANNEL_ID.set(normalized_channel)
-        session_token = _CRON_TOOL_SESSION_ID.set(session_id)
-        metadata_token = _CRON_TOOL_METADATA.set(normalized_metadata)
-        mode_token = _CRON_TOOL_MODE.set(normalized_mode)
-        bound_token = _CRON_TOOL_BOUND.set(True)
-        resource_id = str(routing.get("bot_id") or "").strip()
-        policy_id = ""
-        enterprise_config = getattr(self, "_enterprise_config", None)
-        if (
-            enterprise_config is not None
-            and str(getattr(enterprise_config, "resource_id", "") or "").strip()
-            == resource_id
-        ):
-            policy_refs = getattr(enterprise_config, "template_ref", {}).get(
-                "a2a_access_policy", []
-            )
-            if isinstance(policy_refs, list) and len(policy_refs) == 1:
-                policy_id = str(policy_refs[0] or "").strip()
-        resource_token = _RUNTIME_TOOL_RESOURCE_ID.set(resource_id)
-        policy_token = _RUNTIME_TOOL_A2A_POLICY_ID.set(policy_id)
-        shell_token = set_shell_session_id(session_id)
-
-        # 绑定 send_file 专用路由 ContextVar（与 skill_turbo / test 仓对齐）。
-        # 默认值为 None，不会像 _CRON_TOOL_CHANNEL_ID 那样在 reset 后回落成 web。
-        send_file_token: Token | None = None
-        try:
-            from jiuwenswarm.agents.harness.common.tools.send_file_to_user import (
-                set_send_file_request_context,
-            )
-
-            send_file_token = set_send_file_request_context(
-                request_id=(
-                    request_id.strip()
-                    if isinstance(request_id, str) and request_id.strip()
-                    else None
-                ),
-                session_id=session_id,
-                channel_id=normalized_channel,
-                metadata=normalized_metadata,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] set send_file request context failed: %s",
-                exc,
-            )
-
-        scope = RuntimeScopeKey.from_adapter(self, session_id=session_id)
-        request_workspace = workspace_dir or project_dir or normalized_metadata.get(
-            "project_dir"
-        )
-        try:
-            deepresearch_token = push_deepresearch_route(
-                request_id=request_id or "",
-                channel_id=normalized_channel,
-                session_id=scope.session_id,
-                service_id=scope.service_id,
-                agent_id=scope.agent_id,
-                workspace_key=scope.workspace_key,
-                output_dir=_deepresearch_artifact_output_dir(self,
-                    normalized_metadata.get("project_dir")
-                ),
-            )
-        except BaseException:
-            _reset_runtime_cron_context(
-                _RuntimeCronContextTokens(
-                    channel=channel_token,
-                    session=session_token,
-                    metadata=metadata_token,
-                    mode=mode_token,
-                    bound=bound_token,
-                    shell=shell_token,
-                    deepresearch=None,
-                    send_file=send_file_token,
-                    resource_id=resource_token,
-                    a2a_policy_id=policy_token,
-                ),
-                suppress_errors=True,
-            )
-            raise
-        return _RuntimeCronContextTokens(
-            channel=channel_token,
-            session=session_token,
-            metadata=metadata_token,
-            mode=mode_token,
-            bound=bound_token,
-            shell=shell_token,
-            deepresearch=_DeepResearchRouteContextToken(deepresearch_token),
-            send_file=send_file_token,
-            resource_id=resource_token,
-            a2a_policy_id=policy_token,
-        )
+        return _bind_runtime_cron_context_impl(self, channel_id=channel_id, session_id=session_id, metadata=metadata, request_id=request_id, mode=mode, workspace_dir=workspace_dir, project_dir=project_dir, params=params)
 
 
 
@@ -10677,60 +10197,7 @@ class JiuWenSwarmDeepAdapter:
             logger.debug("[JiuWenSwarmDeepAdapter] 清理 multi-session 工具失败: %s", exc)
 
     def _ensure_cron_tools_registered(self, session_id: str | None) -> None:
-        """Register this agent's cron tools once, rebuilding only when they change.
-
-        The tool instances carry no per-request state: their context object and
-        owner id are fixed for the adapter's lifetime, and the target channel is
-        read from a contextvar at call time (see ``_bind_runtime_cron_context``).
-        Only the language is baked into the instances, so that is the whole
-        rebuild condition. Registering them per request instead re-bound eight
-        ids in the process-global resource manager every turn, each one a
-        remove + add pair that logged a refresh warning.
-
-        Args:
-            session_id: Session the current turn belongs to. Heartbeat and cron
-                sessions drive the scheduler themselves and get no cron tools.
-        """
-        if session_id is not None and session_id.startswith(("heartbeat", "cron", "diagnosis")):
-            return
-        if os.getenv("JIUWENCLAW_DISABLE_CRON_TOOLS") == "1":
-            for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "") in _CRON_TOOL_NAMES:
-                    self._instance.ability_manager.remove(existing.name)
-            self._cron_tools_registered_language = None
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] skip cron tool registration: disabled by env"
-            )
-            return
-        language = self._resolve_runtime_language()
-        registered_names = {
-            getattr(existing, "name", "")
-            for existing in (self._instance.ability_manager.list() or [])
-        }
-        # The language fingerprint alone is not enough: rebuilding the agent (a
-        # skill or plugin install re-runs ``create_instance``) hands this adapter
-        # a fresh, empty AbilityManager while the fingerprint still reads as
-        # registered, which would silently drop the cron tools for good.
-        if self._cron_tools_registered_language == language and (registered_names & _CRON_TOOL_NAMES):
-            return
-        try:
-            cron_tools = self._build_cron_tools()
-            if not cron_tools:
-                return
-            for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "") in _CRON_TOOL_NAMES:
-                    self._instance.ability_manager.remove(existing.name)
-            for cron_tool in cron_tools:
-                self._register_agent_owned_tool(cron_tool, self._tool_owner_id())
-                self._instance.ability_manager.add(cron_tool.card)
-            self._cron_tools_registered_language = language
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] %d cron tools registered: language=%s",
-                len(cron_tools),
-                language,
-            )
-        except Exception as exc:
-            logger.error("[JiuWenSwarmDeepAdapter] 定时工具注册失败: %s", exc)
+        return _ensure_cron_tools_registered_impl(self, session_id)
 
     async def _update_session_tools(
         self,
@@ -11371,33 +10838,7 @@ class JiuWenSwarmDeepAdapter:
         return None
 
     async def _reload_cron_interrupt(self, cron_inner: Any, session_id: str, request_id: str) -> None:
-        """审批续跑时，从执行落盘的 checkpointer 把暂停中的工具调用读回来。"""
-        if self._read_session_interrupt_state() is not None:
-            return
-        candidates: list[Any] = []
-        primary = _cron_execution_checkpointer(cron_inner)
-        adapter_cp = self._get_adapter_checkpointer()
-        factory_cp = CheckpointerFactory.get_checkpointer()
-        for candidate in (primary, adapter_cp, factory_cp):
-            if candidate is None or any(candidate is item for item in candidates):
-                continue
-            candidates.append(candidate)
-        for checkpointer in candidates:
-            try:
-                await checkpointer.pre_agent_execute(cron_inner, None)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[CRON-CTX] cron interrupt reload failed: session_id=%s "
-                    "error=%s request_id=%s",
-                    session_id, exc, request_id,
-                )
-                continue
-            if self._read_session_interrupt_state() is not None:
-                logger.info(
-                    "[CRON-CTX] cron interrupt reloaded: session_id=%s request_id=%s",
-                    session_id, request_id,
-                )
-                return
+        return await _reload_cron_interrupt_impl(self, cron_inner, session_id, request_id)
 
     async def _recover_cron_session_context(
         self,
@@ -11406,33 +10847,7 @@ class JiuWenSwarmDeepAdapter:
         *,
         reload_interrupt: bool = False,
     ) -> None:
-        """cron_* 续聊 / 审批续跑：从执行时写入的 checkpointer 恢复，空上下文再回灌一次历史。"""
-        if not str(session_id).startswith("cron_") or self._instance is None:
-            return
-        cron_session = getattr(self._instance, "_interaction_session", None)
-        cron_inner = getattr(cron_session, "_inner", None) if cron_session is not None else None
-        if cron_inner is None:
-            return
-        if not _cron_session_has_context(cron_inner):
-            try:
-                await _cron_execution_checkpointer(cron_inner).pre_agent_execute(
-                    cron_inner, None
-                )
-                logger.info(
-                    "[CRON-CTX] cron session re-recover: session_id=%s request_id=%s",
-                    session_id, request_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[CRON-CTX] cron session re-recover failed: session_id=%s "
-                    "error=%s request_id=%s",
-                    session_id, exc, request_id,
-                )
-        if reload_interrupt:
-            await self._reload_cron_interrupt(cron_inner, session_id, request_id)
-        if _cron_session_has_context(cron_inner):
-            return
-        await self._rehydrate_empty_cron_context(session_id, request_id)
+        return await _recover_cron_session_context_impl(self, session_id, request_id, reload_interrupt=reload_interrupt)
 
     _STALE_CRON_PERMISSION_TEXT = (
         "这次审批没有对上暂停中的命令，已停止，避免重新生成另一条命令。"
@@ -11440,34 +10855,7 @@ class JiuWenSwarmDeepAdapter:
     )
 
     async def _block_stale_cron_permission_resume(self, request: Any) -> bool:
-        """cron_* 审批续跑：恢复后仍无 paused tool 则硬拦，避免误开新一轮工具。
-
-        返回 True 表示调用方应拒绝本次 resume，并向用户展示
-        ``_STALE_CRON_PERMISSION_TEXT``。
-        """
-        session_id = str(getattr(request, "session_id", "") or "")
-        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
-        reload_interrupt = (
-            session_id.startswith("cron_")
-            and str(params.get("source") or "") == "permission_interrupt"
-        )
-        if not reload_interrupt:
-            return False
-        await self._recover_cron_session_context(
-            session_id,
-            str(getattr(request, "request_id", "") or ""),
-            reload_interrupt=True,
-        )
-        if self._read_session_interrupt_state() is not None:
-            return False
-        logger.warning(
-            "[CRON-CTX] blocking stale cron permission resume (no paused tool): "
-            "session_id=%s bound_session_id=%s request_id=%s",
-            session_id,
-            self._bound_interaction_session_id(),
-            getattr(request, "request_id", ""),
-        )
-        return True
+        return await _block_stale_cron_permission_resume_impl(self, request)
 
     def _bound_interaction_session_id(self) -> str:
         session = getattr(getattr(self, "_instance", None), "_interaction_session", None)
@@ -11552,89 +10940,10 @@ class JiuWenSwarmDeepAdapter:
             )
 
     async def _rehydrate_empty_cron_context(self, session_id: str, request_id: str) -> None:
-        """仅 cron_*：checkpoint 仍空、内存 context 也没有消息时，用历史回灌一次。"""
-        react_agent = getattr(self._instance, "react_agent", None)
-        context_engine = getattr(react_agent, "context_engine", None) if react_agent is not None else None
-        if context_engine is None:
-            return
-        ctx = context_engine.get_context(session_id=session_id)
-        if ctx is not None:
-            try:
-                if list(ctx.get_messages() or []):
-                    return
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                await context_engine.clear_context(session_id=session_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[CRON-CTX] clear empty cron context failed: session_id=%s error=%s",
-                    session_id, exc,
-                )
-                return
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            warmup_session_context,
-        )
-
-        await warmup_session_context(
-            deep_agent=self._instance,
-            session_id=session_id,
-            history_before_request_id=request_id,
-        )
+        return await _rehydrate_empty_cron_context_impl(self, session_id, request_id)
 
     async def _persist_cron_checkpoint(self, session_id: str, request_id: str) -> None:
-        """非流式 cron 执行收尾补 commit：把 context_engine 内存 context 落盘到 checkpointer。
-
-        根因：cron 走非流式 ``_inner_invoke``，其 commit 挂在 ``need_cleanup`` 下；而 adapter 在
-        ``start_interaction`` 已提前绑定 session，``invoke`` 收到现成 session 致 ``need_cleanup=False``，
-        commit 被跳过，导致 ``cron_*`` 在 checkpointer 恒为空、web 恢复读不到历史。此处对齐流式路径
-        （``_inner_stream`` 的 ``is_agent_session`` 分支会自动 commit），显式补一次落盘。
-        姿势参照流式收尾：save_contexts 之后走 ``commit()``。
-        ``post_run()`` 在 ``_post_run_done`` 后直接返回，cron 非流式收尾会把落盘跳掉。
-        """
-        try:
-            if self._instance is None:
-                return
-            react_agent = getattr(self._instance, "react_agent", None)
-            if react_agent is None:
-                return
-            context_engine = react_agent.context_engine
-            # 无可落盘的 context 则跳过，避免写空状态。
-            _ctx = context_engine.get_context(session_id=session_id)
-            if _ctx is None:
-                return
-            try:
-                _ctx_msg_count = len(list(_ctx.get_messages() or []))
-            except Exception:  # noqa: BLE001
-                _ctx_msg_count = 0
-            if _ctx_msg_count <= 0:
-                return
-            # 用运行中的 _interaction_session（而非新建 session）：
-            # save_contexts 内部 _save_state_to_session 会把 context messages 存回该 session 的
-            # global_state['context']，commit 再落盘 checkpointer。跨 channel 的 web adapter
-            # 复用本会话时会通过上方的 re-recover 从 checkpoint 读回这些 messages。
-            session = getattr(self._instance, "_interaction_session", None)
-            if session is None:
-                logger.warning(
-                    "[CRON-CTX] cron checkpoint skip: no active _interaction_session "
-                    "session_id=%s request_id=%s",
-                    session_id, request_id,
-                )
-                return
-            await context_engine.save_contexts(session)
-            # post_run 在 _post_run_done 后会直接返回，cron 非流式收尾必须走 commit。
-            await session.commit()
-            logger.info(
-                "[CRON-CTX] cron checkpoint committed: session_id=%s request_id=%s "
-                "msg_count=%s",
-                session_id, request_id, _ctx_msg_count,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[CRON-CTX] cron checkpoint commit failed: session_id=%s "
-                "request_id=%s error=%s",
-                session_id, request_id, exc,
-            )
+        return await _persist_cron_checkpoint_impl(self, session_id, request_id)
 
     async def _persist_session_checkpoint(self, session_id: str, request_id: str) -> None:
         """流式 chat 收尾补 commit：把 context_engine 内存 context 落盘到 checkpointer。
@@ -18741,30 +18050,10 @@ class JiuWenSwarmDeepAdapter:
         return total_tokens
 
     async def _cleanup_ttse_background_tasks(self, rid: str, session_id: str) -> None:
-        """Wait for TTSE background induction without draining approval events."""
-        rail = self._ttse_rail
-        if rail is None:
-            return
-        try:
-            cleanup = getattr(rail, "cleanup_background_tasks", None)
-            if cleanup is not None:
-                await cleanup()
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] TTSE cleanup failed: request_id=%s "
-                "session_id=%s error=%s",
-                rid,
-                session_id,
-                exc,
-            )
+        return await _cleanup_ttse_background_tasks_impl(self, rid, session_id)
 
     def _on_ttse_cleanup_done(self, task: asyncio.Task) -> None:
-        """Drop a finished TTSE cleanup task and log a normal failure."""
-        self._ttse_cleanup_tasks.discard(task)
-        try:
-            task.result()
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] TTSE cleanup task exception: %s", exc)
+        return _on_ttse_cleanup_done_impl(self, task)
 
 
     async def try_start_dreaming(self, busy_checker: Callable[[], bool] | None = None) -> None:
