@@ -5,7 +5,7 @@
 | 编号 | F_24 / session-end |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变 |
+| 后续修订 | 2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变；2026-11-02，按原 session.append 的对象示例、输入／输出字段表及具体 Handler 案例统一说明，契约不变 |
 | 计划与进度 | [EXTV2-19 / Server PR10](../designs/extensions-v2-development-plan.md#extv2-19-主会话结束通知与用户资源清理) |
 | 主责规约 | [S_13](../specs/S_13_session-end.md) |
 
@@ -66,25 +66,25 @@ SessionEndInput(
 
 全部构造字段均必填、没有可省略默认；表中的 None/空串是平台明确提供的值。下表解释怎样读、代表什么、怎样使用；主责契约仍为 [S_13](../specs/S_13_session-end.md)。
 
-| 字段 | 类型 / 必填与默认 | 由谁填写 / 应填什么 | 代表什么意思 | 作用 / 怎样使用 | 权限与缺失处理 |
-| --- | --- | --- | --- | --- | --- |
-| session_id | str，必填，无构造默认 | Runtime 提供待永久删除的主会话 ID，如 demo-session-a | 本次清理针对哪个主会话 | 用户按此键释放自己为该会话保存的缓存/订阅 | 只读；不把另一个会话 ID 回填给 next |
-| end_id | str，必填，无构造默认 | 平台 uuid.uuid4().hex，如 0123456789abcdef0123456789abcdef | 本 Runtime 第一次删除收尾通知的身份 | 用于清理日志关联；不是新的会话 ID、请求 ID 或用户重试参数 | 只读，32 位十六进制；同一未完成删除的重试不重新通知 |
-| reason | str，必填，首版固定 session_deleted | 平台填写 session_deleted，用户不自行选择 | 已经进入明确的永久删除收尾阶段 | 可用作 matcher 条件；不能据此判断文件已经删除成功 | 只读，不支持 switch、shutdown、clear、resume 等推测原因 |
-| channel_id | str，必填，无构造默认 | Runtime 从保存资料/原请求解析，如 web；缺失为 default | 目标主会话所属的渠道事实 | 用于日志与筛选，不代表当前在线网页连接 | 只读，不因当前传输断开而变化为另一目标 |
-| mode | str，必填，无构造默认 | Runtime 提供目标主会话模式，如 agent.plan | 被删除会话原来的执行模式 | 按已保存模式筛选自己的清理规则 | 只读；Team/子 Agent 不在本事件覆盖范围 |
+| 字段 | 类型 / 是否总有 | 准确含义 | 应该填写什么、示例 | Handler 权限 |
+| --- | --- | --- | --- | --- |
+| session_id | str，必填，无构造默认 | 本次清理针对哪个主会话。用途：用户按此键释放自己为该会话保存的缓存/订阅 | Runtime 提供待永久删除的主会话 ID，如 demo-session-a | 只读；不把另一个会话 ID 回填给 next |
+| end_id | str，必填，无构造默认 | 本 Runtime 第一次删除收尾通知的身份。用途：用于清理日志关联；不是新的会话 ID、请求 ID 或用户重试参数 | 平台 uuid.uuid4().hex，如 0123456789abcdef0123456789abcdef | 只读，32 位十六进制；同一未完成删除的重试不重新通知 |
+| reason | str，必填，首版固定 session_deleted | 已经进入明确的永久删除收尾阶段。用途：可用作 matcher 条件；不能据此判断文件已经删除成功 | 平台填写 session_deleted，用户不自行选择 | 只读，不支持 switch、shutdown、clear、resume 等推测原因 |
+| channel_id | str，必填，无构造默认 | 目标主会话所属的渠道事实。用途：用于日志与筛选，不代表当前在线网页连接 | Runtime 从保存资料/原请求解析，如 web；缺失为 default | 只读，不因当前传输断开而变化为另一目标 |
+| mode | str，必填，无构造默认 | 被删除会话原来的执行模式。用途：按已保存模式筛选自己的清理规则 | Runtime 提供目标主会话模式，如 agent.plan | 只读；Team/子 Agent 不在本事件覆盖范围 |
 
 #### 本次 Handler 的会话上下文与包身份
 
 Event 输入是可观察的通知内容，SessionContext 是平台另行提供的可信会话资料；两者不是用户填写后再相互组装的关系。平台通知函数构造 context，Bus 为每个实际 Handler 创建绑定该资料的 Ops。
 
-| 字段 | 类型 / 必填与默认 | 由谁填写 / 应填什么 | 代表什么意思 | 作用 / 怎样使用 | 权限与缺失处理 |
-| --- | --- | --- | --- | --- | --- |
-| ops.session_context | Core 只读属性，不用 await | 平台先构造，随 trigger 的独立 context 参数传入；Core 绑定给本次 Handler | 本次调用使用哪份会话资料 | 用户读取已有资料；它不负责采集或组装上下文 | 不能通过改 Event 字段替换，不是用户补填对象 |
-| session_context.session_id | 有效非空 str | 平台提供被永久删除的会话 ID；与事件输入 session_id 一致 | 可信查询目标是被永久删除的会话 | 既有会话 Ops 根据它读取对应平台服务 | 只读；不得拿 next_session_id/previous_session_id 代替当前绑定 |
-| session_context.cwd | str 或 None | start 使用已绑定运行目录；其他三种通知未确认 cwd，保持 None | 可得的真实执行目录观察值 | 已有 cwd 查询可以使用；None 表示该入口未收集到 | 不以进程默认目录或项目根伪造 cwd |
-| session_context.metadata.project_root | str 或 None | start 使用已绑定项目根；其余通知只接受目标保存的绝对 project_dir | 已确认的用户项目根资料 | 已有 root 查询读取这个字段；不是自动推断的 Git 根 | 不可信/缺失时为 None；不为通知创建项目或模型 |
-| ops.package_metadata | Core 绑定的当前 Handler 包身份 | 来自已注册 Handler 的真实包元信息；CORE 没有用户包身份 | 当前正在执行的 USER 属于哪个扩展包 | 管理自己包的资源和日志；与被观察会话是两个维度 | 用户不从 payload 指定或冒充其他包 |
+| 字段 | 类型 / 是否必有 | 含义与应该填写什么 |
+| --- | --- | --- |
+| ops.session_context | Core 只读属性，不用 await | 本次调用使用哪份会话资料。平台先构造，随 trigger 的独立 context 参数传入；Core 绑定给本次 Handler。用途：用户读取已有资料；它不负责采集或组装上下文。边界：不能通过改 Event 字段替换，不是用户补填对象 |
+| session_context.session_id | 有效非空 str | 可信查询目标是被永久删除的会话。平台提供被永久删除的会话 ID；与事件输入 session_id 一致。用途：既有会话 Ops 根据它读取对应平台服务。边界：只读；不得拿 next_session_id/previous_session_id 代替当前绑定 |
+| session_context.cwd | str 或 None | 可得的真实执行目录观察值。start 使用已绑定运行目录；其他三种通知未确认 cwd，保持 None。用途：已有 cwd 查询可以使用；None 表示该入口未收集到。边界：不以进程默认目录或项目根伪造 cwd |
+| session_context.metadata.project_root | str 或 None | 已确认的用户项目根资料。start 使用已绑定项目根；其余通知只接受目标保存的绝对 project_dir。用途：已有 root 查询读取这个字段；不是自动推断的 Git 根。边界：不可信/缺失时为 None；不为通知创建项目或模型 |
+| ops.package_metadata | Core 绑定的当前 Handler 包身份 | 当前正在执行的 USER 属于哪个扩展包。来自已注册 Handler 的真实包元信息；CORE 没有用户包身份。用途：管理自己包的资源和日志；与被观察会话是两个维度。边界：用户不从 payload 指定或冒充其他包 |
 
 本入口不主动采集运行模型；model 查询沿用已有保存信息读取规则，不为展示创建或激活模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
 
@@ -104,11 +104,11 @@ SessionEndOutput(
 )
 ```
 
-| 字段 | 类型 / 必填与默认 | 由谁填写 / 应填什么 | 代表什么意思 | 作用 / 怎样使用 | 权限与缺失处理 |
-| --- | --- | --- | --- | --- | --- |
-| accepted | bool，CORE 实际填严格 True | 默认 CORE 生成，用户只接收 | 默认清理通知已经被确认 | 核对本次通知；最终删除是否成功要看原删除响应 | 不得构造假成功、deny 或取消删除结果；不保证全部外部清理成功 |
-| session_id | str，必有 | CORE 回显平台删除目标 | 已确认通知属于哪个主会话 | 核对自己的资源键与日志 | 只读，不切换清理目标 |
-| end_id | str，必有 | CORE 回显这次通知的 32 位十六进制 UUID | 被确认的具体收尾通知 | 将处理日志与同一次通知对应起来 | 只读，不是业务重试参数或删除提交证明 |
+| 字段 | 类型 / 返回时机 | 含义与调用方怎样使用 |
+| --- | --- | --- |
+| accepted | bool，CORE 实际填严格 True | 默认清理通知已经被确认。默认 CORE 生成，用户只接收。用途：核对本次通知；最终删除是否成功要看原删除响应。边界：不得构造假成功、deny 或取消删除结果；不保证全部外部清理成功 |
+| session_id | str，必有 | 已确认通知属于哪个主会话。CORE 回显平台删除目标。用途：核对自己的资源键与日志。边界：只读，不切换清理目标 |
+| end_id | str，必有 | 被确认的具体收尾通知。CORE 回显这次通知的 32 位十六进制 UUID。用途：将处理日志与同一次通知对应起来。边界：只读，不是业务重试参数或删除提交证明 |
 
 所有输入只读、没有可改写字段。空 matcher 匹配本次候选中的该事件；可用第 3.2 节字段等值筛选，字段不匹配不会替用户延后重放。 正常 next 继续当前通知链；提前短路伪造成功、修改输入、后置改写回执均不构成合法平台操作，按既有 Core USER 故障隔离处理。
 
@@ -116,63 +116,43 @@ CORE 在当前可信调用作用域内核对原始输入和绑定会话，再记
 
 通知失败或超时后原删除继续；原删除请求取消仍传播，由原 Runtime 保留其补偿语义。 单次通知等待预算默认 2 秒，从通知任务启动计；超时使作用域失效并请求取消，忽略取消的任务可能晚退出，但不能再产生迟到有效 CORE 回执。包在途计数直到任务退出才释放。 accepted 只说明默认通知被确认，用户自有资源操作是否成功应由自己的代码记录；外部副作用不自动补偿。 本事件不是跨重启的 exactly-once。
 
-### 3.4 注册、筛选与用户接入示例
+### 3.4 注册、筛选、处理示例
 
-本例在正常回合后建立自己的会话缓存，结束时按 session_id 移除；只在用户侧提供以下两个文件，经既有管理入口安装。接收通知时所有输入字段都是平台事实，不填回额外目标或结束原因。
-
-`manifest.yaml`：
-
-```yaml
-schemaVersion: 1
-package:
-  id: example.session-end
-  version: 1.0.0
-  displayName: Session End Example
-extensions:
-  - id: end-cleanup
-    runtime: backend
-    module: extension.py
-```
-
-`extension.py`：
+本例要做的事情是：**正常回合中为不同会话保存自己的项目根缓存；永久删除某个主会话时，只释放该会话的缓存，并记录对应 end_id。** 下列代码可放入扩展包的 `extension.py`；包格式参照[现有示例包的 manifest](../../examples/session_end/manifest.yaml)，由现有管理入口安装。所有事件字段保持只读，用户处理自己拥有的资源并原样返回 next 的真实回执。
 
 ```python
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
-"""Keep user-owned per-Session cache and release it on terminal deletion."""
-
-import logging
-
-logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_end")
-
-
-class SessionEndExample:
-    """A user's Session resources, independent of platform history ownership."""
-
+class Extension:
     def __init__(self):
-        self.cache = {}
+        self.session_cache = {}
+        self.released = {}
 
     def register(self, registrar):
         registrar.register_event_handler("context.usage.updated", self.on_usage, {}, "user")
         registrar.register_event_handler("session.end", self.on_end, {}, "user")
 
     async def on_usage(self, event, ops, next_handler):
-        self.cache[ops.session_context.session_id] = {"project_root": await ops.session.root()}
+        session_id = ops.session_context.session_id
+        self.session_cache[session_id] = {"root": await ops.session.root()}
         return await next_handler(event)
 
     async def on_end(self, event, ops, next_handler):
-        session_id = ops.session_context.session_id
-        released = self.cache.pop(session_id, None) is not None
-        logger.info("session end example: session=%s end=%s reason=%s released=%s",
-                    session_id, event.event_input.end_id, event.event_input.reason, released)
-        return await next_handler(event)
+        value = event.event_input
+        # Release only resources owned by this package for this session.
+        self.session_cache.pop(value.session_id, None)
+        receipt = await next_handler(event)
+        self.released[value.end_id] = value.session_id
+        return receipt
 
 
 def create_extension():
-    return SessionEndExample()
+    return Extension()
 ```
 
-通知总等待预算为 2 秒；超时取消通知并继续原资源释放，取消请求不能撤销已经发生的外部清理。原删除请求取消则传播取消，由 Runtime 保留原有补偿语义。开始一次通知后，该未完成删除的重试不自动重放；用户清理应幂等，失败后按自己的外部资源规则补偿。
+假设 on_usage 已给 demo-session-a 和 demo-session-b 分别建立缓存。用户永久删除 a 时，Runtime 在 quiesce 后、平台文件删除前发 session.end；on_end 只 pop(a)，next 由 CORE 确认有效通知，再在 released[end_id] 记下 a，b 的缓存保留。
+
+可观察结果是 a 的用户缓存消失，released 关联到这次真实 end_id；它不删除平台 JSONL，也不操作其他包资源。CORE 返回后，Runtime 继续原平台资源释放及文件删除，最终成功仍以原删除响应为准。用户清理用 pop(..., None) 保持幂等；真实外部资源应由用户自己的代码释放和补偿。
+
+Matcher 为等值条件合取，空字典匹配候选中的全部合法通知；按 channel_id、reason 等实际存在字段筛选时，不匹配的通知不会替用户延后重放。多个 USER 按既有顺序通过 next 继续；本生命周期事件未新增业务 BUILTIN。初始化共享 Ops 的 ops.build BUILTIN 属于启动装配，不在这条业务通知链中重新登记方法。
 
 ## 4. 方法契约
 
@@ -188,95 +168,27 @@ def create_extension():
 
 Runtime 调用固定参与者的 `release_resources(target)`；target 为已确认的 SessionLifecycleTarget，参与者返回 None。它只等待通知，不用这个 None 表示删除成功；删除结果仍由原 Runtime 请求返回。 通知输入和上下文由第 3.1 节真实边界收集；没有要求用户自己创建 Bus、注册 CORE 或改平台 Adapter。
 
+平台入口参数（只由对应业务流程填写）：
+
+| 输入字段 | 必填 / 默认 | 应填写的内容、范围及示例 |
+| --- | --- | --- |
+| target | SessionLifecycleTarget，必填 | Runtime 已确认并完成 quiesce 的删除目标，来自原删除编排；主会话才通知。参与者读取 session_id、channel_id、mode、可信项目目录，用户不自行构造调用。 |
+
 ## 5. 接入与兼容方案
 
-### 5.1 两阶段完整调用链
+Worker 启动时登记 session.end 的类型、Matcher、Validator 和唯一默认 CORE；既有 ops.build 的 CORE 创建 Builder、BUILTIN 登记共享能力，Bus 保存方法目录，用户包 register 发布 USER 订阅。通知发生时，Core 为每个实际 Handler 绑定本次 SessionContext 和可信包身份，Builder 不在启动时查询某个会话的数据。
 
-```text
-Worker 装配 → bootstrap 注册 session.end 类型/Validator/默认 CORE
-  → 原 ops.build 准备共享能力 → 用户包 register 发布 on_end
+平台资料从哪里来：删除参与者从 SessionLifecycleTarget.descriptor 读取目标身份、渠道、模式和保存项目目录，只保留可信绝对 project_root；cwd 没有确认时保持 None，不临时创建模型。 平台将通知输入和 SessionContext 作为 trigger 的两部分传入；ops.session_context 只提供只读入口，已有会话 Ops 根据它读取。用户不采集平台资料，也不需要先触发用量通知。
 
-Web/Gateway/Front 已有 session.delete 请求
-  → Supervisor 路由 Worker → 原 SessionArchiveService / AgentRuntime.delete_session
-  → 校验目标、删除锁与既有写入/执行屏障 → quiesce
-  → 宿主删除参与者 release_resources
-  → 构造平台输入与只读 SessionContext，记录本次通知身份
-  → Worker bus.trigger(Event("session.end", input), context)
-  → USER on_end 释放自己的会话资源 → next_handler(原事件)
-  → 剩余 Handler → 默认 session.end CORE 返回真实通知回执
-  → 参与者返回 → 原 KVC/Runtime/Runner 释放与文件删除继续
-  → 原删除响应返回；提交后移除通知去重记录
-```
-
-### 5.2 目录、生命周期与取舍
+默认 CORE 的逻辑：**session_end_core 先检查有效平台调用、输入完全等于原删除目标、Ops 绑定同一 session_id，再生成或复用 SessionEndOutput。它只确认这次清理通知，实际 KVC／Runner 释放和文件删除仍由原 Runtime 在通知返回后完成。** USER 负责本包自己的初始化、摘要或清理，按 next 进入 CORE 并原样返回回执；没有新增业务 BUILTIN 或同名用户 Ops。第 3.1 节是实际触发链，第 3.4 节给出可以消费这些事实的用户业务案例。
 
 类型和注册归 event_types，CORE 归 event_handlers；实际 trigger 及通知任务归 server/runtime/session 的平台参与者。RuntimeParticipantRegistry 增加可选宿主固定删除参与者，与 KVC 的动态发布组合；AgentServer 在构建 Runtime 时注入，Runtime 不直接依赖 EventBus。
 
 选择通知 CORE，不在该 CORE 里第二次释放原资源，避免双重释放和破坏现有删除事务。无需 Core handler_ids 新接口；一次通知沿现有 matcher 执行当前用户链，并为活动包记录在途使用直至任务结束。无装配、无用户包或卸载后保留默认删除，不更改 Front/Supervisor 协议。
 
-### 5.3 完整业务案例：删除会话时释放扩展自己的缓存
+本次文档整理沿用当前分支既有共享只读 Ops；PR !100 的查询事件化及返回格式迁移单独交付。session.start 的 handler_ids 仍以 Core !110 为硬前置，合并顺序保持 Core 在先、Server 在后。其他三项单项不要求 handler_ids，组合 PR 的依赖仍成立。
 
-第 3.4 节包在正常回合后的 on_usage 中，给 demo-session-a 建立自己拥有的缓存项。用户随后永久删除这个会话；期望缓存被释放，其他会话的缓存不受影响。
-
-1. 原 session.delete 经 Front/Supervisor 到 Worker，沿原 Runtime 删除编排确认目标、进入删除屏障并停止目标执行。
-2. Runtime 进入 release_resources，宿主参与者从目标描述读取 session_id/channel_id/mode，生成 end_id，绑定旧会话的只读上下文；原会话文件此时尚未删除。
-3. Worker 触发 session.end。用户 on_end 读取 session_id，只从自己的 cache 中 pop 这项并记录 released；这一步不删除平台 JSONL 或会话目录。
-4. 用户原样 next，session_end_core 确认平台调用仍有效、输入没有变化、Ops 仍绑定目标，然后返回 accepted=True 和原 session_id/end_id。
-5. 通知返回后，Runtime 才继续原有 KVC/Runner 等平台资源释放和文件删除；最终原删除响应才用于判断删除是否提交。
-6. 删除成功后平台释放这次通知的去重记录；同一未完成删除的重试不自动再跑用户清理。用户自己的释放仍应幂等。
-
-可观察结果是该用户包的缓存项消失、日志带上正确 end_id、默认 CORE 回执正确，随后原删除入口给出实际删除结果。通知 accepted 与最终删除成功是两个不同事实。
-
-### 5.4 关键函数：平台触发、Ops 绑定与默认 CORE
-
-以下为当前平台派发和默认 CORE 的源码节选；包在途计数、超时、去重等外层编排保留在 [平台通知模块](../../../server/runtime/session/end_notifications.py)，不是让用户直接调用内部函数。event_types 只维护定义、校验作用域、Matcher 和注册。
-
-```python
-async def _dispatch(
-    bus: ExtensionEventBus,
-    manager: ExtensionManager,
-    state: EndInvocation,
-    context: SessionContext,
-) -> None:
-    runtime = manager.registry.runtime
-    packages = tuple(record.package_id for record in runtime.active_packages())
-    runtime.begin_calls(packages)
-    try:
-        with bind_end_invocation(state):
-            result = await bus.trigger(Event(SESSION_END_EVENT, state.original), context)
-            if state.receipt is None or result != state.receipt:
-                raise RuntimeError("session.end did not return the actual CORE receipt")
-    finally:
-        runtime.end_calls(packages)
-```
-
-Event 是通知输入，独立 context 参数是可信会话资料。Core 为每个实际进入的 USER / CORE 调用 `builder.build(package_metadata, session_context)`，得到本次 Ops；USER 从现有 `ops.session_context` 只读属性读取，不通过这个属性采集资料。启动时的 ops.build BUILTIN 已经登记了共享方法，本次事件不再创建 Builder 或临时登记能力。
-
-```python
-async def session_end_core(
-    event: Event,
-    ops: EventHandlerOps | None,
-    next_handler: EventNext,
-) -> SessionEndOutput:
-    """Acknowledge the real target without invoking deletion a second time."""
-    del next_handler
-    state = current_end_invocation()
-    if not valid_end_input(event.event_input):
-        raise ValueError("session.end input cannot be changed")
-    context = ops.session_context if ops is not None else None
-    if context is None or context.session_id != state.original.session_id:
-        raise RuntimeError("session.end requires its bound SessionContext")
-    if state.receipt is None:
-        state.receipt = SessionEndOutput(True, state.original.session_id, state.original.end_id)
-    return state.receipt
-```
-
-current_end_invocation 要求仍有效的平台调用任务；valid_end_input 保留 Runtime 原始删除目标；绑定会话必须一致。CORE 保存并返回通知回执，不删除文件、不释放 Runner，也不撤销或再次启动原删除。
-
-本事件没有新增业务 BUILTIN；实际通知链是匹配 USER → 默认 CORE，结果反向返回。若有多个匹配 USER，各自原样 next 才继续；已有 ops.build 的 BUILTIN 只属于启动能力登记，不能混同为本次通知的业务处理层。
-
-类型与校验见 [session_end.py](../../event_types/session_end.py)，CORE 见 [event_handlers/session_end.py](../../event_handlers/session_end.py)。
-
+源码位置：[事件定义／校验／注册](../../event_types/session_end.py)、[默认 CORE](../../event_handlers/session_end.py)、[Runtime 删除通知参与者](../../../server/runtime/session/end_notifications.py)。平台实现按职责和源码链接查阅；用户只注册文中示例 Handler，平台仍拥有原业务操作的提交和后续响应。
 
 ## 6. 验收与未决问题
 
@@ -311,6 +223,8 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2/test_session_end.
 result.json、user-handler-results.jsonl、各删除/归档响应、日志和 source-before/source-after 收据记录来源及一致性；cleanup.json 确认 Worker 已退出、端口关闭。首次联调脚本把归档请求误写为单个 session_id，收到 BAD_REQUEST 后已按既有 session_ids 协议修正；该次不计为验收通过，当前结论以上述成功运行记录为准。
 
 已知边界：没有跨进程崩溃/重启 exactly-once；用户资源在取消或平台随后失败时可能已清理，平台不恢复外部副作用。没有真实服务下的恶意无限任务终止保证、非 Windows 实机、产品浏览器 UI、远端 CI 或大并发性能证据。不同 Harness 的统一结束语义、进程退出和恢复资料仍不在首版范围。
+
+2026-11-02 文档整理：以原 session.append 为参照，统一对象示例、五列通知输入表、三列输出表、会话资料说明及具体用户 Handler 案例；保留所有字段来源、默认／缺失、权限、超时和历史验证记录。只改文档，当前契约及 Core !110 前置不变。本轮核对结构、字段、示例与真实默认 CORE 回执、链接及差异，不重跑真实业务、模型或浏览器验收。
 
 ## 7. 参考资料
 
