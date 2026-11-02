@@ -10,9 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.runtime.package_allowlist import (
+from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
     allows,
     bind_request_subject,
+    hidden_from_enterprise,
 )
 
 
@@ -52,6 +53,23 @@ def _bind_allowlist(packages: list[dict], **identity):
     return bind_request_subject(metadata)
 
 
+def test_personal_bind_does_not_read_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+
+    def _deny(*_args, **_kwargs):
+        raise AssertionError("personal bind must not read metadata")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.allowlist._packages_from_metadata",
+        _deny,
+    )
+    with _bind_allowlist(
+        [{"kind": "agent_template", "id": "kept", "match_expr": "user_id =="}],
+        user_id="alice",
+    ):
+        assert allows("agent_template", "kept") is True
+
+
 def test_personal_allows_without_reading_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
 
@@ -59,11 +77,26 @@ def test_personal_allows_without_reading_allowlist(monkeypatch: pytest.MonkeyPat
         raise AssertionError("personal edition must not read the allowlist")
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.package_allowlist._request_packages",
+        "jiuwenswarm.enterprise.capabilities.experts.allowlist._request_packages",
         _deny_read,
     )
     assert allows("agent_template", "hub-expert") is True
     assert allows("agent_group", "finance") is True
+    assert hidden_from_enterprise("794db1bfe8884d6897d62d3584894a59") is False
+
+
+def test_invalid_match_expr_empties_the_whole_request_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    packages = [
+        {"kind": "agent_template", "id": "kept", "match_expr": "user_id =="},
+        {"kind": "agent_template", "id": "also-kept"},
+    ]
+    with _bind_allowlist(packages, user_id="alice"):
+        assert allows("agent_template", "kept") is False
+        assert allows("agent_template", "also-kept") is False
+    assert hidden_from_enterprise("794db1bfe8884d6897d62d3584894a59") is True
 
 
 def test_enterprise_empty_allowlist_denies_controlled_and_allows_user_local(

@@ -271,7 +271,7 @@ async def test_an_answer_to_any_question_of_a_pause_resumes_it(order: tuple[str,
         request_id="turn-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
         is_stream=True, params={"query": "ask me", "mode": "agent", "work_mode": "work"},
     ), trigger_hook=False))
-    assert admission.pending_interactions(session_id) == {"q-1", "q-2"}
+    assert admission.pending_interaction_ids(session_id) == {"q-1", "q-2"}
 
     for question in order:
         await asyncio.wait_for(runtime.invoke(AgentRequest(
@@ -329,7 +329,7 @@ async def test_an_answer_before_the_paused_stream_ends_leaves_nothing_waiting(ki
         is_stream=True, params={"query": "ask me", "mode": "agent", "work_mode": "work"},
     ), trigger_hook=False)))
     for _ in range(200):
-        if admission.pending_interactions(session_id) == {"q-1", "q-2"}:
+        if admission.pending_interaction_ids(session_id) == {"q-1", "q-2"}:
             break
         await asyncio.sleep(0.01)
 
@@ -399,7 +399,7 @@ async def test_an_answer_releases_the_questions_its_pause_no_longer_waits_on(kin
         request_id="turn-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
         is_stream=True, params={"query": "ask me", "mode": "agent", "work_mode": "work"},
     ), trigger_hook=False))
-    assert admission.pending_interactions(session_id) == {"q-1", "q-2"}
+    assert admission.pending_interaction_ids(session_id) == {"q-1", "q-2"}
 
     await asyncio.wait_for(_answer(runtime, session_id, "q-1", kind), 5)
 

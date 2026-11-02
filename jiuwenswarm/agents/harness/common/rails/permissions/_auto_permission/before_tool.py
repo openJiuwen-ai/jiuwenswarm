@@ -7,6 +7,8 @@ from contextlib import nullcontext
 from collections.abc import Mapping
 from typing import Any
 
+from openjiuwen.core.foundation.tool import is_client_tool
+from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
 from openjiuwen.harness.tools.subagent.subagent_tools import (
     SubagentCloseTool,
     SubagentListTool,
@@ -113,6 +115,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls imp
 from jiuwenswarm.agents.harness.common.tools.search_tools import (
     DEFAULT_SEARCH_MAX_RESULTS,
 )
+from jiuwenswarm.runtime.run_permissions import overlay_run_permissions
 from jiuwenswarm.server.runtime.sandbox_no_host_fallback import (
     clear_no_host_fallback,
     require_no_host_fallback,
@@ -194,6 +197,23 @@ class AutoPermissionBeforeToolMixin:
         finally:
             NATIVE_PATH_ACCESS.reset(native_token)
 
+    async def _client_tool_permission(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any], invocation: ToolInvocation
+    ) -> Any:
+        """Judge a client tool by the rules as the user wrote them; the reviewer cannot judge it.
+
+        Smart turns an allow it cannot classify into an ask for its reviewer,
+        which would ask the user about every client tool call. The call runs
+        when the written rules allow it and Smart's own evaluation does not
+        deny it. Any other call goes to the base rail, as in manual mode.
+        """
+        written = self._written_permissions() if self._written_permissions is not None else self.permission_config
+        tool_args = normalize_invocation_tool_args(invocation.tool_name, invocation.tool_args)
+        level, _ = evaluate_tiered_policy(overlay_run_permissions(written), invocation.tool_name, tool_args)
+        if level == ALLOW_LEVEL and (await self.policy_evaluator.evaluate(invocation)).level != DENY_LEVEL:
+            return None
+        return await self._call_base_rail(args, kwargs, invocation)
+
     async def _before_tool_call_impl(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate auto-permission guards before delegating to the base rail."""
         clear_no_host_fallback()
@@ -216,6 +236,10 @@ class AutoPermissionBeforeToolMixin:
             return None
         if invocation.tool_name == ASK_USER_TOOL_NAME:
             return await self._call_base_rail(args, kwargs, invocation)
+        if invocation.ctx is not None and is_client_tool(
+            invocation.ctx.agent.ability_manager.get(invocation.tool_name)
+        ):
+            return await self._client_tool_permission(args, kwargs, invocation)
         invocation_resume = root_permission_resume_from_context(invocation.ctx)
 
         trusted_send_resolution = _resolve_trusted_send_identity(

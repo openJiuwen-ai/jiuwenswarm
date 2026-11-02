@@ -178,12 +178,6 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("skills.get", "GET", "/skills/{name}"),
     ("skills.uninstall", "DELETE", "/skills/{name}"),
     ("skills.toggle", "POST", "/skills/{name}/actions/toggle"),
-    ("agent_templates.list", "GET", "/agent-templates"),
-    ("agent_templates.show", "GET", "/agent-templates/{id}"),
-    ("agent_templates.file.list", "GET", "/agent-templates/{id}/files"),
-    ("agent_templates.file.read", "GET", "/agent-templates/{id}/files/content"),
-    ("agent_templates.install", "POST", "/agent-templates/{id}/actions/install"),
-    ("agent_templates.uninstall", "POST", "/agent-templates/{id}/actions/uninstall"),
     ("extensions.list", "GET", "/extensions"),
     ("extensions.import", "POST", "/extensions"),
     ("extensions.delete", "DELETE", "/extensions/{name}"),
@@ -413,20 +407,15 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
 
 def _attach_package_allowlist_header(headers: dict[str, str]) -> None:
     """企业版写入刚绑定的名单。未绑定时按空名单发送。"""
-    from jiuwenswarm.enterprise import is_enterprise
+    from gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return
-    from jiuwenswarm.server.runtime.package_allowlist import (
-        HEADER_NAME,
-        encode_package_allowlist_header,
-        outbound_allowlist_packages,
+    from gateway.enterprise.capabilities.experts.allowlist import (
+        attach_package_allowlist_header,
     )
 
-    packages = outbound_allowlist_packages()
-    if packages is None:
-        packages = []
-    headers[HEADER_NAME] = encode_package_allowlist_header(packages)
+    attach_package_allowlist_header(headers)
 
 
 def method_has_http_handler(method: str) -> bool:
@@ -463,7 +452,21 @@ def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
     found = REST_ROUTES.get(method)
     if found is not None and method_has_http_handler(method):
         return found[0], found[1]
+    extra = _enterprise_pod_route(method)
+    if extra is not None:
+        return extra
     raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
+
+
+def _enterprise_pod_route(method: str) -> tuple[str, str] | None:
+    """企业版从 Gateway 企业平面取专家包专用网址。个人版不加载该模块。"""
+    from gateway.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return None
+    from gateway.enterprise.capabilities.experts.http_routes import pod_http_routes
+
+    return pod_http_routes().get(method)
 
 
 def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]:

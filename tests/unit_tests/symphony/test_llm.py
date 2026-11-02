@@ -19,12 +19,10 @@ from openjiuwen.core.foundation.llm.request_context import (
     is_disabled_thinking_fallback_allowed,
 )
 
-from jiuwenswarm.symphony.adapter import FingerprintLLMAdapter, llm_config_signature
-from jiuwenswarm.symphony.llm import (
+from jiuwenswarm.runtime.symphony.adapter import llm_config_signature
+from jiuwenswarm.runtime.symphony.llm import (
     LLMConfig,
-    create_llm_client,
     create_model_response_observer,
-    extract_message_content,
     get_llm_token_usage_summary,
     probe_model_connection,
     register_request_model,
@@ -102,10 +100,6 @@ def test_thinking_disabled_request_overrides_returns_isolated_compatibility_fiel
     assert second["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
 
 
-def test_extract_message_content_supports_openjiuwen_response_shape():
-    response = SimpleNamespace(content=[{"text": '{"ok": true}'}])
-
-    assert extract_message_content(response) == '{"ok": true}'
 
 
 def test_llm_config_from_default_models(monkeypatch):
@@ -437,10 +431,6 @@ def test_llm_config_does_not_fallback_to_environment_model(monkeypatch):
         LLMConfig.from_default_model()
 
 
-def test_create_llm_client_uses_jiuwenswarm_client():
-    client = create_llm_client(_llm_config())
-
-    assert type(client).__name__ == "JiuwenSwarmChatClient"
 
 
 def test_llm_config_creates_native_openjiuwen_model(monkeypatch):
@@ -477,9 +467,8 @@ async def test_probe_model_connection_uses_bounded_low_cost_request(monkeypatch)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["probe", "fingerprint"])
-async def test_symphony_calls_retry_when_model_rejects_disabled_thinking(
-    monkeypatch, operation,
+async def test_symphony_probe_retries_when_model_rejects_disabled_thinking(
+    monkeypatch,
 ):
     config = LLMConfig.from_model_entry(_model_entry(request={
         "max_tokens": 99,
@@ -503,21 +492,15 @@ async def test_symphony_calls_retry_when_model_rejects_disabled_thinking(
         "openai.resources.chat.completions.AsyncCompletions.create", create,
     )
 
-    if operation == "probe":
-        await probe_model_connection(config)
-    else:
-        await FingerprintLLMAdapter(config).invoke(
-            [{"role": "user", "content": "fingerprint"}],
-            max_tokens=2048, timeout=30,
-        )
+    await probe_model_connection(config)
 
     first, retry = [call.kwargs for call in create.call_args_list]
     assert first["extra_body"] == original_config["extra_body"]
     expected_retry = deepcopy(first)
     expected_retry["extra_body"] = {"routing": "keep"}
     assert retry == expected_retry
-    assert retry["max_tokens"] == (16 if operation == "probe" else 99)
-    assert retry["timeout"] == (25 if operation == "probe" else 30)
+    assert retry["max_tokens"] == 16
+    assert retry["timeout"] == 25
     assert config.model_config_obj == original_config
     assert is_disabled_thinking_fallback_allowed() is False
 
@@ -574,7 +557,7 @@ async def test_probe_model_connection_enforces_coroutine_deadline(monkeypatch):
 
     monkeypatch.setattr(LLMConfig, "create_model", lambda _config: HangingModel())
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.llm._MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS",
+        "jiuwenswarm.runtime.symphony.llm._MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS",
         0.01,
     )
 
@@ -722,73 +705,12 @@ def test_llm_identity_digest_changes_for_every_client_affecting_setting(
     assert baseline.identity_digest() != changed.identity_digest()
 
 
-@pytest.mark.asyncio
-async def test_complete_json_async_passes_request_overrides_to_invoke():
-    client = create_llm_client(_llm_config())
-    fake_model = _FakeInvokeModel()
-    setattr(client, "_model", fake_model)
-
-    result = await client.complete_json_async(
-        system_prompt="system",
-        user_content="user",
-        request_overrides={
-            "extra_body": {"thinking": {"type": "disabled"}},
-        },
-    )
-
-    assert result == '{"ok": true}'
-    assert "reasoning_effort" not in fake_model.calls[0]
-    assert fake_model.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
-@pytest.mark.asyncio
-async def test_complete_json_async_omits_request_overrides_by_default():
-    client = create_llm_client(_llm_config())
-    fake_model = _FakeInvokeModel()
-    setattr(client, "_model", fake_model)
-
-    await client.complete_json_async(system_prompt="system", user_content="user")
-
-    assert "reasoning_effort" not in fake_model.calls[0]
-    assert "extra_body" not in fake_model.calls[0]
 
 
-@pytest.mark.asyncio
-async def test_complete_json_many_async_passes_request_overrides_to_each_invoke():
-    client = create_llm_client(_llm_config())
-    fake_model = _FakeInvokeModel()
-    setattr(client, "_model", fake_model)
-
-    results = await client.complete_json_many_async(
-        [
-            {"system_prompt": "system-a", "user_content": "user-a"},
-            {"system_prompt": "system-b", "user_content": "user-b"},
-        ],
-        request_overrides={
-            "extra_body": {"thinking": {"type": "disabled"}},
-        },
-    )
-
-    assert results == ['{"ok": true}', '{"ok": true}']
-    assert all("reasoning_effort" not in call for call in fake_model.calls)
-    assert [call["extra_body"] for call in fake_model.calls] == [
-        {"thinking": {"type": "disabled"}},
-        {"thinking": {"type": "disabled"}},
-    ]
 
 
-@pytest.mark.asyncio
-async def test_complete_json_many_async_omits_request_overrides_by_default():
-    client = create_llm_client(_llm_config())
-    fake_model = _FakeInvokeModel()
-    setattr(client, "_model", fake_model)
-
-    await client.complete_json_many_async(
-        [{"system_prompt": "system", "user_content": "user"}],
-    )
-
-    assert "reasoning_effort" not in fake_model.calls[0]
-    assert "extra_body" not in fake_model.calls[0]
 
 
 def test_record_usage_supports_openjiuwen_usage_metadata():

@@ -11,6 +11,16 @@ import logging
 import time
 from typing import Any
 
+from openjiuwen_protocol.audit import (
+    AUDIT_EVENT_EVENT,
+    AUDIT_EVENT_USER_ACTION,
+    AUDIT_LEVEL_INFO,
+    AUDIT_LEVEL_WARN,
+    AUDIT_LIFTED_FIELDS,
+    AUDIT_RSPCD_FAILURE,
+    AUDIT_RSPCD_SUCCESS,
+)
+
 logger = logging.getLogger(__name__)
 
 # caller 要落到业务打点，不能停在本封装或 telemetry / foundation 入口上。
@@ -72,12 +82,12 @@ def emit_audit(
         from jiuwenswarm.telemetry.audit import audit_claw_log
 
         keyword = str(event_type or "").strip().upper()
-        success = keyword != "EVT"
+        success = keyword != AUDIT_EVENT_EVENT
         desc = fields.get("UA") or fields.get("EVT") or fields.get("MSG")
         # UID / session_id / request_id 必须进 audit_claw_log 顶层映射入参，
         # 不能只塞 extra（否则无 ContextVar 时 trace_id/txn_seq/UID 仍为占位，
         # 且会把 session_id/request_id 原名泄漏到 attributes）。
-        _lift = ("UA", "EVT", "MSG", "UID", "uid", "session_id", "request_id")
+        _lift = AUDIT_LIFTED_FIELDS
         rest = {k: v for k, v in fields.items() if k not in _lift}
         raw_uid = fields.get("UID", fields.get("uid"))
         uid = str(raw_uid).strip() if raw_uid is not None else ""
@@ -112,9 +122,9 @@ def emit_audit(
         payload.setdefault("RSPCD", RSPCD)
         payload["caller"] = caller
         keyword = str(event_type or "").strip().upper()
-        if keyword == "UA":
+        if keyword == AUDIT_EVENT_USER_ACTION:
             payload.setdefault("UA", PROC)
-        elif keyword == "EVT":
+        elif keyword == AUDIT_EVENT_EVENT:
             payload.setdefault("EVT", PROC)
         log_audit(keyword, level=level, **payload)
     except Exception as exc:  # noqa: BLE001
@@ -131,22 +141,36 @@ def emit_audit_ua(
     *,
     SUBMDL: str,
     PROC: str,
-    RSPCD: str = "0000",
-    level: str = "INFO",
+    RSPCD: str = AUDIT_RSPCD_SUCCESS,
+    level: str = AUDIT_LEVEL_INFO,
     **fields: Any,
 ) -> None:
-    emit_audit("UA", level=level, SUBMDL=SUBMDL, PROC=PROC, RSPCD=RSPCD, **fields)
+    emit_audit(
+        AUDIT_EVENT_USER_ACTION,
+        level=level,
+        SUBMDL=SUBMDL,
+        PROC=PROC,
+        RSPCD=RSPCD,
+        **fields,
+    )
 
 
 def emit_audit_evt(
     *,
     SUBMDL: str,
     PROC: str,
-    RSPCD: str = "E999",
-    level: str = "WARN",
+    RSPCD: str = AUDIT_RSPCD_FAILURE,
+    level: str = AUDIT_LEVEL_WARN,
     **fields: Any,
 ) -> None:
-    emit_audit("EVT", level=level, SUBMDL=SUBMDL, PROC=PROC, RSPCD=RSPCD, **fields)
+    emit_audit(
+        AUDIT_EVENT_EVENT,
+        level=level,
+        SUBMDL=SUBMDL,
+        PROC=PROC,
+        RSPCD=RSPCD,
+        **fields,
+    )
 
 
 class AuditTimer:

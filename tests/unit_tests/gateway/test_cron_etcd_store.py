@@ -112,8 +112,8 @@ async def test_etcd_put_get_list_delete(extra_fields):
     assert fetched is not None
     assert fetched.name == "daily"
     assert fetched.user_id == "u1"
-    assert fetched.group_id == extra_fields.get("group_id", "default")
-    assert fetched.bot_id == extra_fields.get("bot_id", "default")
+    assert fetched.group_id == extra_fields.get("group_id", "")
+    assert fetched.bot_id == extra_fields.get("bot_id", "")
     assert fetched.mcp == extra_fields.get("mcp")
     assert fetched.credential_ref == extra_fields.get("credential_ref", "")
     listed = await reader.list_jobs()

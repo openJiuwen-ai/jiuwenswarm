@@ -1,6 +1,10 @@
 import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
-import { readOutputOrder } from './sessionOutput';
+import { isRestoredOutputReplay, readOutputOrder } from './sessionOutput';
+import { extractHistoryMediaItems } from './historyRestore';
+import { steerImageMediaRecords } from './sessionInputMedia';
+import { describeChatError } from './free-models/chatError';
+import i18n from '../i18n';
 import { extractCrossSessionMessage } from '../utils/crossSessionMessage';
 import type { WebError, WebRequestOptions } from '../types/websocket';
 
@@ -45,6 +49,7 @@ export async function sendQueuedTaskInput(
         ...context,
         session_id: sessionId,
         content: task.content,
+        ...(task.mediaItems?.length ? { media_items: steerImageMediaRecords(task.mediaItems) } : {}),
         input_mode: 'steer',
         ...(executionId ? { expected_execution_id: executionId } : {}),
       },
@@ -68,7 +73,7 @@ export async function sendQueuedTaskInput(
         taskId,
         requestId,
         deliveryFailedStatus(failure, Boolean(requestId)),
-        failure.message,
+        describeChatError(failure, failure.message, (key) => i18n.t(key)),
         failure.code,
       );
     // Restore an idle send failure only if no actual execution has arrived in the meantime.
@@ -110,9 +115,8 @@ export function handleTaskInputReceipt(event: string, payload: Record<string, un
       store.setActiveExecutionId(sessionId, payload.execution_id);
     }
   } else if (event === 'chat.error') {
-    const error = new Error(
-      typeof payload.error === 'string' ? payload.error : 'Supplemental input failed',
-    ) as WebError;
+    const rawError = typeof payload.error === 'string' ? payload.error : i18n.t('network.supplementFailed');
+    const error = new Error(describeChatError(payload, rawError, (key) => i18n.t(key))) as WebError;
     error.payload = payload;
     error.code = typeof payload.code === 'string' ? payload.code : undefined;
     store.settleTaskInput(sessionId, taskId, requestId, deliveryFailedStatus(error, true), error.message, error.code);
@@ -126,6 +130,7 @@ export function handleSessionOutputBoundary(event: string, payload: Record<strin
   if (typeof sessionId !== 'string') return;
   const store = useChatStore.getState();
   store.ensureRuntime(sessionId);
+  if (isRestoredOutputReplay(store.getRuntime(sessionId)!.messages, payload)) return;
   if (event === 'chat.output_phase') {
     if (typeof payload.output_phase_id !== 'string') return;
     store.setOutputPhase(sessionId, payload.output_phase_id);
@@ -136,6 +141,9 @@ export function handleSessionOutputBoundary(event: string, payload: Record<strin
   const runtime = store.getRuntime(sessionId)!;
   if (runtime.messages.some((message) => message.supplementalInput?.requestId === requestId)) return;
   const request = runtime.taskInputRequests[requestId];
+  const receipt = request ? runtime.taskInputReceipts[request.taskId] : undefined;
+  const canonicalMedia = extractHistoryMediaItems(payload);
+  const mediaItems = canonicalMedia.length ? canonicalMedia : receipt?.mediaItems;
   if (request) store.settleTaskInput(sessionId, request.taskId, requestId, 'accepted', undefined, undefined, 'stream');
   const boundaryTimestamp = new Date(Number(payload.timestamp)).toISOString();
   if (runtime.currentStreamId) {
@@ -146,7 +154,8 @@ export function handleSessionOutputBoundary(event: string, payload: Record<strin
   store.addMessage(sessionId, {
     id: `user-input-${requestId}`,
     role: 'user',
-    content: payload.content,
+    content: receipt?.content ?? payload.content,
+    ...(mediaItems?.length ? { mediaItems } : {}),
     outputOrder: readOutputOrder(payload),
     timestamp: boundaryTimestamp,
     crossSession: extractCrossSessionMessage(payload) ?? undefined,
@@ -165,6 +174,8 @@ export function shouldIgnoreSessionOutput(payload: Record<string, unknown>): boo
   const phase = payload.output_phase_id;
   const sessionId = payload.session_id;
   if (typeof phase !== 'string' || typeof sessionId !== 'string') return false;
-  const current = useChatStore.getState().getRuntime(sessionId)?.outputPhaseId;
+  const runtime = useChatStore.getState().getRuntime(sessionId);
+  if (isRestoredOutputReplay(runtime?.messages ?? [], payload)) return true;
+  const current = runtime?.outputPhaseId;
   return Boolean(current && current !== phase);
 }

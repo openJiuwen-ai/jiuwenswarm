@@ -109,16 +109,12 @@ def _sample_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
-def test_blank_db_identity_becomes_default():
+def test_blank_db_identity_stays_empty():
     job = _row_to_job(_sample_row(group_id=None, bot_id="  ", user_id=None))
     assert job is not None
-    assert (job.group_id, job.bot_id, job.user_id) == ("default", "default", "default")
+    assert (job.group_id, job.bot_id, job.user_id) == ("", "", "")
     row = GatewayDbCronJobStore._job_to_row(job)
-    assert (row["group_id"], row["bot_id"], row["user_id"]) == (
-        "default",
-        "default",
-        "default",
-    )
+    assert (row["group_id"], row["bot_id"], row["user_id"]) == ("", "", "")
     assert "service_id" not in row
     assert "agent_id" not in row
 
@@ -168,7 +164,7 @@ async def test_db_store_create_same_job_id_is_idempotent(memory_store):
 
 
 @pytest.mark.asyncio
-async def test_db_store_create_blank_identity_becomes_default(memory_store):
+async def test_db_store_create_blank_identity_stays_empty(memory_store):
     store = GatewayDbCronJobStore()
     job = await store.create_job(
         name="空身份",
@@ -177,13 +173,13 @@ async def test_db_store_create_blank_identity_becomes_default(memory_store):
         description="提醒",
         targets="web",
     )
-    assert (job.group_id, job.bot_id, job.user_id) == ("default", "default", "default")
-    assert memory_store.rows[0]["group_id"] == "default"
+    assert (job.group_id, job.bot_id, job.user_id) == ("", "", "")
+    assert memory_store.rows[0]["group_id"] == ""
     assert "service_id" not in memory_store.rows[0]
 
     saved = await store.get_job(job.id)
     assert saved is not None
-    assert saved.group_id == "default"
+    assert saved.group_id == ""
 
 
 @pytest.mark.asyncio

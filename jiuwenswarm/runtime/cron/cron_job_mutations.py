@@ -161,6 +161,8 @@ def build_new_cron_job(
     credential_ref: str = "",
 ) -> CronJob:
     """Construct and validate a ``CronJob`` without persisting it."""
+    if (model_selection or {}).get("type") == "model_group":
+        raise ValueError("Scheduled tasks only support a single model")
     now = time.time()
     sid = (
         str(session_id).strip()
@@ -350,6 +352,8 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         else:
             from gateway.common.model_selection import ModelSelection
             selection = ModelSelection.model_validate(raw_selection)
+            if selection.type != "model":
+                raise ValueError("Scheduled tasks only support a single model")
             from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             ModelSelectionResolver().resolve(selection)
             updated = replace(updated, model_selection=selection.model_dump())

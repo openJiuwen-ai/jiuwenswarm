@@ -40,6 +40,7 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_verified_permission_ask_user_question,
     convert_interactions_to_ask_user_question,
+    question_interactions,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
     consume_reviewer_tool_result_metadata,
@@ -92,19 +93,6 @@ def _structured_tool_result_payload(result: Any) -> Any | None:
     return None
 
 
-def _parse_tool_call_arguments(tool_call: Any) -> dict[str, Any]:
-    raw_args = getattr(tool_call, "arguments", None) if tool_call else None
-    if isinstance(raw_args, dict):
-        return raw_args
-    if isinstance(raw_args, str):
-        try:
-            parsed = json.loads(raw_args)
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-
 def _extract_tool_interrupt(value: Any) -> Any | None:
     if value is None:
         return None
@@ -118,54 +106,6 @@ def _extract_tool_interrupt(value: Any) -> Any | None:
             if interrupt is not None:
                 return interrupt
     return None
-
-
-def _normalize_ask_user_interrupt_value(value_obj: Any, tool_args: dict[str, Any]) -> Any:
-    """Attach ask_user tool metadata so plain-query interrupts are not misclassified."""
-    if isinstance(value_obj, dict):
-        if str(value_obj.get("tool_name") or "").strip() == "ask_user":
-            return value_obj
-        if value_obj.get("tool_args"):
-            return value_obj
-        return {
-            **value_obj,
-            "tool_name": "ask_user",
-            "tool_args": tool_args,
-            "message": value_obj.get("message") or tool_args.get("query") or "",
-        }
-
-    tool_name = str(getattr(value_obj, "tool_name", "") or "").strip()
-    existing_args = getattr(value_obj, "tool_args", None)
-    if tool_name == "ask_user" and existing_args:
-        return value_obj
-
-    return {
-        "tool_name": "ask_user",
-        "tool_args": tool_args,
-        "message": str(getattr(value_obj, "message", "") or tool_args.get("query") or ""),
-        "questions": getattr(value_obj, "questions", None) or tool_args.get("questions") or [],
-    }
-
-
-def _ask_user_question_payload_from_interrupt(tool_call: Any, interrupt: Any) -> dict[str, Any] | None:
-    request_id = str(
-        getattr(getattr(interrupt, "request", None), "tool_call_id", None)
-        or getattr(tool_call, "id", "")
-        or ""
-    ).strip()
-    if not request_id:
-        return None
-
-    args = _parse_tool_call_arguments(tool_call)
-    value_obj = getattr(interrupt, "request", None)
-    if value_obj is None:
-        if not args:
-            return None
-        value_obj = {"tool_name": "ask_user", "tool_args": args, "questions": args.get("questions", [])}
-    elif args:
-        value_obj = _normalize_ask_user_interrupt_value(value_obj, args)
-
-    return convert_interactions_to_ask_user_question([{"id": request_id, "value": value_obj}])
 
 
 def _boolish_false(value: Any) -> bool:
@@ -351,12 +291,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         member_name: str | None = None,
         role: str | None = None,
         root_permission_queue: RootPermissionQueue | None = None,
+        project_interruption_snapshots: bool = False,
     ) -> None:
         super().__init__()
         self._deep_agent: Optional[Any] = None
         self._member_name = str(member_name or "").strip()
         self._role = str(role or "").strip().lower()
         self._root_permission_queue = root_permission_queue
+        self.project_interruption_snapshots = project_interruption_snapshots
         # Per-session pause/abort state.  Keyed by session_id (conversation_id).
         # Shared adapter instances serve multiple concurrent sessions; scalar state
         # would cause cross-session contamination (session A cancel kills session B).
@@ -879,6 +821,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     keys=(),
                     reason="permission_queue_unavailable",
                 )
+            elif self.project_interruption_snapshots:
+                await self._project_ordinary_interruption(ctx)
             return
         try:
             snapshot = queue.reconcile(
@@ -893,6 +837,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             return
         if snapshot is None:
+            if self.project_interruption_snapshots:
+                await self._project_ordinary_interruption(ctx)
             return
         payload = build_verified_permission_ask_user_question(
             snapshot.interactions[0],
@@ -912,6 +858,30 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 payload=payload,
             )
         )
+
+    async def _project_ordinary_interruption(self, ctx: AgentCallbackContext) -> None:
+        """Expose the SDK's current head without retaining a second pending list."""
+        result = ctx.inputs.result
+        if not isinstance(result, dict) or result.get("result_type") != "interrupt":
+            return
+        state = result.get("state") or []
+        if state and not question_interactions(state):
+            return
+        payload = convert_interactions_to_ask_user_question(
+            state, root_permission_queue=self._root_permission_queue,
+        )
+        interrupt_ids = result.get("interrupt_ids")
+        if payload is None or not isinstance(interrupt_ids, list) or (
+            payload["request_id"] not in interrupt_ids
+        ):
+            await ctx.session.write_stream(OutputSchema(
+                type="error", index=0,
+                payload={"error": self._interruption_retry_message()},
+            ))
+            return
+        await ctx.session.write_stream(OutputSchema(
+            type="chat.ask_user_question", index=0, payload=payload,
+        ))
 
     async def _cancel_interruption_snapshot(
         self,
@@ -1343,13 +1313,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ctx,
                 tc,
             )
-        await self._emit_ask_user_question_if_interrupted(
-            session,
-            tc,
-            ctx.inputs.tool_name,
-            tool_result,
-            ctx.exception,
-        )
 
         tool_name = ctx.inputs.tool_name
         sid = self._resolve_sid(ctx, session)
@@ -1531,34 +1494,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "interrupted team leader ask_user projection failed",
                 exc_info=True,
             )
-
-    @staticmethod
-    async def _emit_ask_user_question_if_interrupted(
-        session: Session,
-        tool_call: Any,
-        tool_name: str,
-        result: Any,
-        exception: Any = None,
-    ) -> None:
-        if str(tool_name or "").strip() != "ask_user":
-            return
-        interrupt = _extract_tool_interrupt(result) or _extract_tool_interrupt(exception)
-        if interrupt is None:
-            return
-        payload = _ask_user_question_payload_from_interrupt(tool_call, interrupt)
-        if not payload:
-            logger.debug("[StreamEventRail] ask_user interrupt payload unavailable")
-            return
-        try:
-            await session.write_stream(
-                OutputSchema(
-                    type="chat.ask_user_question",
-                    index=0,
-                    payload=payload,
-                )
-            )
-        except Exception:
-            logger.debug("ask_user question emit failed", exc_info=True)
 
     @staticmethod
     async def _emit_reviewer_tool_update(

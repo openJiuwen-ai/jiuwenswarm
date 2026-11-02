@@ -28,8 +28,10 @@ import logging
 import time
 from typing import Final
 
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.utils import get_agent_root_dir
 from gateway.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
@@ -497,7 +499,8 @@ class SessionAdapter(GatewayAdapter):
         # secondary, best-effort cleanup and must not rewrite that result.
         try:
             mailbox = SessionMessageStore(
-                get_agent_root_dir() / "session_messages.sqlite3"
+                get_agent_root_dir() / "session_messages.sqlite3",
+                journal_mode=workspace_sqlite_journal_mode(get_config()) or "WAL",
             )
             if mailbox.exists():
                 records = await asyncio.to_thread(

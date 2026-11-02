@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from contextlib import aclosing
 
 import pytest
 
@@ -1223,6 +1224,139 @@ async def test_team_stream_receives_context_and_parks_persistent_owner() -> None
 
     release.set()
     await stream.aclose()
+    await coordinator.close()
+
+
+def _team_interaction_ids(item: str) -> frozenset[str]:
+    return frozenset({item.removeprefix("ask:")}) if item.startswith("ask:") else frozenset()
+
+
+async def _start_team_request_waiting_on(
+    coordinator: RuntimeSessionCoordinator,
+    control_id: str,
+    release: asyncio.Event,
+):
+    async def operation(context: TeamExecutionContext):
+        del context
+        yield f"ask:{control_id}"
+        await release.wait()
+
+    stream = coordinator.run_team_stream(
+        "session-a",
+        "team-request",
+        SessionWorkKind.TEAM_REQUEST,
+        operation,
+        details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT),
+        interaction_ids=_team_interaction_ids,
+    )
+    assert await anext(stream) == f"ask:{control_id}"
+    return stream
+
+
+async def _answer_team_control(
+    coordinator: RuntimeSessionCoordinator,
+    control_id: str,
+    *,
+    fail: bool = False,
+) -> None:
+    async def operation(context: TeamExecutionContext):
+        del context
+        yield "resumed"
+        if fail:
+            raise RuntimeError("answer was not delivered")
+
+    stream = coordinator.run_team_stream(
+        "session-a",
+        f"answer-{control_id}",
+        SessionWorkKind.TEAM_CONTROL,
+        operation,
+        details=TeamExecutionDetails(control_id=control_id),
+        interaction_ids=_team_interaction_ids,
+    )
+    async with aclosing(stream):
+        async for _ in stream:
+            pass
+
+
+def _team_request_execution(coordinator: RuntimeSessionCoordinator):
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    return next(item for item in snapshot.executions if item.request_id == "team-request")
+
+
+@pytest.mark.asyncio
+async def test_team_control_answer_releases_waiting_team_execution() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+    record = coordinator._sessions["session-a"]
+    assert _team_request_execution(coordinator).waiting_control_ids == frozenset({"call-1"})
+    assert not record.control_ready.is_set()
+
+    await _answer_team_control(coordinator, "call-1")
+
+    execution = _team_request_execution(coordinator)
+    assert execution.waiting_control_ids == frozenset()
+    assert execution.state is SessionExecutionState.RUNNING
+    assert record.control_ready.is_set()
+
+    release.set()
+    await stream.aclose()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_team_control_answer_keeps_interaction_pending() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+
+    with pytest.raises(RuntimeError, match="not delivered"):
+        await _answer_team_control(coordinator, "call-1", fail=True)
+
+    assert _team_request_execution(coordinator).waiting_control_ids == frozenset({"call-1"})
+    assert not coordinator._sessions["session-a"].control_ready.is_set()
+
+    release.set()
+    await stream.aclose()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_team_control_answer_only_releases_its_own_interaction() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+
+    await _answer_team_control(coordinator, "call-other")
+
+    assert _team_request_execution(coordinator).waiting_control_ids == frozenset({"call-1"})
+
+    release.set()
+    await stream.aclose()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_team_control_answer_finishes_parked_team_execution() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    release.set()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+    async with aclosing(stream):
+        async for _ in stream:
+            pass
+    assert _team_request_execution(coordinator).state is SessionExecutionState.WAITING_FOR_CONTROL
+
+    await _answer_team_control(coordinator, "call-1")
+
+    execution = _team_request_execution(coordinator)
+    assert execution.waiting_control_ids == frozenset()
+    assert execution.state is SessionExecutionState.SUCCEEDED
     await coordinator.close()
 
 

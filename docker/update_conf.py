@@ -89,9 +89,9 @@ def main() -> int:
     setpath(data, "gateway.session_map_scope", "${GATEWAY_SESSION_MAP_SCOPE:-per_chat_bot}")
     setpath(data, "react.max_iterations", "${AGENT_SERVER_REACT_MAX_ITER:-100}")
     setpath(data, "react.evolution.enabled", False)
-    # 沙箱可插拔：由部署工具 JIUWENBOX_ENABLED 控制
-    # 关闭时整个 sandbox 域不写入，业务路由走 LOCAL 直跑
-    sandbox_enabled = os.getenv("JIUWENBOX_ENABLED", "true").strip().lower() == "true"
+    # 沙箱可插拔：由部署工具 SANDBOX_TYPE 控制（jiuwenbox 才启用沙箱域）
+    # 非 jiuwenbox 时整个 sandbox 域不写入，业务路由走 LOCAL 直跑
+    sandbox_enabled = os.getenv("SANDBOX_TYPE", "jiuwenbox").strip().lower() == "jiuwenbox"
     if sandbox_enabled:
         setpath(data, "sandbox.enabled", True)
         setpath(data, "sandbox.startup_mode", "external")

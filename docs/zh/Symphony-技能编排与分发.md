@@ -37,7 +37,7 @@ Symphony（技能交响乐）是 JiuwenSwarm 面向海量已安装技能提供�
 
 #### 根据实际使用效果持续优化编排
 
-开启 **动态图谱** 后，Symphony 会参考已完成任务中的技能使用效果，调整后续相关任务的技能组合建议。关闭开关后，编排会恢复为只使用静态图谱，已积累的数据不会删除。
+开启 **动态图谱** 后，Core 的 Symphony Observation 会收集执行证据并生成运行时图快照，Flow 会将满足阈值的成功技能组合沉淀为候选技能包。用户确认候选包后，JiuwenSwarm 完成审核与安装。关闭开关后，编排使用静态图谱，已积累的数据不会删除。
 
 #### 它解决什么问题
 
@@ -413,7 +413,8 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: true
+    flow:
+      enabled: true
 
   orchestration:
     mode: fast
@@ -536,6 +537,10 @@ symphony:
 - [配置说明](配置信息.md)
 - [Agent Team 使用指南](AgentTeam.md)
 - [English: Symphony](../en/Symphony.md)
+
+### 开发与维护边界
+
+检索、指纹提取、图谱编排和演化算法由 `openjiuwen.symphony` 提供。JiuwenSwarm 的应用适配负责模型配置与用量、构建状态、Web/RPC、运行时工具以及技能包安装；配置解析位于 `jiuwenswarm/common/symphony_config.py`。部署升级需要包含对应公开接口的 openjiuwen 版本。删除无调用的 SDK 遗留不改变持久化图谱目录和用户配置路径。
 ---
 
 ## 返回导航

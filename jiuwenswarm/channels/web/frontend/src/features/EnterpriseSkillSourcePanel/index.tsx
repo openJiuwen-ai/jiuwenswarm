@@ -12,7 +12,13 @@ import { getSkillAvatar } from '../../utils/skillAvatar';
 import { Pagination } from '../../components/common/Pagination';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { useToast } from '../../components/common/useToast';
-import { buildSourcePresentationParams, sourceSkillIdentity, isSourceSkillInstalled } from './installMetadata';
+import {
+  buildSourcePresentationParams,
+  sourceSkillIdentity,
+  isEnterpriseSourceSkillInstalled,
+  resolveSourceInstalledLocalSkill,
+  type LocalSkillOriginRef,
+} from './installMetadata';
 
 const PAGE_SIZE_DEFAULT = 20;
 
@@ -70,7 +76,13 @@ interface EnterpriseSkillSourcePanelProps {
    * 提供时隐藏面板内源下拉，仅展示该源的技能列表。
    */
   lockedSourceId?: string;
+  /**
+   * 企业源安装态对照列表：带 origin 的已装技能 + builtin/prebuilt（名称回退用）。
+   * 勿传入「我的技能」全量（含广场自装同名）以免误判已安装。
+   */
+  localSkills?: readonly LocalSkillOriginRef[];
   onInstalled?: (skillName: string) => void | Promise<void>;
+  onGoToChat?: (skillName: string, skillType?: string) => void;
 }
 
 function normalizeUpdatedAt(value: SkillCandidate['updated_at']): string {
@@ -143,7 +155,9 @@ export function EnterpriseSkillSourcePanel({
   viewMode = 'list',
   externalSearchQuery,
   lockedSourceId,
+  localSkills = [],
   onInstalled,
+  onGoToChat,
 }: EnterpriseSkillSourcePanelProps) {
   const { t } = useTranslation();
   const [sources, setSources] = useState<SourceDescriptor[]>([]);
@@ -442,21 +456,34 @@ export function EnterpriseSkillSourcePanel({
         setInstallingId(null);
       }
     },
-    [installingId, loadUpdates, onInstalled, showToast, sourceId, t, withSession],
+    [clearToast, installingId, loadUpdates, onInstalled, showToast, sourceId, t, withSession],
   );
 
+  /** 列表操作：有更新 →「更新」；已安装无更新 →「去试试」；未安装 →「安装」 */
   const renderAction = (item: SkillCandidate) => {
     const identity = sourceSkillIdentity(item, sourceId);
     const status = updateStatuses.get(identity);
-    const isInstalled = isSourceSkillInstalled(identity, installedSkillOrigins, installedStateLoaded, Boolean(status));
+    const local = resolveSourceInstalledLocalSkill(item, sourceId, localSkills);
+    const isInstalled = isEnterpriseSourceSkillInstalled(
+      item,
+      sourceId,
+      localSkills,
+      installedSkillOrigins,
+      installedStateLoaded,
+      Boolean(status),
+    );
     const isInstalling = installingId === itemKey(item, sourceId);
+    const btnClass =
+      'min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm border whitespace-nowrap disabled:text-text-muted disabled:cursor-not-allowed';
+
     if (isInstalled && status?.has_update) {
       return (
         <button
           type="button"
           onClick={() => void handleUpdate(item, status)}
           disabled={isInstalling}
-          className="min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-text border border-text hover:bg-secondary/50 whitespace-nowrap disabled:text-text-muted disabled:cursor-not-allowed"
+          className={`${btnClass} text-text border-text hover:bg-secondary/50`}
+          data-testid="skill-panel-enterprise-update-btn"
         >
           {isInstalling ? t('common.loading') : t('common.update')}
         </button>
@@ -464,9 +491,15 @@ export function EnterpriseSkillSourcePanel({
     }
     if (isInstalled) {
       return (
-        <span className="px-4 h-[28px] flex items-center rounded-2xl text-sm whitespace-nowrap border border-[color:var(--color-border-success)] bg-ok-subtle text-ok">
-          {t('skills.status.installed')}
-        </span>
+        <button
+          type="button"
+          onClick={() => onGoToChat?.(local?.name || item.name, local?.skill_type)}
+          disabled={!onGoToChat}
+          className={`${btnClass} border-[color:var(--color-border-success)] bg-ok-subtle text-ok hover:opacity-90`}
+          data-testid="skill-panel-enterprise-go-try-btn"
+        >
+          {t('skills.actions.goTry')}
+        </button>
       );
     }
     return (
@@ -474,9 +507,10 @@ export function EnterpriseSkillSourcePanel({
         type="button"
         onClick={() => void handleInstall(item)}
         disabled={isInstalling}
-        className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-text border border-text hover:bg-secondary/50 whitespace-nowrap ${
-          isInstalling ? 'text-text-muted cursor-not-allowed' : 'text-text'
+        className={`${btnClass} text-text border-text hover:bg-secondary/50 ${
+          isInstalling ? 'text-text-muted cursor-not-allowed' : ''
         }`}
+        data-testid="skill-panel-enterprise-install-btn"
       >
         {isInstalling ? t('common.loading') : t('skills.actions.install')}
       </button>
@@ -491,8 +525,11 @@ export function EnterpriseSkillSourcePanel({
     return (
       <div
         key={`${item.source_id}:${item.name}:${item.version_id}`}
-        className={`p-4 rounded-lg border border-border bg-panel ${viewMode === 'grid' ? 'flex flex-col' : 'flex items-start justify-between gap-4'}`}
+        className={`p-4 rounded-lg border border-border bg-panel ${
+          viewMode === 'grid' ? 'flex flex-col' : 'flex items-start justify-between gap-4'
+        }`}
         style={viewMode === 'grid' ? { width: '496px', height: '220px', flexShrink: 0 } : undefined}
+        data-testid="skill-panel-enterprise-skill-card"
       >
         <div className="flex items-start gap-3 min-w-0 flex-1">
           <div

@@ -22,6 +22,10 @@ export interface MediaItem {
   /** 展示用的名字（比如任务素材被改过名）；不影响 filename 承担的扩展名识别/下载文件名。
    *  没有的话渲染时回退到 filename。 */
   displayName?: string;
+  /** 这张附件卡片（composer 草稿）自己的 id，发送时随 session.assets.register 的
+   *  client_id 一并带上，让后端识别"这是同一次附加的重试/重放，不是故意再附一次"
+   *  （见 session_assets.py）。不参与渲染。 */
+  clientId?: string;
   base64Data?: string;
   base64_data?: string;
   url?: string;
@@ -116,6 +120,8 @@ export interface Message {
    * 仅作为「任务用时」终点，避免 live 一直停在首包 delta 时间、刷新后变成 final 落盘时间。
    */
   completedAt?: string;
+  /** Server completion time before ISO rounding, bounding output already restored from history. */
+  outputReplayUntil?: number;
   /** 前端渲染身份，避免业务 id 重复或历史 prepend 导致 React key 抖动 */
   renderKey?: string;
   /** 仅用于大历史渐进发布；实时消息没有该标记。 */
@@ -221,6 +227,21 @@ export interface ToolResult {
   /** 仅 symphony_compose_graph 的合法 planned_graph Mermaid 展示投影。 */
   mermaid?: string;
   reviewer?: AutoReviewerMetadata;
+  /** MCP Apps：工具声明了 ui:// 界面时，由后端附带的渲染所需信息。 */
+  mcpApp?: McpAppResult;
+}
+
+/** MCP Apps (io.modelcontextprotocol/ui) tool-result projection. */
+export interface McpAppResult {
+  /** MCP server name, used for mcp_app.* RPCs. */
+  server: string;
+  /** Tool name on that server (not the model-facing mcp_<server>_<tool>). */
+  tool: string;
+  /** ui:// resource holding the app HTML. */
+  resourceUri: string;
+  arguments: Record<string, unknown>;
+  /** Raw CallToolResult (content / structuredContent / _meta / isError). */
+  toolResult?: Record<string, unknown>;
 }
 
 export type ToolExecutionStatus = 'pending' | 'timeout' | 'completed' | 'error';

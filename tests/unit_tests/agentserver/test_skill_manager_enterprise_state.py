@@ -165,6 +165,77 @@ def test_skills_list_exposes_installation_origin_from_installed_plugins(
     assert listed["source_type"] == "user"
 
 
+def test_enterprise_list_get_fallback_version_id_when_ledger_version_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版无 .archive 且账本 version 为空时，list/get 的 version 回退 version_id。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.is_enterprise",
+        lambda: True,
+    )
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _write_skill(workspace, "id-only-skill")
+    manager.record_skill_installation(
+        name="id-only-skill",
+        source_type="user",
+        origin="customer-skillhub:asset-only-id",
+        source="customer-skillhub",
+        source_id="customer-skillhub",
+        skill_id="asset-only-id",
+        version_id="v-only",
+        version="",
+    )
+
+    listed = next(
+        skill
+        for skill in asyncio.run(manager.handle_skills_list({}))["skills"]
+        if skill.get("name") == "id-only-skill"
+    )
+    assert listed.get("version") == "v-only"
+    assert listed.get("version_id") == "v-only"
+
+    detail = asyncio.run(manager.handle_skills_get({"name": "id-only-skill"}))
+    assert detail.get("version") == "v-only"
+    assert detail.get("version_id") == "v-only"
+
+
+def test_personal_list_get_does_not_fallback_ledger_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """单机版无 .archive 时不把账本 version/version_id 写入接口 version。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.is_enterprise",
+        lambda: False,
+    )
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _write_skill(workspace, "personal-skill")
+    manager.record_skill_installation(
+        name="personal-skill",
+        source_type="user",
+        origin="customer-skillhub:personal",
+        source="customer-skillhub",
+        source_id="customer-skillhub",
+        skill_id="personal",
+        version_id="v-personal",
+        version="9.9.9",
+    )
+
+    listed = next(
+        skill
+        for skill in asyncio.run(manager.handle_skills_list({}))["skills"]
+        if skill.get("name") == "personal-skill"
+    )
+    assert listed.get("version") in (None, "")
+    assert listed.get("version_id") == "v-personal"
+
+    detail = asyncio.run(manager.handle_skills_get({"name": "personal-skill"}))
+    assert detail.get("version") in (None, "")
+
+
 def test_apply_skill_source_configs_empty_array_clears_registry(tmp_path: Path) -> None:
     """显式 skill_sources: [] 应清空已配置源；字段缺失则不碰现有 registry。"""
     workspace = tmp_path / "tenant"
@@ -316,6 +387,33 @@ def test_enterprise_builtin_skill_can_toggle_but_not_uninstall(
     assert skill_dir.is_dir()
 
 
+def test_personal_builtin_skill_can_uninstall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人版内置（builtin）与 develop 一致：安装副本可卸载。"""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace))
+    skill_dir = _write_skill(workspace, "docx-pro")
+    record = manager.record_skill_installation(
+        name="docx-pro",
+        source_type="builtin",
+        source="builtin",
+        origin="builtin:docx-pro",
+        version="1.0.0",
+    )
+
+    uninstall_result = asyncio.run(
+        manager.handle_skills_uninstall(
+            {"name": "docx-pro", "origin": record["origin"]}
+        )
+    )
+    assert uninstall_result.get("success") is True
+    assert not skill_dir.is_dir()
+    assert manager.list_skill_installations() == []
+
+
 def test_enterprise_web_install_and_uninstall_use_workspace_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -395,6 +493,52 @@ def test_enterprise_web_uninstall_still_rejects_prebuilt(tmp_path: Path) -> None
     assert result["success"] is False
     assert result["error_code"] == "prebuilt_not_removable"
     assert skill_dir.is_dir()
+
+
+def test_enterprise_web_uninstall_still_rejects_builtin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版 web 卸载入口：builtin 与主路径一致，仍不可卸。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "docx-pro")
+    manager.record_skill_installation(
+        name="docx-pro",
+        source_type="builtin",
+        source="builtin",
+        origin="builtin:docx-pro",
+        version="1.0.0",
+    )
+
+    result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
+
+    assert result["success"] is False
+    assert result["error_code"] == "prebuilt_not_removable"
+    assert skill_dir.is_dir()
+
+
+def test_personal_web_uninstall_allows_builtin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人版 web 卸载入口：builtin 安装副本可卸（与 handle_skills_uninstall 对齐）。"""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "docx-pro")
+    manager.record_skill_installation(
+        name="docx-pro",
+        source_type="builtin",
+        source="builtin",
+        origin="builtin:docx-pro",
+        version="1.0.0",
+    )
+
+    result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
+
+    assert result == {"success": True, "name": "docx-pro"}
+    assert not skill_dir.is_dir()
+    assert manager.list_skill_installations() == []
 
 
 def test_enterprise_uninstall_does_not_fall_back_from_unknown_origin(tmp_path: Path) -> None:
