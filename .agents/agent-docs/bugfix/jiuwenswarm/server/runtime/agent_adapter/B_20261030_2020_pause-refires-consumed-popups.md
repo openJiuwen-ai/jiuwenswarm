@@ -50,3 +50,14 @@ cron_snapshot/team_completion 158 passed）。
 
 重连幽灵弹窗（回放过期 interaction）同根因族，消费层 dedup 守卫对其同效收口；跨
 重启重放的 run 现势过滤留观察（真实复现再议）。
+
+## rebase 归并注记（2026-11-02）
+
+feat 分支 rebase 最新 develop 时，重放层修复（dispatcher 过滤已消费 interaction 帧）与
+develop 侧新演化的 `_question_recovery_filter` 机制（`jiuwenswarm/server/worker/dispatcher.py`）
+归并：develop 版以 `needs_questions`（record 缺失即不触发全量重放）+ 恢复过滤器
+（`recoverable_control` 权威判定 + 只放行"最新当前问题"帧）实现同一语义的超集——
+已消费/已过期问题不重投，且只有真正待恢复的 ask_user 帧进重放。feat 侧的
+frame_interaction_pending 判定是其子集，归并时以 develop 版为准。三层链的另外两层
+（触发层 retire_session_interactions 清场、消费层前端 request_id 级 dedup）不受影响，
+仍为本修复原始实现。
