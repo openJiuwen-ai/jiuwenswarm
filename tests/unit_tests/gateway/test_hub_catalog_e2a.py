@@ -2,6 +2,9 @@
 
 """Management catalog traverses Gateway, routeless E2A and Server HTTP."""
 
+import subprocess
+import sys
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -11,7 +14,7 @@ from fastapi import FastAPI
 
 from gateway.enterprise.config.manager_config.routers.application_config_routers import application_config_router
 from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import HttpSseAgentServerClient
 from jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client import RuntimeRoutedAgentClient
 from jiuwenswarm.server.agent_http_routes import build_http_app
@@ -89,3 +92,14 @@ async def test_catalog_runtime_uses_default_http_without_routing(monkeypatch):
     http.send_request.assert_awaited_once_with(envelope, base_url="http://management-server:8766")
     route.route.assert_not_awaited()
     route.touch.assert_not_awaited()
+
+
+def test_hub_catalog_method_available_without_application_imports():
+    """A standalone Gateway can use the pinned protocol without Server shims."""
+    script = (
+        "import sys; "
+        "from openjiuwen_protocol.message import ReqMethod; "
+        "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG; "
+        "assert not any(name.split('.')[0] in ('jiuwenswarm', 'gateway') for name in sys.modules)"
+    )
+    subprocess.run([sys.executable, "-I", "-c", script], check=True)

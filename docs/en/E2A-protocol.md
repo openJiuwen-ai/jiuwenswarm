@@ -492,6 +492,6 @@ clients use their existing connection.
 The management response remains `{code: 200, message: "success", data: {items: [...],
 error: ""}}`. An unavailable Server, transport failure or Hub lookup failure produces
 empty `items` and an error message, without a local Gateway fallback. Existing Server
-cold-cache and background-refresh semantics remain in place. Until the pinned protocol
-package provides this method, `schema/message.py` registers it using the existing
-compatibility mechanism; remove that registration after the protocol package ships it.
+cold-cache and background-refresh semantics remain in place. The pinned
+`openjiuwen-protocol` package defines `hub.expert_packages.catalog`; no application-side
+enum registration is required.
