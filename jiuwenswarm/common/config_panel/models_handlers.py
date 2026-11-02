@@ -251,6 +251,31 @@ def resolve_persisted_mcc_for_validate(model_name: str) -> dict[str, Any]:
     return {}
 
 
+def resolve_validate_endpoint_profile(
+    params: dict[str, Any],
+    persisted_mcc: dict[str, Any],
+    api_base: str,
+) -> str | None:
+    """解析「测试连接」的端点方言：草稿 → host 推断 → 持久化条目兜底。
+
+    持久化兜底与保存合并（``_merge_models_for_replace_all``）同口径：
+    条目切到 Anthropic 协议或换用其他供应商预设时，保存会丢弃旧方言，
+    探测也不得回退；其余情况表单未携带方言即视为保留持久化值（编辑表单
+    不暴露该字段，缺失不代表清空）。``vendor_key`` 由前端透传；旧版
+    payload 不带该字段时按"未变更"处理会误用旧方言，因此优先信任
+    payload 与持久化的显式比较。
+    """
+    explicit = params.get("endpoint_profile")
+    profile = effective_endpoint_profile(api_base, explicit)
+    if profile:
+        return profile
+    if normalize_provider_value(str(params.get("model_provider") or "")) == "Anthropic":
+        return None
+    if (params.get("vendor_key") or "") != (persisted_mcc.get("vendor_key") or ""):
+        return None
+    return str(persisted_mcc.get("endpoint_profile") or "") or None
+
+
 def build_probe_model_client_config(
     model_provider: str,
     api_key: str,
@@ -387,6 +412,7 @@ def _merge_models_for_replace_all(
                 new_entry["alias"] = item["alias"]
             # vendor_key + plan: persist the exact provider selection identity
             # into model_client_config (or clear it).
+            previous_vendor = str(new_mcc.get("vendor_key") or "")
             if item.get("vendor_key"):
                 new_mcc["vendor_key"] = item["vendor_key"]
             else:
@@ -396,10 +422,16 @@ def _merge_models_for_replace_all(
             else:
                 new_mcc.pop("plan", None)
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
-            # 前端透传则落库；不传则清掉(避免残留旧方言)。Anthropic 协议时此字段被 core 忽略。
+            # 编辑表单不暴露该字段(Anthropic 协议下 core 忽略)，payload 缺失不等于
+            # 用户要求清空：仅当切到 Anthropic 协议或换用其他供应商预设时丢弃持久化
+            # 值，否则保留(与 TUI 保存路径同口径)，避免静默刷掉手写 YAML 的方言。
+            # payload 显式值/保存时 host 推断值始终优先落库。
             if item.get("endpoint_profile"):
                 new_mcc["endpoint_profile"] = item["endpoint_profile"]
-            else:
+            elif (
+                normalize_provider_value(str(item.get("model_provider") or "")) == "Anthropic"
+                or (item.get("vendor_key") or "") != previous_vendor
+            ):
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
             # api_key: resolved holds the decrypted plaintext shown to the frontend.
@@ -687,14 +719,15 @@ async def config_validate_model_handler(
     verify_ssl: bool | None = None
     if "verify_ssl" in params:
         verify_ssl = bool(params.get("verify_ssl"))
-    # 未显式传方言时按 api_base host 推断已知自建网关(如 vllm)，
-    # 保证"测试连接"与保存后的真实运行走同一条 core 路由。
-    endpoint_profile = effective_endpoint_profile(api_base, params.get("endpoint_profile"))
-
-    model_config_obj = resolve_model_config_obj_for_validate(model, params)
     # 探测以持久化条目为基线：custom_headers / ssl_cert 等配置页未暴露的
     # write-only 字段随条目进入探测请求，与保存后的对话路径同口径。
     persisted_mcc = resolve_persisted_mcc_for_validate(model)
+    # 方言解析：草稿优先；未显式传时按 api_base host 推断已知自建网关(如
+    # vllm)；仍未命中且保存会保留持久化值时回退条目方言——保证"测试连接"
+    # 与保存后的真实运行走同一条 core 路由。
+    endpoint_profile = resolve_validate_endpoint_profile(params, persisted_mcc, api_base)
+
+    model_config_obj = resolve_model_config_obj_for_validate(model, params)
 
     reasoning_mcc = {
         "client_provider": model_provider,

@@ -11,6 +11,7 @@ import pytest
 from jiuwenswarm.common.config_panel.models_handlers import (
     build_probe_model_client_config,
     resolve_persisted_mcc_for_validate,
+    resolve_validate_endpoint_profile,
 )
 
 
@@ -101,6 +102,90 @@ class TestResolvePersistedMccForValidate:
         )
         result = resolve_persisted_mcc_for_validate("gpt-4")
         assert result["custom_headers"] == {"A": "1"}
+
+
+class TestResolveValidateEndpointProfile:
+    """Tests for ``resolve_validate_endpoint_profile`` (probe dialect fallback)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_host_inference(self, monkeypatch):
+        """Disable host→profile inference so cases only exercise explicit/fallback."""
+
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config_panel.models_handlers.effective_endpoint_profile",
+            lambda api_base, explicit=None: str(explicit or "").strip() or None,
+        )
+
+    def test_draft_value_wins_over_persisted(self):
+        profile = resolve_validate_endpoint_profile(
+            {"endpoint_profile": "qwen38"},
+            {"endpoint_profile": "vllm"},
+            "https://x.test/v1",
+        )
+        assert profile == "qwen38"
+
+    def test_host_inference_wins_over_persisted(self, monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config_panel.models_handlers.effective_endpoint_profile",
+            lambda api_base, explicit=None: "inferred-vllm",
+        )
+        profile = resolve_validate_endpoint_profile(
+            {"model_provider": "OpenAI"},
+            {"endpoint_profile": "stale-profile"},
+            "https://x.test/v1",
+        )
+        assert profile == "inferred-vllm"
+
+    def test_falls_back_to_persisted_when_draft_missing(self):
+        profile = resolve_validate_endpoint_profile(
+            {"model_provider": "OpenAI"},
+            {"endpoint_profile": "vllm"},
+            "https://x.test/v1",
+        )
+        assert profile == "vllm"
+
+    def test_same_vendor_falls_back_to_persisted(self):
+        profile = resolve_validate_endpoint_profile(
+            {"model_provider": "OpenAI", "vendor_key": "deepseek"},
+            {"vendor_key": "deepseek", "endpoint_profile": "deepseek"},
+            "https://x.test/v1",
+        )
+        assert profile == "deepseek"
+
+    def test_anthropic_never_falls_back(self):
+        profile = resolve_validate_endpoint_profile(
+            {"model_provider": "Anthropic"},
+            {"endpoint_profile": "vllm"},
+            "https://x.test/v1",
+        )
+        assert profile is None
+
+    def test_vendor_switch_never_falls_back(self):
+        profile = resolve_validate_endpoint_profile(
+            {"model_provider": "OpenAI", "vendor_key": "kimi"},
+            {"vendor_key": "deepseek", "endpoint_profile": "deepseek"},
+            "https://x.test/v1",
+        )
+        assert profile is None
+
+    def test_switching_to_custom_vendor_never_falls_back(self):
+        # 前端切换到自定义供应商时会清除 vendor_key。
+        profile = resolve_validate_endpoint_profile(
+            {"model_provider": "OpenAI"},
+            {"vendor_key": "deepseek", "endpoint_profile": "deepseek"},
+            "https://x.test/v1",
+        )
+        assert profile is None
+
+    def test_no_persisted_profile_returns_none(self):
+        assert (
+            resolve_validate_endpoint_profile(
+                {"model_provider": "OpenAI"},
+                {},
+                "https://x.test/v1",
+            )
+            is None
+        )
 
 
 class TestBuildProbeModelClientConfig:
