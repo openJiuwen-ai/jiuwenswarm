@@ -19,6 +19,7 @@ user-facing task directories.
 from __future__ import annotations
 
 import datetime as _datetime
+import hashlib
 import json
 import os
 import re
@@ -140,8 +141,14 @@ def get_projectless_task_workspace(
 ) -> ProjectlessTaskWorkspace:
     """Create or reuse a stable workspace for a projectless task session."""
     tasks_dir = get_projectless_tasks_dir()
-    safe_session = _slugify(session_id, fallback="default")
+    legacy_session = _slugify(session_id, fallback="default")
+    safe_session = _session_key(session_id, legacy_session)
     registered_root = _read_registered_root(tasks_dir, safe_session)
+    if registered_root is None and safe_session != legacy_session:
+        legacy_root = _read_registered_root(tasks_dir, legacy_session)
+        if legacy_root is not None and _metadata_session_id(legacy_root) == session_id:
+            registered_root = legacy_root
+            _write_registered_root(tasks_dir, safe_session, registered_root)
     if registered_root is None:
         task_date = _datetime.datetime.now().astimezone().strftime("%Y-%m-%d")
         registered_root = _allocate_task_root(
@@ -184,6 +191,22 @@ def _slugify(value: str | None, *, fallback: str) -> str:
     if text.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
         return f"task-{text}"
     return text
+
+
+def _session_key(session_id: str | None, slug: str) -> str:
+    """Keep exact short IDs stable while disambiguating lossy path names."""
+    if not session_id or session_id == slug:
+        return slug
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+    return f"{slug[:_MAX_TASK_NAME_LENGTH - 13]}-{digest}"
+
+
+def _metadata_session_id(root: Path) -> str | None:
+    try:
+        metadata = json.loads((root / _METADATA_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return metadata.get("session_id") if isinstance(metadata, dict) else None
 
 
 def _allocate_task_root(
