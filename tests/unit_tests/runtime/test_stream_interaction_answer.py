@@ -1083,9 +1083,10 @@ async def test_chat_send_question_answer_rejects_mixed_stream_and_unary_duplicat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("smart", [False, True])
+@pytest.mark.parametrize("card_id", [None, "call_A", "c" * 129, "c" * 512])
 @pytest.mark.parametrize("decision", ["allow", "reject"])
-async def test_permission_chat_send_streams_large_continuation_before_eof(harness, smart, decision):
+async def test_permission_chat_send_streams_large_continuation_before_eof(harness, card_id, decision):
+    smart = card_id is not None
     await _seed_waiting(harness)
     finish = asyncio.Event()
     deliveries, acknowledgements, closed = [], [], []
@@ -1094,7 +1095,7 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
     request = _answer(source="permission_interrupt", channel_id="web").to_agent_request()
     request.params["answers"][0]["selected_options"] = [decision]
     if smart:
-        request.params["answers"][0]["card_id"] = "opaque-card"
+        request.params["answers"][0]["card_id"] = card_id
 
     async def delivered(answer):
         deliveries.append(answer.request_id)
