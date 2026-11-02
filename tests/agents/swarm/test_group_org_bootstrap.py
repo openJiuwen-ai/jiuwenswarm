@@ -3118,6 +3118,60 @@ async def test_result_keeps_only_the_owner_final_files(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_result_omits_a_copy_of_the_summary_file(monkeypatch, tmp_path):
+    from openjiuwen.agent_teams.paths import (
+        organization_workspace_dir,
+        reset_task_openjiuwen_home,
+        set_task_openjiuwen_home,
+    )
+
+    token = set_task_openjiuwen_home(tmp_path)
+    try:
+        owner_outputs = tmp_path / ".agent_teams" / "org-expert-business" / "outputs"
+        owner_outputs.mkdir(parents=True)
+        summary_dir = organization_workspace_dir(ORG, SESSION) / "summary"
+        summary_dir.mkdir(parents=True)
+        report = summary_dir / "knowledge-qa-assistant-feasibility-report.md"
+        report.write_text("same report", encoding="utf-8")
+        copied = owner_outputs / "knowledge-qa-assistant-feasibility-report.md"
+        copied.write_bytes(report.read_bytes())
+        other = owner_outputs / "notes.md"
+        other.write_text("different", encoding="utf-8")
+
+        async def _round_state(_pool, _plan_id):
+            root = SimpleNamespace(
+                output_context=SimpleNamespace(
+                    result_uri=f".organization/{ORG}/summary/{report.name}"
+                ),
+                output_abstract="",
+            )
+            return "completed", [root]
+
+        monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(
+            {
+                "result": "report",
+                "attachments": [
+                    {"name": copied.name, "path": str(copied)},
+                    {"name": other.name, "path": str(other)},
+                ],
+            }
+        )
+        result, files = await bootstrap._await_completed_result(
+            future, object(), "plan-1", session_id=SESSION, organization_id=ORG
+        )
+    finally:
+        reset_task_openjiuwen_home(token)
+
+    assert result == "report"
+    assert files == [
+        {"name": copied.name, "path": str(copied.resolve())},
+        {"name": other.name, "path": str(other.resolve())},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_fallback_root_output_skips_binary_deliverable(monkeypatch, tmp_path):
     from openjiuwen.agent_teams.paths import (
         organization_workspace_dir,
