@@ -5937,7 +5937,10 @@ class AgentWebSocketServer:
                 page_idx=page_idx,
                 cursor_protocol=cursor_protocol,
                 cursor=request_cursor,
-                limit=params.get("limit", _HISTORY_PAGE_SIZE),
+                limit=params.get(
+                    "limit",
+                    _HISTORY_CURSOR_DEFAULT_LIMIT if cursor_protocol else _HISTORY_PAGE_SIZE,
+                ),
                 max_bytes=params.get("max_bytes", _HISTORY_CURSOR_DEFAULT_MAX_BYTES),
             )
         except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
@@ -6507,7 +6510,10 @@ class AgentWebSocketServer:
                 page_idx=page_idx,
                 cursor_protocol=cursor_protocol,
                 cursor=request_cursor,
-                limit=params.get("limit", _HISTORY_PAGE_SIZE),
+                limit=params.get(
+                    "limit",
+                    _HISTORY_CURSOR_DEFAULT_LIMIT if cursor_protocol else _HISTORY_PAGE_SIZE,
+                ),
                 max_bytes=params.get("max_bytes", _HISTORY_CURSOR_DEFAULT_MAX_BYTES),
             )
         except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:

@@ -183,6 +183,37 @@ def test_cursor_history_accepts_large_batch_and_byte_budget(monkeypatch):
     assert result["messages"] == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_cursor_history_ws_defaults_to_large_batch(server, monkeypatch, stream):
+    captured = {}
+
+    def read_page(session_id, *, cursor, limit, max_bytes, is_restorable):
+        captured.update(limit=limit, max_bytes=max_bytes)
+        return {
+            "messages": [],
+            "next_cursor": None,
+            "has_more": False,
+            "snapshot_id": None,
+            "snapshot_end": 0,
+            "scanned_bytes": 0,
+            "wire_bytes": 0,
+        }
+
+    monkeypatch.setattr(module, "read_history_cursor_page", read_page)
+    handler = server._handle_history_get_stream if stream else server._handle_history_get
+    await handler(
+        RecordingTransport(),
+        history_request(stream=stream, limit=None),
+        asyncio.Lock(),
+    )
+
+    assert captured == {
+        "limit": 500,
+        "max_bytes": module._HISTORY_CURSOR_DEFAULT_MAX_BYTES,
+    }
+
+
 def test_cursor_history_rejects_invalid_max_bytes():
     with pytest.raises(module.InvalidHistoryCursor, match="max_bytes"):
         module.AgentWebSocketServer.get_conversation_history_cursor(
