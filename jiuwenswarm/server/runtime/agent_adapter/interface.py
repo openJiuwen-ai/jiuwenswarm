@@ -3679,6 +3679,32 @@ class JiuWenSwarm:
             return bool(has_runtime())
         return bool(has_runtime(session_id))
 
+    def session_runtime_state(self, session_id: str | None = None) -> dict[str, bool]:
+        """Per-container view behind :meth:`has_session_runtime` (for diagnostics)."""
+        state: dict[str, bool] = {}
+        manager_fn = getattr(self._session_manager, "session_runtime_state", None)
+        if callable(manager_fn):
+            try:
+                state.update(manager_fn(session_id))
+            except Exception:  # noqa: BLE001 - diagnostics must not mask the failure
+                logger.debug(
+                    "[JiuWenSwarm] session_runtime_state(session_manager) failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+        adapter = self._adapter
+        adapter_fn = getattr(adapter, "session_runtime_state", None) if adapter is not None else None
+        if callable(adapter_fn):
+            try:
+                state.update(adapter_fn(session_id))
+            except Exception:  # noqa: BLE001 - diagnostics must not mask the failure
+                logger.debug(
+                    "[JiuWenSwarm] session_runtime_state(adapter) failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+        return state
+
     async def cancel_inflight_work(self, log_prefix: str = "[gateway disconnect] ") -> None:
         """Gateway 与 AgentServer 的 WebSocket 断开时调用：取消 session 流式任务并中止 adapter 内层循环。"""
         await self._session_manager.cancel_all_session_tasks(log_prefix)

@@ -2000,6 +2000,30 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             or self._session_agent_tasks
         )
 
+    def session_runtime_state(self, session_id: str | None = None) -> dict[str, bool]:
+        """Per-container view behind :meth:`has_session_runtime` (for diagnostics)."""
+        if self._is_session_scoped_adapter:
+            return {
+                "adapter.session_scoped": (
+                    self._session_adapter_key(self._parent_session_id)
+                    == self._session_adapter_key(session_id)
+                )
+            }
+        sid = self._session_adapter_key(session_id) if session_id is not None else None
+        if sid is None:
+            return {
+                "adapter.session_adapters": bool(self._session_adapters),
+                "adapter.session_adapter_locks": bool(self._session_adapter_locks),
+                "adapter.active_session_ids": bool(self._active_session_ids),
+                "adapter.session_agent_tasks": bool(self._session_agent_tasks),
+            }
+        return {
+            "adapter.session_adapters": sid in self._session_adapters,
+            "adapter.session_adapter_locks": sid in self._session_adapter_locks,
+            "adapter.active_session_ids": self._active_session_ids.get(sid, 0) > 0,
+            "adapter.session_agent_tasks": sid in self._session_agent_tasks,
+        }
+
     def _session_has_registered_tasks(self, session_id: str) -> bool:
         tasks = getattr(self, "_session_agent_tasks", {}).get(session_id)
         return bool(tasks and any(not task.done() for task in tasks))

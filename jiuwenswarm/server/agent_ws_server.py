@@ -230,6 +230,10 @@ _DESKTOP_SESSION_LIMIT_MESSAGE = (
     "请等待其他会话结束后再发起新会话。"
 )
 _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS = 5
+# session.delete 前先等在途的会话预热（warm pool 前台 prepare）落地：create 回包时
+# 适配器注册与 prepare 仍在后台续跑，delete 抢在该尾巴之前会 cancel 空转、cleanup
+# 撞上"刚注册"的运行态而误判 DELETE_FAILED。超时后照常拆，仍失败则诚实报错。
+_SESSION_PREWARM_WAIT_SEC = 5.0
 
 
 def format_permission_wire_diagnostic(
@@ -4976,6 +4980,37 @@ class AgentWebSocketServer:
                 is_team_mode = self._is_team_metadata_mode(metadata)
                 team_name = str(metadata.get("team_name") or "").strip()
                 channel_id = str(metadata.get("channel_id") or request.channel_id or "").strip() or None
+                # 先等在途创建落地再拆：warm pool 的 prepare 尾巴（adapter 注册 +
+                # start_interaction + warmup）可能仍在后台跑，此时 cancel 找不到适配器
+                # （空转）、cleanup 又会把"刚注册"的运行态判成删不掉 → DELETE_FAILED。
+                wait_prewarm = getattr(self._agent_manager, "wait_for_session_prewarm", None)
+                if callable(wait_prewarm):
+                    # 有界等待：超时、预热任务自身异常或被取消都只缩短等待，
+                    # 绝不能在 cancel/cleanup 之前把 delete 中断掉（否则既无回包
+                    # 也不清理运行态）。asyncio.wait 不会把任务异常抛给等待者。
+                    waiter = asyncio.ensure_future(wait_prewarm(target))
+                    try:
+                        done, _ = await asyncio.wait(
+                            {waiter}, timeout=_SESSION_PREWARM_WAIT_SEC
+                        )
+                    except asyncio.CancelledError:
+                        waiter.cancel()
+                        raise
+                    if not done:
+                        waiter.cancel()
+                        logger.warning(
+                            "[AgentWebSocketServer] session.delete: session prewarm still "
+                            "running after %.1fs, continuing teardown session_id=%s",
+                            _SESSION_PREWARM_WAIT_SEC,
+                            target,
+                        )
+                    elif not waiter.cancelled() and waiter.exception() is not None:
+                        logger.warning(
+                            "[AgentWebSocketServer] session.delete: session prewarm failed, "
+                            "continuing teardown session_id=%s error=%s",
+                            target,
+                            waiter.exception(),
+                        )
                 if not is_team_mode:
                     # session.delete must also stop what the session *does*, not
                     # just erase its records: an in-flight round keeps streaming
@@ -4988,7 +5023,11 @@ class AgentWebSocketServer:
                     # double cancellation.
                     if not await self._cancel_inflight_round_for_delete(request, target):
                         resp = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
-                            ok=False, payload={"code": "DELETE_FAILED", "error": "session runtime cleanup failed"})
+                            ok=False, payload={
+                                "code": "DELETE_FAILED",
+                                "error": "session runtime cleanup failed",
+                                "detail": "in-flight round cancellation failed; session runtime retained",
+                            })
                         async with send_lock:
                             await send_wire_payload(ws, encode_agent_response_for_wire(resp, response_id=request.request_id))
                         return False
@@ -4997,9 +5036,13 @@ class AgentWebSocketServer:
                         try:
                             await await_request_cleanup(cleanup(
                                 channel_id=channel_id or request.channel_id or "", session_id=target))
-                        except Exception:
+                        except Exception as exc:
                             resp = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
-                                ok=False, payload={"code": "DELETE_FAILED", "error": "session runtime cleanup failed"})
+                                ok=False, payload={
+                                    "code": "DELETE_FAILED",
+                                    "error": "session runtime cleanup failed",
+                                    "detail": str(exc)[:300],
+                                })
                             async with send_lock:
                                 await send_wire_payload(ws, encode_agent_response_for_wire(resp, response_id=request.request_id))
                             return False
@@ -5037,6 +5080,7 @@ class AgentWebSocketServer:
                             target,
                             exc_info=True,
                         )
+                    runtime_error = ""
                     try:
                         if is_team_mode:
                             team_manager = get_team_manager(channel_id)
@@ -5044,6 +5088,8 @@ class AgentWebSocketServer:
                                 target,
                                 reason="session.delete: ",
                             )
+                            if not deleted:
+                                runtime_error = "team runtime teardown declined (team still active)"
                         else:
                             await Runner.release(target)
                             deleted = True
@@ -5053,14 +5099,21 @@ class AgentWebSocketServer:
                             target,
                             exc,
                         )
+                        runtime_error = str(exc)[:300]
                         deleted = False
 
                     if not deleted:
+                        payload: dict[str, Any] = {
+                            "error": "session runtime cleanup failed",
+                            "code": "DELETE_FAILED",
+                        }
+                        if runtime_error:
+                            payload["detail"] = runtime_error
                         resp = AgentResponse(
                             request_id=request.request_id,
                             channel_id=request.channel_id,
                             ok=False,
-                            payload={"error": "session runtime cleanup failed", "code": "DELETE_FAILED"},
+                            payload=payload,
                             metadata=request.metadata,
                         )
                     else:

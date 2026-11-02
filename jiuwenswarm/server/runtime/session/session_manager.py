@@ -390,6 +390,25 @@ class SessionManager:
             or self._closing_tasks
         )
 
+    def session_runtime_state(self, session_id: str | None = None) -> dict[str, bool]:
+        """Per-container view behind :meth:`has_session_runtime` (for diagnostics)."""
+        if session_id is not None:
+            return {
+                "session_manager.tasks": session_id in self._session_tasks,
+                "session_manager.priorities": session_id in self._session_priorities,
+                "session_manager.queues": session_id in self._session_queues,
+                "session_manager.processors": session_id in self._session_processors,
+                "session_manager.closing_tasks": session_id in self._closing_tasks,
+            }
+        return {
+            "session_manager.tasks": bool(self._session_tasks),
+            "session_manager.priorities": bool(self._session_priorities),
+            "session_manager.queues": bool(self._session_queues),
+            "session_manager.processors": bool(self._session_processors),
+            "session_manager.task_result_futures": bool(self._task_result_futures),
+            "session_manager.closing_tasks": bool(self._closing_tasks),
+        }
+
     def has_active_tasks(self) -> bool:
         """是否有活跃的 session 任务（供 dreaming busy_checker 使用）。"""
         return any(t is not None and not t.done() for t in self._session_tasks.values())

@@ -556,6 +556,7 @@ class AgentManager:
 
         cleaned = False
         failed_agents = 0
+        failure_details: list[str] = []
         for cache_key, agent in list(channel_agents.items()):
             cleanup_fn = getattr(agent, "cleanup_session_runtime", None)
             if not callable(cleanup_fn):
@@ -563,8 +564,9 @@ class AgentManager:
             try:
                 session_cleaned = bool(await cleanup_fn(sid))
                 cleaned = session_cleaned or cleaned
-            except Exception:
+            except Exception as exc:
                 failed_agents += 1
+                failure_details.append(f"{cache_key}: cleanup raised {type(exc).__name__}")
                 logger.exception(
                     "[AgentManager] cleanup_session_runtime failed: channel_id=%s session_id=%s",
                     channel_key,
@@ -577,6 +579,7 @@ class AgentManager:
                 session_retained = bool(has_runtime(sid)) if callable(has_runtime) else False
             except Exception:
                 failed_agents += 1
+                failure_details.append(f"{cache_key}: state check raised")
                 logger.exception(
                     "[AgentManager] session runtime state check failed: "
                     "channel_id=%s session_id=%s",
@@ -586,12 +589,15 @@ class AgentManager:
                 continue
             if session_retained:
                 failed_agents += 1
+                retained = self._describe_session_runtime_state(agent, sid)
+                failure_details.append(f"{cache_key}: retained[{retained}]")
                 logger.warning(
                     "[AgentManager] session runtime remains after cleanup: "
-                    "channel_id=%s session_id=%s cache_key=%s",
+                    "channel_id=%s session_id=%s cache_key=%s retained=%s",
                     channel_key,
                     sid,
                     cache_key,
+                    retained,
                 )
                 continue
 
@@ -614,12 +620,29 @@ class AgentManager:
         if isinstance(channel_params, dict) and not channel_params:
             self._agent_create_params.pop(channel_key, None)
         if failed_agents:
-            raise RuntimeError(
+            message = (
                 "cleanup_session_runtime failed for "
                 f"{failed_agents} agent(s): channel_id={channel_key} "
                 f"session_id={sid}"
             )
+            if failure_details:
+                message += f"; detail={'; '.join(failure_details)[:300]}"
+            raise RuntimeError(message)
         return cleaned
+
+    @staticmethod
+    def _describe_session_runtime_state(agent: Any, session_id: str) -> str:
+        """Which runtime containers still hold this session (empty when unsupported)."""
+        state_fn = getattr(agent, "session_runtime_state", None)
+        if not callable(state_fn):
+            return "unknown"
+        try:
+            state = state_fn(session_id)
+        except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+            return "unknown"
+        if not isinstance(state, dict):
+            return "unknown"
+        return ",".join(sorted(k for k, v in state.items() if v)) or "none"
 
     def get_client_capabilities(self, channel_id: str = "") -> dict[str, Any]:
         channel_key = str(channel_id or "").strip()
