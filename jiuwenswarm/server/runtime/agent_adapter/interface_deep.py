@@ -17407,6 +17407,7 @@ class JiuWenSwarmDeepAdapter:
         await manager.ensure_session_started(
             context, request_id=request.request_id or "", channel_id=request.channel_id or "",
             is_interactive=inputs.get("supports_user_interaction", True) is True,
+            surface="desktop" if request.channel_id == "web" else None,
         )
 
     async def process_message_impl(

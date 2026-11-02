@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
 
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 from openjiuwen.core.extension import ActivePackageRecord, Runtime
@@ -18,6 +19,7 @@ from jiuwenswarm.extensions_v2.event_types.session_start import (
     SessionStartOutput,
     bind_start_invocation,
 )
+from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface, valid_surface
 
 
 @dataclass
@@ -45,6 +47,7 @@ class SessionStartGate:
         request_id: str,
         channel_id: str,
         is_interactive: bool,
+        surface: RenderSurface | None = None,
     ) -> tuple[SessionStartOutput, ...]:
         """Attempt each new activation once before the caller runs native input.
 
@@ -53,6 +56,7 @@ class SessionStartGate:
             request_id: Native input request identifier.
             channel_id: Existing platform channel identifier.
             is_interactive: Bound runtime's user-interaction capability.
+            surface: Rendering surface declared by the host, or unknown.
 
         Returns:
             Receipts from newly attempted activations during this call.
@@ -66,6 +70,11 @@ class SessionStartGate:
             raise ValueError("session.start requires a valid session_id")
         if not isinstance(request_id, str) or not isinstance(channel_id, str) or not isinstance(is_interactive, bool):
             raise ValueError("session.start requires typed host input facts")
+        cwd = context.cwd
+        if not isinstance(cwd, str) or not cwd or not (Path(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute()):
+            raise ValueError("session.start requires its bound absolute cwd")
+        if surface is not None and not valid_surface(surface):
+            raise ValueError("session.start requires a declared rendering surface")
         parent = _STARTING.get()
         if parent is not None and parent.active and parent.gate is self:
             raise RuntimeError("session.start cannot re-enter its initialization gate")
@@ -95,14 +104,10 @@ class SessionStartGate:
                         ):
                             continue
                         self._attempted[record.package_id] = key
-                        root = context.metadata.get("project_root")
-                        value = SessionStartInput(
-                            record.package_id, record.generation, context.session_id, request_id, channel_id,
-                            context.cwd, root if isinstance(root, str) else None, is_interactive,
-                        )
+                        value = SessionStartInput(cwd, surface, is_interactive)
                         self._runtime.begin_calls((record.package_id,))
                         try:
-                            with bind_start_invocation(value) as invocation:
+                            with bind_start_invocation(value, session_id=context.session_id) as invocation:
                                 await self._bus.trigger(Event(SESSION_START_EVENT, value), context, handler_ids=ids)
                                 if invocation.receipt is None:
                                     raise RuntimeError("session.start returned without its CORE receipt")

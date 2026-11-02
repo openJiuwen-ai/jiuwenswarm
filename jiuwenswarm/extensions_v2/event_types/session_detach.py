@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface, valid_surface
 
 SESSION_DETACH_EVENT = "session.detach"
 
@@ -21,23 +22,16 @@ SESSION_DETACH_EVENT = "session.detach"
 class SessionDetachInput:
     """Identity of the released association, distinct from its replacement."""
 
-    session_id: str
-    surface_id: str
-    attachment_id: str
-    channel_id: str
-    mode: str
+    surface: RenderSurface
+    clientId: str
     reason: str
-    next_session_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class SessionDetachOutput:
     """CORE acknowledgement of the already committed release."""
 
-    accepted: bool
-    session_id: str
-    surface_id: str
-    attachment_id: str
+    clientId: str
 
 
 @dataclass
@@ -46,6 +40,7 @@ class DetachInvocation:
 
     original: SessionDetachInput
     is_released: Callable[[], bool]
+    session_id: str
     owner: asyncio.Task | None = None
     active: bool = True
     receipt: SessionDetachOutput | None = None
@@ -68,6 +63,8 @@ def valid_detach_input(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and state.is_released() and type(value) is SessionDetachInput and value == state.original
+        and valid_surface(value.surface) and type(value.clientId) is str and bool(value.clientId)
+        and value.reason in {"detach", "end"}
     )
 
 
@@ -77,7 +74,7 @@ def valid_detach_output(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and state.is_released() and state.receipt is not None and type(value) is SessionDetachOutput
-        and type(value.accepted) is bool and value == state.receipt
+        and type(value.clientId) is str and value == state.receipt
     )
 
 

@@ -261,7 +261,7 @@ class Extension:
     async def on_end(self, event, ops, next_handler):
         receipt = await next_handler(event)
         row = {"receipt": asdict(receipt), "session_id": ops.session_context.session_id,
-               "exists_after_core": (Path(os.environ["RUNTIME_END_SESSIONS"]) / event.event_input.session_id).is_dir()}
+               "exists_after_core": (Path(os.environ["RUNTIME_END_SESSIONS"]) / event.event_input.sessionId).is_dir()}
         with Path(os.environ["RUNTIME_END_OUTPUT"]).open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(row) + "\\n")
         return receipt
@@ -288,7 +288,7 @@ def create_extension():
         assert all(result.ok and result.deleted for result in results)
         rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
         assert len(rows) == 1 and rows[0]["exists_after_core"] is True
-        assert rows[0]["receipt"] == {"session_id": "terminal"}
+        assert rows[0]["receipt"] == {"sessionId": "terminal"}
         assert rows[0]["session_id"] == "terminal"
         assert not path.exists() and participant._attempted == {"terminal": 1}
         assert env.events.count("runner.release") == 1

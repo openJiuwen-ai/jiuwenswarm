@@ -19,15 +19,17 @@ class SessionDetachExample:
 
     async def on_attach(self, event, ops, next_handler):
         receipt = await next_handler(event)
-        self._resources[receipt.attachment_id] = {"session_id": ops.session_context.session_id}
+        identity = ops.session_context.metadata["session_attachment"]["attachment_id"]
+        self._resources[identity] = {"session_id": ops.session_context.session_id, "client": receipt.clientId}
         return receipt
 
     async def on_detach(self, event, ops, next_handler):
         value = event.event_input
-        self._resources.pop(value.attachment_id, None)
+        identity = ops.session_context.metadata["session_attachment"]["attachment_id"]
+        self._resources.pop(identity, None)
         receipt = await next_handler(event)
-        logger.info("session detach example: session=%s surface=%s attachment=%s reason=%s accepted=%s",
-                    ops.session_context.session_id, value.surface_id, value.attachment_id, value.reason, receipt.accepted)
+        logger.info("session detach example: session=%s surface=%s client=%s reason=%s",
+                    ops.session_context.session_id, value.surface, receipt.clientId, value.reason)
         return receipt
 
 

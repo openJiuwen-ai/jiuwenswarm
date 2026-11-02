@@ -4,229 +4,201 @@
 | --- | --- |
 | 编号 | F_22 / session-start |
 | 建档日期 | 2026-10-28 |
-| 后续修订 | 2026-10-29，既有实现与验证；2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变；2026-11-02，按原 session.append 的对象示例、输入／输出字段表及具体 Handler 案例统一说明，契约不变 |
+| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录 |
 | 计划与进度入口 | [EXTV2-18 / Server PR06](../designs/extensions-v2-development-plan.md#extv2-18-激活实例首次输入前初始化) |
 | 主责契约 | [S_12](../specs/S_12_session-start.md) |
 
 ## 1. 范围、状态与依据
 
-本项已实现 `session.start`，用于 Worker 内每个扩展包激活实例在首次受支持输入前准备自己的资源。原生 `chat.send` 的 unary/stream 接线、用户包、默认 CORE、包隔离和重复通知保护已完成。2026-10-29 已补充真实模型回复与后续用量 Handler 验证，结果见第 6 节；前端页面验收不在本次范围。
+本项保留每个 Worker 包激活实例在首次受支持原生输入前至多尝试一次初始化通知的粒度。本次仅收敛公开观察字段和默认回执；包身份、真实激活记录、generation、发布的 Handler IDs 和请求路由仍由平台门持有，不放进公开 Event。配套 Core !110 提供既有 handler_ids 筛选，本次不新增 Core API，也不改 session.append。
 
-Swarm 基于 `rsi_native_agent_os` 的 `7795851916dd5ce1d34b70f5a20d6d30eafc25e3`，Core 基于 `ead700d7d18a247968d64de54918cf5d201a207a`。配套 [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) 提供通用 `handler_ids` 候选筛选，验证所用 Core 提交为 `6ef27f309c99a3b25a47d225ab1a74f8b0f44ed6`，应先合入或安装此版本。首次独立开发时两边均不包含当时未合入的 PR04 !83、PR05 !90；本特性本身不依赖其 messages/append/turns/usage。当前合并交付以第 6 节 PR !99 的基线和依赖为准。
-
-通知主体是一个 Worker 中的包激活实例，不是每个会话、每轮消息或每次连接。覆盖原生 `chat.send` 的两个 child 入口；本项不增加 Team、Auto-Harness、外部 Harness、控制/历史/重连接线，不增加用户 Ops、额外 Agent 输入或前端页面。Worker 继续持有唯一 EventBus。
+对照 [Claude 官方类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497，文件头 2.1.277。2026-11-02 重新下载官方 main 与固定文件，内容一致；这是此次字段核对的依据，不混用传统大写 SessionStart/SessionEnd Hooks。本地事件仍是 Python frozen dataclass，None 表示对应可选值缺失，并非直接接收任意 TypeScript/JSON 对象。
 
 ## 2. 能力说明与 Claude 对照
 
-`session.start` 在原生输入完成权限准入、模型应用与运行目录绑定后、发送 Agent 输入前触发。每个新激活实例最多尝试通知一次。Handler 收到平台选择的包/代次及首个输入的会话、请求、渠道和目录事实，可用现有只读 Ops 准备用户自己的状态，然后 `return await next_handler(event)`；默认 CORE 返回真实接收回执，由 Manager 消费后继续原输入。它是初始化通知，不是业务请求分发或用量更新。
+`session.start` 在原生 chat.send 完成权限准入、模型应用及执行目录绑定后、Agent 处理该输入前触发。USER 收到 cwd、surface、isInteractive，可以准备自己的规则、缓存或能力，然后 next；CORE 回显可信 cwd，由初始化门消费后继续原输入。后续 Handler 是否复用资源由插件自己的同一实例状态决定，事件本身不会自动把规则传给模型。
 
-| 对照项 | Claude 固定版本声明 | 本特性及使用影响 |
+| 项 | Claude Mods 2.1.277 | 本次实现与使用影响 |
 | --- | --- | --- |
-| 参考 | `bf2323b3021c9d3db7a31e1e7d61068c3f704497`，文件头 2.1.277 的 SessionStartInput/Result | 固定声明对照，不推断其他版本行为 |
-| 生命周期 | 进程启动的会话初始化 | Worker 内包激活实例首次受支持输入前初始化；后续另一个会话不重跑 |
-| 输入 | cwd、surface、isInteractive | cwd、project_root、is_interactive 及可信包/代次、会话/请求/渠道标识；不承诺已有真实 surface |
-| 输出 | cwd | 只读通知回执；不允许改写真实运行目录、目标或身份 |
-| 配套方法 | 不据相似名称补造能力 | 不新增 Ops；可复用已合入 cwd/root/model/repo |
+| 输入与输出 | cwd / surface / isInteractive；输出 cwd | 字段名及默认回执对齐，Python 属性也使用 isInteractive |
+| 粒度 | 每个已加载插件在首次提示前一次，新加载再初始化 | Worker 包激活实例一次；切换会话、每轮完成不会重新 start |
+| 渲染事实 | RenderSurface 或 null | 原生 Web 宿主声明 desktop；未知为 None，不声称已经 attach |
+| 身份 | 通过引擎会话/插件入口读取 | 会话和包分别通过 ops.session_context / ops.package_metadata；代次留在 Gate |
 
-如果用户需要每个会话各自缓存，应另外按 `session_id` 管理状态，不能把本事件的首个会话资料当作所有后续会话的 workspace。
+`surface` 与 `clientId` 是两个维度：前者是渲染面类型，后者是具体客户端。当前 Web 宿主明确使用 `desktop` 渲染面协议，不通过浏览器 UA 猜设备；手机浏览器不会仅因屏幕小就自动变成 mobile。其他宿主只有在明确声明 terminal/mobile/vscode 等类型后才可报告。start 不知道渲染面时为 None；attach 的 surface 必须已知，否则宿主不应伪造一次成功客户端关联。
+
+当前关联参与者的默认渠道声明为 `web → desktop`，其他渠道默认不发 attach。clientId 使用 `channel_id:view_id`，例如 `web:view-main`，避免不同渠道的同名窗口冲突；不是每次重新生成的 attachment_id。旧调用缺少 view_id 时保留原平台降级标识，多个窗口应各自提供稳定且不同的 view_id。
 
 ## 3. 事件契约
 
 ### 3.1 触发前后与粒度
 
-原生 Adapter 的 `_process_message_impl` / `_process_message_stream_impl` 只在 ReqMethod.CHAT_SEND 中，于 `_update_runtime_config` 完成后、Agent 接收输入前等待 `_ensure_extension_session_started`。平台初始化门发现某个当前激活实例尚未尝试时，才发这一包的通知；安装包、每轮结束、历史查询或重新连接本身都不触发。
-
 ```text
-原生 chat.send → 权限准入、应用模型、绑定目录
-  → 平台构造 SessionContext → Manager / SessionStartGate
-  → 找新激活实例、记录已尝试、取得该包 published handler IDs、begin_calls
-  → bind_start_invocation 固定可信输入与真实回执作用域
-  → await bus.trigger(Event("session.start", input), context, handler_ids=本包 IDs)
-  → 选中且匹配的 USER → 原样 next → session_start_core
-  → 校验平台调用和会话 → 真实回执沿链返回 → end_calls
-  → 原来的同一条 Agent 输入继续执行
+原生 chat.send unary / stream → Front / Supervisor → Worker
+  → 原权限准入、模型应用、执行目录绑定
+  → Adapter 构造真实 SessionContext（session_id、cwd、项目根/模型等可得资料）
+  → manager.ensure_session_started(..., surface=宿主声明, is_interactive=原能力)
+  → SessionStartGate 选择尚未尝试的真实激活实例和本包公开 Handler IDs
+  → 构造 SessionStartInput(cwd, surface, isInteractive)，私有绑定真实 session_id
+  → await bus.trigger(Event("session.start", input), context, handler_ids=本包IDs)
+  → Core 为 USER 创建本次 Ops，绑定会话和包身份
+  → USER 准备本包资源 → await next_handler(event)
+  → 剩余 Handler → session_start_core 核对可信原输入和会话/目录
+  → 返回 SessionStartOutput(cwd)
+  → USER 原样返回 → Gate 收集真实回执，释放在途计数
+  → 原 Agent 输入继续，不增加第二次输入
 ```
 
-粒度是“每个 Worker 内每个包激活实例最多一次通知尝试”，不是每个 session_id 一次。门还比较激活记录对象及发布 ID，成功重载/重装形成新实例后在下一次受支持输入前再尝试；generation 数字本身不能唯一识别实例。
+每个激活实例至多一次通知尝试；并发输入串行等待初始化门。安装/加载只发布订阅，第一次受支持原生输入才进入此门；成功重载/重装的新实例在下一次受支持输入前获得机会，失败重载不重复旧实例。控制请求、历史查询、打开/切换会话、重连、普通回合完成不触发。本范围沿用原生 Adapter，不增加 Team、Auto-Harness、外部 Harness 或前端接线。
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
-实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_start`，Handler 接收 frozen dataclass `SessionStartInput`，不是任意 JSON 字典。以下是平台生成后可观察到的形状示意；用户只读，不复制这个构造器直接触发事件。
+实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_start`。以下构造器说明平台生成后的可观察形状；USER 无需自行构造或 trigger 此生命周期事件。输入字段全部只读，没有可改写字段。
 
 ```python
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartInput
 
-SessionStartInput(
-    package_id='example.session-start',
-    generation=1,
-    session_id='demo-session-a',
-    request_id='request-42',
-    channel_id='web',
-    cwd='D:/projects/demo/src',
-    project_root='D:/projects/demo',
-    is_interactive=True,
-)
+SessionStartInput(cwd="D:/projects/demo/src", surface="desktop", isInteractive=True)
 ```
-
-全部构造字段均必填、没有可省略默认；表中的 None/空串是平台明确提供的值。下表解释怎样读、代表什么、怎样使用；主责契约仍为 [S_12](../specs/S_12_session-start.md)。
 
 | 字段 | 类型 / 是否总有 | 准确含义 | 应该填写什么、示例 | Handler 权限 |
 | --- | --- | --- | --- | --- |
-| package_id | str，构造参数必填 | 这一次准备被通知的扩展包身份。用途：结合 generation 记录哪次激活已准备；平台按公开 Handler ID 只选本包 | 平台从当前激活记录填写，如 example.session-start | 只读，不由用户指定通知另一个包 |
-| generation | int，构造参数必填 | 本激活记录的版本代次，不是会话轮次。用途：关联初始化日志；平台还比较激活记录对象和发布 ID，不只比较这个数字 | 平台填写激活记录的代次，如 1 或成功重载后的 2 | 只读；卸载重装可以回到 1，不能单独作为全局唯一键 |
-| session_id | str，构造参数必填 | 该激活实例首次参与输入时所在的会话。用途：与 ops.session_context.session_id 核对，作为本次只读查询目标 | 平台填写首次受支持输入的真实会话 ID，如 demo-session-a | 只读；以后切换会话不为旧激活实例再次 start |
-| request_id | str，构造参数必填 | 触发首次初始化的那一条请求。用途：把初始化日志关联到原生输入，不用于重新发起输入 | 平台保留该原生输入请求 ID；无值时为空串 | 只读，用户不生成第二个 request_id 回填 |
-| channel_id | str，构造参数必填 | 本次首次输入来自哪个渠道。用途：按输入渠道记录/筛选；不证明一个具体视图已挂载 | 平台保留原生请求渠道，如 web；无值时为空串 | 只读，不是 WebSocket 连接 ID 或 surface_id |
-| cwd | str 或 None，构造参数必填 | 这次输入的实际工作目录观察值。用途：为扩展自己的首次运行档案提供目录；不改变运行目录 | 平台使用已绑定执行目录，如 D:/projects/demo/src；未知显式填 None | 只读；None 不应由用户用进程 cwd 补齐 |
-| project_root | str 或 None，构造参数必填 | 用户项目归属目录，可与 cwd 不同。用途：供扩展自己的初始化记录使用；不是自动推导的 Git 根 | 平台使用已绑定项目根，如 D:/projects/demo；无项目为 None | 只读，不允许通过替换字段切换项目 |
-| is_interactive | bool，构造参数必填 | 这次原生请求是否支持交互。用途：用户可选择自己的交互或非交互准备方式 | 平台从 Adapter 能力填写 True/False；能力缺省按 True | 只读；True 不表示 ui.ready、真实视图或渲染面已经存在 |
+| cwd | str，必填，无省略默认 | 首次受支持输入实际运行的绝对目录，供插件定位初始化资料 | 平台从已绑定 SessionContext.cwd 填写，如 D:/projects/demo/src；不填写项目名、相对路径或 Worker 进程目录。缺失/相对目录在进入初始化尝试前拒绝 | 只读；与绑定 cwd 一致 |
+| surface | RenderSurface 或 None，必填 | 初始化时已知的渲染面类型，供插件选择自己的呈现策略 | 宿主明确声明 terminal / desktop / mobile / vscode 之一；不知道时填 None。当前 Web 为 desktop；不是窗口 ID 或 ui.render 槽位 | 只读；不表示窗口已挂载 |
+| isInteractive | bool，必填，无省略默认 | 本次原生请求是否支持用户交互，便于插件选择非交互准备流程 | 平台取 supports_user_interaction 的真实能力，True/False，不填字符串。当前原生 Adapter 缺省能力按原行为视为 True | 只读；不作为授权，也不保证已有 UI |
 
 #### 本次 Handler 的会话上下文与包身份
 
-Event 输入是可观察的通知内容，SessionContext 是平台另行提供的可信会话资料；两者不是用户填写后再相互组装的关系。平台通知函数构造 context，Bus 为每个实际 Handler 创建绑定该资料的 Ops。
+Event 输入与 `SessionContext` 是平台分别传入 `bus.trigger` 的两份资料。Core 给实际进入的 USER Handler 创建 Ops，绑定可信会话和包身份。`ops.session_context` 是已有只读属性，不采集资料、不组装上下文；`next_handler(event)` 继续当前事件链，不创建另一个事件。
 
-| 字段 | 类型 / 是否必有 | 含义与应该填写什么 |
-| --- | --- | --- |
-| ops.session_context | Core 只读属性，不用 await | 本次调用使用哪份会话资料。平台先构造，随 trigger 的独立 context 参数传入；Core 绑定给本次 Handler。用途：用户读取已有资料；它不负责采集或组装上下文。边界：不能通过改 Event 字段替换，不是用户补填对象 |
-| session_context.session_id | 有效非空 str | 可信查询目标是首次输入的会话。平台提供首次输入的会话 ID；与事件输入 session_id 一致。用途：既有会话 Ops 根据它读取对应平台服务。边界：只读；不得拿 next_session_id/previous_session_id 代替当前绑定 |
-| session_context.cwd | str 或 None | 可得的真实执行目录观察值。start 使用已绑定运行目录；其他三种通知未确认 cwd，保持 None。用途：已有 cwd 查询可以使用；None 表示该入口未收集到。边界：不以进程默认目录或项目根伪造 cwd |
-| session_context.metadata.project_root | str 或 None | 已确认的用户项目根资料。start 使用已绑定项目根；其余通知只接受目标保存的绝对 project_dir。用途：已有 root 查询读取这个字段；不是自动推断的 Git 根。边界：不可信/缺失时为 None；不为通知创建项目或模型 |
-| ops.package_metadata | Core 绑定的当前 Handler 包身份 | 当前正在执行的 USER 属于哪个扩展包。来自已注册 Handler 的真实包元信息；CORE 没有用户包身份。用途：管理自己包的资源和日志；与被观察会话是两个维度。边界：用户不从 payload 指定或冒充其他包 |
+| 入口 | 准确含义、来源与使用方式 |
+| --- | --- |
+| `ops.session_context.session_id` | 平台确定的本次查询会话身份。attach 绑定新会话，detach 绑定旧会话，end 绑定结束的会话；不能通过改 Event 切换查询目标 |
+| `ops.session_context.cwd` | 仅有真实执行目录时才提供。start 来自原生 Adapter 已绑定目录；attach/detach/end 未确认时为 None，不使用 Worker 进程目录兜底 |
+| `ops.session_context.metadata["project_root"]` | 平台已确认的项目根观察值；缺失时按相应查询返回 None。不是自动推导的 Git 根，也不为通知创建项目 |
+| `ops.package_metadata.package_id` | Core 绑定的实际 USER 包身份，用于区分本包资源；不是当前会话身份，用户不自行填写 |
 
-start 还可以复用原生请求已应用的公开模型快照；不是由 start CORE 创建模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
+已有 cwd/root/model 等查询使用此可信入口。没有目录或模型资料时按各查询契约返回缺失值；不要求先发生用量事件，也不为展示初始化新模型。
 
-### 3.3 输出：真实通知回执、继续与失败
+### 3.3 输出：真实回执与结果消费
 
-默认 CORE 返回 `SessionStartOutput`。正常用户 Handler 必须返回 `await next_handler(event)` 得到的真实回执内容；本通知不使用查询事件的 value/deny 封装，不返回 `{"accepted": True}` 字典，也没有用户拒绝/改写平台事实的协议。
-
-下面仅展示回执形状，**不让用户自行构造并返回假成功**；字段由 CORE 填写：
+下面是默认 CORE 生成的输出形状，不是让 USER 自行返回假成功。合法 Handler 原样返回 `await next_handler(event)` 的真实结果；没有 deny 或 accepted 包装，也不能通过改回执改变平台事实。
 
 ```python
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartOutput
 
-SessionStartOutput(
-    accepted=True,
-    package_id='example.session-start',
-    generation=1,
-    session_id='demo-session-a',
-    request_id='request-42',
-)
+SessionStartOutput(cwd="D:/projects/demo/src")
 ```
 
 | 字段 | 类型 / 返回时机 | 含义与调用方怎样使用 |
 | --- | --- | --- |
-| accepted | bool，CORE 实际填 True | 本次默认初始化通知链已接受。默认 CORE 在有效调用中生成；USER 不自行构造。用途：判断默认链已完成；不代表用户外部资源全部初始化成功。边界：原样返回真实回执内容，不改成 False 或 deny |
-| package_id | str，必有 | 接受通知的目标包。CORE 回显输入的 package_id。用途：与原输入和用户日志核对。边界：只读，不替换成另一个包 |
-| generation | int，必有 | 接受通知的激活代次。CORE 回显输入的 generation。用途：关联同一次初始化记录。边界：只读，不当作会话轮次或全局实例唯一 ID |
-| session_id | str，必有 | 此次通知使用的会话。CORE 回显首个输入的 session_id。用途：核对绑定会话；以后不同会话不会因此再次 start。边界：只读，不由输出改变实际输入目标 |
-| request_id | str，必有 | 与首次原生请求关联的标识。CORE 回显首次输入 request_id，可能为空串。用途：追踪初始化与原输入的顺序。边界：只读，不额外发起一条请求 |
-
-所有输入只读、没有可改写字段。空 matcher 匹配本次候选中的该事件；可用第 3.2 节字段等值筛选，字段不匹配不会替用户延后重放。session.start 先按本包 published handler IDs 限定候选，其他包的空 matcher 不会混入。 正常 next 继续当前通知链；提前短路伪造成功、修改输入、后置改写回执均不构成合法平台操作，按既有 Core USER 故障隔离处理。
-
-CORE 在当前可信调用作用域内核对原始输入和绑定会话，再记录真实回执；同次调用重复 next 复用该回执，不重复业务操作。用户抛普通异常可能被 Core 隔离后继续默认处理；不能把抛错当作取消平台业务的机制。
-
-并发输入等待同一初始化门；框架异常或取消传播给当前原生输入，已开始的通知不重放。用户初始化产生的外部副作用不自动回滚。 没有在本特性新增统一的 2 秒通知预算；用户初始化处于原输入 await 链，不应长期阻塞。 accepted 只说明默认通知被确认，用户自有资源操作是否成功应由自己的代码记录；外部副作用不自动补偿。
+| cwd | str，必填 | CORE 原样回显本次可信绝对目录。USER 返回 next 的真实结果；Gate 据此确认本通知经过 CORE。它不改变目录，不保证所有用户外部初始化均成功，也不表示 Agent 已完成回答 |
 
 ### 3.4 注册、筛选、处理示例
 
-本例要做的事情是：**在本包第一次参与原生输入前，读取目录和模型资料，建立本激活实例的首次工作区档案；后续用量 Handler 记录它是否已准备。** 下列代码可放入扩展包的 `extension.py`；包格式参照[现有初始化示例包的 manifest](../../examples/session_start/manifest.yaml)，由现有管理入口安装。所有事件字段保持只读，用户处理自己拥有的资源并原样返回 next 的真实回执。
+例如插件读取 rules.json 到自己的 self._rules，后续同一对象的 on_usage 使用这份规则。start CORE 不保存规则；同一实例的成员状态使两个回调能复用。示例包先保存首个工作区观察值，后续用量 Handler 记录初始化是否完成；跨会话状态必须另外按 session_id 管理，不把首个工作区当成所有会话的目录。
+
+下列代码来自 [现有示例包](../../examples/session_start/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
 
 ```python
-class Extension:
+"""Prepare activation-owned state once, then use it on normal notifications."""
+
+import logging
+
+logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_start")
+
+
+class SessionStartExample:
+    """User state belongs to this activation, not to a global session counter."""
+
     def __init__(self):
-        self.first_workspace = None
-        self.observations = {}
+        self.start_count = 0
+        self.workspace = None
 
     def register(self, registrar):
         registrar.register_event_handler("session.start", self.on_start, {}, "user")
         registrar.register_event_handler("context.usage.updated", self.on_usage, {}, "user")
 
     async def on_start(self, event, ops, next_handler):
-        workspace = {
-            "first_session_id": ops.session_context.session_id,
-            "cwd": await ops.session.cwd(),
-            "root": await ops.session.root(),
+        self.start_count += 1
+        self.workspace = {
+            "cwd": await ops.session.cwd(), "root": await ops.session.root(),
             "model": await ops.session.model(),
         }
-        receipt = await next_handler(event)
-        # This is this activation's first workspace, not every later session's.
-        self.first_workspace = workspace
-        return receipt
+        logger.info("session start example: package=%s surface=%s count=%s session=%s workspace=%s",
+                    ops.package_metadata.package_id, event.event_input.surface,
+                    self.start_count, ops.session_context.session_id, self.workspace)
+        return await next_handler(event)
 
     async def on_usage(self, event, ops, next_handler):
-        session_id = ops.session_context.session_id
-        self.observations[session_id] = {
-            "initialized": self.first_workspace is not None,
-            "first_workspace": None if self.first_workspace is None else dict(self.first_workspace),
-        }
+        logger.info("session start example usage: session=%s ready=%s count=%s",
+                    ops.session_context.session_id, self.workspace is not None, self.start_count)
         return await next_handler(event)
 
 
 def create_extension():
-    return Extension()
+    return SessionStartExample()
 ```
-
-安装包只发布两个订阅。首次原生 chat.send 完成权限、模型与目录绑定后，初始化门选中本包并触发 session.start；on_start 从本次 Ops 读取资料，next 取得 CORE 的真实回执，再把结果保存到 first_workspace，原输入随后继续。
-
-当首次会话为 demo-session-a 时，first_workspace["first_session_id"] 为该 ID。后续真实用量事件使 observations[session_id]["initialized"] 为 True，并保留首次档案。另一个会话触发 on_usage 时不会把首次档案误称为该会话的当前目录；要查当前资料，仍用那次事件的 Ops。模型值按本 PR 当前已合入的只读契约原样保存，可为字典或 None，不依赖 PR !100 的字符串迁移。
-
-“准备档案”是这个用户扩展自己的业务规则；本事件不自动注入提示词或执行平台规定的巡检。档案属于本激活实例的内存状态，成功重载／重装后的新实例重新准备；accepted 仍只确认通知链。
-
-Matcher 为等值条件合取，空字典匹配候选中的全部合法通知；按 channel_id、reason 等实际存在字段筛选时，不匹配的通知不会替用户延后重放。多个 USER 按既有顺序通过 next 继续；本生命周期事件未新增业务 BUILTIN。初始化共享 Ops 的 ops.build BUILTIN 属于启动装配，不在这条业务通知链中重新登记方法。
 
 ## 4. 方法契约
 
-### 4.1 用户侧：复用已有 Ops，没有新增 start Ops
+### 4.1 用户方法与平台入口
 
-本项无新增用户 Ops。`ops.session.cwd/root/model/repo` 仍是现有只读能力，在本事件绑定的可信 `SessionContext` 下读取；model 是当前原生请求已应用的模型快照。Ops 读取不再触发 `session.start`，也不依赖先发生 `context.usage.updated`。
-
-用户通过 register 订阅通知，不调用 `ops.session.start()`；本特性没有定义这个方法。前提资料由平台在原输入边界提供，不要求先发生用量通知。
-
-### 4.2 平台内部入口及其返回
-
-平台内部 `ExtensionManager.ensure_session_started(context, *, request_id, channel_id, is_interactive)` 返回本次新尝试实例的 `tuple[SessionStartOutput, ...]`，无新实例返回空 tuple。上下文由真实 Adapter 提供；无效 session/字段类型报 ValueError，重入报 RuntimeError，框架错误或取消继续向当前输入传播。它不是用户远程请求或用户伪造上下文的接口，也不是跨进程 Bus 桥接。
-
-平台调用侧签名如下；这是已有真实 Adapter 使用的内部入口示意，不是给用户扩展自行拼上下文的调用方法：
+无新增 `ops.session.start()`。平台方法仍为：
 
 ```python
-receipts = await manager.ensure_session_started(
-    context,                 # Trusted facts already collected by the Adapter.
-    request_id=request_id,
-    channel_id=channel_id,
-    is_interactive=is_interactive,
+await manager.ensure_session_started(
+    context, request_id="request-a", channel_id="web",
+    is_interactive=True, surface="desktop",
 )
 ```
 
-context 必须是有效 SessionContext；其余三个命名参数全部必填，分别为 str/str/bool。返回 tuple 中每项是本次新尝试激活实例的真实 SessionStartOutput；没有新实例为 `()`。门内部调用 Core 的 handler_ids 只选择当前包，不让用户改变通知目标。
+context 是 Adapter 已收集的可信资料；request_id/channel_id 仍为原路由观察值，不参与公开 Event 字段。surface 是宿主声明，默认 None；is_interactive 是平台方法的 Python 参数，对应公开字段 isInteractive。方法返回本次新尝试实例的 SessionStartOutput 元组；没有新实例返回空元组。
 
-平台入口参数（只由对应业务流程填写）：
+### 4.2 旧 Handler / 回执迁移
 
-| 输入字段 | 必填 / 默认 | 应填写的内容、范围及示例 |
-| --- | --- | --- |
-| context | SessionContext，必填 | 平台在权限准入、模型应用、目录绑定后采集的可信会话资料；用户不手写。session_id 有效，目录与模型资料按真实可得值提供。 |
-| request_id | str，必填 | 原生输入请求 ID；缺少时平台使用空串，不生成第二个输入。 |
-| channel_id | str，必填 | 当前输入渠道，如 web；不能用视图 ID 或连接 ID 替代。 |
-| is_interactive | bool，必填 | 当前 Adapter 的交互能力；True 不证明 UI 已挂载。 |
+这些生命周期特性尚在 Server !99 中修订；旧示例应按下表迁移。平台内部的 snake_case 身份、稳定视图和校验状态继续保留，不因公开字段简化而削弱隔离。
+
+| 旧用法 | 当前写法与影响 |
+| --- | --- |
+| event.event_input.package_id | ops.package_metadata.package_id，读取当前真实包身份 |
+| event.event_input.session_id | ops.session_context.session_id，读取可信会话身份 |
+| event.event_input.project_root | await ops.session.root()，依该查询契约读取可得项目根 |
+| event.event_input.is_interactive | event.event_input.isInteractive；matcher 也改为 isInteractive |
+| generation / request_id / channel_id 事件字段 | 从公开输入移除；代次和请求的验证/去重仍由平台 Gate 持有 |
+| result.accepted / package_id / generation / session_id / request_id | 移除；保留 await next_handler(event) 的真实结果，需要目录时读 result.cwd |
 
 ## 5. 接入与兼容方案
 
-Worker 启动时登记 session.start 的类型、Matcher、Validator 和唯一默认 CORE；既有 ops.build 的 CORE 创建 Builder、BUILTIN 登记共享能力，Bus 保存方法目录，用户包 register 发布 USER 订阅。通知发生时，Core 为每个实际 Handler 绑定本次 SessionContext 和可信包身份，Builder 不在启动时查询某个会话的数据。
+Worker 启动时注册事件类型、Matcher、Validator 和唯一默认 CORE；已有 `ops.build` 的 CORE 创建 Builder、BUILTIN 登记共享 Ops 方法，Registry 保存能力目录。业务发生时使用该目录创建绑定本次 SessionContext 的 Ops，不重跑 ops.build。这四条业务通知没有新增专门的 BUILTIN Handler。
 
-平台资料从哪里来：Adapter 在原输入前提供当前会话、已应用执行目录、项目根和可得模型快照；初始化门同时从真实激活记录取得包身份、代次及 published handler IDs。 平台将通知输入和 SessionContext 作为 trigger 的两部分传入；ops.session_context 只提供只读入口，已有会话 Ops 根据它读取。用户不采集平台资料，也不需要先触发用量通知。
+USER 处理本包资源，通过 `return await next_handler(event)` 继续本条链。默认 CORE 只确认真实平台通知，不再次执行创建、切换、删除或关闭。输入均只读；提前短路伪造回执、修改输入、在 next 之后换身份无效，沿既有 Core USER 故障隔离处理。真实宿主操作的所有权和最终成功判断仍在原平台业务。
 
-默认 CORE 的逻辑：**session_start_core 先检查当前平台调用作用域、原始输入和绑定会话，首次生成 SessionStartOutput 并在同次调用复用。它确认初始化通知，不创建用户资源、不再发一条 Agent 输入；Manager 收集回执后释放在途计数，原输入继续。** USER 负责本包自己的初始化、摘要或清理，按 next 进入 CORE 并原样返回回执；没有新增业务 BUILTIN 或同名用户 Ops。第 3.1 节是实际触发链，第 3.4 节给出可以消费这些事实的用户业务案例。
+初始化门为 [management/session_start.py](../../management/session_start.py)，真实 Adapter 接线为 [interface_deep.py](../../../server/runtime/agent_adapter/interface_deep.py)。默认 CORE 核对私有调用作用域里的 session_id，并核对绑定 cwd 与公开 cwd 一致，生成一次真实 cwd 回执。原激活记录和发布 ID 的去重逻辑保持；不把可观察包代次误作用户可改的输入。
 
-- `event_types/session_start.py` 只承载输入输出、校验作用域、matcher 与注册；真正 `bus.trigger` 留在 [management/session_start.py](../../management/session_start.py) 的平台初始化门；[event_handlers/session_start.py](../../event_handlers/session_start.py) 维护默认 CORE。
-- Manager 保留公开 ActivePackageRecord 对象引用及发布 ID。不能只比较 generation：卸载重装可回到 1，空包也可能没有新 ID。普通输入与重连保留尝试状态；成功重载/重装的新实例在下一次受支持输入前通知；失败重载保留旧状态；Worker 重启重新激活后重新通知。
-- 回调期间不持管理操作锁；使用 Runtime.begin_calls/end_calls 保护卸载。用户回调可查询管理状态；在途卸载按既有 BUSY 语义拒绝；热重载沿既有切换机制，门会重新检查新实例。
-- 采用 Core 公共筛选，不读取私有注册表或直接调用用户函数；既有 matcher、层级顺序、Ops 绑定和故障隔离不变。Core 旧调用默认 `handler_ids=None` 保持行为，自定义 Bus/Fake 实现者需支持新可选参数。
-- 外部副作用不回滚；at-most-once 指本 Worker 通知尝试，不是断电后的全局 exactly-once。热加载与已开始输入沿既有快照语义，不承诺对所有业务事件的全局激活屏障。资源清理留给后续独立生命周期特性。
+USER 普通异常沿 Core 隔离；框架错误和原输入取消传播，不自动重放已经开始的初始化尝试。调用开始即标记已尝试，外部副作用不自动回滚。门拒绝重入，重载仍沿 Core 热切换并重新核对真实实例；在途计数成对保护卸载。
 
-本次文档整理沿用当前分支既有共享只读 Ops；PR !100 的查询事件化及返回格式迁移单独交付。session.start 的 handler_ids 仍以 Core !110 为硬前置，合并顺序保持 Core 在先、Server 在后。其他三项单项不要求 handler_ids，组合 PR 的依赖仍成立。
-
-源码位置：[事件定义／校验／注册](../../event_types/session_start.py)、[默认 CORE](../../event_handlers/session_start.py)、[初始化门](../../management/session_start.py)、[Manager 门面](../../management/registry.py)。平台实现按职责和源码链接查阅；用户只注册文中示例 Handler，平台仍拥有原业务操作的提交和后续响应。
+字段范围以 [S_12](../specs/S_12_session-start.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
+
+### 2026-11-02 Claude Mods 字段修订
+
+四项生命周期及字段定向用例共 **94 项通过**，包含在同一次最终回归的 **1365 项通过** 内，不重复累计。最终范围包括全部 extensions_v2、全部 Runtime、Worker 关闭、原生会话删除/归档和切换接线。5 项平台条件跳过：符号链接、命名管道及 3 项 Unix socket 用例。两个未修改的 LoopBeat 50ms 计时断言在本机存在约 47ms 读数；本分支与未修改基线分别保留复现，最终显式排除两项，不改阈值、不计为通过。
+
+真实 Front → Supervisor → 子 Worker 验证：两个独立 Worker、3 轮真实模型对话，所有生命周期 USER Handler 在真实子进程中执行；没有 mock EventBus、Ops、模型或 Adapter，也没有介入 ui.render。两个 Worker 各一次 start，后续会话切换/回合不重跑；真实输入中 cwd/surface/isInteractive 和 cwd 回执符合新格式，项目根与模型查询仍使用可信 Ops。 两个 Worker PID 均已退出、端口关闭。
+
+现成 HTML 的 A/B 教学案例也重新验证：A 在当前真实 start/usage CORE 下共享同一实例规则；B 的 SQLite HTTP 查询通过，但其模型发现/工具调用仍为教学宿主模拟，不把它当作上述真实模型工具使用证据。
+
+证据目录：`D:/work_space/.codex-temp/align-session-mods-fields-20261102`，包括 final.log/xml/json、contracts.xml、focused-first.xml、baseline-liveness.xml、examples-verified.json。真实进程记录在 `D:/work_space/.codex-temp/align-session-mods-fields-20261102/real-150258`：result.json、USER JSONL、原生请求/响应、explicit-detach.json、两个 cleanup.json 和源码摘要。Core 使用 !110 的 0b5dd43f179be0a41ef2bd4bf0d43950bec9a92f；本次不新增 Core API。尚未执行远端 CI 或原生非 Windows 验收。
+
+文档按 F_16 session.append 的七段结构维护；输入/输出对象、逐字段含义/填写/用途、USER 示例、平台入口、迁移与调用链分别展开。字段修订前的旧结果保留在以下历史区，不作为本次新契约的通过证据。
+
+文档与本地 HTML 核对通过：四份特性保持 session.append 的同一七段结构，8 个输入/输出对象实际构造、28 段 Python 示例语法、120 个本地链接通过（跨仓链接按配套 Core 核对）。HTML 的生命周期调用链、字段表和实际函数已更新，A/B 完整案例逐字保留；桌面/手机视口无页面横向溢出，复制按钮及页面脚本通过。这是独立静态文档渲染检查，不计作产品浏览器 UI 验收。
+
+本次重点覆盖：公开字段/回执及 matcher 大小写、可信 SessionContext 保持、同实例初始化去重、多窗口与切换、过期关联/输入改写/假回执拒绝、真实运行结束的 detach/end 顺序、超时/取消和进程清理。旧日期的验证不自动算成本次重新执行。
+
+<details><summary>此前版本的验证记录：字段或触发范围以相应日期为准</summary>
 
 本次 2026-10-31 仅按 F_16 的写法补齐输入/输出字段、注册示例、真实触发条件、Handler 职责和完整业务案例；运行代码与契约不变。文档核对包括 dataclass 字段与示例值、源码节选、Python/YAML/JSON 示例及相对链接。下列回归和真实服务结果均保留原运行日期与范围，不宣称本次重新执行业务或模型验收。
 
@@ -280,9 +252,12 @@ python -m pytest -o addopts= -q tests/unit_tests/core/events tests/unit_tests/co
 
 2026-11-02 文档整理：以原 session.append 为参照，统一对象示例、五列通知输入表、三列输出表、会话资料说明及具体用户 Handler 案例；保留所有字段来源、默认／缺失、权限、超时和历史验证记录。只改文档，当前契约及 Core !110 前置不变。本轮核对结构、字段、示例与真实默认 CORE 回执、链接及差异，不重跑真实业务、模型或浏览器验收。
 
+</details>
+
 ## 7. 参考资料
 
-- [S_12 主责契约](../specs/S_12_session-start.md)、[开发计划](../designs/extensions-v2-development-plan.md#extv2-18-激活实例首次输入前初始化)。
-- [装配](../../assembly.py)、[事件注册](../../bootstrap.py)、[Manager](../../management/registry.py)、[初始化门](../../management/session_start.py)、[默认 CORE](../../event_handlers/session_start.py)。
-- [原生 Adapter](../../../server/runtime/agent_adapter/interface_deep.py)、[既有 Session Ops](../../handler_ops/session_ops.py)、[示例包](../../examples/session_start/README.md)、[专项测试](../../../../tests/unit_tests/extensions_v2/test_session_start.py)。
-- [Claude 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)、[Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110)、[Core 候选筛选契约](https://gitcode.com/huenrui_/agent-core/blob/6ef27f309c99a3b25a47d225ab1a74f8b0f44ed6/openjiuwen/core/events/docs/features/F_06_handler-selection.md)。
+- [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionStartInput/Result；参照小写 Mods 事件。
+- [主责规约 S_12](../specs/S_12_session-start.md)。
+- [事件定义与校验](../../event_types/session_start.py)、[默认 CORE](../../event_handlers/session_start.py)。
+- [示例包说明](../../examples/session_start/README.md)。
+- [session.append 文档格式基准](F_16_session-history-ops.md)。
