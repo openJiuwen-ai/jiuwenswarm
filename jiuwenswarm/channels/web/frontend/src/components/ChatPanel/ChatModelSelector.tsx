@@ -38,8 +38,12 @@ export default function ChatModelSelector({
   disabled: disabledByParent = false,
   sessionId,
   allowModelGroups = true,
+  includeModelGroups: modelGroupsOverride,
+  testIdPrefix = 'chat-panel-model-selector',
 }: {
   disabled?: boolean;
+  includeModelGroups?: boolean;
+  testIdPrefix?: string;
   /** Session this selector edits. Surfaces that own a session (the design
    * canvas) pass it explicitly: `activeSessionId` follows the app route and can
    * point at another conversation while the surface stays mounted (#5394). */
@@ -79,7 +83,7 @@ export default function ChatModelSelector({
   const collaborationEnabled = useMultiModelCollaborationEnabled();
   const singleAgent = supportsMultiModelCollaboration(mode, cronId);
   const groupsAllowed = allowModelGroups && !cronId;
-  const includeModelGroups = groupsAllowed && (!singleAgent || collaborationEnabled);
+  const includeModelGroups = modelGroupsOverride ?? (groupsAllowed && (!singleAgent || collaborationEnabled));
   const selectableGroups = groupsAllowed ? modelGroups : [];
   const groupBlocked = isConversationModelGroupBlocked({
     mode,
@@ -168,9 +172,9 @@ export default function ChatModelSelector({
   };
 
   return (
-    <div className="chat-model-selector" data-testid="chat-panel-model-selector-wrap">
+    <div className="chat-model-selector" data-testid={`${testIdPrefix}-wrap`}>
       <ModelPicker
-        testIdPrefix="chat-panel-model-selector"
+        testIdPrefix={testIdPrefix}
         value={selectedChildTeam?.execution_model_name ?? selected?.model_name ?? selectedModelName}
         selection={selectedChildTeam?.execution_model_selection ?? pickerSelection}
         includeModelGroups={includeModelGroups}
@@ -188,7 +192,7 @@ export default function ChatModelSelector({
         onAddModel={disabled ? undefined : openModelSettings}
       />
       {selectionError ? (
-        <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">
+        <div className="chat-model-selector__error" role="alert" data-testid={`${testIdPrefix}-error`}>
           {selectionError}
         </div>
       ) : null}
