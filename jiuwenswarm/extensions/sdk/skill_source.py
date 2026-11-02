@@ -21,7 +21,7 @@ import httpx
 
 try:
     from gateway.extensions.sdk.base import BaseExtension
-except ModuleNotFoundError:  # gateway_protocol is provided by the runtime image
+except ModuleNotFoundError:  # AgentServer-only envs may not install the gateway package
     class BaseExtension:  # type: ignore[no-redef]
         """Stand-in so AgentServer unit tests can import the SPI without the protocol package."""
 
