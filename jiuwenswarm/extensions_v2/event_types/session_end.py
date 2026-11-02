@@ -30,7 +30,7 @@ class SessionEndInput:
     """Immutable engine facts, matching Claude reason/sessionId/resume."""
 
     reason: str
-    session_id: str
+    sessionId: str
     resume: SessionResume
 
 
@@ -38,7 +38,7 @@ class SessionEndInput:
 class SessionEndOutput:
     """The actual ending session identity echoed by CORE."""
 
-    session_id: str
+    sessionId: str
 
 
 @dataclass
@@ -68,7 +68,7 @@ def valid_end_input(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and type(value) is SessionEndInput and value == state.original
-        and type(value.resume) is SessionResume and value.resume.id == value.session_id
+        and type(value.resume) is SessionResume and value.resume.id == value.sessionId
         and value.reason in {reason.value for reason in SessionRunEndReason}
     )
 

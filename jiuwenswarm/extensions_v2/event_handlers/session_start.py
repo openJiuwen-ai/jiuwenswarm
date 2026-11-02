@@ -22,9 +22,9 @@ async def session_start_core(
     value = event.event_input
     if not valid_start_input(value):
         raise ValueError("session.start input cannot be rewritten")
-    if ops is None or ops.session_context is None or ops.session_context.session_id != value.session_id:
+    context = ops.session_context if ops is not None else None
+    if context is None or context.session_id != state.session_id or context.cwd != value.cwd:
         raise ValueError("session.start requires its bound session")
     if state.receipt is None:
-        state.receipt = SessionStartOutput(True, value.package_id, value.generation,
-                                          value.session_id, value.request_id)
+        state.receipt = SessionStartOutput(value.cwd)
     return state.receipt

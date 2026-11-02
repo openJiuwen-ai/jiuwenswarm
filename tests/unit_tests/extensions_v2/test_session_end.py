@@ -72,9 +72,9 @@ class Extension:
         with output.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps({"phase": "after", "receipt": asdict(result), **row}) + "\\n")
         if mode == "output":
-            return replace(result, session_id="forged")
+            return replace(result, sessionId="forged")
         if mode == "int-output":
-            return replace(result, session_id=1)
+            return replace(result, sessionId=1)
         return result
 
 def create_extension():
@@ -126,11 +126,11 @@ async def test_installed_user_gets_target_ops_and_actual_core_receipt(end_host):
     await end_host.participant.session_run_ended(end_host.event)
     rows = observed(end_host)
     assert [r["phase"] for r in rows] == ["before", "after"]
-    assert rows[0]["session"] == rows[0]["input"]["session_id"] == "end-a"
+    assert rows[0]["session"] == rows[0]["input"]["sessionId"] == "end-a"
     assert rows[0]["package"] == "end.reader" and rows[0]["cwd"] is None
     assert rows[0]["root"] == end_host.target.descriptor.project_dir
-    assert rows[1]["receipt"] == {"session_id": "end-a"}
-    assert rows[0]["input"] == {"reason": "other", "session_id": "end-a", "resume": {"id": "end-a"}}
+    assert rows[1]["receipt"] == {"sessionId": "end-a"}
+    assert rows[0]["input"] == {"reason": "other", "sessionId": "end-a", "resume": {"id": "end-a"}}
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_same_run_deduplicates_and_resumed_generation_ends_again(end_host)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["raise", "short", "output", "int-output", "double", "input-session_id", "input-reason", "input-resume"])
+@pytest.mark.parametrize("action", ["raise", "short", "output", "int-output", "double", "input-sessionId", "input-reason", "input-resume"])
 async def test_user_failures_or_forgery_cannot_replace_target_or_core(end_host, monkeypatch, action):
     monkeypatch.setenv("SESSION_END_TEST_ACTION", action)
     await end_host.participant.session_run_ended(end_host.event)
@@ -155,8 +155,8 @@ async def test_user_failures_or_forgery_cannot_replace_target_or_core(end_host, 
     # invalid user results/inputs; valid after-hooks see its original target.
     for row in observed(end_host):
         if row["phase"] == "after":
-            assert row["receipt"] == {"session_id": "end-a"}
-    assert end_host.invocations[0].receipt.session_id == "end-a"
+            assert row["receipt"] == {"sessionId": "end-a"}
+    assert end_host.invocations[0].receipt.sessionId == "end-a"
     assert not end_host.host.manager.registry.runtime._inflight
 
 
@@ -273,8 +273,8 @@ async def test_runtime_run_end_preserves_history_and_reports_host_reason(end_hos
     try:
         assert await runtime.cleanup_session(channel_id="web", session_id="end-a", end_reason=reason)
         rows = observed(end_host)
-        assert rows[0]["input"] == {"reason": reason.value, "session_id": "end-a", "resume": {"id": "end-a"}}
-        assert rows[1]["receipt"] == {"session_id": "end-a"}
+        assert rows[0]["input"] == {"reason": reason.value, "sessionId": "end-a", "resume": {"id": "end-a"}}
+        assert rows[1]["receipt"] == {"sessionId": "end-a"}
         assert history.read_bytes() == original
         await runtime.close()
         assert len(observed(end_host)) == 2
@@ -331,7 +331,7 @@ async def test_turn_completion_does_not_end_run_and_close_waits_for_execution(en
         await runtime.close()
         assert stopped.exists()
         assert all(row["stopped"] for row in observed(end_host))
-        assert observed(end_host)[1]["receipt"] == {"session_id": "end-a"}
+        assert observed(end_host)[1]["receipt"] == {"sessionId": "end-a"}
     finally:
         await asyncio.gather(task, return_exceptions=True)
         await runtime.close()
@@ -385,7 +385,7 @@ async def test_worker_shutdown_keeps_user_handlers_until_all_run_ends(end_host):
     assert assembly.get_extension_bus() is None
     assert runtime.closed
     rows = [row for row in observed(end_host) if row["phase"] == "after"]
-    assert {row["receipt"]["session_id"] for row in rows} == {"end-a", "end-b"}
+    assert {row["receipt"]["sessionId"] for row in rows} == {"end-a", "end-b"}
     assert all(row["input"]["resume"]["id"] == row["session"] for row in rows)
 
 

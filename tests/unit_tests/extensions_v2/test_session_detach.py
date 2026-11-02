@@ -37,13 +37,13 @@ class Extension:
         return Path(os.environ["SESSION_DETACH_TEST_OUTPUT"]).parent / ("resource-"+ident)
     async def on_attach(self,event,ops,next_handler):
         receipt = await next_handler(event)
-        self.resource(receipt.attachment_id).touch()
-        self.save({"phase":"attach","input":asdict(event.event_input)})
+        self.resource(ops.session_context.metadata["session_attachment"]["attachment_id"]).touch()
+        self.save({"phase":"attach","input":asdict(event.event_input),"association":dict(ops.session_context.metadata["session_attachment"])})
         return receipt
     async def on_detach(self,event,ops,next_handler):
         value = event.event_input
-        self.resource(value.attachment_id).unlink(missing_ok=True)
-        self.save({"phase":"before","input":asdict(value),"sid":ops.session_context.session_id,
+        self.resource(ops.session_context.metadata["session_attachment"]["attachment_id"]).unlink(missing_ok=True)
+        self.save({"phase":"before","input":asdict(value),"association":dict(ops.session_context.metadata["session_attachment"]),"sid":ops.session_context.session_id,
                    "root":await ops.session.root(),"package":ops.package_metadata.package_id})
         action = os.environ.get("SESSION_DETACH_TEST_ACTION","normal")
         if action == "raise":
@@ -57,7 +57,7 @@ class Extension:
                 while not Path(str(os.environ["SESSION_DETACH_TEST_OUTPUT"])+".release").exists():
                     await asyncio.sleep(.002)
         if action == "short":
-            return SessionDetachOutput(True,value.session_id,value.surface_id,value.attachment_id)
+            return SessionDetachOutput(value.clientId)
         if action.startswith("input-"):
             event = Event(event.event_type,replace(value,**{action.removeprefix("input-"):"forged"}))
         receipt = await next_handler(event)
@@ -65,9 +65,9 @@ class Extension:
             assert await next_handler(event) is receipt
         self.save({"phase":"after","receipt":asdict(receipt)})
         if action == "output":
-            return replace(receipt,accepted=False)
+            return replace(receipt,clientId="forged")
         if action == "int-output":
-            return replace(receipt,accepted=1)
+            return replace(receipt,clientId=1)
         return receipt
 def create_extension():
     return Extension()
@@ -109,7 +109,7 @@ async def test_two_views_only_one_released_and_no_usage_required(detach_host):
     base = detach_host.base
     await base.participant.foreground_changed(base.event)
     await base.participant.foreground_changed(replace(base.event, view_id="view-two"))
-    first, second = [r["input"] for r in rows(detach_host) if r["phase"] == "attach"]
+    first, second = [r["association"] for r in rows(detach_host) if r["phase"] == "attach"]
     old = base.participant.associations.get("web", "view-one")
     assert await release(base, old) is True
     assert await release(base, old) is False
@@ -117,13 +117,13 @@ async def test_two_views_only_one_released_and_no_usage_required(detach_host):
     before = [r for r in records if r["phase"] == "before"]
     assert len(before) == 1 and before[0]["sid"] == "attach-a"
     assert before[0]["package"] == "detach.reader" and before[0]["root"] == base.root
-    assert before[0]["input"]["reason"] == "detach" and before[0]["input"]["next_session_id"] is None
+    assert before[0]["input"]["reason"] == "detach" and before[0]["association"]["next_session_id"] is None
     assert not (detach_host.output.parent / ("resource-"+first["attachment_id"])).exists()
     assert (detach_host.output.parent / ("resource-"+second["attachment_id"])).exists()
     assert base.participant.associations.get("web", "view-one") is None
     assert base.participant.associations.get("web", "view-two") is not None
     assert (base.sessions / "attach-a/metadata.json").exists()
-    assert detach_host.invocations[0].receipt.accepted is True
+    assert detach_host.invocations[0].receipt.clientId == "web:view-one"
 
 
 @pytest.mark.asyncio
@@ -135,8 +135,8 @@ async def test_switch_old_notification_before_new_attach_and_stale_request_canno
     await base.participant.foreground_changed(other)
     assert [r["phase"] for r in rows(detach_host)] == ["attach", "before", "after", "attach"]
     before = rows(detach_host)[1]
-    assert before["input"]["reason"] == "switch" and before["input"]["next_session_id"] == "attach-b"
-    assert before["sid"] == "attach-a" and before["input"]["attachment_id"] == old.attachment_id
+    assert before["input"]["reason"] == "detach" and before["association"]["cause"] == "switch" and before["association"]["next_session_id"] == "attach-b"
+    assert before["sid"] == "attach-a" and before["association"]["attachment_id"] == old.attachment_id
     with pytest.raises(LookupError):
         await release(base, old)
     current = base.participant.associations.get("web", "view-one")
@@ -151,7 +151,7 @@ async def test_switch_old_notification_before_new_attach_and_stale_request_canno
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["raise", "short", "output", "int-output", "double", "input-session_id", "input-surface_id", "input-attachment_id", "input-channel_id", "input-mode", "input-reason", "input-next_session_id"])
+@pytest.mark.parametrize("action", ["raise", "short", "output", "int-output", "double", "input-clientId", "input-surface", "input-reason"])
 async def test_invalid_user_cannot_restore_or_forge_release(detach_host, monkeypatch, action):
     base = detach_host.base
     await base.participant.foreground_changed(base.event)
@@ -159,7 +159,7 @@ async def test_invalid_user_cannot_restore_or_forge_release(detach_host, monkeyp
     monkeypatch.setenv("SESSION_DETACH_TEST_ACTION", action)
     assert await release(base, old)
     assert base.participant.associations.get("web", "view-one") is None
-    assert detach_host.invocations[0].receipt.accepted is True
+    assert detach_host.invocations[0].receipt.clientId == "web:view-one"
     assert not base.host.manager.registry.runtime._inflight
 
 
@@ -239,7 +239,7 @@ async def test_untracked_target_removes_only_old_main_binding(detach_host):
     await base.participant.foreground_changed(replace(base.event, target=replace(base.event.target, kind=SessionKind.TEAM)))
     assert base.participant.associations.get("web", "view-one") is None
     assert [r["phase"] for r in rows(detach_host)] == ["attach", "before", "after"]
-    assert rows(detach_host)[1]["input"]["next_session_id"] is None
+    assert rows(detach_host)[1]["association"]["next_session_id"] is None
 
 
 @pytest.mark.asyncio
@@ -247,13 +247,13 @@ async def test_event_requires_host_scope_and_uninstall_preserves_release(detach_
     base = detach_host.base
     await base.participant.foreground_changed(base.event)
     old = base.participant.associations.get("web", "view-one")
-    facts = SessionDetachInput(old.session_id, old.surface_id, old.attachment_id, old.channel_id, old.mode, "detach", None)
+    facts = SessionDetachInput(old.surface, old.client_id, "detach")
     with pytest.raises(Exception):
         await base.host.bus.trigger(Event("session.detach", facts), SessionContext(old.session_id))
     assert base.participant.associations.get("web", "view-one") is old
     assert (await base.host.manager.uninstall("detach.reader")).status == "SUCCESS"
     assert await release(base, old)
-    assert detach_host.invocations[-1].receipt.accepted is True
+    assert detach_host.invocations[-1].receipt.clientId == "web:view-one"
 
 
 @pytest.mark.asyncio

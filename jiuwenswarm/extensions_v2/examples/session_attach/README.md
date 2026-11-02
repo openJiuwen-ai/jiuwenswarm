@@ -1,28 +1,25 @@
-# Session attach / 界面与会话关联示例
+# session.attach 用户示例
 
-这是用户扩展包。它在现有创建/切换流程提交界面与主会话的关联后，接收 session.attach，读取平台绑定的项目根并记录关联与默认 CORE 回执，不创建聊天或自动渲染 UI。
+`session.attach` 告知插件“这个具体客户端已经加入该会话”。USER 可按渲染面筛选、使用绑定新会话的 Ops 查询资料，为本次关联建立缓存或订阅，然后 next；CORE 确认关联和目标仍然有效，回显 clientId。插件自己的前端能力决定怎样展示，事件本身不自动 ui.render。
 
-## 使用方法
+示例包由扩展管理入口安装，manifest 的 module 指向 extension.py。它只注册 USER Handler；事件、默认 CORE、SessionContext 和触发入口由 Worker 平台提供，不需要用户改业务方法或创建 EventBus。
 
-1. 使用包含 PR08 的 Server 与当前既有 agent-core；不要求先合入 PR04/05/06/10。
-2. 将 manifest.yaml、extension.py 打在 ZIP 根目录，通过原 `/extension install "D:\extensions\session-attach.zip"` 或 extensions.v2.install 管理入口安装。
-3. 在现有 Web 创建主会话或切换到已有主会话。Web 原调用已带稳定 view_id，本 PR 不增加前端操作。日志出现 `session attach example: ... surface=... attachment=... accepted=True`。
-4. 同一视图同一目标重放或稳定 view_id 重连不重复通知；另一个 view_id 进入同一会话会独立通知。切换目标再切回会产生新的 attachment_id。
+输入示意：
 
-只需用户模块中的 register/on_attach，不提供平台 CORE、Adapter、Builder、EventBus 或 SessionContext。event.event_input 的全部字段由平台填写，surface_id 是具体 view_id，不能写成会话 ID、A2UI 卡片 ID 或 ui.ready 的槽位。用户按需要匹配 channel_id/mode，原样返回 `await next_handler(event)` 的真实回执。
+```python
+from jiuwenswarm.extensions_v2.event_types.session_attach import SessionAttachInput
 
-项目根未知时 root 为 None；cwd 未确认时也为 None。model 若调用则遵循既有保存信息查询语义，不创建或激活模型。查询不要求用量事件，不能把保存选择当作当前运行激活的证明。
+SessionAttachInput(surface="desktop", clientId="web:view-main", viewport=None)
+```
 
-默认 CORE 只确认当时仍有效的关联。用户需要自己的展示时应另接已有渲染链路；accepted 不代表所有展示均成功。通知等待预算默认 2 秒，超时或异常不回滚已提交的创建/切换；已经发生的外部副作用需用户自己按关联 ID 幂等处理。
+默认输出示意：
 
-安装不补发旧关联，卸载只撤销 USER 订阅，原业务继续。断开 Gateway、ui.ready、输入意图和单纯隐藏/空闲不是 attach；没有物理在线检测、自动 detach 或 Team/子 Agent 通知。本地关联表不跨 Worker 重启保存，旧接口省略 view_id 的降级值不能区分多个窗口。
+```python
+from jiuwenswarm.extensions_v2.event_types.session_attach import SessionAttachOutput
 
-字段、完整调用链和验收范围见 [F_25](../../docs/features/F_25_session-attach.md)、[S_14](../../docs/specs/S_14_session-attach.md)。
+SessionAttachOutput(clientId="web:view-main")
+```
 
-## English
+例如“会话项目资料”插件：窗口 V 进入 A 后，on_attach 通过 ops.session.root() 读取 A 的可得项目根。插件可以按上下文中的 attachment_id 保存本次关联资料；随后切换 B，由旧 detach 清理 A 的关联资源，再由 B 的 attach 准备新资料。默认 CORE 不替插件准备前端，也不再次切换会话。现成示例包用日志验证 root 和 clientId。
 
-Install manifest.yaml and extension.py as an extension ZIP. The existing Web session.create/session.switch flow already sends a stable view_id. After the Runtime commits a valid main-Session view association, this USER handler reads the bound project root, continues the notification chain and logs its actual CORE receipt.
-
-The host provides immutable input fields and SessionContext. No custom Adapter, EventBus, Builder, new Ops or frontend request is required. surface_id identifies a concrete view, rather than a Session, A2UI card or extension slot. A repeated association is deduplicated; another view or switching away and back creates a distinct notification.
-
-There is no chat execution or automatic UI rendering. Acknowledgement confirms the current association, not every user's external initialization. Missing workspace facts remain unknown; saved model information does not prove activation. Notifications have a two-second wait budget and do not roll back committed business state on failure. Make external effects idempotent, and see F_25/S_14 for reconnect, stale-target, cancellation and evidence boundaries.
+具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_25](../../docs/features/F_25_session-attach.md)，公共契约见 [S_14](../../docs/specs/S_14_session-attach.md)。示例不介入 ui.render，日志与实际结果参数用于观察。
