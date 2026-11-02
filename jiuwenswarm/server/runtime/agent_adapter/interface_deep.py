@@ -288,6 +288,20 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.checkpoint_db import (
     ensure_persistent_checkpointer,
     reset_shared_checkpoint_for_tests,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.progressive_tools import (
+    _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
+    _LEGACY_PROGRESSIVE_EAGER_TOOL_ALIASES,
+    _PROGRESSIVE_META_TOOL_NAMES,
+    _TTSE_CONSULT_TOOL_NAME,
+    _ensure_progressive_meta_tools,
+    _ensure_ttse_consult_eager_tool,
+    _merge_ttse_config,
+    _normalize_progressive_eager_tools,
+    _normalize_tool_names,
+    _ttse_consult_should_be_eager,
+    build_progressive_tool_rail_from_config,
+    is_subagent_tool_lazy_load_enabled,
+)
 from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
     _build_avatar_rail,
     _build_extension_config_debug_rail,
@@ -350,8 +364,6 @@ def _is_foreign_stream_source(payload: Any) -> bool:
         return False
     source_id = payload.get(STREAM_SOURCE_ID_FIELD)
     return isinstance(source_id, str) and bool(source_id) and source_id != "main"
-
-
 
 
 def _tool_result_lookup(payload: Any, *keys: str) -> Any:
@@ -1514,234 +1526,6 @@ _CRON_TOOL_NAMES = frozenset(
     }
 )
 
-_DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
-    "tools_search",
-    "invoke_tool",
-    "web_search",
-    "fetch_webpage",
-    "ask_user",
-    "list_files",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "grep",
-    "bash",
-    "skill_tool",
-    "skill_complete",
-    "todo_create",
-    "todo_list",
-    "todo_modify",
-]
-
-_PROGRESSIVE_META_TOOL_NAMES = frozenset({"tools_search", "invoke_tool"})
-_TTSE_CONSULT_TOOL_NAME = "ttse_consult"
-_LEGACY_PROGRESSIVE_EAGER_TOOL_ALIASES = {
-    "ask_user_question": "ask_user",
-}
-
-
-def _normalize_tool_names(value: Any, default: list[str] | None = None) -> list[str]:
-    """Normalize comma-separated/list tool-name config values."""
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return list(default or [])
-
-
-def _ensure_progressive_meta_tools(eager_tools: list[str]) -> list[str]:
-    """Ensure tools_search / invoke_tool are in the eager list."""
-    if "tools_search" not in eager_tools:
-        eager_tools.insert(0, "tools_search")
-    if "invoke_tool" not in eager_tools:
-        eager_tools.insert(1, "invoke_tool")
-    return eager_tools
-
-
-def _merge_ttse_config(runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Yaml ``react.ttse`` plus runtime overlay (runtime keys win).
-
-    Same merge used by TTSERail mount and ``ttse_consult`` eager gating so a
-    sparse runtime cache (OfficeAce sync snapshot omitting ``ttse``) still
-    inherits the on-disk default. An explicit runtime ``enabled: false`` wins.
-    """
-    merged: dict[str, Any] = {}
-    try:
-        yaml_ttse = _get_ttse_config(get_config())
-    except Exception:
-        yaml_ttse = {}
-    if isinstance(yaml_ttse, dict):
-        merged.update(yaml_ttse)
-    runtime = _get_ttse_config(runtime_config)
-    if isinstance(runtime, dict):
-        merged.update(runtime)
-    return merged
-
-
-def _ttse_consult_should_be_eager(react_config: dict[str, Any] | None) -> bool:
-    """True when TTSE is opted in and inject is on, so ``ttse_consult`` stays in schema.
-
-    Master switch uses :func:`_merge_ttse_config` then :func:`get_ttse_enabled`
-    so eager gating cannot diverge from TTSERail mount.
-    """
-    if not isinstance(react_config, dict):
-        return False
-    merged = _merge_ttse_config(react_config)
-    if not get_ttse_enabled({"ttse": merged}):
-        return False
-    return coerce_config_bool(merged.get("inject_enabled"), True)
-
-
-def _ensure_ttse_consult_eager_tool(
-    eager_tools: list[str],
-    react_config: dict[str, Any] | None,
-) -> list[str]:
-    """Expose ``ttse_consult`` on first turn only after TTSE is explicitly enabled.
-
-    ProgressiveToolRail only exposes ``eager_tools``. After ``react.ttse.enabled``
-    (and inject) is on, P:45 tells the model to call ``ttse_consult`` before
-    ``skill_acceleration_exec``; if the name is filtered out, first-turn consult
-    is impossible without tools_search. Default-off must strip the name even if
-    a yaml eager list still includes it.
-    """
-    if not _ttse_consult_should_be_eager(react_config):
-        return [name for name in eager_tools if name != _TTSE_CONSULT_TOOL_NAME]
-    if _TTSE_CONSULT_TOOL_NAME in eager_tools:
-        return eager_tools
-    if "skill_acceleration_exec" in eager_tools:
-        eager_tools.insert(
-            eager_tools.index("skill_acceleration_exec"),
-            _TTSE_CONSULT_TOOL_NAME,
-        )
-    else:
-        insert_at = 2 if len(eager_tools) >= 2 else len(eager_tools)
-        eager_tools.insert(insert_at, _TTSE_CONSULT_TOOL_NAME)
-    return eager_tools
-
-
-def _normalize_progressive_eager_tools(
-    value: Any,
-    default: list[str] | None = None,
-) -> list[str]:
-    """Normalize eager tools and migrate legacy registered names."""
-    eager_tools: list[str] = []
-    for tool_name in _normalize_tool_names(value, default):
-        normalized_name = _LEGACY_PROGRESSIVE_EAGER_TOOL_ALIASES.get(
-            tool_name,
-            tool_name,
-        )
-        if normalized_name not in eager_tools:
-            eager_tools.append(normalized_name)
-    return _ensure_progressive_meta_tools(eager_tools)
-
-
-def is_subagent_tool_lazy_load_enabled(react_config: dict[str, Any] | None) -> bool:
-    """True when react.tool_lazy_load and subagents are both enabled."""
-    config = react_config if isinstance(react_config, dict) else {}
-    lazy_cfg = config.get("tool_lazy_load") or {}
-    if not isinstance(lazy_cfg, dict):
-        return False
-    if not lazy_cfg.get("enabled", False):
-        return False
-    sub_cfg = lazy_cfg.get("subagents") or {}
-    if not isinstance(sub_cfg, dict):
-        return False
-    return bool(sub_cfg.get("enabled", False))
-
-
-def build_progressive_tool_rail_from_config(
-    react_config: dict[str, Any],
-    *,
-    language: str,
-    profile: str = "main",
-    agent_id: str | None = None,
-    agent_card_id: str | None = None,
-    subagent_kind: str | None = None,
-    deepresearch_context_provider: Callable[[], dict[str, str]] | None = None,
-    active_skill_provider: Callable[[], str | None] | None = None,
-) -> ProgressiveToolRail | None:
-    """Build ProgressiveToolRail from react.tool_lazy_load config.
-
-    Stable base eager-tools schema; deferred tools are reached via tools_search
-    + invoke_tool, while ToolCard skill gates may add direct tools for the
-    active session skill. For subagents, set profile="subagent" and configure
-    react.tool_lazy_load.subagents.
-    """
-    config = react_config if isinstance(react_config, dict) else {}
-    lazy_cfg = config.get("tool_lazy_load") or {}
-    if not isinstance(lazy_cfg, dict):
-        lazy_cfg = {}
-    lazy_load_enabled = bool(lazy_cfg.get("enabled", False))
-
-    enable_for_models = _normalize_tool_names(
-        lazy_cfg.get("enable_for_models", []), []
-    )
-
-    normalized_profile = (profile or "main").strip().lower()
-    if normalized_profile == "subagent":
-        sub_cfg = lazy_cfg.get("subagents") or {}
-        if not isinstance(sub_cfg, dict):
-            sub_cfg = {}
-        if not sub_cfg.get("enabled", False):
-            return None
-
-        main_eager = _normalize_progressive_eager_tools(
-            lazy_cfg.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS),
-            _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
-        )
-        if sub_cfg.get("inherit_parent_eager_tools", False):
-            eager_tools = list(main_eager)
-        else:
-            eager_tools = _normalize_progressive_eager_tools(
-                sub_cfg.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS),
-                _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
-            )
-    else:
-        eager_tools = _normalize_progressive_eager_tools(
-            lazy_cfg.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS),
-            _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
-        )
-
-    eager_tools = _ensure_ttse_consult_eager_tool(eager_tools, config)
-
-    normalized_language = resolve_language(language)
-    disabled_tools: list[str] = []
-    try:
-        disabled_tools = resolve_string_or_list_config(config.get("disabled_tools"))
-    except Exception as exc:
-        logger.warning(
-            "[ProgressiveToolRail] ignore malformed disabled_tools while building "
-            "progressive rail: %s",
-            exc,
-        )
-
-    logger.info(
-        "[ProgressiveToolRail] mounted lazy_load_enabled=%s profile=%s "
-        "kind=%s eager_tools=%s "
-        "agent_id=%s agent_card_id=%s enable_for_models=%s disabled_tools=%s",
-        lazy_load_enabled,
-        normalized_profile,
-        subagent_kind or "",
-        eager_tools,
-        agent_id,
-        agent_card_id,
-        enable_for_models,
-        disabled_tools,
-    )
-
-    return ProgressiveToolRail(
-        enabled=lazy_load_enabled,
-        eager_tools=eager_tools,
-        language=normalized_language,
-        agent_id=agent_id,
-        agent_card_id=agent_card_id,
-        enable_for_models=enable_for_models,
-        deepresearch_context_provider=deepresearch_context_provider,
-        active_skill_provider=active_skill_provider,
-        disabled_tools=disabled_tools,
-    )
-
 
 def _set_skill_evolution_triggers(
     rail: Any,
@@ -1772,10 +1556,6 @@ def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
     require a standalone permission engine initialization step.
     """
     return None
-
-
-
-
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -2071,8 +1851,6 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] ContextProcessorRail create failed: %s", exc)
         return None
-
-
 
 
 _MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
@@ -2741,7 +2519,6 @@ class JiuWenSwarmDeepAdapter:
             self._prebuilt_skills.add(name)
         else:
             self._prebuilt_skills.discard(name)
-
 
 
     def copy_tenant_env_bindings_from(self, source: "JiuWenSwarmDeepAdapter") -> None:
@@ -4357,7 +4134,6 @@ class JiuWenSwarmDeepAdapter:
         return value in {"1", "true", "yes", "on"}
 
 
-
     @staticmethod
     def _sync_browser_runtime_environment(
         config_base: dict[str, Any] | None = None,
@@ -5264,9 +5040,6 @@ class JiuWenSwarmDeepAdapter:
             await self._register_mcp_server(desired_cfg, tag=tag)
 
 
-
-
-
     def _iter_runtime_audio_tools(self, agent_id: str | None) -> list[Any]:
         """Return metadata-only audio tools unless a complete audio model is configured."""
         cfg = self._audio_model_config or AudioModelConfig()
@@ -5541,8 +5314,6 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] extension_config injected from enterprise config: count=%s",
                 len(ext_config),
             )
-
-
 
 
     def _refresh_multimodal_configs(
@@ -6004,9 +5775,6 @@ class JiuWenSwarmDeepAdapter:
                 if self._checkpointer is None:
                     self._checkpointer = _shared_checkpoint_checkpointer
                 self._bind_checkpointer_to_rails()
-
-
-
 
 
     def _previous_model_reload_fingerprint(self) -> str | None:
@@ -6474,8 +6242,6 @@ class JiuWenSwarmDeepAdapter:
         return model
 
 
-
-
     def _native_image_input_enabled(self, config: dict[str, Any], model: Any | None) -> bool:
         # read_file 默认不读取图片：不把图片字节内联进主模型对话，改走 image_reading / VQA 工具。
         # 仅当 config.yaml 显式设置 enable_read_image_multimodal 时遵从配置；模型名启发式已移除。
@@ -6725,7 +6491,6 @@ class JiuWenSwarmDeepAdapter:
             if value:
                 return str(value)
         return None
-
 
 
     def _create_sys_operation(self) -> SysOperation | None:
@@ -7125,7 +6890,6 @@ class JiuWenSwarmDeepAdapter:
             if rail is not None:
                 rails.append(rail)
         return rails
-
 
 
     def _apply_local_sysop_to_all_rails(self) -> None:
@@ -7890,7 +7654,6 @@ class JiuWenSwarmDeepAdapter:
             return None
 
 
-
     def _skill_sleep_model_spec(self) -> SleepModelSpec | None:
         """Resolve the sleep-training model from the main conversation config.
 
@@ -8586,9 +8349,6 @@ class JiuWenSwarmDeepAdapter:
         return rail
 
 
-
-
-
     def _build_task_planning_rail(
         self, config: dict[str, Any] | None = None
     ) -> TaskPlanningRail | None:
@@ -8821,10 +8581,6 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] MemoryRail create failed: %s", exc)
             memory_rail = None
         return memory_rail
-
-
-
-
 
 
     def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
@@ -11355,8 +11111,6 @@ class JiuWenSwarmDeepAdapter:
         )
 
 
-
-
     def _reset_stream_runtime_context(
         self,
         tokens: _RuntimeCronContextTokens,
@@ -11947,9 +11701,6 @@ class JiuWenSwarmDeepAdapter:
         files: Any = None
 
 
-
-
-
     async def configure_session_runtime(
         self,
         *,
@@ -12363,7 +12114,6 @@ class JiuWenSwarmDeepAdapter:
             mode=mode,
             project_dir=project_dir,
         )
-
 
 
     def _read_session_interrupt_state(self) -> Any:
@@ -12911,7 +12661,6 @@ class JiuWenSwarmDeepAdapter:
         return str(output)
 
 
-
     async def prepare_plan_pause_for_request(self, request: AgentRequest) -> None:
         """On next agent.plan message after cancel: clear task_plan, inject decision prompt, clear flag."""
         if self._instance is None:
@@ -13209,12 +12958,6 @@ class JiuWenSwarmDeepAdapter:
                 session_id,
                 exc,
             )
-
-
-
-
-
-
 
 
     def _context_usage_fields(self, session_id: str) -> tuple[float | None, int | None]:
@@ -13535,7 +13278,6 @@ class JiuWenSwarmDeepAdapter:
         return ability_names
 
 
-
     async def _stop_session_interrupt_work(
         self,
         session_id: str | None,
@@ -13783,8 +13525,6 @@ class JiuWenSwarmDeepAdapter:
         parsed["content"] = self._reasoning_only_empty_reply_fallback()
 
 
-
-
     async def _reattach_interrupt_output(self, session_id: str) -> Any | None:
         """Briefly wait for the interrupted consumer to release its output lease."""
         started = time.monotonic()
@@ -13810,15 +13550,10 @@ class JiuWenSwarmDeepAdapter:
         return None
 
 
-
-
-
     def _is_ack_only_dispatch(self, params: Any) -> bool:
         """Steer / follow_up prefer an existing reader when one is present."""
         mode = _resolve_input_dispatch_mode(params)
         return mode in (InputDispatchMode.STEER, InputDispatchMode.FOLLOW_UP)
-
-
 
 
     def _should_inject_into_existing_interaction(self, params: Any) -> bool:
@@ -14587,7 +14322,6 @@ class JiuWenSwarmDeepAdapter:
         )
 
 
-
     async def handle_heartbeat(self, request: AgentRequest) -> AgentResponse | None:
         """Handle heartbeat request. Returns None to continue normal flow.
 
@@ -14795,8 +14529,6 @@ class JiuWenSwarmDeepAdapter:
                 channel_id,
             )
         return await self._handle_governance_approval(request_id, answers, "simplify")
-
-
 
 
     def _approval_response_from_event_or_records(
@@ -15371,7 +15103,6 @@ class JiuWenSwarmDeepAdapter:
                 self._schedule_pending_auto_rebuild(request_id)
 
 
-
     async def _ensure_evolution_rail_for_slash(self, mode: str) -> str | None:
         """Check evolution availability for slash commands; lazily init rail if needed.
 
@@ -15489,12 +15220,6 @@ class JiuWenSwarmDeepAdapter:
         }
 
     # Goal capability adapter -------------------------------------------------
-
-
-
-
-
-
 
 
     def _get_goal_manager(self) -> Any:
@@ -16061,8 +15786,6 @@ class JiuWenSwarmDeepAdapter:
         }
 
 
-
-
     def _load_deepresearch_rewrite_replay(
         self,
         session_id: str,
@@ -16575,9 +16298,6 @@ class JiuWenSwarmDeepAdapter:
         if instance is None or getattr(instance, "active_round", None) is not None:
             return False
         return not self._goal_record_is_active()
-
-
-
 
 
     async def process_message_impl(
@@ -19462,7 +19182,6 @@ class JiuWenSwarmDeepAdapter:
                 payload=None,
                 is_complete=True,
             )
-
 
 
     @property
