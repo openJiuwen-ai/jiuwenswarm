@@ -133,6 +133,7 @@ from jiuwenswarm.runtime.host_services import (
 )
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.runtime.session.model import AnswerInFlightError, NoControlTargetError
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 from jiuwenswarm.runtime.request import (
     PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
 )
@@ -617,7 +618,7 @@ async def _stop_stream_keepalive(
     _consume_keepalive_task_result(keepalive_task, request_id)
 
 
-_UNDELIVERED_ANSWER_ERRORS: tuple[type[Exception], ...] = (NoControlTargetError,)
+_UNDELIVERED_ANSWER_ERRORS: tuple[type[Exception], ...] = (NoControlTargetError, ClientToolAnswerMismatch)
 
 
 @dataclass(slots=True)
@@ -3349,6 +3350,15 @@ class AgentWebSocketServer:
                     describe_ws_exception(e),
                 ),
             )
+        except ClientToolAnswerMismatch as e:
+            logger.info(
+                "[AgentWebSocketServer] client tool results refused: request_id=%s: %s",
+                request.request_id,
+                e,
+            )
+            wire = AgentWebSocketServer._send_error_response(ws, request, send_lock, str(e), e.code)
+            async with send_lock:
+                await send_wire_payload(ws, wire)
         except Exception as e:
             logger.exception(
                 "[AgentWebSocketServer] 处理请求失败: request_id=%s: %s",
@@ -4837,7 +4847,9 @@ class AgentWebSocketServer:
         that delivery. An answer whose pause is gone, as after a restart,
         settles the item it opened as ``unknown``.
         """
-        if resume_state is None or isinstance(exc, AnswerInFlightError):
+        # A refused client tool resume raises ClientToolAnswerMismatch from the coordinator's error.
+        in_flight = isinstance(exc, AnswerInFlightError) or isinstance(exc.__cause__, AnswerInFlightError)
+        if resume_state is None or in_flight:
             return None
         service = getattr(self, "_session_message_service", None)
         if service is None:

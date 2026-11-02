@@ -37,6 +37,7 @@ from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
+from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from gateway.extensions.registry import ExtensionRegistry
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
@@ -103,6 +104,7 @@ from jiuwenswarm.common.utils import (
     migrate_team_skill_views,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.runtime.client_tools import client_tool_answers
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
@@ -2277,6 +2279,12 @@ class JiuWenSwarm:
                 interactive_input.answer(interrupt_id, value)
             else:
                 interactive_input.update(request_id, value)
+
+        if source == CLIENT_TOOL_INTERRUPT_SOURCE:
+            # One result per paused client tool call, by its interrupt id; a call left unanswered stays paused.
+            for answer in client_tool_answers(answers):
+                interactive_input.answer(answer.interrupt_id, answer.result)
+            return interactive_input
 
         if source == "ask_user_interrupt":
             answers_dict = {}
@@ -6189,6 +6197,10 @@ class JiuWenSwarm:
         """Inspect existing Goal work without creating or attaching a session."""
         checker = getattr(self._adapter, "has_active_goal", None)
         return bool(callable(checker) and checker(session_id))
+
+    async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
+        """What this Session's paused turn still asks, as the events that asked it."""
+        return await self._adapter.pending_interactions(session_id) if self._adapter is not None else []
 
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter

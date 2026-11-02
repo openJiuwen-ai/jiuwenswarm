@@ -38,7 +38,7 @@ from gateway.common.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
 )
-from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from gateway.common.interrupt_resume import answers_paused_calls
 from gateway.common.mode_matrix import (
     DEPRECATION_MAP,
     MODE_ALIASES,
@@ -842,10 +842,7 @@ class MessageHandler(ABC):
     def _is_interrupt_resume_chat_send(cls, msg: "Message") -> bool:
         if not isinstance(msg.params, dict):
             return False
-        source = str(msg.params.get("source") or "").strip()
-        answers = msg.params.get("answers")
-        request_id = str(msg.params.get("request_id") or "").strip()
-        if bool(request_id) and isinstance(answers, list) and source in INTERRUPT_RESUME_SOURCES:
+        if answers_paused_calls(msg.params):
             return True
         return cls._is_interrupt_evolution_approval_answer_payload(msg.params)
 
@@ -3659,15 +3656,7 @@ class MessageHandler(ABC):
         sid = str(session_id or "").strip()
         if not sid:
             return False
-        params = getattr(env, "params", None)
-        if not isinstance(params, dict):
-            return False
-        source = str(params.get("source") or "").strip()
-        if source not in INTERRUPT_RESUME_SOURCES:
-            return False
-        answers = params.get("answers")
-        request_id = str(params.get("request_id") or "").strip()
-        return bool(request_id) and isinstance(answers, list)
+        return answers_paused_calls(getattr(env, "params", None))
 
     @staticmethod
     def _cron_permission_resume_settled(

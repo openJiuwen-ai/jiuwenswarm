@@ -449,6 +449,15 @@ class RuntimeSessionCoordinator:
         parent = self._control_parent(record, request_id)
         return parent.waiting_control_ids if parent is not None else frozenset()
 
+    def unanswered_interactions(self, session_id: str) -> frozenset[str]:
+        """What the Session's executions wait on, less what an answer being delivered names."""
+        record = self._sessions.get(session_id)
+        if record is None or record.state is RuntimeSessionState.CLOSED:
+            return frozenset()
+        handles = self._registry.select(session_id=session_id, generation=record.generation, active_only=True)
+        waiting = frozenset().union(*(handle.waiting_control_ids for handle in handles))
+        return waiting.difference(*(delivery.answered for delivery in record.deliveries.values()))
+
     def control_target_work_kind(
         self, session_id: str, request_id: str
     ) -> SessionWorkKind | None:

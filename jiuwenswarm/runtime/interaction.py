@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.runtime.evolution import (
     is_interrupt_evolution_approval_answer_payload,
 )
@@ -22,9 +22,12 @@ if TYPE_CHECKING:
 
 _WORK_MODES = frozenset({"work", "code"})
 
+#: The events that ask the user, or the user's client, for an answer the turn waits on.
+USER_INTERACTION_EVENTS = frozenset({"chat.ask_user_question", EventType.CHAT_CLIENT_TOOL_REQUEST.value})
+
 # The id an answer names, per event that asks for one.
 _INTERACTION_ID_KEYS: dict[str, str] = {
-    "chat.ask_user_question": "request_id",
+    **dict.fromkeys(USER_INTERACTION_EVENTS, "request_id"),
     "harness.activate_interaction": "interaction_id",
 }
 
@@ -225,4 +228,10 @@ class InteractionAnswerInput:
         )
 
 
-__all__ = ["InteractionAnswerError", "InteractionAnswerInput", "asked_interaction_ids", "interaction_ids"]
+__all__ = [
+    "USER_INTERACTION_EVENTS",
+    "InteractionAnswerError",
+    "InteractionAnswerInput",
+    "asked_interaction_ids",
+    "interaction_ids",
+]
