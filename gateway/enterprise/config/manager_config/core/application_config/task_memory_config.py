@@ -1,38 +1,18 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
 
-"""TaskMemory 配置：写入 Gateway 本地库并热更新 AgentServer 缓存。"""
+"""TaskMemory 配置：持久化配置；路由通知 Runtime，由执行侧读取并应用。"""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from gateway.enterprise import is_enterprise
 from gateway.config.enterprise.tables.application_config_models import TASK_MEMORY_CONFIG_TABLE_DEF
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import format_ts, utc_now
 
 _TABLE = TASK_MEMORY_CONFIG_TABLE_DEF.table_name
 logger = logging.getLogger(__name__)
-
-
-def _apply_task_memory(row: dict[str, Any] | None, *, op: str) -> None:
-    from jiuwenswarm.agents.harness.common.memory.config import (
-        apply_task_memory_config_payload,
-    )
-
-    if not is_enterprise():
-        logger.debug(
-            "[ManagerConfigReceiver] skip task_memory_config hot-reload: not enterprise runtime"
-        )
-        return
-
-    if op == "delete":
-        apply_task_memory_config_payload({"op": "delete"})
-        return
-    apply_task_memory_config_payload(
-        {"op": "upsert", "body": row} if isinstance(row, dict) else None
-    )
 
 
 def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
@@ -105,12 +85,10 @@ class TaskMemoryConfigService:
         if isinstance(payload.get("task_memory"), dict):
             payload = dict(payload["task_memory"])
         result = await _upsert_task_memory_config_record(payload)
-        _apply_task_memory(result, op="upsert")
-        logger.info("[ManagerConfigReceiver] task_memory_config hot-reload upsert")
+        logger.info("[ManagerConfigReceiver] task_memory_config saved")
         return result
 
     async def delete(self) -> None:
         repo = require_enterprise_repository(_TABLE)
         await repo.delete()
-        _apply_task_memory(None, op="delete")
         logger.info("[ManagerConfigReceiver] task_memory_config deleted")

@@ -284,29 +284,8 @@ async def setup_gateway_storage_repositories(
                 instance_id="",
             )
         )
-        await _cold_load_memory_configs()
 
     return ctx
-
-
-async def _cold_load_memory_configs() -> None:
-    """企业版：从 Gateway DB 冷加载 memory / task_memory 缓存。"""
-    try:
-        from jiuwenswarm.agents.harness.common.memory.config import (
-            reload_memory_config_from_gateway_db,
-            reload_task_memory_config_from_gateway_db,
-        )
-
-        await reload_task_memory_config_from_gateway_db()
-        await reload_memory_config_from_gateway_db()
-        logger.info(
-            "[StorageAssembly] memory/task_memory_config loaded from Gateway DB (if any)"
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "[StorageAssembly] memory/task_memory_config cold load skipped",
-            exc_info=True,
-        )
 
 
 async def teardown_gateway_storage_repositories(ctx: StorageContext) -> None:
@@ -412,8 +391,6 @@ async def wire_enterprise_persistent_repositories_async(
 
     if get_channel_config_repository() is None:
         _wire_config_repositories(store, cfg)
-
-    await _cold_load_memory_configs()
 
 
 async def setup_session_map_repository(
