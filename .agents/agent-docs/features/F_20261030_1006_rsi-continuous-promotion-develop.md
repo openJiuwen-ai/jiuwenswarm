@@ -72,3 +72,11 @@ PR9297 源分支为 `fix/rsi-continuous-promotion-develop`，合并前为 `6892c
 core 定向测试为 3129 passed、3 skipped，客户端工具及中断交互测试另有 119 passed。
 Swarm 合并后的 RSI、Symphony、依赖来源及 adapter 定向验证共 524 passed，uv lock --check 和 uv sync --check 均通过。
 本轮不重复执行完整 UT，不将此前完整回归结果当成本候选通过证据。
+
+
+## 2026-11-02 依赖文件范围调整
+
+用户明确要求 PR 不修改 pyproject.toml 和 uv.lock，故将两文件完整恢复为 upstream/develop
+`8827ad7b5` 的版本，不再使用本 PR 的 fork core pin，也不携带重新解析锁文件的变化。
+此前兼容 core 和定向测试记录保留为历史证据，不能当作恢复依赖后的验证结果。
+连续晋级的运行支持仍需官方 core 后续提供；本次仅按用户要求收敛依赖文件差异，未重跑 UT。
