@@ -10,11 +10,41 @@ import asyncio
 import copy
 import importlib.util
 import logging
+import os
 import time
 from typing import Any
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+# Default allow silent PG→sqlite. Set to 0/false/off to refuse (enterprise).
+_ENV_ALLOW_SQLITE_FALLBACK = "JIUWENSWARM_ALLOW_SQLITE_FALLBACK"
+
+
+class DistributedDependencyError(RuntimeError):
+    """Raised when postgresql→sqlite fallback is explicitly disallowed."""
+
+
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _falsy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return not value
+    return str(value or "").strip().lower() in {"0", "false", "no", "off"}
+
+
+def _allow_postgresql_to_sqlite() -> bool:
+    """Default allow (silent fallback). Refuse only when env explicitly disables."""
+    raw = os.environ.get(_ENV_ALLOW_SQLITE_FALLBACK)
+    if raw is None or str(raw).strip() == "":
+        return True
+    if _falsy_flag(raw):
+        return False
+    return _truthy_flag(raw)
 
 
 def is_distributed_mode(config_base: dict[str, Any]) -> bool:
@@ -172,8 +202,31 @@ def missing_distributed_dependencies(config_base: dict[str, Any]) -> list[str]:
     return missing
 
 
+def _rewrite_postgresql_storage_or_raise(team_cfg: dict[str, Any]) -> None:
+    """Rewrite postgresql→sqlite by default; raise if env explicitly disallows."""
+    if not is_postgresql_storage(team_cfg):
+        return
+    if not _allow_postgresql_to_sqlite():
+        raise DistributedDependencyError(
+            f"{_ENV_ALLOW_SQLITE_FALLBACK} is false: refusing silent rewrite of "
+            "storage.type postgresql→sqlite. Install asyncpg "
+            '(pip install -e ".[distribute]" / uv sync --extra distribute), '
+            f"or unset / set {_ENV_ALLOW_SQLITE_FALLBACK}=1 for local-dev."
+        )
+    team_cfg["storage"] = {
+        "type": "sqlite",
+        "params": {"connection_string": "team.db"},
+    }
+
+
 def fallback_distributed_to_local(config_base: dict[str, Any]) -> dict[str, Any]:
-    """Create an in-memory local fallback config from distributed config."""
+    """Create a local/inprocess fallback config from distributed config.
+
+    Runtime/transport always fall back to local/inprocess. For postgresql
+    storage: default remains silent rewrite to sqlite; if
+    ``JIUWENSWARM_ALLOW_SQLITE_FALLBACK=0``, raise ``DistributedDependencyError``
+    instead (enterprise external-DB boundary). Local sqlite storage is unchanged.
+    """
     normalized = copy.deepcopy(config_base)
 
     team_cfg = normalized.get("team", {})
@@ -192,11 +245,7 @@ def fallback_distributed_to_local(config_base: dict[str, Any]) -> dict[str, Any]
         transport_cfg.pop("params", None)
         team_cfg["transport"] = transport_cfg
 
-        if is_postgresql_storage(team_cfg):
-            team_cfg["storage"] = {
-                "type": "sqlite",
-                "params": {"connection_string": "team.db"},
-            }
+        _rewrite_postgresql_storage_or_raise(team_cfg)
 
     modes_cfg = normalized.get("modes", {})
     if isinstance(modes_cfg, dict):
@@ -211,11 +260,7 @@ def fallback_distributed_to_local(config_base: dict[str, Any]) -> dict[str, Any]
                 transport_cfg["type"] = "inprocess"
                 transport_cfg.pop("params", None)
                 candidate["transport"] = transport_cfg
-                if is_postgresql_storage(candidate):
-                    candidate["storage"] = {
-                        "type": "sqlite",
-                        "params": {"connection_string": "team.db"},
-                    }
+                _rewrite_postgresql_storage_or_raise(candidate)
 
     return normalized
 
