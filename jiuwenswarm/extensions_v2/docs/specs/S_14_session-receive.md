@@ -18,10 +18,10 @@ SessionReceiveInput 包含 SessionReceiveOrigin、text、可选 SessionReceiveEv
 | --- | --- |
 | S14-01 | origin/event 固定，只允许非空白 text 改写，UTF-8 不超过 32768 字节。 |
 | S14-02 | receive USER 的 Ops 绑定目标上下文；send USER 绑定源上下文。 |
-| S14-03 | SessionReceiveConsumed(consumed) 仅在 next 前生效；原因去空白后 1～512 字符，无新增队列、历史或模型执行。 |
+| S14-03 | SessionReceiveConsumed(consumed) 仅在本事件 CORE 尚未开始、且在 next 前生效；原因去空白后 1～512 字符，无新增队列、历史或模型执行。 |
 | S14-04 | CORE 校验私有调用和绑定身份，执行真实 enqueue continuation，成功后返回实际入队 text。 |
 | S14-05 | 入队后使用平台保存的真实回执；后置 consumed 或改写返回不能撤销/伪造结果。 |
-| S14-06 | 一次调用只入队一次；原持久幂等键继续跨请求去重；调用退出后不能用继承状态提交。 |
+| S14-06 | 一次调用只入队一次；CORE 失败/取消保存至本次状态，再次 next 重新抛出且不重做，不能改成 consumed；原持久幂等键继续跨请求去重；调用退出后不能用继承状态提交。 |
 
 ## 4. 接口与失败
 
@@ -31,7 +31,7 @@ SessionReceiveInput 包含 SessionReceiveOrigin、text、可选 SessionReceiveEv
 
 ## 5. 生命周期与兼容
 
-不持队列锁执行 USER；原锁内复查目标，原通知和异步投递继续负责后续处理。没有 Handler 时行为与旧服务相同。卸载撤销 USER，不删除既有消息。普通 Web/cron/relay/独立 Runtime 入口未接入时不触发本事件。
+不持队列锁执行 USER；原锁内复查源与目标的归属及支持模式，原通知和异步投递继续负责后续处理。没有 Handler 时行为与旧服务相同。卸载撤销 USER，不删除既有消息。普通 Web/cron/relay/独立 Runtime 入口未接入时不触发本事件。
 
 ## 6. 关联与验证索引
 
