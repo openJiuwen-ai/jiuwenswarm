@@ -15,6 +15,24 @@ from jiuwenswarm.server.runtime.group_service import GroupError, read_group
 
 START_TASK = "swarm.group_start_task"
 TASK_POLICY = "swarm.group_task_policy"
+# Temporary public-group leader mute set; see GroupTaskPolicyRail.before_tool_call.
+_LEADER_MUTED_TOOLS = frozenset({"group_send_message", "send_file_to_user"})
+_LEADER_MUTE_ERROR = (
+    "Leader public group output is temporarily muted; "
+    "do not retry this tool."
+)
+
+
+def _reject_tool(ctx, error: str) -> None:
+    """Skip the current tool call and return a LLM-visible error."""
+    from openjiuwen.core.foundation.llm import ToolMessage
+
+    call = ctx.inputs.tool_call
+    ctx.extra["_skip_tool"] = True
+    ctx.inputs.tool_result = {"error": error}
+    ctx.inputs.tool_msg = ToolMessage(content=error, tool_call_id=call.id if call else "")
+
+
 GROUP_MEMBER_RULES = (
     "Your role in this public group is an independent member, not the group leader. "
     "Other public group members are peers, not your subordinates or your internal team. "
@@ -265,7 +283,27 @@ class GroupTaskPolicyRail(DeepAgentRail):
             name="group_task_policy", content={"en": content, "cn": content}, priority=90,
         ))
 
+    def _is_public_group_leader(self, group: dict | None) -> bool:
+        """Whether this backend is the leader of the outer public group."""
+        if group is None:
+            return False
+        backend = get_team_backend(self.context)
+        return (
+            getattr(backend, "is_leader", False)
+            and str(getattr(backend, "team_name", "")) == group["team_name"]
+        )
+
     async def before_tool_call(self, ctx):
+        group = read_group(self.context.session_id)
+        # Temporary mute: public-group leader role allocation is not designed
+        # yet. Revisit once leader responsibilities are explicitly assigned.
+        if (
+            group is not None
+            and ctx.inputs.tool_name in _LEADER_MUTED_TOOLS
+            and self._is_public_group_leader(group)
+        ):
+            _reject_tool(ctx, _LEADER_MUTE_ERROR)
+            return
         if ctx.inputs.tool_name == "send_message":
             group = read_group(self.context.session_id)
             if group is None:
@@ -273,13 +311,10 @@ class GroupTaskPolicyRail(DeepAgentRail):
             public_member = any(item["member_name"] == self.context.member_name for item in group["members"])
             if not public_member:
                 return
-            from openjiuwen.core.foundation.llm import ToolMessage
-
-            error = "Private messaging between public group members is disabled. Use ask_user for questions."
-            call = ctx.inputs.tool_call
-            ctx.extra["_skip_tool"] = True
-            ctx.inputs.tool_result = {"error": error}
-            ctx.inputs.tool_msg = ToolMessage(content=error, tool_call_id=call.id if call else "")
+            _reject_tool(
+                ctx,
+                "Private messaging between public group members is disabled. Use ask_user for questions.",
+            )
             return
         if ctx.inputs.tool_name not in {"group_send_message", "send_file"}:
             return
@@ -302,12 +337,7 @@ class GroupTaskPolicyRail(DeepAgentRail):
             message_id=message_id,
         )
         if blocked:
-            from openjiuwen.core.foundation.llm import ToolMessage
-
-            call = ctx.inputs.tool_call
-            ctx.extra["_skip_tool"] = True
-            ctx.inputs.tool_result = {"error": blocked}
-            ctx.inputs.tool_msg = ToolMessage(content=blocked, tool_call_id=call.id if call else "")
+            _reject_tool(ctx, blocked)
             return
         store = GroupExecutions(self.context.session_id)
         active = store.active(self.context.member_name)
@@ -328,16 +358,11 @@ class GroupTaskPolicyRail(DeepAgentRail):
                 return
         if active.get("presentation", "card") != "card":
             return
-        from openjiuwen.core.foundation.llm import ToolMessage
-
-        error = (
+        _reject_tool(
+            ctx,
             "An execution is active. Use group_send_message with its execution_id for the final result; "
-            "progress stays in the execution card."
+            "progress stays in the execution card.",
         )
-        call = ctx.inputs.tool_call
-        ctx.extra["_skip_tool"] = True
-        ctx.inputs.tool_result = {"error": error}
-        ctx.inputs.tool_msg = ToolMessage(content=error, tool_call_id=call.id if call else "")
 
     async def after_tool_call(self, ctx):
         org_task_tools = {"org_create_task", "org_update_task", "org_claim_task", "org_delegate_task"}
