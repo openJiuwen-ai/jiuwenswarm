@@ -25,7 +25,6 @@ from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
         "team.work.plan",
         "team.code.normal",
         "team.code.plan",
-        "team.design",
     ],
 )
 @pytest.mark.parametrize("role", ["leader", "teammate"])
