@@ -1633,7 +1633,7 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/web_a1b2c3d4e5f6/actions/us
 
 出参（`data.deleted`）：`true`/`false`。
 
-失败：任务不存在 → `404 NOT_FOUND`；无权限 → `403 FORBIDDEN`。
+失败：任务不存在或无权访问 → `404 NOT_FOUND`（跨用户不区分"不存在"与"无权访问"，按防枚举统一返回 404）。
 
 ##### `cron.job.toggle` — `POST /cron/jobs/{id}/actions/toggle`
 
