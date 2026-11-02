@@ -37,11 +37,11 @@ def test_build_skill_evolution_rail_passes_trajectory_span_processor(tmp_path, m
         ),
         patch.object(adapter, "_resolve_skill_dirs", return_value=[str(tmp_path / "skills")]),
         patch(
-            "jiuwenswarm.server.runtime.agent_adapter.interface_deep.SkillEvolutionRail",
+            "jiuwenswarm.server.runtime.agent_adapter.deep.evolution.SkillEvolutionRail",
             _FakeSkillEvolutionRail,
         ),
         patch(
-            "jiuwenswarm.server.runtime.agent_adapter.interface_deep.EvolutionReviewRuntime",
+            "jiuwenswarm.server.runtime.agent_adapter.deep.evolution.EvolutionReviewRuntime",
             return_value=object(),
         ),
     ):
@@ -75,12 +75,12 @@ async def test_ensure_active_evolution_rails_passes_trajectory_span_processor(tm
             return_value=processor,
         ),
         patch(
-            "jiuwenswarm.server.runtime.agent_adapter.interface_deep.configure_skill_evolution_runtime",
+            "jiuwenswarm.server.runtime.agent_adapter.deep.evolution.configure_skill_evolution_runtime",
             configure,
         ),
         patch.object(evolution_mod, "_refresh_active_evolution_rail_refs", MagicMock()),
         patch(
-            "jiuwenswarm.server.runtime.agent_adapter.interface_deep._set_skill_evolution_triggers",
+            "jiuwenswarm.server.runtime.agent_adapter.deep.evolution._set_skill_evolution_triggers",
             MagicMock(),
         ),
     ):

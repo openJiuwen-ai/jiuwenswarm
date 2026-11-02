@@ -327,7 +327,9 @@ def _prepare_reload_adapter(
     monkeypatch.setattr(
         interface_deep_module, "_sync_active_evolution_review_agent_after_reload", MagicMock()
     )
-    monkeypatch.setattr(adapter, "_sync_mcp_servers_for_runtime", AsyncMock())
+    monkeypatch.setattr(
+        interface_deep_module, "_sync_mcp_servers_for_runtime", AsyncMock()
+    )
     monkeypatch.setattr(adapter, "_fan_out_reload_to_session_adapters", AsyncMock())
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", AsyncMock())
     monkeypatch.setattr(

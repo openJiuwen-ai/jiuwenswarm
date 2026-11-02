@@ -22,6 +22,7 @@ from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.common import mcp_config
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+from jiuwenswarm.server.runtime.agent_adapter.deep import request_mcp as request_mcp_mod
 from tests.unit_tests.agentserver.test_request_scoped_office_claw_mcp import (
     _bare_session_adapter, _ResourceManager,
 )
@@ -42,11 +43,11 @@ def _clear_registrations():
 async def test_request_tools_are_visible_to_all_llm_members(mode, source, session_id, monkeypatch):
     resource_manager = _ResourceManager()
     resource_manager.get_tool = lambda tool_id, **kwargs: resource_manager.tools.get(tool_id)
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     definitions = [{"name": "connector_lookup", "description": "Lookup", "input_params": {"type": "object"}}]
     connection = {"url": "http://localhost:12345/mcp", "_mcp_client_type": "streamable-http"}
-    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", AsyncMock(return_value=(definitions, connection)))
-    monkeypatch.setattr(interface_deep, "get_mcp_server_registry", lambda: SimpleNamespace(
+    monkeypatch.setattr(request_mcp_mod, "list_request_mcp_server_tools", AsyncMock(return_value=(definitions, connection)))
+    monkeypatch.setattr(request_mcp_mod, "get_mcp_server_registry", lambda: SimpleNamespace(
         snapshot_for_chat=AsyncMock(return_value=[("connector", definitions, connection)]),
     ))
     roles = ["leader", "teammate", "analyst"]
@@ -147,8 +148,8 @@ async def test_request_tools_are_visible_to_all_llm_members(mode, source, sessio
 @pytest.mark.asyncio
 async def test_failure_after_publication_rolls_back_session_registration(monkeypatch):
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
-    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", AsyncMock(return_value=(
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod, "list_request_mcp_server_tools", AsyncMock(return_value=(
         [{"name": "lookup", "description": "Lookup", "input_params": {"type": "object"}}],
         {"url": "http://localhost:12345/mcp", "_mcp_client_type": "streamable-http"},
     )))
@@ -156,7 +157,7 @@ async def test_failure_after_publication_rolls_back_session_registration(monkeyp
     def fail_publication(*args):
         raise RuntimeError("publication failed")
 
-    monkeypatch.setattr(interface_deep, "publish_live_office_claw_allowlist", fail_publication)
+    monkeypatch.setattr(request_mcp_mod, "publish_live_office_claw_allowlist", fail_publication)
     adapter = _bare_session_adapter()
     request = AgentRequest(request_id="failed", session_id="session", channel_id="web", params={
         "query": "lookup", "request_mcp_servers": {"mcpServers": {

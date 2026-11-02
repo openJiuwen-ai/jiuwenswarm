@@ -68,6 +68,9 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.evolution import (
     _build_skill_evolution_rail,
     _unconfigure_active_evolution_rails,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.request_mcp import (
+    _register_mcp_servers_from_config,
+)
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
@@ -697,7 +700,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._ensure_cron_tools_registered(self._parent_session_id)
         self._registered_mcp_server_ids.clear()
         self._registered_mcp_servers.clear()
-        await self._register_mcp_servers_from_config(config_base, tag="code")
+        await _register_mcp_servers_from_config(self, config_base, tag="code")
         logger.info("[JiuwenSwarmCodeAdapter] 初始化完成: agent_name=%s", self._agent_name)
 
         await self.load_user_rails()

@@ -7,11 +7,19 @@ import logging
 import time
 from typing import Any
 
-from openjiuwen.harness.rails import unconfigure_skill_evolution
+from openjiuwen.harness.rails import (
+    EvolutionInterruptRail,
+    SkillEvolutionRail,
+    SubagentRail,
+    configure_skill_evolution_runtime,
+    unconfigure_skill_evolution,
+)
+from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 
 from jiuwenswarm.common.config import (
     get_evolution_enabled,
     get_passive_skill_evolution_triggers,
+    get_skill_create_enabled,
     get_skill_evolution_enabled,
 )
 from jiuwenswarm.server.runtime.agent_adapter import (
@@ -28,7 +36,9 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     AUTO_REBUILD_SOURCE_MANUAL,
     AUTO_REBUILD_SOURCE_WATCHER,
     EVOLUTION_ACCEPT_LABELS,
+    TEAM_EVOLUTION_EVENT_TIMEOUT_SEC,
     TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES,
+    TEAM_EVOLUTION_IDLE_SLEEP_SEC,
     TEAM_EVOLUTION_NOOP_STAGES,
     AutoRebuildJob,
     EvolutionPushContext,
@@ -53,10 +63,24 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     team_evolution_terminal_progress,
     terminal_stage,
     visible_evolution_progress_from_events,
+    resolve_evolution_event_timeout_sec,
     visible_regular_evolution_start_progress,
+)
+from jiuwenswarm.server.runtime.session.session_metadata import (
+    build_server_push_message,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _set_skill_evolution_triggers(
+    rail: Any,
+    *,
+    review_trigger: bool,
+    signal_trigger: bool = True,
+) -> None:
+    rail.review_trigger = review_trigger
+    rail.signal_trigger = signal_trigger
 
 
 def _build_skill_evolution_rail(adapter, config: dict[str, Any]) -> SkillEvolutionRail | None:
@@ -67,10 +91,6 @@ def _build_skill_evolution_rail(adapter, config: dict[str, Any]) -> SkillEvoluti
     persistence is gated per-skill by ``resolve_skill_evolution_action``
     (``selfEvolution=auto`` only).
     """
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        EvolutionReviewRuntime,
-        SkillEvolutionRail,
-    )
     if not get_skill_evolution_enabled(config):
         return None
     from openjiuwen.extensions.observability.demand import (
@@ -103,11 +123,6 @@ def _build_skill_evolution_rail(adapter, config: dict[str, Any]) -> SkillEvoluti
 
 async def _ensure_active_evolution_rails_registered(adapter) -> None:
     """Configure, register, and cache single-agent skill evolution rails."""
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        _set_skill_evolution_triggers,
-        configure_skill_evolution_runtime,
-        get_passive_skill_evolution_triggers,
-    )
     if adapter._instance is None:
         return
 
@@ -189,11 +204,6 @@ async def _unconfigure_active_evolution_rails(adapter) -> None:
 
 def _refresh_active_evolution_rail_refs(adapter) -> None:
     """Refresh cached rail references after agent-core runtime configure."""
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        EvolutionInterruptRail,
-        SkillEvolutionRail,
-        SubagentRail,
-    )
     if adapter._instance is None:
         return
     find_rails = getattr(adapter._instance, "find_rails_by_type", None)
@@ -475,9 +485,6 @@ async def _ensure_evolution_rail_for_slash(adapter, mode: str) -> str | None:
 
     Returns None when the rail is (or becomes) available, or an error message string.
     """
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        get_skill_create_enabled,
-    )
     # 合并后演进能力在 agent 模式可用（兼容历史 agent.plan token）。
     if mode not in ("agent", "agent.plan"):
         display_mode = str(mode or "当前").strip() or "当前"
@@ -498,12 +505,6 @@ async def _ensure_evolution_rail_for_slash(adapter, mode: str) -> str | None:
 async def _watch_evolution_and_push(adapter, rid: str, cid: str, session_id: str) -> None:
     """Poll passive evolution events and push progress, approval, and terminal status."""
     from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        TEAM_EVOLUTION_EVENT_TIMEOUT_SEC,
-        TEAM_EVOLUTION_IDLE_SLEEP_SEC,
-        build_server_push_message,
-        resolve_evolution_event_timeout_sec,
-    )
 
     push_context = EvolutionPushContext(
         transport=WebSocketGatewayPushTransport(),

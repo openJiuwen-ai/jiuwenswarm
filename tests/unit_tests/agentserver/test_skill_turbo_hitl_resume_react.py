@@ -120,7 +120,6 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._bind_agent_permissions_base = lambda: None  # type: ignore[method-assign]
     adapter._update_permission_rail = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
     adapter._is_subagent_approval_answer = lambda *_args: False  # type: ignore[method-assign]
-    adapter._refresh_stale_mcp_tool_lists = lambda: _async_none()  # type: ignore[method-assign]
     adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
     adapter._inject_model_selection_into_inputs = lambda *_args: None  # type: ignore[method-assign]
     adapter._deepresearch_artifact_output_dir = lambda _adapter, _path=None: ""  # type: ignore[method-assign]
@@ -140,6 +139,10 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep." + _moved_name,
             adapter.__dict__[_moved_name],
         )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._refresh_stale_mcp_tool_lists",
+        lambda *_args, **_kwargs: _async_none(),
+    )
     adapter._handle_slash_command = lambda *_args, **_kwargs: _async_none()  # type: ignore[method-assign]
     captured_metadata = None
 
@@ -877,7 +880,10 @@ async def test_process_stream_applies_pending_reload_for_skill_turbo_resume(
         reload_calls.append("reload")
 
     adapter._maybe_apply_pending_reload = apply_pending_reload  # type: ignore[method-assign]
-    adapter._refresh_stale_mcp_tool_lists = lambda: _async_none()  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._refresh_stale_mcp_tool_lists",
+        lambda *_args, **_kwargs: _async_none(),
+    )
     adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
     adapter._is_subagent_approval_answer = lambda *_args: False  # type: ignore[method-assign]
     monkeypatch.setattr(

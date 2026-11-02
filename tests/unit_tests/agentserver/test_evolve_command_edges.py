@@ -166,20 +166,20 @@ async def test_evolve_slash_lazy_init_registers_active_review_rails(monkeypatch,
     adapter._default_model_name = "default-model"  # pylint: disable=protected-access
     adapter._model = object()  # pylint: disable=protected-access
 
-    monkeypatch.setattr(interface_deep_module, "SkillEvolutionRail", _FakeSkillEvolutionRail)
-    monkeypatch.setattr(interface_deep_module, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
-    monkeypatch.setattr(interface_deep_module, "SubagentRail", _FakeSubagentRail)
+    monkeypatch.setattr(evolution_mod, "SkillEvolutionRail", _FakeSkillEvolutionRail)
+    monkeypatch.setattr(evolution_mod, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
+    monkeypatch.setattr(evolution_mod, "SubagentRail", _FakeSubagentRail)
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "en")
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
     monkeypatch.delenv("SKILL_CREATE", raising=False)
     monkeypatch.delenv("EVOLUTION_SIGNAL_TRIGGER", raising=False)
     monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
     monkeypatch.setattr(
-        interface_deep_module,
+        evolution_mod,
         "get_passive_skill_evolution_triggers",
         lambda _config: {"signal_trigger": True, "review_trigger": False},
     )
-    monkeypatch.setattr(interface_deep_module, "get_skill_create_enabled", lambda _config: False)
+    monkeypatch.setattr(evolution_mod, "get_skill_create_enabled", lambda _config: False)
 
     configure_calls = []
 
@@ -189,7 +189,7 @@ async def test_evolve_slash_lazy_init_registers_active_review_rails(monkeypatch,
         await agent.register_rail(_FakeSkillEvolutionRail())
 
     monkeypatch.setattr(
-        interface_deep_module,
+        evolution_mod,
         "configure_skill_evolution_runtime",
         _fake_configure,
     )
@@ -252,9 +252,9 @@ def test_sync_active_evolution_review_agent_after_reload_restores_retained_rail(
     adapter._skill_evolution_rail = rail  # pylint: disable=protected-access
     adapter._config_cache = {"evolution": {"enabled": True}}  # pylint: disable=protected-access
 
-    monkeypatch.setattr(interface_deep_module, "SkillEvolutionRail", _FakeSkillEvolutionRail)
-    monkeypatch.setattr(interface_deep_module, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
-    monkeypatch.setattr(interface_deep_module, "SubagentRail", _FakeSubagentRail)
+    monkeypatch.setattr(evolution_mod, "SkillEvolutionRail", _FakeSkillEvolutionRail)
+    monkeypatch.setattr(evolution_mod, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
+    monkeypatch.setattr(evolution_mod, "SubagentRail", _FakeSubagentRail)
 
     evolution_mod._sync_active_evolution_review_agent_after_reload(adapter)  # pylint: disable=protected-access
 

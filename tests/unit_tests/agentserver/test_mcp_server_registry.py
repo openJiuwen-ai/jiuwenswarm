@@ -33,6 +33,7 @@ from jiuwenswarm.common.mcp_server_registry import (
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.handlers import mcp_servers as mcp_server_handlers
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+from jiuwenswarm.server.runtime.agent_adapter.deep import request_mcp as request_mcp_mod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS,
@@ -456,9 +457,9 @@ def _stub_office_claw_system_tools(monkeypatch, tools=None):
             "input_params": {},
         }
     ]
-    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=tools))
+    monkeypatch.setattr(request_mcp_mod, "list_office_claw_mcp_tools", AsyncMock(return_value=tools))
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "validate_office_claw_mcp_config",
         lambda config, environ=None: {
             "command": "node",
@@ -493,7 +494,10 @@ async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
         seen["leftover"] = leftover_servers
         return None
 
-    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_register_mcp_from_registry", fake_registry)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.deep.request_mcp._register_mcp_from_registry",
+        fake_registry,
+    )
     request = AgentRequest(
         request_id="r1",
         channel_id="officeclaw",
@@ -520,7 +524,7 @@ async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_chat_empty_list_keeps_office_claw_mcp(monkeypatch) -> None:
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     _stub_office_claw_system_tools(monkeypatch)
     adapter = _bare_session_adapter()
     request = AgentRequest(
@@ -556,7 +560,7 @@ async def test_chat_empty_list_without_office_claw_skips() -> None:
 @pytest.mark.asyncio
 async def test_chat_empty_list_keeps_leftover_pptx(monkeypatch) -> None:
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     _stub_office_claw_system_tools(monkeypatch)
     leftover_calls: list[str] = []
 
@@ -567,7 +571,7 @@ async def test_chat_empty_list_keeps_leftover_pptx(monkeypatch) -> None:
             {"_mcp_client_type": "stdio", "command": "node", "args": ["pptx.js"]},
         )
 
-    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", leftover_discover)
+    monkeypatch.setattr(request_mcp_mod, "list_request_mcp_server_tools", leftover_discover)
     adapter = _bare_session_adapter()
     request = AgentRequest(
         request_id="r-empty-pptx",
@@ -614,9 +618,9 @@ async def test_chat_mcp_server_list_keeps_leftover_pptx(monkeypatch) -> None:
     )
     await registry.add_servers([_user_cfg()])
     _stub_office_claw_system_tools(monkeypatch)
-    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", leftover_discover)
+    monkeypatch.setattr(request_mcp_mod, "list_request_mcp_server_tools", leftover_discover)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     _clear_live_office_claw_allowlists_for_tests()
     adapter = _bare_session_adapter()
     request = AgentRequest(
@@ -668,7 +672,7 @@ async def test_chat_mcp_server_list_wins_name_collision(monkeypatch) -> None:
     await registry.add_servers([_user_cfg()])
     _stub_office_claw_system_tools(monkeypatch)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     _clear_live_office_claw_allowlists_for_tests()
     adapter = _bare_session_adapter()
     request = AgentRequest(
@@ -1067,13 +1071,13 @@ async def test_chat_registry_path_skips_discovery_and_keeps_global_worker(
     )
     _stub_office_claw_system_tools(monkeypatch)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_request_mcp_server_tools",
         AsyncMock(side_effect=AssertionError("legacy connector discovery must not run")),
     )
 
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     _clear_live_office_claw_allowlists_for_tests()
     adapter = _bare_session_adapter()
     request = AgentRequest(
@@ -1118,7 +1122,7 @@ async def test_chat_without_mcp_server_list_uses_legacy(monkeypatch) -> None:
 
     adapter = _bare_session_adapter()
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     legacy = AsyncMock(
         return_value=[
             {
@@ -1128,9 +1132,9 @@ async def test_chat_without_mcp_server_list_uses_legacy(monkeypatch) -> None:
             }
         ]
     )
-    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", legacy)
+    monkeypatch.setattr(request_mcp_mod, "list_office_claw_mcp_tools", legacy)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "validate_office_claw_mcp_config",
         lambda config, environ=None: {
             "command": "node",

@@ -25,6 +25,7 @@ from jiuwenswarm.common.mcp_config import (
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+from jiuwenswarm.server.runtime.agent_adapter.deep import request_mcp as request_mcp_mod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -336,9 +337,9 @@ async def test_registers_exact_tool_names_and_cleans_them_up(
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(return_value=_tool_list()),
     )
@@ -429,7 +430,7 @@ async def test_delayed_registration_cannot_overwrite_newer_request(
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     discovery_started = asyncio.Event()
     finish_discovery = asyncio.Event()
 
@@ -440,7 +441,7 @@ async def test_delayed_registration_cannot_overwrite_newer_request(
             await finish_discovery.wait()
         return _tool_list()
 
-    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", _delayed_tool_list)
+    monkeypatch.setattr(request_mcp_mod, "list_office_claw_mcp_tools", _delayed_tool_list)
     _clear_live_office_claw_allowlists_for_tests()
     adapter = _bare_session_adapter()
     old_task = asyncio.create_task(
@@ -486,7 +487,7 @@ async def test_partial_connector_discovery_cannot_block_newer_request(
     )
 
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     second_connector_started = asyncio.Event()
     finish_second_connector = asyncio.Event()
 
@@ -502,7 +503,7 @@ async def test_partial_connector_discovery_cannot_block_newer_request(
         return ([{"name": tool_name, "description": owner or "", "input_params": {}}], {})
 
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_request_mcp_server_tools",
         _interleaved_discovery,
     )
@@ -547,9 +548,9 @@ async def test_cleanup_does_not_remove_rebound_short_name(
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(return_value=_tool_list()),
     )
@@ -589,9 +590,9 @@ async def test_foreign_short_name_conflict_fails_closed(
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(return_value=_tool_list()),
     )
@@ -630,9 +631,9 @@ async def test_legacy_ability_manager_post_add_mismatch_fails_closed(
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(
             return_value=[
@@ -681,7 +682,7 @@ async def test_registration_failure_is_non_blocking(
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(side_effect=RuntimeError("MCP unavailable")),
     )
@@ -729,7 +730,7 @@ async def test_delayed_registration_failure_cannot_overwrite_newer_request(
         await fail_discovery.wait()
         raise RuntimeError("MCP unavailable")
 
-    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", _delayed_failure)
+    monkeypatch.setattr(request_mcp_mod, "list_office_claw_mcp_tools", _delayed_failure)
     _clear_live_office_claw_allowlists_for_tests()
     adapter = _bare_session_adapter()
     old_task = asyncio.create_task(
@@ -1099,9 +1100,9 @@ async def test_connector_builtin_name_conflict_downgrades_per_tool(monkeypatch: 
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(return_value=[]),
     )
@@ -1126,7 +1127,7 @@ async def test_connector_builtin_name_conflict_downgrades_per_tool(monkeypatch: 
         )
 
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_request_mcp_server_tools",
         AsyncMock(side_effect=_fake_list_request_mcp_server_tools),
     )
@@ -1174,9 +1175,9 @@ async def test_connector_foreign_short_name_conflict_still_fails_closed(monkeypa
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(return_value=[]),
     )
@@ -1194,7 +1195,7 @@ async def test_connector_foreign_short_name_conflict_still_fails_closed(monkeypa
         )
 
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_request_mcp_server_tools",
         AsyncMock(side_effect=_fake_list_request_mcp_server_tools),
     )
@@ -1255,9 +1256,9 @@ async def test_cleanup_superseded_request_preserves_active_allowlist(
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     resource_manager = _ResourceManager()
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", resource_manager)
     monkeypatch.setattr(
-        interface_deep,
+        request_mcp_mod,
         "list_office_claw_mcp_tools",
         AsyncMock(return_value=_tool_list()),
     )
@@ -1565,9 +1566,11 @@ async def test_batch_registration_uses_real_resources_and_one_summary(monkeypatc
     resource_log, tag_log, adapter_log = Mock(), Mock(), Mock()
     monkeypatch.setattr(resource_manager, "logger", resource_log)
     monkeypatch.setattr(tag_manager, "logger", tag_log)
-    monkeypatch.setattr(interface_deep, "logger", adapter_log)
-    monkeypatch.setattr(interface_deep, "Runner", SimpleNamespace(resource_mgr=manager))
-    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
+    from jiuwenswarm.server.runtime.agent_adapter.deep import request_mcp as request_mcp_mod
+
+    monkeypatch.setattr(request_mcp_mod, "logger", adapter_log)
+    monkeypatch.setattr(request_mcp_mod, "Runner", SimpleNamespace(resource_mgr=manager))
+    monkeypatch.setattr(request_mcp_mod, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
     adapter = _bare_session_adapter()
     registration = await adapter.register_request_scoped_office_claw_mcp(_request(_valid_config()))
     try:
@@ -1618,9 +1621,11 @@ async def test_batch_registration_failure_rolls_back_and_restores_logging(monkey
     resource_log, tag_log, adapter_log = Mock(), Mock(), Mock()
     monkeypatch.setattr(resource_manager, "logger", resource_log)
     monkeypatch.setattr(tag_manager, "logger", tag_log)
-    monkeypatch.setattr(interface_deep, "logger", adapter_log)
-    monkeypatch.setattr(interface_deep, "Runner", SimpleNamespace(resource_mgr=manager))
-    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
+    from jiuwenswarm.server.runtime.agent_adapter.deep import request_mcp as request_mcp_mod
+
+    monkeypatch.setattr(request_mcp_mod, "logger", adapter_log)
+    monkeypatch.setattr(request_mcp_mod, "Runner", SimpleNamespace(resource_mgr=manager))
+    monkeypatch.setattr(request_mcp_mod, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
     adapter = _bare_session_adapter()
     attempted = []
     original_add = manager.add_tool
@@ -1664,7 +1669,11 @@ def test_batch_registration_does_not_hide_transitive_import_failure(monkeypatch)
     monkeypatch.setattr(builtins, "__import__", import_with_broken_dependency)
     adapter = _bare_session_adapter()
     with pytest.raises(ModuleNotFoundError) as captured:
-        adapter._install_staged_request_mcp_tools(interface_deep._RequestMcpToolBuffers())
+        from jiuwenswarm.server.runtime.agent_adapter.deep import request_mcp as request_mcp_mod
+
+        request_mcp_mod._install_staged_request_mcp_tools(
+            adapter, interface_deep._RequestMcpToolBuffers()
+        )
     assert captured.value is failure
 
 
@@ -1888,13 +1897,13 @@ async def _register_with_connector_discovery(
 ) -> tuple[JiuWenSwarmDeepAdapter, OfficeClawMcpRegistration]:
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
-    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_catalog_tool_list()))
+    monkeypatch.setattr(request_mcp_mod.Runner, "resource_mgr", _ResourceManager())
+    monkeypatch.setattr(request_mcp_mod, "list_office_claw_mcp_tools", AsyncMock(return_value=_catalog_tool_list()))
 
     async def _fake_discovery(server_name, config):
         return discovery[server_name]
 
-    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", AsyncMock(side_effect=_fake_discovery))
+    monkeypatch.setattr(request_mcp_mod, "list_request_mcp_server_tools", AsyncMock(side_effect=_fake_discovery))
     adapter = _bare_session_adapter()
     registration = await adapter.register_request_scoped_office_claw_mcp(
         _request_with_connectors(_valid_config(), connectors={name: {"command": "npx"} for name in discovery})

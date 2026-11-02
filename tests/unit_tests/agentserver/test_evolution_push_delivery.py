@@ -199,7 +199,7 @@ async def test_normal_evolution_watcher_runs_when_rail_mounted(monkeypatch):
         _FakeTransport,
     )
     monkeypatch.setattr(
-        interface_deep_module,
+        evolution_mod,
         "resolve_evolution_event_timeout_sec",
         lambda rail, fallback_sec=30.0: 0.01,
     )
@@ -229,7 +229,7 @@ async def test_normal_evolution_watcher_uses_delivery_context_metadata(monkeypat
         _FakeTransport,
     )
     monkeypatch.setattr(
-        interface_deep_module,
+        evolution_mod,
         "build_server_push_message",
         _fake_build_server_push_message,
     )
@@ -256,8 +256,8 @@ async def test_normal_evolution_watcher_does_not_push_status_without_sdk_events(
         "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
         _FakeTransport,
     )
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-no-events")
 
@@ -281,8 +281,8 @@ async def test_normal_evolution_watcher_uses_sdk_timeout_before_legacy_fallback(
         "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
         _FakeTransport,
     )
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 100.0)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 100.0)
     monkeypatch.setattr(evolution_helpers, "TEAM_EVOLUTION_EVENT_TIMEOUT_GRACE_SEC", 0.001)
 
     await asyncio.wait_for(
@@ -342,8 +342,8 @@ async def test_normal_evolution_watcher_ends_on_cancelled_progress(monkeypatch):
         "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
         _FakeTransport,
     )
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-cancelled")
 
@@ -402,8 +402,8 @@ async def test_normal_evolution_watcher_ends_on_auto_approved_progress(monkeypat
         "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
         _FakeTransport,
     )
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-auto")
 
@@ -571,11 +571,11 @@ async def test_evolution_watcher_timeout_schedules_pending_auto_rebuild(
         _FakeTransport,
     )
     monkeypatch.setattr(
-        interface_deep_module,
+        evolution_mod,
         "resolve_evolution_event_timeout_sec",
         lambda rail, fallback_sec=30.0: 0.01,
     )
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
     monkeypatch.setattr(evolution_mod, "_run_auto_rebuild_skills_detached", _capture_rebuild)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-timeout-flush")
@@ -1140,8 +1140,8 @@ async def test_normal_evolution_watcher_times_out_after_idle_progress(monkeypatc
         "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
         _FakeTransport,
     )
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
-    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(evolution_mod, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 0.01)
 
     await adapter.watch_evolution_and_push("stream-rid", "web", "sess-timeout")
 

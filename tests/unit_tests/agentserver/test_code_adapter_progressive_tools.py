@@ -295,11 +295,15 @@ async def test_config_reload_matches_profile_and_cleans_historical_team_rail(
         monkeypatch.setattr(adapter, name, MagicMock(return_value=None))
     for name in (
         "load_user_rails", "_sync_skill_retrieval_prompt_rail_for_runtime",
-        "_reconcile_evolution_rails", "_sync_mcp_servers_for_runtime",
+        "_reconcile_evolution_rails",
         "_fan_out_reload_to_session_adapters", "_handle_memory_rail_by_config",
         "_handle_external_memory_rail_by_config", "_handle_office_ace_user_profile_rail_by_config",
     ):
         monkeypatch.setattr(adapter, name, AsyncMock())
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._sync_mcp_servers_for_runtime",
+        AsyncMock(),
+    )
 
     single = sub_mode in SINGLE_SUB_MODES
     # A second reload must preserve the profile, including after stale cleanup.
@@ -346,7 +350,10 @@ async def test_first_call_filters_large_mcp_catalog_and_preserves_coding_tools(m
     eager = [_card(name) for name in ["tools_search", "invoke_tool", "read_file", *CODE_TOOLS]]
     deferred = [_card(f"wps_{i}", "large schema description " * 200) for i in range(666)]
     ctx = _context(rail, eager + deferred)
-    adapter._sync_office_claw_allowlist_to_progressive_rail(
+    from jiuwenswarm.server.runtime.agent_adapter.deep import request_mcp as request_mcp_mod
+
+    request_mcp_mod._sync_office_claw_allowlist_to_progressive_rail(
+        adapter,
         [card.id for card in deferred],
         delivery_thread_id="thread-code",
         invocation_id="turn-code",
