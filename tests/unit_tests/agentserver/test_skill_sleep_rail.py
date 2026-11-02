@@ -25,7 +25,27 @@ from openjiuwen.core.single_agent.rail.base import (
     ToolCallInputs,
 )
 
-from jiuwenswarm.agents.harness.common.rails.skill_sleep_rail import SkillSleepRail
+from jiuwenswarm.agents.harness.common.rails.skill_sleep_rail import (
+    _LAST_SKILLS_MAX_ENTRIES,
+    _LAST_SKILLS_TTL_SEC,
+    _SKILL_DIR_ALIAS_TTL_SEC,
+    SkillSleepRail,
+    _content_block_text,
+    _dir_name_from_path,
+    _fold_identity,
+    _frontmatter_display_name,
+    _invoke_paused_on_interrupt,
+    _parse_frontmatter_head,
+    _parse_last_skills,
+    _prune_last_skills,
+    _resolve_skill_name_from_tool,
+    _skill_directory_from_json,
+    _skill_directory_from_result,
+    _strip_inline_comment,
+    _tool_call_failed,
+    _tool_output_text,
+    _unquote_scalar,
+)
 from jiuwenswarm.agents.harness.common.skill_sleep.counter import SkillCallCounter
 from jiuwenswarm.agents.harness.common.skill_sleep import runner as runner_mod
 from jiuwenswarm.agents.harness.common.skill_sleep.runner import (
@@ -184,6 +204,767 @@ class TestSkillSleepRail(unittest.TestCase):
                 runner.try_start.assert_not_called()
 
             asyncio.run(_run())
+
+    def test_display_title_counts_as_skill_directory_slug(self) -> None:
+        """Beer display title + skill_directory output -> counter key ``beer``."""
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+            title = "Beer — Styles Encyclopedia, Food Pairing & Homebrew Guide"
+
+            async def _run() -> None:
+                ctx = self._ctx(tool_name="skill_tool", skill_name=title)
+                ctx.inputs.tool_msg.content = (
+                    '{"success": true, "data": {"skill_directory": '
+                    '"E:\\\\workspace\\\\relay-claw\\\\.office-claw\\\\skills\\\\beer", '
+                    '"skill_content": "---\\\\nname: Beer"}}'
+                )
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get("beer"), 1)
+                self.assertEqual(counter.get(title), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_display_title_resolves_via_frontmatter_alias(self) -> None:
+        """Without a skills/<dir> slug in the output, frontmatter aliases resolve."""
+        with TemporaryDirectory() as tmp:
+            skills = Path(tmp) / "skills"
+            beer = skills / "beer"
+            beer.mkdir(parents=True)
+            (beer / "SKILL.md").write_text(
+                "---\n"
+                'name: "Beer — Styles Encyclopedia, Food Pairing & Homebrew Guide"\n'
+                "description: x\n"
+                "---\n"
+                "# Beer\n",
+                encoding="utf-8",
+            )
+            counter, runner, rail = self._rail(tmp)
+            runner.current_skills_dirs.return_value = [skills]
+            title = "Beer — Styles Encyclopedia, Food Pairing & Homebrew Guide"
+
+            async def _run() -> None:
+                ctx = self._ctx(tool_name="skill_tool", skill_name=title)
+                ctx.inputs.tool_msg.content = "loaded skill content"
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get("beer"), 1)
+                self.assertEqual(counter.get(title), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_display_title_counts_via_json_directory_without_skills_parent(self) -> None:
+        """Regex-missed output: JSON ``skill_directory`` fallback -> ``beer``."""
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+            title = "Beer — Styles Encyclopedia, Food Pairing & Homebrew Guide"
+
+            async def _run() -> None:
+                ctx = self._ctx(tool_name="skill_tool", skill_name=title)
+                ctx.inputs.tool_msg.content = (
+                    '{"success": true, "data": {"skill_directory": '
+                    '"E:\\\\opt\\\\custom\\\\beer"}}'
+                )
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get("beer"), 1)
+                self.assertEqual(counter.get(title), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_unresolvable_title_keeps_legacy_raw_counting(self) -> None:
+        """No slug / JSON / alias resolution -> count under the raw name."""
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+            title = "Beer — Styles Encyclopedia, Food Pairing & Homebrew Guide"
+
+            async def _run() -> None:
+                ctx = self._ctx(tool_name="skill_tool", skill_name=title)
+                ctx.inputs.tool_msg.content = "loaded skill content"
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get(title), 1)
+                self.assertEqual(counter.get("beer"), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_skill_directory_from_json_variants(self) -> None:
+        self.assertEqual(
+            _skill_directory_from_json(
+                '{"data": {"skill_directory": "E:\\\\opt\\\\custom\\\\beer"}}'
+            ),
+            "beer",
+        )
+        self.assertEqual(_skill_directory_from_json('{"skill_directory": "beer"}'), "beer")
+        self.assertEqual(
+            _skill_directory_from_json('{"data": 5, "skill_directory": "beer"}'),
+            "beer",
+        )
+        self.assertEqual(_skill_directory_from_json("loaded skill content"), "")
+        self.assertEqual(_skill_directory_from_json('{"success": true}'), "")
+        self.assertEqual(_skill_directory_from_json("{not json"), "")
+        # Versioned directory ids keep their dots.
+        self.assertEqual(
+            _skill_directory_from_json('{"skill_directory": "/skills/ocr-invoice-1.1.0"}'),
+            "ocr-invoice-1.1.0",
+        )
+
+    def test_dir_name_from_path_variants(self) -> None:
+        self.assertEqual(_dir_name_from_path("E:\\\\a\\\\beer"), "beer")
+        self.assertEqual(_dir_name_from_path("a/beer"), "beer")
+        self.assertEqual(_dir_name_from_path("beer"), "beer")
+        self.assertEqual(_dir_name_from_path("'beer'"), "beer")
+        self.assertEqual(_dir_name_from_path("my beer"), "")
+        self.assertEqual(_dir_name_from_path(""), "")
+        # Versioned directory ids keep their dots; trailing dots are pathologies.
+        self.assertEqual(
+            _dir_name_from_path("/skills/ocr-invoice-1.1.0"), "ocr-invoice-1.1.0"
+        )
+        self.assertEqual(_dir_name_from_path("ocr-invoice-1.1.0"), "ocr-invoice-1.1.0")
+        self.assertEqual(_dir_name_from_path("beer."), "beer")
+
+    def test_parse_frontmatter_head_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            skill_md = Path(tmp) / "SKILL.md"
+            skill_md.write_text(
+                "---\n"
+                "# head comment\n"
+                'name: "Beer — Styles Encyclopedia" # trailing note\n'
+                "description: hoppy reference # see docs\n"
+                "version: 2\n"
+                "license:\n"
+                "  name: MIT\n"
+                "tags:\n"
+                "  - beer\n"
+                "---\n"
+                "# Body\n",
+                encoding="utf-8",
+            )
+            fields = _parse_frontmatter_head(skill_md)
+            self.assertEqual(fields.get("name"), "Beer — Styles Encyclopedia")
+            self.assertEqual(fields.get("description"), "hoppy reference")
+            self.assertEqual(fields.get("version"), "2")
+            self.assertNotIn("license", fields)
+            self.assertNotIn("tags", fields)
+            # Missing file / no frontmatter head -> empty mapping, no raise.
+            self.assertEqual(_parse_frontmatter_head(Path(tmp) / "missing.md"), {})
+            body_only = Path(tmp) / "BODY.md"
+            body_only.write_text("# Body\nname: OnlyInBody\n", encoding="utf-8")
+            self.assertEqual(_parse_frontmatter_head(body_only), {})
+
+    def test_frontmatter_display_name_comment_and_fallback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            commented = Path(tmp) / "commented.md"
+            commented.write_text("---\nname: Beer # hoppy\n---\n# Body\n", encoding="utf-8")
+            self.assertEqual(_frontmatter_display_name(commented), "Beer")
+
+            body_name = Path(tmp) / "body_name.md"
+            body_name.write_text(
+                "---\ndescription: x\n---\nname: OnlyInBody\n",
+                encoding="utf-8",
+            )
+            # Head parser finds no name -> legacy whole-head regex fallback.
+            self.assertEqual(_frontmatter_display_name(body_name), "OnlyInBody")
+
+            plain = Path(tmp) / "plain.md"
+            plain.write_text("name: PlainBody\n", encoding="utf-8")
+            self.assertEqual(_frontmatter_display_name(plain), "")
+
+    def test_tool_output_text_content_shapes(self) -> None:
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.content = {"type": "text", "text": "mapping text"}
+        self.assertEqual(_tool_output_text(ctx), "mapping text")
+
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.content = ""
+        ctx.inputs.tool_msg.blocks = [
+            SimpleNamespace(text="hello"),
+            {"text": "world"},
+            "raw",
+            {"type": "image"},
+        ]
+        self.assertEqual(_tool_output_text(ctx), "hello world raw")
+
+        # Non-text mapping content falls through to the tool_result branch.
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.content = {"type": "image", "url": "x"}
+        self.assertEqual(_tool_output_text(ctx), "ok")
+
+    def test_content_block_text_shapes(self) -> None:
+        self.assertEqual(_content_block_text("s"), "s")
+        self.assertEqual(_content_block_text({"text": "a"}), "a")
+        self.assertEqual(_content_block_text({"content": "b"}), "b")
+        self.assertEqual(_content_block_text({"type": "image"}), "")
+        self.assertEqual(_content_block_text(SimpleNamespace(text="t")), "t")
+        self.assertEqual(_content_block_text(SimpleNamespace(content="c")), "c")
+        self.assertEqual(_content_block_text(object()), "")
+
+    def test_fold_identity_variants(self) -> None:
+        self.assertEqual(_fold_identity("Beer  Styles"), "beer styles")
+        self.assertEqual(_fold_identity("  MIXED\tCase\nValue  "), "mixed case value")
+        self.assertEqual(_fold_identity(""), "")
+        self.assertEqual(_fold_identity(None), "")
+
+    def test_parse_last_skills_variants(self) -> None:
+        now = 1000.0
+        self.assertEqual(_parse_last_skills(["not", "a", "dict"], now), {})
+        self.assertEqual(
+            _parse_last_skills({"s1": {"skill": "beer", "ts": 99.5}}, now),
+            {"s1": ("beer", 99.5)},
+        )
+        # Legacy flat values inherit *now* as their timestamp.
+        self.assertEqual(
+            _parse_last_skills({"s1": "beer"}, now), {"s1": ("beer", now)}
+        )
+        # Non-numeric ts degrades to *now* instead of raising.
+        self.assertEqual(
+            _parse_last_skills({"s1": {"skill": "beer", "ts": "oops"}}, now),
+            {"s1": ("beer", now)},
+        )
+        # Blank keys / blank names are dropped.
+        self.assertEqual(_parse_last_skills({"": {"skill": "beer"}}, now), {})
+        self.assertEqual(_parse_last_skills({"s1": {"skill": ""}}, now), {})
+
+    def test_prune_last_skills_caps_entries_keeps_newest(self) -> None:
+        now = 10_000.0
+        total = _LAST_SKILLS_MAX_ENTRIES + 8
+        entries = {f"s{i}": (f"skill{i}", float(i)) for i in range(total)}
+        pruned = _prune_last_skills(entries, now)
+        self.assertEqual(len(pruned), _LAST_SKILLS_MAX_ENTRIES)
+        # Oldest sessions were dropped; the newest survived.
+        self.assertNotIn("s0", pruned)
+        self.assertNotIn("s7", pruned)
+        self.assertIn(f"s{total - 1}", pruned)
+
+        # TTL pruning drops stale entries; exactly-at-TTL stays live.
+        stale = {
+            "old": ("beer", now - _LAST_SKILLS_TTL_SEC - 1),
+            "edge": ("beer", now - _LAST_SKILLS_TTL_SEC),
+            "live": ("beer", now),
+        }
+        self.assertEqual(
+            _prune_last_skills(stale, now),
+            {"edge": ("beer", now - _LAST_SKILLS_TTL_SEC), "live": ("beer", now)},
+        )
+
+    def test_tool_call_failed_branches(self) -> None:
+        self.assertTrue(_tool_call_failed(self._ctx(tool_name="bash", failed=True)))
+        # tool_result None without an exception also counts as failed.
+        ctx = self._ctx(tool_name="bash")
+        ctx.exception = None
+        ctx.inputs.tool_result = None
+        self.assertTrue(_tool_call_failed(ctx))
+        # Interrupt-typed results count as failed.
+        ctx = self._ctx(tool_name="bash")
+        ctx.exception = None
+        ctx.inputs.tool_result = type("ToolInterruptException", (), {})()
+        self.assertTrue(_tool_call_failed(ctx))
+        # Healthy call.
+        self.assertFalse(_tool_call_failed(self._ctx(tool_name="bash")))
+        # Non ToolCallInputs payload counts as failed.
+        ctx = self._ctx(tool_name="bash")
+        ctx.inputs = "not-a-toolcall-inputs"
+        self.assertTrue(_tool_call_failed(ctx))
+
+    def test_invoke_paused_on_interrupt_branches(self) -> None:
+        # Interrupt-typed exception.
+        ctx = self._ctx(tool_name="bash")
+        ctx.exception = type("ToolInterruptError", (), {})()
+        self.assertTrue(_invoke_paused_on_interrupt(ctx))
+        # result_type=interrupt payload.
+        ctx = self._ctx(tool_name="bash")
+        ctx.inputs = SimpleNamespace(result={"result_type": "interrupt"})
+        self.assertTrue(_invoke_paused_on_interrupt(ctx))
+        # Pending interruption state committed on the session.
+        ctx = self._ctx(tool_name="bash")
+        session = MagicMock()
+        session.get_state.return_value = MagicMock(spec=BaseInterruptionState)
+        ctx.session = session
+        self.assertTrue(_invoke_paused_on_interrupt(ctx))
+        # get_state raising degrades to "not paused" — never raises out.
+        ctx = self._ctx(tool_name="bash")
+        session = MagicMock()
+        session.get_state.side_effect = RuntimeError("boom")
+        ctx.session = session
+        self.assertFalse(_invoke_paused_on_interrupt(ctx))
+        # Nothing pending anywhere.
+        self.assertFalse(_invoke_paused_on_interrupt(self._ctx(tool_name="bash")))
+
+    def test_resolve_skill_name_from_tool_branches(self) -> None:
+        # metadata skill_name wins by default.
+        self.assertEqual(
+            _resolve_skill_name_from_tool(self._ctx(tool_name="skill_tool")),
+            "weather",
+        )
+        # Directory listing output is not a skill binding.
+        self.assertEqual(
+            _resolve_skill_name_from_tool(
+                self._ctx(tool_name="skill_tool", directory_listing=True)
+            ),
+            "",
+        )
+        # Without metadata, fall back to the tool_call argument.
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.metadata = {}
+        self.assertEqual(_resolve_skill_name_from_tool(ctx), "weather")
+        # Missing argument -> empty.
+        ctx = self._ctx(tool_name="skill_tool", tool_args={})
+        ctx.inputs.tool_msg.metadata = {}
+        self.assertEqual(_resolve_skill_name_from_tool(ctx), "")
+        # No tool_call at all -> empty.
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.metadata = {}
+        ctx.inputs.tool_call = None
+        self.assertEqual(_resolve_skill_name_from_tool(ctx), "")
+
+    def test_skill_dir_aliases_scan_cache_and_degradation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            skills = Path(tmp) / "skills"
+            beer = skills / "beer"
+            beer.mkdir(parents=True)
+            (beer / "SKILL.md").write_text(
+                "---\nname: Beer Styles\n---\n", encoding="utf-8"
+            )
+            # Non-skill entries are skipped by the scan.
+            (skills / "no_md").mkdir()
+            (skills / "stray.txt").write_text("x", encoding="utf-8")
+            _counter, runner, rail = self._rail(tmp)
+            runner.current_skills_dirs.return_value = [skills]
+
+            aliases = rail._skill_dir_aliases()
+            self.assertEqual(aliases.get("beer"), "beer")
+            self.assertEqual(aliases.get("beer styles"), "beer")
+            self.assertNotIn("no_md", aliases)
+            self.assertNotIn("stray.txt", aliases)
+            # TTL cache: the second call does not rescan.
+            rail._skill_dir_aliases()
+            self.assertEqual(runner.current_skills_dirs.call_count, 1)
+            # Cache expiry triggers a rescan.
+            rail._alias_ts -= _SKILL_DIR_ALIAS_TTL_SEC + 1.0
+            rail._skill_dir_aliases()
+            self.assertEqual(runner.current_skills_dirs.call_count, 2)
+            # Scan failure degrades to an empty mapping instead of raising.
+            runner.current_skills_dirs.side_effect = RuntimeError("boom")
+            rail._alias_ts -= _SKILL_DIR_ALIAS_TTL_SEC + 1.0
+            self.assertEqual(rail._skill_dir_aliases(), {})
+
+    def test_skill_dir_aliases_directory_names_win_over_frontmatter(self) -> None:
+        """Directory names must never be preempted by frontmatter aliases.
+
+        ``aaa-helper`` sorts first and its frontmatter display name is
+        ``beer`` — the exact directory name of a later sibling. The two-pass
+        registration keeps ``beer`` -> ``beer``; a single-pass interleaved
+        setdefault would have mapped it to ``aaa-helper``.
+        """
+        with TemporaryDirectory() as tmp:
+            skills = Path(tmp) / "skills"
+            helper = skills / "aaa-helper"
+            helper.mkdir(parents=True)
+            (helper / "SKILL.md").write_text("---\nname: beer\n---\n", encoding="utf-8")
+            beer = skills / "beer"
+            beer.mkdir()
+            (beer / "SKILL.md").write_text(
+                "---\nname: Beer Styles\n---\n", encoding="utf-8"
+            )
+            _counter, runner, rail = self._rail(tmp)
+            runner.current_skills_dirs.return_value = [skills]
+
+            aliases = rail._skill_dir_aliases()
+            self.assertEqual(aliases.get("beer"), "beer")
+            self.assertEqual(aliases.get("aaa-helper"), "aaa-helper")
+            self.assertEqual(aliases.get("beer styles"), "beer")
+            # End to end: "beer" resolves to the beer directory, not to the
+            # helper whose display name claims "beer".
+            self.assertEqual(rail._normalize_skill_identity("beer"), "beer")
+            self.assertEqual(rail._normalize_skill_identity("Beer Styles"), "beer")
+
+    def test_normalize_skill_identity_priority_chain(self) -> None:
+        with TemporaryDirectory() as tmp:
+            skills = Path(tmp) / "skills"
+            wine = skills / "wine"
+            wine.mkdir(parents=True)
+            (wine / "SKILL.md").write_text(
+                "---\nname: Wine Pairing Guide\n---\n", encoding="utf-8"
+            )
+            _counter, runner, rail = self._rail(tmp)
+            runner.current_skills_dirs.return_value = [skills]
+            title = "Beer — Styles Encyclopedia, Food Pairing & Homebrew Guide"
+            body_ref = "see skills/beer for brewing notes"
+
+            # 1. Structured Output declaration beats everything — even a
+            #    directory-style name and body references to other skills.
+            result = SimpleNamespace(
+                data={"skill_directory": "E:\\opt\\skills\\weather_v2"}
+            )
+            self.assertEqual(
+                rail._normalize_skill_identity("weather", body_ref, result),
+                "weather_v2",
+            )
+            # 2. JSON skill_directory field beats the body-text regex.
+            json_out = (
+                '{"skill_directory": "E:/x/skills/weather", '
+                '"skill_content": "see skills/beer"}'
+            )
+            self.assertEqual(
+                rail._normalize_skill_identity("weather", json_out), "weather"
+            )
+            # 3. Directory-style name wins over body references; the alias
+            #    table refines case/underscore variants onto the real dir.
+            self.assertEqual(
+                rail._normalize_skill_identity("weather", body_ref), "weather"
+            )
+            self.assertEqual(rail._normalize_skill_identity("Wine"), "wine")
+            # 4. Display title: exact frontmatter alias resolves it.
+            self.assertEqual(
+                rail._normalize_skill_identity("Wine Pairing Guide", body_ref),
+                "wine",
+            )
+            # 5. No whole-text regex: a body "see skills/beer" reference must
+            #    never steal a display title's identity (no structured/JSON
+            #    declaration, alias table miss) — fall back to the raw name.
+            self.assertEqual(
+                rail._normalize_skill_identity(title, body_ref), title
+            )
+            self.assertEqual(rail._normalize_skill_identity(title), title)
+            self.assertEqual(rail._normalize_skill_identity(""), "")
+            self.assertEqual(rail._normalize_skill_identity("   "), "")
+
+    def test_body_reference_does_not_steal_directory_style_identity(self) -> None:
+        """A slug-style skill.name must not be stolen by body references.
+
+        The loaded SKILL.md (skill_content) may reference *other* skills
+        ("see skills/beer"); neither the structured skill_directory nor the
+        already directory-style name may be overridden by such a match.
+        """
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+            body = "# Weather\nSee skills/beer for brewing notes.\n"
+
+            async def _run() -> None:
+                # With the structured ToolOutput (production shape).
+                ctx = self._ctx(tool_name="skill_tool", skill_name="weather")
+                ctx.inputs.tool_msg.content = body
+                ctx.inputs.tool_result = SimpleNamespace(
+                    data={
+                        "skill_directory": "E:\\opt\\skills\\weather",
+                        "skill_content": body,
+                    }
+                )
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                # Without any structured payload (plain-text result).
+                ctx2 = self._ctx(tool_name="skill_tool", skill_name="weather")
+                ctx2.inputs.tool_msg.content = body
+                await rail.after_tool_call(ctx2)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get("weather"), 1)
+                self.assertEqual(counter.get("beer"), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_dotted_directory_name_keeps_full_identity(self) -> None:
+        """Versioned directory names (``ocr-invoice-1.1.0``) stay whole.
+
+        Real installed-package shape (symphony session consumer): the tool
+        input skill_name *is* the dotted directory name and skill_directory
+        points at it, while the frontmatter display name carries no version.
+        Neither the structured field, the name passthrough, nor the regex may
+        truncate at the dot.
+        """
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+            dotted = "ocr-invoice-1.1.0"
+            self.assertEqual(rail._normalize_skill_identity(dotted), dotted)
+
+            async def _run() -> None:
+                # Structured ToolOutput (production shape).
+                ctx = self._ctx(tool_name="skill_tool", skill_name=dotted)
+                ctx.inputs.tool_msg.content = (
+                    '{"skill_directory": "/skills/ocr-invoice-1.1.0", '
+                    '"skill_content": "---\\nname: ocr-invoice\\n'
+                    'description: OCR\\n---\\n"}'
+                )
+                ctx.inputs.tool_result = SimpleNamespace(
+                    data={"skill_directory": "/skills/ocr-invoice-1.1.0"}
+                )
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                # Text-only result: the dotted name must survive passthrough.
+                ctx2 = self._ctx(tool_name="skill_tool", skill_name=dotted)
+                ctx2.inputs.tool_msg.content = (
+                    "loaded /skills/ocr-invoice-1.1.0/SKILL.md"
+                )
+                await rail.after_tool_call(ctx2)
+                # JSON text only (no structured payload): the dotted
+                # skill_directory field must resolve through the JSON path.
+                ctx3 = self._ctx(tool_name="skill_tool", skill_name=dotted)
+                ctx3.inputs.tool_msg.content = (
+                    '{"skill_directory": "/skills/ocr-invoice-1.1.0"}'
+                )
+                await rail.after_tool_call(ctx3)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get(dotted), 1)
+                self.assertEqual(counter.get("ocr-invoice-1"), 0)
+                self.assertEqual(counter.get("ocr-invoice"), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_skill_directory_from_result_variants(self) -> None:
+        result = SimpleNamespace(
+            data={"skill_directory": "E:\\opt\\skills\\beer", "skill_content": "x"}
+        )
+        self.assertEqual(_skill_directory_from_result(result), "beer")
+        self.assertEqual(
+            _skill_directory_from_result({"skill_directory": "a/wine"}), "wine"
+        )
+        self.assertEqual(_skill_directory_from_result("ok"), "")
+        self.assertEqual(_skill_directory_from_result(SimpleNamespace(data=5)), "")
+        self.assertEqual(_skill_directory_from_result(None), "")
+        self.assertEqual(_skill_directory_from_result(object()), "")
+
+    def test_tool_output_text_result_attr_fallbacks(self) -> None:
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.content = ""
+        ctx.inputs.tool_result = SimpleNamespace(output="obj-output")
+        self.assertEqual(_tool_output_text(ctx), "obj-output")
+
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.content = ""
+        ctx.inputs.tool_result = SimpleNamespace(data="obj-data")
+        self.assertEqual(_tool_output_text(ctx), "obj-data")
+
+        # No textual shape at all -> empty string, never raises.
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.content = ""
+        ctx.inputs.tool_result = object()
+        self.assertEqual(_tool_output_text(ctx), "")
+
+    def test_tool_output_text_list_content_mixed_blocks(self) -> None:
+        ctx = self._ctx(tool_name="skill_tool")
+        ctx.inputs.tool_msg.content = [
+            "plain",
+            {"text": "dict-text"},
+            SimpleNamespace(text="attr-text"),
+            {"type": "image"},
+            "skills/beer",
+        ]
+        self.assertEqual(
+            _tool_output_text(ctx), "plain dict-text attr-text skills/beer"
+        )
+
+    def test_strip_inline_comment_and_unquote_variants(self) -> None:
+        self.assertEqual(_strip_inline_comment('"Beer — x" # note'), '"Beer — x"')
+        self.assertEqual(_strip_inline_comment("'a' # n"), "'a'")
+        self.assertEqual(_strip_inline_comment("plain # note"), "plain")
+        self.assertEqual(_strip_inline_comment("plain"), "plain")
+        # Unclosed quote: the '#' is data, keep the whole scalar.
+        self.assertEqual(_strip_inline_comment('"unclosed # keep'), '"unclosed # keep')
+        self.assertEqual(_unquote_scalar('"beer"'), "beer")
+        self.assertEqual(_unquote_scalar("'beer'"), "beer")
+        self.assertEqual(_unquote_scalar("beer"), "beer")
+        self.assertEqual(_unquote_scalar('  "beer"  '), "beer")
+        self.assertEqual(_unquote_scalar(""), "")
+
+    def test_parse_frontmatter_head_crlf_and_quirks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            skill_md = Path(tmp) / "SKILL.md"
+            skill_md.write_text(
+                "---\r\n"
+                "name: Beer\r\n"
+                "description: colon: kept: here\r\n"
+                "garbage line without colon\n"
+                "empty:\r\n"
+                "---\r\n"
+                "# Body\r\n",
+                encoding="utf-8",
+            )
+            fields = _parse_frontmatter_head(skill_md)
+            self.assertEqual(fields.get("name"), "Beer")
+            self.assertEqual(fields.get("description"), "colon: kept: here")
+            self.assertNotIn("garbage line without colon", fields)
+            self.assertNotIn("empty", fields)
+
+    def test_skill_complete_mismatch_keeps_attribution(self) -> None:
+        """A skill_complete for another skill must not clear attribution."""
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+
+            async def _run() -> None:
+                ctx = self._ctx(tool_name="skill_tool", skill_name="beer")
+                ctx.inputs.tool_msg.content = "loaded skills/beer"
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                other = self._ctx(tool_name="skill_complete", skill_name="wine")
+                other.inputs.tool_msg.content = "loaded skills/wine"
+                await rail.after_tool_call(other)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get("beer"), 1)
+                self.assertEqual(counter.get("wine"), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_display_title_complete_without_path_clears_attribution(self) -> None:
+        """Display-title load + path-less complete must close the loop.
+
+        skill_tool resolves the title to ``beer`` via the structured
+        skill_directory; skill_complete carries only a completion message
+        (no path, no alias resolution available). The raw-name match in
+        _forget_skill must still clear the canonical attribution so later
+        tools in the same task do not keep counting beer.
+        """
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+            title = "Beer — Styles Encyclopedia, Food Pairing & Homebrew Guide"
+
+            async def _run() -> None:
+                ctx = self._ctx(tool_name="skill_tool", skill_name=title)
+                ctx.inputs.tool_msg.content = "loaded skill content"
+                ctx.inputs.tool_result = SimpleNamespace(
+                    data={"skill_directory": "E:\\opt\\skills\\beer"}
+                )
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                done = self._ctx(tool_name="skill_complete", skill_name=title)
+                done.inputs.tool_msg.content = "skill completed"
+                await rail.after_tool_call(done)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get("beer"), 0)
+                self.assertEqual(counter.get(title), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_body_reference_does_not_steal_display_title_identity(self) -> None:
+        """Display title + body-reference output + no declaration -> raw title.
+
+        With no structured/JSON ``skill_directory`` and an empty alias table,
+        a ``skills/<other>`` reference inside the loaded SKILL.md body must
+        not be mistaken for the loaded skill: the identity falls back to the
+        raw title (legacy behaviour) instead of attributing usage to ``beer``.
+        """
+        with TemporaryDirectory() as tmp:
+            counter, runner, rail = self._rail(tmp)
+            title = "Weather Report Builder — Daily Edition"
+
+            async def _run() -> None:
+                ctx = self._ctx(tool_name="skill_tool", skill_name=title)
+                ctx.inputs.tool_msg.content = (
+                    "# Weather Report Builder\nSee skills/beer for brewing notes.\n"
+                )
+                await rail.before_invoke(ctx)
+                await rail.after_tool_call(ctx)
+                with patch(
+                    "jiuwenswarm.agents.harness.common.rails.skill_sleep_rail."
+                    "_resolve_active_skill_name",
+                    return_value="",
+                ):
+                    await rail.after_tool_call(
+                        self._ctx(tool_name="bash", tool_args={"command": "a"})
+                    )
+                await rail.after_invoke(ctx)
+                self.assertEqual(counter.get(title), 1)
+                self.assertEqual(counter.get("beer"), 0)
+                runner.try_start.assert_not_called()
+
+            asyncio.run(_run())
+
+    def test_forget_skill_matches_folded_and_raw_variants(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _counter, _runner, rail = self._rail(tmp)
+            rail._remember_skill("s1", "beer", raw="beer")
+            # Case-folded variant of the remembered id clears the attribution.
+            rail._forget_skill("s1", "Beer", raw="Beer")
+            self.assertEqual(rail._last_skill.get("s1", ""), "")
+
+            # Path-less complete of the same display title clears the
+            # canonical id remembered via the load-side raw name.
+            rail._remember_skill("s1", "beer", raw="Beer Styles Encyclopedia")
+            rail._forget_skill("s1", "beer", raw="Beer Styles Encyclopedia")
+            self.assertEqual(rail._last_skill.get("s1", ""), "")
+
+            # A genuinely different skill keeps the attribution.
+            rail._remember_skill("s1", "beer", raw="Beer Styles Encyclopedia")
+            rail._forget_skill("s1", "wine", raw="wine pairing")
+            self.assertEqual(rail._last_skill.get("s1"), "beer")
+
+            # No name at all (task end) clears unconditionally.
+            rail._forget_skill("s1")
+            self.assertEqual(rail._last_skill.get("s1", ""), "")
 
     def test_retrieval_and_lifecycle_tools_do_not_count(self) -> None:
         with TemporaryDirectory() as tmp:
