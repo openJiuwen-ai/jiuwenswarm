@@ -60,6 +60,7 @@
   },
   "jiuwenmate": {
     "sharing": {
+      "unread": "有未读跨群分享审批",
       "title": "跨群分享审批",
       "open": "进入分享审批对话",
       "pending": "待您审批的跨群分享请求：{{count}}",
@@ -337,14 +338,13 @@
       "welinkAssistantExisting": "填写已有 AK/SK",
       "welinkAssistantCredentialId": "AK",
       "welinkAssistantCredentialPlaceholder": "已有助手的 AK",
-      "welinkAssistantAccount": "助手群成员账号（可选）",
-      "welinkAssistantAccountHint": "填写群成员中的助手 memberAccount，用于匹配这位同事",
       "welinkAssistantSecret": "SK",
       "welinkAssistantSecretPlaceholder": "已有助手的 SK",
       "welinkSaveCredential": "保存",
       "welinkSavingCredential": "正在保存",
       "welinkGenerating": "授权码生成中",
       "welinkBoundAccount": "已绑定账号 {{account}}",
+      "welinkSwitchAccount": "切换账号",
       "welinkAccountMissing": "还没有识别到 WeLink 账号，请先完成第一次扫码",
       "welinkQr": "WeLink 登录二维码",
       "welinkFailed": "WeLink 登录失败",
@@ -356,6 +356,25 @@
       "hideSecret": "隐藏 API Secret"
     },
     "profile": {
+      "welinkOffice": {
+        "title": "WeLink 邮箱与日历",
+        "description": "填写企业邮箱并验证，即可让这位同事使用 WeLink 邮件和日历。",
+        "email": "企业邮箱",
+        "emailPlaceholder": "请输入企业邮箱地址",
+        "account": "WeLink 账号",
+        "loginHint": "请先为这位同事登录并绑定 WeLink，再连接邮箱与日历。",
+        "login": "登录 WeLink",
+        "connect": "连接并验证",
+        "disconnect": "断开连接",
+        "working": "处理中…",
+        "failed": "操作失败，请重试。",
+        "status": {
+          "loading": "正在加载连接状态…",
+          "connected": "邮箱与日历已连接",
+          "not_connected": "尚未连接邮箱与日历",
+          "unavailable": "暂时无法连接邮箱与日历"
+        }
+      },
       "sectionsLabel": "员工配置",
       "sections": {
         "overview": "概览",

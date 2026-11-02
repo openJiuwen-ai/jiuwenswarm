@@ -619,13 +619,21 @@ class AgentManager:
         if resolver is not None and resolver(namespace_id, config_id) is not None:
             raise PersistentAgentError("owner approvals require the colleague configuration", code="FORBIDDEN")
 
-    async def sharing_list(self, namespace_id: str, config_id: str, *, access: AccessSnapshot) -> dict:
+    async def sharing_list(self, namespace_id: str, config_id: str, *, access: AccessSnapshot,
+                           mark_read: bool = False) -> dict:
+        read_started = self._clock()
         await asyncio.to_thread(self._require_sharing_owner, namespace_id, config_id, access)
         await asyncio.to_thread(self.sharing_repository.expire_pending, now=self._clock())
         data = await asyncio.to_thread(
             self.sharing_repository.list_for_owner, namespace_id, config_id, owner_principal=access.principal_ref,
         )
         await self.group_sharing.enrich_owner_view(data, namespace_id)
+        if mark_read:
+            from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
+            await asyncio.to_thread(
+                WebConversationStore(self.db_path).mark_read, namespace_id, config_id,
+                APPROVAL_CONVERSATION, through=read_started,
+            )
         return {**data, "conversation_id": APPROVAL_CONVERSATION}
 
     async def decide_sharing(
@@ -851,7 +859,7 @@ class AgentManager:
                     approval.namespace_id, approval.request_id,
                 ).record.request_input.kind == "direct_message"} if route.channel == "dingtalk" else {}),
                 "text": (
-                    "跨群分享正在等待 Agent 所有者在 WorkSwarm 私聊中批准。"
+                    "跨群分享需要所有者审批。请所有者打开 Web → 对应 AI 同事 → 跨群分享审批 处理；在群里回复“批准”不会生效。"
                     if business_sharing else
                     f"该员工需要确认一次工具操作（15 分钟内有效）：\n{calls}\n" + approval_instructions(approval)
                 ),
@@ -876,7 +884,7 @@ class AgentManager:
             needs_link = row["native_approval_id"] is None or call["tool_call_id"] not in row["tool_call_ids"]
             self.sharing_repository.bind_call(reference, approval.approval_id, call["tool_call_id"])
             if needs_link:
-                self.group_sharing.notify_owner(row["scope"])
+                self.group_sharing.notify_owner(row["scope"], row["approval_id"])
         return business
 
     async def _send_permission_notice(self, message: dict[str, object]) -> None:

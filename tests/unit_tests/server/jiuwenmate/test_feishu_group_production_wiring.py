@@ -1144,3 +1144,20 @@ async def test_welink_gateway_reconciliation_reads_history_without_sending(tmp_p
     result = await manager.deliver_persistent_result({'channel': 'welink', 'operation': 'reconcile',
         'app_id': 'reader', 'chat_id': 'g', 'idempotency_key': 'key'})
     assert result == {'outcome': 'delivered', 'external_message_id': '11'}
+
+
+@pytest.mark.asyncio
+async def test_default_delivery_worker_claims_all_supported_im_channels(tmp_path, monkeypatch):
+    send_delivery = AsyncMock()
+    _fanout, manager = create_default_persistent_group_fanout(
+        tmp_path / "jiuwenmate", send_delivery=send_delivery
+    )
+    service = manager.result_delivery_service
+    claim = MagicMock(return_value=[])
+    monkeypatch.setattr(service._repository, "claim_pending_result_deliveries", claim)
+    try:
+        assert await service.dispatch_pending() == 0
+        assert claim.call_args.kwargs["channels"] == frozenset({"feishu", "dingtalk", "welink"})
+        send_delivery.assert_not_awaited()
+    finally:
+        await manager.aclose()

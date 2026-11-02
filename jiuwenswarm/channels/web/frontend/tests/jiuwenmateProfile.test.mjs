@@ -798,6 +798,16 @@ test('the overview shows quick IM setup when no channel is configured', () => {
   assert.doesNotMatch(overview, /去配置/);
 });
 
+test('WeLink keeps its own setup card with a hint and an authorize action in the quick IM block', () => {
+  const overview = renderProfile({ colleague: { ...colleague, imConfigured: false } });
+  const rows = overview.match(/<div class="jiuwenmate-profile__im-row">[\s\S]*?<\/div>/g) ?? [];
+  const welinkRow = rows.find((row) => row.includes('jiuwenmate-welink-logo'));
+  assert.ok(welinkRow, 'the quick IM block should show a WeLink card');
+  assert.match(welinkRow, /完整流程需要配置两次/);
+  assert.match(welinkRow, /jiuwenmate-link-button--blue/);
+  assert.match(welinkRow, />授权</);
+});
+
 test('skills can be changed on the skills page without the pencil', () => {
   const markup = renderProfile({ initialSection: 'skills' });
   assert.match(markup, /data-testid="jiuwenmate-profile-detail"[^>]*data-variant="skills"/);
@@ -1085,4 +1095,100 @@ test('deleting a colleague offers to keep its data or delete everything, keeping
     if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
   }
+});
+
+test('WeLink mail card explains missing binding and opens existing WeLink login', async () => {
+  let logins = 0;
+  const view = await mountProfile({
+    initialSection: 'mail',
+    onLoadWelinkOfficeStatus: async () => ({ status: 'unavailable', reason: 'WELINK_NOT_BOUND' }),
+    onConfigureWelink: () => { logins += 1; },
+  });
+  try {
+    assert.ok(view.find('mail-setup'));
+    assert.match(view.find('welink-mail-hint').textContent, /WeLink/);
+    assert.equal(view.find('welink-mail-connect').disabled, true);
+    await view.click('welink-mail-login');
+    assert.equal(logins, 1);
+  } finally { await view.close(); }
+});
+
+test('WeLink mail connection verifies email, shows account and disconnects', async () => {
+  const calls = [];
+  const view = await mountProfile({
+    initialSection: 'mail',
+    onLoadWelinkOfficeStatus: async () => ({ status: 'not_connected', email: 'employee@example.com' }),
+    onConnectWelinkOffice: async (id, email) => {
+      calls.push([id, email]);
+      return { status: 'connected', email, account: 'welink-employee' };
+    },
+    onDisconnectWelinkOffice: async (id) => { calls.push([id]); return { status: 'not_connected' }; },
+  });
+  try {
+    await view.click('welink-mail-connect');
+    assert.deepEqual(calls[0], [colleague.id, 'employee@example.com']);
+    assert.match(view.find('welink-mail-account').textContent, /welink-employee/);
+    await view.click('welink-mail-disconnect');
+    assert.deepEqual(calls[1], [colleague.id]);
+    assert.equal(view.find('welink-mail-disconnect'), null);
+  } finally { await view.close(); }
+});
+
+test('WeLink mail keeps the form retryable after a failed verification', async () => {
+  const view = await mountProfile({
+    initialSection: 'mail',
+    onLoadWelinkOfficeStatus: async () => ({ status: 'not_connected', email: 'employee@example.com' }),
+    onConnectWelinkOffice: async () => { throw new Error('Verification denied'); },
+  });
+  try {
+    await view.click('welink-mail-connect');
+    assert.match(view.find('welink-mail-error').textContent, /Verification denied/);
+    assert.equal(view.find('welink-mail-connect').disabled, false);
+  } finally { await view.close(); }
+});
+
+test('WeLink mail refreshes on reconnection and colleague changes, ignoring stale verification', async () => {
+  const loads = [];
+  let resolveConnect;
+  const view = await mountProfile({
+    initialSection: 'mail',
+    onLoadWelinkOfficeStatus: async (id) => {
+      loads.push(id);
+      return { status: 'not_connected', email: `${id}@example.com` };
+    },
+    onConnectWelinkOffice: () => new Promise((resolve) => { resolveConnect = resolve; }),
+  });
+  try {
+    await view.click('welink-mail-connect');
+    assert.equal(view.find('welink-mail-connect').disabled, true);
+    await view.rerender({ connectionEpoch: 1 });
+    assert.deepEqual(loads, [colleague.id, colleague.id]);
+    await view.rerender({ colleague: { ...colleague, id: 'second-agent' } });
+    assert.equal(loads.at(-1), 'second-agent');
+    await act(async () => resolveConnect({ status: 'connected', email: 'stale@example.com', account: 'stale' }));
+    assert.equal(view.find('welink-mail-account'), null);
+    assert.equal(view.find('welink-mail-email').value, 'second-agent@example.com');
+  } finally { await view.close(); }
+});
+
+test('WeLink mail reports load and disconnect errors without hiding the connected account', async () => {
+  const failed = await mountProfile({
+    initialSection: 'mail',
+    onLoadWelinkOfficeStatus: async () => { throw new Error('Status unavailable'); },
+  });
+  try {
+    assert.match(failed.find('welink-mail-error').textContent, /Status unavailable/);
+    assert.equal(failed.find('welink-mail-connect').disabled, true);
+  } finally { await failed.close(); }
+  const connected = await mountProfile({
+    initialSection: 'mail',
+    onLoadWelinkOfficeStatus: async () => ({ status: 'connected', email: 'employee@example.com', account: 'employee' }),
+    onDisconnectWelinkOffice: async () => { throw new Error('Disconnect failed'); },
+  });
+  try {
+    await connected.click('welink-mail-disconnect');
+    assert.match(connected.find('welink-mail-error').textContent, /Disconnect failed/);
+    assert.match(connected.find('welink-mail-account').textContent, /employee/);
+    assert.equal(connected.find('welink-mail-disconnect').disabled, false);
+  } finally { await connected.close(); }
 });

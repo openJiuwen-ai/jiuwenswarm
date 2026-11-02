@@ -794,3 +794,20 @@ test('binding and unbinding an IM app name the colleague configuration and the a
     ['channel.feishu.unbind_agent', { app_id: 'cli-app' }],
   ]);
 });
+
+test('WeLink office setup uses colleague-scoped status, connect and disconnect RPCs', async () => {
+  const connected = { status: 'connected', email: 'employee@example.com', account: 'employee' };
+  const { calls, api } = recorder({
+    'jiuwenmate.welink_office.status': { welink_office: { status: 'not_connected' } },
+    'jiuwenmate.welink_office.connect': { welink_office: connected },
+    'jiuwenmate.welink_office.disconnect': { welink_office: { status: 'not_connected' } },
+  });
+  assert.equal((await api.welinkOfficeStatus('agent-1')).status, 'not_connected');
+  assert.deepEqual(await api.connectWelinkOffice('agent-1', 'employee@example.com'), connected);
+  assert.equal((await api.disconnectWelinkOffice('agent-1')).status, 'not_connected');
+  assert.deepEqual(calls, [
+    ['jiuwenmate.welink_office.status', { agent_id: 'agent-1' }],
+    ['jiuwenmate.welink_office.connect', { agent_id: 'agent-1', email: 'employee@example.com' }],
+    ['jiuwenmate.welink_office.disconnect', { agent_id: 'agent-1' }],
+  ]);
+});

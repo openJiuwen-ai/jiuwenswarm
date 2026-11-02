@@ -36,6 +36,35 @@ def test_revoke_only_removes_selected_binding_and_keeps_reader_login():
     assert result['cli_authorized'] is True
 
 
+def test_same_credential_moves_legacy_office_binding_onto_its_connection_agent():
+    current = dict(account='reader', cli_authorized=True, bindings=[
+        dict(persistent_agent_id='mate_office', assistant_credential_id='ak-coach', assistant_secret='secret',
+             credential_dir='/coach', legacy_identity_fallback=True, enabled=True),
+        dict(persistent_agent_id='mate_other_conn', config_id='mate_other', assistant_credential_id='ak-other',
+             assistant_secret='secret2', credential_dir='/other', enabled=True),
+    ])
+    result = binding.apply_welink_authorization(current, dict(
+        account='reader', persistent_agent_id='mate_new_conn', config_id='mate_office',
+        assistant_credential_id='ak-coach', assistant_secret='secret', credential_dir='/coach'))
+    assert [(item['persistent_agent_id'], item.get('config_id'), item['assistant_credential_id'])
+            for item in result['bindings']] == [
+        ('mate_new_conn', 'mate_office', 'ak-coach'),
+        ('mate_other_conn', 'mate_other', 'ak-other'),
+    ]
+    assert result['bindings'][0]['credential_dir'] == '/coach'
+
+
+def test_another_colleague_still_cannot_reuse_a_credential():
+    current = dict(account='reader', cli_authorized=True, bindings=[
+        dict(persistent_agent_id='mate_office', assistant_credential_id='ak-coach', assistant_secret='secret',
+             credential_dir='/coach', enabled=True),
+    ])
+    with pytest.raises(ValueError, match='another colleague'):
+        binding.apply_welink_authorization(current, dict(
+            persistent_agent_id='mate_stranger', config_id='mate_stranger',
+            assistant_credential_id='ak-coach', assistant_secret='secret'))
+
+
 def test_duplicate_credentials_and_mismatched_reader_fail_without_mutation():
     original = legacy()
     for patch in [dict(persistent_agent_id='mate_2', assistant_credential_id='ak1', assistant_secret='s'),
@@ -87,6 +116,31 @@ def test_invalid_poll_interval_rejected(interval):
 def test_reader_account_matching_is_case_insensitive():
     result = binding.apply_welink_authorization(legacy(), {'account': 'READER'})
     assert result['account'] == 'reader'
+
+
+def test_replacing_the_credential_drops_the_learned_member_id():
+    current = binding.apply_welink_authorization(legacy(), dict(persistent_agent_id='mate_1',
+        assistant_account='dig_1_a'))
+    kept = binding.apply_welink_authorization(current, dict(persistent_agent_id='mate_1',
+        assistant_credential_id='ak1', assistant_secret='secret1'))
+    assert kept['bindings'][0]['assistant_account'] == 'dig_1_a'
+    rotated = binding.apply_welink_authorization(kept, dict(persistent_agent_id='mate_1',
+        assistant_credential_id='ak-new', assistant_secret='secret-new'))
+    assert rotated['bindings'][0]['assistant_account'] == ''
+
+
+def test_learned_member_id_is_kept_for_one_credential_and_refused_for_another():
+    section = {'bindings': [
+        {'persistent_agent_id': 'mate_1', 'assistant_credential_id': 'ak1', 'assistant_account': ''},
+        {'persistent_agent_id': 'mate_2', 'assistant_credential_id': 'ak2', 'assistant_account': 'dig_1_b'},
+    ]}
+    assert binding.assign_learned_assistant_account(section, agent_id='mate_1', credential_id='ak1', account='dig_1_a')
+    assert section['bindings'][0]['assistant_account'] == 'dig_1_a'
+    assert binding.assign_learned_assistant_account(section, agent_id='mate_1', credential_id='ak1', account='dig_1_a')
+    assert not binding.assign_learned_assistant_account(section, agent_id='mate_1', credential_id='ak1', account='dig_1_other')
+    assert section['bindings'][0]['assistant_account'] == 'dig_1_a'
+    assert not binding.assign_learned_assistant_account(section, agent_id='mate_1', credential_id='ak1', account='dig_1_b')
+    assert not binding.assign_learned_assistant_account(section, agent_id='mate_1', credential_id='ak-old', account='dig_1_c')
 
 
 def test_only_migrated_legacy_binding_retains_single_assistant_identity_fallback():

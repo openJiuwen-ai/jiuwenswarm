@@ -106,6 +106,9 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CHANNEL_LIST.value,
         ReqMethod.JIUWENMATE_CHANNEL_MESSAGES.value,
         ReqMethod.JIUWENMATE_CHANNEL_TRACE.value,
+        ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS.value,
+        ReqMethod.JIUWENMATE_WELINK_OFFICE_CONNECT.value,
+        ReqMethod.JIUWENMATE_WELINK_OFFICE_DISCONNECT.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_STATUS.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_BEGIN.value,
         ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_POLL.value,
@@ -545,6 +548,24 @@ class JiuwenMateWebAdapter(GatewayAdapter):
     async def _run(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         manager = await self._runtime()
         conversations = self._conversations
+        if method.startswith("jiuwenmate.welink_office."):
+            from jiuwenswarm.server.jiuwenmate.welink_office_settings import WelinkOfficeSettings
+            from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_bindings
+            config_id = _text_param(params, "agent_id")
+            service = self._colleagues()
+            await asyncio.to_thread(service.get_colleague, WEB_NAMESPACE, config_id)
+            connections = await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
+            agent_ids = {item.agent_id for item in connections if item.channel == "welink"}
+            bindings = [item for item in configured_welink_bindings() if item.agent_id in agent_ids]
+            binding = bindings[0] if len(bindings) == 1 else None
+            store = await asyncio.to_thread(WelinkOfficeSettings, manager.db_path)
+            if method == ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS.value:
+                result = await asyncio.to_thread(store.status, binding)
+            elif method == ReqMethod.JIUWENMATE_WELINK_OFFICE_CONNECT.value:
+                result = await asyncio.to_thread(store.connect, binding, _text_param(params, "email"))
+            else:
+                result = await asyncio.to_thread(store.disconnect, binding)
+            return {"welink_office": result}
         if method.startswith("jiuwenmate.agent_mail."):
             agent_id = _text_param(params, "agent_id")
             await asyncio.to_thread(self._colleagues().get_colleague, WEB_NAMESPACE, agent_id)
@@ -618,7 +639,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             )
             return {"request": view.to_dict()}
         if method == ReqMethod.JIUWENMATE_SHARING_LIST.value:
-            return await manager.sharing_list(WEB_NAMESPACE, _text_param(params, "agent_id"), access=WEB_ACCESS)
+            return await manager.sharing_list(
+                WEB_NAMESPACE, _text_param(params, "agent_id"), access=WEB_ACCESS,
+                mark_read=params.get("mark_read") is True,
+            )
         if method == ReqMethod.JIUWENMATE_SHARING_DECIDE.value:
             return await manager.decide_sharing(
                 WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "approval_id"),

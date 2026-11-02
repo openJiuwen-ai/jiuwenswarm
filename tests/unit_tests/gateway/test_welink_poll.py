@@ -112,6 +112,7 @@ def test_history_parser_reads_resp_data_chat_info() -> None:
                         "content": "小九在吗",
                         "contentType": "TEXT_MSG",
                         "groupId": "1022698754601669726",
+                        "serverSendTime": 1767225600000,
                     },
                     {
                         "msgId": 89629241149103424,
@@ -131,6 +132,34 @@ def test_history_parser_reads_resp_data_chat_info() -> None:
         ("89629241149103424", "[图片] ignored.png"),
     ]
     assert messages[1].sender_id == "s00576742"
+    assert messages[1].received_at == "2026-01-01T00:00:00+00:00"
+    assert messages[0].received_at == ""
+
+
+def test_history_keeps_at_accounts_and_contact_mail() -> None:
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_messages import (
+        contact_mail_note,
+        mention_accounts_in_history,
+        parse_history_messages,
+    )
+    payload = {
+        "respData": {"chatInfo": [{
+            "msgId": 11,
+            "sender": "h00557917",
+            "content": "@小九 发给 @胡恩瑞",
+            "contentType": "TEXT_MSG",
+            "atAccountList": ["h001", "h001", "  "],
+        }]},
+    }
+    messages = parse_history_messages(payload, group_id="g")
+    assert messages[0].mention_accounts == ("h001",)
+    assert mention_accounts_in_history(payload, "11") == ("h001",)
+    note = contact_mail_note(("h001", "h002"), {"users": [{
+        "personAccount": "h001",
+        "w3Account": "h001",
+        "personMail": "h001@huawei.com",
+    }]})
+    assert note == "被@账号邮箱：h001 h001@huawei.com"
 
 
 def test_picture_and_file_markup_keep_name_size_and_dimensions() -> None:
