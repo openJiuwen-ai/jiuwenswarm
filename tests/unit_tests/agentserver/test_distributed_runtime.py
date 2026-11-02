@@ -3,9 +3,26 @@
 import pytest
 
 from jiuwenswarm.agents.harness.team.distributed_runtime import (
+    DistributedDependencyError,
+    fallback_distributed_to_local,
     normalize_distributed_transport_fields,
     parse_port,
 )
+
+
+def _pg_distributed_cfg():
+    return {
+        "team": {
+            "runtime": {"mode": "distributed", "role": "leader"},
+            "transport": {"type": "pyzmq", "params": {}},
+            "storage": {
+                "type": "postgresql",
+                "params": {
+                    "connection_string": "postgresql+asyncpg://u:p@127.0.0.1:5432/db",
+                },
+            },
+        }
+    }
 
 
 def test_normalize_leader_applies_pool_policy_when_pubsub_prefilled():
@@ -102,3 +119,42 @@ def test_parse_port_raises_for_non_numeric_value():
 def test_parse_port_raises_for_out_of_range_value():
     with pytest.raises(ValueError, match="1\\.\\.65535"):
         parse_port(70000, 18557, "team.transport.params.leader.sub_port")
+
+
+def test_fallback_pg_env_unset_silently_rewrites_to_sqlite(monkeypatch):
+    """Unset JIUWENSWARM_ALLOW_SQLITE_FALLBACK keeps legacy silent PG→sqlite."""
+    monkeypatch.delenv("JIUWENSWARM_ALLOW_SQLITE_FALLBACK", raising=False)
+    out = fallback_distributed_to_local(_pg_distributed_cfg())
+    assert out["team"]["runtime"]["mode"] == "local"
+    assert out["team"]["transport"]["type"] == "inprocess"
+    assert out["team"]["storage"]["type"] == "sqlite"
+    assert out["team"]["storage"]["params"]["connection_string"] == "team.db"
+
+
+def test_fallback_pg_env_true_rewrites_to_sqlite(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_SQLITE_FALLBACK", "1")
+    out = fallback_distributed_to_local(_pg_distributed_cfg())
+    assert out["team"]["storage"]["type"] == "sqlite"
+
+
+def test_fallback_pg_env_false_raises(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_SQLITE_FALLBACK", "0")
+    with pytest.raises(DistributedDependencyError, match="JIUWENSWARM_ALLOW_SQLITE_FALLBACK is false"):
+        fallback_distributed_to_local(_pg_distributed_cfg())
+
+
+def test_fallback_local_sqlite_storage_unchanged():
+    cfg = {
+        "team": {
+            "runtime": {"mode": "distributed", "role": "leader"},
+            "transport": {"type": "pyzmq"},
+            "storage": {
+                "type": "sqlite",
+                "params": {"connection_string": "keep-me.db"},
+            },
+        }
+    }
+    out = fallback_distributed_to_local(cfg)
+    assert out["team"]["runtime"]["mode"] == "local"
+    assert out["team"]["storage"]["type"] == "sqlite"
+    assert out["team"]["storage"]["params"]["connection_string"] == "keep-me.db"
