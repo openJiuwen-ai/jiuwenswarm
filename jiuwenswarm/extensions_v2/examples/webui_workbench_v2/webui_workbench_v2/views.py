@@ -12,14 +12,19 @@ PACKAGE_ID = "webui.workbench-v2"
 INSTANCE = "workbench"
 TASK_INSTANCE = "task-inspector"
 IFRAME_INSTANCE = "iframe-preview"
-TURN_SLOTS = frozenset({"conversation.turn.content.after", "conversation.turn.footer.actions"})
+USER_INSTANCE = "user-menu"
+USER_SELECT_ACTION = "workbench.user.select"
+USER_LOGIN_ACTION = "workbench.user.login"
+WEATHER_HIDE_ACTION = "workbench.weather.hide"
+WEATHER_SHOW_ACTION = "workbench.weather.show"
+TURN_SLOTS = frozenset({"conversation.session.content.after", "conversation.turn.footer.actions"})
 # Static Iframe roots for the two main pages; unrelated actions must not republish them.
 IFRAME_PAGE_SLOTS = frozenset({"application.menu.main", "task.function.main"})
 SLOTS = (
-    "application.entry",
+    "application.entry", "application.sidebar.footer",
     "application.menu", "application.menu.main", "task.function", "task.function.main",
     "application.settings", "conversation.input.above", "conversation.input.below",
-    "conversation.panel.right", "conversation.turn.content.after", "conversation.turn.footer.actions",
+    "conversation.panel.right", "conversation.session.content.after", "conversation.turn.footer.actions",
     "conversation.header.title.after", "conversation.header.actions",
 )
 
@@ -103,10 +108,34 @@ def welcome_page() -> RenderNode:
     ))
 
 
+def user_menu_view() -> RenderNode:
+    """Avatar trigger with one demo menu item; no real authentication is involved."""
+    return RenderNode(
+        "Dropdown",
+        {
+            "items": [{"key": "logout", "label": "退出登录 / Sign out", "danger": True}],
+            "placement": "topLeft",
+            "ariaLabel": "用户菜单 / User menu",
+        },
+        events={"ui.select": {"id": USER_SELECT_ACTION, "args": {}}},
+        children=(
+            RenderNode("Avatar", {"url": "/logo.svg", "alt": "用户 / User", "size": 32, "shape": "circle"}),
+        ),
+    )
+
+
+def signed_out_view() -> RenderNode:
+    """Signed-out shell that switches back to the user menu."""
+    return button("登录 / Sign in", USER_LOGIN_ACTION, variant="primary")
+
+
 def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
     """Build a complete replacement tree for one declared contribution."""
     if slot == "application.entry":
         return welcome_page()
+    if slot == "application.sidebar.footer":
+        # The connection-scoped path renders this slot; keep the builder total for direct callers.
+        return user_menu_view()
     if slot == "application.menu":
         return button("交互工作台 / Workbench", "workbench.open")
     if slot == "task.function":
@@ -117,12 +146,23 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
         return iframe_page("任务检查页面 / Task inspection page", "https://example.com/?page=task.function.main")
     if slot == "application.settings":
         return RenderNode("Box", {"direction": "row", "justify": "between", "gap": "md", "wrap": True}, children=(
-            column(text("自动摘要 / Auto summary"), text("在本会话的辅助区域显示筛选摘要。 / Show filter summaries in this conversation.", secondary=True)),
-            switch("自动摘要 / Auto summary", state.auto_summary, "auto_summary"),
+            column(text("天气详情 / Weather details"), text("在输入框上方显示 Token 天气演示。 / Show the Token Weather demo above the input.", secondary=True)),
+            switch("天气详情 / Weather details", state.weather_visible, "weather_visible"),
         ))
     if slot == "conversation.input.above":
-        return column(text(state.summary() if state.auto_summary else "自动摘要已暂停 / Auto summary paused", secondary=True),
-                      text(state.last_result, secondary=True))
+        details = (
+            text("Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06"),
+            text("上下文充裕", secondary=True),
+        ) if state.weather_visible else (text("Token 天气", secondary=True),)
+        return RenderNode("Box", {
+            "direction": "row", "gap": "sm", "align": "center", "justify": "between",
+        }, children=(
+            RenderNode("Box", {
+                "direction": "row", "gap": "sm", "align": "center", "wrap": True, "flex": 1,
+            }, children=details),
+            button("隐藏" if state.weather_visible else "显示",
+                   WEATHER_HIDE_ACTION if state.weather_visible else WEATHER_SHOW_ACTION),
+        ))
     if slot == "conversation.input.below":
         return text(f"工作台 / Workbench · {state.operations} 次操作 / operations", secondary=True)
     if slot == "conversation.panel.right":
@@ -131,18 +171,15 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
         if instance_key == IFRAME_INSTANCE:
             return RenderNode("Iframe", {
                 "title": "网页预览 / Web preview",
-                "src": "https://example.com",
+                "src": "https://www.baidu.com/",
             })
         raise ValueError(f"undeclared right-panel instance: {instance_key}")
     if slot == "conversation.header.title.after":
-        return row(
-            RenderNode("Avatar", {"url": "/logo.svg", "alt": "工作台 / Workbench", "size": "small"}),
-            RenderNode("Tag", {"children": "工作台 / Workbench", "color": "processing"}),
-        )
+        return RenderNode("Tag", {"children": "工作台 / Workbench", "color": "processing"})
     if slot == "conversation.header.actions":
         return button("刷新工作台 / Refresh workbench", "workbench.refresh")
     turn = state.turn(instance_key)
-    if slot == "conversation.turn.content.after":
+    if slot == "conversation.session.content.after":
         return column(text(turn.summary, secondary=True), text(turn.result, secondary=True))
     if slot == "conversation.turn.footer.actions":
         return row(button("刷新本轮 / Refresh round", "workbench.turn.refresh"),

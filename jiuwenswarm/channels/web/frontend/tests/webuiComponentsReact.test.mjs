@@ -12,6 +12,11 @@ textStyles.textContent = readFileSync(new URL(
   '../src/features/webui/renderer/adapters/webuiText/WebUIText.css', import.meta.url,
 ), 'utf8');
 dom.window.document.head.append(textStyles);
+const iframeStyles = dom.window.document.createElement('style');
+iframeStyles.textContent = readFileSync(new URL(
+  '../src/features/webui/renderer/adapters/webuiIframe/Iframe.css', import.meta.url,
+), 'utf8');
+dom.window.document.head.append(iframeStyles);
 const previous = new Map();
 const channels = [];
 const NativeMessageChannel = globalThis.MessageChannel;
@@ -858,14 +863,17 @@ test('Iframe releases inactive documents and resets loading on source changes an
   const iframe = () => app.container.querySelector('iframe');
   try {
     const first = iframe();
-    assert.equal(first.getAttribute('sandbox'), 'allow-scripts allow-forms');
+    assert.equal(first.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
     assert.equal(first.getAttribute('referrerpolicy'), 'no-referrer');
     assert.equal(first.title, 'Preview');
     assert.equal(state().dataset.variant, 'loading');
+    assert.equal(getComputedStyle(state()).pointerEvents, 'none', 'loading notice must not intercept iframe clicks');
+    assert.equal(getComputedStyle(state()).inset, '12px 12px auto auto', 'loading notice must not cover the document');
     await act(async () => first.dispatchEvent(new window.Event('load')));
     assert.ok(!state(), 'loaded frame hides its notice');
     await app.activity(false);
     assert.ok(!iframe(), 'inactive content releases its iframe'); assert.equal(state().dataset.variant, 'inactive');
+    assert.notEqual(getComputedStyle(state()).pointerEvents, 'none');
     await app.activity(true);
     assert.ok(iframe() !== first, 'reactivation creates a new browsing context');
     assert.equal(state().dataset.variant, 'loading');
@@ -878,7 +886,29 @@ test('Iframe releases inactive documents and resets loading on source changes an
     assert.equal(state().dataset.variant, 'loading');
     await act(async () => iframe().dispatchEvent(new window.Event('error')));
     assert.ok(!iframe(), 'failed frame releases its iframe'); assert.equal(state().dataset.variant, 'error');
+    assert.notEqual(getComputedStyle(state()).pointerEvents, 'none');
     assert.equal(app.business().length, 0);
+  } finally { await app.close(); }
+});
+
+test('Iframe keeps relative and absolute host sources sandboxed without same-origin access', async () => {
+  const tree = (src) => ({ component: 'Iframe', props: { src, title: 'Local preview' } });
+  const app = await setup(tree('/preview'), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    for (const [revision, src] of [[2, '/preview'], [3, 'http://localhost/preview']]) {
+      await app.replace(tree(src), revision);
+      const iframe = app.container.querySelector('iframe');
+      assert.ok(iframe);
+      assert.equal(iframe.src, 'http://localhost/preview');
+      const permissions = iframe.getAttribute('sandbox').split(/\s+/);
+      assert.ok(permissions.includes('allow-scripts'));
+      assert.ok(permissions.includes('allow-forms'));
+      assert.ok(permissions.includes('allow-popups'));
+      assert.ok(!permissions.includes('allow-same-origin'), 'host URLs must retain an opaque sandbox origin');
+      assert.ok(!permissions.includes('allow-popups-to-escape-sandbox'));
+      assert.ok(!permissions.some((permission) => permission.startsWith('allow-top-navigation')));
+      assert.equal(iframe.hasAttribute('srcdoc'), false);
+    }
   } finally { await app.close(); }
 });
 

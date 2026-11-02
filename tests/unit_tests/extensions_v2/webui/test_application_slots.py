@@ -405,3 +405,81 @@ async def test_workbench_example_entry_renders_avatar_and_clears_on_close(tmp_pa
         assert clear_frame["reason"] == "requested"
     finally:
         await assembly.shutdown_extensions()
+
+
+@pytest.mark.asyncio
+async def test_workbench_example_sidebar_footer_renders_user_menu(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(assembly, "_ASSEMBLY", None)
+    monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "installed")
+    server = _Push()
+    installed = await assembly.install_extensions(server)
+    assert installed is not None
+    try:
+        example_dir = Path(assembly.__file__).resolve().parent / "examples" / "webui_workbench_v2"
+        reports = await installed.manager.install([example_dir])
+        assert reports[0].status == "SUCCESS"
+
+        def request(event: str, payload: dict, *, package_id: str = "", instance_key: str = "") -> AgentRequest:
+            return AgentRequest(
+                request_id=f"footer-{event}",
+                channel_id="web",
+                req_method=ReqMethod.WEBUI_DISPATCH,
+                metadata={"ws_id": "sock-footer"},
+                params={
+                    "event": event,
+                    "target": {
+                        "scope": "application",
+                        "slot_id": "application.sidebar.footer",
+                        "package_id": package_id,
+                        "instance_key": instance_key,
+                    },
+                    "payload": payload,
+                },
+            )
+
+        ready = await WebUIDispatchAdapter().handle(request("ui.ready", {}))
+        assert ready.ok is True
+        assert ready.payload["status"] == "rendered"
+        frame = server.messages[0]["payload"]
+        assert frame["target"] == {
+            "scope": "application",
+            "slot_id": "application.sidebar.footer",
+            "package_id": "webui.workbench-v2",
+            "instance_key": "user-menu",
+        }
+        assert frame["root"]["component"] == "Dropdown"
+        assert frame["root"]["children"][0]["component"] == "Avatar"
+
+        logout = await WebUIDispatchAdapter().handle(request(
+            "ui.select",
+            {
+                "revision": 1,
+                "node_key": "0",
+                "action_id": "workbench.user.select",
+                "args": {},
+                "data": {"key": "logout"},
+            },
+            package_id="webui.workbench-v2",
+            instance_key="user-menu",
+        ))
+        assert logout.ok is True
+        assert logout.payload["status"] == "rendered"
+        assert server.messages[1]["payload"]["root"]["component"] == "Button"
+
+        login = await WebUIDispatchAdapter().handle(request(
+            "ui.click",
+            {
+                "revision": 2,
+                "node_key": "0",
+                "action_id": "workbench.user.login",
+                "args": {},
+                "data": {},
+            },
+            package_id="webui.workbench-v2",
+            instance_key="user-menu",
+        ))
+        assert login.ok is True
+        assert login.payload["status"] == "rendered"
+        assert server.messages[2]["payload"]["root"]["component"] == "Dropdown"
+    finally:
+        await assembly.shutdown_extensions()

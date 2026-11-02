@@ -49,5 +49,9 @@
   {"component": "TreeSelect", "props": {"treeCheckable": true, "treeData": [{"value": "a", "title": "A"}]}, "event": "ui.select", "data": {"value": "a"}, "allowed": true},
   {"component": "TreeSelect", "props": {"treeCheckable": true, "treeData": [{"value": "a", "title": "A"}]}, "event": "ui.change", "data": {"value": ["a"]}, "allowed": true},
   {"component": "TreeSelect", "props": {"treeData": [{"value": "a", "title": "A"}], "multiple": true}, "event": "ui.change", "data": {"value": ["a", "a"]}, "allowed": false},
-  {"component": "TreeSelect", "props": {"treeData": [{"value": "a", "title": "A"}]}, "event": "ui.change", "data": {"value": null}, "allowed": true}
+  {"component": "TreeSelect", "props": {"treeData": [{"value": "a", "title": "A"}]}, "event": "ui.change", "data": {"value": null}, "allowed": true},
+  {"component": "Dropdown", "props": {"items": [{"key": "profile", "label": "Profile"}, {"key": "logout", "label": "Sign out", "danger": true}]}, "event": "ui.select", "data": {"key": "profile"}, "allowed": true},
+  {"component": "Dropdown", "props": {"items": [{"key": "profile", "label": "Profile"}]}, "event": "ui.select", "data": {"key": "missing"}, "allowed": false},
+  {"component": "Dropdown", "props": {"items": [{"key": "profile", "label": "Profile"}, {"key": "logout", "label": "Sign out", "disabled": true}]}, "event": "ui.select", "data": {"key": "logout"}, "allowed": false},
+  {"component": "Dropdown", "props": {"items": [{"key": "logout", "label": "Sign out"}]}, "event": "ui.select", "data": {}, "allowed": false}
 ]

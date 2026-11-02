@@ -20,7 +20,7 @@ function FrameDocument({ src, title }: Pick<IframeProps, 'src' | 'title'>) {
         <iframe
           src={src}
           title={title}
-          sandbox="allow-scripts allow-forms"
+          sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"
           referrerPolicy="no-referrer"
           className="webui-iframe__frame"
           data-testid="webui-iframe-frame"

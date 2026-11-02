@@ -2048,11 +2048,11 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   </>
                 )}
+                <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
-                <WebUIHost slotId="conversation.input.above" className="mb-2 w-full" />
                 <InputArea
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
@@ -2117,6 +2117,7 @@ export const ChatPanel = React.memo(function ChatPanel({
 
       {hasConversation && (
         <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
+          <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
           <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
           <InterruptResultBubble />
@@ -2129,7 +2130,6 @@ export const ChatPanel = React.memo(function ChatPanel({
               onClearGoal={onClearGoal}
             />
           )}
-          <WebUIHost slotId="conversation.input.above" className="mb-2 w-full" />
           <InputArea
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
