@@ -5,6 +5,7 @@
  *
  * 这里只负责「发现会话号并开始盯」，不在 list 里直接标未读，
  * 也不盲设 isProcessing（等 live 首帧，避免陈旧 active_session_id 永久转圈）。
+ * 返回新发现的 jobId；调用方应再 loadCronSessions，刷新已展开的侧栏子列表。
  */
 
 import { isEnterprise } from '../../edition';
