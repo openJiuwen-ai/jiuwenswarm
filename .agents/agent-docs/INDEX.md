@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 26 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 24 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -19,19 +19,16 @@ generated: true
 | [agent_teams/workflow](#module-2) | 3 |
 | [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
 | [gateway/channel_manager/web](#module-4) | 1 |
-| [gateway/enterprise/config/manager_config](#module-5) | 2 |
-| [gateway/message_handler](#module-6) | 1 |
-| [gateway/storage_assembly](#module-7) | 2 |
-| [jiuwenswarm](#module-8) | 3 |
-| [jiuwenswarm/channels/web](#module-9) | 1 |
-| [jiuwenswarm/channels/web/frontend](#module-10) | 3 |
-| [jiuwenswarm/enterprise/config](#module-11) | 2 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-12) | 1 |
-| [jiuwenswarm/observability](#module-13) | 1 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-14) | 2 |
-| [tests/unit_tests/gateway](#module-15) | 1 |
-| [tests/unit_tests/personal_context](#module-16) | 1 |
-| [未分类](#module-17) | 12 |
+| [gateway/message_handler](#module-5) | 1 |
+| [jiuwenswarm](#module-6) | 3 |
+| [jiuwenswarm/channels/web](#module-7) | 1 |
+| [jiuwenswarm/channels/web/frontend](#module-8) | 3 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-9) | 1 |
+| [jiuwenswarm/observability](#module-10) | 1 |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-11) | 2 |
+| [tests/unit_tests/gateway](#module-12) | 1 |
+| [tests/unit_tests/personal_context](#module-13) | 1 |
+| [未分类](#module-14) | 12 |
 
 <a id="module-1"></a>
 
@@ -69,31 +66,13 @@ generated: true
 
 <a id="module-5"></a>
 
-## gateway/enterprise/config/manager_config
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261102_1011_gateway-memory-task-memory](features/F_20261102_1011_gateway-memory-task-memory.md) | F | 4.6 解决 memory 和 task memory 的 Gateway 解耦问题 | ruiqiang2 | gateway/enterprise/config/manager_config, gateway/storage_assembly, jiuwenswarm/enterprise/config | gateway/enterprise/config/manager_config/core/application_config/memory_config.py, gateway/enterprise/config/manager_config/core/application_config/task_memory_config.py, gateway/storage_assembly/setup.py, jiuwenswarm/enterprise/config/config_provider.py | 无独立 D：用户于 2026-11-02 明确授权 4.6 memory/task memory 解耦，沿用既有通知和配置读取能力，无独立设计文档。 |
-| [S_01_memory-config-ownership](specs/jiuwenswarm/enterprise/config/S_01_memory-config-ownership.md) | S | Memory 与 Task Memory 配置归属与更新契约 | ruiqiang2 | gateway/enterprise/config/manager_config, gateway/storage_assembly, jiuwenswarm/enterprise/config | gateway/enterprise/config/manager_config/core/application_config/memory_config.py, gateway/enterprise/config/manager_config/core/application_config/task_memory_config.py, gateway/enterprise/config/manager_config/routers/application_config_routers.py, gateway/storage_assembly/setup.py, jiuwenswarm/enterprise/config/config_provider.py | — |
-
-<a id="module-6"></a>
-
 ## gateway/message_handler
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261028_1445_xiaoyi-team-join-delivery](bugfix/gateway/channel_manager/im_platforms/xiaoyi/B_20261028_1445_xiaoyi-team-join-delivery.md) | B | 小艺成员加入团队后仅在通知栏收到 Team Leader 消息 | zhongxiaotian | gateway/channel_manager/im_platforms/xiaoyi, gateway/message_handler | gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_connect.py, gateway/message_handler/join_exit_handlers.py, tests/unit_tests/gateway/test_xiaoyi_team_delivery.py | 无独立 D：当前团队席位和 fan-out 契约未变化，本次仅修复小艺平台任务生命周期。 |
 
-<a id="module-7"></a>
-
-## gateway/storage_assembly
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261102_1011_gateway-memory-task-memory](features/F_20261102_1011_gateway-memory-task-memory.md) | F | 4.6 解决 memory 和 task memory 的 Gateway 解耦问题 | ruiqiang2 | gateway/enterprise/config/manager_config, gateway/storage_assembly, jiuwenswarm/enterprise/config | gateway/enterprise/config/manager_config/core/application_config/memory_config.py, gateway/enterprise/config/manager_config/core/application_config/task_memory_config.py, gateway/storage_assembly/setup.py, jiuwenswarm/enterprise/config/config_provider.py | 无独立 D：用户于 2026-11-02 明确授权 4.6 memory/task memory 解耦，沿用既有通知和配置读取能力，无独立设计文档。 |
-| [S_01_memory-config-ownership](specs/jiuwenswarm/enterprise/config/S_01_memory-config-ownership.md) | S | Memory 与 Task Memory 配置归属与更新契约 | ruiqiang2 | gateway/enterprise/config/manager_config, gateway/storage_assembly, jiuwenswarm/enterprise/config | gateway/enterprise/config/manager_config/core/application_config/memory_config.py, gateway/enterprise/config/manager_config/core/application_config/task_memory_config.py, gateway/enterprise/config/manager_config/routers/application_config_routers.py, gateway/storage_assembly/setup.py, jiuwenswarm/enterprise/config/config_provider.py | — |
-
-<a id="module-8"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm
 
@@ -103,7 +82,7 @@ generated: true
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | agent_teams/workflow, jiuwenswarm | — | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | agent_teams/workflow, jiuwenswarm | — | — |
 
-<a id="module-9"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/channels/web
 
@@ -111,7 +90,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1146_chat-cold-load](bugfix/jiuwenswarm/channels/web/B_20261031_1146_chat-cold-load.md) | B | 会话嵌套路由冷加载白屏修复 | kdgmpw | jiuwenswarm/channels/web | jiuwenswarm/channels/web/app_web.py, jiuwenswarm/channels/web/frontend/vite.config.ts, tests/unit_tests/channels/web/test_web_static_cache_headers.py | 无独立 D：对已有静态服务契约的局部修复，与 nginx 的资源别名保持兼容，无独立设计。 |
 
-<a id="module-10"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -121,16 +100,7 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](features/F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 
-<a id="module-11"></a>
-
-## jiuwenswarm/enterprise/config
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261102_1011_gateway-memory-task-memory](features/F_20261102_1011_gateway-memory-task-memory.md) | F | 4.6 解决 memory 和 task memory 的 Gateway 解耦问题 | ruiqiang2 | gateway/enterprise/config/manager_config, gateway/storage_assembly, jiuwenswarm/enterprise/config | gateway/enterprise/config/manager_config/core/application_config/memory_config.py, gateway/enterprise/config/manager_config/core/application_config/task_memory_config.py, gateway/storage_assembly/setup.py, jiuwenswarm/enterprise/config/config_provider.py | 无独立 D：用户于 2026-11-02 明确授权 4.6 memory/task memory 解耦，沿用既有通知和配置读取能力，无独立设计文档。 |
-| [S_01_memory-config-ownership](specs/jiuwenswarm/enterprise/config/S_01_memory-config-ownership.md) | S | Memory 与 Task Memory 配置归属与更新契约 | ruiqiang2 | gateway/enterprise/config/manager_config, gateway/storage_assembly, jiuwenswarm/enterprise/config | gateway/enterprise/config/manager_config/core/application_config/memory_config.py, gateway/enterprise/config/manager_config/core/application_config/task_memory_config.py, gateway/enterprise/config/manager_config/routers/application_config_routers.py, gateway/storage_assembly/setup.py, jiuwenswarm/enterprise/config/config_provider.py | — |
-
-<a id="module-12"></a>
+<a id="module-9"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -138,7 +108,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-13"></a>
+<a id="module-10"></a>
 
 ## jiuwenswarm/observability
 
@@ -146,7 +116,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-14"></a>
+<a id="module-11"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -155,7 +125,7 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](features/F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 
-<a id="module-15"></a>
+<a id="module-12"></a>
 
 ## tests/unit_tests/gateway
 
@@ -163,7 +133,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-16"></a>
+<a id="module-13"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -171,7 +141,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-17"></a>
+<a id="module-14"></a>
 
 ## 未分类
 
