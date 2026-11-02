@@ -3,13 +3,14 @@ import {
   AtSign, Bot, ChevronLeft, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { webClient, type WsEvent } from '../../services/webClient';
+import { webClient, webRequest, type WsEvent } from '../../services/webClient';
 import { attachTeamSession } from '../../services/teamAttach';
-import ModelPicker from '../../components/ModelPicker';
+import ChatModelSelector from '../../components/ChatPanel/ChatModelSelector';
 import { TeamMemberAvatar } from '../../components/TeamMemberAvatar';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import type { ModelSelection, UserAnswer } from '../../types';
+import type { UserAnswer } from '../../types';
+import { parseModelSelection } from '../settings/modules/models/modelGroupAdapters';
 import { GroupMessageContent } from './GroupMessageContent';
 import { Dialog } from '../../components/ui/Dialog/Dialog';
 import type { GroupDirectory } from './useGroupDirectory';
@@ -114,9 +115,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     }
   }, [mentionMenu, mentionIndex]);
   const [sending, setSending] = useState(false);
-  const defaultModel = useSessionStore((state) => state.defaultModelName);
-  const [modelName, setModelName] = useState<string | null>(null);
-  const [modelSelection, setModelSelection] = useState<ModelSelection | null>(null);
+  const [modelReady, setModelReady] = useState(false);
   const [fileAction, setFileAction] = useState<{ kind: 'rename' | 'delete'; path: string; name: string } | null>(null);
   const [fileName, setFileName] = useState('');
   const [fileBusy, setFileBusy] = useState(false);
@@ -148,6 +147,37 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const report = useCallback((reason: unknown) => {
     if (alive.current) setError(reason instanceof Error ? reason.message : String(reason));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelReady(false);
+    if (!connected) return;
+    const store = useSessionStore.getState();
+    const runtime = store.ensureRuntime(groupId);
+    // Keep unsent choices when the workspace is remounted for another group.
+    if (runtime.selectedModelSelection || runtime.selectedModelName) {
+      setModelReady(true);
+      return;
+    }
+    void webRequest<{ model_selection?: unknown; model?: string }>('session.get_metadata', {
+      session_id: groupId,
+    }).then((metadata) => {
+      if (cancelled) return;
+      const current = useSessionStore.getState();
+      const latest = current.getRuntime(groupId);
+      // A late restore must not replace a newer local choice.
+      if (!latest?.selectedModelSelection && !latest?.selectedModelName) {
+        const selection = parseModelSelection(metadata.model_selection);
+        if (selection) current.setSelectedModelSelection(groupId, selection);
+        else if (metadata.model) current.setSelectedModelName(groupId, metadata.model);
+        else current.initializeDefaultModel(groupId);
+      }
+      setModelReady(true);
+    }).catch((reason: unknown) => {
+      if (!cancelled) report(reason);
+    });
+    return () => { cancelled = true; };
+  }, [groupId, connected, report]);
 
   const refresh = useCallback(async () => {
     if (!groupId || refreshing.current) return;
@@ -312,12 +342,11 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
 
   async function send() {
-    if (!group || !input.trim() || sending || !connected) return;
+    if (!group || !input.trim() || sending || !connected || !modelReady) return;
     const recipients = selectedMentions(input, mentions, group.members);
     const body = {
       query: input.trim(), mentions: recipients, intent: 'chat' as const,
-      ...(modelName ? { model_name: modelName } : {}),
-      ...(modelSelection ? { model_selection: modelSelection } : {}),
+      ...useSessionStore.getState().getOutgoingModelParams(groupId),
     };
     const signature = JSON.stringify(body);
     if (request.current?.signature !== signature) request.current = { signature, token: crypto.randomUUID() };
@@ -546,10 +575,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                 aria-label={t('groupChat.mention')} title={t('groupChat.mention')} aria-expanded={mentionMenu}
                 data-testid="group-chat-mention"><AtSign size={17} /></button>
               <span className="group-chat-muted" data-testid="group-chat-send-hint">{t('groupChat.sendHint')}</span>
-              <ModelPicker value={modelName ?? defaultModel} selection={modelSelection} includeModelGroups={false}
-                disabled={sending} onChange={setModelName} onSelectionChange={setModelSelection}
-                testIdPrefix="group-chat-model" />
-              <button type="submit" className="group-chat-send" disabled={!input.trim() || sending || !connected}
+              {modelReady && <ChatModelSelector sessionId={groupId} includeModelGroups={false}
+                disabled={sending || !connected} testIdPrefix="group-chat-model" />}
+              <button type="submit" className="group-chat-send" disabled={!input.trim() || sending || !connected || !modelReady}
                 aria-label={t('groupChat.send')} data-testid="group-chat-send"><Send size={16} /></button>
             </footer>
           </form>}
