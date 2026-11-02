@@ -153,3 +153,39 @@ async def test_confirmed_handoff_reuses_history_with_request_only_agent_identity
     group = fanout._groups.resolve("local", "welink", "g", now=NOW)
     archived, = fanout._agent_manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))
     assert archived.sender_id == "assistant-account" and archived.sender_kind == "human"
+
+
+@pytest.mark.asyncio
+async def test_office_binding_resolves_to_its_welink_connection(tmp_path, monkeypatch):
+    office, connection_agent = "mate_office", "mate_conn"
+    raw = {"channels": {"welink": {"account": "reader", "cli_authorized": True,
+        "reader_credential_dir": "/reader", "bindings": [{
+            "persistent_agent_id": office, "config_id": office,
+            "assistant_credential_id": "ak-office", "assistant_secret": "private-secret",
+            "credential_dir": "/assistant/office", "enabled": True}]}}}
+    lookup = inbound.welink_binding_for_agent
+    monkeypatch.setattr(inbound, "welink_binding_for_agent", lambda agent: lookup(agent, raw))
+    groups = GroupChatRepository(tmp_path / "groups.sqlite3")
+    archive = ConversationArchive(tmp_path / "archive", groups)
+    seen = []
+
+    def snapshot(namespace, agent):
+        seen.append(agent)
+        return SimpleNamespace(agent_id=agent)
+
+    fanout = SimpleNamespace(
+        _groups=groups, _clock=lambda: NOW + timedelta(minutes=1),
+        _agent_manager=SimpleNamespace(group_archive=archive, scheduler=SimpleNamespace(accept=AsyncMock()),
+            group_participant_roster=lambda *args: ()),
+        _sessions=SimpleNamespace(resolve_session=lambda ns, agent, *args, **kwargs: SimpleNamespace(agent_id=agent)),
+        _service=SimpleNamespace(
+            connection_of=lambda *args: None,
+            connections=lambda *args: [SimpleNamespace(
+                channel="welink", connection_key=f"reader:{office}", agent_id=connection_agent)],
+            get_colleague=lambda *args: SimpleNamespace(enabled=True),
+            current_snapshot=snapshot,
+            read_settings=lambda ns, agent: SimpleNamespace(group_reply_mode="adaptive")))
+    message = event(office, assistant_credential_id="ak-office")
+    assert (await inbound.accept_welink_message(fanout, message)).value == "handled"
+    assert seen == [connection_agent]
+    assert fanout._agent_manager.scheduler.accept.call_args.args[0].agent_id == connection_agent

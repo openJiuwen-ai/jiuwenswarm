@@ -505,7 +505,7 @@
         "fullAccessConfirm": "完全访问将开放宿主 OS 账户可访问的所有文件，并允许联网命令。确定为该员工启用吗？"
       },
       "feishuHint": "授权使用智能体，并监控活动。",
-      "welinkHint": "完整流程需要配置两次：第一次绑定 WeLink，第二次创建助手。",
+      "welinkHint": "连接 WeLink 后，可在群里 @ 这位员工分派任务。",
       "authorize": "授权",
       "authorized": "已授权",
       "cancelAuthorization": "取消授权",
@@ -623,7 +623,7 @@
       "deleteConversation": "删除对话",
       "rename": "重命名",
       "viewTrace": "查看轨迹",
-      "composerPlaceholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
+      "composerPlaceholder": "需要帮你做些什么？",
       "defaultPermission": "默认权限",
       "autoMode": "Auto",
       "attach": "添加附件",

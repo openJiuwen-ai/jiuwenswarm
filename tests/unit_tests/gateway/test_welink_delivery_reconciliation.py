@@ -229,6 +229,39 @@ def test_private_notice_is_journaled_without_closing_task(tmp_path):
     assert sends == [False, False]
 
 
+def test_reply_sends_when_the_group_lists_no_assistant_member(tmp_path):
+    channel = channel_at(tmp_path)
+
+    class Cli:
+        def query_history(self, group, cursor):
+            return SimpleNamespace(ok=True, stdout=json.dumps({'messages': [
+                {'messageId': '10', 'senderAccount': 'reader', 'text': 'question'}]}), returncode=0)
+        def query_group_members(self, group):
+            return SimpleNamespace(ok=True, returncode=0, stdout=json.dumps({'respData': [
+                {'memberAccount': 'reader', 'memberType': 'TYPE_NORMAL'}]}))
+    channel._cli = Cli()
+    sent = []
+
+    class Link:
+        def send_text(self, group, text, source_message_id='', *, on_prepared=None):
+            sent.append(source_message_id)
+            if on_prepared:
+                on_prepared('wire-1', 'session-1', 'trace-1')
+            return 'wire-1'
+    channel._link = Link()
+    outcome = asyncio.run(channel.send_group_text(
+        chat_id='g', text='answer', idempotency_key='key', source_message_id='10'))
+    assert outcome['outcome'] == 'unknown'
+    assert sent == ['10']
+    blocked = asyncio.run(channel.send_group_text(chat_id='g', text='notice', idempotency_key='notice'))
+    assert blocked['error_code'] == 'WELINK_SEND_PREFLIGHT_UNAVAILABLE'
+    assert sent == ['10']
+    journal = channel._delivery_journal()
+    confirmed = journal.reconcile('key', [message('wire-1', sender='dig_reader_new')])
+    assert confirmed['outcome'] == 'delivered'
+    assert confirmed['learned_sender'] == 'dig_reader_new'
+
+
 def test_manager_passes_private_idempotency_key(tmp_path):
     from unittest.mock import AsyncMock
     from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
