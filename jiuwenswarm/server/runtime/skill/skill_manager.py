@@ -10472,6 +10472,9 @@ class SkillManager:
         options = raw.get("options") or {}
         if not isinstance(options, dict):
             raise SourceRegistryError("source_misconfigured", "options must be an object")
+        verify_ssl = raw.get("verify_ssl", True)
+        if not isinstance(verify_ssl, bool):
+            raise SourceRegistryError("source_misconfigured", "verify_ssl must be a boolean")
         try:
             priority = int(raw.get("priority", 0))
         except (TypeError, ValueError) as exc:
@@ -10510,6 +10513,7 @@ class SkillManager:
             capabilities=frozenset(str(item) for item in capabilities),
             download_policy=download_policy,
             options=dict(options),
+            verify_ssl=verify_ssl,
         )
 
     async def apply_skill_source_configs(
