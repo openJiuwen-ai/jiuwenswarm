@@ -1964,6 +1964,11 @@
       "currentRound": "Compacting current round…",
       "roundLevel": "Full compaction…"
     },
+    "contextCompressionElapsed": {
+      "seconds": "{{seconds}}s elapsed",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s elapsed",
+      "hoursMinutes": "{{hours}}h {{minutes}}m elapsed"
+    },
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
       "loadingMore": "Loading...",
