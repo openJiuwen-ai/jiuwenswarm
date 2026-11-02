@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   contextCompressionElapsedText,
   contextCompressionRunningText,
+  resolveCompactStartedAt,
 } from '../node_modules/.cache/context-compression-elapsed/contextCompression.mjs';
 
 /** 只关心分档与插值，用固定的英文单位代替真实 i18n 资源。 */
@@ -55,4 +56,17 @@ test('running text keeps per-compressor wording and falls back to the backend su
     contextCompressionRunningText(localize, 'SessionMemoryCompressor', 'backend summary'),
     'backend summary',
   );
+});
+
+test('compact start time resolves per session, not from whichever session started last', () => {
+  const startedAtBySession = new Map([
+    ['session-a', 1_000],
+    ['session-b', 2_500],
+  ]);
+  // 会话 A 压缩中、B 也发起压缩后切回 A：必须拿到 A 的起点，而不是 B 覆盖后的值。
+  assert.equal(resolveCompactStartedAt(startedAtBySession, 'session-a'), 1_000);
+  assert.equal(resolveCompactStartedAt(startedAtBySession, 'session-b'), 2_500);
+  assert.equal(resolveCompactStartedAt(startedAtBySession, 'session-c'), undefined);
+  assert.equal(resolveCompactStartedAt(startedAtBySession, null), undefined);
+  assert.equal(resolveCompactStartedAt(startedAtBySession, undefined), undefined);
 });

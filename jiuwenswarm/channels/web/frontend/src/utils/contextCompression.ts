@@ -22,6 +22,19 @@ export function contextCompressionRunningText(
 }
 
 /**
+ * 取指定会话这一轮手动 /compact 的起始时刻。
+ *
+ * 压缩状态按会话记录（多会话可并发），展示时必须按当前活跃会话取值，
+ * 不能读某次发起时写入的全局单值，否则切换会话后会显示别的会话的起点。
+ */
+export function resolveCompactStartedAt(
+  startedAtBySession: ReadonlyMap<string, number>,
+  sessionId: string | null | undefined,
+): number | undefined {
+  return sessionId ? startedAtBySession.get(sessionId) : undefined;
+}
+
+/**
  * 压缩进行中的计时文案，按秒/分/时三档渲染。
  *
  * 压缩调用是非流式的，后端在整段压缩期间只发 `started` 一个事件，前端拿不到
