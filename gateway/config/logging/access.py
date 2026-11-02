@@ -43,7 +43,7 @@ def schedule_logging_config(awaitable: Any) -> None:
 
 
 def _apply_runtime_levels(payload: dict[str, Any] | None) -> None:
-    from jiuwenswarm.common.utils import apply_logging_config_payload
+    from gateway.common.logging_setup import apply_logging_config_payload
 
     apply_logging_config_payload(payload)
 
@@ -104,12 +104,12 @@ async def merge_logging_levels_in_config(updates: dict[str, Any]) -> None:
         raise ValueError("logging updates must be an object")
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.utils import update_log_levels
+        from gateway.common.logging_setup import update_gateway_log_levels
 
         _legacy_persist_logging_levels(updates)
         kwargs = _runtime_kwargs_from_updates(updates)
         if kwargs:
-            update_log_levels(**kwargs)
+            update_gateway_log_levels(**kwargs)
         return
 
     document = await repo.merge_levels(updates)

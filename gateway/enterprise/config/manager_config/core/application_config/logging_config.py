@@ -12,7 +12,7 @@ from openjiuwen_protocol.logging_config import (
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,
 )
-from jiuwenswarm.common.utils import apply_logging_config_payload
+from gateway.common.logging_setup import apply_logging_config_payload
 
 from ...infrastructure.repository_access import require_logging_repository
 

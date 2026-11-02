@@ -16,8 +16,14 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass
-from logging.handlers import BaseRotatingHandler
+from dataclasses import dataclass, replace
+from logging.handlers import BaseRotatingHandler, QueueHandler
+
+from openjiuwen_protocol.logging_config import (
+    LOG_CONFIG_OP_DELETE,
+    LOG_CONFIG_OP_FIELD,
+    LOGGING_LEVEL_FIELDS,
+)
 from pathlib import Path
 from typing import Any, Optional
 
@@ -385,6 +391,108 @@ def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
     install_source_record_masking()
     _mark_gateway_logging_configured(root)
     return root
+_FILE_LEVEL_ATTR_BY_NAME: dict[str, str] = {
+    "gateway.log": "gateway",
+    "gateway.json": "gateway",
+    "channel.log": "channel",
+    "channel.json": "channel",
+    "agent_server.log": "agent_server",
+    "agent_server.json": "agent_server",
+    "full.log": "full",
+    "full.json": "full",
+    "permissions.log": "agent_server",
+}
 
 
-__all__ = ["setup_gateway_logger"]
+def update_gateway_log_levels(
+    log_level: Optional[str] = None,
+    *,
+    console_level: Optional[str] = None,
+    gateway: Optional[str] = None,
+    channel: Optional[str] = None,
+    agent_server: Optional[str] = None,
+    full: Optional[str] = None,
+) -> logging.Logger:
+    """运行时动态更新 gateway 根日志及各 handler 的级别，无需重建 handler。
+
+    Handler 分类只用标准库基类（QueueHandler / FileHandler / StreamHandler）加
+    文件名映射，不依赖装配侧的 handler 子类——独立安装（gateway 自有装配）与
+    共同安装（复用母仓 ``jiuwenswarm`` 树装配）两种形态下同样正确。
+    """
+    levels = _resolve_logging_levels(log_level)
+    overrides = {
+        "console": console_level,
+        "gateway": gateway,
+        "channel": channel,
+        "agent_server": agent_server,
+        "full": full,
+    }
+    for attr, value in overrides.items():
+        if value is not None:
+            levels = replace(levels, **{attr: _parse_log_level(value, getattr(levels, attr))})
+    levels = replace(
+        levels,
+        logger=min(levels.gateway, levels.channel, levels.agent_server, levels.full),
+    )
+
+    root = logging.getLogger("gateway")
+    if not root.handlers and logging.getLogger("jiuwenswarm").handlers:
+        # 共同安装形态：setup_gateway_logger 复用母仓装配，handlers 在母仓树上。
+        root = logging.getLogger("jiuwenswarm")
+
+    def update_handler(h: logging.Handler) -> None:
+        if isinstance(h, QueueHandler):
+            # fan-out 包装（母仓 _QueuedHandler 形态）经 .handlers 递归更新；
+            # 标准单体 QueueHandler 无内嵌 handler，跳过。
+            targets = getattr(h, "handlers", None)
+            if targets:
+                for target in targets:
+                    update_handler(target)
+                h.setLevel(min(target.level for target in targets))
+        elif isinstance(h, logging.FileHandler):
+            attr = _FILE_LEVEL_ATTR_BY_NAME.get(Path(h.baseFilename).name)
+            if attr is not None:
+                h.setLevel(getattr(levels, attr))
+        elif isinstance(h, logging.StreamHandler):
+            h.setLevel(levels.console)
+
+    root.setLevel(levels.logger)
+    for h in root.handlers:
+        update_handler(h)
+    return root
+
+
+def logging_config_row_to_dict(obj: dict[str, Any] | Any) -> dict[str, Any]:
+    """DB 行 / WS payload → logging 配置字典（字段名收口在 openjiuwen_protocol）。"""
+    if isinstance(obj, dict):
+        get = obj.get
+    else:
+        get = lambda key, default=None: getattr(obj, key, default)  # noqa: E731
+    return {
+        key: get(key, "INFO" if key == "level" else None)
+        for key in LOGGING_LEVEL_FIELDS
+    }
+
+
+def apply_logging_config_payload(payload: dict[str, Any] | None) -> None:
+    """DB 行 / WS payload → :func:`update_gateway_log_levels` 调用。"""
+    if not payload or payload.get(LOG_CONFIG_OP_FIELD) == LOG_CONFIG_OP_DELETE:
+        update_gateway_log_levels()
+        return
+    kwargs: dict[str, Any] = {}
+    if payload.get("level") is not None:
+        kwargs["log_level"] = str(payload["level"])
+    for key in LOGGING_LEVEL_FIELDS:
+        if key == "level":
+            continue
+        if payload.get(key) is not None:
+            kwargs[key] = str(payload[key])
+    update_gateway_log_levels(**kwargs)
+
+
+__all__ = [
+    "apply_logging_config_payload",
+    "logging_config_row_to_dict",
+    "setup_gateway_logger",
+    "update_gateway_log_levels",
+]
