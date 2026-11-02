@@ -30,7 +30,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, ClassVar, List, Optional, Tuple, cast
-from urllib.parse import quote_plus
 
 import yaml
 from openjiuwen.core.context_engine.schema.config import CompressionRecallConfig, ContextEngineConfig
@@ -5550,9 +5549,11 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
                 # Fall back to process-default checkpointer so create_instance can proceed.
-                await ensure_persistent_checkpointer()
+                # Use the return value (not a from-imported global): the singleton is
+                # assigned inside checkpoint_db after import time.
+                shared = await ensure_persistent_checkpointer()
                 if self._checkpointer is None:
-                    self._checkpointer = _shared_checkpoint_checkpointer
+                    self._checkpointer = shared
                 self._bind_checkpointer_to_rails()
 
 

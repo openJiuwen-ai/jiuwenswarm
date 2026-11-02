@@ -346,14 +346,20 @@ async def _build_postgresql_async_engine():
         raise
 
 
-async def ensure_persistent_checkpointer() -> None:
-    """Ensure the process-wide default checkpointer uses sqlite / MySQL / PostgreSQL persistence."""
+async def ensure_persistent_checkpointer() -> Any:
+    """Ensure the process-wide default checkpointer uses sqlite / MySQL / PostgreSQL persistence.
+
+    Returns:
+        The process-wide shared checkpointer instance (may be ``None`` only if
+        initialization somehow left the singleton unset after a successful path;
+        failures raise instead).
+    """
     global _PERSISTENT_CHECKPOINTER_READY, _shared_checkpoint_checkpointer
 
     if _PERSISTENT_CHECKPOINTER_READY:
         if _shared_checkpoint_checkpointer is not None:
             CheckpointerFactory.set_default_checkpointer(_shared_checkpoint_checkpointer)
-        return
+        return _shared_checkpoint_checkpointer
 
     t_cp_start = time.perf_counter()
     lock = await _get_persistent_checkpointer_lock()
@@ -374,7 +380,7 @@ async def ensure_persistent_checkpointer() -> None:
         if _PERSISTENT_CHECKPOINTER_READY:
             if _shared_checkpoint_checkpointer is not None:
                 CheckpointerFactory.set_default_checkpointer(_shared_checkpoint_checkpointer)
-            return
+            return _shared_checkpoint_checkpointer
 
         try:
             PersistenceCheckpointerProvider()
@@ -458,3 +464,4 @@ async def ensure_persistent_checkpointer() -> None:
     finally:
         if acquired:
             lock.release()
+    return _shared_checkpoint_checkpointer

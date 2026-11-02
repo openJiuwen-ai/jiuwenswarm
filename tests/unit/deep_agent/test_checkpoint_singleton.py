@@ -132,6 +132,37 @@ def test_gateway_db_pool_kwargs_runtime_env_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_set_checkpoint_falls_back_to_shared_checkpointer(monkeypatch, tmp_path: Path):
+    """Per-agent create failure must degrade to the process-wide singleton."""
+    monkeypatch.delenv("CHECKPOINT_DB_TYPE", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    shared = MagicMock(name="shared_checkpointer")
+    adapter = _make_adapter()
+
+    with patch.object(
+        iface.CheckpointerFactory,
+        "create",
+        new=AsyncMock(side_effect=RuntimeError("disk I/O error")),
+    ), patch.object(
+        iface,
+        "ensure_persistent_checkpointer",
+        new=AsyncMock(return_value=shared),
+    ) as ensure_mock, patch.object(
+        iface,
+        "get_checkpoint_dir",
+        return_value=tmp_path,
+    ), patch.object(
+        adapter,
+        "_bind_checkpointer_to_rails",
+    ) as bind_mock:
+        await adapter.set_checkpoint()
+
+    ensure_mock.assert_awaited_once()
+    assert adapter._checkpointer is shared
+    bind_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_build_mysql_engine_reuses_process_singleton(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
