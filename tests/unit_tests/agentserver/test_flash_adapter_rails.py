@@ -17,6 +17,7 @@ Covers the review findings on PR6431:
   ``try_stop_dreaming`` are no-ops).
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -28,6 +29,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _RailBuildInfo,
 )
+from jiuwenswarm.server.runtime.agent_adapter import interface_flash
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
 )
@@ -77,6 +79,9 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         _info("_permission_rail"),              # in KEEP and PROTECTED
         _info("_disabled_tools_rail"),          # PROTECTED only
         _info("_skill_rail"),                   # in KEEP (skill execution)
+        _info("_skill_evolution_rail"),        # in KEEP (restricted evolution)
+        _info("_evolution_interrupt_rail"),    # in KEEP (restricted evolution)
+        _info("_skill_sleep_rail"),            # in KEEP (restricted evolution)
         _info("_skill_credential_injection_rail"),  # in KEEP
         _info("_skill_active_state_rail"),      # in KEEP（本仓决策：技能链对等保留）
         _info("_skill_authorization_rail"),     # in KEEP（本仓决策：授权门禁保留）
@@ -97,6 +102,9 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         "_permission_rail",
         "_disabled_tools_rail",
         "_skill_rail",
+        "_skill_evolution_rail",
+        "_evolution_interrupt_rail",
+        "_skill_sleep_rail",
         "_skill_credential_injection_rail",
         "_skill_active_state_rail",
         "_skill_authorization_rail",
@@ -147,15 +155,16 @@ def test_skill_execution_rails_are_in_keep():
     prompt injection come from ``_skill_rail`` (SkillUseRail), and skill envs
     (``react.skill_envs`` credentials) from ``_skill_credential_injection_rail``.
     Both must be in the whitelist or flash is a half-state: can install but not
-    run skills (background skill_turbo PPT jobs would fail). Skill *evolution*
-    (SkillEvolutionRail / SkillCreateRail) stays dropped — that is the
-    self-evolution flash excludes by design.
+    run skills (background skill_turbo PPT jobs would fail). Restricted skill
+    self-evolution is kept, while SkillCreate stays outside the Flash profile.
     """
     keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
     assert "_skill_rail" in keep
     assert "_skill_credential_injection_rail" in keep
-    # evolution / create rails are NOT kept (self-evolution, excluded by design).
-    assert "_skill_evolution_rail" not in keep
+    assert "_skill_evolution_rail" in keep
+    assert "_evolution_interrupt_rail" in keep
+    assert "_skill_sleep_rail" in keep
+    # SkillCreate remains excluded from Flash.
     assert "_skill_create_rail" not in keep
 
 
@@ -259,16 +268,246 @@ async def test_update_rails_for_mode_does_not_call_update_agent_rails():
     assert called["n"] == 0
 
 
+@pytest.mark.asyncio
+async def test_flash_reconcile_registers_active_evolution_when_enabled(monkeypatch):
+    """Flash mounts restricted online evolution rails only when opted in."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {
+        "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock())
+    ensure = AsyncMock()
+    unconfigure = AsyncMock()
+    reconcile_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    ensure.assert_awaited_once()
+    unconfigure.assert_not_awaited()
+    reconcile_sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_defaults_keep_skill_sleep_without_online_evolution(monkeypatch):
+    """Flash defaults are closed online evolution and resident SkillSleep."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {}
+    adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    adapter._skill_evolution_rail = object()
+    adapter._evolution_interrupt_rail = object()
+    adapter._skill_sleep_rail = object()
+    ensure = AsyncMock()
+    unconfigure = AsyncMock()
+    reconcile_sleep = AsyncMock()
+    unconfigure_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+    monkeypatch.setattr(adapter, "_unconfigure_skill_sleep_rail", unconfigure_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    ensure.assert_not_awaited()
+    unconfigure.assert_awaited_once()
+    reconcile_sleep.assert_awaited_once()
+    unconfigure_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_does_not_inherit_global_skill_evolution_switch(monkeypatch):
+    """Flash online evolution is opt-in and never falls back to react.evolution."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {
+        "react": {"evolution": {"enabled": True, "skill_evolution": True}},
+        "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    adapter._skill_evolution_rail = object()
+    adapter._evolution_interrupt_rail = object()
+    adapter._skill_sleep_rail = object()
+    ensure = AsyncMock()
+    unconfigure = AsyncMock()
+    reconcile_sleep = AsyncMock()
+    unconfigure_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+    monkeypatch.setattr(adapter, "_unconfigure_skill_sleep_rail", unconfigure_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    ensure.assert_not_awaited()
+    unconfigure.assert_awaited_once()
+    reconcile_sleep.assert_awaited_once()
+    unconfigure_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_can_disable_skill_sleep_independently(monkeypatch):
+    """A Flash-only SkillSleep switch can unload sleep without online rails."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {
+        "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": False}}},
+    }
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
+    adapter._skill_evolution_rail = object()
+    adapter._skill_sleep_rail = object()
+    ensure = AsyncMock()
+    unconfigure_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_skill_sleep_rail", unconfigure_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    ensure.assert_awaited_once()
+    unconfigure_sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_unmounts_evolution_when_disabled(monkeypatch):
+    """A disabled online switch unmounts only online evolution rails."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {
+        "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    adapter._skill_evolution_rail = object()
+    adapter._evolution_interrupt_rail = object()
+    adapter._skill_sleep_rail = object()
+    ensure = AsyncMock()
+    unconfigure = AsyncMock()
+    reconcile_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    ensure.assert_not_awaited()
+    unconfigure.assert_awaited_once()
+    reconcile_sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_unmounts_cold_started_skill_sleep_when_disabled(monkeypatch):
+    """A cold-mounted SkillSleep rail remains resident by Flash default."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {
+        "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    adapter._skill_sleep_rail = object()
+    ensure = AsyncMock()
+    unconfigure = AsyncMock()
+    reconcile_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    ensure.assert_not_awaited()
+    unconfigure.assert_not_awaited()
+    reconcile_sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_isolates_unmount_failures(monkeypatch):
+    """A failed active-rail unmount must not block SkillSleep reconciliation."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {
+        "flash": {"evolution": {"enabled": False, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._instance = SimpleNamespace(unregister_rail=AsyncMock())
+    adapter._skill_evolution_rail = object()
+    adapter._skill_sleep_rail = object()
+    reconcile_sleep = AsyncMock()
+
+    async def fail_active() -> None:
+        raise RuntimeError("active rail unregister failed")
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", AsyncMock())
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", fail_active)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    await adapter._reconcile_flash_evolution_rails()
+
+    reconcile_sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flash_reload_reconcile_does_not_mount_ttse(monkeypatch):
+    """Hot reload keeps Flash on restricted evolution rails and skips TTSE."""
+    adapter = JiuwenSwarmFlashAdapter()
+    restricted = AsyncMock()
+    ensure_ttse = AsyncMock()
+    reconcile_sleep = AsyncMock()
+
+    monkeypatch.setattr(adapter, "_reconcile_flash_evolution_rails", restricted)
+    monkeypatch.setattr(adapter, "_ensure_ttse_rail_registered", ensure_ttse)
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", reconcile_sleep)
+
+    await adapter._reconcile_evolution_rails()
+
+    restricted.assert_awaited_once()
+    ensure_ttse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flash_reconcile_serializes_concurrent_rail_updates(monkeypatch):
+    """Registration and unregister await points must not interleave in Flash."""
+    adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = {
+        "flash": {"evolution": {"enabled": True, "skill_sleep": {"enabled": True}}},
+    }
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock())
+    active = 0
+    observed_max = 0
+
+    async def ensure():
+        nonlocal active, observed_max
+        active += 1
+        observed_max = max(observed_max, active)
+        await asyncio.sleep(0)
+        active -= 1
+
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", AsyncMock())
+    monkeypatch.setattr(adapter, "_reconcile_skill_sleep_rail", AsyncMock())
+
+    await asyncio.gather(
+        adapter._reconcile_flash_evolution_rails(),
+        adapter._reconcile_flash_evolution_rails(),
+    )
+
+    assert observed_max == 1
+
+
 def test_flash_rail_snapshot_is_stable_and_fingerprint_is_stable():
     adapter = object.__new__(JiuwenSwarmFlashAdapter)
     adapter._task_planning_rail = object()
     adapter._memory_rail = object()
     adapter._context_assemble_rail = object()
+    adapter._skill_evolution_rail = object()
+    adapter._evolution_interrupt_rail = object()
+    adapter._skill_sleep_rail = object()
 
     snapshot = adapter._rail_snapshot()
     fingerprint = adapter._profile_fingerprint()
 
-    assert snapshot == "task_planning_rail,context_assemble_rail,memory_rail"
+    assert snapshot == (
+        "task_planning_rail,context_assemble_rail,memory_rail,"
+        "skill_evolution_rail,evolution_interrupt_rail,skill_sleep_rail"
+    )
     assert fingerprint == adapter._profile_fingerprint()
     assert len(fingerprint) == 12
 
@@ -496,7 +735,7 @@ def test_flash_override_keeps_task_loop_false_against_global_skill_create():
     assert react["enable_task_loop"] is False
     assert react["evolution"]["skill_create"] is False
     assert react["evolution"]["review_trigger"] is False
-    assert react["evolution"]["skill_evolution"] is False
+    assert react["evolution"]["skill_evolution"] is True
     # With the overlay applied, task_loop resolves False (no force-revive).
     assert _resolve_enable_task_loop(react, merged) is False
 

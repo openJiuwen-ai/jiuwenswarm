@@ -29,6 +29,10 @@ class RecordingAgent:
 @pytest.fixture
 def flash_memory(monkeypatch):
     config = {
+        # Keep these memory-lifecycle tests focused on their own rails.
+        # SkillSleep now defaults to resident (matching Deep), but it has no
+        # ``kind`` attribute and is independently gated in its own tests.
+        "flash": {"evolution": {"skill_sleep": {"enabled": False}}},
         "memory": {
             "mode": "local",
             "engine": "external",
@@ -42,6 +46,7 @@ def flash_memory(monkeypatch):
     monkeypatch.setattr(interface_deep, "get_config", lambda: config)
     monkeypatch.setattr(memory_module, "get_memory_section", lambda cfg=None: (cfg or config)["memory"])
     adapter = JiuwenSwarmFlashAdapter()
+    adapter._config_cache = config
     adapter._instance = RecordingAgent()
     # Isolate workspace context and built-in memory from the external gates.
     monkeypatch.setattr(adapter, "_ensure_flash_context_rail", AsyncMock())

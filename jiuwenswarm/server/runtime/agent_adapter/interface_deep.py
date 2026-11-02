@@ -1186,6 +1186,14 @@ class JiuWenSwarmDeepAdapter:
         self._avatar_rail: Any = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
+        # Active passive-evolution watcher ownership by (channel_id, session_id).
+        # A resumed request gets a new request-id; the old paused stream's watcher
+        # must be superseded instead of idling until the host timeout.
+        self._evolution_watchers: dict[tuple[str, str], asyncio.Task] = {}
+        # SkillSleep background tasks are tracked separately from passive-evolution
+        # watchers so disabling the evolution switch can stop sleep work without
+        # broadening watcher teardown semantics.
+        self._skill_sleep_tasks: set[asyncio.Task] = set()
         self._ttse_cleanup_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
         self._sys_operation_card: SysOperationCard | None = None
@@ -6566,9 +6574,130 @@ class JiuWenSwarmDeepAdapter:
                 )
 
     def _track_skill_sleep_task(self, task: asyncio.Task) -> None:
-        """Track background sleep tasks with evolution watcher set."""
+        """Track background sleep tasks with the adapter without watcher teardown."""
+        sleep_tasks = getattr(self, "_skill_sleep_tasks", None)
+        if sleep_tasks is None:
+            sleep_tasks = set()
+            self._skill_sleep_tasks = sleep_tasks
+        sleep_tasks.add(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if watcher_tasks is None:
+            watcher_tasks = set()
+            self._evolution_watcher_tasks = watcher_tasks
+        watcher_tasks.add(task)
+        task.add_done_callback(self._on_skill_sleep_task_done)
+
+    def _start_evolution_watcher(
+        self,
+        rid: str,
+        cid: str,
+        session_id: str,
+    ) -> asyncio.Task | None:
+        """Start a passive-evolution watcher owned by channel and session.
+
+        Permission-approved continuation streams use a new request-id. When that
+        continuation reaches stream completion, this method supersedes the old
+        paused request's watcher instead of leaving its idle timer running until
+        timeout. Ownership is scoped to ``(channel_id, session_id)``. Supersession
+        stops only the old watcher; it does not cancel the shared rail's pending
+        evolution work, which may still be serving unrelated sessions.
+        """
+        if self._skill_evolution_rail is None:
+            return None
+
+        key = (str(cid), str(session_id))
+        watchers = getattr(self, "_evolution_watchers", None)
+        if watchers is None:
+            watchers = {}
+            self._evolution_watchers = watchers
+        old_task = watchers.get(key)
+        if old_task is not None and not old_task.done():
+            # The flag is read by the watcher's cancellation handler. A route
+            # handoff must not call ``cancel_pending_evolution()`` because that
+            # SDK method cancels all background tasks on the shared rail.
+            old_task._evolution_watcher_graceful = True  # pylint: disable=protected-access
+            old_task.cancel()
+
+        task = asyncio.create_task(self._watch_evolution_and_push(rid, cid, session_id))
+        watchers[key] = task
         task.add_done_callback(self._on_evolution_watcher_done)
-        self._evolution_watcher_tasks.add(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if watcher_tasks is None:
+            watcher_tasks = set()
+            self._evolution_watcher_tasks = watcher_tasks
+        watcher_tasks.add(task)
+        return task
+
+    async def _cancel_evolution_watchers(self) -> None:
+        """Cancel adapter-owned passive-evolution watcher tasks.
+
+        ``_evolution_watcher_tasks`` is also used to keep SkillSleep background
+        tasks referenceable. Those tasks retain their runner-owned lifecycle and
+        must not be cancelled as a side effect of watcher teardown.
+        """
+        watchers = getattr(self, "_evolution_watchers", None)
+        if not isinstance(watchers, dict):
+            return
+        tasks = set(watchers.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+                if isinstance(watcher_tasks, set):
+                    watcher_tasks.discard(task)
+        watchers.clear()
+
+    def _on_skill_sleep_task_done(self, task: asyncio.Task) -> None:
+        """Discard a completed SkillSleep task and log unexpected failures."""
+        sleep_tasks = getattr(self, "_skill_sleep_tasks", None)
+        if isinstance(sleep_tasks, set):
+            sleep_tasks.discard(task)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if isinstance(watcher_tasks, set):
+            watcher_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SkillSleep background task exception: %s",
+                exc,
+            )
+
+    async def _unconfigure_skill_sleep_rail(self) -> None:
+        """Unmount SkillSleep and stop sleep work when evolution is disabled."""
+        rail = getattr(self, "_skill_sleep_rail", None)
+        tasks = getattr(self, "_skill_sleep_tasks", None)
+        if rail is None and not tasks:
+            return
+
+        pending = set(tasks or set())
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if rail is not None:
+            if self._instance is None:
+                self._skill_sleep_rail = None
+                return
+            unregister = getattr(self._instance, "unregister_rail", None)
+            if not callable(unregister):
+                return
+            try:
+                await unregister(rail)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] SkillSleepRail unregister failed: %s",
+                    exc,
+                )
+                return
+        self._skill_sleep_rail = None
 
     async def _reconcile_skill_sleep_rail(self) -> None:
         """Register SkillSleepRail when it is not mounted yet."""
@@ -7052,29 +7181,43 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             return
 
-        rails = [
-            rail
-            for rail in (self._skill_evolution_rail, self._evolution_interrupt_rail)
-            if rail is not None
-        ]
+        unregistered_rails: list[Any] = []
         try:
             unconfigure_skill_evolution(self._instance, team=False)
-        except AttributeError:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] evolution bulk unconfigure unavailable"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] evolution bulk unconfigure failed: %s",
+                exc,
             )
         unregister = getattr(self._instance, "unregister_rail", None)
         if callable(unregister):
-            for rail in rails:
-                await unregister(rail)
+            for attr_name, rail in (
+                ("_skill_evolution_rail", self._skill_evolution_rail),
+                ("_evolution_interrupt_rail", self._evolution_interrupt_rail),
+            ):
+                if rail is None:
+                    continue
+                try:
+                    await unregister(rail)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] evolution rail unregister failed "
+                        "attr=%s error=%s",
+                        attr_name,
+                        exc,
+                    )
+                    continue
+                setattr(self, attr_name, None)
+                unregistered_rails.append(rail)
+        else:
+            self._skill_evolution_rail = None
+            self._evolution_interrupt_rail = None
         stale_rails = getattr(self._instance, "_stale_rails", None)
         if isinstance(stale_rails, list):
-            removed_ids = {id(rail) for rail in rails}
+            removed_ids = {id(rail) for rail in unregistered_rails}
             self._instance._stale_rails = [  # pylint: disable=protected-access
                 rail for rail in stale_rails if id(rail) not in removed_ids
             ]
-        self._skill_evolution_rail = None
-        self._evolution_interrupt_rail = None
 
     def _refresh_active_evolution_rail_refs(self) -> None:
         """Refresh cached rail references after agent-core runtime configure."""
@@ -8036,8 +8179,8 @@ class JiuWenSwarmDeepAdapter:
                 {"config": config},
             ),
         )
-        # SkillSleepRail is always mounted; per-skill selfEvolution decides
-        # whether a sleep cycle actually runs.
+        # SkillSleepRail is always mounted;
+        # per-skill selfEvolution decides whether a sleep cycle actually runs.
         rail_infos.insert(
             2,
             _RailBuildInfo(
@@ -11677,6 +11820,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        await self._cancel_evolution_watchers()
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
             try:
@@ -17512,11 +17656,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             if self._skill_evolution_rail is not None:
-                task = asyncio.create_task(
-                    self._watch_evolution_and_push(rid, cid, session_id)
-                )
-                task.add_done_callback(self._on_evolution_watcher_done)
-                self._evolution_watcher_tasks.add(task)
+                self._start_evolution_watcher(rid, cid, session_id)
             if self._ttse_rail is not None:
                 ttse_task = asyncio.create_task(
                     self._cleanup_ttse_background_tasks(rid, session_id)
@@ -19373,7 +19513,11 @@ class JiuWenSwarmDeepAdapter:
                     return
         except asyncio.CancelledError:
             try:
-                await _cleanup_evolution_rail(cancel=True)
+                current_task = asyncio.current_task()
+                graceful = bool(
+                    getattr(current_task, "_evolution_watcher_graceful", False)
+                )
+                await _cleanup_evolution_rail(cancel=not graceful)
             finally:
                 raise
         except Exception as exc:
@@ -19406,9 +19550,19 @@ class JiuWenSwarmDeepAdapter:
 
         Discards the task from the tracking set and logs any exception.
         """
-        self._evolution_watcher_tasks.discard(task)
+        watchers = getattr(self, "_evolution_watchers", None)
+        if isinstance(watchers, dict):
+            for key, current_task in list(watchers.items()):
+                if current_task is task:
+                    watchers.pop(key, None)
+        watcher_tasks = getattr(self, "_evolution_watcher_tasks", None)
+        if isinstance(watcher_tasks, set):
+            watcher_tasks.discard(task)
         try:
             task.result()
+        except asyncio.CancelledError:
+            # Supersession and adapter teardown intentionally cancel old watchers.
+            return
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] evolution watcher task exception: %s", exc)
 

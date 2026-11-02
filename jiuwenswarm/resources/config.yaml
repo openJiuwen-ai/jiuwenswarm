@@ -1819,6 +1819,15 @@ flash:
   enabled: ${JIUWENSWARM_FLASH_ENABLED:-false}
   # 必须在模板声明：启动清理及配置合并会删除模板中不存在的字段。
   # 模块可独立删除；这些默认值不启用功能，也不影响其他 Agent mode。
+  # Flash 专属受限技能自演进开关：
+  #   evolution.enabled=false（默认）— Flash 不挂在线被动演进 / HITL 审批 rail，
+  #     不继承全局 react.evolution.enabled，避免升级后静默开启。
+  #   evolution.skill_sleep.enabled=true（默认）— 保持 Deep 的 SkillSleep 常驻契约，
+  #     是否离线训练仍由技能级 selfEvolution 决定；两者独立。
+  evolution:
+    enabled: ${JIUWENSWARM_FLASH_EVOLUTION_ENABLED:-false}
+    skill_sleep:
+      enabled: ${JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED:-true}
   skill_selection:
     enabled: ${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}
     catalog_check_interval_s: 5.0

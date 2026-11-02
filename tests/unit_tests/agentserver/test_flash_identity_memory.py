@@ -44,6 +44,7 @@ def _isolate_other_rails(monkeypatch, adapter):
         "_handle_memory_rail_by_config",
         "_handle_external_memory_rail_by_config",
         "_handle_office_ace_user_profile_rail_by_config",
+        "_reconcile_flash_evolution_rails",
     ):
         monkeypatch.setattr(adapter, name, AsyncMock())
     monkeypatch.setattr(adapter, "_rebind_late_read_rails_to_local", Mock())

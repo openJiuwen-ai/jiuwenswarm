@@ -85,6 +85,8 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         # Flash 部署开关由 config.yaml 占位符读取，任务 overlay 不应屏蔽沙箱启动值。
         "JIUWENSWARM_FLASH_ENABLED",
         "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED",
+        "JIUWENSWARM_FLASH_EVOLUTION_ENABLED",
+        "JIUWENSWARM_FLASH_SKILL_SLEEP_ENABLED",
         # HTTP/SSE service-to-service mTLS.  These values are process-scoped;
         # certificate paths point to files mounted by the deployment layer.
         "JIUWENSWARM_LINK_MTLS_MODE",
