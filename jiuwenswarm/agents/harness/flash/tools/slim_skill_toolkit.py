@@ -17,11 +17,19 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
+from openjiuwen.core.foundation.tool import Tool, ToolCard
 
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 
 logger = logging.getLogger(__name__)
+
+
+def find_install_candidate(items):
+    """Use the same candidate for permission review and installation."""
+    for item in items:
+        if not item.get("installed") and str(item.get("identifier") or "").strip():
+            return item
+    return None
 
 
 class SlimSkillToolkit(SkillToolkit):
@@ -38,7 +46,7 @@ class SlimSkillToolkit(SkillToolkit):
         try:
             result = await super().search_skill(query, source=source, limit=limit)
             if install and result.get("items"):
-                result["install"] = await self._auto_install_best_match(
+                result["install"] = await self.auto_install_best_match(
                     result["items"]
                 )
             elif install:
@@ -51,15 +59,9 @@ class SlimSkillToolkit(SkillToolkit):
             logger.exception("SlimSkillToolkit.search_skill failed")
             return {"success": False, "source": str(source), "items": [], "detail": str(exc)}
 
-    async def _auto_install_best_match(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def auto_install_best_match(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Auto-install the first not-yet-installed item with a non-empty identifier."""
-        top = None
-        for item in items:
-            if item.get("installed"):
-                continue
-            if str(item.get("identifier") or "").strip():
-                top = item
-                break
+        top = find_install_candidate(items)
         if top is None:
             first = items[0]
             return {
@@ -83,7 +85,7 @@ class SlimSkillToolkit(SkillToolkit):
     def get_tools(self) -> List[Tool]:
         """Return only the merged search_skill tool (with install param)."""
 
-        def make_tool(name: str, description: str, input_params: dict, func) -> Tool:
+        def make_tool(name: str, description: str, input_params: dict) -> Tool:
             card = ToolCard(
                 # 共享注册表按 card.id 先到先得：agent 模式 prewarm 先启动
                 # 注册了 stock 版 search_skill，同名 id 的 slim 版永远注册
@@ -94,7 +96,11 @@ class SlimSkillToolkit(SkillToolkit):
                 description=description,
                 input_params=input_params,
             )
-            return LocalFunction(card=card, func=func)
+            from jiuwenswarm.agents.harness.flash.permissions.skill_install import (
+                FlashSkillSearchTool,
+            )
+
+            return FlashSkillSearchTool(card=card, toolkit=self)
 
         return [
             make_tool(
@@ -135,7 +141,6 @@ class SlimSkillToolkit(SkillToolkit):
                     },
                     "required": ["query"],
                 },
-                func=self.search_skill,
             ),
         ]
 

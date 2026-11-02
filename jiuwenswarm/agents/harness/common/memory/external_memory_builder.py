@@ -17,6 +17,7 @@ import os
 from typing import Any, Dict, Optional
 
 from .external_memory_config import (
+    is_cloud_deployment,
     build_openjiuwen_provider_config,
     get_external_memory_config,
 )
@@ -216,16 +217,6 @@ def _build_lakebase_provider(ext_cfg: Dict[str, Any]):
     return provider
 
 
-def _is_cloud_deployment() -> bool:
-    """True if running in cloud deployment form.
-
-    云端（``OFFICE_ACE_DEPLOYMENT=cloud``）与 PC 端（``pc`` 或缺省）的区分：
-    * 云端：记忆搜索走 AgentArts SDK，sync_turn 不上报（由 relay-claw 直报）。
-    * PC 端：记忆搜索走 chat-service appapi，sync_turn 走 pc-threads 上报。
-    """
-    return os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc").strip().lower() == "cloud"
-
-
 def _build_officeace_cloud_provider(
     ext_cfg: Dict[str, Any],
 ):
@@ -257,7 +248,7 @@ def _build_officeace_cloud_provider(
     space_id = oa_cfg.get("space_id") or os.environ.get("AGENTARTS_MEMORY_SPACE_ID", "")
     actor_id = ext_cfg.get("user_id") or ""
 
-    if _is_cloud_deployment():
+    if is_cloud_deployment():
         from openjiuwen.core.memory.external.office_ace_memory_cloud_provider import (
             OfficeAceMemoryCloudProvider,
         )

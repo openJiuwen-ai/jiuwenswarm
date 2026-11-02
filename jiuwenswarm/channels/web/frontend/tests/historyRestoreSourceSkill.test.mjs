@@ -87,3 +87,74 @@ test('history replay without source_skill stays undefined (no fake value)', () =
   assert.ok(execution);
   assert.equal(execution.toolCall.source_skill, undefined);
 });
+
+const PERMISSION_ASK = {
+  role: 'assistant',
+  request_id: 'tool-call-1#1',
+  channel_id: 'web',
+  timestamp: 1757800100,
+  event_type: 'chat.ask_user_question',
+  content: '',
+  source: 'permission_interrupt',
+  questions: [
+    {
+      question: '工具 read_file 需要授权才能执行',
+      options: [{ label: '本次允许' }],
+    },
+  ],
+};
+
+test('answered with stripped hitl suffix clears pending permission card', () => {
+  const { pendingAskUser } = parseHistoryJsonFileToTimelinePreview(
+    [
+      PERMISSION_ASK,
+      {
+        role: 'assistant',
+        request_id: 'tool-call-1',
+        channel_id: 'web',
+        timestamp: 1757800101,
+        event_type: 'chat.ask_user_answered',
+        content: '',
+        status: 'answered',
+      },
+      {
+        role: 'assistant',
+        request_id: 'tool-call-1',
+        channel_id: 'web',
+        timestamp: 1757800102,
+        event_type: 'chat.final',
+        content: '验证完成：read_file 工具可以正常执行。',
+      },
+    ],
+    'cron_perm_1',
+  );
+  assert.equal(pendingAskUser, null);
+});
+
+test('permission ask without answer but with later final does not revive card', () => {
+  const { pendingAskUser } = parseHistoryJsonFileToTimelinePreview(
+    [
+      PERMISSION_ASK,
+      {
+        role: 'assistant',
+        request_id: 'cron-rid',
+        channel_id: 'web',
+        timestamp: 1757800105,
+        event_type: 'chat.final',
+        content: '验证完成：read_file 工具可以正常执行。',
+      },
+    ],
+    'cron_perm_2',
+  );
+  assert.equal(pendingAskUser, null);
+});
+
+test('unanswered permission ask stays pending when run did not continue', () => {
+  const { pendingAskUser } = parseHistoryJsonFileToTimelinePreview(
+    [PERMISSION_ASK],
+    'cron_perm_3',
+  );
+  assert.ok(pendingAskUser);
+  assert.equal(pendingAskUser.request_id, 'tool-call-1#1');
+  assert.equal(pendingAskUser.source, 'permission_interrupt');
+});

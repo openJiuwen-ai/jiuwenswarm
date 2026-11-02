@@ -9,9 +9,15 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.common.workspace.service import WorkspaceService
-from jiuwenswarm.common.workspace.zones import normalize_relative_path
+from jiuwenswarm.common.workspace.zones import (
+    WorkspaceZone,
+    classify_zone,
+    is_deletable,
+    normalize_relative_path,
+)
 
 _DELETABLE_PREFIX = "agent/jiuwenclaw_workspace/projects"
+_UPLOADS_PREFIX = "agent/jiuwenclaw_workspace/uploads"
 
 
 def test_normalize_relative_path_accepts_relative() -> None:
@@ -118,3 +124,39 @@ def test_delete_rejects_path_traversal(tmp_path: Path) -> None:
     result = svc.delete_entries(["../outside"])
     assert result["results"][0]["ok"] is False
     assert result["results"][0]["error"] == "bad_path"
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "zone", "deletable"),
+    [
+        (f"{_UPLOADS_PREFIX}/note.txt", WorkspaceZone.ARTIFACT, True),
+        (f"{_UPLOADS_PREFIX}", WorkspaceZone.ARTIFACT, True),
+        ("agent/jiuwenclaw_workspace/prompt_attachment/a.md", WorkspaceZone.ARTIFACT, True),
+        ("agent/jiuwenclaw_workspace/received_files/b.bin", WorkspaceZone.ARTIFACT, True),
+        ("agent/jiuwenclaw_workspace/skills/SKILL.md", WorkspaceZone.SKILLS, False),
+    ],
+)
+def test_uploads_classified_as_deletable_artifact(
+    relative_path: str,
+    zone: WorkspaceZone,
+    deletable: bool,
+) -> None:
+    assert classify_zone(relative_path) == zone
+    assert is_deletable(relative_path) is deletable
+
+
+def test_delete_enterprise_upload_attachment(tmp_path: Path) -> None:
+    tenant = tmp_path / "tenant"
+    uploads = tenant / "agent" / "jiuwenclaw_workspace" / "uploads"
+    uploads.mkdir(parents=True)
+    target = uploads / "note.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    svc = WorkspaceService(tenant_root=tenant)
+    rel = f"{_UPLOADS_PREFIX}/note.txt"
+    result = svc.delete_entries([rel])
+
+    assert result["results"] == [
+        {"relative_path": rel, "ok": True, "error": None, "freed_bytes": 5}
+    ]
+    assert not target.exists()

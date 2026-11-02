@@ -84,7 +84,7 @@ def test_build_acp_session_update_ignores_symphony_status():
     update = build_acp_session_update(
         _build_message(EventType.CHAT_SYMPHONY_STATUS),
         {
-            "source": "symphony_compose_score",
+            "source": "symphony_compose_graph",
             "operation_id": "call-1",
             "phase": "checking_score",
             "content": "Symphony status",

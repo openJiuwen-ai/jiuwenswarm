@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _get_a2x_config
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
@@ -428,7 +429,7 @@ async def test_reload_reuses_existing_a2x_client_when_config_unchanged(
         ownership_file=False,
     )
     adapter._a2x_client = existing
-    adapter._a2x_config = adapter._get_a2x_config(config_base)
+    adapter._a2x_config = _get_a2x_config(config_base)
 
     monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.a2x.client", fake_module)
 
@@ -460,7 +461,7 @@ async def test_reload_keeps_existing_a2x_client_when_unchanged_registration_fail
         ownership_file=False,
     )
     adapter._a2x_client = existing
-    adapter._a2x_config = adapter._get_a2x_config(config_base)
+    adapter._a2x_config = _get_a2x_config(config_base)
 
     monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.a2x.client", fake_module)
 

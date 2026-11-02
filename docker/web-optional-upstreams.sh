@@ -1,5 +1,5 @@
 #!/bin/sh
-# 按 env 生成 User Web 可选自定义上游(/idp、/manager-api)的 location 片段。
+# 按 env 生成 User Web 运行时配置和可选上游(/idp、/manager-api)片段。
 #
 # 语义对齐 jiuwenswarm/channels/web/app_web.py 的 _dispatch_proxy/_proxy_named_http:
 #   - /idp   精确 → 上游 /;      /idp/x   → 上游 /x(前缀剥离)
@@ -18,6 +18,23 @@
 
 CONF=/etc/nginx/optional-upstreams/user-web-custom.conf
 : > "$CONF"
+
+# 只将校验后的整数注入 HTML，避免非法配置破坏页面脚本或 nginx 配置。
+web_request_timeout_seconds=$(printf '%s' "${WEB_REQUEST_TIMEOUT_SECONDS:-15}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+if [ -z "$web_request_timeout_seconds" ]; then
+    web_request_timeout_seconds=15
+fi
+case "$web_request_timeout_seconds" in
+    *[!0-9]*) web_request_timeout_seconds=invalid ;;
+esac
+if [ "${#web_request_timeout_seconds}" -gt 7 ] ||
+    [ "$web_request_timeout_seconds" = invalid ] ||
+    [ "$web_request_timeout_seconds" -le 0 ] ||
+    [ "$web_request_timeout_seconds" -gt 2147483 ]; then
+    printf '%s\n' '[UserWeb] Invalid WEB_REQUEST_TIMEOUT_SECONDS; using the default of 15 seconds.' >&2
+    web_request_timeout_seconds=15
+fi
+printf "sub_filter '__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS_VALUE__' '%s';\n" "$web_request_timeout_seconds" >> "$CONF"
 
 if [ -n "$USER_WEB_IDP_TARGET" ]; then
     cat >> "$CONF" <<EOF

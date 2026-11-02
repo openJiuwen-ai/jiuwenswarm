@@ -6,6 +6,7 @@ import DatePicker from './DatePicker';
 import { validateCronExpr } from './cronExprValidation';
 import {
   intervalMaxForUnit,
+  intervalMinForUnit,
   isIntervalValueInRange,
   normalizeDigitsInput,
   parseIntervalField,
@@ -428,6 +429,7 @@ export default function ScheduleEditor({
               inputMode="numeric"
               value={intervalNumberText}
               title={t('cron.schedule.intervalRangeHint', {
+                min: intervalMinForUnit(schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours'),
                 max: intervalMaxForUnit(schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours'),
               }) ?? undefined}
               onKeyDown={(e) => {
@@ -485,7 +487,7 @@ export default function ScheduleEditor({
             </div>
             <WeekdayPicker selected={schedule.weekdays ?? []} onToggle={toggleWeekday} />
           </div>
-          {/* 不满足唯一限制条件（1–max 整数）时红字展示该条件；空/过小/过大用同一条文案。 */}
+          {/* 不满足 [min, max] 整数时红字展示该条件；分钟下限是 5，小时下限是 1。空/过小/过大用同一条文案。 */}
           {(() => {
             const unit = schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours';
             const n = unit === 'minutes' ? schedule.everyMinutes : schedule.everyHours;
@@ -493,6 +495,7 @@ export default function ScheduleEditor({
           })() && (
             <p className="text-xs text-danger">
               {t('cron.schedule.intervalRangeHint', {
+                min: intervalMinForUnit(schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours'),
                 max: intervalMaxForUnit(schedule.intervalUnit === 'minutes' ? 'minutes' : 'hours'),
               })}
             </p>

@@ -35,7 +35,6 @@ _IMAGE_EXTENSIONS = frozenset(
         ".webp",
         ".tiff",
         ".tif",
-        ".svg",
         ".ico",
         ".heic",
         ".heif",

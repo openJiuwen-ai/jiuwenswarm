@@ -114,6 +114,29 @@ def _partition_nested_ro_binds(
     return non_nested, nested
 
 
+def _partition_nested_rw_binds(
+    rw_binds: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split ``rw_binds`` into ``(non-nested, nested-under-another-rw)``.
+
+    Mirror image of :func:`_partition_nested_ro_binds`: a nested rw-bind must
+    be emitted *after* its rw ancestor so bwrap's later-wins keeps the more
+    specific mountpoint live. ``directories`` backing binds are contributed by
+    the runtime rather than the policy, so producer order cannot be relied on.
+    Both partitions preserve the original relative order of ``rw_binds``.
+    """
+    rw_dsts = [dst for _, dst in rw_binds]
+    non_nested: list[tuple[str, str]] = []
+    nested: list[tuple[str, str]] = []
+    for bind in rw_binds:
+        dst = bind[1]
+        if any(_is_strict_subpath(dst, other) for other in rw_dsts):
+            nested.append(bind)
+        else:
+            non_nested.append(bind)
+    return non_nested, nested
+
+
 @dataclass
 class BwrapConfig:
     """Configuration that maps to bwrap CLI arguments."""
@@ -514,13 +537,17 @@ class BwrapConfig:
         # bind_root_entries-vs-bind_mounts override contract holds for
         # non-overlapping paths.
         non_nested_ro, nested_ro = _partition_nested_ro_binds(ro_binds, rw_binds)
+        non_nested_rw, nested_rw = _partition_nested_rw_binds(rw_binds)
 
         # read-only binds not nested under a rw parent
         for src, dst in non_nested_ro:
             args.extend(["--ro-bind", src, dst])
 
-        # read-write binds
-        for src, dst in rw_binds:
+        # read-write binds, shallowest first, so the nested per-path binds
+        # below stay live under bwrap's later-wins semantics
+        for src, dst in non_nested_rw:
+            args.extend(["--bind", src, dst])
+        for src, dst in nested_rw:
             args.extend(["--bind", src, dst])
 
         # read-only binds nested under a rw parent — emitted last so the ro

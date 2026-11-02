@@ -15,6 +15,7 @@ import shutil
 import ssl
 import tarfile
 import tempfile
+import time
 import uuid
 import zipfile
 from contextlib import contextmanager
@@ -360,7 +361,6 @@ def _safe_rmtree(path: Path) -> bool:
     if not path.exists():
         return True
 
-    import time
     import stat
 
     max_retries = 3
@@ -528,6 +528,8 @@ class SkillManager:
         self._persist_skills_state = bool(persist_skills_state)
         self._service_id = str(service_id or "").strip() or None
         self._agent_id = str(agent_id or "").strip() or None
+        # 最近一次最外层状态事务的锁等待耗时（state_transaction 写入，装卸埋点读取）
+        self._last_state_lock_wait_ms: float = 0.0
         self._state: dict[str, Any] = self._load_state()
         self._source_registry = SourceRegistry()
         self._register_builtin_skill_sources()
@@ -1041,6 +1043,39 @@ class SkillManager:
         language = str((params or {}).get("language") or "cn").strip() or "cn"
         return await asyncio.to_thread(get_skill_retrieval_tree, self, language=language)
 
+    async def handle_skills_graph_build(self, params: dict) -> dict:
+        """Start a background Skill Graph build."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        value = (params or {}).get("force", False)
+        force = (
+            value.strip().lower() in {"1", "true", "yes", "on"}
+            if isinstance(value, str)
+            else bool(value)
+        )
+        return await get_swarm_symphony_service().start_refresh_graph(force=force)
+
+    async def handle_skills_graph_status(self, params: dict) -> dict:
+        """Return Skill Graph build and freshness status."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return await get_swarm_symphony_service().graph_status()
+
+    async def handle_skills_graph_get(self, params: dict) -> dict:
+        """Return the current published Skill Graph."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return await get_swarm_symphony_service().graph()
+
+    async def handle_skills_graph_cancel(self, params: dict) -> dict:
+        """Cancel the active Skill Graph build while retaining checkpoints."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return await get_swarm_symphony_service().cancel_build()
+
     async def handle_skills_evolution_status(self, params: dict) -> dict:
         """检查某个 skill 是否存在 evolutions.json."""
         name = str(params.get("name") or "").strip()
@@ -1275,7 +1310,6 @@ class SkillManager:
                 "installed_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        self._refresh_agent_data_indexes()
 
         return {"success": True}
 
@@ -1341,8 +1375,6 @@ class SkillManager:
             }
         )
 
-        # 刷新索引
-        self._refresh_agent_data_indexes()
 
         return {"success": True}
 
@@ -1979,7 +2011,6 @@ class SkillManager:
                             "installed_at": datetime.now(timezone.utc).isoformat(),
                         }
                     )
-                    self._refresh_agent_data_indexes()
                     _safe_rmtree(skill_dir)
                     return {
                         "success": True,
@@ -2100,7 +2131,6 @@ class SkillManager:
                 )
 
             skill_file.write_text(content, encoding="utf-8")
-            self._refresh_agent_data_indexes()
             return {"success": True, "path": str(target_dir)}
         except Exception as exc:
             logger.error("Team Skills Hub init 失败: %s", exc)
@@ -2419,6 +2449,9 @@ class SkillManager:
         source_type: str = "user",
     ) -> dict[str, Any]:
         """Atomically replace the entity, then commit the JSON installation record."""
+        _commit_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时，同卸载侧约定，避免跨线程读被覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
         normalized_source_type = str(source_type or "user").strip() or "user"
         if normalized_source_type not in {"user", "prebuilt"}:
             raise ValueError(f"invalid source_type for source install: {source_type}")
@@ -2487,7 +2520,12 @@ class SkillManager:
                 _safe_rmtree(staging)
         if backup.exists():
             _safe_rmtree(backup)
-        self._refresh_agent_data_indexes()
+        logger.info(
+            "[SkillManager] source_install commit name=%s txn_ms=%.1f lock_wait_ms=%.1f",
+            skill_name,
+            (time.perf_counter() - _commit_t0) * 1000.0,
+            _lock_wait_ms,
+        )
         return self._skill_installation_dto(record)
 
     def lookup_skill_md_author(self, skill_name: str) -> str:
@@ -2648,6 +2686,11 @@ class SkillManager:
         source_id = str(params.get("source_id") or "").strip()
         skill_id = str(params.get("skill_id") or "").strip()
         version_id = str(params.get("version_id") or "").strip()
+        logger.info(
+            "[SkillManager] source_install recv source_id=%s skill_id=%s version_id=%s",
+            source_id, skill_id, version_id,
+        )
+        _t0 = time.perf_counter()
         if not source_id or not skill_id or not version_id:
             return self._source_error(
                 "missing_params", "source_id, skill_id and version_id are required"
@@ -2657,12 +2700,19 @@ class SkillManager:
         market_display_name = str(params.get("display_name") or "").strip()[:200]
         market_version = str(params.get("version") or "").strip()[:100]
         market_author = str(params.get("author") or "").strip()[:200]
+        _download_t0 = time.perf_counter()
         try:
             descriptor, body, verification = await self._fetch_verified_source_artifact(
                 source_id=source_id,
                 skill_id=skill_id,
                 version_id=version_id,
                 params=params,
+            )
+            logger.info(
+                "[SkillManager] source_install stage=download source_id=%s cost_ms=%.1f size_bytes=%d",
+                source_id,
+                (time.perf_counter() - _download_t0) * 1000.0,
+                len(body),
             )
             with tempfile.TemporaryDirectory(prefix="jiuwenswarm_source_install_") as tmpdir:
                 tmp_path = Path(tmpdir)
@@ -2729,6 +2779,12 @@ class SkillManager:
                 exc,
             )
             return self._source_error("source_install_failed", str(exc))
+        finally:
+            logger.info(
+                "[SkillManager] source_install done source_id=%s total_ms=%.1f",
+                source_id,
+                (time.perf_counter() - _t0) * 1000.0,
+            )
 
     async def handle_skills_update(self, params: dict) -> dict:
         """Update an installed SkillRef through the same verified install transaction."""
@@ -3127,7 +3183,6 @@ class SkillManager:
                         "installed_at": installed_at,
                     }
                 )
-                self._refresh_agent_data_indexes()
                 return {
                     "success": True,
                     "skill": {
@@ -3292,7 +3347,6 @@ class SkillManager:
                     "installed_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
-            self._refresh_agent_data_indexes()
         except Exception as exc:
             logger.error("SkillNet 写入状态失败: %s", exc)
             self._skillnet_install_jobs[install_id] = {
@@ -3522,11 +3576,40 @@ class SkillManager:
             origin: 可选，技能来源标识（如 ``clawhub:owner/slug``、URL）。提供时按
                 origin 精确定位目录与记录，避免重名技能误删另一个。
         """
-        return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        logger.info(
+            "[SkillManager] uninstall recv name=%s origin=%s",
+            params.get("name", ""), str(params.get("origin", "") or "").strip(),
+        )
+        _t0 = time.perf_counter()
+        try:
+            return await asyncio.to_thread(self._handle_skills_uninstall_sync, params)
+        finally:
+            # done = 请求端到端，与安装侧 done 同口径（含等锁与线程调度）
+            logger.info(
+                "[SkillManager] uninstall done name=%s total_ms=%.1f",
+                params.get("name", ""),
+                (time.perf_counter() - _t0) * 1000.0,
+            )
 
     @_state_transactional
     def _handle_skills_uninstall_sync(self, params: dict) -> dict:
         """Uninstall one skill while holding the workspace state transaction."""
+        _txn_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时：此刻同实例其它事务被本锁
+        # 串行化，该属性不可能被并发覆盖；跨线程在事务外读会被后续事务取值覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
+        try:
+            return self._handle_skills_uninstall_txn_body(params)
+        finally:
+            # txn 行只覆盖事务体（获锁后起计）；lock_wait_ms 单列，供「等锁 vs 真实处理」拆分
+            logger.info(
+                "[SkillManager] uninstall txn name=%s txn_ms=%.1f lock_wait_ms=%.1f",
+                params.get("name", ""),
+                (time.perf_counter() - _txn_t0) * 1000.0,
+                _lock_wait_ms,
+            )
+
+    def _handle_skills_uninstall_txn_body(self, params: dict) -> dict:
         raw_name = params.get("name", "")
         raw_origin = str(params.get("origin", "") or "").strip()
         if not raw_name:
@@ -3614,6 +3697,7 @@ class SkillManager:
                 if dest.resolve() == builtin_skill_path.resolve():
                     return {"success": False, "detail": "内置技能不允许删除"}
 
+        _stage_t0 = time.perf_counter()
         _safe_rmtree(dest)
 
         # 处理 mirror 根目录中的技能
@@ -3621,13 +3705,21 @@ class SkillManager:
             mirror_dest = _safe_child_path(mirror_root, dest.name, "skill")
             if mirror_dest.exists() and mirror_dest.is_dir():
                 _safe_rmtree(mirror_dest)
+        logger.info(
+            "[SkillManager] uninstall stage=rmtree name=%s cost_ms=%.1f",
+            raw_name, (time.perf_counter() - _stage_t0) * 1000.0,
+        )
 
         # 按身份删除记录：origin 优先，避免误删同名另一条
+        _ledger_t0 = time.perf_counter()
         self._remove_installed_plugin(raw_name, origin=raw_origin or None)
         self._remove_local_skill(raw_name, origin=raw_origin or None)
         # 卸载时一并清掉该 skill 的 enabled 配置，避免重装同名 skill 时沿用旧的禁用状态。
         self.remove_skill_config(raw_name)
-        self._refresh_agent_data_indexes()
+        logger.info(
+            "[SkillManager] uninstall stage=ledger name=%s cost_ms=%.1f",
+            raw_name, (time.perf_counter() - _ledger_t0) * 1000.0,
+        )
         return {"success": True}
 
     async def handle_skills_import_local(self, params: dict) -> dict:
@@ -3714,7 +3806,6 @@ class SkillManager:
             return {"success": False, "detail": f"不支持的路径类型: {origin}"}
 
         self._add_local_skill({"name": skill_name, "origin": origin, "source": "local"})
-        self._refresh_agent_data_indexes()
         logger.info(
             "[SkillManager] import_local_from_path done: skill_name=%s origin=%s dest=%s",
             skill_name,
@@ -3800,6 +3891,9 @@ class SkillManager:
         source_url: str,
     ) -> dict[str, Any]:
         """Commit the user Skill entity and ledger record in one transaction."""
+        _commit_t0 = time.perf_counter()
+        # 在事务体内（同线程、持锁中）读取锁等待耗时，同卸载侧约定，避免跨线程读被覆盖。
+        _lock_wait_ms = self._last_state_lock_wait_ms
         existing = self._find_skill_installation(name=skill_name)
         if existing is not None:
             existing_type = str(existing.get("source_type") or "").strip()
@@ -3867,6 +3961,12 @@ class SkillManager:
                 "error_code": "state_write_failed",
                 "error_message": str(exc)[:500],
             }
+        logger.info(
+            "[SkillManager] enterprise_install commit name=%s txn_ms=%.1f lock_wait_ms=%.1f",
+            installed_name,
+            (time.perf_counter() - _commit_t0) * 1000.0,
+            _lock_wait_ms,
+        )
         return {
             "success": True,
             "skill": {"name": installed_name, "version": skill_version},
@@ -3874,6 +3974,21 @@ class SkillManager:
 
     async def handle_skills_web_install(self, params: dict) -> dict:
         """企业 Web 安装兼容入口：下载、校验、落盘并提交 workspace JSON。"""
+        url = str(params.get("url") or "").strip()
+        logger.info("[SkillManager] enterprise_install recv url=%s", url)
+        _t0 = time.perf_counter()
+        try:
+            return await self._handle_skills_web_install_body(params)
+        finally:
+            # done = 请求端到端（含等锁与下载），失败早退路径也打，与 source_install finally 口径一致
+            logger.info(
+                "[SkillManager] enterprise_install done url=%s total_ms=%.1f",
+                url,
+                (time.perf_counter() - _t0) * 1000.0,
+            )
+
+    async def _handle_skills_web_install_body(self, params: dict) -> dict:
+        """下载、校验、落盘并提交的实际执行体（recv/done 计时由 handler 层负责）。"""
         from jiuwenswarm.agents.harness.common.installed_skill import (
             verify_skill_download_hmac,
         )
@@ -3896,6 +4011,7 @@ class SkillManager:
                 "error_message": "service_id and agent_id are required",
             }
 
+        _download_t0 = time.perf_counter()
         try:
             content = await asyncio.to_thread(self._download_web_skill_bytes, url)
         except Exception as exc:  # noqa: BLE001
@@ -3905,6 +4021,11 @@ class SkillManager:
                 "error_code": "download_failed",
                 "error_message": str(exc)[:500],
             }
+        logger.info(
+            "[SkillManager] enterprise_install stage=download cost_ms=%.1f size_bytes=%d",
+            (time.perf_counter() - _download_t0) * 1000.0,
+            len(content),
+        )
 
         # 签名可选：有则验 HMAC；无则跳过验签直接解压安装
         if signature and not verify_skill_download_hmac(content, signature):
@@ -3984,6 +4105,13 @@ class SkillManager:
         origin = str(params.get("origin") or "").strip()
         installation = self._find_web_uninstall_installation(name=name, origin=origin)
         if installation is None:
+            logger.warning(
+                "[SkillManager] web uninstall not found: service_id=%s agent_id=%s name=%s origin=%s",
+                service_id,
+                agent_id,
+                name,
+                origin,
+            )
             return {
                 "success": False,
                 "error_code": "not_found",
@@ -4065,17 +4193,21 @@ class SkillManager:
                 raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
             return body
 
-        artifact_bytes = _download_with_requests()
+        artifact_bytes = await asyncio.to_thread(_download_with_requests)
 
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_local_") as tmpdir:
             tmp_path = Path(tmpdir)
-            logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
-            self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
-            skill_dir = self._locate_skill_dir(tmp_path)
-            if skill_dir is None:
-                return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
-            logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
-            return self._import_local_from_path(skill_dir, force=force, origin=download_url)
+
+            def _extract_and_import() -> dict:
+                logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
+                self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
+                skill_dir = self._locate_skill_dir(tmp_path)
+                if skill_dir is None:
+                    return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
+                logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
+                return self._import_local_from_path(skill_dir, force=force, origin=download_url)
+
+            return await asyncio.to_thread(_extract_and_import)
 
     async def handle_skills_marketplace_add(self, params: dict) -> dict:
         """添加 marketplace 源.
@@ -4773,85 +4905,6 @@ class SkillManager:
         except Exception:
             return []
         return mirrors
-
-    @staticmethod
-    def _normalize_lang_suffix(name: str) -> str:
-        """将 xxxx_zh.MD / xxxx_en.MD 规范为 xxxx.MD（去除 _zh/_en 后缀）。"""
-        stem, suffix = name.rpartition(".")[0], name.rpartition(".")[2]
-        suffix_lower = suffix.lower()
-        if suffix_lower in ("md", "mdx"):
-            stem_lower = stem.lower()
-            if stem_lower.endswith("_zh"):
-                stem = stem[:-3]
-            elif stem_lower.endswith("_en"):
-                stem = stem[:-3]
-        return f"{stem}.{suffix}" if stem else name
-
-    @staticmethod
-    def _generate_agent_data_for_workspace(workspace_root: Path) -> None:
-        """Generate agent/jiuwenclaw_workspace/agent-data.json from agent tree."""
-        agent_root = workspace_root.resolve()
-        output_path = (agent_root / "agent-data.json").resolve()
-        root_folder_key = "__root__"
-
-        if not agent_root.exists() or not agent_root.is_dir():
-            return
-
-        folder_data: dict[str, list[dict[str, str | bool]]] = {}
-        seen_paths: dict[str, set[str]] = {}
-        for entry in sorted(agent_root.rglob("*")):
-            if not entry.is_file() or entry.name.startswith("."):
-                continue
-            # Skip files in hidden directories (e.g., .agent_history)
-            if any(part.startswith(".") for part in entry.relative_to(agent_root).parts):
-                continue
-            relative_folder_path = entry.parent.relative_to(agent_root.parent).as_posix()
-            folder_key = root_folder_key if relative_folder_path == "." else relative_folder_path
-
-            display_name = SkillManager._normalize_lang_suffix(entry.name)
-            display_path = (
-                f"agent/{relative_folder_path}/{display_name}".replace("/.", "/").replace("//", "/")
-                if relative_folder_path != "."
-                else f"agent/{display_name}"
-            )
-
-            seen = seen_paths.setdefault(folder_key, set())
-            if display_path in seen:
-                continue
-            seen.add(display_path)
-
-            folder_data.setdefault(folder_key, []).append(
-                {
-                    "name": display_name,
-                    "path": display_path,
-                    "isMarkdown": entry.suffix.lower() in {".md", ".mdx"},
-                }
-            )
-
-        sorted_folder_data = {
-            folder_key: sorted(files, key=lambda item: item["path"])
-            for folder_key, files in sorted(folder_data.items(), key=lambda item: item[0])
-        }
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(sorted_folder_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def _refresh_agent_data_indexes(self) -> None:
-        """Refresh agent-data.json for runtime and mirror workspaces."""
-        workspace_roots: set[Path] = {self._agent_root.resolve()}
-        for mirror_root in self._get_mirror_skills_dirs():
-            try:
-                # mirror_root = .../agent/skills → agent 根目录为其 parent
-                workspace_roots.add(mirror_root.parent.resolve())
-            except Exception:
-                continue
-        for workspace_root in workspace_roots:
-            try:
-                self._generate_agent_data_for_workspace(workspace_root)
-            except Exception as exc:
-                logger.warning("重建 agent-data.json 失败: agent_root=%s error=%s", workspace_root, exc)
 
     @staticmethod
     def _locate_skill_dir(path: Path) -> Path | None:
@@ -5956,8 +6009,12 @@ class SkillManager:
         if not is_enterprise() or not self._persist_skills_state:
             yield
             return
+        _lock_wait_t0 = time.perf_counter()
         with enterprise_skill_state_lock(self._state_file) as outermost:
             if outermost:
+                # 最近一次最外层事务的锁等待耗时（进程 RLock + 跨 Pod portalocker），
+                # 供装卸类请求埋点区分「等锁」与「真实处理」。
+                self._last_state_lock_wait_ms = (time.perf_counter() - _lock_wait_t0) * 1000.0
                 self._state = self._load_state()
             yield
 
@@ -6197,6 +6254,8 @@ class SkillManager:
         ``installed_plugins.origin`` 精确命中优先。旧 skillhub 记录把 origin
         只写在 ``local_skills`` 上，插件行没有 origin；这时仅当本地记录的 name
         与请求一致、且插件行 origin 为空时才认领，并带上本地 origin 供后续按身份删除。
+        半安装脏数据可能只有 ``local_skills``、没有 ``installed_plugins``：在
+        name+origin 已唯一命中本地记录时，合成一条 user 安装记录继续卸载。
         插件行已有别的 origin，或 origin 在两本账里都不存在时，不按 name 回退。
         """
         if not origin:
@@ -6224,6 +6283,21 @@ class SkillManager:
             record_origin = str(record.get("origin") or "").strip()
             if record_name == name and not record_origin:
                 candidates.append(record)
+        # 兼容 installed_plugins 无该 origin（甚至无同名空 origin 行）时，按 local_skills 兜底
+        if not candidates:
+            local = local_matches[0]
+            resolved_name = str(local.get("name") or name).strip()
+            resolved_origin = str(local.get("origin") or origin).strip()
+            logger.warning(
+                "only local_skills has skill: name=%s origin=%s",
+                resolved_name,
+                resolved_origin,
+            )
+            return {
+                "name": resolved_name,
+                "origin": resolved_origin,
+                "source_type": "user",
+            }
         if len(candidates) != 1:
             return None
         resolved = dict(candidates[0])
@@ -6561,7 +6635,6 @@ class SkillManager:
 
         builtin_dir = get_builtin_skills_dir()
         builtin_exists = builtin_dir.exists()
-        changed = False
 
         for child in self._skills_dir.iterdir():
             if not child.is_dir() or child.name.startswith("_"):
@@ -6597,10 +6670,6 @@ class SkillManager:
             )
             registered_origins.add(inferred_origin)
             registered_names.add(name)
-            changed = True
-
-        if changed:
-            self._refresh_agent_data_indexes()
 
     @staticmethod
     def _is_builtin_installation_record(record: dict[str, Any]) -> bool:
@@ -6735,7 +6804,6 @@ class SkillManager:
 
         self._drop_builtin_state_records(removed_record_ids, removed_names)
         self._save_state()
-        self._refresh_agent_data_indexes()
 
     def _apply_enabled_config(
         self,

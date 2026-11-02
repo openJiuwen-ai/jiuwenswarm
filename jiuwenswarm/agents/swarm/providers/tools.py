@@ -43,7 +43,7 @@ from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
     JiuwenHarnessFetchWebpageTool,
     JiuwenHarnessWebSearchTool,
 )
-from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
+from jiuwenswarm.agents.harness.common.tools.image_tools import _ensure_image_dependencies, generate_image
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
@@ -97,6 +97,9 @@ from jiuwenswarm.common.tool_ownership import mark_stateless
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 logger = logging.getLogger(__name__)
+
+# Swarm retains eager image setup; only actual Flash adapters defer it.
+_ensure_image_dependencies()
 
 # Provider name constants; namespaced under the shared "swarm." prefix.
 SKILL_TOOLKIT = "swarm.skill_toolkit"
@@ -303,12 +306,35 @@ def vision_model_config_params(config: dict[str, Any]) -> dict[str, Any]:
     ).strip()
     if not api_key or not base_url or not model_name:
         return {}
-    return {
+    # Session-mode accounts authenticate via VISION_DEFAULT_HEADERS (e.g. Basic
+    # auth injected by the relay); parse it so team/member agents keep vision
+    # authentication (mirrors the single-agent build in interface_deep).
+    headers_raw = _tip_getenv("VISION_DEFAULT_HEADERS")
+    default_headers: dict[str, str] | None = None
+    if headers_raw:
+        try:
+            parsed_headers = json.loads(headers_raw)
+            if isinstance(parsed_headers, dict) and parsed_headers:
+                default_headers = {str(k): str(v) for k, v in parsed_headers.items()}
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "VISION_DEFAULT_HEADERS is set but malformed (JSON parse failed: %s) "
+                "— auth headers dropped; session-mode vision calls will likely 401",
+                exc,
+            )
+            default_headers = None
+    params: dict[str, Any] = {
         "api_key": api_key,
         "base_url": base_url,
         "model": model_name,
         "max_retries": _parse_int(_tip_getenv("VISION_MAX_RETRIES"), 3),
     }
+    # 仅在有值时才传 default_headers：VisionModelConfig 的 dataclass default 是 None，
+    # 不传等价于传 None；但无条件传该键在依赖版本尚未包含该字段（联动合并顺序
+    # 失控）时会 TypeError——与 interface_deep._build_vision_model_config 的兜底对称。
+    if default_headers is not None:
+        params["default_headers"] = default_headers
+    return params
 
 
 def audio_dedicated_configured(config: dict[str, Any]) -> bool:

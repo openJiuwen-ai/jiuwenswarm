@@ -2,12 +2,15 @@ import { create } from 'zustand';
 import {
   buildCronJobFingerprintMap,
   detectCronJobRunUpdates,
+  resolveOpenCronHistoryRefresh,
   type CronJobRunFingerprint,
 } from '../features/cron/cronJobSync';
+import { settleCronSessionRuntime } from '../features/cron/cronLiveWatch';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
 import { webRequest } from '../services/webClient';
 import type { Session } from '../types';
 import { useChatStore } from './chatStore';
+import { useSessionStore } from './sessionStore';
 
 export interface SidebarCronJob {
   id: string;
@@ -45,9 +48,8 @@ interface CronState {
   // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由
   lastRunSessionId: Record<string, string>;
   setLastRunSessionId: (jobId: string, sessionId: string) => void;
-  // 轮询检测到「当前正打开会话 == 某 job 新 last_session_id」时，投递一次历史刷新请求。
-  // 企业版 HTTP 无 cron 结果 push，立即执行跳转后 skipHistoryLoad，消息两头落空；
-  // 这里用 30s 轮询作为兜底：命中就把 session_id 交给 App.tsx 触发 startHistoryRestore。
+  // 企业版 HTTP 无 cron 结果 push。30s 轮询发现任务跑完后，若当前窗口属于这次任务
+  // （含连续执行时已被下一次盖住的上一个 cron_*），投递一次历史刷新。
   pendingActiveHistoryRefresh: string | null;
   requestActiveHistoryRefresh: (sessionId: string) => void;
   consumeActiveHistoryRefresh: () => string | null;
@@ -76,6 +78,20 @@ function persistCronUnread(state: Record<string, boolean>) {
   queueMicrotask(() => {
     try { localStorage.setItem('jiuwenswarm_cron_unread', JSON.stringify(state)); } catch { /* ignore */ }
   });
+}
+
+function cronIdOfSession(sessionId: string): string {
+  const sid = sessionId.trim();
+  if (!sid) {
+    return '';
+  }
+  const sessionState = useSessionStore.getState();
+  const current = sessionState.currentSession;
+  if (current?.session_id === sid) {
+    return (current.cron_id || '').trim();
+  }
+  const listed = sessionState.sessions.find((item) => item.session_id === sid);
+  return (listed?.cron_id || '').trim();
 }
 
 async function fetchWebCronJobs(): Promise<SidebarCronJob[]> {
@@ -137,6 +153,15 @@ export const useCronStore = create<CronState>((set, get) => ({
         isLoading: false,
         runSyncFingerprints: buildCronJobFingerprintMap(webJobs),
       });
+      // CronPanel 约 5s 静默刷新会走这里；比 30s syncJobRuns 更快收口漏掉的 processing。
+      const activeSid = (useChatStore.getState().activeSessionId || '').trim();
+      for (const job of webJobs) {
+        const lastSid = (job.last_session_id ?? '').trim();
+        if (!lastSid) continue;
+        if (settleCronSessionRuntime(lastSid) && lastSid === activeSid) {
+          get().requestActiveHistoryRefresh(lastSid);
+        }
+      }
     } catch {
       set({ jobs: [], isLoading: false, runSyncFingerprints: {} });
     }
@@ -153,28 +178,55 @@ export const useCronStore = create<CronState>((set, get) => ({
         runSyncFingerprints: nextFingerprints,
       });
 
-      const activeSessionId = useChatStore.getState().activeSessionId;
+      const activeSessionId = (useChatStore.getState().activeSessionId || '').trim();
       const projectIdsToRefresh = new Set<string>();
+
+      // last_session_id 在 agent stream 返回后回写 = 该趟已结束/进审批。
+      // 连点立即执行切走时 live 可能漏收尾；这里收口仍标 processing 的 UI
+      // （pendingQuestion 时 settle 内部会跳过）。
+      for (const job of webJobs) {
+        const lastSid = (job.last_session_id ?? '').trim();
+        if (!lastSid) continue;
+        if (settleCronSessionRuntime(lastSid) && lastSid === activeSessionId) {
+          get().requestActiveHistoryRefresh(lastSid);
+        }
+      }
 
       for (const jobId of updatedJobIds) {
         const job = webJobs.find((item) => item.id === jobId);
         const lastSid = (job?.last_session_id ?? '').trim();
         const projectId = job?.project_id || 'default';
+        const prevLastSid = (previous[jobId]?.lastSessionId || '').trim();
+        const rememberedSid = (get().lastRunSessionId[jobId] || '').trim();
+        // 上一趟会话也可能卡在 processing（指纹已从旧 sid 跳到新 sid）。
+        if (prevLastSid && prevLastSid !== lastSid) {
+          settleCronSessionRuntime(prevLastSid);
+        }
+        if (rememberedSid && rememberedSid !== lastSid) {
+          settleCronSessionRuntime(rememberedSid);
+        }
         // 侧栏会话组读 projectCronSessions。本函数只挂在企业版 HTTP 的 30s 轮询上，
         // 个人版 WS 推送不走这里。
         projectIdsToRefresh.add(projectId);
-        // 当前正打开的会话恰好是这次新产生的 cron 会话：企业版 HTTP 无 push，
-        // 立即执行跳转后 skipHistoryLoad，消息两头落空。这里用轮询兜底——
-        // 投递一次历史刷新请求，并直接清掉蓝点（消息即将实打实显示出来）。
-        if (lastSid && activeSessionId && lastSid === activeSessionId) {
+        // 正看着的 cron_* 属于这个任务时再读一次历史。最新会话被下一次执行盖住时，
+        // 仍刷新当前窗口，避免必须手动刷新才看得到已落盘的回复。
+        const refreshSid = resolveOpenCronHistoryRefresh({
+          jobId,
+          lastSessionId: lastSid,
+          activeSessionId,
+          activeCronId: cronIdOfSession(activeSessionId),
+          rememberedRunSessionId: rememberedSid,
+        });
+        const viewingLatest = Boolean(lastSid && activeSessionId && lastSid === activeSessionId);
+        if (viewingLatest) {
           get().clearCronJobUnread(jobId);
-          get().requestActiveHistoryRefresh(lastSid);
-          if (job) {
-            void get().loadCronSessions(projectId, jobId);
-          }
-          continue;
+        } else {
+          get().markCronJobUnread(jobId);
         }
-        get().markCronJobUnread(jobId);
+        // cron 进行中 restore 会 keep-live，可安全补任务内容 user 消息。
+        if (refreshSid) {
+          get().requestActiveHistoryRefresh(refreshSid);
+        }
         if (job) {
           void get().loadCronSessions(projectId, jobId);
         }

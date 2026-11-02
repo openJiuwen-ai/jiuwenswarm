@@ -26,14 +26,22 @@ from openjiuwen.harness.rails import (
     TeamSkillEvolutionRail,
     TeamSkillCreateRail,
 )
+from openjiuwen.core.context_engine.processor.compressor import FullCompactProcessorConfig
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 from openjiuwen.harness.rails.context_engineer import ContextProcessorRail
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
+from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail import (
+    ContextOverflowRecoveryRail,
+)
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.agents.harness.team.rails.team_admission_rail import (
+    build_team_admission_rail,
+    resolve_team_section_for_admission,
+)
 from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail import TeamWorkspaceReportPathRail
 from jiuwenswarm.common.config import (
     get_config,
@@ -92,6 +100,8 @@ RAIL_WHITELIST = frozenset({
     "SkillEvolutionRail",
     "TeamWorkspaceReportPathRail",
     "ContextProcessorRail",
+    "ContextOverflowRecoveryRail",
+    "TeamAdmissionRail",
 })
 
 TOOL_WHITELIST = frozenset({
@@ -361,11 +371,13 @@ def build_member_rails(
                 logger.warning("[TeamRuntime] EvolutionInterruptRail failed: %s", exc, exc_info=True)
             rails_list.append(evo_rail)
 
-    # Context compression rail for all members (leader + teammates).
+    # Context compression + overflow recovery for all members (leader + teammates).
     # ``config`` here is the full config.yaml mapping (hot-reload path passes
     # ``get_config()``); strip the ``react`` outer key so the rail builder sees
     # the same ``{"context_engine_config": ...}`` shape the swarm provider path
     # passes (see member_rails._build_context_processor).
+    # Align with single-agent: FullCompact + ContextOverflowRecoveryRail so Team
+    # members can recover from 413 / context-window overflow the same way.
     if get_context_engine_enabled(config):
         react = config.get("react", {}) if isinstance(config, dict) else {}
         react = react if isinstance(react, dict) else {}
@@ -374,6 +386,21 @@ def build_member_rails(
         )
         if rail is not None:
             rails_list.append(rail)
+        overflow_rail = _build_context_overflow_recovery_rail()
+        if overflow_rail is not None:
+            rails_list.append(overflow_rail)
+
+    # Process-wide LLM admission (especially when enable_swarmflow is false).
+    # Pass team_id so multi-entry modes.team cannot bind A to B's limit via
+    # dict-order heuristics (see resolve_team_section_for_admission).
+    admission_rail = build_team_admission_rail(
+        resolve_team_section_for_admission(
+            config if isinstance(config, dict) else None,
+            team_key=team_id,
+        )
+    )
+    if admission_rail is not None:
+        rails_list.append(admission_rail)
 
     logger.info("[TeamRuntime] Total rails built: %d", len(rails_list))
     return rails_list
@@ -582,6 +609,34 @@ def get_context_engine_enabled(config: dict[str, Any] | None) -> bool:
     return True
 
 
+def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Align with ``interface_deep._resolve_session_memory_config``."""
+    raw_config = (
+        context_engine_cfg.get("session_memory_config")
+        or context_engine_cfg.get("session_memory")
+    )
+    if raw_config is True:
+        return {}
+    if isinstance(raw_config, dict):
+        return raw_config
+    return None
+
+
+def _build_context_overflow_recovery_rail() -> ContextOverflowRecoveryRail | None:
+    """Build ContextOverflowRecoveryRail for Team members (same as single Agent)."""
+    try:
+        rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
+        logger.info("[TeamRuntime] ContextOverflowRecoveryRail created")
+        return rail
+    except Exception as exc:
+        logger.warning(
+            "[TeamRuntime] ContextOverflowRecoveryRail creation failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
 def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProcessorRail | None:
     """Build a preset ContextProcessorRail for team members with user config thresholds.
 
@@ -594,23 +649,30 @@ def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProce
     * ``member_rails._build_context_processor`` (swarm provider) bakes the
       section into ``ContextProcessorInput`` at spec-build time.
 
-    Mirrors :func:`interface_deep._build_context_processor_rail`, which takes the
-    same shape (the ``react`` section itself).
+    Mirrors :func:`interface_deep._build_context_processor_rail` (including
+    SessionMemoryCompressor, FullCompactProcessor, and ``session_memory=``).
     """
     try:
         from typing import List, Tuple
 
         from openjiuwen.harness.prompts import resolve_language
 
-        user_processors: List[Tuple[str, dict]] = []
+        user_processors: List[Tuple[str, Any]] = []
         ctx_cfg: dict[str, Any] = {}
         if isinstance(config, dict):
             raw = config.get("context_engine_config", {})
             ctx_cfg = raw if isinstance(raw, dict) else {}
 
+        session_memory_cfg = _resolve_session_memory_config(ctx_cfg)
+
         offloader_cfg = ctx_cfg.get("message_summary_offloader_config", {})
         if isinstance(offloader_cfg, dict) and offloader_cfg:
             user_processors.append(("MessageSummaryOffloader", offloader_cfg))
+
+        # 会话记忆：preset 链中默认为禁用，此处用配置覆盖启用（与单 Agent 对齐）
+        session_memory_compressor_cfg = ctx_cfg.get("session_memory_compressor_config", {})
+        if isinstance(session_memory_compressor_cfg, dict) and session_memory_compressor_cfg:
+            user_processors.append(("SessionMemoryCompressor", session_memory_compressor_cfg))
 
         compressor_cfg = ctx_cfg.get("dialogue_compressor_config", {})
         if isinstance(compressor_cfg, dict) and compressor_cfg:
@@ -623,6 +685,14 @@ def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProce
         round_level_cfg = ctx_cfg.get("round_level_compressor_config", {})
         if isinstance(round_level_cfg, dict) and round_level_cfg:
             user_processors.append(("RoundLevelCompressor", round_level_cfg))
+
+        # 兜底压缩：413/溢出时由 ContextOverflowRecoveryRail 触发 force_compact。
+        # FullCompactProcessor 不在 0.1.16 preset 链中，必须传完整 BaseModel 实例。
+        full_compact_cfg = ctx_cfg.get("full_compact_processor_config", {})
+        if isinstance(full_compact_cfg, dict) and full_compact_cfg:
+            user_processors.append(
+                ("FullCompactProcessor", FullCompactProcessorConfig(**full_compact_cfg))
+            )
 
         reasoning_loop_cfg = ctx_cfg.get("reasoning_tool_loop_compact_config", {})
         if isinstance(reasoning_loop_cfg, dict) and reasoning_loop_cfg:
@@ -637,11 +707,13 @@ def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProce
         rail = ContextProcessorRail(
             processors=user_processors if user_processors else None,
             preset=True,
+            session_memory=session_memory_cfg,
         )
         logger.info(
             "[TeamRuntime] ContextProcessorRail created (preset=True), "
-            "user_processors=%s",
+            "user_processors=%s session_memory=%s",
             [p[0] for p in user_processors] if user_processors else "none",
+            "enabled" if isinstance(session_memory_cfg, dict) else "disabled",
         )
         return rail
     except Exception as exc:

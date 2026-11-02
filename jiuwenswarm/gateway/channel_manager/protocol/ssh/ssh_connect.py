@@ -17,6 +17,9 @@ from typing import Any, Callable
 
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from jiuwenswarm.extensions.agentos.auth.ssh_authenticator import SshPublicKeyAuthenticator
+from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import AgentOSSshKeyIssuer, SshKeyIssuer
+from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
 from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
 from jiuwenswarm.gateway.channel_manager.protocol.ssh.server import SSHAgentHooks, SSHProxy
 
@@ -49,6 +52,25 @@ class SshRelaySession:
 
 
 @dataclass
+class SshAuthConfig:
+    """SSH Channel public-key authentication settings."""
+
+    enabled: bool = False
+    ephemeral_key_ttl_sec: float = 300.0
+    ephemeral_key_type: str = "ssh-ed25519"
+    cleanup_interval_sec: float = 60.0
+
+    @classmethod
+    def from_dict(cls, conf: dict[str, Any]) -> "SshAuthConfig":
+        return cls(
+            enabled=bool(conf.get("enabled", False)),
+            ephemeral_key_ttl_sec=float(conf.get("ephemeral_key_ttl_sec", 300.0)),
+            ephemeral_key_type=str(conf.get("ephemeral_key_type") or "ssh-ed25519"),
+            cleanup_interval_sec=float(conf.get("cleanup_interval_sec", 60.0)),
+        )
+
+
+@dataclass
 class SshChannelConfig:
     """SSH server channel configuration."""
 
@@ -57,6 +79,7 @@ class SshChannelConfig:
     listen_port: int = 2222
     host_key_path: str = ""
     relay_timeout_sec: float = 3600.0
+    auth: SshAuthConfig = field(default_factory=SshAuthConfig)
 
     def to_proxy_config(self):
         raw = {
@@ -68,12 +91,14 @@ class SshChannelConfig:
 
     @classmethod
     def from_dict(cls, conf: dict[str, Any]) -> "SshChannelConfig":
+        auth_raw = conf.get("auth")
         return cls(
             enabled=bool(conf.get("enabled", False)),
             listen_host=str(conf.get("listen_host", "0.0.0.0")),
             listen_port=int(conf.get("listen_port", 2222)),
             host_key_path=str(conf.get("host_key_path") or ""),
             relay_timeout_sec=float(conf.get("relay_timeout_sec", 3600.0)),
+            auth=SshAuthConfig.from_dict(auth_raw if isinstance(auth_raw, dict) else {}),
         )
 
 
@@ -91,13 +116,26 @@ class SshChannel(BaseChannel):
 
     name = "ssh"
 
-    def __init__(self, config: SshChannelConfig, router: RobotMessageRouter):
+    def __init__(
+        self,
+        config: SshChannelConfig,
+        router: RobotMessageRouter,
+        key_registry: KeyRegistry | None = None,
+    ):
         super().__init__(config, router)
         self.config: SshChannelConfig = config
         self._proxy: SSHProxy | None = None
         self._running = False
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._sessions: dict[str, _SshSession] = {}
+        self._key_registry = key_registry or KeyRegistry()
+        self._authenticator = SshPublicKeyAuthenticator(self._key_registry)
+        self._key_issuer = AgentOSSshKeyIssuer(
+            self._key_registry,
+            key_type=str(config.auth.ephemeral_key_type or "ssh-ed25519"),
+        )
+        self._auth_enabled = bool(config.auth.enabled)
+        self._cleanup_task: asyncio.Task[Any] | None = None
 
     @property
     def channel_id(self) -> str:
@@ -106,6 +144,18 @@ class SshChannel(BaseChannel):
     @property
     def clients(self) -> set[Any]:
         return set(self._sessions.keys())
+
+    @property
+    def key_registry(self) -> KeyRegistry:
+        return self._key_registry
+
+    @property
+    def authenticator(self) -> SshPublicKeyAuthenticator:
+        return self._authenticator
+
+    @property
+    def key_issuer(self) -> SshKeyIssuer:
+        return self._key_issuer
 
     def on_message(self, callback: Callable[[Message], None]) -> None:
         self._on_message_cb = callback
@@ -118,23 +168,71 @@ class SshChannel(BaseChannel):
             return
 
         hooks = self._build_agent_hooks()
-        self._proxy = SSHProxy(self.config.to_proxy_config(), agent_hooks=hooks)
+        self._proxy = SSHProxy(
+            self.config.to_proxy_config(),
+            agent_hooks=hooks,
+            key_registry=self._key_registry,
+            authenticator=self._authenticator,
+            auth_enabled=self._auth_enabled,
+        )
         await self._proxy.start()
         self._running = True
+        if self._auth_enabled:
+            self._cleanup_task = asyncio.create_task(
+                self._cleanup_loop(),
+                name="ssh-key-cleanup",
+            )
         logger.info(
             "[SSHChannel] started (listen %s:%s -> MessageHandler; "
-            "southbound relay via agent client)",
+            "southbound relay via agent client; auth=%s)",
             self.config.listen_host,
             self.config.listen_port,
+            self._auth_enabled,
         )
         await self._proxy.wait_closed()
 
     async def stop(self) -> None:
         self._running = False
+        cleanup = self._cleanup_task
+        self._cleanup_task = None
+        if cleanup is not None and not cleanup.done():
+            cleanup.cancel()
+            try:
+                await cleanup
+            except asyncio.CancelledError:
+                pass
         self._sessions.clear()
         if self._proxy is not None:
             await self._proxy.stop()
             self._proxy = None
+
+    def issue_ephemeral_key(
+        self,
+        *,
+        user_id: str,
+        username: str,
+        session_id: str,
+        ttl_sec: float,
+    ) -> str:
+        """Delegate to AgentOS SSH key issuer (generate + register fingerprint)."""
+        return self._key_issuer.issue_ephemeral_key(
+            user_id=user_id,
+            username=username,
+            session_id=session_id,
+            ttl_sec=ttl_sec,
+        )
+
+    async def _cleanup_loop(self) -> None:
+        """Periodically drop expired ephemeral key registrations."""
+        interval = max(1.0, float(self.config.auth.cleanup_interval_sec))
+        while self._running:
+            await asyncio.sleep(interval)
+            removed = self._key_registry.cleanup_expired()
+            if removed:
+                logger.debug(
+                    "[SSHChannel] cleaned up %d expired key entries",
+                    removed,
+                )
 
     def _build_agent_hooks(self) -> SSHAgentHooks:
         return SSHAgentHooks(
@@ -226,6 +324,7 @@ class SshChannel(BaseChannel):
             return
 
         username = str(metadata.get("username") or "").strip() or "unknown"
+        user_id = str(metadata.get("user_id") or "").strip() or username
         # ``relay_session`` (with live ``process``) is handed to the
         # southbound AgentOS router in-process; it is never serialized.
         params: dict[str, Any] = {
@@ -240,7 +339,7 @@ class SshChannel(BaseChannel):
             type="req",
             channel_id=self.channel_id,
             session_id=session_id,
-            user_id=username,
+            user_id=user_id,
             params=params,
             timestamp=time.time(),
             ok=True,

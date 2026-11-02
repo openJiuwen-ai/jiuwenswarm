@@ -1,4 +1,4 @@
-"""ModelRoutingRail package — 四档模式（写死）模型路由。"""
+"""ModelRoutingRail package — auto 档分类器模型路由。"""
 from __future__ import annotations
 
 from .capability import ModelCapability, build_capability_table_from_config

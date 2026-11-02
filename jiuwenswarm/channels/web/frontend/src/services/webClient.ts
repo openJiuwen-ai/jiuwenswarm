@@ -9,6 +9,7 @@ import {
   WsResponse,
 } from '../types';
 import { getWebTransport, getWsBase } from '../utils/env';
+import { getDefaultRequestTimeoutMs } from '../utils/requestTimeout';
 import i18n from '../i18n';
 import { GoalRecord } from '../types/goal';
 import { WebHttpClient } from './webHttpClient';
@@ -25,7 +26,6 @@ interface PendingRequest {
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
-const DEFAULT_TIMEOUT_MS = 15000;
 
 /** 暂停期间暂存、恢复后回放的流式事件 */
 export const PAUSABLE_STREAM_EVENTS = new Set([
@@ -156,6 +156,11 @@ class WebClient {
   /** 回放暂存的事件——直接派发给 handler，绕过 filter 和 buffer */
   replayBufferedEvent(event: WsEvent): void {
     this.dispatchEventToHandlers(event);
+  }
+
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
   }
 
   async connect(options: WebConnectOptions = {}): Promise<void> {
@@ -289,7 +294,7 @@ class WebClient {
     }
 
     const id = options.requestId ?? this.generateRequestId();
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? getDefaultRequestTimeoutMs();
     const message: WsRequest = {
       type: 'req',
       id,

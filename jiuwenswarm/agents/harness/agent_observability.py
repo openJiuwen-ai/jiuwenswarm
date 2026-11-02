@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -34,7 +35,10 @@ from openjiuwen.harness.observability import (
     release_observability,
 )
 
-from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
+from jiuwenswarm.agents.harness.observability_runtime import (
+    bind_agentarts_tracer_provider,
+    build_observability_config,
+)
 from jiuwenswarm.common.config import (
     get_config,
     get_skill_evolution_enabled,
@@ -61,6 +65,91 @@ _agent_observability_active: bool = False
 # config-gated path (agent_observability.enabled hot-reload) is unaffected
 # unless force was ever used.
 _force_ever_enabled: bool = False
+
+# When the shared provider is owned by the unified telemetry runtime (relay
+# injects OTEL env), the SDK init path ignores agent-side exporter settings,
+# so local jsonl output stops. Attaching the file exporter as a fan-out span
+# processor keeps jsonl flowing alongside the unified OTLP export.
+_file_exporter_fanout: Any | None = None
+_file_exporter_fanout_config: tuple[Path, int] | None = None
+_file_exporter_fanout_users: set[str] = set()
+_file_exporter_fanout_lock = Lock()
+
+
+def _attach_file_exporter_fanout(
+    traces_dir: str, cfg: Any, *, runtime: str = "agent"
+) -> None:
+    with _file_exporter_fanout_lock:
+        _attach_file_exporter_fanout_locked(traces_dir, cfg, runtime)
+
+
+def _attach_file_exporter_fanout_locked(traces_dir: str, cfg: Any, runtime: str) -> None:
+    global _file_exporter_fanout, _file_exporter_fanout_config
+    if _file_exporter_fanout is not None:
+        # File output follows the shared provider's first-writer configuration.
+        # Warn once when a new user asks for settings we cannot apply to it.
+        if runtime not in _file_exporter_fanout_users and _file_exporter_fanout_config is not None:
+            active_dir, active_retention = _file_exporter_fanout_config
+            requested = (Path(traces_dir).resolve(), int(cfg.get("file_retention_days", 7)))
+            if requested != _file_exporter_fanout_config:
+                logger.warning(
+                    "[AgentObservability] %s requested traces_dir=%s retention_days=%s, "
+                    "but the shared file exporter uses traces_dir=%s retention_days=%s; "
+                    "the first configuration remains active",
+                    runtime, traces_dir, requested[1], active_dir, active_retention,
+                )
+        _file_exporter_fanout_users.add(runtime)
+        return
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+        from openjiuwen.extensions.observability.file_exporter import TraceFileExporter
+        from openjiuwen.extensions.observability.runtime import SafeSpanProcessor
+        from openjiuwen.extensions.observability.setup import is_initialized
+
+        if not is_initialized():
+            return
+        retention_days = int(cfg.get("file_retention_days", 7))
+        exporter_config = (Path(traces_dir).resolve(), retention_days)
+        exporter = TraceFileExporter(
+            root_dir=traces_dir,
+            retention_days=retention_days,
+        )
+        # 注册并持有包装层（SafeSpanProcessor）而非内层 BatchSpanProcessor：
+        # provider 上真正挂的是适配器，on_end 只在适配器自身的 _shutdown_called
+        # 置位后才短路——持有内层时对其 shutdown 无法让适配器停转（评审 CR-002）。
+        # 直接在全局 provider 上注册：unified runtime 初始化时会
+        # set_tracer_provider，与 runtime.add_span_processors 内部使用的是同一
+        # 个 provider；自持引用的幂等判断（is not None）强于其对象身份去重。
+        adapter = SafeSpanProcessor(BatchSpanProcessor(exporter))
+        trace.get_tracer_provider().add_span_processor(adapter)
+        _file_exporter_fanout = adapter
+        _file_exporter_fanout_config = exporter_config
+        _file_exporter_fanout_users.add(runtime)
+        logger.info(
+            "[AgentObservability] file exporter attached as fan-out processor: traces_dir=%s",
+            traces_dir,
+        )
+    except Exception as exc:
+        logger.warning("[AgentObservability] file exporter fan-out failed: %s", exc)
+
+
+def _release_file_exporter_fanout(runtime: str) -> None:
+    global _file_exporter_fanout, _file_exporter_fanout_config
+    with _file_exporter_fanout_lock:
+        _file_exporter_fanout_users.discard(runtime)
+        if _file_exporter_fanout_users or _file_exporter_fanout is None:
+            return
+        try:
+            # Keep the SafeSpanProcessor shutdown gate: the provider has no
+            # remove API, so its registered adapter must stop accepting spans.
+            _file_exporter_fanout.shutdown()
+            _file_exporter_fanout = None
+            _file_exporter_fanout_config = None
+        except Exception as exc:
+            # Retain the adapter on failure to avoid stacking another exporter.
+            logger.warning("[AgentObservability] file exporter fan-out shutdown failed: %s", exc)
 
 
 def sync_agent_observability(*, force: bool = False) -> None:
@@ -117,6 +206,7 @@ def sync_agent_observability(*, force: bool = False) -> None:
             default_backend="otlp",
             traces_dir=traces_dir,
         )
+        bind_agentarts_tracer_provider(obs_cfg)
         provider_existed = acquire_observability(obs_cfg)
         was_active = _agent_observability_active
         _agent_observability_active = True
@@ -132,6 +222,8 @@ def sync_agent_observability(*, force: bool = False) -> None:
                     "[AgentObservability] reusing existing observability provider "
                     "(owned by another subsystem)"
                 )
+                if cfg.get("exporter", "otlp_grpc") == "file":
+                    _attach_file_exporter_fanout(traces_dir, cfg)
             elif cfg.get("exporter", "otlp_grpc") == "file":
                 logger.info(
                     "[AgentObservability] enabled: exporter=%s traces_dir=%s",
@@ -161,6 +253,7 @@ def shutdown_agent_observability() -> None:
             logger.warning("[AgentObservability] trajectory runtime did not drain cleanly")
     except Exception as exc:
         logger.warning("[AgentObservability] trajectory runtime shutdown failed: %s", exc)
+    _release_file_exporter_fanout("agent")
     if not _agent_observability_active:
         return
     try:

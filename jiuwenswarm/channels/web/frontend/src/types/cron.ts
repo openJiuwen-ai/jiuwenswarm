@@ -63,5 +63,5 @@ export interface CronSchedule {
   date?: string; // YYYY-MM-DD，once 用
   intervalUnit?: 'hours' | 'minutes'; // interval 用：数字的单位，默认 'hours'（兼容旧数据/旧生成结果）
   everyHours?: number; // interval 用，intervalUnit 为 'hours' 时的取值；只允许正整数（croniter 小时步长不支持小数）
-  everyMinutes?: number; // interval 用，intervalUnit 为 'minutes' 时的取值；只允许正整数且需整除 60
+  everyMinutes?: number; // interval 用，intervalUnit 为 'minutes' 时的取值；正整数，面板下限 5、上限 1440
 }

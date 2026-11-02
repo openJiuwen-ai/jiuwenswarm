@@ -6,9 +6,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import jiuwenbox
-
-_CONFIGS_DIR = Path(jiuwenbox.__file__).resolve().parent / "configs"
+# Editable installs may expose the parent as a namespace package (__file__ is None).
+_CONFIGS_DIR = Path(__file__).resolve().parent / "configs"
 
 
 def configs_dir() -> Path:

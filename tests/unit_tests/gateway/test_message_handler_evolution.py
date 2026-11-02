@@ -638,6 +638,234 @@ def test_processing_status_is_only_emitted_for_chat_streams() -> None:
 
 
 @pytest.mark.asyncio
+async def test_hitl_pause_skips_processing_false_supplement() -> None:
+    """invocation_paused 收尾时不得补发 processing=false（cron 二次审批续跑）。"""
+    handler = _TestMessageHandler.create()
+    _FakeAgentClient.stream_payloads = [
+        {
+            "event_type": "chat.ask_user_question",
+            "request_id": "perm-read-1",
+            "source": "permission_interrupt",
+            "questions": [{"question": "允许 read_file？", "options": [{"label": "本次允许"}]}],
+        },
+        {
+            "event_type": "chat.invocation_paused",
+            "awaiting_user_input": True,
+        },
+    ]
+    env = SimpleNamespace(
+        request_id="resume-hitl-1",
+        channel="web",
+        method=ReqMethod.CHAT_SEND.value,
+        params={
+            "source": "permission_interrupt",
+            "request_id": "perm-bash-1",
+            "answers": [{"selected_options": ["allow_once"]}],
+        },
+    )
+    # 走 impl，避开本环境 telemetry/observability 导入链。
+    await handler._process_stream_impl(
+        env,
+        "cron_sess_hitl",
+        None,
+        emit_processing_status=True,
+        telemetry_outcome={"error": None, "cancelled": False},
+    )
+
+    payloads = await _drain_robot_payloads_for_permission_resume(handler)
+    assert any(p.get("event_type") == "chat.ask_user_question" for p in payloads)
+    assert any(p.get("event_type") == "chat.invocation_paused" for p in payloads)
+    assert not any(
+        p.get("event_type") == "chat.processing_status"
+        and p.get("is_processing") is False
+        for p in payloads
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_permission_resume_empty_final_releases_hold() -> None:
+    """空 final（drain 后）且无新 ask：流结束须释放 hold，便于下次 run-now 新开。"""
+    handler = _TestMessageHandler.create()
+    released: list[str] = []
+    handler._cron_registry = SimpleNamespace(
+        release_cron_permission_hold=lambda sid: released.append(sid),
+    )
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.delta", "content": "bash 验证完成"},
+        {"event_type": "chat.final", "content": ""},
+    ]
+    env = SimpleNamespace(
+        request_id="resume-empty-final-1",
+        channel="web",
+        method=ReqMethod.CHAT_SEND.value,
+        params={
+            "source": "permission_interrupt",
+            "request_id": "perm-bash-2",
+            "answers": [{"selected_options": ["allow_once"]}],
+        },
+    )
+    await handler._process_stream_impl(
+        env,
+        "cron_1a13859afeb_db60b72257b9",
+        None,
+        emit_processing_status=True,
+        telemetry_outcome={"error": None, "cancelled": False},
+    )
+    assert released == ["cron_1a13859afeb_db60b72257b9"]
+    payloads = await _drain_robot_payloads_for_permission_resume(handler)
+    assert any(
+        p.get("event_type") == "chat.processing_status"
+        and p.get("is_processing") is False
+        for p in payloads
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_permission_resume_second_ask_keeps_hold_and_skips_false() -> None:
+    """多工具第二次权限 ask：不释放 hold、不补 processing=false（即使无 pause 帧）。"""
+    handler = _TestMessageHandler.create()
+    released: list[str] = []
+    handler._cron_registry = SimpleNamespace(
+        release_cron_permission_hold=lambda sid: released.append(sid),
+    )
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.delta", "content": "准备调用 read_file"},
+        {"event_type": "chat.final", "content": "中间收口正文"},
+        {
+            "event_type": "chat.ask_user_question",
+            "request_id": "perm-read-2",
+            "source": "permission_interrupt",
+        },
+        # 故意不发 invocation_paused：覆盖 pause 帧丢失时仍须保卡/保 hold。
+    ]
+    env = SimpleNamespace(
+        request_id="resume-second-ask-1",
+        channel="web",
+        method=ReqMethod.CHAT_SEND.value,
+        params={
+            "source": "permission_interrupt",
+            "request_id": "perm-bash-3",
+            "answers": [{"selected_options": ["allow_once"]}],
+        },
+    )
+    await handler._process_stream_impl(
+        env,
+        "cron_sess_second_ask",
+        None,
+        emit_processing_status=True,
+        telemetry_outcome={"error": None, "cancelled": False},
+    )
+    assert released == []
+    payloads = await _drain_robot_payloads_for_permission_resume(handler)
+    assert any(p.get("event_type") == "chat.ask_user_question" for p in payloads)
+    assert not any(
+        p.get("event_type") == "chat.processing_status"
+        and p.get("is_processing") is False
+        for p in payloads
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_permission_resume_contentful_final_alone_does_not_release() -> None:
+    """仅有正文 final、流中又二次 pause：中间 final 不得单独释放 hold。"""
+    handler = _TestMessageHandler.create()
+    released: list[str] = []
+    handler._cron_registry = SimpleNamespace(
+        release_cron_permission_hold=lambda sid: released.append(sid),
+    )
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.final", "content": "工具1已执行"},
+        {
+            "event_type": "chat.ask_user_question",
+            "request_id": "perm-bash-4",
+            "source": "permission_interrupt",
+        },
+        {
+            "event_type": "chat.invocation_paused",
+            "awaiting_user_input": True,
+        },
+    ]
+    env = SimpleNamespace(
+        request_id="resume-mid-final-1",
+        channel="web",
+        method=ReqMethod.CHAT_SEND.value,
+        params={
+            "source": "permission_interrupt",
+            "request_id": "perm-1",
+            "answers": [{"selected_options": ["allow_once"]}],
+        },
+    )
+    await handler._process_stream_impl(
+        env,
+        "cron_sess_mid_final",
+        None,
+        emit_processing_status=True,
+        telemetry_outcome={"error": None, "cancelled": False},
+    )
+    assert released == []
+
+
+@pytest.mark.asyncio
+async def test_non_cron_permission_resume_does_not_release_cron_hold() -> None:
+    """普通 sess_* 审批续跑不得走 cron hold 释放。"""
+    handler = _TestMessageHandler.create()
+    released: list[str] = []
+    handler._cron_registry = SimpleNamespace(
+        release_cron_permission_hold=lambda sid: released.append(sid),
+    )
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.final", "content": ""},
+    ]
+    env = SimpleNamespace(
+        request_id="resume-sess-1",
+        channel="web",
+        method=ReqMethod.CHAT_SEND.value,
+        params={
+            "source": "permission_interrupt",
+            "request_id": "perm-1",
+            "answers": [{"selected_options": ["allow_once"]}],
+        },
+    )
+    await handler._process_stream_impl(
+        env,
+        "sess_normal_1",
+        None,
+        emit_processing_status=True,
+        telemetry_outcome={"error": None, "cancelled": False},
+    )
+    assert released == []
+
+
+@pytest.mark.asyncio
+async def test_normal_complete_still_supplements_processing_false() -> None:
+    """无 HITL 暂停时，Agent 未发 false 仍由 Gateway 补发。"""
+    handler = _TestMessageHandler.create()
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.final", "content": "done"},
+    ]
+    env = SimpleNamespace(
+        request_id="chat-complete-1",
+        channel="web",
+        method=ReqMethod.CHAT_SEND.value,
+        params={"query": "hello"},
+    )
+    await handler._process_stream_impl(
+        env,
+        "sess-complete",
+        None,
+        emit_processing_status=True,
+        telemetry_outcome={"error": None, "cancelled": False},
+    )
+
+    payloads = await _drain_robot_payloads_for_permission_resume(handler)
+    assert any(
+        p.get("event_type") == "chat.processing_status"
+        and p.get("is_processing") is False
+        for p in payloads
+    )
+
+
+@pytest.mark.asyncio
 async def test_permission_resume_stream_keeps_processing_while_goal_stream_active() -> None:
     """command.goal (emit=False) still blocks processing_status=false on permission ack."""
     handler = _TestMessageHandler.create()

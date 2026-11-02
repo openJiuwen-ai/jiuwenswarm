@@ -4,6 +4,7 @@ import { normalizeFinalContent } from '../utils/finalContent';
 import i18n from '../i18n';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
+import { extractAutomation } from '../utils/heartbeatAutomation';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
 import { normalizeAskUserQuestionPayload } from './askUserQuestion';
@@ -410,6 +411,14 @@ function parseHistoryTimelineEntry(
     const isGoalObjectiveMessage =
       isTruthyHistoryFlag(record.is_goal_objective_message) ||
       isTruthyHistoryFlag(record.isGoalObjectiveMessage);
+    const rawSkills = record.skills;
+    const skills = Array.isArray(rawSkills)
+      ? rawSkills.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      : undefined;
+    // §9：Heartbeat 自动轮的 user/assistant 消息后端会带 metadata.automation 落盘，
+    // 历史恢复时读回同一个标记，保证刷新/切会话/后端重启后仍能识别 Heartbeat 轮。
+    // 与实时链路（useWebSocket.ts）共用同一个 extractAutomation。
+    const userAutomation = extractAutomation(record) ?? extractAutomation(buildEventPayloadForRecord(record));
     return {
       kind: 'message',
       message: {
@@ -419,6 +428,8 @@ function parseHistoryTimelineEntry(
         timestamp: at,
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
+        ...(skills && skills.length > 0 ? { skills } : {}),
+        ...(userAutomation ? { automation: userAutomation } : {}),
       },
     };
   }
@@ -568,6 +579,11 @@ function parseHistoryTimelineEntry(
         ...(isProactiveRecommendation && histProactiveType
           ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
           : {}),
+        // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
+        // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
+        ...((extractAutomation(payload) ?? extractAutomation(record))
+          ? { automation: (extractAutomation(payload) ?? extractAutomation(record))! }
+          : {}),
       },
     };
   }
@@ -698,6 +714,25 @@ interface MaterializedHistoryTimeline {
   pendingAskUser: AskUserQuestionPayload | null;
 }
 
+/**
+ * HITL 卡片 id 可能带 ``{call_id}#{n}``；作答落盘曾 strip 后缀，刷新要对得上。
+ * 规则：exact 优先；仅允许「裸 base」↔「base#n」。禁止 ``#1``↔``#2`` 互认（多步同 call）。
+ */
+export function hitlRequestIdsMatch(left: string, right: string): boolean {
+  const a = String(left || '').trim();
+  const b = String(right || '').trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const strip = (value: string) => value.replace(/#\d+$/, '');
+  const baseA = strip(a);
+  const baseB = strip(b);
+  // a is unsuffixed base, b is a#n
+  if (a === baseA && baseB === a && b !== baseB) return true;
+  // b is unsuffixed base, a is b#n
+  if (b === baseB && baseA === b && a !== baseA) return true;
+  return false;
+}
+
 /** 将已按时间升序的 history 条目折叠成消息/工具/思考，供 restore / page / 文件预览共用。 */
 function materializeHistoryTimeline(entries: HistoryTimelineEntry[]): MaterializedHistoryTimeline {
   const messages: Message[] = [];
@@ -713,7 +748,7 @@ function materializeHistoryTimeline(entries: HistoryTimelineEntry[]): Materializ
       continue;
     }
     if (e.kind === 'ask_user_question_expired' || e.kind === 'ask_user_answered') {
-      if (pendingAskUser?.request_id === e.requestId) {
+      if (pendingAskUser && hitlRequestIdsMatch(pendingAskUser.request_id, e.requestId)) {
         pendingAskUser = null;
       }
       continue;
@@ -722,6 +757,13 @@ function materializeHistoryTimeline(entries: HistoryTimelineEntry[]): Materializ
       // 同一轮里 ask_user 前后常有 chat.final 铺垫句（如「好的，那我认真问一个」），
       // 不能把它当成「已经答完」。只有用户又发了新消息才收起卡片。
       if (e.message.role === 'user') {
+        pendingAskUser = null;
+      } else if (
+        e.message.role === 'assistant' &&
+        pendingAskUser?.source === 'permission_interrupt' &&
+        String(e.message.content || '').trim()
+      ) {
+        // 权限卡之后若已有正文终态，说明本轮已批准并跑完；缺 ask_user_answered 时也不应复活。
         pendingAskUser = null;
       }
       messages.push(e.message);
@@ -803,6 +845,8 @@ export interface HistoryTimelinePreview {
   executions: ToolExecution[];
   reasoningSegments: { id: string; text: string; startedAt: number; closed: true; closedAt?: number }[];
   mode: 'team' | null;
+  /** 刷新后仍应展示的未作答 HITL 卡；已作答 / 权限后已出正文则为 null */
+  pendingAskUser: AskUserQuestionPayload | null;
 }
 
 /**
@@ -813,7 +857,13 @@ export function parseHistoryJsonFileToTimelinePreview(
   sessionId: string
 ): HistoryTimelinePreview {
   if (!Array.isArray(parsed)) {
-    return { messages: [], executions: [], reasoningSegments: [], mode: null };
+    return {
+      messages: [],
+      executions: [],
+      reasoningSegments: [],
+      mode: null,
+      pendingAskUser: null,
+    };
   }
 
   const entries: HistoryTimelineEntry[] = [];
@@ -843,7 +893,8 @@ export function parseHistoryJsonFileToTimelinePreview(
     return safeTimestampMs(aAt) - safeTimestampMs(bAt);
   });
 
-  const { messages, toolReplay, reasoningReplay } = materializeHistoryTimeline(entries);
+  const { messages, toolReplay, reasoningReplay, pendingAskUser } =
+    materializeHistoryTimeline(entries);
   const executions = buildToolExecutionsFromReplay(toolReplay);
   const reasoningSegments = buildReasoningSegmentsFromReplay(sessionId, reasoningReplay);
 
@@ -852,6 +903,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     executions,
     reasoningSegments,
     mode: isTeam ? 'team' : null,
+    pendingAskUser,
   };
 }
 

@@ -36,6 +36,10 @@ from openjiuwen.harness.rails.personal_context import PersonalContextRail
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
+from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
+    ModelRoutingRail,
+    model_routing_enabled,
+)
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
 )
@@ -63,7 +67,11 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.rails.request_scoped_mcp_tools_rail import (
     RequestScopedMcpToolsRail,
 )
+from jiuwenswarm.agents.harness.team.rails.team_admission_rail import (
+    build_team_admission_rail,
+)
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
+    _build_context_overflow_recovery_rail,
     _build_context_processor_rail,
 )
 
@@ -77,6 +85,8 @@ TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 TEAM_SHARED_SKILL_LINK_REFRESH = "swarm.team_shared_skill_link_refresh"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 CONTEXT_PROCESSOR = "swarm.context_processor"
+CONTEXT_OVERFLOW_RECOVERY = "swarm.context_overflow_recovery"
+TEAM_ADMISSION = "swarm.team_admission"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
@@ -84,6 +94,48 @@ A2A_OUTBOUND_TOOLKIT = "swarm.a2a_outbound_toolkit"
 TEAM_PERMISSION_POLICY = "swarm.team_permission_policy"
 DISABLED_TOOLS = "swarm.disabled_tools"
 REQUEST_SCOPED_MCP_TOOLS = "swarm.request_scoped_mcp_tools"
+MODEL_ROUTING = "swarm.model_routing"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=MODEL_ROUTING,
+    description="auto gear: each member scores its own task and may switch its own model.",
+)
+def _build_model_routing_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> ModelRoutingRail | None:
+    """auto 档路由 rail —— **成员级**，每个成员各自跑分类器。
+
+    开关不走 ``run_context``（成员拿不到）：relay 在 chat.send ``params.enable_routing``
+    上下发，``team_helpers`` 写进 ``request_metadata``，随 ``build_context_seed`` 还原到
+    成员自身的 ``BuildContext``；rail 侧 ``_resolve_request_routing_enabled`` 走该兜底分支。
+
+    能力表留空：切换用的 cap 由 ``_build_switch_cap`` 从**当前成员模型**的 client config
+    克隆（只换 model_name，api_base / api_key / 鉴权头逐字保留），能力表仅在该 config
+    取不到时才兜底。故成员 rail 不需要 adapter 注入任何构造器。
+    """
+    del params
+    if not model_routing_enabled(getattr(context, "config", None)):
+        return None
+    try:
+        rail = ModelRoutingRail(apply_routing=True)
+    except Exception as exc:  # noqa: BLE001 - 可选 Rail，构造失败只降级
+        logger.warning(
+            "[swarm.model_routing] Rail construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
+    # 与 interface_deep 的单 agent 构建日志同形，便于确认成员确实挂上了 rail
+    # （成功路径否则完全静默，日志里分不清「没挂」和「挂了但没触发」）。
+    logger.info(
+        "[swarm.model_routing] ModelRoutingRail mounted (team=%s member=%s role=%s)",
+        getattr(context, "team_id", "") or "?",
+        getattr(context, "member_name", None) or "?",
+        getattr(context, "role", None) or "?",
+    )
+    return rail
 
 
 @harness_element(
@@ -554,6 +606,79 @@ def _build_context_processor(
     )
 
 
+class ContextOverflowRecoveryInput(ConstructionInput):
+    """Construction inputs for the context-overflow recovery rail."""
+
+    context_engine_enabled: bool = param_field(
+        default=True,
+        description="Whether the context engine is enabled in config (gate).",
+    )
+    max_recovery_attempts: int = param_field(
+        default=3,
+        description="Max consecutive overflow recoveries before circuit-break.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=CONTEXT_OVERFLOW_RECOVERY,
+    description="Recover from LLM context overflow (413) via FullCompact + retry; "
+    "aligned with single-agent ContextOverflowRecoveryRail.",
+    input_model=ContextOverflowRecoveryInput,
+)
+def _build_context_overflow_recovery(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> Any | None:
+    """Build ContextOverflowRecoveryRail when the context engine is enabled."""
+    inp = ContextOverflowRecoveryInput.resolve(params, context)
+    if not inp.context_engine_enabled:
+        return None
+    # Prefer shared builder (fixed attempts=3) for parity with hot-reload path;
+    # allow param override when callers pass an explicit value.
+    if inp.max_recovery_attempts == 3:
+        return _build_context_overflow_recovery_rail()
+    try:
+        from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail import (
+            ContextOverflowRecoveryRail,
+        )
+
+        return ContextOverflowRecoveryRail(max_recovery_attempts=inp.max_recovery_attempts)
+    except Exception as exc:
+        logger.warning(
+            "[SwarmRails] ContextOverflowRecoveryRail create failed: %s",
+            exc,
+        )
+        return None
+
+
+class TeamAdmissionInput(ConstructionInput):
+    """Construction inputs for process-wide Team LLM admission."""
+
+    max_concurrent_llm_calls: int = param_field(
+        default=0,
+        description="Process-wide concurrent Team LLM call ceiling; 0 disables.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=TEAM_ADMISSION,
+    description="Cap concurrent Team member LLM calls process-wide "
+    "(especially when enable_swarmflow is false).",
+    input_model=TeamAdmissionInput,
+)
+def _build_team_admission(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> Any | None:
+    """Build TeamAdmissionRail when max_concurrent_llm_calls > 0."""
+    inp = TeamAdmissionInput.resolve(params, context)
+    return build_team_admission_rail(
+        max_concurrent_llm_calls=inp.max_concurrent_llm_calls,
+    )
+
+
 @harness_element(
     kind=ElementKind.RAIL,
     name=PLUGIN_RAILS,
@@ -600,6 +725,8 @@ __all__ = [
     "TEAM_SHARED_SKILL_LINK_REFRESH",
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
+    "CONTEXT_OVERFLOW_RECOVERY",
+    "TEAM_ADMISSION",
     "PLUGIN_RAILS",
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",

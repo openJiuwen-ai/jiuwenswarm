@@ -189,11 +189,11 @@ def message_content(message: Any) -> str:
     return _safe_string(_get_value(message, "content"))
 
 
-def _message_entry(message: Any) -> dict[str, Any]:
+def _message_entry(message: Any, *, max_chars: int = 4096) -> dict[str, Any]:
     role = message_role(message)
     content = message_content(message)
     if role == "tool":
-        content = content[:4096]
+        content = content[:max_chars]
     entry: dict[str, Any] = {
         "role": role,
         "parts": [{"type": "text", "content": content}],
@@ -206,12 +206,15 @@ def _message_entry(message: Any) -> dict[str, Any]:
 
 def serialize_input_messages(messages: Any, *, max_chars: int) -> str:
     return _bounded_json(
-        [_message_entry(message) for message in _input_message_items(messages)],
+        [
+            _message_entry(message, max_chars=max_chars)
+            for message in _input_message_items(messages)
+        ],
         max_chars=max_chars,
     )
 
 
-def _tool_call_entry(tool_call: Any) -> dict[str, Any]:
+def _tool_call_entry(tool_call: Any, *, max_chars: int = 4096) -> dict[str, Any]:
     function = _get_value(tool_call, "function")
     name = _get_value(tool_call, "name")
     if not name:
@@ -224,7 +227,7 @@ def _tool_call_entry(tool_call: Any) -> dict[str, Any]:
         "name": _safe_string(name),
     }
     if arguments not in (None, ""):
-        entry["arguments"] = _bounded_value(arguments, max_chars=4096)
+        entry["arguments"] = _bounded_value(arguments, max_chars=max_chars)
     return entry
 
 
@@ -236,10 +239,12 @@ def serialize_output_message(result: Any, *, max_chars: int) -> str:
     }
     tool_calls = _items(_get_value(result, "tool_calls"))
     if tool_calls:
-        output["tool_calls"] = [_tool_call_entry(call) for call in tool_calls]
+        output["tool_calls"] = [
+            _tool_call_entry(call, max_chars=max_chars) for call in tool_calls
+        ]
     reasoning = _safe_string(_get_value(result, "reasoning_content"))
     if reasoning:
-        output["parts"].append({"type": "reasoning", "content": reasoning[:4096]})
+        output["parts"].append({"type": "reasoning", "content": reasoning[:max_chars]})
     return _bounded_json([output], max_chars=max_chars)
 
 

@@ -29,6 +29,13 @@ from openjiuwen.harness.rails.interrupt.confirm_rail import (
 )
 from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
 
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    PLAN_EXECUTE_CTX_KEY,
+    PLAN_EXECUTE_PAYLOAD_KEY,
+    PLAN_SKIP_PAYLOAD_KEY,
+    PLAN_SKIP_TURN_OUTPUT,
+)
+
 if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
 
@@ -222,16 +229,47 @@ class PlanApprovalInterruptRail(ConfirmInterruptRail):
                 )
             )
 
+        # Web 的"跳过"：走 reject 通道（不退出 plan），但必须结束本轮，
+        # 否则模型收到普通 reject 后会继续思考并再次调用 exit_plan_mode。
+        # 该标记只由 Web 的 plan_skip 选项产生，TUI 的 reject 不受影响。
+        plan_skip = bool(
+            isinstance(user_input, dict) and user_input.get(PLAN_SKIP_PAYLOAD_KEY)
+        )
+        # Web 的"执行"：批准后只让 exit_plan_mode 跑完退出 plan，本轮就结束；
+        # 真正的执行由前端补发的普通消息开启新一轮。TUI 发的是纯 approve，没有
+        # 这个标记，仍在同一轮里继续实现。
+        plan_execute = bool(
+            isinstance(user_input, dict) and user_input.get(PLAN_EXECUTE_PAYLOAD_KEY)
+        )
+
         # Resume — delegate to parent (handles ConfirmPayload.approved)
         decision = await super().resolve_interrupt(
             ctx, tool_call, user_input, auto_confirm_config
         )
+        # 标记设在拿到结果之后：父类可能把这次恢复判成拒绝（例如 payload 校验
+        # 失败），那时 exit_plan_mode 不会执行，本轮也就不该被"执行"标记提前结束。
+        if plan_execute and not isinstance(decision, RejectResult):
+            ctx.extra[PLAN_EXECUTE_CTX_KEY] = True
         # When the user rejects, _skip_tool() sets ctx.extra["_skip_tool"]=True,
         # but _railed_execute_single_tool_call pops it before after_tool_call
         # runs.  Set a persistent marker so CodeAgentModeRail.after_tool_call()
         # can still detect the rejection and skip mode restoration.
         if isinstance(decision, RejectResult):
             ctx.extra["_plan_rejected"] = True
+            if plan_skip:
+                ctx.extra["_plan_skipped"] = True
+                ctx.request_force_finish(
+                    {
+                        "output": PLAN_SKIP_TURN_OUTPUT.get(
+                            self._detect_language(), PLAN_SKIP_TURN_OUTPUT["cn"]
+                        ),
+                        "result_type": "answer",
+                    }
+                )
+                logger.info(
+                    "[PlanApprovalInterruptRail] Plan approval skipped; "
+                    "staying in plan mode and finishing this turn"
+                )
         return decision
 
     # ── Helpers ──────────────────────────────────────────────────────

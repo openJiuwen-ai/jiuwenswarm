@@ -180,6 +180,12 @@ class SkillTurboPlanner:
 3. 禁止输出执行代码、plan_code、额外解释文字、Markdown 格式，仅返回纯净 JSON。
 4. reason 使用简短中文，一句话说明选中 / 未匹配的核心依据。
 
+## 按技能独立匹配
+根据 registered_skills 中各技能的 description、match_keywords 和用户要求的目标产物逐个判断。
+Word 文档、Excel 工作簿等任务按相应技能的支持范围匹配，包含其支持的模板填写、编辑和转换。
+以下 PPT 准入与排除规则仅约束 PPT 候选，不得据此排除其他技能。
+排除 PPT 后仍须检查其他已注册技能，只有全部不适配时才返回 skill_name=null。
+
 ## PPT pipeline 准入规则（满足任意一条，PPT skill 参与候选）
 1. 新建空白 PPT 演示文稿
 2. 依据给定主题、素材生成整套演示文稿
@@ -195,14 +201,13 @@ class SkillTurboPlanner:
 5. 上传.ppt/.pptx 文件，要求直接编辑、修改原有 PPT 文件（参考旧内容重做新版不受本条限制）
 6. 当涉及定时任务、计划任务、调度、提醒、指定某个时间 / 周期再执行等调度类诉求，
    即便文案中出现"PPT / 演示文稿"等字样，也不视为当前要立即生成 PPT，
-   应判定为非 PPT pipeline（skill_name 固定为 null）
-7. context 中存在 "__skill_turbo_prior_artifacts__" 字段时，需对比该字段记录的已完成产物信息
-   与当前任务意图：
-   - 若当前任务是基于已有产物的迭代、调整、修复、续作等**增量操作**（如"改成15页"、
-     "换风格"、"继续上次"），PPT skill **不参与候选**（由上层流程复用已有产物）；
-   - 若当前任务与已有产物的**任意关键参数不同**（包括但不限于主题 topic、
-     页数 page_count、风格 style_id、受众 audience、演示目的 presentation_purpose），
-     属于从零开始的全新任务，PPT skill **正常参与候选**，不受此条限制。
+   PPT skill 不参与当前立即执行任务的候选，仍按其他技能的支持范围判断
+
+（历史注：曾有 rule 7 依据 context 中 "__skill_turbo_prior_artifacts__" 字段识别
+"基于已有产物的增量操作"并排除 PPT skill，但该字段的注入代码已随 bbc64b25c
+收敛主路径删除，规则成为孤儿——planner 实际推理"field doesn't exist, rule
+doesn't apply"后放行路由。残留产物的 fresh 拦截已由工具层 fresh 调用守卫
+（F_01，fresh_start 显式放行）承接，故删除本条而非恢复字段注入。）
 
 ## 输出固定 JSON 结构
 {

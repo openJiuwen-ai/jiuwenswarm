@@ -75,6 +75,7 @@ from jiuwenbox.supervisor.daemon_ipc import (
     REQUEST_TYPE_BG_STATUS,
     REQUEST_TYPE_EXEC,
     REQUEST_TYPE_EXEC_BACKGROUND,
+    REQUEST_TYPE_FILE_SNAPSHOT,
     REQUEST_TYPE_LIST_DIR,
     REQUEST_TYPE_READ_FILE,
     REQUEST_TYPE_SHUTDOWN,
@@ -2676,6 +2677,76 @@ class ProcessRuntime(RuntimeAdapter):
             error="transport_failure",
             detail=str(exc),
         )
+
+    def _file_snapshot_blocking(
+        self,
+        socket_path: Path,
+        payload: dict[str, Any],
+        content: bytes,
+    ) -> tuple[dict[str, Any], bytes]:
+        sock = self._connect_daemon_socket(socket_path)
+        try:
+            sock.settimeout(DAEMON_FILE_OP_TIMEOUT_SECONDS)
+            blob = encode_request(request_type=REQUEST_TYPE_FILE_SNAPSHOT, payload=payload)
+            self._send_request_blob(sock, blob, content)
+            sock.shutdown(socket.SHUT_WR)
+            response = self._read_response_blob(sock)
+            raw = b""
+            if response.get("ok") and payload["operation"] == "read":
+                raw = recv_frame(sock, MAX_FILE_BYTES)
+                if len(raw) != response.get("content_size"):
+                    raise ConnectionError("Snapshot response content size mismatch")
+            return response, raw
+        finally:
+            sock.close()
+
+    async def file_snapshot(
+        self,
+        sandbox_id: str,
+        payload: dict[str, Any],
+        content: bytes = b"",
+    ) -> tuple[dict[str, Any], bytes]:
+        payload = {**payload, "content_size": len(content)}
+        writing = payload.get("operation") == "compare_replace"
+
+        def execute():
+            if sys.platform == "win32":
+                runner = self._win_runners.get(sandbox_id)
+                if runner is None:
+                    return {"ok": False, "error": "daemon_unavailable"}, b""
+                result = self._win_roundtrip_blocking(
+                    runner["control_port"],
+                    REQUEST_TYPE_FILE_SNAPSHOT,
+                    payload,
+                    content or None,
+                    payload.get("operation") == "read",
+                    control_token=runner.get("control_token"),
+                )
+                return result if isinstance(result, tuple) else (result, b"")
+            socket_path = self._control_socket_host_path(sandbox_id)
+            if socket_path is None or not self._daemon_ipc_available(sandbox_id):
+                return {"ok": False, "error": "daemon_unavailable"}, b""
+            return self._file_snapshot_blocking(socket_path, payload, content)
+
+        worker = asyncio.create_task(asyncio.to_thread(execute))
+        settled = asyncio.gather(worker, return_exceptions=True)
+        cancelled = False
+        while not worker.done():
+            try:
+                await asyncio.shield(settled)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            worker.exception()
+            raise asyncio.CancelledError
+        try:
+            return worker.result()
+        except (OSError, ValueError) as exc:
+            return {
+                "ok": False,
+                "error": "outcome_unknown" if writing else "transport_failure",
+                "stderr": str(exc),
+            }, b""
 
     def _write_file_via_daemon_blocking(
         self,

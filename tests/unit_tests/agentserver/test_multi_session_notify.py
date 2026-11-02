@@ -85,6 +85,10 @@ async def test_notify_without_runtime_host_keeps_local_summary() -> None:
 
     with (
         patch(
+            "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.current_instance",
+            return_value=None,
+        ),
+        patch(
             "jiuwenswarm.agents.harness.common.tools.multi_session_toolkits.send_runtime_push",
             new=AsyncMock(return_value=False),
         ) as push,
@@ -95,6 +99,12 @@ async def test_notify_without_runtime_host_keeps_local_summary() -> None:
         await toolkit.notify("child-session", Status.COMPLETED, result="done")
 
     push.assert_awaited_once()
+    summary = push.call_args.args[0]
+    assert summary["payload"]["event_type"] == "chat.final"
+    assert summary["payload"]["content"]["output"] == (
+        "后台会话任务均已完成：\n"
+        "\nsession_id: child-session\ndescription: Summarize the result\nresult: done\n"
+    )
     info_messages = [
         " ".join(str(part) for part in call.args)
         for call in toolkit_logger.info.call_args_list

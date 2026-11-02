@@ -145,6 +145,35 @@ class TestLlmRetryRailMount:
             ex = SkillTurboExecutor(_env(client), config=ExecutorConfig())
         assert ex._llm_retry_rail is None
 
+    def test_build_passes_config_params_when_enabled(self):
+        """enabled=True 时配置参数必须透传到 rail（PR 6047 修复的挂载链，参数漂移即防线失效）。"""
+        client, _ = _client_with_stream_outputs([["ok"]])
+        with (
+            patch.object(SkillTurboExecutor, "_build_ask_user_rail", return_value=None),
+            patch(
+                "jiuwenswarm.common.config.get_config",
+                return_value={
+                    "execution_guard": {
+                        "llm_retry_rail": {
+                            "enabled": True,
+                            "max_retries": 5,
+                            "repeat_min_count": 3,
+                            "notify_user_on_retry": False,
+                            "notify_user_on_exhausted": False,
+                        },
+                    },
+                },
+            ),
+        ):
+            ex = SkillTurboExecutor(_env(client), config=ExecutorConfig())
+
+        rail = ex._llm_retry_rail
+        assert rail is not None, "enabled=True 必须挂载 rail"
+        assert rail.max_retries == 5
+        assert rail.repeat_min_count == 3
+        assert rail.notify_user_on_retry is False
+        assert rail.notify_user_on_exhausted is False
+
 
 class TestStreamLlmRetry:
     @pytest.mark.asyncio

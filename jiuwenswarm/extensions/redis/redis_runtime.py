@@ -92,6 +92,18 @@ def get_gateway_redis_client() -> Any | None:
     return _redis_client
 
 
+def get_gateway_redis_client_if_open() -> Any | None:
+    """返回已 ``open`` 成功的 Redis 客户端（最佳努力）。
+
+    与 :func:`get_gateway_redis_client` 的差异：不要求
+    ``get_effective_distributed_redis_active()``（健康检查 degraded 时仍可用）。
+    ``deployment_mode=standalone`` 未初始化 Redis 时仍为 ``None``。
+
+    供 cron live 跨副本扇出等「有则用、无则本机降级」的路径。
+    """
+    return _redis_client
+
+
 async def _ping_with_retries(client: Any, *, attempts: int) -> bool:
     for i in range(attempts):
         if await client.ping():
@@ -161,12 +173,15 @@ async def init_gateway_redis_from_config(full_cfg: dict[str, Any] | None) -> Non
 
     # 仅 standalone 跳过 Redis init；active-standby / distributed 都需要连 Redis
     if _declared_deployment_mode == "standalone":
-        logger.debug("[GatewayRedis] deployment_mode=standalone; skip Redis init (§3.3.4)")
+        logger.info(
+            "[GatewayRedis] deployment_mode=standalone; skip Redis init (§3.3.4) "
+            "(multi-replica cron live fanout requires distributed|active-standby)"
+        )
         return
 
     # 企业版特性：仅企业版开启时启用主备 Redis
     if not is_enterprise():
-        logger.debug(
+        logger.warning(
             "[GatewayRedis] deployment_mode=%s but not enterprise edition; skip Redis init",
             _declared_deployment_mode,
         )

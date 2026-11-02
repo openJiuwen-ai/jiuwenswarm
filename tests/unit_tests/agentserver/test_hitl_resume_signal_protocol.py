@@ -27,6 +27,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import (
+    _apply_hitl_suppress_clear,
+    _parse_stream_chunk,
+)
 
 
 class _Chunk:
@@ -43,7 +47,7 @@ class _Chunk:
 def test_resume_signal_clears_suppress_and_skips_chunk() -> None:
     """协议化信号到达：清除 suppress 且信号本身不转发（skip=True）。"""
     chunk = _Chunk("__resume_signal__", {"source": "tool_interrupt"})
-    suppress_after, skip = JiuWenSwarmDeepAdapter._apply_hitl_suppress_clear(
+    suppress_after, skip = _apply_hitl_suppress_clear(
         chunk,
         suppress_stream_after_hitl=True,
         request_id="req-signal",
@@ -55,13 +59,13 @@ def test_resume_signal_clears_suppress_and_skips_chunk() -> None:
 def test_resume_signal_is_dropped_by_parser() -> None:
     """信号无用户可见内容：_parse_stream_chunk 必须吞掉（返回 None）。"""
     chunk = _Chunk("__resume_signal__", {"source": "workflow_interrupt"})
-    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+    assert _parse_stream_chunk(chunk) is None
 
 
 def test_resume_signal_when_suppress_already_cleared_is_inert() -> None:
     """suppress 已清除时信号无害：不清除、不跳过，由 parser 吞掉。"""
     chunk = _Chunk("__resume_signal__", {"source": "tool_interrupt"})
-    suppress_after, skip = JiuWenSwarmDeepAdapter._apply_hitl_suppress_clear(
+    suppress_after, skip = _apply_hitl_suppress_clear(
         chunk,
         suppress_stream_after_hitl=False,
         request_id="req-signal",
@@ -73,7 +77,7 @@ def test_resume_signal_when_suppress_already_cleared_is_inert() -> None:
 def test_noise_chunks_keep_suppress() -> None:
     """噪声（llm_usage / context.usage / 无失败 controller_output）不清除。"""
     for payload in ("llm_usage", "context.usage"):
-        suppress_after, skip = JiuWenSwarmDeepAdapter._apply_hitl_suppress_clear(
+        suppress_after, skip = _apply_hitl_suppress_clear(
             _Chunk(payload),
             suppress_stream_after_hitl=True,
         )
@@ -83,7 +87,7 @@ def test_noise_chunks_keep_suppress() -> None:
 
 def test_unknown_chunk_still_clears_suppress_as_fallback() -> None:
     """旧版 agent-core 无信号：首个非噪声 chunk 兜底清除（fail-open 防挂起）。"""
-    suppress_after, skip = JiuWenSwarmDeepAdapter._apply_hitl_suppress_clear(
+    suppress_after, skip = _apply_hitl_suppress_clear(
         _Chunk("chat.delta", {"content": "hello"}),
         suppress_stream_after_hitl=True,
     )

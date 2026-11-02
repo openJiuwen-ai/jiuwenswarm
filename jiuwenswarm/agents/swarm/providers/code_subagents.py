@@ -43,6 +43,9 @@ from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.browser_env import (
+    sync_browser_runtime_environment,
+)
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.providers.code_rails import (
     code_runtime_language,
@@ -234,6 +237,9 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
     if model is None:
         logger.warning("[swarm.browser_agent] skipped: no parent model on build context")
         return None
+
+    config_base = ctx.config if isinstance(getattr(ctx, "config", None), dict) else None
+    sync_browser_runtime_environment(config_base)
 
     browser_key = _browser_key(inp.session_id, inp.member_name, inp.role)
     spec = build_browser_agent_config(

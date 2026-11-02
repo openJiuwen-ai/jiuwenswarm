@@ -8,7 +8,7 @@
 不经过本包。
 """
 
-from .rails import FlashMemoryRail, FlashTodoRail, SlimSysOperationRail
+from .rails import FlashMemoryRail, FlashSubagentRail, FlashTodoRail, SlimSysOperationRail
 from .tools import (
     FlashGlobTool,
     FlashMemoryTool,
@@ -22,6 +22,7 @@ __all__ = [
     "FlashMemoryRail",
     "FlashMemoryTool",
     "FlashReadFileTool",
+    "FlashSubagentRail",
     "FlashTodoRail",
     "SlimSkillToolkit",
     "SlimSysOperationRail",

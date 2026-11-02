@@ -9,12 +9,10 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 from typing import Any, Callable
 
 from dotenv import load_dotenv
-from fastmcp import FastMCP
-from google import genai
-from google.genai import types
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
@@ -31,11 +29,50 @@ from jiuwenswarm.common.local_env_config import get_local_config
 
 
 logger = logging.getLogger(__name__)
+# Keep dotenv before the adapter's runtime override, never in delayed SDK setup.
 load_dotenv(verbose=True, override=True)
 
 _SANDBOX_MARKER = "home/user"
 
-mcp = FastMCP("vision-mcp-server")
+if _TYPE_CHECKING:
+    from fastmcp import FastMCP
+    from google import genai
+    from google.genai import types
+
+    mcp: FastMCP
+
+_IMAGE_DEPENDENCY_EXPORTS = ("FastMCP", "genai", "types", "mcp")
+_image_dependencies_lock = threading.RLock()
+_image_dependencies_loaded = False
+
+
+def _ensure_image_dependencies() -> None:
+    """Initialize the original image SDKs once; only Flash defers this setup."""
+    global _image_dependencies_loaded
+    if _image_dependencies_loaded:
+        return
+    with _image_dependencies_lock:
+        if _image_dependencies_loaded:
+            return
+        from fastmcp import FastMCP as fast_mcp_type
+        from google import genai as genai_module
+        from google.genai import types as genai_types
+
+        server = fast_mcp_type("vision-mcp-server")
+        # Publish only after success so a failed initialization can be retried.
+        globals().update(FastMCP=fast_mcp_type, genai=genai_module, types=genai_types, mcp=server)
+        _image_dependencies_loaded = True
+
+
+def __getattr__(name: str) -> Any:
+    if name in _IMAGE_DEPENDENCY_EXPORTS:
+        _ensure_image_dependencies()
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_IMAGE_DEPENDENCY_EXPORTS))
 
 
 class _PathHelper:
@@ -65,6 +102,32 @@ class _MimeResolver:
     def from_path(cls, path: str) -> str:
         _, ext = os.path.splitext(path)
         return cls._EXT_MAP.get(ext.lower(), "image/jpeg")
+
+
+# 图片内容魔数白名单：用于校验 LLM 提供的输入确实是图片，防止任意本地
+# 文件（如 ~/.ssh/id_rsa、config.yaml）被 base64 后外发到远端图像 API。
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+)
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    """Sniff the real content type from magic bytes.
+
+    Returns the sniffed MIME type, or None when the bytes do not look like a
+    supported image format (PNG/JPEG/GIF/BMP/WEBP). Unlike extension-based
+    resolution, this cannot be fooled by a renamed file.
+    """
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    for sig, mime in _IMAGE_SIGNATURES:
+        if data.startswith(sig):
+            return mime
+    return None
 
 
 class _RetryExecutor:
@@ -123,9 +186,9 @@ def _get_image_gen_api_credentials():
     return k, b, m, p
 
 
-def _make_sandbox_error_msg() -> str:
+def _make_sandbox_error_msg(tool_name: str = "visual_question_answering") -> str:
     return (
-        "The visual_question_answering tool cannot access to sandbox file, "
+        f"The {tool_name} tool cannot access to sandbox file, "
         "please use the local path provided by original instruction"
     )
 
@@ -181,6 +244,7 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
     if not gemini_key:
         return "[ERROR]: GEMINI_API_KEY is not configured for Gemini vision."
 
+    _ensure_image_dependencies()
     try:
         mime = _MimeResolver.from_path(src)
         if os.path.exists(src):
@@ -419,18 +483,168 @@ def _parse_optional_seed(inputs: dict[str, Any]) -> int | None:
         return None
 
 
+def _resolve_edit_images(inputs: dict[str, Any]) -> list[str] | None:
+    """Resolve optional input image(s) for image editing (e.g. watermark removal).
+
+    Accepts a local file path, an http(s) URL, or a data: URL. A list may be
+    given for multi-image fusion (comma-joined per Huawei MaaS contract).
+    Local files are inlined as base64 data URLs because the remote API cannot
+    reach local paths. Images are sent as-is — dimension limits are the
+    service's contract and surface through its error message, so switching
+    models does not require local adjustment here.
+
+    Security: local paths and data URLs are validated by magic bytes against
+    a supported-image whitelist (PNG/JPEG/GIF/BMP/WEBP), so non-image files
+    are rejected with a clear error instead of being exfiltrated to the
+    remote image API. The MIME type comes from the sniffed content, not the
+    file extension. Sandbox-style paths get the same dedicated error message
+    as the visual_question_answering tool.
+
+    Raises ValueError on unreadable/oversized/invalid inputs.
+    Returns None when no image input was provided.
+    """
+    raw = inputs.get("image")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    items = [str(s).strip() for s in raw] if isinstance(raw, (list, tuple)) else [str(raw).strip()]
+    items = [s for s in items if s]
+    if not items:
+        return None
+    resolved: list[str] = []
+    for item in items:
+        if item.startswith("data:"):
+            _, _, b64 = item.partition(",")
+            try:
+                raw_bytes = base64.b64decode(b64)
+            except Exception:
+                raw_bytes = b""
+            if _sniff_image_mime(raw_bytes) is None:
+                raise ValueError(
+                    "data URL image content is not a recognized image "
+                    "(PNG/JPEG/GIF/BMP/WEBP); refusing to send non-image content"
+                )
+            resolved.append(item)
+            continue
+        if item.startswith(("http://", "https://")):
+            resolved.append(item)
+            continue
+        if not os.path.isfile(item):
+            if _PathHelper.is_sandbox(item):
+                raise ValueError(_make_sandbox_error_msg("generate_image"))
+            raise ValueError(f"input image not found: {item}")
+        with open(item, "rb") as f:
+            data = f.read()
+        if len(data) > 20 * 1024 * 1024:
+            raise ValueError(f"input image too large (>20MB): {item}")
+        mime = _sniff_image_mime(data)
+        if mime is None:
+            raise ValueError(
+                f"input image is not a recognized image file "
+                f"(PNG/JPEG/GIF/BMP/WEBP): {item}"
+            )
+        resolved.append(f"data:{mime};base64,{base64.b64encode(data).decode('utf-8')}")
+    return resolved
+
+
+_MAAS_DIMENSION_ERROR_RE = re.compile(
+    r"allowed area range is:\[\s*(\d+)\s*x\s*(\d+)\s*,\s*(\d+)\s*x\s*(\d+)\s*\]"
+)
+
+
+def _try_auto_resize_from_dimension_error(
+    exc: Exception, edit_images: list[str] | None
+) -> list[str] | None:
+    """Error-driven edit-image auto-resize (no locally hard-coded limits).
+
+    When the image service rejects an edit input image for its dimension range
+    (e.g. Huawei MaaS ModelArts.81001: "allowed area range is:
+    [512x512,3072x3072]. Current area: 358 x 117"), parse the allowed range
+    from the error message — the authoritative source for the *current* model,
+    so switching models needs no local adjustment — and scale the data-URL
+    input image(s) proportionally into that range.
+
+    Returns the resized list, or None when the error is not dimension-related,
+    no input images exist, nothing needs resizing, or the images cannot be
+    resized locally (http(s) URLs / Pillow missing / decode failure).
+    """
+    if not edit_images:
+        return None
+    m = _MAAS_DIMENSION_ERROR_RE.search(str(exc))
+    if not m:
+        return None
+    lo_w, lo_h, hi_w, hi_h = (int(g) for g in m.groups())
+    min_side, max_side = min(lo_w, lo_h), max(hi_w, hi_h)
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    import io
+
+    resized_any = False
+    out: list[str] = []
+    for item in edit_images:
+        if not item.startswith("data:"):
+            return None  # http(s) URL 无法本地缩放，放弃自愈
+        _, _, b64 = item.partition(",")
+        try:
+            raw = base64.b64decode(b64)
+            with Image.open(io.BytesIO(raw)) as im:
+                w, h = im.size
+                scale = 1.0
+                if w < min_side or h < min_side:
+                    scale = max(min_side / w, min_side / h)
+                if max(w, h) * scale > max_side:
+                    scale = min(max_side / w, max_side / h)
+                if abs(scale - 1.0) < 1e-9:
+                    out.append(item)
+                    continue
+                # 单一 scale 同时作用于两边以保持长宽比；若等比缩放后仍有
+                # 边在范围外（极端长宽比，如 10000x100 → 3072x31），放弃自愈
+                # 并原样抛出服务端错误——独立钳制两边会导致拉伸失真。
+                nw = round(w * scale)
+                nh = round(h * scale)
+                if not (min_side <= nw <= max_side and min_side <= nh <= max_side):
+                    logger.info(
+                        "[generate_image] edit image %dx%d cannot fit "
+                        "service-reported range [%d,%d] without aspect "
+                        "distortion; giving up self-heal",
+                        w, h, min_side, max_side,
+                    )
+                    return None
+                buf = io.BytesIO()
+                im.resize((nw, nh), Image.LANCZOS).save(buf, format="PNG")
+                out.append(
+                    f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+                )
+                resized_any = True
+                logger.info(
+                    "[generate_image] edit image auto-resized from %dx%d to %dx%d "
+                    "per service-reported range [%d,%d]",
+                    w, h, nw, nh, min_side, max_side,
+                )
+        except Exception:
+            logger.warning(
+                "[generate_image] failed to auto-resize edit image; giving up self-heal",
+                exc_info=True,
+            )
+            return None
+    if not resized_any:
+        return None
+    return out
+
+
 def _build_image_gen_kwargs(
     provider: str,
     inputs: dict[str, Any],
     *,
-    size: str,
+    size: str | None,
     n: int,
     api_base: str = "",
+    edit_images: list[str] | None = None,
 ) -> dict[str, Any]:
-    gen_kwargs: dict[str, Any] = {
-        "size": normalize_image_size(size, provider, api_base=api_base),
-        "n": n,
-    }
+    gen_kwargs: dict[str, Any] = {"n": n}
+    if size:
+        gen_kwargs["size"] = normalize_image_size(size, provider, api_base=api_base)
     if _is_huawei_maas_config(provider, api_base):
         # Huawei MaaS: single image, b64_json only; supports seed.
         gen_kwargs["n"] = 1
@@ -438,6 +652,26 @@ def _build_image_gen_kwargs(
         parsed_seed = _parse_optional_seed(inputs)
         if parsed_seed is not None:
             gen_kwargs["seed"] = parsed_seed
+        if edit_images:
+            # qwen-image-edit requires the input image as a body-level `image`
+            # field (base64 data URLs or public URLs; comma-joined for
+            # multi-image). The OpenAI SDK has no such parameter, so forward it
+            # via extra_body, which openjiuwen passes through to
+            # images.generate. When size is omitted, the service generates at
+            # the input image's dimensions — the natural behavior for editing.
+            gen_kwargs["extra_body"] = {"image": ",".join(edit_images)}
+            if not gen_kwargs.get("size"):
+                # 显式 None：省略键会落进 openjiuwen 的 size 形参默认
+                # '1664*928'（* 分隔），华为云要求 <width>x<height> 会 400；
+                # 显式 None 让请求体不带 size 字段，服务端按输入图尺寸生成。
+                gen_kwargs["size"] = None
+        if gen_kwargs.get("size") and not re.fullmatch(r"\d+x\d+", str(gen_kwargs["size"])):
+            # 无法归一化为 <width>x<height> 的值（如 "auto"）直接丢弃，避免 400。
+            logger.warning(
+                "[generate_image] dropping invalid size %r for Huawei MaaS",
+                gen_kwargs["size"],
+            )
+            gen_kwargs["size"] = None
         return gen_kwargs
 
     if not _is_dashscope_provider(provider):
@@ -700,6 +934,20 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
     if not prompt:
         return {"error": "[ERROR]: prompt cannot be empty."}
 
+    try:
+        edit_images = _resolve_edit_images(inputs)
+    except ValueError as exc:
+        return {"error": f"[ERROR]: {exc}"}
+    if edit_images and not _is_huawei_maas_config(provider, api_base):
+        return {
+            "error": (
+                "[ERROR]: image editing (input image) is only supported on "
+                "Huawei MaaS qwen-image-edit models with the current provider; "
+                "either remove the input image or switch the image generation "
+                "account to a Huawei MaaS endpoint."
+            )
+        }
+
     size_raw = str(inputs.get("size") or "").strip()
     n_raw = inputs.get("n", 1)
     try:
@@ -741,9 +989,12 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
         gen_kwargs = _build_image_gen_kwargs(
             provider,
             inputs,
-            size=size_raw or _default_size_for_provider(provider, api_base),
+            # 编辑场景未显式指定 size 时不传 size，让服务端按输入图尺寸生成。
+            size=size_raw
+            or (None if edit_images else _default_size_for_provider(provider, api_base)),
             n=n,
             api_base=api_base,
+            edit_images=edit_images,
         )
 
         async def _call():
@@ -772,6 +1023,21 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
         except asyncio.CancelledError:
             cancel_event.set()
             raise
+        except Exception as gen_exc:
+            # 错误驱动自愈：输入图尺寸越界被服务端拒绝时（如华为云
+            # ModelArts.81001），从错误信息解析出允许范围，把 data URL 编辑图
+            # 等比缩放进范围后重试一次。范围完全来自服务端而非本地硬编码，
+            # 换模型自适应；只重试一次，失败则原样抛出。
+            resized_images = _try_auto_resize_from_dimension_error(gen_exc, edit_images)
+            if resized_images is None:
+                raise
+            edit_images = resized_images
+            gen_kwargs["extra_body"] = {"image": ",".join(edit_images)}
+            try:
+                result = await asyncio.to_thread(_run_gen)
+            except asyncio.CancelledError:
+                cancel_event.set()
+                raise
 
         out_dir = Path(save_dir) if save_dir else None
         saved_paths = await asyncio.to_thread(
@@ -790,20 +1056,89 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
 @tool(
     name="generate_image",
     description=(
-        "Generate an image from a text description using AI image generation models. "
-        "Use this tool when the user wants to create an image based on a text prompt. "
+        "Generate an image from a text description, or edit an input image "
+        "(e.g. watermark removal, style transfer, element changes) when the "
+        "configured model supports it (Huawei MaaS qwen-image-edit). "
         "Supports provider-specific options: DashScope (prompt_extend, negative_prompt, seed), "
         "Huawei MaaS (seed, b64_json response), OpenAI-compatible (standard sizes). "
         "Returns the paths to the saved generated image file(s)."
     ),
+    # NOTE: docstring 的 "Args: inputs: Dict with keys: ..." 嵌套子键无法被
+    # schema 解析器提取（LLM 只能看到 "Dict with keys:"），因此显式声明
+    # input_params，让 LLM 直接看到每个键的名称、类型与用途。
+    input_params={
+        "type": "object",
+        "properties": {
+            "inputs": {
+                "type": "object",
+                "description": "Image generation / editing parameters",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Required. Text description of the image to generate, "
+                            "or the editing instruction when an input image is provided"
+                        ),
+                    },
+                    "image": {
+                        "type": ["string", "array"],
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional input image for editing (e.g. watermark removal): "
+                            "a local file path, an http(s) URL, or a data: URL; a list of "
+                            "these for multi-image fusion. Huawei MaaS qwen-image-edit "
+                            "models only. When editing, size defaults to the input image "
+                            "dimensions unless specified"
+                        ),
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": 'Image size, e.g. "1024x1024", "1792x1024", "1920*1080" (DashScope uses *)',
+                    },
+                    "quality": {
+                        "type": "string",
+                        "enum": ["standard", "hd"],
+                        "description": "Image quality",
+                    },
+                    "n": {
+                        "type": "integer",
+                        "description": "Number of images to generate (1-4; Huawei MaaS forces 1)",
+                    },
+                    "negative_prompt": {
+                        "type": "string",
+                        "description": "Negative prompt to exclude elements (DashScope only)",
+                    },
+                    "prompt_extend": {
+                        "type": "boolean",
+                        "description": "Whether to extend the prompt automatically (DashScope only, default True)",
+                    },
+                    "seed": {
+                        "type": "integer",
+                        "description": "Random seed for reproducibility (DashScope, Huawei MaaS)",
+                    },
+                    "save_dir": {
+                        "type": "string",
+                        "description": "Optional directory to save images (defaults to workspace/generated_images)",
+                    },
+                },
+                "required": ["prompt"],
+            }
+        },
+        "required": ["inputs"],
+    },
 )
 async def generate_image(inputs: dict[str, Any], **kwargs) -> str:
     """
-    Generate an image from text description.
+    Generate an image from text description, or edit an input image.
 
     Args:
         inputs: Dict with keys:
-            prompt (required): Text description of the image to generate
+            prompt (required): Text description of the image to generate, or the
+                editing instruction when an input image is provided
+            image: Optional input image for editing (e.g. watermark removal):
+                a local file path, an http(s) URL, or a data: URL; pass a list
+                of these for multi-image fusion. Huawei MaaS qwen-image-edit
+                only. When editing, size defaults to the input image dimensions
             size: Image size, e.g., "1024x1024", "1792x1024", "1920*1080" (DashScope uses *)
             quality: Image quality, "standard" or "hd"
             n: Number of images to generate (1-4; Huawei MaaS forces 1)
@@ -824,8 +1159,9 @@ async def generate_image(inputs: dict[str, Any], **kwargs) -> str:
 
     _, _, model, provider = _get_image_gen_api_credentials()
     logger.info(
-        "[generate_image] using model: %s, provider: %s, size: %s, n: %s",
+        "[generate_image] using model: %s, provider: %s, size: %s, n: %s, edit: %s",
         model, provider, inputs.get("size", ""), inputs.get("n", 1),
+        bool(inputs.get("image")),
     )
 
     try:
@@ -852,3 +1188,5 @@ async def generate_image(inputs: dict[str, Any], **kwargs) -> str:
 
     return "\n".join(response_parts)
 
+# Preserve historical wildcard exports, including the deferred SDK objects.
+__all__ = [name for name in globals() if not name.startswith("_")] + list(_IMAGE_DEPENDENCY_EXPORTS)

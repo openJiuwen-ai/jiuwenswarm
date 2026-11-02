@@ -35,7 +35,7 @@ The important part is not listing skills in order. Skill Orchestration checks wh
 
 The skill score is the graph used by orchestration. Each node represents a skill. Each edge means one skill's output can be used as another skill's input, in other words, a connectable relationship. It helps users understand possible skill combinations and gives orchestration candidate relationships to work from.
 
-![Skill score](../assets/images/symphony_score.png)
+![Skill score](../assets/images/symphony_graph.png)
 
 The skill score shows statically built connectable candidate relationships, and it does not guarantee every visible connection can be chained directly for every task. Always check the skill details, required inputs, and current task goal.
 
@@ -86,7 +86,7 @@ Skill Retrieval mainly finds skills. Skill Orchestration organizes candidate ski
 
 ### Runtime tools
 
-When Skill Retrieval is enabled, the agent receives skill-directory browsing tools. When Skill Symphony is enabled, the agent receives score and orchestration tools. Users usually do not need to call these tools manually; the system chooses them based on the task.
+When Skill Retrieval is enabled, the agent receives skill-directory browsing tools. When Skill Symphony is enabled, the agent receives graph and orchestration tools. Users usually do not need to call these tools manually; the system chooses them based on the task.
 
 #### Skill Retrieval tools
 
@@ -96,17 +96,17 @@ When Skill Retrieval is enabled, the agent receives skill-directory browsing too
 | `skill_branch_peek` | Shows a lightweight branch summary without expanding the full tree | Use when it is unclear whether a branch is worth expanding |
 | `skill_index_build` | Builds or refreshes the local installed-skill tree index | Use only when retrieval tools explicitly report a missing or stale index |
 
-When `skill_branch_explore` returns a `skills` section, those entries are installed skills, not branch IDs. The agent narrows candidates by skill name, description, and returned `worker_id`. If orchestration is needed later, those `worker_id` values can be passed to `symphony_compose_score` as `candidate_skill_ids`.
+When `skill_branch_explore` returns a `skills` section, those entries are installed skills, not branch IDs. The agent narrows candidates by skill name, description, and returned `worker_id`. If orchestration is needed later, those `worker_id` values can be passed to `symphony_compose_graph` as `candidate_skill_ids`.
 
 #### Skill Orchestration tools
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `symphony_read_score` | Checks whether the skill score exists and whether it is stale | Before orchestration, when the current score state needs to be known |
-| `symphony_refresh_score` | Extracts installed-skill features and refreshes the skill score | When the score is missing, stale, or skills were newly installed or changed |
-| `symphony_compose_score` | Main orchestration entry. Builds an execution graph from the task goal, candidate skills, and skill score | When the user asks to use skills, or the task needs a skill chain, skill ordering, or a specialized tool chain |
+| `symphony_read_graph` | Checks whether the skill score exists and whether it is stale | Before orchestration, when the current score state needs to be known |
+| `symphony_refresh_graph` | Extracts installed-skill features and refreshes the skill score | When the score is missing, stale, or skills were newly installed or changed |
+| `symphony_compose_graph` | Main orchestration entry. Builds an execution graph from the task goal, candidate skills, and skill score | When the user asks to use skills, or the task needs a skill chain, skill ordering, or a specialized tool chain |
 
-The core parameter of `symphony_compose_score` is `query`, the original user task. The current orchestration mode is `fast`. If Skill Retrieval has already narrowed the candidate set, pass the `worker_id` list from `skill_branch_explore` into `candidate_skill_ids`; Symphony will compose a skill chain from those candidates and their connectable neighbors. If the result says no suitable skill is available, install the required skill from the **Skills** page, call `symphony_refresh_score` to refresh the score, and then compose again with the original task.
+The core parameter of `symphony_compose_graph` is `query`, the original user task. The current orchestration mode is `fast`. If Skill Retrieval has already narrowed the candidate set, pass the `worker_id` list from `skill_branch_explore` into `candidate_skill_ids`; Symphony will compose a skill chain from those candidates and their connectable neighbors. If the result says no suitable skill is available, install the required skill from the **Skills** page, call `symphony_refresh_graph` to refresh the score, and then compose again with the original task.
 
 ---
 
@@ -187,7 +187,7 @@ In **Related edges**:
 | **Adjust minimum confidence** | Hide lower-confidence edges so you can focus on stronger skill handoffs |
 | **Read score** | Reload the existing built skill score |
 | **Incremental build** | Update the score after adding, removing, or changing skills |
-| **Pause build** | Pause a long-running score build while keeping completed cache and checkpoints |
+| **Cancel build** | Cancel a long-running score build while keeping completed cache and checkpoints |
 | **Full rebuild** | Recompute everything when the score looks stale or incorrect |
 | **Fit view** | Re-center and scale the visible graph |
 
@@ -274,7 +274,7 @@ After seeing the route, you can respond in one of these ways:
 
 ## Configuration
 
-The Web configuration page exposes three related switches: **Enable Skill Retrieval** controls skill-tree retrieval tools, **Enable skill orchestration** controls skill score and orchestration tools, and **Enable dynamic graph** controls whether Session execution traces are learned from and used by later orchestration. The Skill Index page provides index build, rebuild, cancel, status, and tree viewing operations. The Skill Graph page provides score reading, incremental build, pause build, and full rebuild operations.
+The Web configuration page exposes three related switches: **Enable Skill Retrieval** controls skill-tree retrieval tools, **Enable skill orchestration** controls skill score and orchestration tools, and **Enable dynamic graph** controls whether Session execution traces are learned from and used by later orchestration. The Skill Index page provides index build, rebuild, cancel, status, and tree viewing operations. The Skill Graph page provides score reading, incremental build, cancel build, and full rebuild operations.
 
 Advanced build, retrieval, and orchestration settings are configured in the user runtime config file:
 
@@ -288,15 +288,15 @@ Advanced build, retrieval, and orchestration settings are configured in the user
 
 Whether to enable Symphony orchestration. The default template value is `false`.
 
-When enabled, new sessions register orchestration tools such as `symphony_read_score`, `symphony_refresh_score`, and `symphony_compose_score`. The agent can read or refresh the skill score and build a skill chain from candidate skills. When disabled, these tools are not registered and the agent does not use the skill score for orchestration.
+When enabled, new sessions register orchestration tools such as `symphony_read_graph`, `symphony_refresh_graph`, and `symphony_compose_graph`. The agent can read or refresh the skill score and build a skill chain from candidate skills. When disabled, these tools are not registered and the agent does not use the skill score for orchestration.
 
 This switch controls Symphony orchestration tools. Skill Retrieval is still controlled separately by `symphony.skill_retrieval.enabled`: retrieval finds candidate skills, and orchestration builds an execution route from the task goal, candidate skills, and the skill score.
 
-#### `symphony.paths.skills_root` / `symphony.paths.score_dir`
+#### `symphony.paths.skills_root` / `symphony.paths.graph_dir`
 
 The skill source directory and skill score artifact directory. Both default template values are empty strings, which means the runtime default directories are used.
 
-`symphony_refresh_score` reads skills from `skills_root` and refreshes the skill score. `symphony_read_score` and `symphony_compose_score` read score artifacts from `score_dir`. Configure these paths explicitly when the score needs to be cached in a fixed location or reused across runtime environments.
+`symphony_refresh_graph` reads skills from `skills_root` and refreshes the skill score. `symphony_read_graph` and `symphony_compose_graph` read score artifacts from `graph_dir`. Configure these paths explicitly when the score needs to be cached in a fixed location or reused across runtime environments.
 
 #### `symphony.build`
 
@@ -418,7 +418,7 @@ symphony:
   enabled: true
   paths:
     skills_root: ""
-    score_dir: ""
+    graph_dir: ""
 
   build:
     max_candidates_per_skill_relation: 32
@@ -514,9 +514,9 @@ No. Symphony only uses installed skills. Install new skills from the **Skills** 
 
 No. Symphony helps the Leader or agent find relevant skills and form a skill chain. Task decomposition, skill reading, tool execution, and team coordination still use JiuwenSwarm's existing runtime.
 
-### Is building the skill score the same as composing an execution score?
+### Is building the skill score the same as composing an execution graph?
 
-This is an easy distinction to miss: building the skill score is not composing an execution score. Building the skill score usually happens before a task arrives and focuses on which skills in the whole installed skill set may have stable connectable relationships. Composing an execution score happens after a task arrives and focuses on this specific request: which skills should be selected from the score, in what order they should run, and where additional inputs are needed.
+This is an easy distinction to miss: building the skill score is not composing an execution graph. Building the skill score usually happens before a task arrives and focuses on which skills in the whole installed skill set may have stable connectable relationships. Composing an execution graph happens after a task arrives and focuses on this specific request: which skills should be selected from the score, in what order they should run, and where additional inputs are needed.
 
 ---
 

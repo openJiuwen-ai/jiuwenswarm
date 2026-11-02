@@ -84,3 +84,33 @@ export function detectCronJobRunUpdates(
 
   return { updatedJobIds, nextFingerprints };
 }
+
+/**
+ * 企业版 HTTP 没有定时任务结果推送。当前窗口只要属于刚跑完的这个任务，
+ * 就再读一次它的历史；不必等于任务上的最新会话。连续执行时最新会话会被
+ * 下一次覆盖，正看着的上一个窗口否则要刷新页面才看得到回复。
+ * 没有打开相关窗口时返回空串，不额外请求历史。
+ */
+export function resolveOpenCronHistoryRefresh(input: {
+  jobId: string;
+  lastSessionId: string;
+  activeSessionId: string;
+  activeCronId: string;
+  rememberedRunSessionId: string;
+}): string {
+  const active = input.activeSessionId.trim();
+  if (!active) {
+    return '';
+  }
+  const last = input.lastSessionId.trim();
+  if (last && last === active) {
+    return active;
+  }
+  if (input.activeCronId.trim() === input.jobId) {
+    return active;
+  }
+  if (input.rememberedRunSessionId.trim() === active) {
+    return active;
+  }
+  return '';
+}

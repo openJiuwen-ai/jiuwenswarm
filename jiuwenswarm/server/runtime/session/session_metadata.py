@@ -9,16 +9,18 @@ import queue
 import re
 import shutil
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from datetime import datetime, timezone
 
+import portalocker
+
+from jiuwenswarm.common.mode_matrix import NEW_AGENT_CODE_NORMAL, NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_agent_workspace_dir,
     is_valid_session_id,
 )
-from jiuwenswarm.common.mode_matrix import NEW_AGENT_CODE_NORMAL, NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
@@ -38,10 +40,22 @@ _METADATA_QUEUE: queue.Queue[tuple[str, dict[str, Any], str | None, bool]] = que
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
 _FILE_LOCK = threading.Lock()
+_TODO_INITIALIZED_KEY = "todo_initialized"
 
 # 内存缓存: key = f"{sessions_root}\n{session_id}"，避免多租户同 session_id 串缓存
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
+# 缓存容量帽:键空间随累计会话数增长,无帽则每会话一条永驻(issue#5240 残余:
+# 受控 census 实测 ≈+2-3 obj/会话,adapter 逐出不删会话目录故无自然回收)。
+# FIFO 逐最旧;miss 只退化为一次 metadata.json 小文件读,无正确性影响。
+_METADATA_CACHE_MAX = 8192
+
+
+def _evict_metadata_cache_locked() -> None:
+    """容量帽驱逐;调用方必须已持有 ``_CACHE_LOCK``(threading.Lock 不可重入)。"""
+    if len(_METADATA_CACHE) < _METADATA_CACHE_MAX:
+        return
+    _METADATA_CACHE.pop(next(iter(_METADATA_CACHE)), None)
 
 # 会话标题自动生成的截取长度
 _TITLE_MAX_LEN = 50
@@ -85,6 +99,14 @@ _INJECTED_TAG_START_RE = re.compile(
 
 def _has_valid_work_mode(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in SUPPORTED_WORK_MODES
+
+
+def _normalize_adapter_mode(value: Any) -> str | None:
+    """Normalize the implementation selection persisted with a session."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in {"agent", "code", "flash"} else None
 
 
 def _is_first_lock_available(metadata: dict[str, Any], key: str) -> bool:
@@ -546,8 +568,16 @@ def restore_session_team_binding_artifacts(
         session_dir / "metadata.json",
         session_dir / _TEAM_TEMPLATE_SNAPSHOT_FILE,
     )
-    with _FILE_LOCK:
+    with _FILE_LOCK, portalocker.Lock(str(paths[0]) + ".lock", timeout=30):
         for path, content in zip(paths, artifacts, strict=True):
+            if path == paths[0] and path.exists():
+                current = json.loads(path.read_text(encoding="utf-8"))
+                if current.get(_TODO_INITIALIZED_KEY) is True:
+                    if content is None:
+                        raise ValueError("Cannot remove metadata for an initialized Todo object")
+                    restored = json.loads(content)
+                    restored[_TODO_INITIALIZED_KEY] = current[_TODO_INITIALIZED_KEY]
+                    content = json.dumps(restored, ensure_ascii=False, indent=2).encode("utf-8")
             if content is None:
                 path.unlink(missing_ok=True)
                 continue
@@ -802,13 +832,20 @@ def _write_metadata_sync(
     """
     fpath = _metadata_file(session_id, sessions_root)
     to_write = metadata
-    with _FILE_LOCK:
-        if preserve_pin_fields and fpath.exists():
+    with _FILE_LOCK, portalocker.Lock(str(fpath) + ".lock", timeout=30):
+        if fpath.exists():
             try:
                 current = json.loads(fpath.read_text(encoding="utf-8") or "{}")
                 if isinstance(current, dict):
-                    to_write = _merge_pin_fields(current, metadata)
+                    to_write = _merge_pin_fields(current, metadata) if preserve_pin_fields else dict(metadata)
+                    # Async metadata updates cannot reset a consumed Todo origin.
+                    if _TODO_INITIALIZED_KEY in current:
+                        to_write[_TODO_INITIALIZED_KEY] = current[_TODO_INITIALIZED_KEY]
+                    else:
+                        to_write.pop(_TODO_INITIALIZED_KEY, None)
             except Exception as exc:  # noqa: BLE001
+                # An unreadable old record cannot prove a new Todo object.
+                to_write = {k: v for k, v in metadata.items() if k != _TODO_INITIALIZED_KEY}
                 logger.warning("读取 metadata.json 置顶字段失败: %s", exc)
         tmp_path = fpath.with_name(
             f"{fpath.name}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -825,6 +862,54 @@ def _write_metadata_sync(
     return to_write
 
 
+def check_todo_initialization(
+    session_id: str,
+    *,
+    file_exists: bool,
+    committing: bool = False,
+    sessions_root: str | Path | None = None,
+) -> None:
+    """Validate/consume the session's Todo origin before a possible publication.
+
+    Legacy callers may create a first Todo without an origin marker. Once a
+    commit is attempted, the recorded marker prevents reinitialization after
+    restart or file loss, including unknown write outcomes.
+    """
+    if file_exists and not committing:
+        return
+    session_dir = resolve_session_subdir(session_id, sessions_root=sessions_root)
+    if session_dir is None or (not file_exists and not session_dir.is_dir()):
+        raise ValueError("Todo session lifecycle is unavailable")
+    if file_exists:
+        session_dir.mkdir(parents=True, exist_ok=True)
+    path = session_dir / "metadata.json"
+    with _FILE_LOCK, portalocker.Lock(str(path) + ".lock", timeout=30):
+        metadata = (json.loads(path.read_text(encoding="utf-8")) if path.exists()
+                    else {"session_id": session_id})
+        if not isinstance(metadata, dict):
+            raise TypeError("Todo session lifecycle is invalid")
+        initialized = metadata.get(_TODO_INITIALIZED_KEY)
+        if _TODO_INITIALIZED_KEY in metadata and not isinstance(initialized, bool):
+            raise ValueError("Todo initialization marker is invalid")
+        if not file_exists and initialized is True:
+            raise ValueError("Todo file is missing; first initialization cannot be confirmed")
+        if not committing or initialized is True:
+            return
+        metadata[_TODO_INITIALIZED_KEY] = True
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(metadata, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    # A subsequent queued write merges the disk marker under the same lock.
+    with _CACHE_LOCK:
+        _METADATA_CACHE.pop(_metadata_cache_key(session_id, _normalize_sessions_root_s(sessions_root)), None)
+
+
 def _merge_pin_fields(current: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     merged = metadata.copy()
     if "pinned" in current:
@@ -832,31 +917,6 @@ def _merge_pin_fields(current: dict[str, Any], metadata: dict[str, Any]) -> dict
     if "pin_order" in current:
         merged["pin_order"] = int(current.get("pin_order") or 0)
     return merged
-
-
-def _merge_pin_fields_from_disk(
-    session_id: str,
-    metadata: dict[str, Any],
-    *,
-    sessions_root: str | None = None,
-) -> dict[str, Any]:
-    """Preserve latest disk pin state for async writes that do not own pin fields."""
-    session_dir = resolve_session_subdir(session_id, sessions_root=sessions_root)
-    if session_dir is None:
-        return metadata
-    fpath = session_dir / "metadata.json"
-    if not fpath.exists():
-        return metadata
-    try:
-        with _FILE_LOCK:
-            current = json.loads(fpath.read_text(encoding="utf-8") or "{}")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("读取 metadata.json 置顶字段失败: %s", exc)
-        return metadata
-    if not isinstance(current, dict):
-        return metadata
-
-    return _merge_pin_fields(current, metadata)
 
 
 def _ensure_worker_started() -> None:
@@ -886,9 +946,19 @@ def _ensure_worker_started() -> None:
                     if preserve_pin_fields:
                         cache_key = _metadata_cache_key(sid, sessions_root)
                         with _CACHE_LOCK:
+                            _evict_metadata_cache_locked()
                             _METADATA_CACHE[cache_key] = written.copy()
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("metadata 异步写入失败: %s", exc)
+                    logger.warning("metadata 异步写入失败 session_id=%s: %s", sid, exc)
+                    if preserve_pin_fields:
+                        # 入队时缓存的是未 merge 磁盘 pin 字段的 metadata;若不在此
+                        # 失效,落盘失败(磁盘满/文件锁超时/权限)会让该陈旧视图一直
+                        # 留在缓存里(直到该会话下次成功写入或 LRU 淘汰),表现为置顶
+                        # 排序长期错位。丢弃后下次读退化为一次磁盘读(跨进程真源)。
+                        with _CACHE_LOCK:
+                            _METADATA_CACHE.pop(
+                                _metadata_cache_key(sid, sessions_root), None
+                            )
                 finally:
                     _METADATA_QUEUE.task_done()
 
@@ -913,15 +983,20 @@ def _enqueue_write(
 
     注意: ``_write_metadata_sync`` 本身不更新缓存,缓存更新统一在此函数
     顶部完成,与异步路径行为一致,避免 ``init_session_metadata`` 污染缓存。
+
+    preserve_pin_fields 的磁盘 merge 不在调用方线程做:历史实现曾在函数
+    顶部读盘,导致每条普通消息都在 AgentServer 事件循环上同步读
+    metadata.json,慢盘场景停摆事件循环(OA.05000010, 2026-10-15)。落盘
+    正确性由 ``_write_metadata_sync`` 在 ``_FILE_LOCK`` 内 merge 保证;
+    落盘完成后(同步分支立即/worker 分支异步)将 merge 结果回写缓存,
+    pin 字段视图仅在落盘窗口内短暂陈旧;worker 落盘失败时主动失效该
+    session 的缓存条目,后续读退化为磁盘读,不会长期陈旧。
     """
     root_s = _coalesce_write_sessions_root(sessions_root)
     cache_key = _metadata_cache_key(session_id, root_s)
     # 立即更新缓存,确保后续读取能看到最新状态
-    if preserve_pin_fields:
-        metadata = _merge_pin_fields_from_disk(
-            session_id, metadata, sessions_root=root_s
-        )
     with _CACHE_LOCK:
+        _evict_metadata_cache_locked()
         _METADATA_CACHE[cache_key] = metadata.copy()
     if sync_write:
         written = _write_metadata_sync(
@@ -932,6 +1007,7 @@ def _enqueue_write(
         )
         if preserve_pin_fields:
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = written.copy()
         return
     _ensure_worker_started()
@@ -940,12 +1016,6 @@ def _enqueue_write(
             (session_id, metadata, root_s, preserve_pin_fields)
         )
     except queue.Full:
-        if preserve_pin_fields:
-            metadata = _merge_pin_fields_from_disk(
-                session_id, metadata, sessions_root=root_s
-            )
-            with _CACHE_LOCK:
-                _METADATA_CACHE[cache_key] = metadata.copy()
         written = _write_metadata_sync(
             session_id,
             metadata,
@@ -954,6 +1024,7 @@ def _enqueue_write(
         )
         if preserve_pin_fields:
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = written.copy()
 
 
@@ -984,8 +1055,10 @@ def init_session_metadata(
     model: str = "",
     cron_id: str = "",
     work_mode: str = "",
+    adapter_mode: str = "agent",
     channel_metadata: dict[str, Any] | None = None,
     sessions_root: str | Path | None = None,
+    new_todo_object: bool = False,
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -998,6 +1071,7 @@ def init_session_metadata(
         if not (isinstance(work_mode, str) and work_mode.strip())
         else normalize_work_mode(work_mode)
     )
+    resolved_adapter_mode = _normalize_adapter_mode(adapter_mode) or "agent"
     metadata = {
         "session_id": session_id,
         "channel_id": channel_id,
@@ -1020,9 +1094,12 @@ def init_session_metadata(
         "pin_order": 0,
         "status": "idle",
         "work_mode": resolved_work_mode,
+        "adapter_mode": resolved_adapter_mode,
     }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
+    if new_todo_object:
+        metadata[_TODO_INITIALIZED_KEY] = False
     root_s = _normalize_sessions_root_s(sessions_root)
     try:
         from jiuwenswarm.common.workspace.quota import (
@@ -1247,6 +1324,7 @@ def sync_session_request_metadata(
     explicit_mode_provided: bool = False,
     explicit_model_provided: bool = False,
     work_mode: str | None = None,
+    adapter_mode: str | None = None,
     sessions_root: str | Path | None = None,
 ) -> str | None:
     """校验请求带来的参数与磁盘 metadata.json 是否需要更新，并按字段语义写入。
@@ -1300,6 +1378,8 @@ def sync_session_request_metadata(
         session_id, cache_bust=True, sessions_root=root_s
     )
     effective_project_dir: str | None = None
+    normalized_adapter_mode = _normalize_adapter_mode(adapter_mode)
+    adapter_mode_changed = False
 
     if not metadata:
         # 会话元数据不存在：兜底新建（外部渠道隐式创建 session 的场景）
@@ -1310,6 +1390,7 @@ def sync_session_request_metadata(
             if not (isinstance(work_mode, str) and work_mode.strip())
             else normalize_work_mode(work_mode)
         )
+        adapter_mode_changed = normalized_adapter_mode is not None
         metadata = {
             "session_id": session_id,
             "channel_id": channel_id or "",
@@ -1332,6 +1413,7 @@ def sync_session_request_metadata(
             "pin_order": 0,
             "status": "idle",
             "work_mode": resolved_work_mode,
+            "adapter_mode": normalized_adapter_mode or "agent",
         }
         effective_project_dir = project_dir or None
     else:
@@ -1369,6 +1451,16 @@ def sync_session_request_metadata(
             if not _has_valid_work_mode(existing_wm):
                 metadata["work_mode"] = normalized_wm
 
+        # ``adapter_mode`` is an implementation selection, not a business
+        # canonical mode.  Persist changes synchronously so an immediate next
+        # turn (or a process reload) cannot lose the session's implementation
+        # affinity and accidentally fall back to Deep.
+        if normalized_adapter_mode is not None:
+            adapter_mode_changed = (
+                metadata.get("adapter_mode") != normalized_adapter_mode
+            )
+            metadata["adapter_mode"] = normalized_adapter_mode
+
         # model：显式覆盖式——仅当请求方显式携带 model 才覆盖；
         # 未显式携带（如只读 RPC 回退到进程 MODEL_NAME）则保持磁盘原值，
         # 不覆盖用户在该会话用 /model 切换过的模型
@@ -1396,6 +1488,7 @@ def sync_session_request_metadata(
         session_id,
         metadata,
         preserve_pin_fields=True,
+        sync_write=adapter_mode_changed,
         sessions_root=root_s,
     )
     return effective_project_dir
@@ -1438,6 +1531,7 @@ def get_session_metadata(
         metadata.setdefault("team_name", "")
         metadata.setdefault("runtime_team_name", "")
         metadata.setdefault("team_template_id", "")
+    metadata.pop(_TODO_INITIALIZED_KEY, None)
     return metadata
 
 
@@ -1868,6 +1962,7 @@ def get_all_sessions_metadata(
                 sessions_root=sessions_root,
             )
 
+        metadata.pop(_TODO_INITIALIZED_KEY, None)
         sessions.append(metadata)
 
     # 按最后消息时间倒序排序
@@ -1941,5 +2036,6 @@ def collect_all_sessions_metadata() -> list[dict[str, Any]]:
                 enable_writeback=False,
                 sessions_root=str(sessions_dir),
             )
+        meta.pop(_TODO_INITIALIZED_KEY, None)
         result.append(meta)
     return result

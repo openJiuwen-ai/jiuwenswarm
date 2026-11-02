@@ -17,6 +17,7 @@ from jiuwenbox.supervisor.bwrap import (
     BwrapConfig,
     _is_strict_subpath,
     _partition_nested_ro_binds,
+    _partition_nested_rw_binds,
 )
 
 CONFIG_YAML = "/home/user/.jiuwenswarm/config/config.yaml"
@@ -81,6 +82,30 @@ def test_partition_nested_ro_binds_home_ancestor_from_lifecycle_dirs():
     non_nested, nested = _partition_nested_ro_binds(ro, rw)
     assert non_nested == []
     assert nested == [("/h/cfg", CONFIG_YAML)]
+
+
+def test_partition_nested_rw_binds_splits_and_preserves_order():
+    rw = [("/h/backing", HOME), ("/h/ws", JIUWENSWARM), ("/h/agent", AGENT)]
+    non_nested, nested = _partition_nested_rw_binds(rw)
+    assert non_nested == [("/h/backing", HOME)]
+    assert nested == [("/h/ws", JIUWENSWARM), ("/h/agent", AGENT)]
+
+
+def test_partition_nested_rw_binds_deepest_emitted_last():
+    # Only the shallowest entry escapes the "nested" group; combined with the
+    # non_nested-before-nested emission order the deepest mount wins.
+    rw = [("/h/a", "/home/a"), ("/h/a/b", "/home/a/b"), ("/h/a/b/c", "/home/a/b/c")]
+    non_nested, nested = _partition_nested_rw_binds(rw)
+    assert non_nested == [("/h/a", "/home/a")]
+    assert nested == [("/h/a/b", "/home/a/b"), ("/h/a/b/c", "/home/a/b/c")]
+
+    cfg = BwrapConfig(command=["/bin/sh"])
+    cfg.rw_binds = rw
+    args = cfg.to_args()
+    assert _bind_index(args, "--bind", "/home/a") < _bind_index(args, "--bind", "/home/a/b")
+    assert _bind_index(args, "--bind", "/home/a/b") < _bind_index(
+        args, "--bind", "/home/a/b/c"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -180,3 +205,38 @@ def test_same_path_ro_not_nested_remount_still_fires():
     remount = _remount_index(args, same)
     assert ro >= 0 and rw >= 0 and remount >= 0
     assert ro < rw < remount
+
+
+def test_nested_rw_under_home_lifecycle_emitted_after_home_backing():
+    # The directories:/home backing bind is appended after the policy's
+    # bind_mounts; nested-rw partitioning keeps the per-path bind live.
+    cfg = BwrapConfig(command=["/bin/sh"])
+    cfg.rw_binds = [(JIUWENSWARM, JIUWENSWARM), (HOME, HOME)]
+    args = cfg.to_args()
+
+    home_bind = _bind_index(args, "--bind", HOME)
+    ws_bind = _bind_index(args, "--bind", JIUWENSWARM)
+    assert home_bind >= 0 and ws_bind >= 0
+    assert home_bind < ws_bind
+
+
+def test_backing_then_nested_rw_then_nested_ro_order():
+    # directories:/home backing + bind_mounts underneath it + a nested ro bind.
+    cfg = BwrapConfig(command=["/bin/sh"])
+    cfg.ro_binds = [("/host/cfg", CONFIG_YAML), ("/host/bin", "/bin")]
+    cfg.rw_binds = [
+        (JIUWENSWARM, JIUWENSWARM),
+        ("/host/backing-home", HOME),
+        ("/host/backing-tmp", "/tmp"),
+    ]
+    cfg.remount_ro = ["/", "/bin", CONFIG_YAML]
+    args = cfg.to_args()
+
+    ro_bin = _bind_index(args, "--ro-bind", "/bin")
+    home_bind = _bind_index(args, "--bind", HOME)
+    tmp_bind = _bind_index(args, "--bind", "/tmp")
+    ws_bind = _bind_index(args, "--bind", JIUWENSWARM)
+    ro_cfg = _bind_index(args, "--ro-bind", CONFIG_YAML)
+    assert -1 not in (ro_bin, home_bind, tmp_bind, ws_bind, ro_cfg)
+    assert ro_bin < home_bind < tmp_bind < ws_bind < ro_cfg
+    assert _remount_index(args, CONFIG_YAML) > ro_cfg

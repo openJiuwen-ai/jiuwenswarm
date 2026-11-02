@@ -24,6 +24,12 @@ sandbox:
   url: http://127.0.0.1:8321
   type: jiuwenbox
   policy_file: windows-policy.yaml
+  # 空闲 reaper 周期(秒):稳态沙箱数 ≈ 创建速率 × TTL,须与 Box 内存容量匹配
+  # (≈14.4MB/个)。两个键必须留在模板里——_deep_merge 会剔除 override 独有键,
+  # 缺席即 update_conf 写入的值永远到不了运行时(issue#5718)。部署时由
+  # update_conf 按 JIUWENBOX_IDLE_TTL_SECONDS/CHECK_INTERVAL_SECONDS 覆写。
+  idle_ttl_seconds: 180
+  idle_check_interval: 60
 
 a2ui:
   enabled: false
@@ -36,7 +42,7 @@ symphony:
   enabled: false
   paths:
     skills_root: ""
-    score_dir: ""
+    graph_dir: ""
 
   fingerprint:
     scan:
@@ -265,7 +271,7 @@ memory:
   # ------------------------------------------------------------
   # 用户画像（用户级记忆概览，OfficeAceUserProfileRail 自动注入 prompt）
   # ------------------------------------------------------------
-  # 独立于 engine/external：不要求 memory.engine=external 即可生效。
+  # 要求 memory.engine=external/both 且 external.provider=officeace_cloud。
   # endpoint/api_key 任一为空 → rail 不挂载（零残留，对话照常）。
   # user_id 复用上层 memory.external.user_id（${MEMORY_USER_ID:-__default__}），
   # 不在此段单独配置。
@@ -653,6 +659,7 @@ react:
       - skill_tool
       - skill_complete
       - skill_acceleration_exec
+      - office_claw_list_wishes
       - todo_create
       - todo_list
       - todo_modify
@@ -668,8 +675,10 @@ react:
       - read_memory                 # 间接调用（尤其中小模型），长期记忆功能形同虚设
       - write_memory
       - edit_memory
+      - external_memory_search
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm
+      - deepseek
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表
@@ -678,7 +687,8 @@ react:
       #   - invoke_tool
       #   - web_search
   # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用
-  # browser_agent: code.team 路径通过此 key 门控（单 agent 路径仍由 browser runtime 开关决定）
+  # general_agent: 单 agent 与专家团共用。专家团未开 subagent_runtime，开启后由 task_tool 派发 general-purpose
+  # browser_agent: team / code.team 通过此 key 门控（单 agent 路径仍由 browser runtime 开关决定）
   subagents:
     general_agent:
       enabled: true
@@ -787,6 +797,13 @@ react:
       reasoning_preview_max_chars: 512     # 摘要里 reasoning 预览的最大字符数
       bailout_threshold: 3                 # reasoning 规则压缩次数达此值后中止
       tool_args_bailout_threshold: 2       # 工具入参规则压缩次数达此值后终止
+      # 豁免异步轮询作为断墙：image_get_run 直调与 invoke_tool 包装调用（按名豁免，脱离本段循环网，靠会话超时等兜底）
+      ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
+        - tool_name: invoke_tool
+          argument_equals:
+            tool_name: image_get_run
   # Skills 在线自演进配置
   evolution:
     enabled: true             # true = 启用在线 Skills 自演进（挂载后被动扫描始终开启）
@@ -861,6 +878,11 @@ embed:
   embed_api_key: ${EMBED_API_KEY}
   embed_base_url: ${EMBED_API_BASE}
   embed_model: ${EMBED_MODEL}
+
+# 定时任务面板限制。只作用于 Web 界面上「运行中」任务的新建和启动；
+# 会话、Cron 表达式、TUI 不读这项。企业版由 Manager 下发的 cron_policy 覆盖。
+cron:
+  max_jobs_per_user: 5
 
 task_memory:
   # Set enabled: true to activate TaskMemoryService skill tools
@@ -960,6 +982,10 @@ gateway:
       user_template: "yr:instance:{instance}"
       connect_timeout_s: 30
       client_keys_dir: "/root/.ssh"
+    auth_service_url: ${AGENTOS_AUTH_SERVICE_URL:-http://iam-agentos:8080}
+    timeout: ${AGENTOS_AUTH_TIMEOUT:-10}
+    # Web/TUI token 鉴权总开关；默认关闭。true 时创建 AgentOSAuthenticator 校验连接。
+    auth_enabled: false
 
 heartbeat:
   # 心跳间隔（秒），默认 3600
@@ -996,15 +1022,24 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # 策略级鉴权失败 / 凭证探测断路器（单 agent / flash）。
+  stalled_access:
+    enabled: true
+    auth_threshold: 5
+    probe_threshold: 3
+    window_seconds: 1800
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
-  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  # 不是 issue 级 OPEN/HALF_OPEN 恢复型熔断；
+  # non_retryable_tool 检测器也在此开关下；默认部署使用 agent_ras，
+  # 不消费 tool_result_contract，因此默认不会触发该检测器。
   circuit_breaker:
     enabled: false
     warning_threshold: 10
     critical_threshold: 20
     global_breaker_threshold: 30
     unknown_tool_threshold: 10
+    non_retryable_threshold: 3
 
 # Agent RAS 整体配置
 agent_ras:
@@ -1025,6 +1060,8 @@ agent_ras:
       # Match the outer tool and selected top-level arguments exactly.
       # Add rules for other polling functions without exempting the whole tool.
       ignored_tool_calls:
+        - tool_name: image_get_run
+          argument_equals: {}
         - tool_name: invoke_tool
           argument_equals:
             tool_name: image_get_run
@@ -1046,7 +1083,8 @@ agent_ras:
   # 恢复侧通用配置
   recovery:
     # LOW 警告时是否向用户推送可见 notice（steering 始终按 policy 执行）
-    notify_user_on_warning: true
+    # 默认 false：[工具调用异常] 等告警不再写入前台回复流，仅向模型注入 steering 自纠偏
+    notify_user_on_warning: false
 
 # web_enterprise 聊天附件上传（自部署 MinIO / S3 兼容对象存储）
 # 环境变量：OBS_URL / OBS_ACCESS_KEY / OBS_SECRET_KEY / OBS_BUCKET / OBS_SECURE / OBS_PUBLIC_BASE_URL / OBS_REGION
@@ -1218,6 +1256,15 @@ channels:
     listen_port: 2222
     host_key_path: ~/.jiuwenswarm/config/ssh_host_key
     relay_timeout_sec: 3600
+    auth:
+      # 公钥认证开关。true 时校验客户端公钥并签发临时密钥；false 为宽松认证。
+      enabled: true
+      # TUI 场景: 临时密钥有效期（秒）
+      ephemeral_key_ttl_sec: 300
+      # 临时密钥类型
+      ephemeral_key_type: "ssh-ed25519"
+      # 过期清理间隔（秒）
+      cleanup_interval_sec: 60
 
 # ========== 细粒度权限管控（tiered_policy）==========
 #
@@ -1516,7 +1563,6 @@ extensions:
   # EXTENSION_DIRS="E:/a;D:/b"
   extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
 
-
 # ============================================================
 # Hooks 配置
 # 17 个事件类型，支持 command / prompt 两种 hook 类型
@@ -1702,6 +1748,24 @@ modes:
 
       storage:
         type: sqlite
+        # SQLite pool / WAL knobs → openjiuwen DatabaseConfig via StorageSpec.params.
+        # Omitted keys fall back to product defaults in config_loader
+        # (_SQLITE_STORAGE_DEFAULTS). Explicit values below override defaults.
+        params:
+          # connection_string: team.db   # relative → ~/.…/agent-teams/team.db
+          db_timeout: 5
+          db_enable_wal: true
+          read_pool_size: 16
+          write_pool_size: 2
+          wal_checkpoint_interval_s: 30.0
+
+      # Process-wide Team LLM admission (especially when enable_swarmflow is false).
+      # max_concurrent_llm_calls: concurrent member LLM calls across the process.
+      #   null/omitted → 4 when swarmflow off, 0 (disabled) when swarmflow on
+      #   0            → disable this rail
+      #   N>0          → hard ceiling (queues excess callers)
+      resource_admission:
+        max_concurrent_llm_calls:
 
       # ============================================================
       # Team 级共享记忆（TeamMemoryConfig）
@@ -1744,17 +1808,18 @@ modes:
 # 演进）。行为定义（rail 白名单 / react 覆盖）硬编码在 JiuwenSwarmFlashAdapter
 # 类常量，不在此配置。enabled 控制「是否对普通 agent 对话注入 flash」；
 # skill_selection 仅配置 Flash 内可选的已安装技能检索模块。
-# 触发点在 mode 解析层（resolve_agent_request_mode）：置 true 时，所有归一到
-# agent 的对话请求被改写为 flash mode（无需前端发 mode=flash，配置即触发）；
-# code / team 路径不受影响。置 false（默认）时维持原 agent 行为。
+# 触发点在 mode 解析层：独立部署的普通单 Agent 请求可按此配置选择 Flash。
+# OfficeClaw/PC 前台仍按显式 mode 选择；Code、Team、显式 Plan 与已有会话绑定
+# 保持原规则。置 false（默认）时，普通单 Agent 默认走原 agent 实现。
 #   enabled: false（默认）— 普通对话走 DeepAdapter（全量 rail + task loop）。
 #   enabled: true        — 普通对话注入 flash，走 FlashAdapter facade。
 flash:
-  enabled: false
+  # 沙箱启动时注入；缺省关闭，配置加载后为布尔值。
+  enabled: ${JIUWENSWARM_FLASH_ENABLED:-false}
   # 必须在模板声明：启动清理及配置合并会删除模板中不存在的字段。
   # 模块可独立删除；这些默认值不启用功能，也不影响其他 Agent mode。
   skill_selection:
-    enabled: false
+    enabled: ${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}
     catalog_check_interval_s: 5.0
     candidate_k: 5
     text_max_chars: 2000

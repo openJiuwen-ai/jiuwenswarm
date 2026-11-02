@@ -6,12 +6,20 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+    _session_adapter_idle_ttl_default,
+)
 
 
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     """Create a bare adapter with internal state set via setattr."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    state.setdefault("_sessions_awaiting_tool_permission", set())
+    # Skill allow-list stamp bookkeeping (mirrors __init__; __new__ skips it).
+    state.setdefault("_skill_enabled_version", 0)
+    state.setdefault("_session_skill_versions", {})
+    state.setdefault("_session_skill_refresh_failures", {})
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
@@ -56,6 +64,22 @@ class _BlockingCleanupChildAdapter(_IdleChildAdapter):
         self.cleanup_started.set()
         await self.cleanup_can_finish.wait()
         await super().cleanup()
+
+
+def test_idle_ttl_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", "60")
+    assert _session_adapter_idle_ttl_default() == 60
+
+
+def test_idle_ttl_env_invalid_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    for bad in ("abc", "-1", "0", "   "):
+        monkeypatch.setenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", bad)
+        assert _session_adapter_idle_ttl_default() == 2 * 60 * 60
+
+
+def test_idle_ttl_env_absent_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC", raising=False)
+    assert _session_adapter_idle_ttl_default() == 2 * 60 * 60
 
 
 def test_other_active_sessions_treats_subagent_as_related() -> None:
@@ -133,6 +157,8 @@ async def test_cleanup_session_adapter_removes_idle_child_adapter() -> None:
         _session_adapter_last_used={"sess_exit": 1.0},
         _session_adapter_versions={"sess_exit": 1},
         _session_adapter_reload_failures={"sess_exit": (1, 1.0)},
+        _session_skill_versions={"sess_exit": 1},
+        _session_skill_refresh_failures={"sess_exit": (1, 1.0)},
     )
 
     removed = await getattr(parent, "cleanup_session_adapter")("sess_exit")
@@ -144,6 +170,8 @@ async def test_cleanup_session_adapter_removes_idle_child_adapter() -> None:
     assert getattr(parent, "_session_adapter_last_used") == {}
     assert getattr(parent, "_session_adapter_versions") == {}
     assert getattr(parent, "_session_adapter_reload_failures") == {}
+    assert getattr(parent, "_session_skill_versions") == {}
+    assert getattr(parent, "_session_skill_refresh_failures") == {}
 
 
 @pytest.mark.asyncio

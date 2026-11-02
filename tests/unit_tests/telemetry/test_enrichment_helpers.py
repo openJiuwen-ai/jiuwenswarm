@@ -444,7 +444,11 @@ def test_all_serializers_handle_unserializable_values_and_4096_limit() -> None:
     assert "<_Opaque>" in definitions
 
 
-def test_tool_arguments_and_results_are_individually_limited_to_4096_chars() -> None:
+def test_tool_arguments_and_results_follow_message_char_budget() -> None:
+    """Tool single-item fields (result content / call arguments) share the
+    message-level char budget instead of a fixed 4096 cap: with headroom the
+    payload passes through untruncated, and a tighter budget truncates each
+    item to the budget."""
     tool_result = json.loads(
         serialize_input_messages(
             [{"role": "tool", "content": "r" * 5_000}], max_chars=10_000
@@ -461,9 +465,27 @@ def test_tool_arguments_and_results_are_individually_limited_to_4096_chars() -> 
         )
     )
 
-    assert len(tool_result[0]["parts"][0]["content"]) == 4096
-    assert isinstance(output[0]["tool_calls"][0]["arguments"], str)
-    assert len(output[0]["tool_calls"][0]["arguments"]) == 4096
+    # Headroom: neither item is truncated; the arguments dict is small enough
+    # to fit the budget and is kept structured (see _bounded_value).
+    assert len(tool_result[0]["parts"][0]["content"]) == 5_000
+    assert output[0]["tool_calls"][0]["arguments"] == {"value": "a" * 5_000}
+
+    tight_result = serialize_input_messages(
+        [{"role": "tool", "content": "r" * 5_000}], max_chars=4_000
+    )
+    tight_output = serialize_output_message(
+        {
+            "tool_calls": [
+                {"name": "tool", "arguments": {"value": "a" * 5_000}}
+            ]
+        },
+        max_chars=4_000,
+    )
+
+    # Tight budget: the budget still caps the serialized output (best-effort
+    # truncation, same assertion style as the fixed-budget test above).
+    assert len(tight_result) == 4_000
+    assert len(tight_output) == 4_000
 
 
 @pytest.mark.parametrize(
@@ -522,6 +544,8 @@ def test_usage_extracts_nested_sdk_and_provider_specific_fields() -> None:
         cache_read_input_tokens=5,
         cache_creation_input_tokens=3,
         reasoning_output_tokens=2,
+        uncached_input_tokens=4,
+        cache_usage_observed=True,
     )
 
 
@@ -541,6 +565,8 @@ def test_usage_supports_flat_dict_aliases_and_never_raises_for_invalid_values() 
         cache_read_input_tokens=3,
         cache_creation_input_tokens=0,
         reasoning_output_tokens=0,
+        uncached_input_tokens=5,
+        cache_usage_observed=True,
     )
     assert extract_usage(None) == UsageBreakdown()
     assert extract_usage({"usage_metadata": {"input_tokens": True}}) == UsageBreakdown()
@@ -557,7 +583,61 @@ def test_usage_degrades_broken_top_level_and_nested_mapping_reads() -> None:
     assert extract_usage({"usage_metadata": partly_broken_usage}) == UsageBreakdown(
         output_tokens=4,
         total_tokens=4,
+        uncached_input_tokens=0,
     )
+
+
+def test_usage_computes_uncached_input_by_provider_style() -> None:
+    openai_style = {
+        "prompt_tokens": 10,
+        "prompt_tokens_details": {"cached_tokens": 4},
+    }
+    anthropic_style = {
+        "input_tokens": 10,
+        "cache_read_input_tokens": 4,
+    }
+
+    assert extract_usage(openai_style).uncached_input_tokens == 6
+    assert extract_usage(anthropic_style).uncached_input_tokens == 6
+    assert extract_usage({"prompt_tokens": 5}).uncached_input_tokens == 5
+
+
+def test_usage_computes_uncached_input_from_unified_metadata() -> None:
+    result = {
+        "input_tokens": 10,
+        "cache_read_tokens": 4,
+        "cache_write_tokens": 2,
+        "cache_creation_input_tokens": 2,
+    }
+
+    breakdown = extract_usage(result)
+
+    assert breakdown.input_tokens == 10
+    assert breakdown.cache_read_input_tokens == 4
+    assert breakdown.cache_creation_input_tokens == 2
+    assert breakdown.uncached_input_tokens == 4
+    assert breakdown.cache_usage_observed is True
+
+
+def test_usage_prefers_unified_cache_miss_tokens() -> None:
+    result = {
+        "input_tokens": 10,
+        "cache_read_tokens": 4,
+        "cache_write_tokens": 2,
+        "cache_miss_tokens": 3,
+    }
+
+    breakdown = extract_usage(result)
+
+    assert breakdown.uncached_input_tokens == 3
+    assert breakdown.cache_usage_observed is True
+
+
+def test_usage_without_cache_fields_is_not_cache_observed() -> None:
+    breakdown = extract_usage({"input_tokens": 10, "output_tokens": 2})
+
+    assert breakdown.cache_usage_observed is False
+    assert breakdown.uncached_input_tokens == 10
 
 
 def test_context_tokens_classify_all_components_and_each_skill(

@@ -96,7 +96,32 @@ class TestParser:
         assert opts.jiuwenswarm_trace_to_optimizer is False
         assert opts.data_root == "./data"
         assert opts.optimizer_model == "opt"
+        assert opts.skill_inits is None
         assert opts.is_exec_backend
+
+    @staticmethod
+    def test_skill_init_named_maps_to_skill_inits(stub_launch_api, monkeypatch):
+        monkeypatch.delenv("JIUWENSWARM_CLI_PATH", raising=False)
+        args = st.build_parser().parse_args([
+            "--skill-init", "legacy.md",
+            "--skill-init-named", "search=path/to/search/SKILL.md",
+            "--skill-init-named", "browse=path/to/browse/SKILL.md",
+        ])
+        assert args.skill_init_named == [
+            ("search", "path/to/search/SKILL.md"),
+            ("browse", "path/to/browse/SKILL.md"),
+        ]
+        opts = st._build_options(args)
+        assert opts.skill_init == ""
+        assert opts.skill_inits == {
+            "search": "path/to/search/SKILL.md",
+            "browse": "path/to/browse/SKILL.md",
+        }
+
+    @staticmethod
+    def test_parse_skill_init_named_rejects_bad_format():
+        with pytest.raises(SystemExit):
+            st.build_parser().parse_args(["--skill-init-named", "no-equals"])
 
     @staticmethod
     def test_cli_path_prefers_sibling_script(tmp_path, monkeypatch):
@@ -157,13 +182,37 @@ class TestRun:
 
         def _fake_train(opts):
             seen["opts"] = opts
-            return SimpleNamespace(best_score=0.75, output_dir="out/x")
+            return SimpleNamespace(best_score=0.75, output_dir="out/x", best_skills={"default": "body"})
 
         monkeypatch.setattr(stub_launch_api, "run_offline_training", _fake_train, raising=False)
         assert st.run_skill_train(args) == 0
         assert seen["opts"].limit == 1
         assert seen["opts"].target_backend == "jiuwenswarm_cli_exec"
         assert any("best_score=0.7500" in msg for msg in infos)
+        assert any("best_skill.md" in msg.replace("\\", "/") for msg in infos)
+
+    @staticmethod
+    def test_training_success_logs_multi_skill_paths(stub_launch_api, monkeypatch):
+        args = st.build_parser().parse_args([
+            "--skip-gateway-check",
+            "--skill-init-named", "a=a.md",
+            "--skill-init-named", "b=b.md",
+        ])
+        infos = _capture_logger_info(monkeypatch)
+
+        def _fake_train(opts):
+            assert opts.skill_inits == {"a": "a.md", "b": "b.md"}
+            return SimpleNamespace(
+                best_score=0.5,
+                output_dir="out/multi",
+                best_skills={"a": "A", "b": "B"},
+            )
+
+        monkeypatch.setattr(stub_launch_api, "run_offline_training", _fake_train, raising=False)
+        assert st.run_skill_train(args) == 0
+        joined = "\n".join(infos).replace("\\", "/")
+        assert "best_skills/a/SKILL.md" in joined
+        assert "best_skills/b/SKILL.md" in joined
 
     @staticmethod
     def test_eval_only(stub_launch_api, monkeypatch):

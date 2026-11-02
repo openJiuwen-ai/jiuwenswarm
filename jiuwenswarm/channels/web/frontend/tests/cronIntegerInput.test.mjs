@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   INTERVAL_MAX_HOURS,
   INTERVAL_MAX_MINUTES,
+  INTERVAL_MIN_MINUTES,
   isIntervalValueInRange,
   normalizeDigitsInput,
   parseDigitInt,
@@ -44,12 +45,14 @@ test('parseIntervalField uses finite max+1 for digit strings longer than the lim
   assert.equal(parseIntervalField('1' + '0'.repeat(20), 'minutes'), INTERVAL_MAX_MINUTES + 1);
 });
 
-test('isIntervalValueInRange matches 1–24 hours and 1–1440 minutes', () => {
+test('isIntervalValueInRange matches 1–24 hours and 5–1440 minutes', () => {
   assert.equal(isIntervalValueInRange(undefined, 'hours'), false);
   assert.equal(isIntervalValueInRange(0, 'hours'), false);
   assert.equal(isIntervalValueInRange(1, 'hours'), true);
   assert.equal(isIntervalValueInRange(INTERVAL_MAX_HOURS, 'hours'), true);
   assert.equal(isIntervalValueInRange(INTERVAL_MAX_HOURS + 1, 'hours'), false);
+  assert.equal(isIntervalValueInRange(INTERVAL_MIN_MINUTES - 1, 'minutes'), false);
+  assert.equal(isIntervalValueInRange(INTERVAL_MIN_MINUTES, 'minutes'), true);
   assert.equal(isIntervalValueInRange(INTERVAL_MAX_MINUTES, 'minutes'), true);
   assert.equal(isIntervalValueInRange(INTERVAL_MAX_MINUTES + 1, 'minutes'), false);
   assert.equal(isIntervalValueInRange(Number.POSITIVE_INFINITY, 'minutes'), false);

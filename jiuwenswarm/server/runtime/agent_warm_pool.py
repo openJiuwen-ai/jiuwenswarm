@@ -20,6 +20,7 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
 )
+from jiuwenswarm.common.config import resolve_config_env_vars
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.runtime.session import project_store
 
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Background prewarming is on by default and can be opted out of through the
+# Background prewarming is off by default and is only activated through the
 # environment. Once off, sessions are allocated an id immediately and initialize
 # lazily on their first request.
 _PREWARM_ENABLED_ENV_KEY = "JIUWENSWARM_AGENT_PREWARM"
@@ -38,12 +39,12 @@ _PREWARM_ON_VALUES = frozenset({"1", "true", "yes", "on"})
 _PREWARM_OFF_VALUES = frozenset({"0", "false", "no", "off"})
 
 
-def _prewarm_enabled_by_env() -> bool:
+def prewarm_enabled_by_env() -> bool:
     """Return whether background session prewarming is switched on.
 
     Returns:
-        The explicit environment choice, or True when the switch is unset or
-        carries an unrecognized value.
+        True only when the environment explicitly opts in; False when the
+        switch is unset or carries an unrecognized value.
 
     企业版模型依赖请求 ``metadata.routing``（含 ``bot_id``）。预热路径没有
     identity，会落到空 ``config.yaml`` 并打 ERROR；因此企业版强制关闭会话预热，
@@ -52,15 +53,15 @@ def _prewarm_enabled_by_env() -> bool:
     if is_enterprise():
         return False
     raw = str(os.environ.get(_PREWARM_ENABLED_ENV_KEY, "") or "").strip().lower()
-    if raw in _PREWARM_OFF_VALUES:
-        return False
-    if raw not in _PREWARM_ON_VALUES and raw:
+    if raw in _PREWARM_ON_VALUES:
+        return True
+    if raw and raw not in _PREWARM_OFF_VALUES:
         logger.warning(
-            "Ignoring unrecognized %s value %r; keeping prewarming enabled.",
+            "Ignoring unrecognized %s value %r; keeping prewarming disabled.",
             _PREWARM_ENABLED_ENV_KEY,
             raw,
         )
-    return True
+    return False
 
 
 def _zero_stats() -> dict[str, int]:
@@ -86,10 +87,11 @@ class WarmKey:
     project_dir: str
     work_mode: str
     is_swarm: bool = False
+    adapter_mode: str = "agent"
 
     @property
     def agent_mode(self) -> str:
-        return "code" if self.work_mode == "code" else "agent"
+        return self.adapter_mode
 
     @property
     def agent_sub_mode(self) -> str | None:
@@ -135,7 +137,7 @@ class AgentWarmPool:
         enabled: bool | None = None,
     ) -> None:
         self._manager = manager
-        self._enabled = _prewarm_enabled_by_env() if enabled is None else bool(enabled)
+        self._enabled = prewarm_enabled_by_env() if enabled is None else bool(enabled)
         self._boot_id = uuid.uuid4().hex
         self._sequence = 0
         self._revision = WarmRevision(self._boot_id, "", 0)
@@ -183,13 +185,22 @@ class AgentWarmPool:
         project_dir: str | None,
         work_mode: str,
         is_swarm: bool = False,
+        adapter_mode: str | None = None,
     ) -> WarmKey:
+        normalized_adapter_mode = str(adapter_mode or "").strip().lower()
+        if not normalized_adapter_mode:
+            normalized_adapter_mode = (
+                "code" if str(work_mode).strip().lower() == "code" else "agent"
+            )
+        if normalized_adapter_mode not in {"agent", "code", "flash"}:
+            normalized_adapter_mode = "agent"
         return WarmKey(
             channel_id=str(channel_id or "default").strip() or "default",
             project_id=str(project_id or "").strip(),
             project_dir=_normalize_project_dir(project_dir),
             work_mode="code" if str(work_mode).strip().lower() == "code" else "work",
             is_swarm=bool(is_swarm),
+            adapter_mode=normalized_adapter_mode,
         )
 
     @staticmethod
@@ -232,6 +243,7 @@ class AgentWarmPool:
                 "project_dir": key.project_dir,
                 "work_mode": key.work_mode,
                 "is_swarm": key.is_swarm,
+                "adapter_mode": key.adapter_mode,
             },
         }
         self._marker_path(session_id).write_text(
@@ -267,7 +279,11 @@ class AgentWarmPool:
             except (OSError, ValueError, TypeError):
                 logger.warning("Invalid prewarm marker left in place: %s", marker)
 
-    def _desired_keys(self, enabled_channels: set[str] | None = None) -> set[WarmKey]:
+    def _desired_keys(
+        self,
+        enabled_channels: set[str] | None = None,
+        config: Any | None = None,
+    ) -> set[WarmKey]:
         channels = (
             self._enabled_channels if enabled_channels is None else enabled_channels
         )
@@ -281,12 +297,25 @@ class AgentWarmPool:
                 (DEFAULT_PROJECT_ID_CODE, "", "code"),
             ]
         )
+        flash_enabled = False
+        if isinstance(config, dict):
+            flash_config = resolve_config_env_vars(config).get("flash")
+            flash_enabled = bool(
+                flash_config.get("enabled", False)
+                if isinstance(flash_config, dict)
+                else False
+            )
         return {
             self.make_key(
                 channel_id=channel,
                 project_id=project_id,
                 project_dir=project_dir,
                 work_mode=work_mode,
+                adapter_mode=(
+                    "code"
+                    if work_mode == "code"
+                    else ("flash" if flash_enabled else "agent")
+                ),
             )
             for channel in channels
             for project_id, project_dir, work_mode in records
@@ -321,7 +350,7 @@ class AgentWarmPool:
         # Project discovery can touch persistent metadata. Keep it outside both
         # the AgentServer event loop and the pool lock, then reconcile against
         # one immutable target snapshot.
-        desired = await asyncio.to_thread(self._desired_keys, channels)
+        desired = await asyncio.to_thread(self._desired_keys, channels, config)
         async with self._lock:
             if self._closed:
                 return _zero_stats()
@@ -469,6 +498,8 @@ class AgentWarmPool:
 
     async def begin_foreground(self) -> None:
         """Preempt speculative preparation while a real chat is active."""
+        if not self._enabled:
+            return
         cancelled = 0
         async with self._lock:
             self._foreground_count += 1
@@ -490,6 +521,8 @@ class AgentWarmPool:
 
     async def end_foreground(self) -> None:
         """Resume lazy background preparation after the final chat completes."""
+        if not self._enabled:
+            return
         async with self._lock:
             self._foreground_count = max(0, self._foreground_count - 1)
             if self._foreground_count == 0:
@@ -545,6 +578,7 @@ class AgentWarmPool:
                         session_id=session_id,
                         channel_id=key.channel_id,
                         mode=("code.normal" if key.work_mode == "code" else "agent"),
+                        adapter_mode=key.adapter_mode,
                         project_dir=key.project_dir or None,
                     )
             logger.info(

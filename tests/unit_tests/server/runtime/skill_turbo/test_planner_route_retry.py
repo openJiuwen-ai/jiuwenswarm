@@ -111,3 +111,61 @@ class TestMatchSkillRouteRetry:
 
         assert skill is not None and skill.name == "ppt"
         assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,query", [
+    ("docx", "编辑 Word 报告，修改要求：使用正式语气"),
+    ("xlsx", "按模板生成 Excel 月度预算工作簿"),
+])
+async def test_office_route_retains_scope_independently_of_ppt_rules(name, query):
+    output = json.dumps({"skill_name": name, "confidence": 0.95, "reason": "匹配任务产物"})
+    client, calls = _client_with_outputs([[output]])
+    env = _env(client)
+    env.skills[name] = SimpleNamespace(name=name, description=query, match_keywords=[name])
+    skill = await SkillTurboPlanner(env).match_skill(query)
+    assert skill is env.skills[name]
+    assert len(calls) == 1
+    system = calls[0][0]["content"]
+    payload = json.loads(calls[0][1]["content"])
+    assert "PPT 准入与排除规则仅约束 PPT 候选" in system
+    assert "只有全部不适配时才返回 skill_name=null" in system
+    assert payload["task"] == query
+    assert {item["name"] for item in payload["registered_skills"]} == {"ppt", name}
+    assert next(item for item in payload["registered_skills"] if item["name"] == name)["description"] == query
+
+
+class TestPlannerPrechecks:
+    """plan 前置检查三分支（S_02 边界 15/16）：不发起 LLM 调用直接降级 None。
+
+    防护意图：model_client 缺失曾表现为"无匹配 skill"静默降级，难定位
+    （契约接线类根因）；前置分支零 LLM 调用是可精确断言的成本契约。
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_task_returns_none_without_llm_call(self):
+        client, calls = _client_with_outputs([[_ROUTE_OK]])
+        planner = SkillTurboPlanner(_env(client))
+
+        assert await planner.plan("   ") is None
+        assert calls == [], "空 task 必须在前置检查返回，不得消耗 LLM 调用"
+
+    @pytest.mark.asyncio
+    async def test_no_registered_skills_returns_none_without_llm_call(self):
+        client, calls = _client_with_outputs([[_ROUTE_OK]])
+        env = _env(client)
+        env.skills = {}
+        planner = SkillTurboPlanner(env)
+
+        assert await planner.plan("生成一份PPT") is None
+        assert calls == [], "无注册技能必须直接降级，不得发起路由 LLM 调用"
+
+    @pytest.mark.asyncio
+    async def test_missing_model_client_returns_none_without_llm_call(self):
+        client, calls = _client_with_outputs([[_ROUTE_OK]])
+        env = _env(client)
+        env.model_client = None
+        planner = SkillTurboPlanner(env)
+
+        assert await planner.plan("生成一份PPT") is None
+        assert calls == [], "model_client 缺失必须直接降级（S_02 边界 15）"

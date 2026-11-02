@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, ChevronUp, Columns2, FileCode2, Files, Folder, List, LoaderCircle, RefreshCw, Search } from 'lucide-react';
 import type { ProjectInfo, WebError } from '../../types';
+import { CodeCommitPushControl } from './CodeCommitPushControl';
 import { gitClient } from './gitClient';
 import type { CodeReviewTarget, GitDiffFile, GitDiffHunk, GitDiffStats, GitTurnDiff } from './types';
 import type { CodeGitDiffWatchController } from './useCodeGitDiffWatch';
@@ -222,6 +223,7 @@ interface CodeReviewPanelProps {
   sessionId: string;
   target?: CodeReviewTarget | null;
   diffWatch: CodeGitDiffWatchController;
+  isProcessing: boolean;
 }
 
 type CodeReviewSource = 'last_turn' | 'working_tree';
@@ -256,7 +258,7 @@ function getReviewErrorMessage(error: unknown): string {
   }
 }
 
-export function CodeReviewPanel({ project, sessionId, target = null, diffWatch }: CodeReviewPanelProps) {
+export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, isProcessing }: CodeReviewPanelProps) {
   const [source, setSource] = useState<CodeReviewSource>(target?.source === 'working_tree' ? 'working_tree' : 'last_turn');
   const [turnDiff, setTurnDiff] = useState<GitTurnDiff | null>(null);
   const [turnLoading, setTurnLoading] = useState(false);
@@ -593,6 +595,17 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch }
           <span className="code-review__stat code-review__stat--removed">-{stats.lines_removed}</span>
         </div>
         <div className="code-review__toolbar-spacer" />
+        <CodeCommitPushControl
+          project={project}
+          branch={diffWatch.summary?.repo.branch || project.git.branch || null}
+          hasChanges={Boolean(diffWatch.summary?.current?.is_dirty)}
+          filesChanged={diffWatch.summary?.current?.stats.files_changed ?? 0}
+          isGit={Boolean(diffWatch.summary?.repo.is_git)}
+          transient={Boolean(diffWatch.summary?.repo.transient)}
+          isProcessing={isProcessing}
+          variant="review"
+          onSuccess={diffWatch.refresh}
+        />
         <button type="button" className="code-review__icon-button" onClick={reload} title="刷新审核结果">
           <RefreshCw size={16} />
         </button>

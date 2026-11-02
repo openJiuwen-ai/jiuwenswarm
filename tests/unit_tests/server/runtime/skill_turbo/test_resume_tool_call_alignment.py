@@ -15,13 +15,16 @@ ask_user_rail user_input=None → 再次 interrupt → 死循环。
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.executor import (
     SkillTurboExecutor,
     _parse_call_idx_from_call_id,
     _parse_tool_name_from_call_id,
 )
+from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 
 
 def _make_executor() -> SkillTurboExecutor:
@@ -31,6 +34,30 @@ def _make_executor() -> SkillTurboExecutor:
         "jiuwenswarm.server.runtime.skill_turbo.skill_codes",
     )
     return SkillTurboExecutor(environment=env)
+
+
+@pytest.mark.asyncio
+async def test_use_tool_rejects_hitl_pause_without_model_identity(monkeypatch):
+    """没有唯一模型身份时，SkillTurbo 不应保存不可恢复的 resume_ctx。"""
+    ex = _make_executor()
+    ex._execution_inputs = {"metadata": {}}
+    ex._current_plan_code = "plan"
+    ex._snapshot_task_states = lambda: []  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        ex,
+        "_run_rail_hook",
+        AsyncMock(side_effect=AbortError("hitl")),
+    )
+    save_resume_ctx = AsyncMock()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill_turbo.executor.save_resume_ctx",
+        save_resume_ctx,
+    )
+
+    with pytest.raises(RuntimeError, match="model identity is unavailable"):
+        await ex.use_tool("ask_user")
+
+    save_resume_ctx.assert_not_awaited()
 
 
 class TestParseToolNameFromCallId:

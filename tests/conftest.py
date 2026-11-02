@@ -8,7 +8,7 @@ import tempfile
 import warnings
 from importlib import import_module, invalidate_caches
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Generator
 
 import pytest
@@ -171,8 +171,32 @@ def _install_missing_extensions_observability_stub() -> None:
 
         return bool(core_obs.is_initialized())
 
+    def _force_flush_provider(timeout_millis: int = 5000) -> None:
+        return None
+
+    def _get_config():
+        return None
+
+    def _get_observability_runtime():
+        return SimpleNamespace(
+            get_config=lambda: None,
+            is_initialized=lambda: False,
+            get_tracer=lambda name: None,
+        )
+
+    def _init_observability(*args, **kwargs):
+        return None
+
+    def _shutdown_observability(*args, **kwargs):
+        return None
+
     setup.get_tracer = _get_tracer
     setup.is_initialized = _is_initialized
+    setup.force_flush_provider = _force_flush_provider
+    setup.get_config = _get_config
+    setup.get_observability_runtime = _get_observability_runtime
+    setup.init_observability = _init_observability
+    setup.shutdown_observability = _shutdown_observability
 
     semconv = _ensure_module("openjiuwen.extensions.observability.semconv")
     semconv.LANGFUSE_SESSION_ID = "langfuse.session.id"

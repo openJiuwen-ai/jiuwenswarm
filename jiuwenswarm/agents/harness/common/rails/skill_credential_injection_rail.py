@@ -354,11 +354,15 @@ class SkillCredentialInjectionRail(DeepAgentRail):
 
     三分支（执行位判定，CR-1/CR-2 修正后）：
     1. 命令**执行**当前激活技能的脚本（执行位命中，matched == active）
-       → 注入该技能凭据；参数位/只读引用（cat/grep/--ref 等）不参与匹配；
+       → 注入该技能凭据（配置权威覆盖：模型 env 已带的同名凭据 key 一律
+       被当前配置值覆盖，防凭据轮换后模型从历史回写的旧值回流执行）；
+       参数位/只读引用（cat/grep/--ref 等）不参与匹配；
     2. 命令**执行**另一个有凭据技能的脚本 → 闸门拒绝并指引激活（逃生口：
-       tool_args["env"] 显式携带该技能凭据 key 时放行，且不再注入 active
-       技能的凭据，避免跨技能泄漏）；执行位命中**多个**技能时指引拆分为
-       多条命令分别激活（单激活语义下「激活后重跑」会乒乓循环）；
+       tool_args["env"] 显式携带该技能凭据 key 时放行，放行前仅把模型已
+       带入的同名凭据 key 刷新为当前配置值（陈旧值覆盖，不补全其余 key，
+       跨技能隔离不变），且不再注入 active 技能的凭据）；执行位命中**多个**
+       技能时指引拆分为多条命令分别激活（单激活语义下「激活后重跑」会
+       乒乓循环）；
     3. 命令无执行位脚本（只读引用/cd+相对路径/裸文件名/无凭据技能/非
        脚本形态）→ 回退按 active 注入，与既有行为一致（零回归）。
     """
@@ -420,8 +424,20 @@ class SkillCredentialInjectionRail(DeepAgentRail):
                 return
             gate_skill = other_skills[0]
             if self._has_explicit_skill_env(tool_args, gate_skill):
-                # 逃生口：模型显式传了该技能的凭据 key，按原样执行；
+                # 逃生口：模型显式传了该技能的凭据 key，放行执行；
                 # 不再注入 active 技能凭据（防跨技能泄漏）。
+                # 配置权威覆盖：只刷新模型已带入的同名凭据 key（典型为凭据
+                # 轮换后从历史回写的旧值抄写），不补全模型未提供的 key，
+                # 跨技能隔离不变。
+                gate_credentials = self._skill_envs.get(gate_skill, {})
+                gate_env = tool_args.get("env") if isinstance(tool_args, dict) else None
+                if gate_credentials and isinstance(gate_env, dict):
+                    self._override_env_keys(
+                        tool_args,
+                        {k: v for k, v in gate_credentials.items() if k in gate_env},
+                        tool_name,
+                        skill=gate_skill,
+                    )
                 logger.info(
                     "[SkillCredentialInjectionRail] explicit env for skill=%s, "
                     "skip active-skill injection (active=%s) session=%s",
@@ -452,7 +468,9 @@ class SkillCredentialInjectionRail(DeepAgentRail):
 
         # 注入凭据到 tool_args["env"]，BashTool 会转发给子进程。
         # 同时处理 PowerShell '&' 语法（去前缀保持 auto shell）。
-        self._inject_credentials(ctx.inputs, credentials, tool_name)
+        self._inject_credentials(
+            ctx.inputs, credentials, tool_name, skill=active_skill
+        )
         logger.debug(
             "[SkillCredentialInjectionRail] injected env keys=%s for skill=%s tool=%s",
             list(credentials.keys()),
@@ -506,8 +524,44 @@ class SkillCredentialInjectionRail(DeepAgentRail):
     def _resolve_session_id(self, ctx: AgentCallbackContext) -> str:
         return resolve_skill_session_id(ctx, self._preset_session_id)
 
+    def _override_env_keys(
+        self,
+        tool_args: dict[str, Any],
+        credentials: dict[str, str],
+        tool_name: str,
+        skill: str | None = None,
+    ) -> None:
+        """配置权威覆盖：技能凭据 key 一律写入当前配置值。
+
+        模型 env 里已存在的同名凭据 key 会被覆盖 —— 旧值典型来源是历史
+        回写后被模型模仿抄写的陈旧凭据（凭据轮换后 tool_call 历史仍带旧
+        值，模型照抄导致过期凭据透传执行）。仅覆盖技能凭据 key，模型传入
+        的其他 env 项不动。
+        """
+        env = tool_args.get("env")
+        if not isinstance(env, dict):
+            env = {}
+        for key, value in credentials.items():
+            if value in (None, ""):
+                continue
+            if key in env and env.get(key) != value:
+                logger.warning(
+                    "[SkillCredentialInjectionRail] override env key=%s for "
+                    "skill=%s tool=%s (previous value differs from current "
+                    "skill_envs, e.g. stale credential copied from context)",
+                    key,
+                    skill or "-",
+                    tool_name,
+                )
+            env[key] = value
+        tool_args["env"] = env
+
     def _inject_credentials(
-        self, inputs: ToolCallInputs, credentials: dict[str, str], tool_name: str
+        self,
+        inputs: ToolCallInputs,
+        credentials: dict[str, str],
+        tool_name: str,
+        skill: str | None = None,
     ) -> None:
         tool_args: Any = inputs.tool_args
         if tool_args is None:
@@ -534,13 +588,7 @@ class SkillCredentialInjectionRail(DeepAgentRail):
             if _should_strip_powershell_amp_prefix(tool_name, command, shell_type):
                 tool_args["command"] = command.lstrip()[2:].lstrip()
 
-            env = tool_args.get("env")
-            if not isinstance(env, dict):
-                env = {}
-            for key, value in credentials.items():
-                if key not in env and value not in (None, ""):
-                    env[key] = value
-            tool_args["env"] = env
+            self._override_env_keys(tool_args, credentials, tool_name, skill=skill)
 
 
 __all__ = [

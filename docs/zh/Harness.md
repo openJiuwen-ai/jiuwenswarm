@@ -110,7 +110,11 @@ Tool & Execution 是 Harness 把模型意图落到真实环境的执行层。工
 
 `SysOperationRail` 注册文件、Shell 和可选 code tool。所有系统操作通过共享 `SysOperation` 执行，从而统一接入本地执行、沙箱、工作目录限制和权限控制。
 
-当工具集很大时，`ProgressiveToolRail` 负责渐进式工具暴露：模型默认只看到元工具和基础工具，再通过 `tool_search` 搜索工具，通过 `load_tools` 加载当前 session 需要的工具，减少上下文噪声和误用高风险工具的概率。
+当工具集很大时，`ProgressiveToolRail` 按 `react.tool_lazy_load` 配置渐进式暴露工具：模型默认只看到 eager 工具，再通过 `tools_search` 搜索工具、`invoke_tool` 按需调用，避免全量工具 schema 占满上下文。`enabled` 和 `enable_for_models` 分别控制总开关与模型白名单。
+
+code.normal/code.plan 从会话首次创建起即挂载该 rail，热重载沿用同一策略；code.team 对齐普通 team，首建和热重载均不新增该 rail，历史误挂实例会在重载时注销，保留协作及工作区工具的直接可见性。LSP（`lsp`）、`coding_memory_read/write/edit`、`switch_mode`、`enter_plan_mode`、`exit_plan_mode` 在单 agent code 中补入 eager 名单；最终可见性仍受模式、技能门控及禁用工具策略约束。非 eager 的请求级 MCP 工具进入延迟池，按当前请求的 allowlist 调用；子代理继续由 `tool_lazy_load.subagents` 独立控制。普通 agent/team 的行为不变；team 成员携带大量 MCP schema 的上下文风险仍存在。
+
+code 适配器的首次创建将 `None`、空字符串及纯空白按 normal 处理，忽略大小写和首尾空格。技能或插件安装触发无参 `create_instance()` 重建时，`sub_mode=None` 保留已保存的 profile，并传给本次 rail 装配和后续 session 子适配器；显式传入 normal 或空白可切回 normal。首建将有效 sub_mode 显式传给懒加载 builder，配置热重载未传时使用 `_session_instance_sub_mode`；team 在完整及部分配置重载时均不会新增该 rail。每次 code 挂载只输出一条适配器挂载日志，使用 `[JiuwenSwarmCodeAdapter] ProgressiveToolRail mounted`，包含规范化 sub_mode 与 progressive/skill-gate-only 状态。
 
 权限治理由 `PermissionEngine` 和 `PermissionInterruptRail` 组成。`PermissionEngine` 负责 allow / ask / deny 策略评估，`PermissionInterruptRail` 负责在工具调用前拦截所有工具，执行直接放行、直接拒绝、HITL 确认、“允许一次”和“总是允许”等流程。Shell 命令会经过 AST 分析，外部路径检查会与当前决策取更严格结果。
 

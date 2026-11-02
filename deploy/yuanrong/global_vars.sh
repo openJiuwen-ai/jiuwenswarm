@@ -58,4 +58,6 @@ declare -A DEPLOY_VARS=(
     ["SANDBOX_IDLE_TIMEOUT_SECONDS"]=""
     ["OS_TYPE"]=""
     ["EXTENSION_DIRS"]=""
+    ["AGENTOS_AUTH_SERVICE_URL"]=""
+    ["AGENTOS_AUTH_TIMEOUT"]=""
 )

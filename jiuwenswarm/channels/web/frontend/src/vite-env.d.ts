@@ -56,6 +56,8 @@ interface Window {
   __JIUWEN_LOGIN_AUTH_SIMULATE__?: boolean | string;
   /** Web transport mode injected by the User Web server (websocket | http). */
   __JIUWEN_WEB_TRANSPORT__?: string;
+  /** Default request timeout in seconds, injected by the User Web server. */
+  __JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS__?: string;
   /** Workspace quota feature flag injected at serve time (WORKSPACE_QUOTA_ENABLED). */
   __WORKSPACE_QUOTA_ENABLED__?: boolean | string;
 }

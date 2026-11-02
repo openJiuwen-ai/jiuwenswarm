@@ -99,41 +99,32 @@ class A2UIProtocolSpec:
     ) -> str:
         if language in {"zh", "cn"}:
             role = (
-                "JiuwenSwarm 支持可选的 A2UI 输出格式。当富交互界面适合当前回答时，"
-                "可以生成严格符合 A2UI 0.8 schema 的消息。"
+                "JiuwenSwarm 支持 A2UI 输出格式。当富交互界面适合当前回答时，"
+                "应生成严格符合 A2UI 0.8 schema 的消息。"
             )
             ui = (
-                "当用户需要列表、卡片、表单、确认结果、可点击操作或结构化信息比较时使用 A2UI。"
-                "普通解释、简短回答、敏感内容或不需要交互的回答保持纯文本。"
+                "交互场景用 A2UI，非交互（纯叙述、简短事实、寒暄）保持纯文本。"
             )
             workflow = (
-                "如果使用 A2UI，回答可以包含说明文本和一个或多个 A2UI JSON block。"
-                f"每个 block 必须用 {A2UI_OPEN_TAG} 和 {A2UI_CLOSE_TAG} 包装。"
-                "block 内必须是 JSON list，list 中每个元素都是 A2UI server-to-client message。"
-                "必须先输出 beginRendering，再输出 surfaceUpdate；如果使用数据绑定，再按需输出 dataModelUpdate。"
-                "父组件必须先于子组件出现。不要输出其他协议版本的 schema、字段或组件。"
+                "如果使用 A2UI，必须先输出 beginRendering，再输出 surfaceUpdate；"
+                "如果使用数据绑定，再按需输出 dataModelUpdate。"
+                "不要输出其他协议版本的 schema、字段或组件。"
             )
         else:
             role = (
-                "JiuwenSwarm supports an optional A2UI output format. When a rich "
+                "JiuwenSwarm supports A2UI output format. When a rich "
                 "interactive answer is appropriate, generate messages that "
                 "strictly validate against the A2UI 0.8 schema."
             )
             ui = (
-                "Use A2UI for lists, cards, forms, confirmations, clickable "
-                "actions, and structured comparisons. Keep ordinary explanations, "
-                "short answers, sensitive answers, and non-interactive replies as "
-                "plain text."
+                "Use A2UI for interactive scenarios; keep non-interactive "
+                "replies (narrative, brief facts, greetings) as plain text."
             )
             workflow = (
-                "When using A2UI, the response may contain conversational text and "
-                f"one or more A2UI JSON blocks wrapped in {A2UI_OPEN_TAG} and "
-                f"{A2UI_CLOSE_TAG}. The JSON inside each block MUST be a JSON list "
-                "of A2UI server-to-client messages. Emit beginRendering before "
-                "surfaceUpdate; include dataModelUpdate only when data binding is "
-                "needed. List parent components before child components. Do not "
-                "emit schema, fields, or components from any protocol version "
-                "other than 0.8."
+                "When using A2UI, emit beginRendering before surfaceUpdate; "
+                "include dataModelUpdate only when data binding is needed. "
+                "Do not emit schema, fields, or components from any protocol "
+                "version other than 0.8."
             )
 
         workflow = f"{workflow}\n\n{build_a2ui_autonomy_instruction(language)}"
@@ -255,7 +246,13 @@ def format_a2ui_for_text_channel(content: str, version: str = VERSION_0_8) -> st
 
 
 def format_content_for_channel(content: str, channel_id: str | None) -> str:
-    if str(channel_id or "").lower() == "web":
+    # web/officeclaw 是原生 a2ui 渲染渠道：直接透传原始 <a2ui-json> 块（前端自行提取渲染）。
+    # 注意 1：本函数当前全仓无生产调用方（历史遗留导出，网关侧
+    #   apply_non_web_text_fallback_to_payload 已是 no-op）；未来若接线，调用方必须先过
+    #   a2ui.enabled 配置门控，否则关闭态下 officeclaw 会把协议原文直接透传给用户。
+    # 注意 2：渠道集合与 integration._A2UI_CHANNEL_IDS 保持同步（protocol 不能反向
+    #   import integration——循环依赖，故此处内联字面量并加本注释锚定）。
+    if str(channel_id or "").lower() in {"web", "officeclaw"}:
         return content
     spec = get_protocol_spec()
     if not spec.may_contain_a2ui_content(content):

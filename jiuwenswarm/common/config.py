@@ -159,6 +159,33 @@ def resolve_env_vars(value: Any) -> Any:
         return value
 
 
+def _normalize_flash_config(config: dict[str, Any]) -> None:
+    """统一 Flash 布尔类型，并让旧配置无需手改即可接受部署环境变量。"""
+    flash = config.get("flash")
+    if not isinstance(flash, dict):
+        return
+    switches = (
+        (flash, "JIUWENSWARM_FLASH_ENABLED"),
+        (flash.get("skill_selection"), "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED"),
+    )
+    for section, env_name in switches:
+        if not isinstance(section, dict):
+            continue
+        value = section.get("enabled", False)
+        if isinstance(value, bool):
+            # 旧 YAML / provider 的布尔值仅作回退；复用与模板相同的占位符解析。
+            default = str(value).lower()
+            value = resolve_env_vars("${" + env_name + ":-" + default + "}")
+        section["enabled"] = coerce_config_bool(value, default=False)
+
+
+def resolve_config_env_vars(config: dict[str, Any]) -> dict[str, Any]:
+    """解析完整配置快照；保持输入不变，并统一 Flash 开关的布尔类型。"""
+    resolved = resolve_env_vars(config)
+    _normalize_flash_config(resolved)
+    return resolved
+
+
 def _normalize_config(config: dict[str, Any] | None) -> None:
     """后处理配置，将需要结构化的字符串字段解析为原生类型。
 
@@ -352,14 +379,14 @@ def get_config():
                 config_base = fill_template_defaults(
                     supplied, load_yaml_dict(resolve_shipped_template_config_path())
                 )
-                config_base = resolve_env_vars(config_base)
+                config_base = resolve_config_env_vars(config_base)
                 _normalize_config(config_base)
         except Exception:
             logger.warning("config provider failed, fallback to yaml", exc_info=True)
             config_base = None
     if config_base is None:
         config_base = get_merged_config_dict()
-        config_base = resolve_env_vars(config_base)
+        config_base = resolve_config_env_vars(config_base)
         _normalize_config(config_base)
 
     with _config_lock:

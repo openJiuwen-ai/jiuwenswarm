@@ -38,7 +38,7 @@ def edge_key(source: Any, target: Any, relation_type: str = CAN_FEED) -> str:
 
 def skill_id(node_id: Any) -> str:
     text = str(node_id or "")
-    return text.removeprefix("skill:")
+    return text.removeprefix("skill:").removeprefix("capability:")
 
 
 def normalize_edge(item: Any) -> dict[str, Any] | None:

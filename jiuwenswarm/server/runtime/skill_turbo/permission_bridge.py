@@ -39,6 +39,8 @@ from jiuwenswarm.server.runtime.skill_turbo.resume_context import (  # noqa: F40
     set_skill_turbo_id,
 )
 
+SKILL_TURBO_MODEL_IDENTITY_KEY = "__skill_turbo_model_identity__"
+
 logger = logging.getLogger(__name__)
 
 
@@ -132,8 +134,9 @@ def build_interaction_output_from_abort(
     ``InteractionOutput(id=tcid, value=tool_call_request)`` 并放入
     ``OutputSchema(type="__interaction__", payload=interaction_payload)``。
 
-    供 SkillTurbo executor（中断侧主动写流）和 DeepAdapter（``_emit_skill_turbo_hitl_chunks``
-    二次中断兜底）共用，保持构造逻辑一致。
+    Path A 删除后暂无生产调用方（发卡单路 owner 已收口为 harness
+    ``__interaction__`` 转换，[[S_06]] N8）；保留构造实现待未来消费方，
+    长期无消费者可随下次死代码清理删除。
 
     Args:
         exc: ``AbortError``（其 cause 链含 ``ToolInterruptException``）。
@@ -197,6 +200,7 @@ async def save_resume_ctx(
     inputs: dict[str, Any],
     pending_tool_call_id: str,
     task_states: list[dict[str, Any]] | None = None,
+    outer_task_id: str | None = None,
 ) -> None:
     """中断时保存断点上下文到 session state（checkpointer 持久化）。
 
@@ -210,6 +214,7 @@ async def save_resume_ctx(
         inputs=inputs,
         pending_tool_call_id=pending_tool_call_id,
         task_states=task_states,
+        outer_task_id=outer_task_id,
     )
 
 

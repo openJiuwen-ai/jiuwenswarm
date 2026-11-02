@@ -14,12 +14,21 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { AtSign, CircleX, FileText, Loader2, Plus, Square, Target, X } from 'lucide-react';
+import { AtSign, CircleX, ClipboardList, FileText, Loader2, Plus, Square, Target, X } from 'lucide-react';
 import { FileTypeIcon, getFileTypeIconKeyFromFilename, type FileTypeIconKey } from './FileTypeIcon';
 import { useSpeechRecognition } from '../../hooks';
 
 // import { stopAllTts } from '../../utils';
-import { useChatStore, useGoalStore, useSessionStore, useWorkspaceStore, resolveEffectiveModel, usePersonalContextStore } from '../../stores';
+import {
+  useChatStore,
+  useGoalStore,
+  usePlanStore,
+  useSessionStore,
+  useWorkspaceStore,
+  usePersonalContextStore,
+  resolveChatModelSelection,
+} from '../../stores';
+import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
@@ -617,6 +626,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、编辑/暂停/删除，已经由
   // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
   const goalTagVisible = canUseGoalMenu && goalArmed;
+  // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直按
+  // 基础模式拼 agent.plan / team.plan.* 发送，直到用户点叉或后端推 plan.mode_exited。
+  // 单 agent 与集群均开放 Plan 入口（集群 profile 由 work_mode 决定）。
+  const planActive = usePlanStore((s) => s.runtimes[activeSessionId ?? '']?.active ?? false);
+  const planPendingExplicitEntry = usePlanStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.pendingExplicitEntry ?? false,
+  );
+  // Plan 已经真正生效：开关打开且至少发出过一条 Plan 消息（pendingExplicitEntry 已被消费）。
+  // 区别于"刚打开开关但还没发消息"的未提交态——后者和 Goal 的 armed 一样可以被对方随手顶替。
+  const planCommitted = planActive && !planPendingExplicitEntry;
+  const canUsePlanMenu = supportsPlanMode(mode);
+  const planTagVisible = canUsePlanMenu && planActive;
 
   // 个人上下文：agent 加载开关（总开关联动）。总开关关闭时整个菜单项隐藏；开启时默认打开，可单独控制。
   // 显式企业版隔离 + 功能开关门控：不依赖 store 默认值与配置加载路径的隐式隔离。
@@ -2320,29 +2341,44 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     <span className="chat-mode-select__label">{t('chat.addFile')}</span>
                   </span>
                 </button>
-                {canUseGoalMenu && (
-                  <button
-                    type="button"
-                    className="chat-mode-select__option"
-                    role="menuitem"
-                    disabled={hasUnfinishedGoal}
-                    title={hasUnfinishedGoal ? t('goal.toolbarUnavailable') : undefined}
-                    onClick={() => {
-                      if (hasUnfinishedGoal) return;
-                      setAttachMenuOpen(false);
-                      if (activeSessionId) {
-                        useGoalStore.getState().setArmed(activeSessionId, true);
-                      }
-                    }}
-                  >
-                    <span className="chat-mode-select__option-main">
-                      <span className="chat-mode-select__icon" aria-hidden="true">
-                        <Target className="w-4 h-4" />
+                {canUseGoalMenu && (() => {
+                  // Goal 和 Plan 互斥：已有真正生效的目标/计划时都不能再选目标。已提交的目标沿用
+                  // 原提示；被"计划已生效"挡住时换一条对应文案，避免误导用户去找目标本身的问题。
+                  const goalDisabled = hasUnfinishedGoal || planCommitted;
+                  const goalDisabledTitle = hasUnfinishedGoal
+                    ? t('goal.toolbarUnavailable')
+                    : planCommitted
+                      ? t('goal.toolbarUnavailablePlan')
+                      : undefined;
+                  return (
+                    <button
+                      type="button"
+                      className="chat-mode-select__option"
+                      role="menuitem"
+                      disabled={goalDisabled}
+                      title={goalDisabledTitle}
+                      onClick={() => {
+                        if (goalDisabled) return;
+                        setAttachMenuOpen(false);
+                        if (activeSessionId) {
+                          // 走到这里 planCommitted 一定是 false（否则上面已 disabled），所以 planActive
+                          // 为 true 时只可能是"刚打开开关、还没发过消息"的未提交态，可以放心顶掉。
+                          if (planActive) {
+                            usePlanStore.getState().setActive(activeSessionId, false);
+                          }
+                          useGoalStore.getState().setArmed(activeSessionId, true);
+                        }
+                      }}
+                    >
+                      <span className="chat-mode-select__option-main">
+                        <span className="chat-mode-select__icon" aria-hidden="true">
+                          <Target className="w-4 h-4" />
+                        </span>
+                        <span className="chat-mode-select__label">{t('goal.toolbarTag')}</span>
                       </span>
-                      <span className="chat-mode-select__label">{t('goal.toolbarTag')}</span>
-                    </span>
-                  </button>
-                )}
+                    </button>
+                  );
+                })()}
                 {personalContextChatAvailable && personalContextMasterEnabled && (
                   <div
                     className="chat-mode-select__option"
@@ -2362,6 +2398,46 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     />
                   </div>
                 )}
+                {canUsePlanMenu && (() => {
+                  // 对称地：已有未完成目标时不能选计划；对话进行中（isProcessing）时也先禁掉，
+                  // 避免在当前这轮还没结束时又叠加切一次模式。
+                  const planDisabled = hasUnfinishedGoal || isProcessing;
+                  const planDisabledTitle = hasUnfinishedGoal
+                    ? t('plan.toolbarUnavailableGoal')
+                    : isProcessing
+                      ? t('plan.toolbarUnavailableProcessing')
+                      : undefined;
+                  return (
+                    <button
+                      type="button"
+                      className="chat-mode-select__option"
+                      role="menuitem"
+                      disabled={planDisabled}
+                      title={planDisabledTitle}
+                      onClick={() => {
+                        if (planDisabled) return;
+                        setAttachMenuOpen(false);
+                        if (activeSessionId) {
+                          // 走到这里 hasUnfinishedGoal 一定是 false，goalArmed 为 true 时只可能是
+                          // "刚选了目标、还没发消息"的未提交态，顶掉换成 Plan。
+                          useGoalStore.getState().setArmed(activeSessionId, false);
+                          // explicitEntry：这是用户手动打开开关，下一条 Plan 消息要带
+                          // plan_entry_source，否则会被后端的防重入闸门拦下。
+                          usePlanStore
+                            .getState()
+                            .setActive(activeSessionId, true, { explicitEntry: true });
+                        }
+                      }}
+                    >
+                      <span className="chat-mode-select__option-main">
+                        <span className="chat-mode-select__icon" aria-hidden="true">
+                          <ClipboardList className="w-4 h-4" />
+                        </span>
+                        <span className="chat-mode-select__label">{t('plan.toolbarTag')}</span>
+                      </span>
+                    </button>
+                  );
+                })()}
               </div>,
               document.body
             )}
@@ -2496,6 +2572,32 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             </div>
           )}
 
+          {planTagVisible && (
+            <div className="chat-goal-tag">
+              <button type="button" className="chat-mode-select__trigger">
+                <span className="chat-mode-select__value">
+                  <span className="chat-mode-select__icon" aria-hidden="true">
+                    <ClipboardList className="w-4 h-4" />
+                  </span>
+                  <span className="chat-mode-select__label">{t('plan.toolbarTag')}</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="chat-goal-tag__close"
+                disabled={isProcessing}
+                title={isProcessing ? t('plan.closeTagDisabled') : t('plan.closeTag')}
+                onClick={() => {
+                  if (isProcessing) return;
+                  if (!activeSessionId) return;
+                  usePlanStore.getState().setActive(activeSessionId, false);
+                }}
+              >
+                <X size={11} strokeWidth={2.5} />
+              </button>
+            </div>
+          )}
+
           {evolutionLabel && (
             <div className="chat-input-evolution-pill" title={evolutionLabel}>
               <span className="chat-input-evolution-pill__dot" />
@@ -2528,10 +2630,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               )}
             </button>
           )} */}
-
+          
           <ModelSelector
-            disabled={enterpriseLocked || isTeamMode || isProcessing}
-            lockedToDefault={enterpriseLocked || isTeamMode}
+            disabled={enterpriseLocked || isProcessing || activeSessionId !== NEW_CONVERSATION_ID}
           />
 
           <button
@@ -2813,10 +2914,8 @@ function ComposerSuggestionMenu({
 
 function ModelSelector({
   disabled = false,
-  lockedToDefault = false,
 }: {
   disabled?: boolean;
-  lockedToDefault?: boolean;
 }) {
   const chatAvailableModels = useSessionStore((s) => s.chatAvailableModels);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -2845,14 +2944,12 @@ function ModelSelector({
 
   if (chatAvailableModels.length === 0) return null;
 
-  // 集群模式下 UI 禁止手动改模型（见下方 disabled/tooltip），但显示仍应优先反映
-  // 该会话实际记录的模型（如定时任务在集群模式下显式指定了非默认模型，后端也确实
-  // 按该模型执行——见 bug002 回归），而不是不管三七二十一恒显示全局默认模型；
-  // 从未指定过模型的会话 selectedModelName 本就兜底等于默认模型，行为不变。
-  // 与实际发给后端的 model_name（sessionStore.getEffectiveModelName）复用同一套解析逻辑，
-  // 避免模型改名/改别名后 UI 显示值和实际请求参数走出两份不同的兜底结果（bug003）。
+  // 单 Agent 与集群（team）模式共用同一套解析，展示会话自选模型（含 metadata 恢复值），
+  // 失配时回退默认模型。与实际发给后端的 model_name（sessionStore.getEffectiveModelName）
+  // 复用同一套解析逻辑，避免模型改名/改别名后 UI 显示值和实际请求参数走出两份不同的
+  // 兜底结果（bug003）。
   const selectedModel =
-    resolveEffectiveModel(chatAvailableModels, selectedModelName, defaultModelName) ??
+    resolveChatModelSelection(chatAvailableModels, selectedModelName, defaultModelName) ??
     chatAvailableModels[0];
 
   const handleSelect = (modelKey: string) => {
@@ -2865,6 +2962,12 @@ function ModelSelector({
     window.dispatchEvent(new CustomEvent<string>('jiuwen:nav', { detail: 'configpanel' }));
   };
 
+  // 只读态（企业版统一配置 / 已创建会话固定模型）不再提示"切换对话使用的模型"，
+  // 按禁用原因给出准确文案，避免误导用户点击。
+  const modelSelectorTooltip = disabled
+    ? t(isEnterprise() ? 'chat.modelSelector.tooltipLockedEnterprise' : 'chat.modelSelector.tooltipSessionLocked')
+    : t('chat.modelSelector.tooltip');
+
   return (
     <div
       ref={menuRef}
@@ -2873,7 +2976,7 @@ function ModelSelector({
       <button
         type="button"
         className="chat-mode-select__trigger"
-        title={t(lockedToDefault ? 'chat.modelSelector.clusterLockedTooltip' : 'chat.modelSelector.tooltip')}
+        title={modelSelectorTooltip}
         onClick={() => {
           if (disabled) return;
           if (!isOpen && menuRef.current) {

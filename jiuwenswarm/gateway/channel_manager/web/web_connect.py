@@ -200,6 +200,9 @@ class WebChannel(BaseChannel):
     def on_disconnect(self, callback: Any) -> None:
         self.rpc.on_disconnect(callback)
 
+    def set_channel_event_reporter(self, reporter: Any) -> None:
+        self.ws.set_channel_event_reporter(reporter)
+
     def on_message(self, callback: Callable[[Message], None]) -> None:
         self.rpc.on_message(callback)
 

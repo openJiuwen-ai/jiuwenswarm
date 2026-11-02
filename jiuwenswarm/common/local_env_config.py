@@ -82,6 +82,9 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         "DISABLED_TOOLS",
         # Code-mode generated-code co-author header switch; process shared.
         "JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED",
+        # Flash 部署开关由 config.yaml 占位符读取，任务 overlay 不应屏蔽沙箱启动值。
+        "JIUWENSWARM_FLASH_ENABLED",
+        "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED",
         # HTTP/SSE service-to-service mTLS.  These values are process-scoped;
         # certificate paths point to files mounted by the deployment layer.
         "JIUWENSWARM_LINK_MTLS_MODE",
@@ -195,6 +198,8 @@ BUSINESS_MIRROR_KEYS: frozenset[str] = frozenset(
         "BROWSER_DRIVER",
         "BROWSER_PROFILE_NAME",
         "BROWSER_MANAGED_BINARY",
+        "BROWSER_MANAGED_HOST",
+        "BROWSER_MANAGED_PORT",
         "BROWSER_TIMEOUT_S",
         "BROWSER_ALLOW_SHORT_TIMEOUT_OVERRIDE",
         "MEMORY_MODE",
@@ -1204,6 +1209,33 @@ def read_env(name: str, default: str = "") -> str:
         return default
     text = _stringify_env_value(value)
     return text if text else default
+
+
+def read_env_live(name: str, default: str = "") -> str:
+    """Read the latest Formula-B tip, bypassing the sealed request overlay.
+
+    This is intentionally narrow: live-read consumers must be safe observing
+    mid-request reload updates. When an overlay is bound and the live tip no
+    longer contains the key, the key is considered unset; do not fall back to
+    the sealed overlay or process environment.
+    """
+    if name in SPAWN_ENV_KEYS:
+        logger.warning(
+            "read_env_live 不服务轨道 A 键 %s —— 请直读 spawn/path API", name
+        )
+        return default
+
+    tip = effective_tip()
+    if _mapping_has_product_key(tip, name):
+        value = _read_from_mapping(name, tip, default or None)
+        if value is None:
+            return default
+        text = _stringify_env_value(value)
+        return text if text else default
+
+    if is_task_env_overlay_bound():
+        return default
+    return read_env(name, default)
 
 
 def read_env_if_set(name: str) -> str | None:

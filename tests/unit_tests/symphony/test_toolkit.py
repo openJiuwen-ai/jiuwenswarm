@@ -10,24 +10,7 @@ from jiuwenswarm.agents.harness.common.tool_progress_context import (
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
-from jiuwenswarm.extensions.registry import ExtensionRegistry
-
-
-class _CallbackFramework:
-    @staticmethod
-    def register_sync(*args, **kwargs):
-        return None
-
-    async def trigger(self, *args, **kwargs):
-        return None
-
-
-def setup_function():
-    ExtensionRegistry.reset_instance()
-
-
-def teardown_function():
-    ExtensionRegistry.reset_instance()
+from jiuwenswarm.symphony.service import SwarmSymphonyService
 
 
 @pytest.fixture(autouse=True)
@@ -43,28 +26,26 @@ def enabled_symphony_config(monkeypatch):
     )
 
 
-def _registry() -> ExtensionRegistry:
-    return ExtensionRegistry.create_instance(
-        callback_framework=_CallbackFramework(),
-        config={},
-        logger=object(),
-    )
-
-
-def test_plan_calls_compose_rpc_once_without_language():
-    registry = _registry()
+@pytest.mark.asyncio
+async def test_plan_calls_process_service_once_without_language():
     calls = []
 
-    async def handler(params, request=None):
-        del request
-        calls.append(params)
+    async def handler(query, **kwargs):
+        calls.append({"query": query, **kwargs})
         return {"success": True, "content": "## Plan", "direct_display": True}
 
-    registry.register_rpc_handler("symphony.plan", handler)
+    result = await SymphonyToolkit(SimpleNamespace(plan=handler)).plan(
+        "use installed skills"
+    )
 
-    result = asyncio.run(SymphonyToolkit().plan("use installed skills"))
-
-    assert calls == [{"query": "use installed skills"}]
+    assert calls == [
+        {
+            "query": "use installed skills",
+            "mode": None,
+            "candidate_skill_ids": None,
+            "progress": None,
+        }
+    ]
     assert result == {
         "success": True,
         "content": "## Plan",
@@ -74,57 +55,56 @@ def test_plan_calls_compose_rpc_once_without_language():
     }
 
 
-def test_plan_passes_mode_and_deduplicated_candidates():
-    registry = _registry()
+@pytest.mark.asyncio
+async def test_plan_passes_mode_and_deduplicated_candidates():
     seen = {}
 
-    async def handler(params, request=None):
-        del request
-        seen.update(params)
+    async def handler(query, **kwargs):
+        seen.update({"query": query, **kwargs})
         return {"success": True}
 
-    registry.register_rpc_handler("symphony.plan", handler)
-
-    asyncio.run(
-        SymphonyToolkit().plan(
-            "compose",
-            mode="beam",
-            candidate_skill_ids=["skill-a", "skill-a", "Skill B"],
-        )
+    await SymphonyToolkit(SimpleNamespace(plan=handler)).plan(
+        "compose",
+        mode="beam",
+        candidate_skill_ids=["skill-a", "skill-a", "Skill B"],
     )
 
     assert seen == {
         "query": "compose",
         "mode": "beam",
         "candidate_skill_ids": ["skill-a", "Skill B"],
+        "progress": None,
     }
 
 
-def test_plan_preserves_progress_callback_on_extension_request():
-    registry = _registry()
+@pytest.mark.asyncio
+async def test_plan_passes_current_progress_callback_directly_to_service():
     events = []
 
-    async def handler(params, request=None):
-        del params
-        callback = request.metadata["symphony_progress_callback"]
+    async def handler(query, *, progress=None, **kwargs):
+        del query, kwargs
+        callback = progress
         await callback({"event": "started", "graph": {"nodes": [], "edges": []}})
         return {"success": True}
 
-    registry.register_rpc_handler("symphony.plan", handler)
-    token = bind_tool_progress(events.append)
+    async def progress(event):
+        events.append(event)
+
+    token = bind_tool_progress(progress)
     try:
-        asyncio.run(SymphonyToolkit().plan("compose", mode="beam"))
+        await SymphonyToolkit(SimpleNamespace(plan=handler)).plan(
+            "compose", mode="beam"
+        )
     finally:
         reset_tool_progress(token)
 
     assert events == [{"event": "started", "graph": {"nodes": [], "edges": []}}]
 
 
-def test_plan_returns_compact_plan_and_beam_graph():
-    registry = _registry()
-
-    async def handler(params, request=None):
-        del params, request
+@pytest.mark.asyncio
+async def test_plan_returns_compact_plan_and_beam_graph():
+    async def handler(*args, **kwargs):
+        del args, kwargs
         return {
             "success": True,
             "content": "## Beam Plan",
@@ -157,9 +137,9 @@ def test_plan_returns_compact_plan_and_beam_graph():
             },
         }
 
-    registry.register_rpc_handler("symphony.plan", handler)
-
-    result = asyncio.run(SymphonyToolkit().plan("compose", mode="beam"))
+    result = await SymphonyToolkit(SimpleNamespace(plan=handler)).plan(
+        "compose", mode="beam"
+    )
 
     assert result["beam_search"] == {
         "language": "cn",
@@ -182,11 +162,10 @@ def test_plan_returns_compact_plan_and_beam_graph():
     assert "result" not in result
 
 
-def test_plan_preserves_dynamic_graph_metadata():
-    registry = _registry()
-
-    async def handler(params, request=None):
-        del params, request
+@pytest.mark.asyncio
+async def test_plan_preserves_dynamic_graph_metadata():
+    async def handler(*args, **kwargs):
+        del args, kwargs
         return {
             "success": True,
             "plan_id": "plan-session-1",
@@ -194,9 +173,7 @@ def test_plan_preserves_dynamic_graph_metadata():
             "result": {"recommended_plans": []},
         }
 
-    registry.register_rpc_handler("symphony.plan", handler)
-
-    result = asyncio.run(SymphonyToolkit().plan("compose"))
+    result = await SymphonyToolkit(SimpleNamespace(plan=handler)).plan("compose")
 
     assert result["plan_id"] == "plan-session-1"
     assert result["dynamic_graph_enabled"] is True
@@ -222,36 +199,107 @@ def test_toolkit_compacts_inferred_edge_provenance():
     }
 
 
-def test_plan_reports_missing_rpc_handler():
-    _registry()
+@pytest.mark.asyncio
+async def test_plan_reports_service_failure():
+    async def handler(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("service unavailable")
 
-    result = asyncio.run(SymphonyToolkit().plan("compose"))
+    result = await SymphonyToolkit(SimpleNamespace(plan=handler)).plan("compose")
 
     assert result["success"] is False
-    assert "handler not registered" in result["detail"]
+    assert "service unavailable" in result["detail"]
 
 
-def test_status_and_refresh_remain_explicit_tools():
-    registry = _registry()
-    registry.register_rpc_handler(
-        "symphony.score_status",
-        lambda params, request=None: {"success": True, "exists": True},
+@pytest.mark.asyncio
+async def test_status_and_refresh_remain_explicit_tools():
+    async def graph_status():
+        return {"success": True, "exists": True}
+
+    async def refresh_graph(*, progress=None):
+        assert progress is None
+        return {"success": True, "rebuilt": True}
+
+    toolkit = SymphonyToolkit(
+        SimpleNamespace(graph_status=graph_status, refresh_graph=refresh_graph)
     )
-    registry.register_rpc_handler(
-        "symphony.build_score",
-        lambda params, request=None: {"success": True, "rebuilt": True},
+    assert (await toolkit.graph_status())["exists"] is True
+    assert (await toolkit.refresh_graph())["rebuilt"] is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_timeout_aborts_blocked_progress_without_leaking_worker(
+    monkeypatch,
+    tmp_path,
+):
+    config = SimpleNamespace(
+        paths=SimpleNamespace(
+            skills_root=tmp_path / "skills",
+            graph_dir=tmp_path / "graph",
+        )
     )
+    callback_entered = asyncio.Event()
+    callback_cancelled = asyncio.Event()
 
-    assert asyncio.run(SymphonyToolkit().score_status())["exists"] is True
-    assert asyncio.run(SymphonyToolkit().refresh_score())["rebuilt"] is True
+    async def blocking_progress(_event):
+        callback_entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            callback_cancelled.set()
 
+    async def fake_build_graph(*args, **kwargs):
+        del args, kwargs
+        return SimpleNamespace(to_dict=lambda: {"success": True, "version": "v1"})
 
-def test_get_tools_describes_fast_and_beam_without_language():
-    compose_tool = next(
-        tool
-        for tool in SymphonyToolkit().get_tools()
-        if tool.card.name == "symphony_compose_score"
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.load_symphony_config",
+        lambda: config,
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.service_build_graph",
+        fake_build_graph,
+    )
+    monkeypatch.setattr(
+        SymphonyToolkit,
+        "_resolve_timeout_s",
+        staticmethod(lambda default_s=1800.0: 0.05),
+    )
+    service = SwarmSymphonyService()
+    toolkit = SymphonyToolkit(service)
+    token = bind_tool_progress(blocking_progress)
+    try:
+        task = asyncio.create_task(toolkit.refresh_graph())
+        await callback_entered.wait()
+        result = await asyncio.wait_for(task, timeout=0.5)
+    finally:
+        reset_tool_progress(token)
+
+    assert result["success"] is False
+    assert "timeout" in result["detail"]
+    assert callback_cancelled.is_set()
+    assert service._active_build_task is None
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == "symphony-build-progress"
+    ]
+
+
+def test_get_tools_exposes_only_graph_named_contracts():
+    tools = SymphonyToolkit().get_tools()
+    assert [tool.card.name for tool in tools] == [
+        "symphony_read_graph",
+        "symphony_refresh_graph",
+        "symphony_compose_graph",
+    ]
+    assert all("score" not in tool.card.name for tool in tools)
+
+    compose_tool = tools[-1]
     properties = compose_tool.card.input_params["properties"]
 
     assert properties["mode"]["enum"] == ["fast", "beam"]

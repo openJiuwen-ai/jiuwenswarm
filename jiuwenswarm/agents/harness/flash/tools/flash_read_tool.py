@@ -27,12 +27,16 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.harness.tools.base_tool import ToolOutput
 from openjiuwen.harness.tools.filesystem import (
     ReadFileTool,
     _ReadStateRecord,
+    _RawTextState,
     _resolve_tool_file_path,
 )
+
+from .flash_file_meta import detect_encoding, record_file_meta
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +147,51 @@ class FlashReadFileTool(ReadFileTool):
             lang, FLASH_READ_DESCRIPTION["cn"]
         )
         self.card.input_params = get_flash_read_input_params(lang)
+
+    # ------------------------------------------------------------------
+    # Snapshot read override (bytes fast path)
+    # ------------------------------------------------------------------
+
+    async def _read_raw_text_for_edit_state(self, file_path: str) -> Optional[_RawTextState]:
+        """bytes 一次读快照（覆写 stock 的 text 逐行全读）。
+
+        stock 实现走 ``fs.read_file`` 默认 text 模式 → ``_read_full`` 的
+        aiofiles 逐行 yield，每行一次 executor 往返（隔离微基准：240KB /
+        1 万行约 720-810ms，bytes 全读 0.49-0.68ms）。本覆写改为 bytes
+        模式一次读完，在内存中解码归一化，返回签名与 stock 一致——
+        ``_record_read_state`` 的调用方（单文件/多文件两条路径）无感知。
+
+        顺手把 stock 丢弃的原始字节元数据（sha256/EOL/编码）记入侧车缓存
+        （读前 stat 绑定快照版本），供 FlashEditFileTool 缓存命中路径使用。
+        """
+        if self._is_office_doc(file_path):
+            # Office 文本抽取管线与 raw bytes 语义不同，维持 stock 行为。
+            return await super()._read_raw_text_for_edit_state(file_path)
+        try:
+            try:
+                _st = os.stat(file_path)
+                mtime_ns, size_bytes = _st.st_mtime_ns, _st.st_size
+            except OSError:
+                # 沙箱：文件在 jiuwenbox sidecar，本地 stat 不可用。仍注册
+                # （mtime/size 记 0）；缓存路径不依赖它——沙箱无 CAS，flash
+                # edit 在沙箱下不走缓存。
+                mtime_ns, size_bytes = 0, 0
+            res = await self.operation.fs().read_file(file_path, mode="bytes")
+            if res.code != StatusCode.SUCCESS.code:
+                return None
+            raw = res.data.content if res.data else b""
+            if isinstance(raw, str):
+                raw = raw.encode("utf-8")
+            record_file_meta(file_path, raw, mtime_ns, size_bytes)
+            content = raw.decode(detect_encoding(raw), errors="replace")
+            normalized = str(content).replace("\r\n", "\n")
+            return _RawTextState(
+                content=normalized,
+                line_count=self._raw_line_count(normalized),
+            )
+        except Exception:
+            # 与 stock 同口径：读失败返回 None，调用方按无快照处理。
+            return None
 
     # ------------------------------------------------------------------
     # Single-file reader (reused in both single and multi modes)

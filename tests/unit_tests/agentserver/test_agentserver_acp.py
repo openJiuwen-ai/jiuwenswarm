@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers import bootstrap as bootstrap_module  # noqa: F
 from jiuwenswarm.server.handlers import team as team_module
 from jiuwenswarm.server.handlers import session as session_handlers
 from jiuwenswarm.server.handlers import team as team_handlers
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 def _all_patch_targets():
@@ -302,8 +303,8 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
         "direct_display": True,
         "display_format": "markdown",
         "mermaid": "flowchart LR\n  A --> B",
-        "score_status": {"success": True, "exists": False},
-        "score_build": {"success": False, "detail": "failed"},
+        "graph_status": {"success": True, "exists": False},
+        "graph_build": {"success": False, "detail": "failed"},
     }
     parsed = parse_stream_chunk(
         types.SimpleNamespace(
@@ -311,7 +312,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
             payload={
                 "tool_result": {
                     "tool_call_id": "call-1",
-                    "tool_name": "symphony_compose_score",
+                    "tool_name": "symphony_compose_graph",
                     "result": "failed",
                     "status": "error",
                     "success": False,
@@ -320,8 +321,8 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
                     "direct_display": True,
                     "display_format": "markdown",
                     "mermaid": raw_output["mermaid"],
-                    "score_status": raw_output["score_status"],
-                    "score_build": raw_output["score_build"],
+                    "graph_status": raw_output["graph_status"],
+                    "graph_build": raw_output["graph_build"],
                 }
             },
         )
@@ -330,7 +331,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     assert parsed == {
         "event_type": "chat.tool_result",
         "result": "failed",
-        "tool_name": "symphony_compose_score",
+        "tool_name": "symphony_compose_graph",
         "tool_call_id": "call-1",
         "status": "error",
         "success": False,
@@ -339,8 +340,8 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
         "direct_display": True,
         "display_format": "markdown",
         "mermaid": raw_output["mermaid"],
-        "score_status": raw_output["score_status"],
-        "score_build": raw_output["score_build"],
+        "graph_status": raw_output["graph_status"],
+        "graph_build": raw_output["graph_build"],
     }
 
 
@@ -348,7 +349,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     "parser",
     [
         parse_stream_chunk,
-        getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk"),
+        _parse_stream_chunk,
     ],
     ids=["shared_stream_parser", "deep_adapter_parser"],
 )
@@ -418,7 +419,7 @@ def test_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
 
 
 def test_interface_deep_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     raw_output = {
         "success": True,
         "result": "# Skill Branch Explore",
@@ -468,7 +469,7 @@ def test_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
 
 
 def test_interface_deep_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     parsed = parse_chunk(
         types.SimpleNamespace(
             type="tool_result",
@@ -492,7 +493,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
         types.SimpleNamespace(
             type="chat.symphony_status",
             payload={
-                "source": "symphony_compose_score",
+                "source": "symphony_compose_graph",
                 "operation_id": "call-1",
                 "phase": "checking_score",
                 "content": "Symphony status",
@@ -503,7 +504,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
 
     assert parsed == {
         "event_type": "chat.symphony_status",
-        "source": "symphony_compose_score",
+        "source": "symphony_compose_graph",
         "operation_id": "call-1",
         "phase": "checking_score",
         "content": "Symphony status",
@@ -512,12 +513,12 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
 
 
 def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     parsed = parse_chunk(
         types.SimpleNamespace(
             type="chat.symphony_status",
             payload={
-                "source": "symphony_compose_score",
+                "source": "symphony_compose_graph",
                 "operation_id": "call-1",
                 "phase": "planning",
                 "content": "Symphony planning status",
@@ -528,7 +529,7 @@ def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
 
     assert parsed == {
         "event_type": "chat.symphony_status",
-        "source": "symphony_compose_score",
+        "source": "symphony_compose_graph",
         "operation_id": "call-1",
         "phase": "planning",
         "content": "Symphony planning status",
@@ -904,6 +905,83 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire_mode,global_enabled,expected",
+    [("flash", False, "flash"), ("agent.plan", True, "agent")],
+)
+async def test_officeclaw_session_create_persists_explicit_adapter(
+    monkeypatch, tmp_path, wire_mode, global_enabled, expected,
+):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.handlers import _shared
+
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": global_enabled}})
+    server = AgentWebSocketServerHarness()
+    manager = FakeAgentManager(session_id="officeclaw_explicit_create")
+    server.set_agent_manager_for_test(manager)
+    prewarm = AsyncMock()
+    monkeypatch.setattr(server, "_tenant_pool", lambda: types.SimpleNamespace(
+        prewarm_session_in_background=prewarm,
+    ))
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    patch_session_roots(monkeypatch, sessions_root)
+    incoming = AgentRequest(
+        request_id="officeclaw-explicit-create",
+        channel_id="officeclaw",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={"create_token": "explicit-create", "mode": wire_mode},
+    )
+
+    await server.handle_session_create_for_test(fake_ws, incoming, asyncio.Lock())
+    await asyncio.sleep(0)
+
+    assert fake_ws.sent[0]["ok"] is True
+    assert manager.claim_session_calls[0]["adapter_mode"] == expected
+    assert manager.claim_session_calls[0]["prewarm_eligible"] is True
+    metadata = json.loads(
+        (sessions_root / manager.session_id / "metadata.json").read_text(encoding="utf-8"),
+    )
+    assert metadata["mode"] == metadata["adapter_mode"] == expected
+    assert metadata.get("todo_initialized") is (False if expected == "flash" else None)
+    assert prewarm.await_args.kwargs["mode"] == expected
+    assert prewarm.await_args.kwargs["adapter_mode"] == expected
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_flash_session_create_records_todo_origin(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.server.handlers import _shared
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        check_todo_initialization,
+    )
+
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": False}})
+    server = AgentWebSocketServerHarness()
+    manager = FakeAgentManager(session_id="direct_flash_create")
+    server.set_agent_manager_for_test(manager)
+    monkeypatch.setattr(server, "_tenant_pool", lambda: types.SimpleNamespace(
+        prewarm_session_in_background=AsyncMock(),
+    ))
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    patch_session_roots(monkeypatch, sessions_root)
+    request = AgentRequest(
+        request_id="direct-flash-create", channel_id="chat-service", req_method=ReqMethod.SESSION_CREATE,
+        params={"create_token": "direct-flash", "mode": "flash"},
+    )
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+    assert fake_ws.sent[0]["ok"] is True
+    path = sessions_root / manager.session_id / "metadata.json"
+    assert json.loads(path.read_text())["todo_initialized"] is False
+    check_todo_initialization(manager.session_id, file_exists=False, committing=True, sessions_root=sessions_root)
+    assert json.loads(path.read_text())["todo_initialized"] is True
+
+
+@pytest.mark.asyncio
 async def test_handle_session_create_rejects_explicit_session_id(monkeypatch, tmp_path):
     server = AgentWebSocketServerHarness()
     fake_manager = FakeAgentManager(session_id="unused-default")
@@ -1190,6 +1268,140 @@ async def test_handle_team_binding_create_persists_team_entity(monkeypatch, tmp_
     assert entity is not None
     assert entity.template_id == "research"
     assert entity.template_snapshot["leader"]["member_name"] == "lead_1"
+
+
+@pytest.mark.asyncio
+async def test_handle_team_binding_create_heals_entity_without_binding(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    server = AgentWebSocketServerHarness()
+    fake_ws = FakeWebSocket()
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    entity_store.write(
+        team_name="oc_team_legacy",
+        template_id="oc_team_legacy",
+        template_snapshot={
+            "team_name": "oc_team_legacy",
+            "leader": {"member_name": "lead"},
+        },
+        created_at=42.0,
+    )
+
+    patch_shared_name(monkeypatch, "get_config", lambda: {"modes": {"team": {}}})
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+
+    request = AgentRequest(
+        request_id="req-team-binding-heal",
+        channel_id="officeclaw",
+        req_method=ReqMethod.TEAM_BINDING_CREATE,
+        params={"team_name": "oc_team_legacy", "template_id": "oc_team_legacy"},
+    )
+
+    await server.handle_team_binding_create_for_test(fake_ws, request, asyncio.Lock())
+
+    binding = binding_store.get("oc_team_legacy")
+    assert fake_ws.sent[0]["ok"] is True
+    assert binding is not None
+    assert binding.template_id == "oc_team_legacy"
+    assert binding.created_at == 42.0
+    assert binding.legacy is False
+    assert binding.session_ids == ()
+    # Entity must stay intact; heal only backfills binding.
+    entity = entity_store.get("oc_team_legacy")
+    assert entity is not None
+    assert entity.created_at == 42.0
+
+
+def test_create_team_binding_without_heal_conflicts_on_entity_only(monkeypatch, tmp_path):
+    """Generate/auto-create must not adopt a dead-state entity (heal defaults off)."""
+    from jiuwenswarm.server.handlers import team as team_handlers
+    from jiuwenswarm.server.runtime.team_binding_store import (
+        TeamBindingStore,
+        TeamBindingStoreError,
+    )
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    entity_store.write(
+        team_name="semantic_name",
+        template_id="semantic_name",
+        template_snapshot={
+            "team_name": "semantic_name",
+            "leader": {"member_name": "lead"},
+        },
+        created_at=42.0,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+
+    with pytest.raises(TeamBindingStoreError) as exc_info:
+        team_handlers._create_team_binding_from_template(
+            team_name="semantic_name",
+            template_id="research",
+            config_base={"modes": {"team": {"research": {"team_name": "t"}}}},
+            heal=False,
+        )
+
+    assert exc_info.value.code == "CONFLICT"
+    assert binding_store.get("semantic_name") is None
+
+
+@pytest.mark.asyncio
+async def test_handle_team_binding_create_still_conflicts_when_binding_exists(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    server = AgentWebSocketServerHarness()
+    fake_ws = FakeWebSocket()
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    entity_store.write(
+        team_name="research_team",
+        template_id="research",
+        template_snapshot={"team_name": "research_team", "leader": {"member_name": "lead"}},
+        created_at=42.0,
+    )
+    binding_store.create(team_name="research_team", template_id="research", created_at=42.0)
+
+    patch_shared_name(monkeypatch, "get_config", lambda: {"modes": {"team": {}}})
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+
+    request = AgentRequest(
+        request_id="req-team-binding-conflict",
+        channel_id="web",
+        req_method=ReqMethod.TEAM_BINDING_CREATE,
+        params={"team_name": "research_team", "template_id": "research"},
+    )
+
+    await server.handle_team_binding_create_for_test(fake_ws, request, asyncio.Lock())
+
+    assert fake_ws.sent[0]["ok"] is False
+    assert fake_ws.sent[0]["payload"]["code"] == "CONFLICT"
 
 
 @pytest.mark.asyncio
@@ -3619,7 +3831,7 @@ def test_build_context_assemble_rail_returns_context_assemble_rail_instance(monk
     "parser",
     [
         parse_stream_chunk,
-        interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk,
+        interface_deep_module._parse_stream_chunk,
     ],
     ids=["shared", "deep-adapter"],
 )
@@ -3634,7 +3846,7 @@ def test_parse_stream_chunk_emits_empty_final_marker_after_streamed_content(pars
         },
     )
 
-    if parser is interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk:
+    if parser is interface_deep_module._parse_stream_chunk:
         # Deep adapter needs the already-streamed text to decide trailer-only
         # vs drain-rescue when has_streamed was set by tiny/blank deltas.
         parsed = parser(
@@ -3659,7 +3871,7 @@ def test_deep_parse_keeps_final_body_when_stream_flag_lacks_visible_text():
             }
         },
     )
-    parsed = interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = interface_deep_module._parse_stream_chunk(
         chunk,
         _has_streamed_content=True,
         _streamed_text="",

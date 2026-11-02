@@ -77,6 +77,11 @@ EXPECTED_SPECS = {
         "s",
         "Time to first token",
     ),
+    "jiuwenclaw.llm.cache_hit_rate": (
+        "histogram",
+        "1",
+        "LLM KV-cache hit rate",
+    ),
 }
 
 ACTIVE_SPECS = [
@@ -140,12 +145,12 @@ def _metric(reader: InMemoryMetricReader, name: str):
     return matches[0]
 
 
-def test_catalog_contains_exactly_21_metrics_with_compatible_kinds_and_units() -> None:
+def test_catalog_contains_exactly_22_metrics_with_compatible_kinds_and_units() -> None:
     assert {
         name: (spec.kind, spec.unit, spec.description)
         for name, spec in METRIC_SPECS.items()
     } == EXPECTED_SPECS
-    assert len(METRIC_SPECS) == 21
+    assert len(METRIC_SPECS) == 22
 
 
 def test_metrics_record_when_trace_sampler_drops_spans() -> None:

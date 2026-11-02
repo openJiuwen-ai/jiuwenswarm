@@ -27,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 # Type for a function that can retry a request without A2UI
 RetryWithoutA2UI = Callable[[str], Any]
-_A2UI_FINALIZATION_TIMEOUT_SECONDS = 45.0
+# Must cover max_repair_attempts full LLM rounds: a measured repair turn
+# (schema repair prompt + regenerated JSON, glm-5.2) takes ~30-40s, so the
+# old 45s budget killed the first attempt before it could return and degraded
+# every invalid block to stripped text.
+_A2UI_FINALIZATION_TIMEOUT_SECONDS = 120.0
 _A2UI_FAST_PATH_VALIDATION_TIMEOUT_SECONDS = 5.0
 
 

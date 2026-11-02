@@ -29,8 +29,10 @@ from urllib.parse import urlparse
 
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from jiuwenswarm.common.ws_diagnostics import format_ws_diagnostics, describe_ws_peer, describe_ws_exception
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
+from jiuwenswarm.gateway.channel_manager.base import BaseWebChannel
 
 parse_dotenv_early("jiuwenswarm-gateway")
 
@@ -99,6 +101,13 @@ async def _start_gateway_a2a_ingress(a2a_manager: Any) -> None:
 # Keep gateway idle-finalize fallback aligned with ACP channel default.
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _AGENT_PREWARM_EXCLUDED_CHANNELS = frozenset({"acp", "a2a"})
+
+
+def _agent_prewarm_enabled() -> bool:
+    """Return whether background session prewarming is switched on."""
+    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+    return prewarm_enabled_by_env()
 
 # IM 平台官方 API 域名（仅作为 config.yaml 缺字段时的加载兜底，不在 Config 类里硬编码）
 _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
@@ -294,7 +303,7 @@ async def _connect_with_retry(
 
     def _tcp_ready(timeout: float = 0.5) -> bool:
         try:
-            with _socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            with _socket.create_connection((host, port), timeout=timeout):
                 return True
         except OSError:
             return False
@@ -515,7 +524,7 @@ class _LocalHandlerContext:
     user_id: str | None
 
 
-class GatewayServer:
+class GatewayServer(BaseWebChannel):
     """通用多路路由 WebSocket Gateway Server。
 
     支持多个路径（如 /acp、/cli），每条路径可以有独立的 channel_id 和本地 handler。
@@ -523,6 +532,7 @@ class GatewayServer:
     """
 
     def __init__(self, config: GatewayServerConfig, router) -> None:
+        super().__init__(config, router)
         self.config = config
         self.bus = router
         self._server = None
@@ -1099,6 +1109,7 @@ class GatewayServer:
         raw_path = path if path is not None else getattr(ws, "path", "")
         parsed = urlparse(raw_path)
         request_path = parsed.path or raw_path
+        remote = getattr(ws, "remote_address", None)
 
         route, matched_path = self._resolve_route(request_path)
         if route is None:
@@ -1118,6 +1129,45 @@ class GatewayServer:
             route.channel_id,
             matched_path,
         )
+
+        # 触发连接钩子（GatewayServer 自身 + 外部 ws_channel，如 TuiChannel 鉴权）
+        for hook in self._connect_hooks:
+            try:
+                result = hook(ws)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as e:  # pragma: no cover
+                logger.warning(
+                    "WebChannel on_connect hook error: %s",
+                    format_ws_diagnostics(
+                        {"remote": remote, "path": request_path},
+                        describe_ws_peer(ws),
+                        describe_ws_exception(e),
+                    ),
+                )
+        ws_channel = getattr(route, "ws_channel", None)
+        if ws_channel is not None:
+            for hook in getattr(ws_channel, "_connect_hooks", []):
+                try:
+                    result = hook(ws)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as e:
+                    logger.warning(
+                        "%s on_connect hook error: %s",
+                        type(ws_channel).__name__,
+                        format_ws_diagnostics(
+                            {"remote": remote, "path": request_path},
+                            describe_ws_peer(ws),
+                            describe_ws_exception(e),
+                        ),
+                    )
+
+        # 上报连接事件
+        if route.ws_channel is not None:
+            reporter = getattr(route.ws_channel, "report_connect", None)
+            if callable(reporter):
+                reporter(ws)
 
         # connection.ack
         try:
@@ -1173,6 +1223,10 @@ class GatewayServer:
                         "GatewayServer delegate unregister_ws to ws_channel failed: path=%s",
                         request_path, exc_info=True,
                     )
+                # 上报断连事件
+                reporter = getattr(route.ws_channel, "report_disconnect", None)
+                if callable(reporter):
+                    reporter(ws)
             if route.disconnect_handler is not None:
                 try:
                     # Pass stale_request_keys so the handler can recover session_ids
@@ -1200,6 +1254,17 @@ class GatewayServer:
                     )
             for session_key in stale_session_keys:
                 await self._promote_pending_session_client(route, session_key)
+
+            for hook in self._disconnect_hooks:
+                try:
+                    result = hook(ws, None)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as e:  # pragma: no cover
+                    logger.warning(
+                        "on_disconnect hook error: %s",
+                        e,
+                    )
 
     async def _handle_raw_message(self, ws: Any, raw: str, request_path: str, route: RouteConfig) -> None:
 
@@ -1564,6 +1629,7 @@ async def _run_with_telemetry(
         SlackChannelConfig
     from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import WecomChannel, WecomConfig
     from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import SshChannel, SshChannelConfig
+    from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.cleanup import start_background_cleanup
     from jiuwenswarm.extensions.redis import init_gateway_redis_from_config
@@ -1879,12 +1945,13 @@ async def _run_with_telemetry(
     channel_manager = ChannelManager(message_handler, config=initial_channels_conf)
     # 回填引用：MessageHandler 实例化早于 ChannelManager，广播全局事件时需经它取 web channel。
     message_handler.set_channel_manager(channel_manager)
+
     updater_service = UpdaterService()
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
     prewarm_sync_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
-        if is_enterprise():
+        if is_enterprise() or not _agent_prewarm_enabled():
             return
         try:
             prewarm_channels = {
@@ -1917,7 +1984,7 @@ async def _run_with_telemetry(
         name: str, *, delay_seconds: float = 1.0
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
-        if is_enterprise():
+        if is_enterprise() or not _agent_prewarm_enabled():
             return
         nonlocal prewarm_sync_debounce_task
         previous = prewarm_sync_debounce_task
@@ -2140,6 +2207,11 @@ async def _run_with_telemetry(
     )
     channel_manager.register_channel_with_inbound(tui_channel, tui_norm_and_forward)
 
+    # Web/TUI 注册后再订阅连接钩子，否则 get_channel 拿不到 channel。
+    subscribe_fn = getattr(client, "set_channel_manager", None)
+    if callable(subscribe_fn):
+        subscribe_fn(channel_manager)
+
     acp_inbound_server = _InboundGatewayServer(
         lambda msg: _normalize_and_forward_message(msg, channel_manager)
     )
@@ -2211,6 +2283,20 @@ async def _run_with_telemetry(
     wechat_task = None
     ssh_channel = None
     ssh_task = None
+
+    def _set_agentos_ssh_key_issuer(
+        issuer,
+        *,
+        ephemeral_key_ttl_sec: float = 300.0,
+    ) -> None:
+        """Inject/clear SshChannel as ephemeral key issuer on AgentOSRouter extension."""
+        setter = getattr(agent_server_ext, "set_key_issuer", None)
+        if not callable(setter):
+            return
+        try:
+            setter(issuer, ephemeral_key_ttl_sec=ephemeral_key_ttl_sec)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[App] failed to set AgentOS SSH key issuer: %s", exc)
 
     _last_channels_conf: dict = {}
 
@@ -2763,6 +2849,8 @@ async def _run_with_telemetry(
             ssh_conf = conf.get("ssh") if isinstance(conf, dict) else None
             await _stop_channel(ssh_channel, ssh_task, "ssh")
             ssh_channel, ssh_task = None, None
+            # Clear issuer whenever SSH channel is torn down / reconfigured.
+            _set_agentos_ssh_key_issuer(None)
 
             if isinstance(ssh_conf, dict):
                 # 南向经 agent client（如 agentos_router -> yuanrong）动态解析。
@@ -2787,7 +2875,11 @@ async def _run_with_telemetry(
                     )
                 else:
                     ssh_config = SshChannelConfig.from_dict({**ssh_conf, "enabled": True})
-                    ssh_channel = SshChannel(ssh_config, _DummyBus())
+                    ssh_channel = SshChannel(
+                        ssh_config,
+                        _DummyBus(),
+                        key_registry=KeyRegistry(),
+                    )
                     channel_manager.register_channel(ssh_channel)
                     ssh_task = asyncio.create_task(ssh_channel.start(), name="ssh")
 
@@ -2805,11 +2897,17 @@ async def _run_with_telemetry(
                             )
 
                     ssh_task.add_done_callback(_on_ssh_task_done)
+                    if ssh_config.auth.enabled:
+                        _set_agentos_ssh_key_issuer(
+                            ssh_channel.key_issuer,
+                            ephemeral_key_ttl_sec=ssh_config.auth.ephemeral_key_ttl_sec,
+                        )
                     logger.info(
                         "[App] SshChannel registered from config.yaml.channels.ssh "
-                        "(listen %s:%s -> MessageHandler; southbound via agent client)",
+                        "(listen %s:%s -> MessageHandler; southbound via agent client; auth=%s)",
                         ssh_config.listen_host,
                         ssh_config.listen_port,
+                        ssh_config.auth.enabled,
                     )
             else:
                 logger.info("[App] channels.ssh missing or invalid, SshChannel disabled")
@@ -2825,7 +2923,7 @@ async def _run_with_telemetry(
         "agent-prewarm-sync-after-startup",
         delay_seconds=3.0,
     )
-    if not is_enterprise():
+    if not is_enterprise() and _agent_prewarm_enabled():
         prewarm_sync_task = asyncio.create_task(
             _periodic_agent_prewarm_sync(),
             name="agent-prewarm-periodic-sync",
@@ -3046,6 +3144,7 @@ async def _run_with_telemetry(
             except asyncio.CancelledError:
                 pass
             await ssh_channel.stop()
+            _set_agentos_ssh_key_issuer(None)
 
         await cron_registry.stop_all()
         await channel_manager.stop_dispatch()

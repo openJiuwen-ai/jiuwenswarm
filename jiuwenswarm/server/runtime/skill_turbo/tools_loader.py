@@ -171,11 +171,14 @@ def _load_jw_vision(ctx: ToolLoaderContext) -> list[Any]:
         return []
     from openjiuwen.harness.tools import create_vision_tools
 
+    # 与 _load_jw_filesystem 同款透传 ctx.sys_operation：沙箱模式下视觉工具需
+    # 经 fs().read_file 读沙箱内图片，缺失则退化为宿主直读 → Permission denied。
     return list(
         create_vision_tools(
             language=ctx.language,
             vision_model_config=ctx.vision_model_config,
             agent_id=ctx.agent_id,
+            operation=ctx.sys_operation,
         )
     )
 
@@ -206,8 +209,10 @@ def _load_jw_image_gen(ctx: ToolLoaderContext) -> list[Any]:
     """图像生成：image_gen_enabled 开关（沿用 _get_tool_cards 同款写法）。"""
     if not ctx.image_gen_enabled:
         return []
-    from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
+    from jiuwenswarm.agents.harness.common.tools.image_tools import _ensure_image_dependencies, generate_image
 
+    # 此入口沿用图片工具装载时初始化的行为，不跟随 Flash 的延迟策略。
+    _ensure_image_dependencies()
     return [generate_image]
 
 

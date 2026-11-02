@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-import inspect
 import json
 import logging
 import os
@@ -49,6 +48,16 @@ from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.skill.workspace_provider import SkillWorkspaceProvider
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config, get_permissions_file_guard_workspace_access
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    PLAN_EXECUTE_OPTION_VALUES,
+    PLAN_SKIP_OPTION_VALUES,
+    plan_skip_feedback,
+)
+from jiuwenswarm.common.mode_matrix import (
+    is_web_composable_mode,
+    read_request_work_mode,
+    resolve_adapter_mode,
+)
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.ask_user import normalize_ask_user_response
@@ -71,7 +80,10 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.server.runtime.a2ui.integration import (
     finalize_assistant_response_if_a2ui,
     is_a2ui_channel,
+    is_a2ui_probe_channel,
+    should_finalize_repair,
 )
+from jiuwenswarm.server.runtime.a2ui.protocol import is_a2ui_client_event
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
@@ -121,6 +133,33 @@ def _permission_response_key(request: AgentRequest) -> str | None:
     if not isinstance(request_id, str):
         return None
     return request_id or None
+
+
+def _is_a2ui_client_event_request(request: AgentRequest) -> bool:
+    """True when this request carries an A2UI client event in params.content.
+
+    此类请求的 inputs["query"] 已由 build_user_prompt 转成可读 a2ui prompt；
+    team 分支若再用 raw_query 覆写，raw_query = query if isinstance(query, str)
+    else "" 为空字符串——用空串覆写转换后成品 prompt。
+    """
+    params = request.params if isinstance(request.params, dict) else {}
+    return is_a2ui_client_event(params.get("content"))
+
+
+def _should_skip_team_raw_override(inputs: dict[str, Any], request: AgentRequest) -> bool:
+    """team raw_query 覆写的豁免判定（可单测纯函数）。
+
+    豁免两类结构化请求：
+    - InteractiveInput：ask_user/HITL 续答（既有先例）
+    - A2UI client_event：query 已是转换后 a2ui prompt（str），但 raw_query 取自
+      params.content（dict），raw_query = query if isinstance(query, str) else ""
+      为空字符串——不豁免时用空串覆写转换后成品 prompt。
+    """
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    if isinstance(inputs.get("query"), InteractiveInput):
+        return True
+    return _is_a2ui_client_event_request(request)
 
 
 def _is_team_permission_interactive_resume(
@@ -428,6 +467,10 @@ def _make_a2ui_final_chunk(
             "event_type": "chat.final",
             "session_id": session_id,
             "content": content,
+            # §9.1 契约：suppress 链重发的权威终稿。relay 见标记即整段覆写正文
+            # （不再要求含 <a2ui-json> 标签），清掉流式期已上 wire 的半截
+            # `<a2ui` + probe 占位残片；降级无标签终稿同样被干净覆写。
+            "a2ui_resend": True,
         },
         is_complete=False,
     )
@@ -457,6 +500,54 @@ def _is_foreign_stream_source(payload: Any) -> bool:
         return False
     source_id = payload.get("stream_source_id")
     return isinstance(source_id, str) and bool(source_id) and source_id != "main"
+
+
+def _a2ui_probe_for_frame(
+        probe: str,
+        content: str,
+        *,
+        event_type: str,
+        enabled: bool,
+        foreign: bool,
+) -> tuple[tuple[str, str] | None, str]:
+    """Advance the parent's a2ui probe state machine with one stream frame.
+
+    Returns ``(split, next_probe)``. Mirror frames from nested streams must
+    never touch the probe buffer or yield a split: a child marker left in the
+    parent's 512-byte probe window makes the *next main-chain* frame split on
+    it (``marker_start <= content_start``) and spuriously engages suppression
+    — the parent's deltas get withheld and a bogus render probe is emitted
+    (PR9194 review CR#2). Gate the whole probe step on ``foreign`` instead of
+    only gating engage, so the state machine input stays clean.
+    """
+    # Split guards for G.CTL.03 (<=3 boolean operands per condition): frame
+    # validity first, then event-type whitelist — same short-circuit semantics.
+    if foreign or not enabled or not content:
+        return None, probe
+    if event_type not in {"chat.delta", "chat.final"}:
+        return None, probe
+    split = _split_a2ui_stream_content(probe, content)
+    return split, _extend_a2ui_stream_probe(probe, content)
+
+
+def _a2ui_suppress_should_engage(
+        suppress_active: bool,
+        a2ui_split: tuple[str, str] | None,
+        foreign: bool,
+) -> bool:
+    """Gate the a2ui withhold state machine for one stream frame.
+
+    Mirror frames from a nested stream (subagent / skill node) must never
+    engage suppression on the parent turn: their markers belong to the child
+    timeline, and letting them trip the state machine withholds the parent's
+    deltas, emits a spurious render probe and mixes child text into the
+    finalized parent answer. Once suppression is already active, every frame
+    stays withheld (unchanged) — the flag belongs to the parent turn, not to
+    the frame that set it.
+    """
+    if suppress_active:
+        return True
+    return not foreign and a2ui_split is not None
 
 
 def _is_duplicate_full_body_delta(pending_chunks: list[str], content: str) -> bool:
@@ -699,6 +790,10 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_RETRIEVAL_INDEX_CANCEL: "handle_skills_retrieval_index_cancel",
     ReqMethod.SKILLS_RETRIEVAL_SEARCH: "handle_skills_retrieval_search",
     ReqMethod.SKILLS_RETRIEVAL_TREE: "handle_skills_retrieval_tree",
+    ReqMethod.SKILLS_GRAPH_BUILD: "handle_skills_graph_build",
+    ReqMethod.SKILLS_GRAPH_STATUS: "handle_skills_graph_status",
+    ReqMethod.SKILLS_GRAPH_GET: "handle_skills_graph_get",
+    ReqMethod.SKILLS_GRAPH_CANCEL: "handle_skills_graph_cancel",
     ReqMethod.SKILLS_EVOLUTION_STATUS: "handle_skills_evolution_status",
     ReqMethod.SKILLS_EVOLUTION_GET: "handle_skills_evolution_get",
     ReqMethod.SKILLS_EVOLUTION_SAVE: "handle_skills_evolution_save",
@@ -760,16 +855,6 @@ _PLUGIN_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGINS_DISABLE: "handle_plugins_disable",
     ReqMethod.PLUGINS_RELOAD: "handle_plugins_reload",
 }
-
-_SYMPHONY_METHODS: frozenset[ReqMethod] = frozenset(
-    {
-        ReqMethod.SYMPHONY_BUILD_SCORE,
-        ReqMethod.SYMPHONY_PAUSE_BUILD,
-        ReqMethod.SYMPHONY_SCORE_STATUS,
-        ReqMethod.SYMPHONY_GRAPH,
-        ReqMethod.SYMPHONY_PLAN,
-    }
-)
 
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
@@ -1139,6 +1224,7 @@ class JiuWenSwarm:
         skill_manager: SkillManager | None = None,
     ) -> None:
         self._adapter: AgentAdapter | None = None
+        self._adapter_mode: str | None = None
         # PersonalContext Rail follows the Host runtime switch.  Keep the
         # latest snapshot on the facade so a lazily-created adapter inherits
         # the current state before its first rail synchronization.
@@ -1240,7 +1326,13 @@ class JiuWenSwarm:
         request: AgentRequest,
         session_id: str,
     ) -> None:
-        """Record HITL resume so refresh does not revive an already-answered card."""
+        """Record HITL resume so refresh does not revive an already-answered card.
+
+        Persist the **card** ``request_id`` as the client sent it (including
+        ``{call_id}#{n}``). Harness routing still strips the suffix elsewhere;
+        history restore matches on the card id, and stripping here made refresh
+        resurrect permission cards after a successful approve.
+        """
         params = request.params if isinstance(request.params, dict) else {}
         answers = params.get("answers")
         status = params.get("status")
@@ -1248,10 +1340,14 @@ class JiuWenSwarm:
         has_status = isinstance(status, str) and bool(status.strip())
         if not has_answers and not has_status:
             return
-        rid = _ask_user_answer_request_id(params, request.request_id)
+        raw_rid = str(params.get("request_id") or "").strip()
+        rid = raw_rid or _ask_user_answer_request_id(params, request.request_id)
         if not rid:
             return
         extra: dict[str, Any] = {"request_id": rid}
+        base_rid = strip_hitl_seq_suffix(rid)
+        if base_rid and base_rid != rid:
+            extra["base_request_id"] = base_rid
         source = str(params.get("source") or "").strip()
         if source:
             extra["source"] = source
@@ -1302,17 +1398,20 @@ class JiuWenSwarm:
         logger.info("[JiuWenSwarm] SkillDevService 初始化完成")
         return self._skilldev_service
 
-    def _ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
+    def _ensure_adapter(self, *, mode: str | None = None) -> AgentAdapter:
         """确保 adapter 已初始化，如果未初始化则根据环境变量和 mode 创建."""
+        current_adapter_mode = getattr(self, "_adapter_mode", None)
+        selected_mode = mode or current_adapter_mode or "agent"
         if self._adapter is None:
             self._sdk_name = resolve_sdk_choice()
             self._adapter = create_adapter(
                 self._sdk_name,
-                mode=mode,
+                mode=selected_mode,
                 workspace_dir=self._workspace_dir,
                 agent_id=self._agent_id,
                 service_id=self._service_id,
             )
+            self._adapter_mode = selected_mode
             if hasattr(self._adapter, "set_skill_manager"):
                 self._adapter.set_skill_manager(self._skill_manager)
             setter = getattr(
@@ -1326,12 +1425,30 @@ class JiuWenSwarm:
             logger.info(
                 "[JiuWenSwarm] Initialized adapter: sdk=%s, mode=%s, workspace_dir=%s",
                 self._sdk_name,
-                mode,
+                selected_mode,
                 self._workspace_dir,
+            )
+            return self._adapter
+
+        # Facade is intentionally one adapter per cache key.  A request that
+        # explicitly asks for a different implementation must not silently use
+        # the existing Deep/Flash adapter; the manager is responsible for
+        # selecting a separate facade.
+        if current_adapter_mode is None:
+            self._adapter_mode = selected_mode
+            current_adapter_mode = selected_mode
+        # Compare implementations, while retaining the original business mode
+        # for parameterless rebuilds (team and agent both use DeepAdapter).
+        current_implementation = resolve_adapter_mode(current_adapter_mode)
+        requested_implementation = resolve_adapter_mode(selected_mode)
+        if mode is not None and requested_implementation != current_implementation:
+            raise RuntimeError(
+                "JiuWenSwarm adapter mode mismatch: "
+                f"current={current_adapter_mode!r}, requested={selected_mode!r}"
             )
         return self._adapter
 
-    def ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
+    def ensure_adapter(self, *, mode: str | None = None) -> AgentAdapter:
         """Public wrapper for ``_ensure_adapter`` (used by AgentManager reload)."""
         return self._ensure_adapter(mode=mode)
 
@@ -1518,23 +1635,44 @@ class JiuWenSwarm:
 
     @staticmethod
     def _adapter_mode_for_request(request: AgentRequest) -> str:
+        """选择 Deep / Code adapter。
+
+        Web 请求（显式携带 ``work_mode``）由 ``work_mode`` 决定 profile：
+        ``code`` 走 CodeAdapter，``work`` 走 DeepAdapter。TUI 等历史客户端不带
+        ``work_mode``，继续按完整 mode 串判定，行为不变。
+        """
+        resolved_adapter_mode = getattr(request, "resolved_adapter_mode", None)
+        if resolved_adapter_mode in {"agent", "code", "flash"}:
+            return resolved_adapter_mode
         params = request.params if isinstance(request.params, dict) else {}
+        work_mode = read_request_work_mode(params)
         raw_mode = params.get("mode", "")
-        if isinstance(raw_mode, str):
-            mode = raw_mode.strip().lower()
-            if mode == "team.plan":
-                return "code"
-            if mode == "code" or mode.startswith("code."):
-                return "code"
-            if mode == "flash" or mode.startswith("flash."):
-                return "flash"
+        mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
+        # 新版 mode_matrix 把 ``team`` 也列为 Web 可组合模式，但集群 adapter
+        # 选型从不随 work_mode 改变（4413 的矩阵尚未把 team 纳入组合集）。
+        # 当前所有发送方都保证 mode 非空（Web 出站恒带 mode、cron 恒非空、
+        # IM/TUI 不带 work_mode 走 legacy 分支），``mode or "agent"`` 仅为
+        # 防御性兜底；空 mode + work_mode=code 理论上会选 CodeAdapter（与
+        # 历史默认 DeepAdapter 不同），该组合现不可达。
+        if (
+            work_mode is not None
+            and mode != "team"
+            and is_web_composable_mode(mode or "agent")
+        ):
+            return "code" if work_mode == "code" else "agent"
+        if mode == "team.plan":
+            return "code"
+        if mode == "code" or mode.startswith("code."):
+            return "code"
+        if mode == "flash" or mode.startswith("flash."):
+            return "flash"
         return "agent"
 
     async def create_instance(
         self,
         config: dict[str, Any] | None = None,
         *,
-        mode: str = "agent",
+        mode: str | None = None,
         sub_mode: str = None,
         config_base: dict[str, Any] | None = None,
     ) -> None:
@@ -1545,17 +1683,18 @@ class JiuWenSwarm:
             mode: 实例化模式，"claw"（默认）或 "code"，透传给底层 adapter.
             sub_mode: 子模式
         """
-        adapter = self._ensure_adapter(mode=mode)
+        selected_mode = mode or self._adapter_mode or "agent"
+        adapter = self._ensure_adapter(mode=selected_mode)
         setattr(adapter, "_env_service_id", getattr(self, "_env_service_id", "default"))
         setattr(adapter, "_env_agent_id", getattr(self, "_env_agent_id", "default"))
         setattr(adapter, "_workspace_key", getattr(self, "_workspace_key", "default"))
-        create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
+        create_kwargs: dict[str, Any] = {"mode": selected_mode, "sub_mode": sub_mode}
         if config_base is not None:
             create_kwargs["config_base"] = config_base
         await adapter.create_instance(config, **create_kwargs)
         logger.info(
             "[JiuWenSwarm] Agent instance created: sdk=%s, mode=%s, sub_mode=%s",
-            self._sdk_name, mode, sub_mode,
+            self._sdk_name, selected_mode, sub_mode,
         )
 
         sm = self._session_manager
@@ -1567,6 +1706,7 @@ class JiuWenSwarm:
         """Reload the agent and refresh active team shared skill links after async install."""
         await self.create_instance()
         self._refresh_team_shared_skill_links()
+        self.bump_skill_enabled_version()
 
     @staticmethod
     def _refresh_team_shared_skill_links(session_id: str | None = None) -> None:
@@ -1577,6 +1717,35 @@ class JiuWenSwarm:
             refresh_team_shared_skill_links_across_managers(session_id)
         except Exception as exc:
             logger.warning("[JiuWenSwarm] team shared skill link refresh failed: %s", exc)
+
+    def bump_skill_enabled_version(self) -> int | None:
+        """Mark live session SkillUseRail allow-lists stale after skill install/uninstall.
+
+        Session adapters catch up lazily on their next turn; see DeepAdapter
+        ``bump_skill_enabled_version`` / ``_refresh_session_skills_if_stale``.
+
+        Returns:
+            The new root stamp after a successful bump, or ``None`` when unused.
+        """
+        adapter = self._ensure_adapter()
+        bump = getattr(adapter, "bump_skill_enabled_version", None)
+        if callable(bump):
+            return bump()
+        return None
+
+    async def _push_skill_refresh_to_bound_session(
+        self,
+        request: AgentRequest | None,
+    ) -> None:
+        """装/卸请求绑定真实会话时，同轮立即刷新该会话的 SkillUseRail。
+
+        委托 DeepAdapter 同名方法；适配器不支持时静默跳过，维持既有
+        「下一轮边界惰性追平」语义。
+        """
+        adapter = self._ensure_adapter()
+        push = getattr(adapter, "_push_skill_refresh_to_bound_session", None)
+        if callable(push):
+            await push(request)
 
     async def refresh_enabled_skills_from_db(self) -> None:
         """企业账本变更后轻量刷新启用集（直读 DB + 重建 SkillUseRail）。
@@ -1673,9 +1842,19 @@ class JiuWenSwarm:
         channel_id: str,
         mode: str,
         project_dir: str | None = None,
+        adapter_mode: str | None = None,
     ) -> None:
-        """Initialize and start the session-owned DeepAgent without sending input."""
-        adapter = self._ensure_adapter(mode="code" if mode.startswith("code") else "agent")
+        """Initialize and start the session-owned adapter without sending input.
+
+        ``mode`` remains the business canonical mode; ``adapter_mode`` is the
+        implementation selection (Deep / Code / Flash).  Prewarm callers that
+        omit ``adapter_mode`` retain the previous Deep/Code fallback for
+        compatibility.
+        """
+        selected_adapter_mode = adapter_mode or (
+            "code" if mode.startswith("code") else "agent"
+        )
+        adapter = self._ensure_adapter(mode=selected_adapter_mode)
         prepare = getattr(adapter, "prepare_session", None)
         if not callable(prepare):
             raise RuntimeError("active adapter does not support session prewarming")
@@ -2040,6 +2219,47 @@ class JiuWenSwarm:
         return retry_without_a2ui_call
 
     @staticmethod
+    async def _resolve_turn_adapter_for_finalize(
+            adapter: AgentAdapter,
+            request: AgentRequest,
+            session_id: str | None,
+    ) -> AgentAdapter:
+        """Return the session-scoped adapter that actually executed this turn.
+
+        _ensure_adapter 返回的 root facade 按设计不自建实例（热更新仅级联
+        session adapter），其 _model/_instance 恒为 None：repair_call 挂在 root 上
+        时 repair_model_response 每轮都 skip，retry_without_a2ui 也在 _instance
+        守卫处静默返回 None，repair_failed 后"降级非 a2ui 重答"的设计路径从不执行，
+        最终 a2ui 块被整块剥离。
+
+        解析走 _get_or_create_session_adapter，常态是缓存命中：流执行链在
+        _process_message_stream_impl 内已创建过 session adapter（create_instance
+        完成 _model 绑定）。条目在 finalize 前被清理（cleanup_session_adapter /
+        空闲 TTL 驱逐 / 企业身份切换）或不在同一缓存域时会 miss，此时会冷建一个
+        新实例（create_instance + start_interaction + warmup_session_context，
+        秒级代价）——这是让 repair 拿到可用 _model 付出的代价，不是无成本命中。
+
+        仅对启用服务端 repair 的 a2ui 渠道解析；其他渠道的 finalize 会早退，直接
+        返回 root，避免每轮多走一次解析、也避免在没有 repair 的渠道上触发冷建。
+        解析失败保持旧的 root 接线行为，不引入新故障面。
+        """
+        channel = getattr(request, "channel_id", None)
+        if not is_a2ui_channel(channel) or not should_finalize_repair(channel):
+            return adapter
+        getter = getattr(adapter, "_get_or_create_session_adapter", None)
+        if not callable(getter) or not session_id:
+            return adapter
+        try:
+            return await getter(session_id, request=request)  # pylint: disable=protected-access
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarm] resolve turn-scoped finalize adapter failed "
+                "session_id=%s: %s (falling back to root adapter)",
+                session_id, exc, exc_info=True,
+            )
+            return adapter
+
+    @staticmethod
     def _build_interactive_input_from_answers(
             request_id: str,
             answers: list[dict],
@@ -2186,6 +2406,27 @@ class JiuWenSwarm:
                 "persist_allow": True,
                 "feedback": "",
             }
+        elif value in PLAN_EXECUTE_OPTION_VALUES:
+            # Web 的"执行"：批准并退出 plan，但本轮不再调模型。真正的执行由前端
+            # 紧接着补发的普通消息开启新一轮完成。``plan_execute`` 是额外键，
+            # ConfirmPayload 会忽略它，rail 在校验前从原始 dict 读取。
+            confirm_payload = {
+                "approved": True,
+                "auto_confirm": False,
+                "feedback": "",
+                "plan_execute": True,
+            }
+        elif value in PLAN_SKIP_OPTION_VALUES:
+            # Web 的"跳过"：不退出 plan，也不继续修改，直接结束本轮。
+            # ``plan_skip`` 是额外键，ConfirmPayload 会忽略它；
+            # PlanApprovalInterruptRail 在校验前从原始 dict 读取该标记。
+            confirm_payload = {
+                "approved": False,
+                "auto_confirm": False,
+                "feedback": custom_input
+                or plan_skip_feedback(get_config().get("preferred_language")),
+                "plan_skip": True,
+            }
         elif value in ("reject", "拒绝", "Reject", "继续规划", "其他意见"):
             feedback = custom_input or (
                 "用户希望继续规划" if value in ("Keep planning", "继续规划", "其他意见") else "用户拒绝"
@@ -2318,15 +2559,47 @@ class JiuWenSwarm:
             _enterprise_web_handler = handler_name in _SKILLS_WEB_HANDLERS
             if handler_name == "handle_skills_skillnet_install" and payload.get("pending"):
                 _reload_after_skills = False
+            skills_changed = False
             if _enterprise_web_handler and payload.get("success") is not False:
                 if is_enterprise():
+                    _post_refresh_t0 = time.perf_counter()
                     await self.refresh_enabled_skills_from_db()
+                    if handler_name.startswith("handle_skills_web_"):
+                        logger.info(
+                            "[SkillManager] %s post_refresh rail_refresh_ms=%.1f request_id=%s",
+                            handler_name.removeprefix("handle_skills_web_"),
+                            (time.perf_counter() - _post_refresh_t0) * 1000.0,
+                            request.request_id,
+                        )
+                    skills_changed = True
             elif _reload_after_skills and payload.get("success") is not False:
+                _reload_t0 = time.perf_counter()
                 await self.create_instance()
+                _reload_create_ms = (time.perf_counter() - _reload_t0) * 1000.0
+                _links_t0 = time.perf_counter()
                 self._refresh_team_shared_skill_links(request.session_id)
+                logger.info(
+                    "[SkillManager] skills reload handler=%s create_instance_ms=%.1f links_ms=%.1f request_id=%s",
+                    handler_name,
+                    _reload_create_ms,
+                    (time.perf_counter() - _links_t0) * 1000.0,
+                    request.request_id,
+                )
+                skills_changed = True
             elif handler_name == "handle_skills_uninstall" and payload.get("success"):
                 await self._refresh_skill_rails_after_change()
                 self._refresh_team_shared_skill_links(request.session_id)
+                skills_changed = True
+            if skills_changed:
+                # Root create_instance / refresh often no-ops on the chat path;
+                # bump so existing session adapters lazily rebuild SkillUseRail.
+                self.bump_skill_enabled_version()
+                # Same-turn visibility: an install/uninstall request bound to a
+                # live chat session (session_id resolves to an existing session
+                # adapter) refreshes that session's SkillUseRail now instead of
+                # at its next turn boundary, so install -> skill_tool works
+                # within the same turn.
+                await self._push_skill_refresh_to_bound_session(request)
         except Exception as exc:
             logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
             return AgentResponse(
@@ -2378,111 +2651,6 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
-    async def _handle_symphony_request(self, request: AgentRequest) -> AgentResponse | None:
-        """处理 Symphony extension RPC 请求."""
-        if request.req_method not in _SYMPHONY_METHODS:
-            return None
-
-        method = request.req_method.value
-        try:
-            handler = ExtensionRegistry.get_instance().get_rpc_handler(method)
-            if handler is None:
-                payload = {
-                    "success": False,
-                    "detail": f"Symphony extension RPC unavailable: {method}: handler not registered",
-                }
-            else:
-                result = handler(request.params or {}, request=request)
-                payload = await result if inspect.isawaitable(result) else result
-                if not isinstance(payload, dict):
-                    payload = {"success": True, "result": payload}
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[JiuWenSwarm] Symphony RPC failed: %s", method)
-            return AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"success": False, "detail": f"{method}: {exc}"},
-                metadata=request.metadata,
-            )
-
-        return AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=True,
-            payload=payload,
-            metadata=request.metadata,
-        )
-
-    async def _handle_symphony_request_stream(
-        self,
-        request: AgentRequest,
-    ) -> AsyncIterator[AgentResponseChunk]:
-        """Stream Symphony RPC progress events, then the final RPC payload."""
-        if request.req_method not in _SYMPHONY_METHODS:
-            return
-
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        async def progress_callback(event: dict[str, Any]) -> None:
-            await queue.put(event)
-
-        metadata = dict(request.metadata or {})
-        metadata["symphony_progress_callback"] = progress_callback
-        stream_request = replace(request, metadata=metadata)
-        task = asyncio.create_task(self._handle_symphony_request(stream_request))
-
-        try:
-            while not task.done() or not queue.empty():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    continue
-                yield AgentResponseChunk(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    payload={
-                        "event_type": event.get("type")
-                        or "symphony.beam_search.update",
-                        "beam_search_event": event,
-                    },
-                    is_complete=False,
-                )
-            response = await task
-        except Exception as exc:
-            logger.exception("[JiuWenSwarm] Symphony stream failed: %s", exc)
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload={"event_type": "chat.error", "error": str(exc)},
-                is_complete=False,
-            )
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload=None,
-                is_complete=True,
-            )
-            return
-
-        payload = dict(response.payload or {}) if response is not None else {}
-        payload.setdefault(
-            "event_type",
-            f"{request.req_method.value if request.req_method else 'symphony'}.result",
-        )
-        yield AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload=payload,
-            is_complete=False,
-        )
-        yield AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload=None,
-            is_complete=True,
-        )
-
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
 
@@ -2511,7 +2679,12 @@ class JiuWenSwarm:
                 session_id=session_id,
             )
 
-        adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        # Control requests belong to the already selected session owner. Legacy
+        # clients may send agent.plan or omit mode even for a Flash session.
+        if self._adapter is not None:
+            adapter = self._ensure_adapter()
+        else:
+            adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
         if intent == "pause":
             # 暂停：不取消任务，只暂停 ReAct 循环
@@ -2597,15 +2770,23 @@ class JiuWenSwarm:
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
-                await self._session_manager.cancel_session_task(
-                    session_id,
-                    reason,
-                    wait_timeout=5.0,
-                )
+                if paused:
+                    await self._session_manager.cancel_session_task(
+                        session_id,
+                        reason,
+                        wait_timeout=5.0,
+                    )
                 message = "团队已暂停" if paused else "当前没有可暂停的团队任务"
             else:
                 # Use cancel_session_runtime to remove from Runner pool
-                cancelled = await team_manager.cancel_session_runtime(session_id, reason=reason)
+                try:
+                    cancelled = await team_manager.cancel_session_runtime(session_id, reason=reason)
+                except Exception:
+                    logger.exception("[JiuWenSwarm] team cancel failed: session_id=%s", session_id)
+                    return self._build_interrupt_result_response(
+                        request, intent=intent, success=False,
+                        message="团队停止未完成，请稍后重试",
+                    )
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -2779,7 +2960,7 @@ class JiuWenSwarm:
                     metadata=request.metadata,
                 )
 
-        # 无状态请求（skills / skilldev / plugins / symphony）不需要 adapter，
+        # 无状态请求（skills / skilldev / plugins / Skill Graph）不需要 adapter，
         # 在 _ensure_adapter 之前检查，避免触发 adapter 懒初始化。
         # COMMAND_GOAL 已在上方单独处理（其内部按需 ensure），不影响本顺序。
         skilldev_response = await self._handle_skilldev_request(request)
@@ -2793,10 +2974,6 @@ class JiuWenSwarm:
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
             return plugins_response
-
-        symphony_response = await self._handle_symphony_request(request)
-        if symphony_response is not None:
-            return symphony_response
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
@@ -2923,6 +3100,20 @@ class JiuWenSwarm:
                             logger.warning(
                                 "[JiuWenClaw] ask_user stale guard failed session_id=%s "
                                 "(fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
+                    # 作答消费销毁（挂起表转移）：guard 放行（含 fail-open）=
+                    # 该卡应答被接受为当前代，摘除 base 挂起表条目。迁自
+                    # _try_skill_turbo_resume（删 Path A 后公共入口在此）。
+                    _consume = getattr(hook_adapter, "_consume_hitl_live_card_for_answer", None)
+                    if callable(_consume):
+                        try:
+                            _consume(request)
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] ask_user consume live card failed "
+                                "session_id=%s (fail-open)",
                                 session_id,
                                 exc_info=True,
                             )
@@ -3054,11 +3245,15 @@ class JiuWenSwarm:
             if result.ok and result.payload.get("content"):
                 content = result.payload["content"]
                 content_str = content if isinstance(content, str) else str(content)
-                repair_call = getattr(adapter, "repair_model_response", None)
+                turn_adapter = await self._resolve_turn_adapter_for_finalize(
+                    adapter, request, session_id,
+                )
+                repair_call = getattr(turn_adapter, "repair_model_response", None)
                 retry_without_a2ui_call = self._make_retry_without_a2ui_call(
-                    adapter=adapter,
+                    adapter=turn_adapter,
                     request=request,
                 )
+                pre_finalize_content_str = content_str
                 content_str = await finalize_assistant_response_if_a2ui(
                     content_str,
                     channel=request.channel_id,
@@ -3067,6 +3262,10 @@ class JiuWenSwarm:
                     repair_call=repair_call,
                     retry_without_a2ui_call=retry_without_a2ui_call,
                 )
+                if not content_str:
+                    # 同流式路径兜底：finalize 空返回（如 repair 不可用被误判合法）
+                    # 不得把 unary 正文整体清空，回退 finalize 前的原始字符串。
+                    content_str = pre_finalize_content_str
                 if isinstance(content, str):
                     result.payload["content"] = content_str
                 from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
@@ -3209,18 +3408,12 @@ class JiuWenSwarm:
             )
             return
 
-        if request.req_method in _SYMPHONY_METHODS:
-            async for chunk in self._handle_symphony_request_stream(request):
-                yield chunk
-            return
-
-        # 无状态 RPC（skills / plugins / symphony）不需要 adapter，
+        # 无状态 RPC（skills / plugins / Skill Graph）不需要 adapter，
         # 委托给非流式 handler 并包装为单个 chunk，避免触发 adapter 懒初始化。
         # skilldev 已由上面的流式分支处理，这里不会再命中。
         for stateless_handler in (
             self._handle_skills_request,
             self._handle_plugins_request,
-            self._handle_symphony_request,
         ):
             stateless_response = await stateless_handler(request)
             if stateless_response is not None:
@@ -3355,6 +3548,20 @@ class JiuWenSwarm:
                                 session_id,
                                 exc_info=True,
                             )
+                    # 作答消费销毁（挂起表转移）：guard 放行（含 fail-open）=
+                    # 该卡应答被接受为当前代，摘除 base 挂起表条目。迁自
+                    # _try_skill_turbo_resume（删 Path A 后公共入口在此）。
+                    _consume = getattr(hook_adapter, "_consume_hitl_live_card_for_answer", None)
+                    if callable(_consume):
+                        try:
+                            _consume(request)
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] stream ask_user consume live card failed "
+                                "session_id=%s (fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
                 for hook_name, log_name in (
                     ("prepare_plan_pause_for_request", "prepare_plan_pause"),
                     ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
@@ -3403,12 +3610,20 @@ class JiuWenSwarm:
             from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
             team_query_is_interactive_input = isinstance(inputs.get("query"), InteractiveInput)
-            if not team_query_is_interactive_input:
+            # a2ui client_event / InteractiveInput 请求豁免 raw_query 覆写（判定见纯函数）
+            skip_raw_override = _should_skip_team_raw_override(inputs, request)
+            if not skip_raw_override:
                 inputs["query"] = raw_query
-            logger.info(
-                "[JiuWenSwarm] Team模式使用原始query: %s",
-                raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
-            )
+                logger.info(
+                    "[JiuWenSwarm] Team模式使用原始query: %s",
+                    raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
+                )
+            else:
+                # 豁免分支：query 是成品 prompt，单独文案避免与原始 query 混淆
+                logger.info(
+                    "[JiuWenSwarm] Team模式豁免raw_query覆写(a2ui client_event/InteractiveInput)，保留转换后query: type=%s",
+                    type(inputs.get("query")).__name__,
+                )
 
         # cloud memory: before chat hook
         if memory_mode == "cloud":
@@ -3656,7 +3871,12 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
-        a2ui_probe_enabled = is_a2ui_channel(cid)
+        # probe 渠道白名单收口在 integration._A2UI_PROBE_CHANNEL_IDS（web + officeclaw）。
+        # officeclaw (relay-claw) 启用 probe → suppress 自动激活（扣 a2ui delta + 原
+        # chat.final + 改写 is_complete）。覆写依赖 relay-claw PR #5508 的
+        # replace_final / a2ui_resend 消费（尚未合入 dev-stable/main、未部署），
+        # 合入顺序须 relay-claw 先行，否则累积的 <a2ui 前半 + probe 污染无法清洗。
+        a2ui_probe_enabled = is_a2ui_probe_channel(cid)
         _yielded_from_queue = 0
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
@@ -3720,7 +3940,14 @@ class JiuWenSwarm:
                                 continue
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
-                            should_record = et.startswith("chat.") or et.startswith("task.")
+                            # context.usage is a blank-content structured snapshot;
+                            # persist so history.get / Web restore can rebuild the
+                            # context indicator (align develop).
+                            should_record = (
+                                et.startswith("chat.")
+                                or et.startswith("task.")
+                                or et == "context.usage"
+                            )
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "context_compression_state":
@@ -3733,10 +3960,15 @@ class JiuWenSwarm:
                                 )
 
                             payload_content = str(data.payload.get("content", ""))
-                            a2ui_split = None
-                            if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
-                                a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
-                                a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
+                            # foreign 判定前置（CR#2）：子流镜像帧不得进入父轮 probe 状态机
+                            frame_is_foreign = _is_foreign_stream_source(data.payload)
+                            a2ui_split, a2ui_stream_probe = _a2ui_probe_for_frame(
+                                a2ui_stream_probe,
+                                payload_content,
+                                event_type=et,
+                                enabled=a2ui_probe_enabled,
+                                foreign=frame_is_foreign,
+                            )
                             if _should_defer_a2ui_processing_status(
                                     suppress_a2ui_stream=suppress_a2ui_stream,
                                     event_type=et,
@@ -3749,8 +3981,10 @@ class JiuWenSwarm:
                                 )
                                 continue
                             if et == "chat.delta":
-                                final_answer_chunks.append(payload_content)
-                                if suppress_a2ui_stream or a2ui_split is not None:
+                                delta_is_foreign = frame_is_foreign
+                                if not delta_is_foreign:
+                                    final_answer_chunks.append(payload_content)
+                                if _a2ui_suppress_should_engage(suppress_a2ui_stream, a2ui_split, delta_is_foreign):
                                     first_a2ui_suppression = not suppress_a2ui_stream
                                     if first_a2ui_suppression:
                                         logger.info(
@@ -3785,7 +4019,11 @@ class JiuWenSwarm:
                                     )
                                     should_record = False
                                     continue
-                                durable_pending_final_chunks.append(payload_content)
+                                # CR#3：与 final_answer_chunks / reasoning 缓冲同款守卫——
+                                # 子流 delta 不进 durable 缓冲（否则父 tool_call 持久化时
+                                # 把子流文本写成父历史、空 final rescue 又把合并当父正文）。
+                                if not delta_is_foreign:
+                                    durable_pending_final_chunks.append(payload_content)
                                 should_record = False
                             elif et == "chat.reasoning":
                                 # Reasoning mirrored from a nested stream stays
@@ -3806,7 +4044,9 @@ class JiuWenSwarm:
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
-                                if suppress_a2ui_stream or a2ui_split is not None:
+                                if _a2ui_suppress_should_engage(
+                                    suppress_a2ui_stream, a2ui_split, frame_is_foreign
+                                ):
                                     first_a2ui_suppression = not suppress_a2ui_stream
                                     if first_a2ui_suppression:
                                         logger.info(
@@ -3818,8 +4058,12 @@ class JiuWenSwarm:
                                     if first_a2ui_suppression and not a2ui_pending_render_sent:
                                         yield _make_a2ui_pending_render_chunk(request_id=rid, channel_id=cid)
                                         a2ui_pending_render_sent = True
-                                    final_answer_content = payload_content
-                                    durable_pending_final_chunks = []
+                                    # CR#1：suppress 激活后 foreign final 也进本分支
+                                    # （维持 withhold 不变），但不得改写父轮被扣的终稿
+                                    # 与 durable 缓冲——bookkeeping 只认主链帧。
+                                    if not frame_is_foreign:
+                                        final_answer_content = payload_content
+                                        durable_pending_final_chunks = []
                                     continue
                                 # Facade-level rescue: reasoning-only models may emit an
                                 # empty chat.final after chat.reasoning. Fill a short
@@ -3832,16 +4076,20 @@ class JiuWenSwarm:
                                 # RelayClaw computeFinalTextDelta appends another copy
                                 # (esp. after post-tool \n\n round-break).
                                 merged_from_deltas = False
-                                if (
-                                    not str(payload_content or "").strip()
-                                    and durable_pending_final_chunks
-                                    and isinstance(data.payload, dict)
-                                ):
-                                    merged = "".join(durable_pending_final_chunks)
-                                    if merged.strip():
-                                        data.payload["content"] = merged
-                                        payload_content = merged
-                                        merged_from_deltas = True
+                                # CR#1/#3：rescue/fill 只在主链 final 上做。子流空 final
+                                # 若也进这里，会把父轮 durable 合并进子帧、或触发
+                                # reasoning-only fill，污染子流内容并掏空父缓冲。
+                                if not frame_is_foreign:
+                                    if (
+                                        not str(payload_content or "").strip()
+                                        and durable_pending_final_chunks
+                                        and isinstance(data.payload, dict)
+                                    ):
+                                        merged = "".join(durable_pending_final_chunks)
+                                        if merged.strip():
+                                            data.payload["content"] = merged
+                                            payload_content = merged
+                                            merged_from_deltas = True
                                 # Segment-local visibility only: durable_final_content
                                 # is prior-tool text and must not suppress post-tool
                                 # reasoning-only rescue.
@@ -3856,35 +4104,37 @@ class JiuWenSwarm:
                                         (data.payload or {}).get("reasoning_content") or ""
                                     ).strip()
                                 )
-                                if isinstance(data.payload, dict):
-                                    filled = fill_reasoning_only_empty_final_content(
-                                        content=payload_content,
-                                        has_visible_streamed_text=has_visible_streamed_text,
-                                        has_reasoning=has_reasoning,
-                                        lang=str(
-                                            get_config().get("preferred_language", "zh")
-                                        ),
-                                    )
-                                    if filled != payload_content:
-                                        data.payload["content"] = filled
-                                        payload_content = filled
-                                        logger.info(
-                                            "[JiuWenSwarm] filled reasoning-only empty "
-                                            "chat.final: request_id=%s "
-                                            "had_visible_streamed_text=%s",
-                                            rid,
-                                            has_visible_streamed_text,
+                                if not frame_is_foreign:
+                                    if isinstance(data.payload, dict):
+                                        filled = fill_reasoning_only_empty_final_content(
+                                            content=payload_content,
+                                            has_visible_streamed_text=has_visible_streamed_text,
+                                            has_reasoning=has_reasoning,
+                                            lang=str(
+                                                get_config().get("preferred_language", "zh")
+                                            ),
                                         )
-                                    elif not str(payload_content or "").strip():
-                                        logger.info(
-                                            "[JiuWenSwarm] skipped reasoning-only empty "
-                                            "chat.final fill: request_id=%s "
-                                            "has_reasoning=%s had_visible_streamed_text=%s",
-                                            rid,
-                                            has_reasoning,
-                                            has_visible_streamed_text,
-                                        )
-                                durable_pending_final_chunks = []
+                                        if filled != payload_content:
+                                            data.payload["content"] = filled
+                                            payload_content = filled
+                                            logger.info(
+                                                "[JiuWenSwarm] filled reasoning-only empty "
+                                                "chat.final: request_id=%s "
+                                                "had_visible_streamed_text=%s",
+                                                rid,
+                                                has_visible_streamed_text,
+                                            )
+                                        elif not str(payload_content or "").strip():
+                                            logger.info(
+                                                "[JiuWenSwarm] skipped reasoning-only empty "
+                                                "chat.final fill: request_id=%s "
+                                                "has_reasoning=%s had_visible_streamed_text=%s",
+                                                rid,
+                                                has_reasoning,
+                                                has_visible_streamed_text,
+                                            )
+                                    # 主链 final 才结算父轮 durable；子流 final 不得掏空
+                                    durable_pending_final_chunks = []
 
                             if should_record and not _is_foreign_stream_source(data.payload):
                                 payload_dict = dict(data.payload)
@@ -3917,7 +4167,9 @@ class JiuWenSwarm:
                                 )
                                 if et == "chat.final":
                                     durable_final_content = str(data.payload.get("content", ""))
-                            if et == "chat.final":
+                            if et == "chat.final" and not frame_is_foreign:
+                                # CR#1：普通（未 suppress）路径同样不认子流 final——
+                                # 晚到的 foreign chat.final 否则会把父轮答案顶掉。
                                 final_answer_content = str(data.payload.get("content", ""))
                                 # History kept the merged body; strip wire so hosts
                                 # that already rendered chat.delta do not append again.
@@ -3930,7 +4182,14 @@ class JiuWenSwarm:
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
                         merged_from_deltas = False
-                        should_record = et.startswith("chat.") or et.startswith("task.")
+                        # context.usage is a blank-content structured snapshot;
+                        # persist so history.get / Web restore can rebuild the
+                        # context indicator (align develop).
+                        should_record = (
+                            et.startswith("chat.")
+                            or et.startswith("task.")
+                            or et == "context.usage"
+                        )
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
                         if et == "context_compression_state":
@@ -3943,10 +4202,15 @@ class JiuWenSwarm:
                             )
 
                         payload_content = str(data.get("content", ""))
-                        a2ui_split = None
-                        if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
-                            a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
-                            a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
+                        # foreign 判定前置（CR#2，与 chunk 路同款）
+                        frame_is_foreign = _is_foreign_stream_source(data)
+                        a2ui_split, a2ui_stream_probe = _a2ui_probe_for_frame(
+                            a2ui_stream_probe,
+                            payload_content,
+                            event_type=et,
+                            enabled=a2ui_probe_enabled,
+                            foreign=frame_is_foreign,
+                        )
                         if _should_defer_a2ui_processing_status(
                                 suppress_a2ui_stream=suppress_a2ui_stream,
                                 event_type=et,
@@ -3961,8 +4225,10 @@ class JiuWenSwarm:
                         if et == "chat.final":
                             ensure_final_mode_inplace(data)
                         if et == "chat.delta":
-                            final_answer_chunks.append(payload_content)
-                            if suppress_a2ui_stream or a2ui_split is not None:
+                            delta_is_foreign = frame_is_foreign
+                            if not delta_is_foreign:
+                                final_answer_chunks.append(payload_content)
+                            if _a2ui_suppress_should_engage(suppress_a2ui_stream, a2ui_split, delta_is_foreign):
                                 first_a2ui_suppression = not suppress_a2ui_stream
                                 if first_a2ui_suppression:
                                     logger.info(
@@ -3995,7 +4261,9 @@ class JiuWenSwarm:
                                 )
                                 should_record = False
                                 continue
-                            durable_pending_final_chunks.append(payload_content)
+                            # CR#3：子流 delta 不进父 durable 缓冲（与 chunk 路同款）
+                            if not delta_is_foreign:
+                                durable_pending_final_chunks.append(payload_content)
                             should_record = False
                         elif et == "chat.reasoning":
                             if not _is_foreign_stream_source(data):
@@ -4006,7 +4274,9 @@ class JiuWenSwarm:
                                 _persist_pending_final_text()
                                 final_answer_chunks = []
                         elif et == "chat.final":
-                            if suppress_a2ui_stream or a2ui_split is not None:
+                            if _a2ui_suppress_should_engage(
+                                suppress_a2ui_stream, a2ui_split, frame_is_foreign
+                            ):
                                 first_a2ui_suppression = not suppress_a2ui_stream
                                 if first_a2ui_suppression:
                                     logger.info(
@@ -4018,8 +4288,11 @@ class JiuWenSwarm:
                                 if first_a2ui_suppression and not a2ui_pending_render_sent:
                                     yield _make_a2ui_pending_render_chunk(request_id=rid, channel_id=cid)
                                     a2ui_pending_render_sent = True
-                                final_answer_content = payload_content
-                                durable_pending_final_chunks = []
+                                # CR#1：foreign final 维持 withhold，但不得改写父轮
+                                # 被扣终稿与 durable 缓冲（与 chunk 路同款守卫）
+                                if not frame_is_foreign:
+                                    final_answer_content = payload_content
+                                    durable_pending_final_chunks = []
                                 continue
                             has_visible_streamed_text = bool(
                                 "".join(final_answer_chunks).strip()
@@ -4031,8 +4304,10 @@ class JiuWenSwarm:
                                 or str(data.get("reasoning_content") or "").strip()
                             )
                             merged_from_deltas = False
+                            # CR#3：子流空 final 不得合并/掏空父轮 durable
                             if (
-                                not str(payload_content or "").strip()
+                                not frame_is_foreign
+                                and not str(payload_content or "").strip()
                                 and durable_pending_final_chunks
                             ):
                                 merged = "".join(durable_pending_final_chunks)
@@ -4047,6 +4322,8 @@ class JiuWenSwarm:
                                 has_reasoning=has_reasoning,
                                 lang=str(get_config().get("preferred_language", "zh")),
                             )
+                            if frame_is_foreign:
+                                filled = payload_content  # 子流 final 不做 reasoning-only 补白
                             if filled != payload_content:
                                 data["content"] = filled
                                 payload_content = filled
@@ -4066,7 +4343,9 @@ class JiuWenSwarm:
                                     has_reasoning,
                                     has_visible_streamed_text,
                                 )
-                            durable_pending_final_chunks = []
+                            if not frame_is_foreign:
+                                # 主链 final 才结算父轮 durable
+                                durable_pending_final_chunks = []
 
                         if should_record and not _is_foreign_stream_source(data):
                             extra_fields = {
@@ -4101,7 +4380,8 @@ class JiuWenSwarm:
                             )
                             if et == "chat.final":
                                 durable_final_content = str(data.get("content", ""))
-                        if et == "chat.final":
+                        if et == "chat.final" and not frame_is_foreign:
+                            # CR#1：晚到的 foreign final 不得顶掉父轮答案
                             final_answer_content = str(data.get("content", ""))
                             if merged_from_deltas:
                                 data["content"] = ""
@@ -4137,9 +4417,10 @@ class JiuWenSwarm:
                 permission_reservation.release_if_unstarted()
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
-        repair_call = getattr(adapter, "repair_model_response", None)
+        turn_adapter = await self._resolve_turn_adapter_for_finalize(adapter, request, session_id)
+        repair_call = getattr(turn_adapter, "repair_model_response", None)
         retry_without_a2ui_call = self._make_retry_without_a2ui_call(
-            adapter=adapter,
+            adapter=turn_adapter,
             request=request,
         )
         
@@ -4151,6 +4432,17 @@ class JiuWenSwarm:
             repair_call=repair_call,
             retry_without_a2ui_call=retry_without_a2ui_call,
         )
+        if suppress_a2ui_stream and not finalized_assistant_message and assistant_message:
+            # suppress 已把原 chat.final 扣在手上（未上 wire），此处 finalized 若为空
+            # （如适配器无模型可修、repair 返回 None 被强转空串——case #26 形态），
+            # 下面的重发会被整体跳过，整块 a2ui 静默丢失、relay 落库只剩 probe 残留。
+            # 兜底回退重发被扣的原始内容：即便 JSON 破损，relay 前端 replace_final
+            # 覆写 + jsonrepair 仍有渲染机会，优于什么都不发。
+            logger.warning(
+                "A2UI finalized empty under suppression: request_id=%s falling back to raw stream content",
+                rid or "",
+            )
+            finalized_assistant_message = assistant_message
         if finalized_assistant_message and (
                 finalized_assistant_message != assistant_message or suppress_a2ui_stream
         ):
@@ -4241,6 +4533,20 @@ class JiuWenSwarm:
         if self._adapter is None:
             return None
         return await self._adapter.ensure_instance()
+
+    def get_live_session_instance(self, session_id: str | None):
+        """Return the DeepAgent already running ``session_id``, if any.
+
+        Returns None when no adapter exists, when the adapter predates this
+        accessor, or when the session has not started a child adapter yet.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return None
+        getter = getattr(adapter, "get_live_session_instance", None)
+        if getter is None:
+            return None
+        return getter(session_id)
 
     async def apply_package_change_to_session_adapters(
         self,

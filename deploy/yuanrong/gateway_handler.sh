@@ -10,6 +10,34 @@ gateway_get_config_dir() {
     fi
 }
 
+# yuanrong 部署固定使用 /root；若目标机 JIUWENSWARM_HOME（或 $HOME）不是 /root 则提示，
+# 调用方应强制以 JIUWENSWARM_HOME=/root 覆盖拉起。
+gateway_check_jiuwenswarm_home() {
+    local host="$1"
+    local effective_home
+    # 脚本顶层是 set -euo（-o 无参数被静默忽略），无 pipefail；管道退出码由 tr 决定。
+    # 必须在 $() 子 shell 内读 PIPESTATUS[0] 再 exit，才能把 exec_on_host 失败传出。
+    # 父 shell 在 $(cmd1|cmd2) 之后的 PIPESTATUS[0] 只是子 shell 整体状态，拿不到 cmd1。
+    effective_home=$(
+        exec_on_host "${host}" 'printf %s "${JIUWENSWARM_HOME:-$HOME}"' | tr -d '\r'
+        exit "${PIPESTATUS[0]}"
+    ) || {
+        warning "Failed to read JIUWENSWARM_HOME from ${host}"
+        return 1
+    }
+    if [ -z "${effective_home}" ]; then
+        effective_home="/root"
+    fi
+    # 去掉末尾 /
+    effective_home="${effective_home%/}"
+
+    if [ "${effective_home}" != "/root" ]; then
+        warning "JIUWENSWARM_HOME on ${host} is '${effective_home}', expected '/root'. Forcing overwrite under /root."
+        return 1
+    fi
+    return 0
+}
+
 gateway_resolve_host() {
     local master_host="${DEPLOY_VARS["MASTER_NODE_IP"]:-}"
     if [ -z "${master_host}" ]; then
@@ -72,12 +100,17 @@ gateway_deploy_process() {
     local config_dir
     config_dir=$(gateway_get_config_dir)
 
-    local init_cmd="jiuwenswarm-init -f </dev/null"
-    local start_cmd="nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+    local home_prefix=""
+    if ! gateway_check_jiuwenswarm_home "${master_host}"; then
+        home_prefix="JIUWENSWARM_HOME=/root "
+    fi
+
+    local init_cmd="${home_prefix}jiuwenswarm-init -f </dev/null"
+    local start_cmd="${home_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
 
     if [ -n "${instance_name}" ]; then
-        init_cmd="JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} jiuwenswarm-init -f </dev/null"
-        start_cmd="JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        init_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} jiuwenswarm-init -f </dev/null"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     fi
 
     info "Running jiuwenswarm-init on ${master_host}..."

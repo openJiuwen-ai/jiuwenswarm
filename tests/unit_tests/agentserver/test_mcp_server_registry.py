@@ -38,6 +38,7 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS,
     _FORWARD_REQ_METHODS,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _leftover_request_mcp_servers
 
 
 async def _wait_until(predicate, *, turns: int = 20) -> None:
@@ -415,7 +416,7 @@ def test_extract_mcp_server_list() -> None:
 
 
 def test_leftover_request_mcp_servers_drops_covered_names() -> None:
-    leftover, dropped = JiuWenSwarmDeepAdapter._leftover_request_mcp_servers(
+    leftover, dropped = _leftover_request_mcp_servers(
         {
             "chrome-devtools": {"command": "dup"},
             "pptx-mcp": {"command": "pptx"},
@@ -424,11 +425,11 @@ def test_leftover_request_mcp_servers_drops_covered_names() -> None:
     )
     assert dropped == ["chrome-devtools"]
     assert leftover == {"pptx-mcp": {"command": "pptx"}}
-    assert JiuWenSwarmDeepAdapter._leftover_request_mcp_servers(
+    assert _leftover_request_mcp_servers(
         {"pptx-mcp": {"command": "pptx"}},
         [],
     ) == ({"pptx-mcp": {"command": "pptx"}}, [])
-    assert JiuWenSwarmDeepAdapter._leftover_request_mcp_servers(None, ["chrome-devtools"]) == (
+    assert _leftover_request_mcp_servers(None, ["chrome-devtools"]) == (
         None,
         [],
     )

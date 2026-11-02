@@ -74,6 +74,9 @@ METRIC_SPECS: dict[str, MetricSpec] = {
     "gen_ai.client.token.first_token_duration": MetricSpec(
         "histogram", "s", "Time to first token"
     ),
+    "jiuwenclaw.llm.cache_hit_rate": MetricSpec(
+        "histogram", "1", "LLM KV-cache hit rate"
+    ),
 }
 
 
@@ -84,6 +87,12 @@ metrics_session_id: ContextVar[str | None] = ContextVar(
 )
 metrics_channel_id: ContextVar[str | None] = ContextVar(
     "metrics_channel_id", default=None
+)
+metrics_mode_id: ContextVar[str | None] = ContextVar(
+    "metrics_mode_id", default=None
+)
+metrics_adapter_mode_id: ContextVar[str | None] = ContextVar(
+    "metrics_adapter_mode_id", default=None
 )
 
 

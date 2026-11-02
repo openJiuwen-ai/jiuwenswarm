@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ def _create_team_binding_from_template(
     team_name: str,
     template_id: str,
     config_base: dict[str, Any],
+    heal: bool = False,
 ) -> Any:
     from jiuwenswarm.agents.harness.team import (
         get_team_template_snapshot,
@@ -62,12 +64,36 @@ def _create_team_binding_from_template(
     )
     from jiuwenswarm.server.runtime.team_binding_store import (
         TeamBindingStoreError,
+        ensure_binding_for_entity,
         get_team_binding_store,
         validate_team_name,
     )
     from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity, get_team_entity_store
 
     normalized_name = validate_team_name(team_name)
+    entity_store = get_team_entity_store()
+    binding_store = get_team_binding_store()
+
+    # Upgrade heal (opt-in): entity without binding is otherwise an unrecoverable
+    # dead state. Only explicit create (heal=True) may backfill; generate/auto
+    # create keep CONFLICT so name-allocation retries stay "always new team".
+    if entity_store.exists(normalized_name):
+        existing_binding = binding_store.get(normalized_name)
+        if existing_binding is not None or not heal:
+            raise TeamBindingStoreError("team_name already exists", code="CONFLICT")
+        entity = entity_store.get(normalized_name)
+        if entity is None:
+            raise TeamBindingStoreError("team entity config missing", code="NOT_FOUND")
+        binding = ensure_binding_for_entity(entity, store=binding_store)
+        if binding is None:
+            raise TeamBindingStoreError("team entity config missing", code="NOT_FOUND")
+        logger.info(
+            "[AgentWebSocketServer] healed missing team binding from entity: team_name=%s template_id=%s",
+            binding.team_name,
+            binding.template_id,
+        )
+        return binding
+
     template_ids = {
         str(item.get("template_id") or "")
         for item in list_team_template_summaries(config_base)
@@ -75,11 +101,7 @@ def _create_team_binding_from_template(
     if template_id not in template_ids:
         raise TeamBindingStoreError("template_id not found", code="NOT_FOUND")
 
-    entity_store = get_team_entity_store()
-    if entity_store.exists(normalized_name):
-        raise TeamBindingStoreError("team_name already exists", code="CONFLICT")
     template_snapshot = get_team_template_snapshot(config_base, template_id=template_id)
-    binding_store = get_team_binding_store()
     binding = binding_store.create(team_name=normalized_name, template_id=template_id)
     try:
         entity = ensure_team_entity(
@@ -363,6 +385,7 @@ async def handle_team_binding_create(ctx: RequestContext) -> None:
             team_name=team_name,
             template_id=template_id,
             config_base=config_base,
+            heal=True,
         )
         resp = AgentResponse(
             request_id=request.request_id,
@@ -829,14 +852,20 @@ async def handle_team_session_reset(ctx: RequestContext) -> None:
         team_manager = get_team_manager(
             str(metadata.get("channel_id") or request.channel_id or "")
         )
+        reset_t0 = time.perf_counter()
         # 1) Clear shell-side runtime tracking + first-request flag first.
         #    stop_runner=False: the Runner-owned runtime is stopped below by
         #    reset_session itself, mirroring delete_team's force-stop.
         try:
+            stop_shell_t0 = time.perf_counter()
             await team_manager.stop_session_runtime(
                 session_id,
                 reason="team.session.reset",
                 stop_runner=False,
+            )
+            logger.info(
+                "[TeamHandlers] lifecycle_timing reset reset_stop_shell duration_ms=%.0f",
+                (time.perf_counter() - stop_shell_t0) * 1000,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -848,10 +877,15 @@ async def handle_team_session_reset(ctx: RequestContext) -> None:
         # 2) openjiuwen session-scoped reset: drop session tables + release
         #    checkpoint + remove session worktrees, keep team_info/roster/binding.
         try:
+            reset_runner_t0 = time.perf_counter()
             ok = await Runner.reset_agent_team_session(
                 team_name=runtime_team_name,
                 session_id=session_id,
                 force=True,
+            )
+            logger.info(
+                "[TeamHandlers] lifecycle_timing reset reset_runner duration_ms=%.0f",
+                (time.perf_counter() - reset_runner_t0) * 1000,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -861,6 +895,10 @@ async def handle_team_session_reset(ctx: RequestContext) -> None:
                 exc,
             )
             ok = False
+        logger.info(
+            "[TeamHandlers] lifecycle_timing reset reset_total duration_ms=%.0f",
+            (time.perf_counter() - reset_t0) * 1000,
+        )
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,

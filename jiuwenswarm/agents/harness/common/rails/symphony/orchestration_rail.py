@@ -23,7 +23,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
     priority = 98
     SECTION_NAME = "symphony_orchestration"
     SECTION_PRIORITY = 42
-    COMPOSE_TOOL_NAME = "symphony_compose_score"
+    COMPOSE_TOOL_NAME = "symphony_compose_graph"
 
     def __init__(self, *, config_base: _ConfigBaseProvider = None) -> None:
         super().__init__()
@@ -129,11 +129,11 @@ class SymphonyOrchestrationRail(DeepAgentRail):
 
 When the user says to use skill(s) or 技能, or when you judge that skill
 capabilities, skill chaining, skill ordering, or a specialized toolchain could
-help complete the task, you MUST call `symphony_compose_score` with the original
+help complete the task, you MUST call `symphony_compose_graph` with the original
 user task as `query` before answering.
 When you identify, inspect, or recommend installed Skills that are relevant to
 the task, you MUST pass their exact identifiers or names as
-`symphony_compose_score.candidate_skill_ids`. Do not omit this field after
+`symphony_compose_graph.candidate_skill_ids`. Do not omit this field after
 selecting candidate Skills. Do not choose the execution chain yourself;
 Symphony owns ordering and graph composition. After it returns, present its
 returned `content` directly to the user. If Symphony reports missing inputs,
@@ -142,8 +142,8 @@ ask for those inputs.
 If Symphony reports no suitable candidates, a missing capability, or caveats
 that point to a skill gap, use `search_skill` to discover external skills. When
 installing a discovered skill is appropriate, call `install_skill`; after a
-successful install, call `symphony_refresh_score` and then call
-`symphony_compose_score` again with the original user task.
+successful install, call `symphony_refresh_graph` and then call
+`symphony_compose_graph` again with the original user task.
 
 For clearly ordinary tasks that do not benefit from skill capabilities, continue
 normally without Symphony.

@@ -10,7 +10,7 @@ from jiuwenswarm.common.thinking import register_hook as rh
 from jiuwenswarm.common.thinking.adapter import adapt_thinking
 
 
-def test_on_subagent_thinking_default_skips_rail(monkeypatch):
+def test_on_subagent_thinking_default_skips_non_glm53_allowlisted():
     added: list = []
 
     class FakeSub:
@@ -20,6 +20,34 @@ def test_on_subagent_thinking_default_skips_rail(monkeypatch):
             added.append(rail)
 
     rh._on_subagent_thinking(FakeSub(), thinking="default", model="glm-5")
+    assert added == []
+
+
+def test_on_subagent_thinking_default_attaches_rail_for_glm53():
+    added: list = []
+
+    class FakeSub:
+        card = SimpleNamespace(id="a1", name="explore_agent")
+
+        def add_rail(self, rail):
+            added.append(rail)
+
+    rh._on_subagent_thinking(FakeSub(), thinking="default", model="glm-5.3-test")
+    assert len(added) == 1
+    assert added[0].__class__.__name__ == "ThinkingInjectRail"
+    assert added[0]._profile.thinking == "low"
+
+
+def test_on_subagent_thinking_default_skips_unsupported():
+    added: list = []
+
+    class FakeSub:
+        card = SimpleNamespace(id="a1", name="explore_agent")
+
+        def add_rail(self, rail):
+            added.append(rail)
+
+    rh._on_subagent_thinking(FakeSub(), thinking="default", model="qwen3-plus")
     assert added == []
 
 

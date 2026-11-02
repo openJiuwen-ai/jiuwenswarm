@@ -1310,10 +1310,26 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     }
 
 
-def test_web_does_not_expose_symphony_evolution_rpc_methods():
-    assert "symphony.evolution_status" not in app_web_handlers._FORWARD_REQ_METHODS
-    assert "symphony.evolution_record_outcome" not in app_web_handlers._FORWARD_REQ_METHODS
-    assert "symphony.evolution_rebuild" not in app_web_handlers._FORWARD_REQ_METHODS
+def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
+    skill_graph_methods = {
+        "skills.graph.build",
+        "skills.graph.status",
+        "skills.graph.get",
+        "skills.graph.cancel",
+    }
+    assert skill_graph_methods.issubset(app_web_handlers._FORWARD_REQ_METHODS)
+
+    legacy_symphony_methods = {
+        "symphony.build_score",
+        "symphony.pause_build",
+        "symphony.score_status",
+        "symphony.graph",
+        "symphony.plan",
+        "symphony.evolution_status",
+        "symphony.evolution_record_outcome",
+        "symphony.evolution_rebuild",
+    }
+    assert legacy_symphony_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
 
 
 def test_web_forwards_only_canonical_personal_context_rpc_methods():
@@ -2041,6 +2057,72 @@ def test_inject_identity_noop_without_connection_identity() -> None:
         "params": {"session_id": "s1"},
     })
     assert transport._inject_user_id_into_frame(ws, raw) == raw
+
+
+# =====================================================================
+# cron.job.delete — 跨用户/不存在任务按防枚举统一返回 404
+# =====================================================================
+
+
+class _KeyErrorCronController:
+    """模拟跨用户删除：controller 所有权校验抛 KeyError('job not found')。"""
+
+    def __init__(self) -> None:
+        self.delete_calls: list[dict] = []
+
+    async def get_job(self, job_id):
+        # 非 proactive.tick 的普通任务，绕过主动推荐保护分支
+        return SimpleNamespace(id=job_id, mode="chat")
+
+    async def delete_job(self, job_id, *, group_id=None, bot_id=None, user_id=None):
+        self.delete_calls.append(
+            {"id": job_id, "group_id": group_id, "bot_id": bot_id, "user_id": user_id}
+        )
+        raise KeyError("job not found")
+
+
+@pytest.mark.asyncio
+async def test_cron_job_delete_cross_user_returns_not_found():
+    """跨用户删除时 controller 抛 KeyError → 应映射为 404 NOT_FOUND，而非 500。"""
+    channel = FakeWebChannel()
+    cc = _KeyErrorCronController()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, cron_controller=cc))
+
+    await channel.methods["cron.job.delete"](
+        object(), "req-cron-del", {"id": "job-other"}, "sess-1"
+    )
+
+    last = channel.responses[-1]
+    assert last["ok"] is False
+    assert last["code"] == "NOT_FOUND"
+    assert last["error"] == "job not found"
+    # 确实走到了所有权校验路径（而非参数校验提前返回）
+    assert cc.delete_calls[0]["id"] == "job-other"
+
+
+@pytest.mark.asyncio
+async def test_cron_job_delete_existing_job_returns_deleted():
+    """本用户正常删除 → ok=true（回归保护，确保修复未破坏正常路径）。"""
+    channel = FakeWebChannel()
+
+    class _OkCronController:
+        async def get_job(self, job_id):
+            return SimpleNamespace(id=job_id, mode="chat")
+
+        async def delete_job(self, job_id, *, group_id=None, bot_id=None, user_id=None):
+            return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, cron_controller=_OkCronController())
+    )
+
+    await channel.methods["cron.job.delete"](
+        object(), "req-cron-del", {"id": "job-own"}, "sess-1"
+    )
+
+    last = channel.responses[-1]
+    assert last["ok"] is True
+    assert last["payload"] == {"deleted": True}
 
 
 def test_capture_session_create_row_on_ok_response(monkeypatch) -> None:

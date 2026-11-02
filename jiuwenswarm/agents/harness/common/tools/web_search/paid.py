@@ -14,7 +14,7 @@ from typing import Any, Optional
 from jiuwenswarm.agents.harness.common.tools.web_search.http_client import http_request
 from jiuwenswarm.agents.harness.common.tools.web_search.content_cache import parse_update_time
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.local_env_config import read_env
+from jiuwenswarm.common.local_env_config import read_env, read_env_live
 
 logger = logging.getLogger(__name__)
 baseline = logging.getLogger("jiuwenswarm.agents.harness.common.tools.web_search.baseline")
@@ -28,7 +28,7 @@ _TAVILY_MAX_CONTENT_LEN = 4000
 
 
 def _resolve_petal_search_url() -> str:
-    petal_url = read_env("PETAL_SEARCH_URL", "").strip()
+    petal_url = read_env_live("PETAL_SEARCH_URL", "").strip()
     if not petal_url:
         raise ValueError("PETAL_SEARCH_URL is not set")
     return petal_url
@@ -36,7 +36,7 @@ def _resolve_petal_search_url() -> str:
 
 def _load_llm_default_headers() -> dict[str, str]:
     from jiuwenswarm.common.local_env_config import parse_default_headers
-    raw = read_env("PETAL_SEARCH_HEADERS", "")
+    raw = read_env_live("PETAL_SEARCH_HEADERS", "")
     header_map = parse_default_headers(raw)
     if not header_map:
         raise ValueError("PETAL_SEARCH_HEADERS is not set")

@@ -11,20 +11,12 @@ from jiuwenswarm.server.runtime.a2ui.runtime.prompt import (
 )
 
 
-def test_a2ui_prompt_discourages_icon_ligature_dependency():
-    instruction = build_a2ui_autonomy_instruction("en")
-
-    assert "Avoid A2UI Icon for semantic content" in instruction
-    assert "Material Symbols" in instruction
-    assert "emoji or text labels" in instruction
-
-
 def test_a2ui_prompt_is_autonomous_not_forced():
     instruction = build_a2ui_autonomy_instruction("en")
 
-    assert "A2UI is optional" in instruction
-    assert "If A2UI is not appropriate, answer in plain text" in instruction
-    assert "Do not promise to show the result with A2UI and then output only Markdown" in instruction
+    assert "plain text" in instruction
+    assert "narrative explanation" in instruction
+    assert "markdown mock" in instruction
     assert "Mandatory A2UI account-action gate" not in instruction
     assert "browser_preflight_submit" not in instruction
 
@@ -33,7 +25,7 @@ def test_a2ui_prompt_discourages_nested_templates():
     instruction = build_a2ui_autonomy_instruction("en")
 
     assert "Do not nest templates" in instruction
-    assert "flatten repeated item details" in instruction
+    assert "indexed valueMap" in instruction
 
 
 def test_a2ui_prompt_defines_hotel_booking_actions():
@@ -114,8 +106,8 @@ def test_a2ui_zh_prompt_section_is_readable():
     prompt = build_a2ui_prompt_section("zh")
 
     assert "你是 jiuwenswarm 的 A2UI 生成器" not in prompt
-    assert "JiuwenSwarm 支持可选的 A2UI 输出格式" in prompt
-    assert "当用户需要列表、卡片、表单" in prompt
+    assert "JiuwenSwarm 支持 A2UI 输出格式" in prompt
+    assert "交互场景用 A2UI" in prompt
     assert "浣犳槸" not in prompt
     assert "鐢熸垚" not in prompt
 
@@ -124,7 +116,7 @@ def test_a2ui_en_prompt_does_not_use_generator_identity():
     prompt = build_a2ui_prompt_section("en")
 
     assert "You are jiuwenswarm's A2UI generator" not in prompt
-    assert "JiuwenSwarm supports an optional A2UI output format" in prompt
+    assert "JiuwenSwarm supports A2UI output format" in prompt
 
 
 def test_a2ui_zh_client_event_prompt_is_readable():

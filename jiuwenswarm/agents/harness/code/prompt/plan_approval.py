@@ -30,6 +30,107 @@ REJECT_CMD_PREFIX = "plan.reject"
 # Consumed by ``_ensure_code_mode_state`` to allow plan → normal restoration.
 PLAN_USER_APPROVED_FLAG = "_plan_user_approved"
 
+# ── Plan approval skip（Web 专用："修改框留空 + 点击跳过"）─────────────────
+# 语义：不退出 plan、不执行、也不继续修改，本轮到此结束。它复用现有的 reject
+# 通道（``approved=False``，因此 ``exit_plan_mode`` 不会执行），额外通过
+# ``PLAN_SKIP_PAYLOAD_KEY`` 告诉 rail 需要强制结束当前 turn，否则模型收到普通
+# reject 后可能继续运行并再次弹出审批。
+#
+# TUI 不发送这些取值，其 approve / reject 行为完全不变。
+PLAN_SKIP_PAYLOAD_KEY = "plan_skip"
+
+# 只认 ``build_plan_approval_actions`` 实际下发的取值。不要放 "skip" / "跳过"
+# 这类通用词：消费它的那段 if/elif 是所有确认类中断共用的选项映射，别的确认流
+# 若出现一个"跳过"按钮会被误判成计划跳过。
+PLAN_SKIP_OPTION_VALUES: frozenset[str] = frozenset({"plan_skip"})
+
+PLAN_SKIP_FEEDBACK = {
+    "cn": "用户选择跳过本次计划审批，暂不执行，也未提出修改意见。",
+    "en": (
+        "The user skipped this plan approval: do not implement yet, and no "
+        "revision notes were given."
+    ),
+}
+
+PLAN_SKIP_TURN_OUTPUT = {
+    "cn": "已跳过本次计划审批。计划已保存，当前仍处于计划模式，可以继续补充意见。",
+    "en": (
+        "Plan approval skipped. The plan is saved and you are still in plan mode; "
+        "send revision notes whenever you are ready."
+    ),
+}
+
+# ── Plan approval execute（Web 专用："执行"按钮）────────────────────────────
+# Web 的执行分成两次请求：本次只负责让 ``exit_plan_mode`` 真正跑完（退出 plan
+# 模式），跑完立刻结束本轮、不再调模型；随后前端补发一条普通非 plan 消息，由那
+# 条消息作为用户提问开启全新一轮来执行计划。
+#
+# 因此 Web 用独立取值 ``plan_execute``，而不是复用 ``approve``：TUI 发的仍是
+# ``approve``，批准后照旧在同一轮里继续实现，行为完全不变。
+PLAN_EXECUTE_PAYLOAD_KEY = "plan_execute"
+
+PLAN_EXECUTE_OPTION_VALUES: frozenset[str] = frozenset({"plan_execute"})
+
+# ``ctx.extra`` 标记：PlanApprovalInterruptRail 在恢复中断时设置，
+# CodeAgentModeRail 在 exit_plan_mode 跑完后据此结束本轮。
+PLAN_EXECUTE_CTX_KEY = "_plan_execute_deferred"
+
+# ── 进入 plan 时注入的提醒 ─────────────────────────────────────────────────
+# 进入 plan 的那一轮会把一段 <system-reminder> 拼到 ``params["query"]`` 前面。
+# 那段文字是给模型看的运行时上下文，不是用户说的话，所以写会话历史时必须还原
+# 成用户原文，否则刷新页面 / 加载历史会把提示词当成用户提问显示出来。
+PLAN_REMINDER_ORIGINAL_QUERY_KEY = "_plan_reminder_original_query"
+
+# 三个按钮的结构与文案分开存放：结构（回传取值、是否需要输入）与语言无关，
+# 只有 label 需要按语言取。
+_PLAN_APPROVAL_ACTIONS: tuple[dict[str, str], ...] = (
+    {"kind": "execute", "value": PLAN_EXECUTE_PAYLOAD_KEY, "requires_input": "no"},
+    {"kind": "skip", "value": PLAN_SKIP_PAYLOAD_KEY, "requires_input": "empty"},
+    {"kind": "revise", "value": "reject", "requires_input": "yes"},
+)
+
+_PLAN_ACTION_LABELS: dict[str, dict[str, str]] = {
+    "cn": {"execute": "执行", "skip": "跳过", "revise": "下一步"},
+    "en": {"execute": "Execute", "skip": "Skip", "revise": "Next"},
+}
+
+
+def plan_skip_feedback(language: str | None) -> str:
+    """按语言取"跳过"时写给模型的反馈文案。
+
+    Args:
+        language: ``cn`` / ``zh`` / ``en``（大小写不敏感），其余取值按中文处理。
+    """
+    lang = (language or "").strip().lower()
+    return PLAN_SKIP_FEEDBACK["en" if lang.startswith("en") else "cn"]
+
+
+def build_plan_approval_actions(language: str) -> list[dict[str, str]]:
+    """Build the Web plan-approval action descriptors.
+
+    Web 弹窗由"执行"按钮 + 修改框 + 动态按钮组成：修改框为空时按钮是"跳过"，
+    有内容时是"下一步"。三者都复用既有的 approve / reject 通道：
+
+    - ``plan_execute``：批准并退出 plan，本轮到此结束；前端随后补发一条普通
+      非 plan 消息来真正执行。
+    - ``plan_skip``：留在 plan，结束本轮，不执行也不修改。
+    - ``reject`` + ``custom_input``：留在 plan，按修改意见继续完善同一份计划。
+
+    TUI 不读取该字段，仍使用 ``questions[].options`` 的 approve / reject，
+    批准后在同一轮里直接继续实现。
+
+    Args:
+        language: ``cn`` 或 ``en``。
+
+    Returns:
+        动作描述列表，供 Web 渲染按钮与决定回传的 ``selected_options``。
+    """
+    labels = _PLAN_ACTION_LABELS.get(language, _PLAN_ACTION_LABELS["cn"])
+    return [
+        {**action, "label": labels[action["kind"]]}
+        for action in _PLAN_APPROVAL_ACTIONS
+    ]
+
 PlanUserIntent = Literal["approve", "revise"]
 
 # ── Pending approval marker (fallback — appended to exit_plan_mode tool_result) ──
@@ -245,8 +346,17 @@ __all__ = [
     "PLAN_MODE_EXITED_EVENT_TYPE",
     "APPROVE_CMD_PREFIX",
     "REJECT_CMD_PREFIX",
+    "PLAN_EXECUTE_CTX_KEY",
+    "PLAN_EXECUTE_OPTION_VALUES",
+    "PLAN_EXECUTE_PAYLOAD_KEY",
+    "PLAN_SKIP_FEEDBACK",
+    "PLAN_SKIP_OPTION_VALUES",
+    "PLAN_REMINDER_ORIGINAL_QUERY_KEY",
+    "PLAN_SKIP_PAYLOAD_KEY",
+    "PLAN_SKIP_TURN_OUTPUT",
     "PLAN_USER_APPROVED_FLAG",
     "PlanUserIntent",
+    "build_plan_approval_actions",
     "PENDING_APPROVAL_MARKER",
     "APPROVED_NOTIFICATION",
     "FEEDBACK_INJECTION",
@@ -254,4 +364,5 @@ __all__ = [
     "is_direct_plan_implement_request",
     "is_user_approving",
     "extract_feedback_from_reject",
+    "plan_skip_feedback",
 ]

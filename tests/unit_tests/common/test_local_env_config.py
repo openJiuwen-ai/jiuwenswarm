@@ -272,3 +272,101 @@ class TestLocalEnvConfig:
         assert "API_KEY" not in exported
         assert "PETAL_SEARCH_HEADERS" not in exported
         assert "tenant-secret" not in repr(exported)
+
+    def test_read_env_live_reads_staged_tip_under_bound_overlay(self):
+        """Live Petal reads must observe mid-request reload updates."""
+        from jiuwenswarm.common.local_env_config import (
+            bind_agent_env_ns,
+            bind_task_env_overlay,
+            build_effective_env_overlay,
+            clear_agent_env_ns,
+            read_env_live,
+            replace_active_env,
+            reset_agent_env_ns,
+            reset_local_env_state_for_tests,
+            reset_task_env_overlay,
+            stage_env_overrides,
+        )
+
+        sid, aid = "live-svc", "live-agent"
+        reset_local_env_state_for_tests()
+        clear_agent_env_ns(sid, aid)
+        replace_active_env(
+            {"PETAL_SEARCH_HEADERS": '{"Authorization": "sealed"}'},
+            service_id=sid,
+            agent_id=aid,
+        )
+        try:
+            ns = bind_agent_env_ns(sid, aid)
+            overlay = build_effective_env_overlay(
+                None, service_id=sid, agent_id=aid
+            )
+            token = bind_task_env_overlay(overlay)
+            try:
+                stage_env_overrides(
+                    {"PETAL_SEARCH_HEADERS": '{"Authorization": "latest"}'},
+                    service_id=sid,
+                    agent_id=aid,
+                )
+                assert read_env("PETAL_SEARCH_HEADERS") == (
+                    '{"Authorization": "sealed"}'
+                )
+                assert read_env_live("PETAL_SEARCH_HEADERS") == (
+                    '{"Authorization": "latest"}'
+                )
+            finally:
+                reset_task_env_overlay(token)
+                reset_agent_env_ns(ns)
+        finally:
+            reset_local_env_state_for_tests()
+
+    def test_read_env_live_missing_key_is_unset_under_bound_overlay(self):
+        """Live miss intentionally deletes instead of reading sealed/process env."""
+        from jiuwenswarm.common.local_env_config import (
+            bind_agent_env_ns,
+            bind_task_env_overlay,
+            clear_agent_env_ns,
+            read_env_live,
+            replace_active_env,
+            reset_agent_env_ns,
+            reset_local_env_state_for_tests,
+            reset_task_env_overlay,
+        )
+
+        sid, aid = "live-svc", "live-agent"
+        reset_local_env_state_for_tests()
+        clear_agent_env_ns(sid, aid)
+        replace_active_env({}, service_id=sid, agent_id=aid)
+        try:
+            ns = bind_agent_env_ns(sid, aid)
+            token = bind_task_env_overlay(
+                {"PETAL_SEARCH_HEADERS": '{"Authorization": "sealed"}'}
+            )
+            try:
+                os.environ["PETAL_SEARCH_HEADERS"] = "process-secret"
+                assert read_env_live("PETAL_SEARCH_HEADERS", "fallback") == (
+                    "fallback"
+                )
+            finally:
+                os.environ.pop("PETAL_SEARCH_HEADERS", None)
+                reset_task_env_overlay(token)
+                reset_agent_env_ns(ns)
+        finally:
+            reset_local_env_state_for_tests()
+
+    def test_read_env_live_keeps_cold_start_process_fallback(self):
+        from jiuwenswarm.common.local_env_config import (
+            clear_agent_env_ns,
+            read_env_live,
+            reset_local_env_state_for_tests,
+        )
+
+        sid, aid = "default", "default"
+        reset_local_env_state_for_tests()
+        clear_agent_env_ns(sid, aid)
+        try:
+            os.environ["PETAL_SEARCH_HEADERS"] = "cold-start"
+            assert read_env_live("PETAL_SEARCH_HEADERS") == "cold-start"
+        finally:
+            os.environ.pop("PETAL_SEARCH_HEADERS", None)
+            reset_local_env_state_for_tests()

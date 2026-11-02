@@ -33,6 +33,7 @@ from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
 from jiuwenswarm.agents.harness.common.tools.web_search.harness import (
     JiuwenHarnessWebSearchTool,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _resolve_enable_task_loop
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -166,7 +167,7 @@ def test_build_agent_identity_prompt_contains_identity_section_only():
 
     assert "# JiuwenSwarm 内部数据" in prompt
     assert "## Symphony Orchestration" not in prompt
-    assert "`symphony_compose_score`" not in prompt
+    assert "`symphony_compose_graph`" not in prompt
     assert "# 消息说明" not in prompt
     # Agent-internal dirs must stay logical; absolute tenant paths belong in runtime context.
     assert "Agent 内部数据目录/skills" in prompt
@@ -191,7 +192,7 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
     enabled_ctx = AgentCallbackContext(
         agent=enabled_agent,
         inputs=SimpleNamespace(
-            tools=[SimpleNamespace(name="symphony_compose_score")],
+            tools=[SimpleNamespace(name="symphony_compose_graph")],
         ),
         session=_FakeSession(),
         extra={},
@@ -207,7 +208,7 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
     disabled_ctx = AgentCallbackContext(
         agent=disabled_agent,
         inputs=SimpleNamespace(
-            tools=[SimpleNamespace(name="symphony_compose_score")],
+            tools=[SimpleNamespace(name="symphony_compose_graph")],
         ),
         session=_FakeSession(),
         extra={},
@@ -221,9 +222,9 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
     enabled_prompt = enabled_builder.build()
     disabled_prompt = disabled_builder.build()
     assert "## Symphony Orchestration" in enabled_prompt
-    assert "`symphony_compose_score`" in enabled_prompt
+    assert "`symphony_compose_graph`" in enabled_prompt
     assert "## Symphony Orchestration" not in disabled_prompt
-    assert "`symphony_compose_score`" not in disabled_prompt
+    assert "`symphony_compose_graph`" not in disabled_prompt
 
 
 @pytest.mark.asyncio
@@ -239,7 +240,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     ctx = AgentCallbackContext(
         agent=agent,
         inputs=SimpleNamespace(
-            tools=[SimpleNamespace(name="symphony_compose_score")],
+            tools=[SimpleNamespace(name="symphony_compose_graph")],
         ),
         session=_FakeSession(),
         extra={},
@@ -251,7 +252,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
 
     prompt = builder.build()
     assert "## Symphony Orchestration" in prompt
-    assert "`symphony_compose_score`" in prompt
+    assert "`symphony_compose_graph`" in prompt
     assert "exact identifiers or names" in prompt
     assert "Do not omit this field" in prompt
     assert "skill_branch_explore" not in prompt
@@ -276,7 +277,7 @@ async def test_symphony_orchestration_rail_backfills_viewed_skills():
         )
 
     compose_ctx = _tool_call_ctx(
-        "symphony_compose_score",
+        "symphony_compose_graph",
         {"query": "build a financial model"},
         extra=invocation_extra,
     )
@@ -299,7 +300,7 @@ async def test_symphony_orchestration_rail_preserves_explicit_candidates():
         )
     )
     compose_ctx = _tool_call_ctx(
-        "symphony_compose_score",
+        "symphony_compose_graph",
         {"query": "task", "candidate_skill_ids": ["explicit-skill"]},
         extra=invocation_extra,
     )
@@ -322,7 +323,7 @@ async def test_symphony_orchestration_rail_does_not_reuse_other_invocation():
         )
     )
     compose_ctx = _tool_call_ctx(
-        "symphony_compose_score",
+        "symphony_compose_graph",
         {"query": "new task"},
         extra={},
     )
@@ -352,7 +353,7 @@ async def test_symphony_orchestration_rail_ignores_disclosure_and_failed_views()
         )
     )
     compose_ctx = _tool_call_ctx(
-        "symphony_compose_score",
+        "symphony_compose_graph",
         {"query": "task"},
         extra=invocation_extra,
     )
@@ -406,7 +407,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
     ctx = AgentCallbackContext(
         agent=agent,
         inputs=SimpleNamespace(
-            tools=[SimpleNamespace(name="symphony_compose_score")],
+            tools=[SimpleNamespace(name="symphony_compose_graph")],
         ),
         session=_FakeSession(),
         extra={},
@@ -433,9 +434,9 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     tools = [
         SimpleNamespace(card=SimpleNamespace(id=name, name=name))
         for name in (
-            "symphony_read_score",
-            "symphony_refresh_score",
-            "symphony_compose_score",
+            "symphony_read_graph",
+            "symphony_refresh_graph",
+            "symphony_compose_graph",
         )
     ]
 
@@ -452,14 +453,14 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     assert seen_configs == [{"symphony": {"enabled": True}}]
     assert adapter._symphony_tools_registered is True
     assert [card.name for card in adapter._tool_cards] == [
-        "symphony_read_score",
-        "symphony_refresh_score",
-        "symphony_compose_score",
+        "symphony_read_graph",
+        "symphony_refresh_graph",
+        "symphony_compose_graph",
     ]
     assert fake_resource.added == [
-        "symphony_read_score",
-        "symphony_refresh_score",
-        "symphony_compose_score",
+        "symphony_read_graph",
+        "symphony_refresh_graph",
+        "symphony_compose_graph",
     ]
     assert fake_instance.ability_manager.added == fake_resource.added
 
@@ -473,9 +474,9 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     # sibling adapter still running on it.
     assert fake_resource.removed == []
     assert fake_instance.ability_manager.removed == [
-        "symphony_read_score",
-        "symphony_refresh_score",
-        "symphony_compose_score",
+        "symphony_read_graph",
+        "symphony_refresh_graph",
+        "symphony_compose_graph",
     ]
 
 
@@ -1119,7 +1120,7 @@ def test_code_adapter_skill_retrieval_sync_respects_configured_tools(monkeypatch
 def test_resolve_enable_task_loop_forces_true_when_skill_create_enabled(monkeypatch):
     monkeypatch.delenv("SKILL_CREATE", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {"evolution": {"skill_create": True}},
         )
@@ -1130,7 +1131,7 @@ def test_resolve_enable_task_loop_forces_true_when_skill_create_enabled(monkeypa
 def test_resolve_enable_task_loop_forces_true_when_review_trigger_enabled(monkeypatch):
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {"evolution": {"review_trigger": True}},
         )
@@ -1142,7 +1143,7 @@ def test_resolve_enable_task_loop_preserves_false_when_only_evolution_enabled(mo
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
     monkeypatch.delenv("SKILL_CREATE", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {
                 "evolution": {
@@ -1160,7 +1161,7 @@ def test_resolve_enable_task_loop_preserves_false_without_enforcers(monkeypatch)
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
     monkeypatch.delenv("SKILL_CREATE", raising=False)
     assert (
-        JiuWenSwarmDeepAdapter._resolve_enable_task_loop(
+        _resolve_enable_task_loop(
             {"enable_task_loop": False},
             {"evolution": {"enabled": False, "skill_create": False}},
         )

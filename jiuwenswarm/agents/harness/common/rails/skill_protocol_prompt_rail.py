@@ -40,15 +40,18 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
 随后按 SKILL 工作流执行；下列规范约束执行过程。
 
 1. **声明步骤**：默认情况下，每次行动前必须在回复开头声明当前所在步骤，格式：`[当前步骤: <步骤名称>]`。**无需调用任何工具来"开始"步骤**——声明本身即代表进入该步。若 SKILL.md 明确声明“阶段状态和阶段消息由工具事件唯一生成”，则以该声明为准，禁止自行输出 `[当前步骤: ...]` 或其他步骤声明。
-2. **必须使用 todo**：在执行 skill 步骤前，必须先创建 todo 列表。
+2. **必须使用 todo**：除下述例外，在执行 skill 步骤前，必须先创建 todo 列表。
+   - **DeepResearch 专用路径例外（优先于本条的 todo 要求）**：加载 `deepresearch` Skill 之前及同轮，不创建加载、准备、研究或交付 todo；加载后由 `deepresearch_execute` 专用引擎唯一管理研究阶段，Main Agent 只加载技能并调用入口，不另建、查询或更新 todo 来编排这项研究。专用入口不存在或未开放，或工具明确返回 `fallback.mode=model_research` 时，按 Skill 进入模型研究路径，恢复普通 todo 创建与更新规则。取消、等待用户输入及执行状态不确定不触发该降级。其他技能及同一请求中的其他独立工作仍遵循原 todo 规则；不得仅因采用专用路径而删除、取消或伪造完成无关待办；用户明确放弃旧任务时仍按第 9 条处理。
+   - **加速通道例外（单份交付物）**：若任务直接交给 `skill_acceleration_exec` 加速通道执行、且本单轮只需产出**一份交付物**，**不要创建 todo**——加速通道内部会通过 Stage 步骤事件自行在前端展示进度，无需也不应再建外层 todo（建了会导致前端任务列表异常）。**仅当单轮需产出多份交付物**（需多次调用 `skill_acceleration_exec`）时，才必须先建外层待办清单（规则见「技能加速通道」段的「多交付物待办清单」）。
    - **创建时搭便车**：`todo_create` **必须**和第一个工作工具在同一轮发出，禁止 `todo_create` 独占一轮。
    - **更新时搭便车（强制）**：`todo_modify` **必须**和下一个任务的工作工具在同一轮发出，禁止 `todo_modify` 独占一轮。系统会在工作工具被调用时自动将 pending 推进为 in_progress，你只需要用 `todo_modify` 标记 completed/cancelled。
    - ✅ 正确：`[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
    - ❌ 禁止：`[todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]` ← 独占一轮，浪费 LLM 调用
-   - 唯一例外：所有工作完成后、即将给出最终回复的最后一轮，可以单独调 `todo_modify`。
+   - 唯一例外：纯文本最终回复的前一轮。若仍有 `in_progress`，这一轮必须单独调 `todo_modify`，不要在这一轮写给用户的正文。
+   - 判定粒度是**这一条步骤**是否做完，不是整个任务是否交付。已做完的标 `completed`；还没开始的保持 `pending`；只有整件事确定不再继续（含第 9 条的用户打断）才标 `cancelled`。缺文件、跳过问答、等待用户补输入，都不是把已做完步骤留在 `in_progress` 的理由。
    - 可在连续推进多个任务后用一次 `todo_modify` 统一批量更新状态。
    放弃、跳过或决定不再执行某步骤时（如用户说「不生成 PPT 了」），**必须**立即 `todo_modify` 将该条标为 `cancelled`；
-   禁止仅用口头回复收尾而仍保留 `in_progress`/`pending` 项。
+   禁止仅用口头回复收尾而仍保留已开始的 `in_progress` 项。还没开始的 `pending` 在等待用户补输入时保持 `pending`。
 3. **严格顺序**：按 SKILL.md 定义的顺序逐步执行，**禁止跳过、合并或重排步骤**，除非 SKILL.md 或用户明确允许。
 4. **闸门等待**：遇到需要用户确认/审批的步骤时，**必须等待用户回复，禁止自行假设用户同意**。
 5. **不确定时重读**：只能再次调用 `skill_tool`，**不得**用其它工具获取 SKILL.md。
@@ -59,7 +62,7 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
    - 原话含"继续"/"接着做"/"刚才那个继续" → 继续当前技能流程。
    - 其他情况（无关问题、闲聊、新任务、同技能新需求、显式取消、意图不明）→ 一律视为放弃原任务：
      先用 `todo_modify` 把所有 `in_progress`/`pending` 项标为 `cancelled`，再回应新请求。
-     若新请求需要技能，重新用 `skill_tool` 加载并**重建** todo，不要沿用旧 todo。
+     若新请求需要技能，重新用 `skill_tool` 加载，按第 2 条的适用规则处理 todo，不要沿用旧 todo；专用 DeepResearch 路径不重建 todo。
 
 ⚠️ 用户发 N 条消息 ≠ N 个并发任务；新消息**默认覆盖**旧任务，**不追加**。禁止措辞："让我先完成之前的"/"先把之前的收尾"/"两个都做"/"先 X 再 Y"（除非用户原话已明示并列）。仅凭 history 有两条任务消息就推断"用户想做两个"是错误推理。
 """
@@ -80,16 +83,19 @@ The "Skills" section of this prompt (from SkillUseRail) lists available skills a
 Then execute the workflow; the rules below govern execution.
 
 1. **Declare step**: By default, before each action, state your current step at the start of your reply: `[Current Step: <step name>]`. **You do NOT call any tool to "start" a step** — the declaration itself enters the step. If SKILL.md explicitly states that stage status and stage messages are emitted exclusively by tool events, follow that rule and you must not declare `[Current Step: ...]` or any other step message yourself.
-2. **Use todo (mandatory)**: For skills, you MUST create a todo list before executing the skill steps.
+2. **Use todo (mandatory)**: Except for the exceptions below, for skills you MUST create a todo list before executing the skill steps.
+   - **Dedicated DeepResearch exception (takes precedence over this rule's todo requirements)**: before or alongside loading the `deepresearch` Skill, do not create loading, preparation, research, or delivery todos. After loading, `deepresearch_execute` exclusively manages research stages; the Main Agent only loads the Skill and calls the entry, without creating, querying, or updating todos to orchestrate this research. If the dedicated entry is absent or unavailable, or the tool explicitly returns `fallback.mode=model_research`, follow the Skill's model-research path and restore normal todo creation and updates. Cancellation, waiting for user input, and uncertain execution do not trigger this fallback. Other skills and independent work in the same request retain the normal todo rules; never delete, cancel, or falsely complete unrelated todos merely because the dedicated path is selected; explicit abandonment of an earlier task still follows item 9.
+   - **Acceleration-channel exception (single deliverable)**: If the task is handed directly to the `skill_acceleration_exec` acceleration channel and this turn needs to produce exactly **one deliverable**, do **NOT** create a todo — the channel emits its own Stage step events that render as the frontend task list, so no outer todo is needed (creating one causes the frontend task list to display incorrectly). **Only** when a single turn must produce **multiple deliverables** (multiple `skill_acceleration_exec` calls) must you first build an outer todo list (see the "Multiple-deliverable todo list" in the acceleration-channel section).
    - **Piggyback on creation**: `todo_create` **MUST** be called in the same response as the first work tool — never in a standalone todo-only round.
    - **Piggyback on updates (MANDATORY)**: `todo_modify` **MUST** be called alongside the next task's work tool in the same response — never alone. The system auto-advances pending tasks to in_progress when work tools are called, so you only need `todo_modify` to mark tasks completed/cancelled.
    - ✅ CORRECT: `[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
    - ❌ PROHIBITED: `[todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]` ← wastes an entire LLM round
-   - The ONLY exception: the very final round when all work is done and you are about to give the final answer.
+   - The ONLY exception: the turn immediately before the plain-text final reply. If any item is still `in_progress`, that turn MUST call `todo_modify` alone and must not contain the user-facing answer.
+   - Judge each step on its own, not on whether the whole task is delivered. Mark a finished step `completed`; leave steps that have not started `pending`; mark `cancelled` only when the whole task will not continue, including the user-interruption cases in rule 9. Missing files, a skipped question, or waiting for input are not reasons to leave a finished step `in_progress`.
    - You may run several tasks back-to-back and update statuses in a single batched `todo_modify`.
    When abandoning or skipping a step (e.g. the user says not to generate the PPT), you **must** call
-   `todo_modify` to mark it `cancelled` immediately; never end with text only while items stay
-   `in_progress` or `pending`.
+   `todo_modify` to mark it `cancelled` immediately; never end with text only while a started item
+   stays `in_progress`. Leave not-yet-started `pending` items `pending` while waiting for the user.
 3. **Strict order**: Execute steps in the order defined by SKILL.md. **Do not skip, merge, or reorder steps** unless SKILL.md or the user explicitly allows it.
 4. **Gate enforcement**: When a step requires user confirmation/approval, **you MUST wait for the user's response. Never assume approval.**
 5. **Re-read when unsure**: Refresh the SKILL.md body **only** by calling `skill_tool` again — **never** use any other tool to obtain SKILL.md.
@@ -101,7 +107,7 @@ Then execute the workflow; the rules below govern execution.
    - Anything else (unrelated question, small talk, a new task, a new requirement for the same skill,
      explicit cancellation, unclear intent) → treat the original task as abandoned: first call
      `todo_modify` to mark every `in_progress`/`pending` item `cancelled`, then respond to the new request.
-     If the new request needs a skill, load it again via `skill_tool` and **rebuild** the todo list
+     If the new request needs a skill, load it again via `skill_tool` and handle todos under the applicable rules in item 2 (do not rebuild them for dedicated DeepResearch)
      instead of reusing the old one.
 
 ⚠️ N user messages ≠ N parallel tasks; a new substantive message **replaces** the prior request by default — it does NOT stack. Forbidden phrasing: "let me finish the previous task first" / "let me wrap that up" / "let me do both" / "first X then Y" (unless the user's own words explicitly stated parallel intent). Inferring multiple parallel tasks purely from history is a **wrong inference** that MUST be avoided.

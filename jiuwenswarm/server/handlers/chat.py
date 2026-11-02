@@ -22,6 +22,7 @@ from jiuwenswarm.server.handlers._shared import (
     _apply_resolved_mode_to_request,
     _effective_config_for_request,
     _is_team_metadata_mode,
+    _plan_active_sessions,
     _plan_exited_sessions,
     _request_query_text,
     _session_team_binding_lock,
@@ -78,6 +79,7 @@ async def _cleanup_client_disconnect_session_runtime(ctx, request: AgentRequest)
         # locks are weakly cached and disappear automatically after their
         # last active/waiting user releases them.
         _plan_exited_sessions.discard(session_id)
+        _plan_active_sessions.discard(session_id)
 
 
 def _build_team_interrupt_response(
@@ -252,12 +254,18 @@ async def _handle_cancel(
                 message="团队已暂停" if paused else "当前没有可暂停的团队任务",
             )
         elif intent == "cancel":
-            cancelled = await team_manager.cancel_session_runtime(sid, reason=reason)
+            try:
+                cancelled = await team_manager.cancel_session_runtime(sid, reason=reason)
+                message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
+            except Exception:
+                logger.exception("[AgentWebSocketServer] team cancel failed: session_id=%s", sid)
+                cancelled = False
+                message = "团队停止未完成，请稍后重试"
             resp = _build_team_interrupt_response(
                 request,
                 intent=intent,
                 success=cancelled,
-                message="团队当前执行已结束" if cancelled else "当前没有可取消的团队任务",
+                message=message,
             )
         else:
             resp = _build_team_interrupt_response(

@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+    AgentCreateFailed,
     AgentCreatingTimeout,
     AgentDeleted,
     AgentManager,
@@ -71,6 +72,55 @@ async def test_waiting_for_creation_times_out() -> None:
     await asyncio.gather(owner, return_exceptions=True)
     failed = await agent_manager.list_user_agents("u1")
     assert failed[0].info.status is AgentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_failed_create_does_not_retry() -> None:
+    agent_manager = AgentManager()
+    create_calls = 0
+
+    async def creator(agent: AgentInfo) -> AgentInfo:
+        nonlocal create_calls
+        create_calls += 1
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await agent_manager.get_or_create_agent("u1", "jiuwenswarm", creator=creator)
+
+    with pytest.raises(AgentCreateFailed, match="AGENT_CREATE_FAILED"):
+        await agent_manager.get_or_create_agent("u1", "jiuwenswarm", creator=creator)
+
+    assert create_calls == 1
+    failed = await agent_manager.list_user_agents("u1")
+    assert failed[0].info.status is AgentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_cancelled_create_does_not_retry() -> None:
+    agent_manager = AgentManager()
+    create_calls = 0
+    creator_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def creator(agent: AgentInfo) -> AgentInfo:
+        nonlocal create_calls
+        create_calls += 1
+        creator_started.set()
+        await never.wait()
+        return agent
+
+    owner = asyncio.create_task(
+        agent_manager.get_or_create_agent("u1", "jiuwenswarm", creator=creator)
+    )
+    await creator_started.wait()
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    with pytest.raises(AgentCreateFailed, match="AGENT_CREATE_FAILED"):
+        await agent_manager.get_or_create_agent("u1", "jiuwenswarm", creator=creator)
+
+    assert create_calls == 1
 
 
 @pytest.mark.asyncio

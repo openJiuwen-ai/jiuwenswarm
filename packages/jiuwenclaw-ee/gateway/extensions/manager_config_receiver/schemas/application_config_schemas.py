@@ -18,6 +18,12 @@ class LoggingConfigUpsertRequest(BaseModel):
     full: str | None = Field(default=None, max_length=16)
 
 
+class CronPolicyUpsertRequest(BaseModel):
+    """对齐 cron_policy：界面同时运行中的定时任务上限。0 表示不能再从界面启用。"""
+
+    max_jobs_per_user: int = Field(..., ge=0)
+
+
 class TaskMemoryUpsertRequest(BaseModel):
     """对齐 task_memory_config：仅 ``enabled`` NOT NULL；模型/密钥等列可空。"""
 

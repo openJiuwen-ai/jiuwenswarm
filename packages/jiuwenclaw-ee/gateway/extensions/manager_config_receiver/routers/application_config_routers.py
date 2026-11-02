@@ -8,12 +8,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.application_config.audit_log_config import AuditLogConfigService
+from ..core.application_config.cron_policy import CronPolicyService
 from ..core.application_config.log_masking_rule import LogMaskingRuleService
 from ..core.application_config.logging_config import LoggingConfigService
 from ..core.application_config.memory_config import MemoryConfigService
 from ..core.application_config.task_memory_config import TaskMemoryConfigService
 from ..schemas.application_config_schemas import (
     AuditLogUpsertRequest,
+    CronPolicyUpsertRequest,
     LoggingConfigUpsertRequest,
     LogMaskingRuleCreateRequest,
     LogMaskingRuleUpdateRequest,
@@ -36,6 +38,7 @@ LoggingSyncBody = make_sync_body("LoggingSyncBody", LoggingConfigUpsertRequest)
 TaskMemorySyncBody = make_sync_body("TaskMemorySyncBody", TaskMemoryUpsertRequest)
 MemorySyncBody = make_sync_body("MemorySyncBody", MemoryConfigUpsertRequest)
 AuditLogSyncBody = make_sync_body("AuditLogSyncBody", AuditLogUpsertRequest)
+CronPolicySyncBody = make_sync_body("CronPolicySyncBody", CronPolicyUpsertRequest)
 LogMaskingCreateSyncBody = make_sync_body(
     "LogMaskingCreateSyncBody", LogMaskingRuleCreateRequest
 )
@@ -113,6 +116,28 @@ async def delete_memory(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     trigger_runtime_config_update()
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.put("/cron-policy", response_model=ResponseModel)
+async def upsert_cron_policy(
+    sync: Annotated[SyncContext, Depends(verify_sync(CronPolicySyncBody))],
+):
+    try:
+        result = await CronPolicyService().upsert(sync.business)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
+
+
+@application_config_router.delete("/cron-policy", response_model=ResponseModel)
+async def delete_cron_policy(
+    sync: VerifySyncEnvelopeOnly,
+):
+    try:
+        await CronPolicyService().delete()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 

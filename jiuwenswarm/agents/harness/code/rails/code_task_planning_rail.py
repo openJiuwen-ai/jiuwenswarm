@@ -228,6 +228,10 @@ class CodeTaskPlanningRail(TaskPlanningRail):
             target_model = self._default_llm
 
         if target_model is not None:
+            # Gap: set_llm does not sync compressor models. Production constructs
+            # this rail without model_selection, so this branch is unreachable.
+            # When model_selection is wired, call sync_agent_compressor_models
+            # (same as ModelRoutingRail). Upstream TaskPlanningRail has the same gap.
             ctx.agent.set_llm(target_model)
             ctx.agent.config.model_name = target_model.model_config.model_name
             logger.debug(

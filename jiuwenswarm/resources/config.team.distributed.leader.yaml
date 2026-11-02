@@ -192,8 +192,11 @@ react:
   model_name: ${MODEL_NAME}
   skill_mode: all
   # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用
+  # general_agent: 专家团 task_tool 派发 general-purpose（与主 config.yaml 对齐）
   # browser_agent 保持原行为，仍由浏览器 runtime 开关决定是否默认注册；这里只支持覆盖其参数
   subagents:
+    general_agent:
+      enabled: true
     code_agent:
       enabled: false
       # max_iterations: 15

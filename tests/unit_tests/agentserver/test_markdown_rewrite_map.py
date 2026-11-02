@@ -1019,3 +1019,42 @@ def test_protocol_v2_fixture_uses_real_utf8_ranges_and_hashes():
         "full",
         "partial",
     ]
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "https://example.com/report(1).pdf",
+        "https://example.com/report(a(b)).pdf",
+        r"https://example.com/report\(1\).pdf",
+        "https://example.com/report%281%29.pdf",
+        "<https://example.com/report(1).pdf>",
+    ],
+)
+def test_citation_parentheses_preserve_atomic_source_and_utf8_ranges(destination):
+    citation = f"[[77]]({destination})"
+    markdown = f"中文😀 English {citation} tail."
+    result = rewrite_map_module.build_rewrite_map(markdown)
+    assert not result.unsupported_regions
+    assert len(result.units) == 1
+    anchors = [a for a in result.units[0].protected if a.kind == "citation"]
+    assert len(anchors) == 1
+    assert anchors[0].source == citation
+    raw = markdown.encode("utf-8")
+    assert raw[anchors[0].start_byte : anchors[0].end_byte].decode() == citation
+    assert (
+        "".join(slot.text for slot in result.units[0].slots) == "中文😀 English  tail."
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "[[77]](https://example.com/report(1.pdf)",
+        "[[77]](https://example.com/report(1).pdf",
+        "[[77]](javascript:alert(1))",
+        '[[77]](https://example.com/report.pdf "title")',
+    ],
+)
+def test_citation_parser_does_not_truncate_invalid_destinations(source):
+    assert rewrite_map_module.parse_citation(source, full=True) is None

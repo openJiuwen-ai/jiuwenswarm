@@ -34,6 +34,7 @@ from jiuwenswarm.common.utils import get_logs_dir
 logger = logging.getLogger(__name__)
 
 _SYNC_PRIMITIVE_TYPES = (asyncio.Lock, asyncio.Event, asyncio.Condition, asyncio.Semaphore)
+_fault_log_handle: TextIO | None = None
 
 
 def _write_thread_stacks(out: TextIO) -> None:
@@ -160,5 +161,39 @@ def install_async_dump_handler(service_name: str) -> None:
     logger.info(
         "[debug_dump] async dump handler installed for %s: kill -USR1 %s",
         service_name,
+        os.getpid(),
+    )
+
+
+def install_fault_log(service_name: str) -> None:
+    """Write native crash tracebacks into the log directory.
+
+    Windows has no SIGUSR1, and a hard crash skips the atexit exit-reason log.
+    The file handle stays open for the process lifetime so faulthandler can
+    write after the logging system is already dead.
+    """
+    global _fault_log_handle
+    if _fault_log_handle is not None:
+        return
+    import faulthandler
+
+    try:
+        dump_dir = get_logs_dir()
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        path = dump_dir / f"{service_name}_fault.log"
+        handle = open(path, "ab", buffering=0)
+    except Exception:
+        logger.exception("[debug_dump] faulthandler file open failed")
+        return
+    try:
+        faulthandler.enable(file=handle, all_threads=True)
+    except Exception:
+        handle.close()
+        logger.exception("[debug_dump] faulthandler enable failed")
+        return
+    _fault_log_handle = handle
+    logger.info(
+        "[debug_dump] faulthandler enabled file=%s pid=%s",
+        path,
         os.getpid(),
     )

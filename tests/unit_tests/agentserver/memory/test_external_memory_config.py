@@ -246,3 +246,61 @@ def test_openjiuwen_provider_config_missing_subsection_uses_defaults(monkeypatch
     assert out["kv"]["backend"] == "shelve"
     assert out["vector"]["backend"] == "chroma"
     assert out["db"]["backend"] == "sqlite"
+
+
+# ---------------------------------------------------------------------------
+# is_cloud_deployment — three-tier resolution (tip → baseline → os.environ)
+# ---------------------------------------------------------------------------
+
+from jiuwenswarm.common import local_env_config as _lec  # noqa: E402
+
+
+def _reset_cloud_env(monkeypatch):
+    """Clear all OFFICE_ACE_DEPLOYMENT sources for deterministic tests."""
+    monkeypatch.delenv("OFFICE_ACE_DEPLOYMENT", raising=False)
+
+
+def test_is_cloud_deployment_tip_wins(monkeypatch):
+    _reset_cloud_env(monkeypatch)
+    monkeypatch.setattr(_lec, "effective_tip", lambda *a, **k: {"OFFICE_ACE_DEPLOYMENT": "cloud"})
+    monkeypatch.setattr(_lec, "get_process_baseline", lambda: {"OFFICE_ACE_DEPLOYMENT": "pc"})
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "pc")
+    assert emc.is_cloud_deployment() is True
+
+
+def test_is_cloud_deployment_baseline_falls_back_when_tip_empty(monkeypatch):
+    _reset_cloud_env(monkeypatch)
+    monkeypatch.setattr(_lec, "effective_tip", lambda *a, **k: {})
+    monkeypatch.setattr(_lec, "get_process_baseline", lambda: {"OFFICE_ACE_DEPLOYMENT": "cloud"})
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "pc")
+    assert emc.is_cloud_deployment() is True
+
+
+def test_is_cloud_deployment_environ_falls_back_when_tip_and_baseline_empty(monkeypatch):
+    _reset_cloud_env(monkeypatch)
+    monkeypatch.setattr(_lec, "effective_tip", lambda *a, **k: {})
+    monkeypatch.setattr(_lec, "get_process_baseline", lambda: {})
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "cloud")
+    assert emc.is_cloud_deployment() is True
+
+
+def test_is_cloud_deployment_defaults_to_pc_when_all_empty(monkeypatch):
+    _reset_cloud_env(monkeypatch)
+    monkeypatch.setattr(_lec, "effective_tip", lambda *a, **k: {})
+    monkeypatch.setattr(_lec, "get_process_baseline", lambda: {})
+    assert emc.is_cloud_deployment() is False
+
+
+def test_is_cloud_deployment_case_insensitive_and_whitespace_trimmed(monkeypatch):
+    _reset_cloud_env(monkeypatch)
+    monkeypatch.setattr(_lec, "effective_tip", lambda *a, **k: {"OFFICE_ACE_DEPLOYMENT": "  CLOUD  "})
+    monkeypatch.setattr(_lec, "get_process_baseline", lambda: {})
+    assert emc.is_cloud_deployment() is True
+
+
+def test_is_cloud_deployment_pc_value_is_not_cloud(monkeypatch):
+    _reset_cloud_env(monkeypatch)
+    monkeypatch.setattr(_lec, "effective_tip", lambda *a, **k: {"OFFICE_ACE_DEPLOYMENT": "pc"})
+    monkeypatch.setattr(_lec, "get_process_baseline", lambda: {"OFFICE_ACE_DEPLOYMENT": "cloud"})
+    monkeypatch.setenv("OFFICE_ACE_DEPLOYMENT", "cloud")
+    assert emc.is_cloud_deployment() is False

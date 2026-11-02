@@ -20,6 +20,7 @@ from typing import Iterator
 from urllib.parse import quote
 
 from markdown_it import MarkdownIt
+from markdown_it.common.utils import unescapeAll
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch.path_safety import (
     is_direct_directory,
@@ -29,7 +30,10 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.artifact_naming
     ArtifactPaths,
     allocate_next_paths,
 )
-
+from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.citation_links import (
+    iter_citations,
+    parse_citation,
+)
 from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.markdown_rewrite_map import (
     MarkdownRewriteMap,
     ProtectedAnchor,
@@ -47,7 +51,6 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.markdown_rewrit
 logger = logging.getLogger(__name__)
 
 SAFE_ID_RE = re.compile(r"^(?:doc|rev)_[A-Za-z0-9_-]{1,128}$")
-CITATION_RE = re.compile(r"\[\[(?P<index>\d+)\]\]\((?P<url>https?://[^\s)]+)\)")
 FORBIDDEN_OUTPUT_RE = re.compile(
     r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://|"
     r"(?<![A-Za-z0-9+.-])(?:javascript|vbscript|data|mailto|tel|sms|urn):[ \t\r\n]*|"
@@ -638,7 +641,8 @@ def _citation_index(
                 or field_size(value) > CITATION_FIELD_MAX_BYTES
             ):
                 raise RewriteError("DOCUMENT_NOT_FOUND", "report citation data is invalid")
-        key = f"{reference_index}\0{url}"
+        # Body destinations receive the same single CommonMark unescape pass.
+        key = f"{reference_index}\0{unescapeAll(url)}"
         if source_id in by_id:
             raise RewriteError("DOCUMENT_NOT_FOUND", "report citation data is ambiguous")
         by_id[source_id] = item
@@ -652,12 +656,12 @@ def _citation_occurrence_index(
     _, by_key = _citation_index(citations)
     boundary_table = Utf8BoundaryTable(markdown)
     ranges_by_key: dict[str, list[tuple[int, int]]] = {}
-    for match in CITATION_RE.finditer(markdown):
-        key = f"{match.group('index')}\0{match.group('url')}"
+    for match in iter_citations(markdown):
+        key = f"{match.index}\0{match.url}"
         ranges_by_key.setdefault(key, []).append(
             (
-                boundary_table.codepoint_to_byte[match.start()],
-                boundary_table.codepoint_to_byte[match.end()],
+                boundary_table.codepoint_to_byte[match.start],
+                boundary_table.codepoint_to_byte[match.end],
             )
         )
 
@@ -746,8 +750,8 @@ def _slot_slice(slot: RewriteSlot, start: int, end: int) -> tuple[str, int, int]
 
 def _anchor_visible_text(anchor: ProtectedAnchor) -> str:
     if anchor.kind == "citation":
-        match = CITATION_RE.fullmatch(anchor.source)
-        return f"[{match.group('index')}]" if match else ""
+        match = parse_citation(anchor.source, full=True)
+        return f"[{match.index}]" if match else ""
     if anchor.kind == "hard_break":
         return "\n"
     if anchor.kind == "inline_code":
@@ -988,7 +992,7 @@ def prepare_rewrite(
     for anchor in selected_anchors:
         if anchor.kind != "citation":
             continue
-        match = CITATION_RE.fullmatch(anchor.source)
+        match = parse_citation(anchor.source, full=True)
         if match is not None:
             citation = citation_occurrences.get((anchor.start_byte, anchor.end_byte))
             if citation is not None:
@@ -1408,10 +1412,10 @@ def _validate_affected_citations(
             for anchor in rewrite_map.units[index].protected:
                 if anchor.kind != "citation":
                     continue
-                match = CITATION_RE.fullmatch(anchor.source)
+                match = parse_citation(anchor.source, full=True)
                 if match is None:
                     raise RewriteError("FORMAT_CONFLICT", "citation syntax changed")
-                result.append((match.group("index"), match.group("url")))
+                result.append((match.index, match.url))
         return result
 
     expected = identities(original_map)

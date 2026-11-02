@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import os
 import queue
@@ -13,7 +14,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,91 @@ _stop_sampler = threading.Event()
 _events: "queue.SimpleQueue[tuple[float, float]]" = queue.SimpleQueue()
 #: 环形缓冲：（monotonic 时刻, 主线程栈签名）
 _ring: deque[tuple[float, str]] = deque(maxlen=_RING_SIZE)
+
+# ---------------------------------------------------------------------------
+# 停摆告警上报回调
+#
+# 旧实现停摆告警只写本地日志（full.log），宿主（网关/诊断面板）无法感知，
+# 故障只能事后靠人工捞日志定位。注册 reporter 后，每次停摆告警都会同步
+# 通知宿主，可转为 runtime 推送帧上报网关（见 AgentWebSocketServer）。
+# ---------------------------------------------------------------------------
+#: 停摆告警上报回调，签名 ``(gap_seconds: float, end_ts: float) -> None``。
+#: 在事件循环心跳协程中被同步调用，实现必须非阻塞（内部自行调度发送）。
+_stall_reporter: Optional[Callable[[float, float], None]] = None
+
+
+def set_stall_reporter(reporter: Optional[Callable[[float, float], None]]) -> None:
+    """注册/清除停摆告警上报回调；传 ``None`` 清除。幂等。"""
+    global _stall_reporter
+    _stall_reporter = reporter
+
+
+# ---------------------------------------------------------------------------
+# GC 治理（freeze + 后台线程定期 collect）
+#
+# urllib3/requests 的连接池依赖 weakref 终结器关闭 SSL 连接，终结器在
+# **触发 GC 的线程**上同步执行（``_close_pool_connections → ssl._real_close``）。
+# 放任 GC 随机触发时，终结器可能恰好落在 asyncio 事件循环线程上，
+# ~10s 的同步 SSL 关闭足以让网关 keepalive 连续 miss 并主动断连。
+# 本治理线程以固定周期执行 ``gc.collect()``，
+# 使终结器大概率固定落在本线程；配合 ``gc.freeze()``（启动期对象移出
+# 分代跟踪）进一步降低事件循环线程内分配触发 full GC 的概率。
+# ---------------------------------------------------------------------------
+#: GC 治理开关（env 可关闭）
+_GC_GOVERNOR_ENABLED = os.environ.get(
+    "JIUWENSWARM_GC_GOVERNOR", "1"
+) not in ("0", "false", "False")
+#: 后台 GC 周期（秒）
+_GC_COLLECT_INTERVAL_S = float(
+    os.environ.get("JIUWENSWARM_GC_COLLECT_INTERVAL", "30.0")
+)
+
+#: GC 治理线程句柄（幂等安装用）
+_gc_governor_thread: Optional[threading.Thread] = None
+
+
+def _gc_governor_loop() -> None:
+    """后台线程：周期性 ``gc.collect()``，把终结器执行点固定在本线程。"""
+    while True:
+        time.sleep(_GC_COLLECT_INTERVAL_S)
+        try:
+            gc.collect()
+        except Exception:
+            # 治理线程绝不能把进程带崩
+            logger.exception("[GCGovernor] gc.collect() 失败（已忽略）")
+
+
+def install_gc_governor() -> None:
+    """幂等安装 GC 治理（``gc.freeze()`` + 后台定期 ``gc.collect()``）。
+
+    遵循本模块原则：任何失败仅记日志，绝不影响服务启动。
+    """
+    global _gc_governor_thread
+    if not _GC_GOVERNOR_ENABLED:
+        return
+    if _gc_governor_thread is not None and _gc_governor_thread.is_alive():
+        return
+    try:
+        # 先清一遍当前垃圾再 freeze，避免把浮动垃圾永久钉进永久代
+        gc.collect()
+        gc.freeze()
+    except Exception:
+        logger.warning("[GCGovernor] gc.freeze() 失败（已忽略）", exc_info=True)
+    try:
+        _gc_governor_thread = threading.Thread(
+            target=_gc_governor_loop,
+            name="agent-server-gc-governor",
+            daemon=True,
+        )
+        _gc_governor_thread.start()
+    except Exception:
+        logger.exception("[GCGovernor] 安装失败（已忽略）")
+        _gc_governor_thread = None
+        return
+    logger.info(
+        "[GCGovernor] GC 治理已安装: collect_interval=%.0fs",
+        _GC_COLLECT_INTERVAL_S,
+    )
 
 
 def _frame_signature(frame: Any) -> str:
@@ -198,6 +284,14 @@ async def loop_heartbeat_loop() -> None:
             extra={"loop_stall_seconds": round(gap, 1)},
         )
         _events.put((gap, now))
+        # 通知宿主（如 AgentWebSocketServer → 网关推送）。
+        # 回调必须非阻塞；异常只记日志，绝不能影响心跳协程本身。
+        reporter = _stall_reporter
+        if reporter is not None:
+            try:
+                reporter(gap, now)
+            except Exception:
+                logger.exception("[LoopMonitor] 停摆上报回调失败（已忽略）")
 
 
 class StackSampler:
@@ -306,6 +400,9 @@ async def ensure_event_loop_monitor() -> None:
         return
     try:
         StackSampler.start()
+        # GC 治理（freeze + 后台定期 collect），
+        # 内部自吞异常，不影响本函数的失败重试语义。
+        install_gc_governor()
         _heartbeat_task = asyncio.create_task(
             loop_heartbeat_loop(), name="event-loop-stall-heartbeat"
         )

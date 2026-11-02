@@ -29,7 +29,11 @@ from jiuwenswarm.common.local_env_config import (
 def _reset_env_state():
     saved_environ = dict(os.environ)
     reset_local_env_state_for_tests()
+    # Session 复用引入了模块级缓存：必须在用例间重置，
+    # 否则 monkeypatch 替换的 Session 替身不会生效（缓存跨用例存活）。
+    proxy_cfg.reset_shared_session()
     yield
+    proxy_cfg.reset_shared_session()
     reset_local_env_state_for_tests()
     os.environ.clear()
     os.environ.update(saved_environ)

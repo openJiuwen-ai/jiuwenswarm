@@ -4,7 +4,7 @@
  * 应用主布局，整合所有组件
  */
 
-import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
@@ -14,6 +14,7 @@ import { TeamPanel } from './components/TeamPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import LongHorizonReminderToasts from './components/LongHorizonReminderToast';
+import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChannelsPanel } from './components/ChannelsPanel';
@@ -56,8 +57,15 @@ import {
 import { webRequest } from './services/webClient';
 import { OPEN_SESSION_EVENT, type OpenSessionDetail } from './features/longHorizon/sessionNav';
 import { getWebTransport } from './utils/env';
+import {
+  bindCronLiveWatchLifecycle,
+  dismissCronAskUser,
+  isCronAskUserDismissed,
+  settleCronSessionRuntime,
+  shouldAcceptCronAskUserQuestion,
+} from './features/cron/cronLiveWatch';
 import { useTeamPanelState } from './features/teamPanelState';
-import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session, type UserAnswerStatus } from './types';
+import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Message, type Session, type UserAnswerStatus } from './types';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -65,6 +73,7 @@ import {
   useTodoStore,
   useGoalStore,
   useHarnessStore,
+  usePlanStore,
   useWorkspaceStore,
   useCronStore,
   useSubagentStore,
@@ -85,6 +94,7 @@ import {
   forgetCreatedConversation,
   isConversationMissing,
   registerCreatedConversation,
+  resolveNewConversationEntrySettings,
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
 import { toDisplaySessionTitle } from './utils/documentMessage';
@@ -134,6 +144,16 @@ const LazyDiagnosisHistoryPanel = lazy(async () => {
 });
 
 const TEAM_SESSION_MODES = new Set(['team', 'team.plan', 'code.team']);
+const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
+const CHAT_PANEL_MIN_WIDTH_PCT = 20;
+const CHAT_PANEL_MAX_WIDTH_PCT = 70;
+
+type ChatPanelResizeDrag = {
+  pointerId: number;
+  startX: number;
+  startPct: number;
+  containerWidth: number;
+};
 const PREVIEW_MODEL_SETUP_GUIDE = import.meta.env.DEV
   && new URLSearchParams(window.location.search).get('modelSetupGuide') === '1';
 
@@ -147,6 +167,12 @@ function shouldPreviewModelSetupGuide(): boolean {
 
 function isCronConversation(session: Pick<Session, 'cron_id'>): boolean {
   return Boolean(session.cron_id);
+}
+
+/** 与 project.get_sessions 一致：cron 执行会话不进普通对话；长程会话即使带 cron_id 也留在对话列表。 */
+function belongsInConversationList(session: Pick<Session, 'session_id' | 'cron_id'>): boolean {
+  if (!session.cron_id) return true;
+  return session.session_id.startsWith('longhorizon_');
 }
 
 async function refreshCronListsAfterDelete(
@@ -425,12 +451,11 @@ function AppContent() {
       setConfigInitialExpandGroup(null);
     }
     if (activeNav === 'chat') {
-      const { availableModels, setSelectedModelName } = useSessionStore.getState();
-      const defaultModel = availableModels[0];
+      const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
       const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModel && !runtime?.selectedModelName) {
+      if (defaultModelName && !runtime?.selectedModelName) {
         useSessionStore.getState().ensureRuntime(sessionId);
-        setSelectedModelName(sessionId, defaultModel.alias || defaultModel.model_name);
+        setSelectedModelName(sessionId, defaultModelName);
       }
     }
   }, [activeNav, sessionId]);
@@ -504,7 +529,9 @@ function AppContent() {
   const historyPageCancelRef = useRef(new Map<string, () => void>());
   const historyBackgroundPrefetchTokensRef = useRef(new Map<string, number>());
   const creatingSessionRef = useRef(false);
-  const promotedFromNewSessionIdsRef = useRef(new Set<string>());
+  /** 离开新建任务页后，仍未发送的临时会话可以被再次打开。 */
+  const pendingNewConversationRef = useRef(route.kind === 'chat-new');
+  const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
   const shareExportRef = useRef<HTMLDivElement>(null);
   const shareExportFilenameRef = useRef('jiuwenswarm-share.png');
   const shareExportTokenRef = useRef(0);
@@ -571,6 +598,7 @@ function AppContent() {
     } else if (route.kind === 'chat-new') {
       const newChatPath = chatRoutePath({ kind: 'chat-new' }).split('?')[0];
       if (window.location.pathname !== newChatPath) navigate({ kind: 'chat-new' }, { replace: true });
+      pendingNewConversationRef.current = true;
       if (preserveSelectedProjectOnChatNewRef.current) {
         preserveSelectedProjectOnChatNewRef.current = false;
       } else {
@@ -640,14 +668,27 @@ function AppContent() {
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
-  const [chatPanelWidthPct, setChatPanelWidthPct] = useState(33.33);
+  const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
+  const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
+  const [heartbeatPanelOpen, setHeartbeatPanelOpen] = useState(false);
 
   useEffect(() => {
     setCodeReviewTarget(null);
   }, [sessionId]);
 
+  // 心跳面板是会话级功能，切换会话时收起，避免带着上一个会话的任务列表进入新会话
+  useEffect(() => {
+    setHeartbeatPanelOpen(false);
+  }, [sessionId]);
+
+  const handleToggleHeartbeatPanel = useCallback(() => {
+    setHeartbeatPanelOpen((v) => !v);
+  }, []);
+
   const handleToggleDetailPanel = useCallback((expanded: boolean) => {
+    // 团队/代码审核面板和心跳面板互斥，共用右侧工作区同一栏
+    setHeartbeatPanelOpen(false);
     if (expanded && mode !== 'team' && teamAreaActiveTab === 'team') {
       setTeamAreaActiveTab('planning');
     }
@@ -655,33 +696,55 @@ function AppContent() {
   }, [mode, setTeamAreaActiveTab, setTeamAreaExpanded, teamAreaActiveTab]);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
+    setHeartbeatPanelOpen(false);
     setCodeReviewTarget(target);
     setTeamAreaActiveTab('review');
     setTeamAreaExpanded(true);
   }, [setTeamAreaActiveTab, setTeamAreaExpanded]);
 
-  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startPct = chatPanelWidthPct;
-    const container = (e.currentTarget as HTMLElement).parentElement;
+  const handleDividerPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || chatPanelResizeDragRef.current) return;
+    const container = event.currentTarget.parentElement;
     if (!container) return;
     const containerWidth = container.getBoundingClientRect().width;
+    if (containerWidth <= 0) return;
 
-    const onMouseMove = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      const newPct = Math.min(70, Math.max(20, startPct + (dx / containerWidth) * 100));
-      setChatPanelWidthPct(newPct);
+    event.preventDefault();
+    document.body.classList.add('workspace-resize-active');
+    event.currentTarget.setPointerCapture(event.pointerId);
+    chatPanelResizeDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startPct: chatPanelWidthPct,
+      containerWidth,
     };
-
-    const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
   }, [chatPanelWidthPct]);
+
+  const handleDividerPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = chatPanelResizeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const nextWidthPct = drag.startPct + (dx / drag.containerWidth) * 100;
+    const clampedWidthPct = Math.min(
+      CHAT_PANEL_MAX_WIDTH_PCT,
+      Math.max(CHAT_PANEL_MIN_WIDTH_PCT, nextWidthPct),
+    );
+    setChatPanelWidthPct(clampedWidthPct);
+  }, []);
+
+  const clearChatPanelResize = useCallback((pointerId?: number): boolean => {
+    if (pointerId !== undefined && chatPanelResizeDragRef.current?.pointerId !== pointerId) return false;
+    chatPanelResizeDragRef.current = null;
+    document.body.classList.remove('workspace-resize-active');
+    return true;
+  }, []);
+
+  const finishDividerResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!clearChatPanelResize(event.pointerId)) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [clearChatPanelResize]);
 
   const clearMessages = useChatStore((s) => s.clearMessages);
   const clearSubtasks = useChatStore((s) => s.clearSubtasks);
@@ -703,6 +766,7 @@ function AppContent() {
   const messages = useChatStore((s) => s.runtimes[sessionId]?.messages ?? []);
   const isLoadingHistory = useChatStore((s) => s.runtimes[sessionId]?.isLoadingHistory ?? false);
   const replaceHistoryMessages = useChatStore((s) => s.replaceHistoryMessages);
+  const applyHistoryMessagesKeepLive = useChatStore((s) => s.applyHistoryMessagesKeepLive);
   const restoreReasoningSegments = useChatStore((s) => s.restoreReasoningSegments);
   const setPendingQuestion = useChatStore((s) => s.setPendingQuestion);
   const isRestoringHistorySession = isLoadingHistory && !historyPagerMeta && messages.length === 0;
@@ -781,7 +845,7 @@ function AppContent() {
   }, [mode, todos.length, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode, subagentCount]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
-  const isTeamAreaExpanded = mode !== 'auto_harness' && teamAreaExpanded && toolPanelHasContent;
+  const isTeamAreaExpanded = mode !== 'auto_harness' && teamAreaExpanded && toolPanelHasContent && !heartbeatPanelOpen;
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
   const hideTrajectorySessions = false;
@@ -1494,7 +1558,9 @@ function AppContent() {
       }
       void (async () => {
         const session = await loadSessionMetadata(sessionId);
-        if (session) {
+        // 只把普通对话（含长程）刷进侧栏。cron 执行会话已由 chat.final 的
+        // loadCronSessions 进定时任务组，再 upsert 会在「对话」下多出一条。
+        if (session && belongsInConversationList(session)) {
           useWorkspaceStore.getState().upsertSession(session);
         }
       })();
@@ -1529,6 +1595,32 @@ function AppContent() {
   const startHistoryRestore = useCallback((sid: string): { done: Promise<boolean> } => {
     let settleDone!: (ok: boolean) => void;
     const done = new Promise<boolean>((resolve) => { settleDone = resolve; });
+    // 只认「还在飞」：结束后若仍因思考段/工具列表判 busy，会 keep-live 跳过
+    // reasoning 回放，切走再回来只剩工具、思考丢失。
+    const cronLiveBusy = () => {
+      if (!sid.startsWith('cron_')) return false;
+      const runtime = useChatStore.getState().getRuntime(sid);
+      if (!runtime) return false;
+      return Boolean(
+        runtime.isProcessing ||
+        runtime.pendingQuestion ||
+        runtime.currentStreamId,
+      );
+    };
+    /** 内存里已有助手正文而 history 本轮缺正文时，禁止整表覆盖抹掉实时气泡。 */
+    const cronShouldKeepLiveAgainstThinHistory = (historyMessages: Message[]) => {
+      if (!sid.startsWith('cron_')) return false;
+      const runtime = useChatStore.getState().getRuntime(sid);
+      if (!runtime) return false;
+      const memAssistants = runtime.messages.filter(
+        (m) => m.role === 'assistant' && String(m.content || '').trim(),
+      ).length;
+      if (memAssistants === 0) return false;
+      const histAssistants = historyMessages.filter(
+        (m) => m.role === 'assistant' && String(m.content || '').trim(),
+      ).length;
+      return memAssistants > histAssistants;
+    };
     const restoreHandle = beginHistoryRestore({
       sessionId: sid,
       onReady: (messages, totalPages) => {
@@ -1538,10 +1630,16 @@ function AppContent() {
         // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
         // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
         // 见 stampGoalObjectiveMessages。
-        replaceHistoryMessages(
+        const stamped = stampGoalObjectiveMessages(
           sid,
-          stampGoalObjectiveMessages(sid, mergePersistedGoalCompletionMessages(sid, messages))
+          mergePersistedGoalCompletionMessages(sid, messages),
         );
+        // cron 监听流进行中，或内存正文比 history 更完整：只补消息，不清实时态。
+        if (cronLiveBusy() || cronShouldKeepLiveAgainstThinHistory(stamped)) {
+          applyHistoryMessagesKeepLive(sid, stamped);
+        } else {
+          replaceHistoryMessages(sid, stamped);
+        }
         const restoredTotalPages = totalPages ?? 1;
         setHistoryPagerMeta(sid, {
           loadedPages: 1,
@@ -1557,7 +1655,10 @@ function AppContent() {
         settleDone(true);
       },
       onEmpty: (emptyTotalPages) => {
-        replaceHistoryMessages(sid, mergePersistedGoalCompletionMessages(sid, []));
+        // 全新 cron_* 常先空历史；若已在听流，不能 replace 空列表清掉实时态。
+        if (!cronLiveBusy()) {
+          replaceHistoryMessages(sid, mergePersistedGoalCompletionMessages(sid, []));
+        }
         const restoredTotalPages = emptyTotalPages ?? 1;
         setHistoryPagerMeta(sid, {
           loadedPages: 1,
@@ -1565,12 +1666,14 @@ function AppContent() {
         });
         if (historyRestoreFromPanelHintRef.current) {
           historyRestoreFromPanelHintRef.current = false;
-          addMessage(sid, {
-            id: `history-restore-empty-${Date.now()}`,
-            role: 'system',
-            content: tRef.current('sessions.restoreEmpty'),
-            timestamp: new Date().toISOString(),
-          });
+          if (!cronLiveBusy()) {
+            addMessage(sid, {
+              id: `history-restore-empty-${Date.now()}`,
+              role: 'system',
+              content: tRef.current('sessions.restoreEmpty'),
+              timestamp: new Date().toISOString(),
+            });
+          }
         }
         setLoadingHistory(sid, false);
         startBackgroundHistoryPrefetch(sid, 1, restoredTotalPages);
@@ -1580,6 +1683,8 @@ function AppContent() {
         settleDone(true);
       },
       onToolReplay: (items) => {
+        // 监听流已有工具态时不要用历史回放盖掉。
+        if (cronLiveBusy()) return;
         clearSubtasks(sid);
         for (const item of items) {
           if (item.kind === 'tool_call') {
@@ -1619,6 +1724,7 @@ function AppContent() {
         settleHistoricalToolExecutions(sid);
       },
       onHarnessReplay: (items: HistoryHarnessReplayItem[]) => {
+        if (cronLiveBusy()) return;
         const harnessStore = useHarnessStore.getState();
         const harnessRuntime = harnessStore.getRuntime(sid);
         for (const item of items) {
@@ -1660,9 +1766,45 @@ function AppContent() {
         }
       },
       onReasoningReplay: (items) => {
+        if (cronLiveBusy()) return;
         restoreReasoningSegments(sid, items);
       },
       onAskUserReplay: (question) => {
+        // 监听流已挂审批卡时保留实时卡；否则按历史回放。
+        if (cronLiveBusy() && useChatStore.getState().getRuntime(sid)?.pendingQuestion) {
+          return;
+        }
+        if (question) {
+          if (
+            !shouldAcceptCronAskUserQuestion(sid, {
+              request_id: question.request_id,
+              source: question.source,
+            })
+          ) {
+            return;
+          }
+          const askRid = String(question.request_id || '').trim();
+          if (askRid && isCronAskUserDismissed(sid, askRid)) {
+            return;
+          }
+          const runtime = useChatStore.getState().getRuntime(sid);
+          const hasAssistant = (runtime?.messages ?? []).some(
+            (m: { role?: string; content?: string }) =>
+              m.role === 'assistant' && String(m.content || '').trim(),
+          );
+          // keep-live 时窗口里往往已有续跑正文，而 history 尚未带上 answered/final，
+          // materialize 会把 permission 卡当成仍 pending——有终态正文则不再挂卡。
+          if (
+            question.source === 'permission_interrupt' &&
+            hasAssistant &&
+            !runtime?.pendingQuestion
+          ) {
+            if (askRid) {
+              dismissCronAskUser(sid, askRid);
+            }
+            return;
+          }
+        }
         // replaceHistoryMessages 会把 pendingQuestion 清掉；回放必须在它之后。
         setPendingQuestion(sid, question);
         if (question) {
@@ -1721,6 +1863,7 @@ function AppContent() {
     setLoadingHistory,
     setHistoryPagerMeta,
     replaceHistoryMessages,
+    applyHistoryMessagesKeepLive,
     restoreReasoningSegments,
     startBackgroundHistoryPrefetch,
     setPendingQuestion,
@@ -1728,9 +1871,8 @@ function AppContent() {
     setThinking,
   ]);
 
-  // 轮询兜底刷新：企业版 HTTP 无 cron 结果 push，立即执行跳转后 skipHistoryLoad，
-  // syncJobRuns 检测到「当前正打开会话 == 新 last_session_id」时投递刷新请求，
-  // 这里消费并触发一次完整的历史恢复（与首次点击激活会话的时机一逻辑一致）。
+  // 轮询兜底刷新：企业版 HTTP 无 cron 结果 push。syncJobRuns 在当前窗口属于
+  // 刚跑完的任务时投递刷新（不要求它仍是任务上的最新会话）。
   const pendingActiveHistoryRefresh = useCronStore((s) => s.pendingActiveHistoryRefresh);
   useEffect(() => {
     if (!pendingActiveHistoryRefresh) return;
@@ -1742,11 +1884,15 @@ function AppContent() {
     startHistoryRestore(sid);
   }, [pendingActiveHistoryRefresh, startHistoryRestore]);
 
+  // 企业版 HTTP 不在网关 WebSocket 上。为当前 cron_* 与仍在 processing 的 cron
+  // 维持 live；切走不拆仍在跑的订阅，否则收不到 processing_status=false 会干转。
+  useEffect(() => bindCronLiveWatchLifecycle(), []);
+
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     
-    if (promotedFromNewSessionIdsRef.current.has(sessionId)) {
+    if (sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -1762,8 +1908,8 @@ function AppContent() {
       return;
     }
 
-    // 已有完整历史恢复状态则跳过历史加载，直接使用内存数据。
-    // historyPagerMeta 是唯一可靠的"history 是否完整加载过"标记。
+    // 当前页面新建的会话已在上方复用实时内存数据；对于其他会话，
+    // historyPagerMeta 表示已完成 history 首屏恢复，可直接复用并继续补齐剩余分页。
     const existingRuntime = useChatStore.getState().getRuntime(sessionId);
     if (existingRuntime && existingRuntime.historyPagerMeta) {
       setLoadingHistory(sessionId, false);
@@ -1821,6 +1967,11 @@ function AppContent() {
   const enterNewConversation = useCallback((targetMode: AgentMode = mode, options: NewConversationOptions = {}) => {
     const currentSessionId = sessionIdRef.current;
     const currentRuntime = useSessionStore.getState().getRuntime(currentSessionId);
+    const pendingNewRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
+    const shouldRestorePendingNewConversation =
+      currentSessionId !== NEW_CONVERSATION_ID
+      && pendingNewConversationRef.current
+      && Boolean(pendingNewRuntime);
     newConversationPreviousSessionRef.current =
       currentSessionId && currentSessionId !== NEW_CONVERSATION_ID
         ? {
@@ -1828,16 +1979,22 @@ function AppContent() {
           mode: currentRuntime?.mode ?? mode,
         }
         : null;
-    // 新建会话固定使用配置的默认模型，不继承当前会话手动切换过的模型；
+    // 返回尚未发送的新建任务时，恢复该临时会话自己的模式和模型；真正开始一个新任务时，
+    // 仍固定使用配置的默认模型，不继承当前正式会话手动切换过的模型。
     // 默认模型列表尚未加载完成时兜底沿用当前会话的模型，避免新会话没有模型可用。
-    const selectedModelName = useSessionStore.getState().defaultModelName ?? currentRuntime?.selectedModelName ?? null;
+    const { mode: nextMode, selectedModelName } = resolveNewConversationEntrySettings(
+      targetMode,
+      useSessionStore.getState().defaultModelName,
+      currentRuntime?.selectedModelName ?? null,
+      shouldRestorePendingNewConversation ? pendingNewRuntime : null,
+    );
     const selectedProject = options.project ?? useWorkspaceStore.getState().selectedProject;
     const projectDir = options.project?.project_dir ?? selectedProject?.project_dir ?? null;
     disposeInFlightHistoryHandles(
       currentSessionId !== NEW_CONVERSATION_ID ? currentSessionId : undefined,
     );
     setHistoryLoadingMore(false);
-    resetNewConversationRuntime({ mode: targetMode, selectedModelName, projectDir });
+    resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
     if (options.initialInputValue) {
       useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, options.initialInputValue);
     }
@@ -1936,8 +2093,23 @@ function AppContent() {
         const pendingSkills = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.selectedSkills ?? [];
         pendingSkills.forEach((skill) => useSessionStore.getState().addSelectedSkill(newSid, skill));
         useSessionStore.getState().clearSelectedSkills(NEW_CONVERSATION_ID);
+        // Plan 开关是按 session 存的。欢迎页上开关记在 'new' 名下，这里必须搬到真实
+        // 会话，否则 sendMessage 取到的是新会话的默认值 false，这条消息就不会带
+        // `.plan`，整个 Plan 流程（只读约束、计划审批弹窗）全都不会触发。
+        if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
+          // 连"用户手动打开开关"这个一次性标记一起搬过去：欢迎页那次点击就是显式
+          // 进入 Plan，标记决定这条消息是否带 plan_entry_source。
+          usePlanStore.getState().setActive(newSid, true, {
+            explicitEntry: usePlanStore
+              .getState()
+              .hasPendingExplicitEntry(NEW_CONVERSATION_ID),
+          });
+        }
+        usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+        pendingNewConversationRef.current = false;
+        useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
         useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
-        promotedFromNewSessionIdsRef.current.add(newSid);
+        sessionIdsCreatedInThisPageRef.current.add(newSid);
         useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
         sessionIdRef.current = newSid;
         setSessionId(newSid);
@@ -2079,7 +2251,7 @@ function AppContent() {
   ) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
-      return Promise.resolve();
+      return Promise.resolve(false);
     }
     return sendUserAnswer(currentSessionId, requestId, answers, source, status);
   }, [sendUserAnswer]);
@@ -2150,7 +2322,12 @@ function AppContent() {
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+    async (
+      targetSessionId: string,
+      targetMode?: string,
+      targetSession?: Session,
+      options?: { skipHistoryLoad?: boolean; seedUserMessage?: string },
+    ) => {
       const previousSessionId = sessionIdRef.current;
       const previousMode =
         useSessionStore.getState().getRuntime(previousSessionId)?.mode ?? mode;
@@ -2178,11 +2355,60 @@ function AppContent() {
       // 整页重拉历史，replaceHistoryMessages 换掉整条时间线（render key 重排+滚动效果
       // 重跑），这就是"切回已访问会话时的跳闪"。只有即将走预载/重载路径的会话才清旧状态。
       setHistoryLoadingMore(false);
+      // 立即执行打开的全新 cron_*：预载仍可走 history（用于补任务内容 user 消息），
+      // 但 restore 路径会 keep-live，避免清掉监听流。这里先标 processing，时间线不要「已完成」。
+      if (options?.skipHistoryLoad && targetSessionId.startsWith('cron_')) {
+        historyRestoreFromPanelHintRef.current = false;
+        setProcessing(targetSessionId, true);
+        setThinking(targetSessionId, false);
+        const seed = String(options.seedUserMessage || '').trim();
+        if (seed) {
+          const runtime = useChatStore.getState().getRuntime(targetSessionId);
+          const hasUser = Boolean(runtime?.messages.some((m) => m.role === 'user'));
+          if (!hasUser) {
+            addMessage(targetSessionId, {
+              id: `cron-seed-${targetSessionId}`,
+              role: 'user',
+              content: seed,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      }
+      // 切回已跑完但仍标 processing 的 cron_*（连点立即执行切走漏收尾）：
+      // job.last_session_id 已指向本会话则强制收口，否则 keep-live 会永远转圈。
+      if (
+        targetSessionId.startsWith('cron_') &&
+        existingRuntime &&
+        !options?.skipHistoryLoad &&
+        existingRuntime.isProcessing &&
+        !existingRuntime.pendingQuestion
+      ) {
+        const finishedOnServer = useCronStore
+          .getState()
+          .jobs.some((job) => (job.last_session_id || '').trim() === targetSessionId);
+        if (finishedOnServer) {
+          settleCronSessionRuntime(targetSessionId);
+        }
+      }
+      // 已结束的 cron_*：切回时强制重拉历史。内存里可能只有思考/工具、缺正文，
+      // 且旧 historyPagerMeta 会让 bootstrap 直接跳过恢复。
+      const cronRuntimeAfterSettle = useChatStore.getState().getRuntime(targetSessionId);
+      const cronNeedsHistoryReload =
+        Boolean(targetSessionId.startsWith('cron_')) &&
+        Boolean(cronRuntimeAfterSettle || existingRuntime) &&
+        !options?.skipHistoryLoad &&
+        !cronRuntimeAfterSettle?.isProcessing &&
+        !cronRuntimeAfterSettle?.pendingQuestion &&
+        !cronRuntimeAfterSettle?.currentStreamId;
+      if (cronNeedsHistoryReload) {
+        setHistoryPagerMeta(targetSessionId, null);
+      }
       const willLoadHistory =
         !options?.skipHistoryLoad &&
-        !existingRuntime?.historyPagerMeta &&
-        !existingRuntime?.isNewSession &&
-        !promotedFromNewSessionIdsRef.current.has(targetSessionId);
+        (!(cronRuntimeAfterSettle ?? existingRuntime)?.historyPagerMeta || cronNeedsHistoryReload) &&
+        !(cronRuntimeAfterSettle ?? existingRuntime)?.isNewSession &&
+        !sessionIdsCreatedInThisPageRef.current.has(targetSessionId);
       if (willLoadHistory) {
         setHistoryPagerMeta(targetSessionId, null);
         setLoadingHistory(targetSessionId, true);
@@ -2230,9 +2456,9 @@ function AppContent() {
       setSessionId(targetSessionId);
       if (targetSession) {
         upsertSessionMetadata(targetSession, { setCurrent: true });
-        // 还原后端记录的会话模型：打开会话时若后端 metadata 带 model，写进
-        // runtime.selectedModelName，避免 selectedModelName 为空被全局默认兜底，
-        // 导致界面显示成默认模型（如定时任务选了非默认模型的会话，bug002）。
+        // 会话打开时若后端 metadata 带 model（首条 chat.send 显式携带 model_name 时
+        // 由后端落盘），写进 runtime.selectedModelName——单 Agent 与集群（team）会话
+        // 同样恢复，保证刷新页面后模型选择不回退到默认模型。
         if (targetSession.model) {
           useSessionStore.getState().setSelectedModelName(targetSessionId, targetSession.model);
         }
@@ -2273,6 +2499,7 @@ function AppContent() {
       setProcessing,
       setSessionId,
       setThinking,
+      addMessage,
       startHistoryRestore,
       t,
       upsertSessionMetadata,
@@ -2284,7 +2511,7 @@ function AppContent() {
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean },
+      options?: { skipHistoryLoad?: boolean; seedUserMessage?: string },
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -2389,6 +2616,7 @@ function AppContent() {
       useHarnessStore.getState().removeRuntime(deletedSessionId);
       useGoalStore.getState().removeRuntime(deletedSessionId);
       useSubagentStore.getState().removeRuntime(deletedSessionId);
+      usePlanStore.getState().removeRuntime(deletedSessionId);
     }
 
     if (routeSessionId && deletedSessionIds.has(routeSessionId)) {
@@ -2419,6 +2647,7 @@ function AppContent() {
       useHarnessStore.getState().removeRuntime(deleteTarget.session_id);
       useGoalStore.getState().removeRuntime(deleteTarget.session_id);
       useSubagentStore.getState().removeRuntime(deleteTarget.session_id);
+      usePlanStore.getState().removeRuntime(deleteTarget.session_id);
       const deletingCurrent = sessionIdRef.current === deleteTarget.session_id;
       setDeleteTarget(null);
       await useWorkspaceStore.getState().refreshSessionWorkspace(deletedSession);
@@ -2555,8 +2784,16 @@ function AppContent() {
     && missingSessionId === routeSessionId
     && isConversationMissing(routeSessionId, true, sessions);
   const showConversationNotFound = route.kind === 'not-found' || routeSessionMissing;
-  const isNewSessionPromotion = Boolean(sessionId && promotedFromNewSessionIdsRef.current.has(sessionId));
+  const showWorkspaceDivider = isTeamAreaExpanded && !showConversationNotFound;
+  const isNewSessionPromotion = Boolean(sessionId && sessionIdsCreatedInThisPageRef.current.has(sessionId));
   const composerFocusKey = showConversationNotFound ? null : `${sessionId}:${composerFocusNonce}`;
+
+  useEffect(() => {
+    if (!showWorkspaceDivider) clearChatPanelResize();
+    return () => {
+      clearChatPanelResize();
+    };
+  }, [clearChatPanelResize, showWorkspaceDivider]);
 
   return (
     <div
@@ -2661,6 +2898,8 @@ function AppContent() {
                       onToggleTeamArea={handleToggleDetailPanel}
                       onOpenCodeReview={handleOpenCodeReview}
                       permissionsEnabled={serverConfig?.permissions_enabled !== 'false'}
+                      heartbeatPanelOpen={heartbeatPanelOpen}
+                      onToggleHeartbeatPanel={handleToggleHeartbeatPanel}
                       onSavePermission={savePermissionSilent}
                       historyPager={chatHistoryPager}
                       isHistoryRestoring={isRestoringHistorySession}
@@ -2685,15 +2924,23 @@ function AppContent() {
                 </div>
 
                 {/* 可拖拽分割线 */}
-                {effectiveTeamAreaExpanded && !showConversationNotFound && (
+                {showWorkspaceDivider && (
                   <div
-                    className="resize-divider"
-                    onMouseDown={handleDividerMouseDown}
+                    className="resize-divider resize-divider--workspace touch-none select-none"
+                    role="separator"
+                    aria-orientation="vertical"
+                    onPointerDown={handleDividerPointerDown}
+                    onPointerMove={handleDividerPointerMove}
+                    onPointerUp={finishDividerResize}
+                    onPointerCancel={finishDividerResize}
+                    onLostPointerCapture={(event) => {
+                      clearChatPanelResize(event.pointerId);
+                    }}
                   />
                 )}
 
                 {/* Tool Panel / Expanded Team Panel */}
-                {trajectoryTaskPanelAvailable && !hideTrajectoryTasks && !showConversationNotFound && (
+                {trajectoryTaskPanelAvailable && !hideTrajectoryTasks && !showConversationNotFound && !heartbeatPanelOpen && (
                   <ToolPanel
                     sessionId={sessionId}
                     project={sessionProject}
@@ -2711,6 +2958,11 @@ function AppContent() {
                     setCodeReviewTarget={setCodeReviewTarget}
                     setTeamAreaSelectedArtifactId={setTeamAreaSelectedArtifactId}
                   />
+                )}
+
+                {/* 心跳面板：跟 ToolPanel 一样占用右侧工作区一栏，而不是浮在页面上方的浮层 */}
+                {heartbeatPanelOpen && sessionId && sessionId !== NEW_CONVERSATION_ID && !showConversationNotFound && (
+                  <HeartbeatPanel sessionId={sessionId} onClose={() => setHeartbeatPanelOpen(false)} />
                 )}
               </div>
             </div>
@@ -2761,14 +3013,16 @@ function AppContent() {
               <CronPanel
                 sessionId={sessionId}
                 onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
-                onSelectSession={(session) => {
+                onSelectSession={(session, selectOptions) => {
                   if (typeof session === 'string') {
                     // 立即执行返回的 session_id 可能还未在后端创建（agent 刚开始执行），
                     // 构造最小 Session 占位对象，让 upsertSessionMetadata 直接加入会话列表，
                     // 避免 loadSessionMetadata 立即失败导致"对话不存在或已删除"。
                     // 后续 cron 广播到达时会刷新会话列表补全完整元数据。
-                    // 跳过初始历史加载：session 是全新的，空响应的 replaceHistoryMessages
-                    // 会覆盖后续到达的广播消息。
+                    // skipHistoryLoad 只跳过切换预载；bootstrap 仍会拉历史，且 cron
+                    // 进行中走 keep-live，只补任务内容、不清监听流。
+                    // 复用待审批会话：必须拉历史回放审批卡，勿当新 run 只 seed + 干转。
+                    const reusePending = Boolean(selectOptions?.reusePendingApproval);
                     void handleRestoreSession(session, undefined, {
                       session_id: session,
                       title: '',
@@ -2779,7 +3033,10 @@ function AppContent() {
                       message_count: 0,
                       created_at: new Date().toISOString(),
                       updated_at: new Date().toISOString(),
-                    }, { skipHistoryLoad: true });
+                    }, {
+                      skipHistoryLoad: !reusePending,
+                      seedUserMessage: reusePending ? undefined : selectOptions?.seedUserMessage,
+                    });
                     return;
                   }
                   requestSessionNavigation(session);

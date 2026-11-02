@@ -697,11 +697,10 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.enterprise.uninstall",
     "skills.enterprise.source.providers",
     "skills.enterprise.source.search",
-    "symphony.build_score",
-    "symphony.pause_build",
-    "symphony.score_status",
-    "symphony.graph",
-    "symphony.plan",
+    "skills.graph.build",
+    "skills.graph.status",
+    "skills.graph.get",
+    "skills.graph.cancel",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -863,11 +862,10 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.enterprise.uninstall",
     "skills.enterprise.source.providers",
     "skills.enterprise.source.search",
-    "symphony.build_score",
-    "symphony.pause_build",
-    "symphony.score_status",
-    "symphony.graph",
-    "symphony.plan",
+    "skills.graph.build",
+    "skills.graph.status",
+    "skills.graph.get",
+    "skills.graph.cancel",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -2248,6 +2246,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
         if is_enterprise():
+            return
+        from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+        if not prewarm_enabled_by_env():
             return
 
         async def _sync() -> None:
@@ -4058,6 +4060,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         session_id_to_delete = session_id_to_delete.strip()
+        # Match chat/session.list tenant identity when removing shared session
+        # files. Params supplied by the caller must not override connection scope.
+        delete_group, delete_bot = _ws_identity_scope(ws)
+        delete_routing = {
+            key: value for key, value in (("group_id", delete_group), ("bot_id", delete_bot))
+            if value
+        }
+        delete_metadata = {"routing": delete_routing} if delete_routing else None
 
         from jiuwenswarm.gateway.routing.session_index import is_remote_storage
 
@@ -4080,6 +4090,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         req_method=ReqMethod.SESSION_DELETE,
                         params=params,
                         user_id=user_id,
+                        metadata=delete_metadata,
                     )
                     resp = await ac.send_request(env)
                     if not resp.ok:
@@ -4190,6 +4201,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     req_method=ReqMethod.SESSION_DELETE,
                     params=params,
                     user_id=user_id,
+                    metadata=delete_metadata,
                 )
                 resp = await ac.send_request(env)
                 if resp.ok:
@@ -7201,7 +7213,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        await channel.send_response(ws, req_id, ok=True, payload=cc.job_metadata())
+        payload = dict(cc.job_metadata())
+        from jiuwenswarm.gateway.cron.policy import resolve_max_jobs_per_user
+
+        payload["max_jobs_per_user"] = await resolve_max_jobs_per_user()
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _cron_job_get(ws, req_id, params, session_id):
         reg, cc, sid, aid = await _cron_context(params)
@@ -7321,6 +7337,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
             else:
                 deleted = await cc.delete_job(job_id, group_id=g, bot_id=b, user_id=u)
+        except KeyError:
+            await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
+            return
         except PermissionError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="FORBIDDEN")
             return
@@ -7431,13 +7450,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             run_info = await cc.run_now_with_session(
                 job_id, group_id=g, bot_id=b, user_id=u
             )
+            payload = {
+                "accepted": True,
+                "run_id": run_info.get("run_id", ""),
+                "session_id": run_info.get("session_id", ""),
+            }
+            if run_info.get("reused_pending_session") or run_info.get("awaiting_approval"):
+                payload["awaiting_approval"] = True
+                payload["reused_pending_session"] = True
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={
-                    "accepted": True,
-                    "run_id": run_info.get("run_id", ""),
-                    "session_id": run_info.get("session_id", ""),
-                },
+                payload=payload,
             )
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")

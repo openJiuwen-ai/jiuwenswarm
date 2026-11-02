@@ -26,6 +26,13 @@ def test_formal_tools_honor_enable_flag(monkeypatch):
     assert dr.get_deepresearch_tools() == []
 
 
+def test_stream_description_routes_skill_requests_through_skill_entry():
+    description = dr.deepresearch_stream.card.description
+    assert 'skill_tool(skill_name="deepresearch")' in description
+    assert "deepresearch_execute" in description
+    assert "not a substitute for loading the skill" in description
+
+
 @pytest.mark.parametrize(
     ("config", "expected"),
     [({}, True), ({"enable_deepresearch": True}, True),

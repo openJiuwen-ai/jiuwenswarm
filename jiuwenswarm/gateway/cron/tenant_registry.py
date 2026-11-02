@@ -332,6 +332,21 @@ class CronTenantRegistry:
         )
         return data
 
+    def release_cron_permission_hold(self, session_id: str) -> None:
+        """审批续跑成功后放开调度（见 ``mark_permission_resume_succeeded``）。"""
+        sid = str(session_id or "").strip()
+        if not sid.startswith("cron_"):
+            return
+        for controller in list(self._controllers.values()):
+            scheduler = getattr(controller, "_scheduler", None)
+            mark = getattr(scheduler, "mark_permission_resume_succeeded", None)
+            if callable(mark):
+                mark(sid)
+                continue
+            release = getattr(scheduler, "release_permission_hold_for_session", None)
+            if callable(release):
+                release(sid)
+
     async def stop_all(self) -> None:
         for controller in list(self._controllers.values()):
             try:

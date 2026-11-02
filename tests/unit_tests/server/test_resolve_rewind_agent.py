@@ -73,6 +73,7 @@ def test_resolve_rewind_agent_prefers_session_scoped_instance(server_cls):
 
     server = MagicMock()
     server._agent_manager = MagicMock()
+    server._agent_manager.get_agent_for_session_nowait.return_value = agent
     server._agent_manager.get_agent_nowait.return_value = agent
     server._resolve_adapter = AgentWebSocketServer._resolve_adapter
 
@@ -101,6 +102,7 @@ def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(server_
 
     server = MagicMock()
     server._agent_manager = MagicMock()
+    server._agent_manager.get_agent_for_session_nowait.return_value = None
     server._agent_manager.get_agent_nowait.return_value = agent
     server._resolve_adapter = AgentWebSocketServer._resolve_adapter
 
@@ -109,3 +111,61 @@ def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(server_
     assert pair is not None
     deep, _react = pair
     assert deep is root_deep
+
+
+def test_resolve_rewind_agent_finds_session_owner_across_cached_roots(server_cls):
+    from jiuwenswarm.server.runtime.agent_manager import AgentManager
+
+    wrong_root = MagicMock(name="wrong_root")
+    wrong_root.react_agent = MagicMock(name="wrong_react")
+    wrong_adapter = SimpleNamespace(
+        _is_session_scoped_adapter=False,
+        _get_cached_session_adapter=lambda _sid: None,
+        apply_sandbox_runtime_patch=lambda *a, **k: None,
+    )
+    wrong_agent = SimpleNamespace(
+        _adapter=wrong_adapter,
+        _jiuwenswarm_agent_mode="agent",
+        _jiuwenswarm_agent_sub_mode="",
+        _jiuwenswarm_agent_project_dir="",
+        has_session_runtime=lambda _sid: False,
+        ensure_instance=_returning(wrong_root),
+    )
+
+    session_deep = MagicMock(name="session_deep")
+    session_deep.react_agent = MagicMock(name="session_react")
+    session_adapter = SimpleNamespace(_instance=session_deep)
+    code_adapter = SimpleNamespace(
+        _is_session_scoped_adapter=False,
+        _get_cached_session_adapter=(
+            lambda sid: session_adapter if sid == "sess-code" else None
+        ),
+        apply_sandbox_runtime_patch=lambda *a, **k: None,
+    )
+    code_agent = SimpleNamespace(
+        _adapter=code_adapter,
+        _jiuwenswarm_agent_mode="code",
+        _jiuwenswarm_agent_sub_mode="normal",
+        _jiuwenswarm_agent_project_dir="D:/workspace",
+        has_session_runtime=lambda sid: sid == "sess-code",
+        ensure_instance=_returning(session_deep),
+    )
+
+    manager = AgentManager()
+    manager.agents["tui"] = {
+        "agent::": wrong_agent,
+        "code:normal:D:/workspace": code_agent,
+    }
+    server = SimpleNamespace(
+        _agent_manager=manager,
+        _resolve_adapter=AgentWebSocketServer._resolve_adapter,
+    )
+    ctx = SimpleNamespace(services=_services(server))
+
+    pair = asyncio.run(
+        server_cls._resolve_rewind_agent(ctx, "tui", session_id="sess-code")
+    )
+    assert pair is not None
+    deep, react = pair
+    assert deep is session_deep
+    assert react is session_deep.react_agent

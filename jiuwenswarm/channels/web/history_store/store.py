@@ -60,7 +60,7 @@ class ChatHistoryStore:
             return cls(memory=True)
         if normalized in ("postgresql", "postgres", "pg"):
             return cls(settings=WebHistoryDbSettings.from_env(), db_type="postgresql")
-        if normalized == "mysql":
+        if normalized in ("mysql", "mariadb"):
             return cls(settings=WebHistoryDbSettings.from_env(), db_type="mysql")
         logger.warning(
             "[history] 不支持的历史库类型 %r，回退内存（不支持 sqlite）",

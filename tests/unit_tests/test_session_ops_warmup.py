@@ -41,7 +41,7 @@ async def test_warmup_excludes_current_request_from_restored_history(monkeypatch
     )
     monkeypatch.setattr(
         session_ops_service,
-        "_resolve_live_agent_session",
+        "resolve_live_agent_session",
         lambda _deep_agent, _session_id: object(),
     )
 
@@ -97,7 +97,7 @@ async def test_warmup_keeps_history_when_boundary_is_not_yet_visible(monkeypatch
     )
     monkeypatch.setattr(
         session_ops_service,
-        "_resolve_live_agent_session",
+        "resolve_live_agent_session",
         lambda _deep_agent, _session_id: object(),
     )
 
@@ -145,7 +145,7 @@ async def test_warmup_limits_history_at_user_turn_boundary(monkeypatch):
     )
     monkeypatch.setattr(
         session_ops_service,
-        "_resolve_live_agent_session",
+        "resolve_live_agent_session",
         lambda _deep_agent, _session_id: object(),
     )
 
@@ -204,7 +204,7 @@ async def test_warmup_closes_temporary_session_after_context_restore(monkeypatch
     )
     monkeypatch.setattr(
         session_ops_service,
-        "_resolve_live_agent_session",
+        "resolve_live_agent_session",
         lambda _deep_agent, _session_id: None,
     )
     monkeypatch.setattr(
@@ -240,7 +240,7 @@ async def test_warmup_closes_temporary_session_when_context_restore_fails(monkey
     )
     monkeypatch.setattr(
         session_ops_service,
-        "_resolve_live_agent_session",
+        "resolve_live_agent_session",
         lambda _deep_agent, _session_id: None,
     )
     monkeypatch.setattr(

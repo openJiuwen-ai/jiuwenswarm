@@ -678,6 +678,7 @@ class CronTools:
             work_mode=work_mode,
             service_id=self._service_id,
             agent_id=self._agent_id,
+            user_id=str(normalized.get("user_id") or "").strip(),
             **session_kw,
             **mode_kw,
             **model_kw,

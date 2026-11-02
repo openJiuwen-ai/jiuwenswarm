@@ -19,6 +19,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _agent_ras_kwargs_from_config,
     _optional_enable_subagent_runtime,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _session_has_live_subagent_runtime
 
 
 def test_shipped_template_subagent_runtime_enabled_by_default() -> None:
@@ -75,13 +76,13 @@ def test_session_has_live_subagent_runtime_reads_capacity() -> None:
             }
         )
     )
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         live, "sess-1"
     ) is True
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         idle, "sess-1"
     ) is False
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         SimpleNamespace(_instance=None), "sess-1"
     ) is False
 
@@ -97,7 +98,7 @@ def test_session_has_live_subagent_runtime_fail_closed_when_capacity_raises() ->
             }
         )
     )
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         occupied, "sess-1"
     ) is True
 
@@ -106,10 +107,10 @@ def test_session_has_live_subagent_runtime_missing_controls_is_idle() -> None:
     """dest-stable SDK and never-spawned parents have no control map."""
     missing = SimpleNamespace(_instance=SimpleNamespace())
     invalid = SimpleNamespace(_instance=SimpleNamespace(_subagent_controls="bad"))
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         missing, "sess-1"
     ) is False
-    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+    assert _session_has_live_subagent_runtime(
         invalid, "sess-1"
     ) is False
 
@@ -146,6 +147,18 @@ def test_agent_ras_passthrough_still_enabled() -> None:
     kwargs = _agent_ras_kwargs_from_config({"agent_ras": {"enabled": True}})
     assert "agent_ras" in kwargs
     assert kwargs["agent_ras"] is not False
+
+
+def test_code_mode_create_instance_passes_agent_ras_kwargs() -> None:
+    """code 模式独立调用 create_deep_agent，agent_ras 须与 deep/flash 路径对齐透传."""
+    import inspect
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    source = inspect.getsource(JiuwenSwarmCodeAdapter.create_instance)
+    assert "**_agent_ras_kwargs_from_config(config_base)" in source
 
 
 def test_optional_enable_subagent_runtime_follows_deep_agent_config_signature() -> None:

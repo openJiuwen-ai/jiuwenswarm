@@ -292,6 +292,30 @@ async def test_http_register_agent_maps_fields() -> None:
     assert post[2]["node"] == "192.168.0.12"
     assert post[2]["address"] == "10.244.1.7:4096"
     await client.unregister_agent(agent.agent_id)
+    delete = next(call for call in transport.calls if call[0] == "DELETE")
+    assert delete[1].endswith(f"/api/instances/{instance_service_id('user-01', 'opencode')}")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_agent_resolves_service_id_without_local_map() -> None:
+    """Idle delete can race ahead of async register; still DELETE by (user, framework)."""
+    transport = _FakeRegistryTransport()
+    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client._http = httpx.AsyncClient(  # noqa: SLF001
+        base_url="http://registry.test/",
+        transport=transport,
+        timeout=5.0,
+    )
+    await client.unregister_agent(
+        "agent-not-yet-mapped",
+        user_id="user-01",
+        agent_type="opencode",
+    )
+    delete = next(call for call in transport.calls if call[0] == "DELETE")
+    assert delete[1].endswith(
+        f"/api/instances/{instance_service_id('user-01', 'opencode')}"
+    )
     await client.close()
 
 

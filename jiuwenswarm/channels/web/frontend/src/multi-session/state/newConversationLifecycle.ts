@@ -3,6 +3,7 @@ import {
   useChatStore,
   useGoalStore,
   useHarnessStore,
+  usePlanStore,
   useSessionStore,
   useSubagentStore,
   useTodoStore,
@@ -16,6 +17,21 @@ interface ConversationRuntimeSettings {
   mode: AgentMode;
   selectedModelName: string | null;
   projectDir?: string | null;
+}
+
+export type NewConversationEntrySettings = Pick<ConversationRuntimeSettings, 'mode' | 'selectedModelName'>;
+
+export function resolveNewConversationEntrySettings(
+  targetMode: AgentMode,
+  defaultModelName: string | null,
+  currentModelName: string | null,
+  pendingSettings?: NewConversationEntrySettings | null,
+): NewConversationEntrySettings {
+  if (pendingSettings) return pendingSettings;
+  return {
+    mode: targetMode,
+    selectedModelName: defaultModelName ?? currentModelName ?? null,
+  };
 }
 
 const locallyCreatedConversations = new Map<string, Session>();
@@ -46,6 +62,7 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   useHarnessStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useGoalStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useSubagentStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+  usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   applyRuntimeSettings(NEW_CONVERSATION_ID, settings);
   if (preservedDraft) {
     useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);

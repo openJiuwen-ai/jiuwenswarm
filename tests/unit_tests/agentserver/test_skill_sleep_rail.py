@@ -36,6 +36,10 @@ from jiuwenswarm.common.config import (
     get_skill_sleep_action,
     get_skill_sleep_call_threshold,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
+    _push_skill_sleep_published,
+    _push_skill_sleep_suggest,
+)
 
 
 class TestSkillCallCounter(unittest.TestCase):
@@ -1380,24 +1384,17 @@ class TestBuildChatClient(unittest.TestCase):
 
 class TestAdapterSkillSleepModelSpec(unittest.TestCase):
     def test_skill_sleep_published_push_payload(self) -> None:
-        from jiuwenswarm.server.runtime.agent_adapter import interface_deep
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-            JiuWenSwarmDeepAdapter,
-        )
-
         transport = MagicMock()
         transport.send_push = AsyncMock()
         with patch(
             "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
             return_value=transport,
-        ), patch.object(
-            interface_deep,
-            "build_server_push_message",
+        ), patch(
+            "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers.build_server_push_message",
             side_effect=lambda **kw: kw,
         ):
             asyncio.run(
-                JiuWenSwarmDeepAdapter._push_skill_sleep_published(
-                    SimpleNamespace(),
+                _push_skill_sleep_published(
                     skill_name="tianqi",
                     version="1.1.0",
                     session_id="sess-1",
@@ -1420,24 +1417,17 @@ class TestAdapterSkillSleepModelSpec(unittest.TestCase):
         )
 
     def test_skill_sleep_suggest_push_payload(self) -> None:
-        from jiuwenswarm.server.runtime.agent_adapter import interface_deep
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-            JiuWenSwarmDeepAdapter,
-        )
-
         transport = MagicMock()
         transport.send_push = AsyncMock()
         with patch(
             "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
             return_value=transport,
-        ), patch.object(
-            interface_deep,
-            "build_server_push_message",
+        ), patch(
+            "jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers.build_server_push_message",
             side_effect=lambda **kw: kw,
         ):
             asyncio.run(
-                JiuWenSwarmDeepAdapter._push_skill_sleep_suggest(
-                    SimpleNamespace(),
+                _push_skill_sleep_suggest(
                     skill_name="tianqi",
                     session_id="sess-1",
                     request_id="skill-sleep-7",

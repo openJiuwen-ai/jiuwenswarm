@@ -1,7 +1,8 @@
 // 7段式 cron 表达式校验（croniter 语法，second_at_beginning=True），原样搬自旧 CronPanel/index.tsx，
 // i18n.errors.cron* key 沿用；周字段范围已按 croniter 实测结果修正（见下方说明）。
 
-import { normalizeWeekAlphas } from './cronWeekAlpha';
+// .js 扩展是 Node 原生 ESM 加载器（node --test 使用）的必需项；tsc --module ES2020 不会自动添加扩展名。
+import { normalizeWeekAlphas } from './cronWeekAlpha.js';
 
 // 步长（`*/N`）只要求是 ≥1 的整数，不要求能整除字段的取值范围（60/24 等）：croniter 对
 // `*/9` 这类"整不除"的步长一样能正常解析、正常调度（只是在字段回绕到 0 的边界处会出现一次

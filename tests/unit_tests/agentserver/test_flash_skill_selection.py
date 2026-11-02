@@ -219,13 +219,23 @@ async def test_flash_selection_survives_startup_cleanup_and_config_read(
     await harness.rail.after_model_call(ctx)
 
 
-def test_shipped_flash_selection_defaults_are_disabled_and_complete():
+def test_shipped_flash_selection_defaults_are_disabled_and_complete(monkeypatch, tmp_path):
     from dataclasses import asdict
     from jiuwenswarm.common.utils import load_yaml_dict, resolve_shipped_template_config_path
 
+    from jiuwenswarm.common import config as config_module
+
     template = load_yaml_dict(resolve_shipped_template_config_path())
-    assert template["flash"]["skill_selection"] == asdict(SelectionSettings())
-    assert not SelectionSettings.from_config(template).enabled
+    assert template["flash"]["skill_selection"]["enabled"] == "${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}"
+    monkeypatch.setattr(config_module, "get_config_file", lambda: tmp_path / "config.yaml")
+    monkeypatch.delenv("JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", raising=False)
+    config_module.clear_config_cache()
+    try:
+        config = config_module.get_config()
+        assert config["flash"]["skill_selection"] == asdict(SelectionSettings())
+        assert not SelectionSettings.from_config(config).enabled
+    finally:
+        config_module.clear_config_cache()
 
 
 @pytest.mark.parametrize("settings", [{"enabled": "true"}, {"enabled": True, "candidate_k": 6},
@@ -561,6 +571,7 @@ async def test_model_request_excludes_full_catalog_before_and_after_search(harne
     records.append(SimpleNamespace(name="slides", description="presentation slides"))
     callbacks = AgentCallbackManager("flash-prompt-test-" + uuid4().hex)
     agent = object.__new__(ReActAgent)
+    agent._context_usage_sequences = {}
     agent._agent_callback_manager = callbacks
     agent._config = ReActAgentConfig(model_name="offline-capture")
     agent._ability_manager = AbilityManager()
@@ -660,7 +671,8 @@ async def test_model_request_excludes_full_catalog_before_and_after_search(harne
         assert "search_installed_skills(action='search', query, keywords)" in first_prompt
         assert 'Office 文档处理与交付' in first_prompt
         assert '不要仅因数据少、任务简单' in first_prompt
-        assert '无需为使用加速器先检索本地技能' in first_prompt
+        assert '无需先检索或通过 skill_tool 加载' in first_prompt
+        assert '包括 Word / Excel，不限于 PPT' in first_prompt
         assert '用户明确要求不使用技能时遵从' in first_prompt
         assert SYSTEM_GUIDANCE in first_prompt
         assert first_request['tools'][-1]['description'] == TOOL_GUIDANCE
@@ -770,6 +782,44 @@ async def test_explicit_choice_uses_native_loader_later(harness):
     assert '用户明确指定以下技能，无需先检索。请通过原生 skill_tool 加载' in prompt
     assert '执行前先用 read_file 阅读相关 SKILL.md。' not in prompt
     assert not ctx.extra[h.rail.REUSE].tickets and not ctx.extra.get(h.rail.FALLBACK)
+    await h.rail.after_model_call(ctx)
+
+
+@pytest.mark.parametrize('name', ['docx-craft', 'xlsx-craft', 'pptx-craft'])
+@pytest.mark.parametrize('source', ['text', 'frontend'])
+async def test_explicit_turbo_skill_preserves_acceleration_priority(harness, name, source):
+    h = harness
+    write_skill(h.root, name)
+    h.native.scan()
+    text = f'请使用 {name} 技能生成文件' if source == 'text' else '你收到一条消息：\n' + json.dumps({
+        'content': '生成文件', 'skills_to_use': [name], 'type': 'user input', 'source': 'web',
+        'preferred_response_language': 'zh',
+    })
+    ctx = context(text)
+    ctx.inputs.tools.append(SimpleNamespace(name='skill_acceleration_exec'))
+    await h.rail.before_model_call(ctx)
+    prompt = h.agent.system_prompt_builder.get_section(h.rail.SECTION).content['cn']
+    leading = prompt.split('\n\n')[0]
+    assert '优先调用 skill_acceleration_exec' in leading
+    assert '准确名称' in leading and '支持范围' in leading
+    assert name in leading
+    assert '请通过原生 skill_tool 加载指令后执行对应任务' not in leading
+    assert {'skill_tool', 'skill_acceleration_exec'} <= {tool.name for tool in ctx.inputs.tools}
+    await h.rail.after_model_call(ctx)
+
+
+@pytest.mark.parametrize('name', ['docx-craft', 'xlsx-craft'])
+async def test_explicit_office_skill_without_accelerator_uses_native_loader(harness, name):
+    h = harness
+    write_skill(h.root, name)
+    h.native.scan()
+    ctx = context(f'请使用 {name} 技能生成文件')
+    await h.rail.before_model_call(ctx)
+    prompt = h.agent.system_prompt_builder.get_section(h.rail.SECTION).content['cn']
+    leading = prompt.split('\n\n')[0]
+    assert '请通过原生 skill_tool 加载指令后执行对应任务' in leading
+    assert 'skill_acceleration_exec' not in leading
+    assert 'skill_tool' in {tool.name for tool in ctx.inputs.tools}
     await h.rail.after_model_call(ctx)
 
 
@@ -1148,12 +1198,14 @@ async def test_direct_answers_do_not_trigger_automatic_search(harness, text, mon
 async def test_stale_candidate_file_change_is_rejected(harness):
     h = harness
     await warm_catalog(h)
-    write_skill(h.root, 'slides', 'changed body after snapshot')
     ctx = context()
     await h.rail.before_model_call(ctx)
     await h.rail.after_model_call(ctx)
     result = await h.rail.handle_action(
         SkillSearchInput(action='search', query='制作幻灯片', keywords=['slides']), ctx)
+    # Search now refreshes stale ranking before issuing a ticket. A change
+    # after that ticket must still be rejected before native execution.
+    write_skill(h.root, 'slides', 'changed body after candidate was issued')
     assert (await load(h, result['search_id'], 'slides', ctx))['status'] == 'changed'
     h.abilities.execute.assert_not_awaited()
 
@@ -1546,6 +1598,55 @@ async def test_two_round_warm_query_does_not_rescan_and_revocation_is_live(harne
     h.abilities.execute.assert_not_awaited()
 
 
+async def test_repeated_query_revalidates_details_without_reranking(harness, monkeypatch):
+    h = harness
+    path = h.root / 'slides' / 'SKILL.md'
+    path.write_text(path.read_text(encoding='utf-8') + '\n[Limits](limits.md)\n', encoding='utf-8')
+    reference = path.parent / 'limits.md'
+    reference.write_text('Supports creating PPTX presentations.', encoding='utf-8')
+    await warm_catalog(h)
+    pipeline = h.rail.service._pipeline
+    original_search = pipeline.search
+    calls = 0
+
+    def count_search(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_search(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, 'search', count_search)
+    ctx = context()
+    await h.rail.before_model_call(ctx)
+    first = await h.rail._search_from_model('制作幻灯片', ['slides'], ctx)
+    state = ctx.extra[h.rail.REUSE]
+    first_document = state.tickets[first['search_id']]['result'].candidates[0][0]
+    reference.write_text('Cannot create PPTX. Only supports creating PDF.', encoding='utf-8')
+    second = await h.rail._search_from_model('制作幻灯片', ['slides'], ctx)
+    second_document = state.tickets[second['search_id']]['result'].candidates[0][0]
+    assert calls == 1
+    assert first_document.fingerprint != second_document.fingerprint
+    assert first_document.capability_record != second_document.capability_record
+    assert (await load(h, first['search_id'], 'slides', ctx))['status'] == 'changed'
+    h.abilities.execute.assert_not_awaited()
+
+
+async def test_search_refreshes_root_changed_after_ranking_snapshot(harness):
+    h = harness
+    await warm_catalog(h)
+    old_generation = h.rail.service.generation
+    write_skill(h.root, 'slides', 'Only supports creating PDF presentation slides.')
+    ctx = context()
+    await h.rail.before_model_call(ctx)
+    result = await h.rail._search_from_model('presentation', ['slides'], ctx)
+    assert result['status'] == 'candidates'
+    ticket = ctx.extra[h.rail.REUSE].tickets[result['search_id']]
+    document = ticket['result'].candidates[0][0]
+    assert document.description == 'Only supports creating PDF presentation slides.'
+    assert ticket['result'].generation > old_generation
+    assert document.fingerprint and document.capability_record
+    assert not ctx.extra.get(h.rail.FALLBACK)
+
+
 async def test_two_round_timeout_restores_all_tools_and_catalog(harness, monkeypatch):
     h = harness
     h.config['flash']['skill_selection']['query_timeout_s'] = 0.1
@@ -1624,3 +1725,41 @@ def test_inverted_bm25_preserves_original_scores():
         expected.append(score)
     assert index.get_scores(terms) == pytest.approx(expected, rel=1e-14)
     assert BM25Okapi([]).get_scores(terms) == []
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("environment", [None, "true", "false"])
+async def test_yaml_environment_controls_real_retrieval_without_rewriting_config(
+    harness, monkeypatch, tmp_path, enabled, environment,
+):
+    from copy import deepcopy
+    from jiuwenswarm.common import config as config_module
+
+    path = tmp_path / "config.yaml"
+    raw = {"flash": {"skill_selection": {"enabled": enabled, "candidate_k": 3}}}
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    original = path.read_bytes()
+    monkeypatch.setattr(config_module, "get_config_file", lambda: path)
+    monkeypatch.delenv("JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", raising=False)
+    if environment is not None:
+        monkeypatch.setenv("JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", environment)
+    config_module.clear_config_cache()
+    try:
+        config = config_module.get_config()
+        harness.config.clear()
+        harness.config.update(deepcopy(config))
+        expected = enabled if environment is None else environment == "true"
+        ctx = context()
+        await harness.rail.before_model_call(ctx)
+        assert (SkillSearchTool.TOOL_NAME in harness.abilities.tools) is expected
+        if expected:
+            assert harness.rail.service.settings.candidate_k == 3
+            result = await harness.rail._search_from_model("制作演示文稿", ["slides"], ctx)
+            assert result["status"] == "candidates"
+        else:
+            assert harness.rail.service is None
+        await harness.rail.after_model_call(ctx)
+        assert path.read_bytes() == original
+        assert config_module.get_config_raw()["flash"]["skill_selection"]["enabled"] is enabled
+    finally:
+        config_module.clear_config_cache()

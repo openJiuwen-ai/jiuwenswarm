@@ -19,6 +19,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import select
 import socket
 import ssl
@@ -75,6 +76,7 @@ def _inject_user_web_runtime_config(
     document: str,
     login_auth_simulate: bool = True,
     web_transport: str = "websocket",
+    request_timeout_seconds: int = 15,
 ) -> str:
     """Inject runtime edition and login-auth flags into index.html."""
     from jiuwenswarm.common.workspace.quota import is_workspace_quota_enabled
@@ -88,10 +90,27 @@ def _inject_user_web_runtime_config(
         )
         .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", web_transport)
         .replace(
+            "__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS_VALUE__",
+            str(request_timeout_seconds),
+        )
+        .replace(
             "__WORKSPACE_QUOTA_ENABLED_VALUE__",
             "true" if is_workspace_quota_enabled() else "false",
         )
     )
+
+
+def _parse_web_request_timeout_seconds(raw: str | None) -> int:
+    """Keep invalid values within the browser's signed 32-bit timer range."""
+    value = (raw or "").strip()
+    if not value:
+        return 15
+    if re.fullmatch(r"[0-9]{1,7}", value) and 0 < int(value) <= 2_147_483:
+        return int(value)
+    logging.getLogger(__name__).warning(
+        "Invalid WEB_REQUEST_TIMEOUT_SECONDS; using the default of 15 seconds."
+    )
+    return 15
 
 
 def _parse_login_auth_simulate(raw: str | None) -> bool:
@@ -171,6 +190,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     ws_disable_compress = False
     login_auth_simulate = True
     web_transport = "websocket"
+    request_timeout_seconds = 15
     logger = logging.getLogger(__name__)
 
     _HOP_BY_HOP_HEADERS = {
@@ -813,6 +833,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 index.read_text(encoding="utf-8"),
                 self.login_auth_simulate,
                 self.web_transport,
+                self.request_timeout_seconds,
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -906,6 +927,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     target.read_text(encoding="utf-8"),
                     self.login_auth_simulate,
                     self.web_transport,
+                    self.request_timeout_seconds,
                 ).encode("utf-8")
                 f = io.BytesIO(body)
                 self.send_response(200)
@@ -946,6 +968,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 index_path.read_text(encoding="utf-8"),
                 self.login_auth_simulate,
                 self.web_transport,
+                self.request_timeout_seconds,
             ).encode("utf-8")
             f = io.BytesIO(body)
             self.send_response(200)
@@ -1128,6 +1151,9 @@ def main() -> None:
     _ConfiguredHandler.login_auth_simulate = login_auth_simulate
     web_transport = _parse_web_transport(os.getenv("WEB_TRANSPORT"))
     _ConfiguredHandler.web_transport = web_transport
+    _ConfiguredHandler.request_timeout_seconds = _parse_web_request_timeout_seconds(
+        os.getenv("WEB_REQUEST_TIMEOUT_SECONDS")
+    )
     _ConfiguredHandler.web_http_target = web_http_target
     _ConfiguredHandler.ws_disable_compress = args.ws_disable_compress
     _ConfiguredHandler.logger = logger

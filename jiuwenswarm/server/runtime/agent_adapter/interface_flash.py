@@ -13,12 +13,13 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 一致：CodeAdapter 把 ``_FIXED_RAIL_NAMES`` / ``_is_code_agent`` 等定义硬编码为
 类常量，flash 同样把行为开关、keep 白名单与工具面裁剪作为类常量/override。
 
-部署组合提示：``flash.enabled`` 是进程级开关，不区分 channel / 请求来源——
-officeclaw 对话与 cron / heartbeat / proactive 等后台流水线同样进入 flash。
-flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail`` /
-``_deepresearch_execution_rail`` 等健壮性 rail，长文档 / 弱网任务的容错弱于
-normal；officeclaw 等部署开启 flash 前需评估此影响面，如需按来源豁免应在
-mode 解析 guard（``_shared.resolve_agent_request_mode``）增加 channel 过滤。
+部署组合提示：OfficeClaw 交互请求由 Relay 显式发送 ``mode=flash`` 选型，
+不再由 ``flash.enabled`` 将普通 Agent 请求自动转换为 Flash；其它渠道和后台
+来源沿用各自的既有路由策略。具体准入与会话续接由 ``_shared`` 的模式解析负责。
+flash 白名单包含 ``_context_overflow_recovery_rail``（仅上下文溢出兜底，
+正常路径零开销），但不含 ``_llm_retry_rail`` 等重试类健壮性 rail，
+长文档 / 弱网任务的容错仍弱于 normal，部署时需评估所选 Flash profile
+的能力边界。
 
 flash 行为由类常量定义：
 - :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``
@@ -43,7 +44,7 @@ flash 行为由类常量定义：
 - :meth:`_update_rails_for_mode` — 每请求调用（interface_deep.py:10596）。父类会调
   ``_update_agent_rails()`` 动态注册 context_assemble / memory 等 rail，绕过
   ``_instantiate_rails`` 的白名单裁剪——flash 覆盖此方法不调 ``_update_agent_rails()``，
-  只卸载白名单外的动态 rail，闭合白名单。
+  单独装配身份上下文和记忆，并卸载白名单外的动态 rail。
 - :meth:`try_start_dreaming` / :meth:`try_stop_dreaming` — no-op。flash 是「无自演进」
   profile，memory dreaming（被动记忆巩固）属自演进范畴，不挂。
 
@@ -72,13 +73,22 @@ skill_credential / skill_active_state / disabled_tools）全部在 keep 白名�
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import hashlib
 import logging
 import os
+from contextlib import contextmanager
 from typing import Any
 
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.harness.rails import SkillUseRail
+
+try:
+    from jiuwenswarm.agents.harness.flash.skill_selection import startup_lifecycle
+except ImportError:
+    # Skill selection remains an optional, removable Flash extension.
+    startup_lifecycle = None
 
 from jiuwenswarm.agents.harness.common.memory.config import (
     get_embed_config,
@@ -115,6 +125,7 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
 )
 from jiuwenswarm.agents.harness.flash import (
     FlashMemoryRail,
+    FlashSubagentRail,
     FlashTodoRail,
     SlimSkillToolkit,
     SlimSysOperationRail,
@@ -122,12 +133,14 @@ from jiuwenswarm.agents.harness.flash import (
 from jiuwenswarm.common.config import (
     get_evolution_review_trigger_enabled,
     get_skill_create_enabled,
+    resolve_string_or_list_config,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _CRON_TOOL_NAMES,
     _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
+    _build_context_assemble_rail,
     _resolve_instance_config_base,
     acp_chat,
     create_vision_tools,
@@ -141,11 +154,16 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     wiki_lint,
     wiki_query,
 )
+from jiuwenswarm.telemetry.attributes import (
+    JIUWENCLAW_AGENT_PROFILE,
+    JIUWENCLAW_AGENT_RAILS,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
 )
 
 logger = logging.getLogger(__name__)
+_FLASH_TURBO_TOOL_NAME = "skill_acceleration_exec"
 
 
 class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
@@ -159,6 +177,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     文件系统精简、skill 面只留 skill_tool），不重写 ``_build_agent_rails`` 本体
     ——复用父类按 mode 构建的 rail 表，只在其实例化前用白名单裁剪。
     """
+
+    # Keep image SDK initialization out of Flash's first model call path.
+    _defer_image_sdk_imports = True
 
     # ── flash 行为定义（类常量，仿 CodeAdapter._FIXED_RAIL_NAMES） ─────────
     # react/evolution 覆盖：深合并进 config_base 的 react 段。这些是 flash「单轮、
@@ -198,6 +219,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 "skill_tool",
                 "skill_complete",
                 "todo",
+                "office_claw_list_wishes",
             ],
         },
     }
@@ -221,12 +243,32 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_runtime_prompt_rail",
         "_response_prompt_rail",
         "_stream_event_rail",
+        
+         # deepresearch_execute 依赖此 rail 绑定执行上下文并桥接原生 HITL。
+        "_deepresearch_execution_rail",
+        
+        # 普通工具导出也需触发产物扩展（水印等），独立于 todo / TaskPlan。
+        "_flash_artifact_post_process_rail",
+        # Turbo 工具会缓存交付总结；保留发送组件，启用仍由父类 Turbo 开关控制。
+        "_skill_turbo_delivery_summary_rail",
+        # Turbo routing must remain available when skill retrieval is disabled.
+        "_skill_turbo_prompt_rail",
+        
         "_task_planning_rail",
+        # auto 档动态路由：请求级 enable_routing / 进程级 model_routing.enabled
+        # 均开启时，Flash 必须保留该 rail 才能执行分类器并真实 set_llm。
+        "_model_routing_rail",
         "_security_rail",
         "_heartbeat_rail",
+        "_request_summary_rail",
+        "_stalled_access_circuit_rail",
+        "_last_iteration_finalize_rail",
         "_subagent_rail",
         "_permission_rail",
         "_context_processor_rail",
+        # 上下文溢出兜底：413/ModelArts.81001 input-token-limit 时
+        # 由该 rail 设置 force_compact 并在重试前压缩上下文。正常请求不触发。
+        "_context_overflow_recovery_rail",
         # _filesystem_rail: SlimSysOperationRail（flash override），init() 注册
         #   Read/Write/Edit/Glob/Grep/Bash，不注册 powershell/list_files；
         #   丢掉=无文件/shell 能力。
@@ -243,10 +285,14 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         #   这两个，本仓决策保留）。
         "_skill_active_state_rail",
         "_skill_authorization_rail",
+        # Workspace identity files are assembled on the request path.
+        "_context_assemble_rail",
         # _memory_rail: FlashMemoryRail（flash override，统一 memory 工具）挂在
         #   动态挂载路径上，进 keep 才不会被 _drop_non_whitelist_dynamic_rails
         #   卸载；闸门是 modes.agent.memory.enabled（flash 记忆档归一 agent）。
         "_memory_rail",
+        "_external_memory_rail",
+        "_office_ace_user_profile_rail",
         # ask_user：交互请求动态挂载，留白名单避免 churn（见上方注释）。
         "_ask_user_rail",
     })
@@ -284,6 +330,53 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         service_id: str | None = None,
     ) -> None:
         super().__init__(workspace_dir=workspace_dir, agent_id=agent_id, service_id=service_id)
+        self._flash_startup_preparations = {}
+        self._flash_context_rail_lock = asyncio.Lock()
+        self._flash_context_agent_sysop = None
+
+    @contextmanager
+    def _prepare_flash_startup(self, request=None):
+        if startup_lifecycle is None:
+            yield
+            return
+        request_id = getattr(request, "request_id", "")
+        preparations = getattr(self, "_flash_startup_preparations", None)
+        if preparations is None:
+            preparations = self._flash_startup_preparations = {}
+        with startup_lifecycle.preparing(request_id) as preparation:
+            previous = preparations.get(request_id)
+            if request_id:
+                preparations[request_id] = preparation
+            try:
+                yield
+            finally:
+                if request_id:
+                    if previous is None:
+                        preparations.pop(request_id, None)
+                    else:
+                        preparations[request_id] = previous
+
+    async def process_message_stream_impl(self, request, inputs):
+        with self._prepare_flash_startup(request):
+            stream = super().process_message_stream_impl(request, inputs)
+            try:
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                await stream.aclose()
+
+    async def process_message_impl(self, request, inputs):
+        with self._prepare_flash_startup(request):
+            return await super().process_message_impl(request, inputs)
+
+    def _bind_subagent_model_resolver(self):
+        instance = self._instance
+        if instance is not None and startup_lifecycle is not None:
+            preparations = getattr(self, "_flash_startup_preparations", None)
+            if preparations is None:
+                preparations = self._flash_startup_preparations = {}
+            startup_lifecycle.bind_instance(instance, preparations)
+        return super()._bind_subagent_model_resolver()
 
     def _build_web_tools(self, agent_id: str, cache: Any | None = None) -> list[Any]:
         """Expose the single ``web_flash`` card only for the Flash profile."""
@@ -334,6 +427,37 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """Use the Flash profile's merged cron card for lifecycle checks."""
         return frozenset({"cron_flash"})
 
+    def _build_permission_rail_for_agent(self, config=None, llm=None, model_name=None):
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            PermissionRailBuildOptions,
+            build_permission_rail,
+        )
+        from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
+            FlashPermissionRail,
+        )
+
+        rail = build_permission_rail(
+            config=config or {},
+            options=PermissionRailBuildOptions(
+                llm=llm if llm is not None else self._model,
+                model_name=model_name,
+                permission_config=self._agent_permissions_body,
+                resolve_workspace_dir=self._permission_workspace_dir,
+                persist_target_agent_id_provider=self._permissions_persist_target,
+                rail_factory=FlashPermissionRail.create,
+            ),
+        )
+        if rail is None and self._resolve_permission_config_for_agent().get("enabled", False):
+            raise RuntimeError("Flash permission rail could not be built while permissions are enabled")
+        return rail
+
+    def _update_permission_rail(self, config_base, *, session_id=None):
+        super()._update_permission_rail(config_base, session_id=session_id)
+        if self._permission_rail is None and self._resolve_permission_config_for_agent(
+            session_id=session_id
+        ).get("enabled", False):
+            raise RuntimeError("Flash permission rail could not be enabled during reload")
+
     async def _get_tool_cards(self, agent_id: str):
         """Build flash tool cards.
 
@@ -372,6 +496,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                     language=self._resolve_runtime_language(),
                     vision_model_config=self._vision_model_config,
                     agent_id=agent_id,
+                    operation=self._sys_operation,
                 ):
                     registered = self._register_agent_owned_tool(tool, agent_id)
                     tool_cards.append(registered.card)
@@ -478,7 +603,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 manager=self._skill_manager,
                 service_id=self._service_id,
                 agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+                on_installed_skills_changed=self._on_installed_skills_changed,
             )
             skill_tool_names: list[str] = []
             for tool in skill_toolkit.get_tools():
@@ -563,7 +688,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 manager=self._skill_manager,
                 service_id=self._service_id,
                 agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+                on_installed_skills_changed=self._on_installed_skills_changed,
             )
             slim_names: list[str] = []
             for tool in slim_toolkit.get_tools():
@@ -635,7 +760,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             logger.error("[JiuWenSwarmDeepAdapter] 定时工具注册失败: %s", exc)
 
     def _build_progressive_tool_rail(self, config: dict[str, Any]) -> Any:
-        """Keep the two merged Flash tools visible to the model."""
+        """Keep merged Flash tools and enabled Turbo visible to the model."""
         flash_config = copy.deepcopy(config) if isinstance(config, dict) else {}
         lazy_config = flash_config.setdefault("tool_lazy_load", {})
         if not isinstance(lazy_config, dict):
@@ -657,6 +782,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         for name in ("web_flash", "cron_flash"):
             if name not in eager_tools:
                 eager_tools.append(name)
+        eager_tools = [name for name in eager_tools if name != _FLASH_TURBO_TOOL_NAME]
+        if self._flash_turbo_enabled(flash_config):
+            eager_tools.append(_FLASH_TURBO_TOOL_NAME)
         lazy_config["eager_tools"] = eager_tools
         return super()._build_progressive_tool_rail(flash_config)
 
@@ -679,11 +807,13 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         自己的字段，故 flash 的 ``enable_task_loop=false`` 等配置一路传到
         ``_resolve_enable_task_loop`` 与 ``_build_agent_rails``。
         """
-        resolved = _resolve_instance_config_base(config_base)
-        resolved = self._apply_flash_react_override(resolved)
-        await super().create_instance(
-            config=config, mode=mode, sub_mode=sub_mode, config_base=resolved
-        )
+        request = config.get("request") if isinstance(config, dict) else None
+        with self._prepare_flash_startup(request):
+            resolved = _resolve_instance_config_base(config_base)
+            resolved = self._apply_flash_react_override(resolved)
+            await super().create_instance(
+                config=config, mode=mode, sub_mode=sub_mode, config_base=resolved
+            )
 
     async def _apply_reload_config_snapshot(
         self,
@@ -712,14 +842,62 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """按 flash 白名单过滤后再实例化 rails.
 
         父类 ``_build_agent_rails`` 末尾调用本方法；先按 ``_FLASH_RAIL_KEEP`` 白名单
-        裁剪 rail_infos，再委托父类 ``_instantiate_rails`` 逐个构建并挂载 standing rails。
+        裁剪 rail_infos，补充独立产物后处理，再委托父类逐个构建并挂载 standing rails。
         """
         rail_infos = self._filter_rail_infos_by_keep(rail_infos)
+        rail_infos.append(_RailBuildInfo(
+            "_flash_artifact_post_process_rail",
+            self._build_flash_artifact_post_process_rail,
+        ))
         rails = super()._instantiate_rails(rail_infos, config_base)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
             rails.extend((selection.load_rail, selection))
         return rails
+
+    @staticmethod
+    def _build_flash_artifact_post_process_rail():
+        """复用独立产物后处理组件；Flash 不注入 Code 署名或任务生命周期。"""
+        from jiuwenswarm.agents.harness.code.rails.coding_artifact_post_process_rail import (
+            CodingArtifactPostProcessRail,
+        )
+
+        return CodingArtifactPostProcessRail(coauthor_header_enabled=False)
+
+    def _build_skill_turbo_prompt_rail(self) -> Any | None:
+        """Use Flash guidance independently of the optional skill retriever."""
+        try:
+            turbo_config = self._config_cache.get("skill_turbo", {})
+            if not isinstance(turbo_config, dict) or not turbo_config.get("enabled", False):
+                return None
+            disabled_tools = resolve_string_or_list_config(self._config_cache.get("disabled_tools"))
+            from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import (
+                FlashTurboPromptRail,
+            )
+
+            # Keep a disabled rail so it can remove a stale guide, as the parent does.
+            return FlashTurboPromptRail(acceleration_disabled=_FLASH_TURBO_TOOL_NAME in disabled_tools)
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashTurboPromptRail create failed: %s", exc, exc_info=True)
+            return None
+
+    def _build_skill_turbo_delivery_summary_rail(self) -> Any | None:
+        """仅在 Turbo 开启时装配 Flash 专用的总结与收尾组件。"""
+        try:
+            config_base = get_config()
+            react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
+            turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
+            if not isinstance(turbo_config, dict) or not turbo_config.get("enabled", False):
+                return None
+
+            from jiuwenswarm.agents.harness.flash.rails.flash_delivery_summary_rail import (
+                FlashDeliverySummaryRail,
+            )
+
+            return FlashDeliverySummaryRail()
+        except Exception:
+            logger.warning("[FlashAdapter] 创建 Turbo 总结组件失败", exc_info=True)
+            return None
 
     def _build_flash_skill_selection_rail(self, config_base: dict[str, Any]):
         """Optional Flash-only extension; removing its package restores native skills."""
@@ -742,6 +920,11 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
     def _get_current_agent_rails(self, config, config_base):
         rails, removed = super()._get_current_agent_rails(config, config_base)
+        # The SDK retains callbacks when reconfiguring with the same rail
+        # instance, so requeueing it would register its callbacks again.
+        context_rail = getattr(self, "_context_assemble_rail", None)
+        if context_rail is not None:
+            rails = [rail for rail in rails if rail is not context_rail]
         old = getattr(self, "_flash_skill_selection_rail", None)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
@@ -763,12 +946,14 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ``_memory_rail`` / ``_external_memory_rail`` 等 rail——这些大多不在 flash 白名单
         内，却会绕过 ``_instantiate_rails`` 的冷启动裁剪被挂上，使白名单形同虚设。
 
-        flash 覆盖此方法：**不调** ``_update_agent_rails()``，只做三件事——
+        flash 覆盖此方法：**不调** ``_update_agent_rails()``，仅装配身份上下文和记忆，
+        并卸载白名单外的动态 rail——
         1. 记 ``_last_mode``（父类首行本就做）；
-        2. 记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
+        2. 身份上下文及记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
            这里按归一后的 agent 档调 ``_handle_memory_rail_by_config``（闸门
            ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
-           白名单内，不会被后续卸载步骤误删。
+           白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
+           engine/provider 配置入口，独立于内置 memory 的模式开关。
         3. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
            可能被父类/旧 reload 残留注册的动态 rail。
 
@@ -782,8 +967,72 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         重建」的 churn（参见 PR6431 review #4 修正）。
         """
         self._last_mode = mode
+        await self._ensure_flash_context_rail()
         await self._handle_memory_rail_by_config("agent")
+        await self._handle_external_memory_rail_by_config()
+        await self._handle_office_ace_user_profile_rail_by_config()
         await self._drop_non_whitelist_dynamic_rails()
+        self._refresh_rail_observability_snapshot()
+
+    async def _ensure_flash_context_rail(self) -> None:
+        """Attach workspace identity without enabling the full agent profile."""
+        async with self._flash_context_rail_lock:
+            if self._context_assemble_rail is not None:
+                is_registered = getattr(self._instance, "is_registered_rail", None)
+                is_pending = getattr(self._instance, "is_pending_rail", None)
+                mounted = not callable(is_registered) or is_registered(self._context_assemble_rail)
+                if not mounted and callable(is_pending):
+                    mounted = is_pending(self._context_assemble_rail)
+                if mounted:
+                    self._sync_flash_context_bindings()
+                    return
+                self._context_assemble_rail = None
+                self._context_assemble_mode = None
+            disabled = []
+            try:
+                rail_names = getattr(self._disabled_tools_rail, "_disabled_tools", None)
+                if rail_names:
+                    disabled = [str(name).strip() for name in rail_names if str(name).strip()]
+                else:
+                    disabled = resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
+            except Exception as exc:
+                logger.warning("[FlashAdapter] ignore malformed disabled_tools for ContextAssembleRail: %s", exc)
+            progressive = self._progressive_tool_rail
+            rail = _build_context_assemble_rail(
+                disabled_tools=disabled or None,
+                tool_name_allowlist=list(progressive.eager_tools) if progressive is not None else None,
+            )
+            if rail is None:
+                return
+            try:
+                await self._instance.register_rail(rail)
+            except BaseException:
+                # Registration may have installed some callbacks before failing.
+                try:
+                    await self._instance.unregister_rail(rail)
+                except Exception:
+                    logger.warning("[FlashAdapter] context rail rollback failed", exc_info=True)
+                raise
+            self._context_assemble_rail = rail
+            self._context_assemble_mode = "agent"
+            config = getattr(self._instance, "deep_config", None)
+            self._flash_context_agent_sysop = getattr(config, "sys_operation", None)
+            self._rebind_late_read_rails_to_local()
+
+    def _sync_flash_context_bindings(self) -> None:
+        """Refresh retained context bindings after an agent reconfiguration."""
+        rail = self._context_assemble_rail
+        config = getattr(self._instance, "deep_config", None)
+        if rail is None or config is None:
+            return
+        workspace = getattr(config, "workspace", None)
+        sysop = getattr(config, "sys_operation", None)
+        if rail.workspace is workspace and self._flash_context_agent_sysop is sysop:
+            return
+        rail.set_workspace(workspace)
+        rail.set_sys_operation(sysop)
+        self._flash_context_agent_sysop = sysop
+        self._rebind_late_read_rails_to_local()
 
     async def try_start_dreaming(self, busy_checker=None) -> None:
         """no-op：flash 不启 memory dreaming.
@@ -802,6 +1051,49 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         return
 
     # ── 工具面覆盖（rail 构建 / 工具卡注册） ──────────────────────
+
+    def _flash_general_agent_enabled(self) -> bool:
+        """react.subagents.general_agent.enabled 显式 true 才注入（对齐 stock 门控语义）。
+
+        flash 冷启动门控（interface_deep 的 mode 检查）不含 flash，工厂不注入
+        general-purpose 子代理；此开关交由 FlashSubagentRail 自注入 spec。
+        """
+        react_cfg = getattr(self, "_config_cache", None)
+        if not isinstance(react_cfg, dict):
+            try:
+                react_cfg = (get_config() or {}).get("react") or {}
+            except Exception:
+                react_cfg = {}
+        subagents_cfg = (
+            react_cfg.get("subagents") if isinstance(react_cfg, dict) else None
+        )
+        general_cfg = (
+            subagents_cfg.get("general_agent")
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        return isinstance(general_cfg, dict) and bool(general_cfg.get("enabled", False))
+
+    def _build_subagent_rail(
+        self, config_base: dict[str, Any] | None = None
+    ) -> FlashSubagentRail | None:
+        """flash 用调优版 subagent rail 替换 stock SubagentRail.
+
+        spec 自注入 + 提示段/工具卡描述替换（见 FlashSubagentRail docstring）；
+        注册机制（task_tool / available_agents / 授权绑定）全部复用 stock。
+        兼容两处调用：冷启动 rail 表传 ``config_base`` 关键字参数（与
+        ``_build_task_planning_rail`` 同理），当前实现未用到，接收并忽略。
+        """
+        _ = config_base
+        try:
+            rail = FlashSubagentRail(
+                inject_general_purpose=self._flash_general_agent_enabled(),
+            )
+            logger.info("[JiuwenSwarmFlashAdapter] FlashSubagentRail create success")
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmFlashAdapter] FlashSubagentRail create failed: %s", exc)
+            rail = None
+        return rail
 
     def _build_task_planning_rail(
         self, config: dict[str, Any] | None = None
@@ -848,9 +1140,16 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 has_model = embed_config.get("model")
             if not all([has_api_key, has_base_url, has_model]):
                 logger.warning(
-                    "[JiuwenSwarmFlashAdapter] FlashMemoryRail create failed: "
-                    "No available embedding config"
+                    "[JiuwenSwarmFlashAdapter] Incomplete embedding config; "
+                    "FlashMemoryRail will attempt keyword search"
                 )
+                # The SDK uses an absent key to select its no-embedding provider.
+                # Keep the required string fields valid without using partial credentials.
+                embed_config = {
+                    "model": has_model or "",
+                    "base_url": has_base_url or "",
+                    "api_key": None,
+                }
             self._is_proactive_memory = is_proactive_memory(mode, config)
             memory_rail = FlashMemoryRail(
                 embedding_config=EmbeddingConfig(
@@ -905,7 +1204,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
 
     async def _update_runtime_config(self, runtime_config: Any) -> None:
-        """每回合 super() 后修正统一 memory 卡的可见性。
+        """每回合 super() 后刷新 Turbo 描述并修正统一 memory 卡的可见性。
 
         super() 的群聊块只认 stock 五件套（对 flash 全是 no-op），且其恢复分支
         会把 stock write_memory/edit_memory 加回 flash 会话（统一卡才是 flash 的
@@ -914,6 +1213,39 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """
         await super()._update_runtime_config(runtime_config)
         self._sync_unified_memory_tool_visibility()
+        self._refresh_flash_turbo_description()
+
+    @staticmethod
+    def _flash_turbo_enabled(config: dict[str, Any]) -> bool:
+        turbo = config.get("skill_turbo", {})
+        return (
+            isinstance(turbo, dict)
+            and bool(turbo.get("enabled", False))
+            and _FLASH_TURBO_TOOL_NAME not in resolve_string_or_list_config(
+                config.get("disabled_tools")
+            )
+        )
+
+    def _refresh_flash_turbo_description(self) -> None:
+        """Reuse Turbo discovery after request env binding, before SDK snapshots.
+
+        The shared helper caches scans by skill roots with a TTL. Calling it
+        here once per request also precedes progressive-tool navigation caching.
+        """
+        if self._instance is None or not self._flash_turbo_enabled(self._config_cache):
+            return
+        card = self._instance.ability_manager.get(_FLASH_TURBO_TOOL_NAME)
+        if card is None:
+            return
+
+        from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools
+
+        old_description = card.description
+        names = skill_turbo_tools.refresh_skill_acceleration_description()
+        # Update the live SDK card too, in case it was copied during registration.
+        card.description = skill_turbo_tools.skill_turbo.card.description
+        if card.description != old_description:
+            logger.info("[FlashTurboDiscovery] supported_skills=%s", names)
 
     def _sync_unified_memory_tool_visibility(self) -> None:
         """按 TOOL_PERMISSION_CONTEXT 调整统一 memory 工具的可见性/只读。
@@ -987,6 +1319,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
         for k, v in self._FLASH_REACT_OVERRIDE.items():
             base_react[k] = self._deep_merge_react_value(base_react.get(k), v)
+        if self._flash_turbo_enabled(base_react):
+            lazy_config = base_react.setdefault("tool_lazy_load", {})
+            eager_tools = lazy_config.setdefault("eager_tools", [])
+            eager_tools.append(_FLASH_TURBO_TOOL_NAME)
         # eager_tools 是整表替换（设计上 flash 须写全最终名单）：部署配置过的
         # 自定义常驻工具会退到 deferred，这里把差异打出来，避免工具呈现变化
         # 不可观测。
@@ -1081,10 +1417,83 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ("_context_processor_rail", "ContextProcessorRail"),
         ("_memory_rail", "MemoryRail"),
         ("_external_memory_rail", "ExternalMemoryRail"),
+        ("_office_ace_user_profile_rail", "OfficeAceUserProfileRail"),
         ("_skill_evolution_rail", "SkillEvolutionRail"),
         ("_evolution_interrupt_rail", "EvolutionInterruptRail"),
         ("_skill_create_rail", "SkillCreateRail"),
     )
+
+    def _rail_snapshot(self) -> str:
+        """Return the live rail names in stable adapter-attribute order."""
+        attrs = (
+            item[0]
+            for item in self._DYNAMIC_RAIL_ATTRS
+            if item[0] in self._FLASH_RAIL_KEEP
+        )
+        attrs = (
+            *attrs,
+            *sorted(
+                self._FLASH_RAIL_KEEP
+                - {item[0] for item in self._DYNAMIC_RAIL_ATTRS}
+            ),
+            *sorted(self._PROFILE_PROTECTED_RAILS),
+        )
+        names = [attr.lstrip("_") for attr in attrs if getattr(self, attr, None) is not None]
+        return ",".join(names)
+
+    def _profile_fingerprint(self) -> str:
+        """Return a stable hash of the profile-defining class constants."""
+        payload = "\n".join(
+            (
+                ",".join(sorted(self._FLASH_RAIL_KEEP)),
+                ",".join(sorted(self._PROFILE_PROTECTED_RAILS)),
+                ",".join(sorted(self._FLASH_TOOL_CARD_DROP_NAMES)),
+                ",".join(
+                    self._FLASH_REACT_OVERRIDE.get("tool_lazy_load", {}).get(
+                        "eager_tools", []
+                    )
+                ),
+            )
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+    def _rail_observability_snapshot(self) -> tuple[str, str]:
+        return self._rail_snapshot(), f"flash:{self._profile_fingerprint()}"
+
+    def _refresh_rail_observability_snapshot(self) -> None:
+        """Expose the flash rail set through trace-inherited attributes.
+
+        Rail updates happen before the run root span starts, so spans started
+        later inherit these values through the trace binding.
+        """
+        try:
+            from opentelemetry import trace
+
+            from jiuwenswarm.telemetry import get_telemetry_runtime
+
+            span_context = trace.get_current_span().get_span_context()
+            if not span_context.is_valid:
+                return
+            runtime = get_telemetry_runtime()
+            if not runtime.is_unified_active():
+                return
+            span_registry = runtime.span_registry
+            if span_registry is None:
+                return
+            names, profile = self._rail_observability_snapshot()
+            span_registry.bind_trace_attributes(
+                span_context.trace_id,
+                {
+                    JIUWENCLAW_AGENT_RAILS: names,
+                    JIUWENCLAW_AGENT_PROFILE: profile,
+                },
+            )
+        except Exception as error:
+            logger.debug(
+                "[JiuwenSwarmFlashAdapter] rail observability snapshot failed: %s",
+                error,
+                exc_info=True,
+            )
 
     async def _drop_non_whitelist_dynamic_rails(self) -> None:
         """Unregister any dynamically-registered rail outside the flash whitelist.

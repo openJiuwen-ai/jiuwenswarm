@@ -70,6 +70,10 @@ class AgentDeleted(RuntimeError):
     """Agent was deleted while creation was in flight."""
 
 
+class AgentCreateFailed(RuntimeError):
+    """Previous create failed; automatic retry is disabled to avoid double create."""
+
+
 @dataclass
 class AgentRuntime:
     """In-process agent record: business info plus create-wait signaling."""
@@ -112,12 +116,6 @@ class AgentRuntime:
         envelope.channel_context["agent_type"] = self.info.agent_type
         if self.info.sandbox_id:
             envelope.channel_context["sandbox_id"] = self.info.sandbox_id
-
-    def reset_for_retry(self) -> None:
-        self.info.status = AgentStatus.CREATING
-        self.info.error = None
-        self.info.updated_at = time.time()
-        self.creating_event = asyncio.Event()
 
     @staticmethod
     def apply_creator_result(created: AgentInfo | None, *, base: AgentInfo) -> AgentInfo:
@@ -240,10 +238,39 @@ class AgentManager:
         self._runtimes: dict[AgentKey, AgentRuntime] = {}
         self._runtimes_lock = asyncio.Lock()
         self._creating_timeout_seconds = max(0.1, float(creating_timeout_seconds))
+        # 用户连接计数：user_id → 当前活跃连接数
+        self._user_connection_counts: dict[str, int] = {}
 
     @property
     def key_fields(self) -> tuple[str, ...]:
         return self._key_fields
+
+    @staticmethod
+    def _failed_message(runtime: AgentRuntime, key_desc: str) -> str:
+        detail = str(runtime.info.error or "").strip() or "unknown error"
+        return f"AGENT_CREATE_FAILED: {key_desc}: {detail}"
+
+    # ── 用户连接计数 ──
+
+    def increment_user_connections(self, user_id: str) -> None:
+        """递增用户连接计数。"""
+        uid = str(user_id or "").strip()
+        self._user_connection_counts[uid] = self._user_connection_counts.get(uid, 0) + 1
+
+    def decrement_user_connections(self, user_id: str) -> int:
+        """递减用户连接计数，返回递减后的值（最小为 0）。"""
+        uid = str(user_id or "").strip()
+        count = self._user_connection_counts.get(uid, 0) - 1
+        if count <= 0:
+            self._user_connection_counts.pop(uid, None)
+            return 0
+        self._user_connection_counts[uid] = count
+        return count
+
+    def get_user_connection_count(self, user_id: str) -> int:
+        """获取用户当前连接数。"""
+        uid = str(user_id or "").strip()
+        return self._user_connection_counts.get(uid, 0)
 
     def _make_key(
         self,
@@ -322,8 +349,12 @@ class AgentManager:
                 else:
                     runtime = existing
                     if runtime.is_failed():
-                        runtime.reset_for_retry()
-                        owner = True
+                        # Do not reset_for_retry: a cancelled/failed create may
+                        # still have provisioned a YuanRong sandbox; retrying
+                        # here would spawn a second one.
+                        raise AgentCreateFailed(
+                            self._failed_message(runtime, key_desc)
+                        )
                 creator_base = runtime.info.copy()
 
             if owner:
@@ -343,6 +374,8 @@ class AgentManager:
                 ) from exc
             if runtime.is_deleted():
                 raise AgentDeleted(f"AGENT_DELETED: {key_desc}")
+            if runtime.is_failed():
+                raise AgentCreateFailed(self._failed_message(runtime, key_desc))
 
     async def get_agent(
         self,

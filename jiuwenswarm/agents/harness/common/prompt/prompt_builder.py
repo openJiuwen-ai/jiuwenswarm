@@ -28,6 +28,7 @@ class PromptPriority(IntEnum):
     TODO = 85
     # thinking_discipline 紧挨最终可见回复之前：思考与 tool_calls 职责分工，高于 RESPONSE。
     THINKING_DISCIPLINE = 115
+    A2UI_BOOST = 117
     # final_visible_reply 放在 system 最末，强调约束工具/todo 结束后必须再发一轮完整纯文本 final；
     # UI 主要展示「最后一轮无 tool_calls」的正文。
     FINAL_VISIBLE_REPLY = 120
@@ -37,6 +38,7 @@ class LocalSectionName:
     """Local section names for optional JiuwenSwarm prompt sections."""
 
     A2UI = "a2ui"
+    A2UI_BOOST = "a2ui_boost"
     THINKING_DISCIPLINE = "thinking_discipline"
     FINAL_VISIBLE_REPLY = "final_visible_reply"
 
@@ -369,6 +371,14 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 - 启动配置目录：JiuwenSwarm 启动配置目录只用于保存 JiuwenSwarm 自身配置，不得用于存放普通任务产物或项目文件。
 - 不要仅因为 Agent 内部数据目录的物理路径名包含 `workspace`，就把它当作用户项目的输出目录。
 
+## 产物格式偏好
+
+- 矢量产物（流程图、架构图、示意图、图标、插画等）默认用 ```svg 围栏包裹完整自包含的 `<svg>...</svg>` 源码写在最终回复正文里；不生成 .svg 文件、不调 `generate_image`、不落盘投递。
+- **词义消歧**：用户说“给我 svg”“用 svg 画”“要矢量图标”指源码而非 .svg 文件附件；仅当明确出现“文件/下载/导出/保存为 .svg”时才生成并
+  投递文件。Mermaid 仅用于标准结构图，超出其表达或用户明确要 SVG 时直接给源码。
+- SVG 源码须在**最后一条无工具调用的消息**里；同一产物不要既内联又发文件。
+- 仅当产物本质是位图（照片、AI 生图）或用户明确要 png/jpg/pdf 时才 `generate_image` + `send_file_to_user`；用户指定格式时以用户为准。
+
 ## 文件发送
 
 当你的工具列表中存在 `send_file_to_user` 工具时，**必须**在以下场景主动调用该工具将文件发送给用户：
@@ -378,6 +388,13 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 - 用户主动调用`write_file`、`write_text_file`这类文件生成/修改工具后
 
 **调用方式**：使用文件的绝对路径作为参数调用 `send_file_to_user` 工具。
+
+**用户说没收到文件时**：如果用户明确表示没有收到文件、要求“再发一次/重新发送/文件呢”，
+调用 `send_file_to_user` 时设置 `force=true`，绕过本会话的重复发送保护。
+`force` 只用于用户明确要求重发的场景，普通首次发送不要设置。
+
+**不要用 PPT 翻译工具发送普通文件**：`invoke_pptx_translation` 只用于翻译已打开的 PPT；
+发送/找回已生成的 md、html、docx、xlsx 等文件必须使用 `send_file_to_user`。
 
 **跨 channel 投递**：`send_file_to_user` 接受可选参数 `target_channels`（字符串数组），
 用于指定文件投递的目标 channel（如 `["feishu", "xiaoyi", "web"]`）。
@@ -507,6 +524,23 @@ If the user does not specify a location, follow these rules:
 - Do not treat the Agent internal data directory as the user's project output directory merely because
   its physical path name contains the word `workspace`.
 
+## Artifact Format Preference
+
+- Vector artifacts (flowcharts, architecture diagrams, schematics, icons, illustrations, etc.)
+  default to inline SVG source in the final reply body — a complete, self-contained
+  `<svg>...</svg>` wrapped in a ```svg fenced code block. Do NOT generate .svg files, call
+  `generate_image`, or save to disk to deliver.
+- **Lexical disambiguation**: "give me an svg", "draw it in svg", "I want a vector/icon" means
+  SVG source, NOT a .svg file attachment. Only generate and deliver a file when the user
+  explicitly says "file/download/export/save as .svg". Use Mermaid only for standard structured
+  charts; when the user explicitly asks for SVG or the diagram is beyond Mermaid, output SVG
+  source.
+- SVG source MUST go in the **last message with no tool calls**; do not both inline and send a
+  file for the same artifact.
+- Call `generate_image` + `send_file_to_user` only for inherently raster artifacts (photos, AI
+  image gen) or when the user explicitly requests png/jpg/pdf; honor any explicit format the
+  user specifies.
+
 ## Sending Files
 
 When the `send_file_to_user` tool is available in your tool list, you **must** proactively invoke it in these scenarios:
@@ -516,6 +550,14 @@ When the `send_file_to_user` tool is available in your tool list, you **must** p
 - After the user actively invokes file generation/modification tools such as `write_file` and `write_text_file`
 
 **How to call**: Use the absolute file path(s) as the parameter to invoke the `send_file_to_user` tool.
+
+**When the user says they did not receive the file**: if the user explicitly reports a missing
+file or asks to resend it, call `send_file_to_user` with `force=true` to bypass the session-level
+duplicate guard. Do not set `force` for an ordinary first delivery.
+
+**Do not use the PPT translation tool to send ordinary files**: `invoke_pptx_translation` is only
+for translating an already-open PPT. Use `send_file_to_user` for md, html, docx, xlsx, and other
+deliverables.
 
 **Cross-channel delivery**: `send_file_to_user` accepts an optional `target_channels` parameter
 to specify delivery targets by channel id (e.g. `["feishu", "xiaoyi", "web"]`).

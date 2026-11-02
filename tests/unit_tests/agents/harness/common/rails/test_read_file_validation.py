@@ -7,7 +7,17 @@ from __future__ import annotations
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
+    _looks_like_binary_payload,
+    is_image_file_path,
+    is_non_text_file_path,
     validate_read_file_result,
+)
+
+_SVG_WITH_BASE64 = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">'
+    '<image href="data:image/png;base64,'
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    '/></svg>'
 )
 
 
@@ -110,3 +120,26 @@ def test_empty_result_still_rejected() -> None:
     ok, _error = validate_read_file_result("a.txt", "")
 
     assert ok is False
+
+
+def test_svg_is_read_as_text_not_image() -> None:
+    """SVG 是文本 XML：前置拦截与后置校验都不应把它当图片。"""
+    assert is_image_file_path("diagram.svg") is False
+    assert is_non_text_file_path("diagram.svg") is False
+
+
+def test_svg_with_embedded_base64_passes_validation() -> None:
+    """内嵌 base64 图片的合法 SVG 不得被二进制启发式误拦。"""
+    assert _looks_like_binary_payload(_SVG_WITH_BASE64) is False
+    assert validate_read_file_result("diagram.svg", _SVG_WITH_BASE64) == (True, None)
+
+
+def test_image_extensions_still_blocked() -> None:
+    """防误扩大：位图扩展名仍按图片/二进制拦截。"""
+    assert is_image_file_path("photo.png") is True
+    assert is_non_text_file_path("photo.jpg") is True
+
+    ok, error = validate_read_file_result("photo.png", "\x00\x01binary")
+
+    assert ok is False
+    assert error is not None

@@ -534,7 +534,7 @@ class CronController:
         run_id = await self._scheduler.trigger_run_now(job_id)
         return run_id
 
-    async def run_now_info(self, job_id: str) -> dict[str, str]:
+    async def run_now_info(self, job_id: str) -> dict[str, Any]:
         return await self._scheduler.trigger_run_now_info(job_id)
 
     async def run_now_with_session(
@@ -544,12 +544,15 @@ class CronController:
         group_id: str | None = None,
         bot_id: str | None = None,
         user_id: str | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         """web「立即执行」：校验归属并提前创建真实执行会话，返回给前端跳转。
 
         与 ``run_now`` 的差异仅在返回真实 session_id（非 team 模式预分配会话），
         避免前端跳到占位 ``cron_<ts>_<job.id>`` 空会话。预分配失败降级为占位，
         执行阶段仍会兜底创建。
+
+        若该任务仍有未完成的工具审批 hold，直接复用旧 ``cron_*``（
+        ``reused_pending_session=True``），不再新建空会话。
         """
         job = await self._store.get_job(job_id)
         if job is None:

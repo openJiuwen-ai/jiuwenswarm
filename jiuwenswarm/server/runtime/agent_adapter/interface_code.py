@@ -54,9 +54,11 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _AGENT_CARD_ID,
     _CRON_TOOL_CHANNEL_ID,
     _RailBuildInfo,
+    _agent_ras_kwargs_from_config,
     _deep_agent_kv_cache_affinity_config,
     _optional_enable_subagent_runtime,
     _resolve_instance_config_base,
+    build_progressive_tool_rail_from_config,
     parse_int,
 )
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
@@ -73,6 +75,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
+from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import ProgressiveToolRail
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
     get_office_ace_user_profile_config,
 )
@@ -266,14 +269,39 @@ ask_user is only for clarifying requirements — do not use it for approval ques
 # Plan mode exit notification appended to exit_plan_mode tool_result.
 # Explicitly tells the model it can now edit files. Without this, the model only sees
 # MODE_INSTRUCTIONS removed from system prompt but receives no explicit signal.
+# The tool_result this is appended to carries the whole plan text, so a mild
+# "proceed with the plan" wording loses to that blob and the model just echoes the
+# plan back and asks whether to start. Hence the explicit do-NOT-restate wording.
 # ---------------------------------------------------------------------------
 
 _EXIT_PLAN_MODE_NOTIFICATION = """\
 <system-reminder>
-Plan mode has ended. You are now in normal mode. You can edit files,
-run write operations, and make changes to the system. Proceed with
-implementing the approved plan.
+The user approved this plan. Plan mode has ended and you are now in normal mode:
+you can edit files, run write operations, and make changes to the system.
+
+Start executing the first step now. Do NOT restate the plan and do NOT ask again
+whether to begin — the user has already read and approved it. This turn's output
+should be the work itself and its results. Use ask_user only if execution is
+genuinely blocked.
 </system-reminder>"""
+
+
+# Code prompts refer to these tools directly. Keep their schemas available
+# without requiring discovery, including after the shared config reload path.
+_CODE_EAGER_TOOLS = (
+    "lsp",
+    "coding_memory_read",
+    "coding_memory_write",
+    "coding_memory_edit",
+    "switch_mode",
+    "enter_plan_mode",
+    "exit_plan_mode",
+)
+
+
+def _normalize_code_sub_mode(sub_mode: str | None) -> str:
+    """Keep creation and reload profile checks identical, including defaults."""
+    return str(sub_mode or "normal").strip().lower() or "normal"
 
 
 # 名字 → 构建方法映射（rail/tool 名字与类方法名对照）
@@ -532,7 +560,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # coding_memory/.
         self._session_instance_config = dict(config or {}) if isinstance(config, dict) else None
         self._session_instance_mode = mode
-        self._session_instance_sub_mode = sub_mode
+        # Skill/plugin installs rebuild through the facade with sub_mode=None.
+        # Preserve the profile and pass it to this build as well as new sessions.
+        if sub_mode is not None:
+            self._session_instance_sub_mode = sub_mode
+        sub_mode = self._session_instance_sub_mode
 
         await self.set_checkpoint()
 
@@ -618,6 +650,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             **_optional_enable_subagent_runtime(
                 self._resolve_enable_subagent_runtime(config_base),
             ),
+            **_agent_ras_kwargs_from_config(config_base),
         )
 
         # Keep ensure_initialized on the main event loop (same as interface_deep).
@@ -636,7 +669,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         initial_workspace = self._project_dir or str(
             get_default_project_session_workspace_dir()
         )
-        self._ensure_project_gitignore_agent_history(initial_workspace)
         self._seed_runtime_cwd(initial_workspace, workspace=initial_workspace)
 
         setattr(self._instance, "_jiuwenswarm_adapter_mode", "code")
@@ -677,7 +709,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     ) -> list[Any]:
         """Build rails for code mode: fixed rails + dynamic rails from config.
 
-        Code 模式固定包含 LspRail、ProjectMemoryRail、CodingMemoryRail。
+        Code 模式固定包含 LspRail、ProjectMemoryRail、CodingMemoryRail。plan 相关
+        的 rails 同样固定挂载，不按子模式分叉。
         """
         mode_config = config_base.get("modes", {}).get("code", {})
         artifact_config = mode_config.get("artifact_post_process") or {}
@@ -738,9 +771,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
+            # 与上游 02957a531 对齐：挂到链路末端（context_processor 之后），
+            # 保证 ON_USER_MESSAGE 投影替换发生在上下文初始化链路之后。
+            _RailBuildInfo(
+                "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
         ]
 
-        normalized_sub_mode = str(sub_mode or "normal").strip().lower() or "normal"
+        normalized_sub_mode = _normalize_code_sub_mode(sub_mode)
         # The CodeAdapter may be rebuilt through JiuWenSwarm.create_instance(),
         # whose compatibility default is mode="agent" even when this adapter
         # already owns a Code session.  Sub-mode is the reliable profile key:
@@ -754,11 +792,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     self._build_a2a_outbound_toolkit_rail,
                 ),
             )
-            # 四档档位路由（ModelRoutingRail）同样只在单 agent code 模式挂载。
-            # relay 的单 agent 通道不下发具体模型 id，档位关键字（fast/balanced/
-            # extreme/auto）原样进 params.model_name，靠这条 rail 翻成具体模型 +
-            # 思考深度；code.team / team.plan 已由 relay 侧翻成具体 id，挂上只会
-            # 拿到具体名走能力表兜底，故与 team profile 一并排除。
+            # 模型路由（ModelRoutingRail）只在单 agent code 模式挂载：auto 档
+            # （params.enable_routing=True）跑分类器、超阈值才切模型，具体模型名走 skip。
+            # code.team / team.plan 由 relay 侧翻成具体 id，故与 team profile 一并排除。
             rail_infos.append(
                 _RailBuildInfo(
                     "_model_routing_rail",
@@ -807,6 +843,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 rail_name,
             )
 
+        # Filter single-agent MCP schemas from the first turn. Team members
+        # need their collaboration/workspace tools directly visible; their
+        # tool policy belongs to the team assembly path.
+        if normalized_sub_mode in {"normal", "plan"}:
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_progressive_tool_rail",
+                    self._build_progressive_tool_rail,
+                    {"config": config, "sub_mode": normalized_sub_mode},
+                )
+            )
+
         # Keep the unified react.disabled_tools policy consistent with agent
         # mode. Its low priority makes it run after fixed and dynamic rails
         # have registered their tools.
@@ -819,6 +867,35 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
 
         return self._instantiate_rails(rail_infos, config_base)
+
+    def _build_progressive_tool_rail(
+        self, config: dict[str, Any], *, sub_mode: str | None = None
+    ) -> ProgressiveToolRail | None:
+        """Share lazy-loading policy while preserving code's direct tools."""
+        # Creation passes its profile explicitly; reload uses the saved one.
+        # Returning None also retires a rail mounted by an older version.
+        normalized_sub_mode = _normalize_code_sub_mode(
+            sub_mode if sub_mode is not None else self._session_instance_sub_mode
+        )
+        if normalized_sub_mode not in {"normal", "plan"}:
+            return None
+        # Reuse the common policy factory; emit only the code adapter mount log.
+        rail = build_progressive_tool_rail_from_config(
+            config,
+            language=self._resolve_runtime_language(),
+            agent_id=self._tool_owner_id(),
+            agent_card_id=self._tool_owner_id(),
+            deepresearch_context_provider=self._get_deepresearch_tool_context,
+            active_skill_provider=self._get_progressive_active_skill,
+        )
+        if rail is not None:
+            rail.eager_tools = list(dict.fromkeys([*rail.eager_tools, *_CODE_EAGER_TOOLS]))
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] ProgressiveToolRail mounted mode=%s sub_mode=%s",
+                "progressive" if rail.enabled else "skill-gate-only",
+                normalized_sub_mode,
+            )
+        return rail
 
     # ─── Code 专属 Rail 构建 ────────────────
 
@@ -1136,7 +1213,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         workspace = self._workspace_dir or "./"
         sys_operation = self._sys_operation
         subagents: list[Any] = []
-        self._sync_browser_runtime_environment(config_base)
 
         statusline_setup_cfg = (
             subagents_cfg.get(STATUSLINE_SETUP_AGENT_TYPE)
@@ -1222,12 +1298,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
             browser_enabled = self._browser_runtime_enabled()
             if browser_enabled:
-                if not str(os.getenv("BROWSER_DRIVER") or "").strip():
-                    os.environ["BROWSER_DRIVER"] = "managed"
-                    logger.info(
-                        "[JiuwenSwarmCodeAdapter] browser subagent enabled without BROWSER_DRIVER; "
-                        "defaulting to managed mode"
-                    )
+                # Same gate as the deep adapter: do not rewrite driver / CDP
+                # env unless this code agent is actually registering browser.
+                self._sync_browser_runtime_environment(config_base)
                 browser_max_iterations = None
                 if isinstance(browser_agent_cfg, dict):
                     browser_max_iterations = browser_agent_cfg.get("max_iterations")
@@ -1357,6 +1430,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         CodeAgentRail 和 PlanApprovalInterruptRail 不在其中。覆盖此方法确保 config reload
         时这些 rail 被正确重新初始化。
         """
+        if (
+            _normalize_code_sub_mode(self._session_instance_sub_mode) not in {"normal", "plan"}
+            and "tool_lazy_load" not in config
+        ):
+            # Partial reloads normally preserve this rail. Code team profiles
+            # must still retire historical mis-mounts, without mutating config.
+            config = {**config, "tool_lazy_load": {}}
         rails_list, rails_to_unregister = super()._get_current_agent_rails(
             config, config_base
         )
@@ -1460,6 +1540,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt
             )
+        eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
+        if eternal_conversation_rail is not None:
+            self._eternal_conversation_enabled = runtime_config.eternal_conversation_enabled
+            eternal_conversation_rail.configure_runtime(
+                enabled=runtime_config.eternal_conversation_enabled,
+                session_id=runtime_config.session_id,
+                request_id=runtime_config.request_id,
+                mode=runtime_config.mode,
+                channel=resolved_channel,
+                project_dir=runtime_config.project_dir or self._project_dir,
+                model=getattr(self, "_active_request_model", None) or self._model,
+                interaction_resume=runtime_config.interaction_resume,
+            )
+            if self._eternal_conversation_enabled and self._context_processor_rail is not None:
+                self.shutdown_context_session_memory(self._context_processor_rail)
         # PermissionInterruptRail: per-request trusted_dirs 注入，使 external_directory
         # 检查将这些子树视为 internal 而跳过 ask/deny（与 RuntimePromptRail 对齐）。
         # 用 getattr 兼容绕过 __init__ 的测试构造（_permission_rail 仅在 rail 构建流程赋值）。
@@ -1722,6 +1817,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         force_english_runtime_prompt: bool = True,
     ) -> None:
         """Apply the code runtime profile to a team member DeepAgent."""
+        self._session_instance_mode = "code"
+        self._session_instance_sub_mode = "team"
         if skill_manager is not None and hasattr(self, "set_skill_manager"):
             self.set_skill_manager(skill_manager)
 
@@ -1808,7 +1905,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         setattr(agent, "_jiuwenswarm_adapter_mode", "code")
         setattr(agent, "_jiuwenswarm_code_project_dir", self._project_dir or self._workspace_dir)
         setattr(agent, "_jiuwenswarm_project_dir", self._project_dir or self._workspace_dir)
-        setattr(agent, "_jiuwenswarm_code_team_member", True)
 
         logger.info(
             "[JiuwenSwarmCodeAdapter] configured team member as code profile: "

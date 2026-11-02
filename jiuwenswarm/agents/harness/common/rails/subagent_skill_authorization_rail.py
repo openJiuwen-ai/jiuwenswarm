@@ -40,7 +40,6 @@ from openjiuwen.harness.security.skill_authorization.subagent_approval_registry 
     SubagentApprovalRequest,
 )
 from openjiuwen.harness.rails.skills.skill_authorization_rail import (
-    SkillAuthorizationRail,
     _SkillApprovalCall,
     _parse_answer_to_action,
     _resolve_session_id,
@@ -49,6 +48,10 @@ from openjiuwen.harness.rails.skills.skill_lifecycle_events import (
     extract_skill_lifecycle_event,
     is_root_skill_load,
     is_skill_complete,
+)
+
+from jiuwenswarm.agents.harness.common.rails.skill_authorization_rail import (
+    SkillAuthorizationRail,
 )
 from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
     get_subagent_parent_session,
@@ -392,6 +395,7 @@ class SubagentSkillAuthorizationRail(SkillAuthorizationRail):
             self._create_pending_grant_quiet(
                 session_id, agent_scope_id, current_manifest, tool_call_id,
                 decision=GrantDecision.LOCAL, log_tag="subagent.skill.grant_create_failed",
+                authorization_generation=authorization_generation,
             )
         self._proceed_tool_call(ctx, tool_call, tool_name)
 
