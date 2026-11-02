@@ -37,7 +37,10 @@ import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   consumePendingQuestion as consumeQueuedQuestion,
   clearPermissionQuestions as clearQueuedPermissionQuestions,
+  dropAnsweredAskUserQuestions,
   enqueuePendingQuestions,
+  isAnsweredAskUserQuestion,
+  markQuestionsAnswered as markQueuedQuestionsAnswered,
 } from './pendingQuestionQueue';
 
 const TOOL_TIMEOUT_MS = 12_000_000;
@@ -442,6 +445,8 @@ interface ChatState {
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
   enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  /** 登记已答的 ask_user request_id，并移除队列中对应的过期问题。 */
+  markQuestionsAnswered: (sessionId: string, requestIds: Iterable<string>) => void;
   clearPendingQuestions: (sessionId: string) => void;
   setPendingA4PAuthorization: (
     sessionId: string,
@@ -2095,6 +2100,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   },
 
   enqueuePendingQuestion: (sessionId, question) => {
+    if (isAnsweredAskUserQuestion(sessionId, question)) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -2116,6 +2122,25 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const pendingQuestions = consumeQueuedQuestion(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  markQuestionsAnswered: (sessionId, requestIds) => {
+    markQueuedQuestionsAnswered(sessionId, requestIds);
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = dropAnsweredAskUserQuestions(sessionId, runtime.pendingQuestions);
+      if (pendingQuestions.length === runtime.pendingQuestions.length) return state;
       return {
         runtimes: {
           ...state.runtimes,

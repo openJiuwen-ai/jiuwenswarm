@@ -7,14 +7,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from gateway.config.enterprise.tables.application_config_models import (
-    PACKAGE_ALLOWLIST_TABLE_DEF,
-)
-from jiuwenswarm.common.schema.package_allowlist import (
+from openjiuwen_protocol.package_allowlist import (
     ensure_packages_fit,
     normalize_packages,
 )
 
+from gateway.config.enterprise.tables.application_config_models import (
+    PACKAGE_ALLOWLIST_TABLE_DEF,
+)
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import format_ts, utc_now
 

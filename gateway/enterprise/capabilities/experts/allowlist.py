@@ -9,9 +9,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from jiuwenswarm.common.schema.package_allowlist import (
-    HEADER_NAME,
-    METADATA_KEY,
+from openjiuwen_protocol.package_allowlist import (
+    PACKAGE_ALLOWLIST_HEADER_NAME as HEADER_NAME,
+    apply_allowlist_to_envelope,  # noqa: F401 — re-export，供 agent_client 使用
     encode_package_allowlist_header,
 )
 
@@ -37,14 +37,6 @@ def outbound_allowlist_packages() -> list[dict[str, Any]] | None:
     if current is None:
         return None
     return list(current)
-
-
-def apply_allowlist_to_envelope(envelope: Any, packages: list[dict[str, Any]]) -> None:
-    """覆盖 channel_context 里的名单，不沿用客户端字段。"""
-    ctx = getattr(envelope, "channel_context", None)
-    copied = dict(ctx) if isinstance(ctx, dict) else {}
-    copied[METADATA_KEY] = list(packages)
-    envelope.channel_context = copied
 
 
 def attach_package_allowlist_header(headers: dict[str, str]) -> None:

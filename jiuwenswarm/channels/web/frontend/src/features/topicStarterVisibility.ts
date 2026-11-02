@@ -230,15 +230,11 @@ export function buildTopicClickEvent(slate: TopicStarterVisibleSlate, topicId: s
   return event;
 }
 
-// A dismissal, the pause of the dismissed card's interest, or an undo of either, all on the slate the card was shown in.
-export type TopicStarterCardFeedback = 'not_interested' | 'interest_paused' | 'not_interested_undone' | 'interest_pause_undone';
-
 export function buildNotInterestedEvent(
   slate: TopicStarterVisibleSlate,
   topicId: string,
-  eventType: TopicStarterCardFeedback = 'not_interested',
 ): TopicStarterEvent {
-  const event = baseEvent(slate, eventType, topicId);
+  const event = baseEvent(slate, 'not_interested', topicId);
   event.payload = {
     ...dynamicBatchPayload(slate),
     card_revision_id: topicId,

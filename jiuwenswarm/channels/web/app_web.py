@@ -55,9 +55,6 @@ if TYPE_CHECKING:
         ShareImageRenderAuth,
     )
 
-_share_image_export_manager: ShareImageExportManager | None = None
-_share_image_export_manager_lock = threading.Lock()
-
 
 class _BadRequestError(ValueError):
     """Client-supplied input the web handler cannot process.
@@ -69,17 +66,12 @@ class _BadRequestError(ValueError):
 
 
 def _get_share_image_export_manager() -> ShareImageExportManager:
-    """Create the share-image job registry on first use to keep startup lazy."""
-    global _share_image_export_manager
-    if _share_image_export_manager is None:
-        with _share_image_export_manager_lock:
-            if _share_image_export_manager is None:
-                from jiuwenswarm.channels.web.share_image_export import (
-                    ShareImageExportManager,
-                )
+    """Forward to the gateway-owned singleton (shared job registry)."""
+    from gateway.channel_manager.web.share_image_export import (
+        get_share_image_export_manager,
+    )
 
-                _share_image_export_manager = ShareImageExportManager()
-    return _share_image_export_manager
+    return get_share_image_export_manager()
 
 
 def _get_user_workspace_dir() -> Path:
