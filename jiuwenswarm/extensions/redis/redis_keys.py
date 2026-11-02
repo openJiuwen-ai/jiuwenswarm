@@ -85,6 +85,7 @@ def cron_permission_hold_by_session_rel(session_id: str) -> str:
         raise ValueError("session_id is required")
     return GATEWAY_CRON_PERMISSION_HOLD_BY_SESSION_TEMPLATE.format(session_id=sid)
 
+
 def cron_active_session_rel(job_id: str) -> str:
     """``gateway:cron_active_session:{job_id}`` String：该 job 正在执行的会话号。
 
