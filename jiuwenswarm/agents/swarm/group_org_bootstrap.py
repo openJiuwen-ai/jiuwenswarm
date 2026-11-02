@@ -2249,6 +2249,10 @@ def _root_output(roots: list[Any]) -> str:
         try:
             if path.is_file():
                 parts.append(path.read_text(encoding="utf-8")[:20000])
+        except UnicodeDecodeError:
+            # A binary deliverable (e.g. .pptx) is not inlined; it still
+            # reaches the group as an attachment via _owner_final_files.
+            logger.debug("organization output is not UTF-8 text, skipped: %s", uri)
         except OSError:
             logger.debug("organization output unreadable: %s", uri, exc_info=True)
     return "\n\n".join(parts)

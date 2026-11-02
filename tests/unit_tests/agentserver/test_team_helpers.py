@@ -2749,6 +2749,145 @@ async def test_heartbeat_team_followup_waits_for_real_round_and_routes_once(monk
     assert (await browser_queue.get())["content"] == "interactive"
 
 
+def _group_session_metadata(group_session_id: str):
+    def _metadata(session_id, **_kwargs):
+        return {"type": "group_chat"} if session_id == group_session_id else {}
+
+    return _metadata
+
+
+def test_group_heartbeat_detection_requires_heartbeat_in_group_session(monkeypatch):
+    monkeypatch.setattr(team_helpers, "get_session_metadata", _group_session_metadata("sess-group"))
+    heartbeat = {"automation": {"kind": "heartbeat", "run_id": "hb"}}
+
+    def _request(session_id, metadata):
+        return SimpleNamespace(session_id=session_id, metadata=metadata, params={})
+
+    assert team_helpers._is_group_heartbeat_request(_request("sess-group", heartbeat)) is True
+    assert team_helpers._is_group_heartbeat_request(_request("sess-team", heartbeat)) is False
+    assert team_helpers._is_group_heartbeat_request(_request("sess-group", {})) is False
+
+
+@pytest.mark.anyio
+async def test_group_heartbeat_followup_wakes_leader_privately(monkeypatch):
+    from openjiuwen.agent_teams.interaction.payload import GodViewMessage
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    delivered: list = []
+
+    class _FakeManager(TeamManager):
+        def has_stream_task(self, session_id, *, generation: int | None = None) -> bool:
+            return True
+
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        async def interact(self, session_id: str, query, *, run_context=None):
+            delivered.append(query)
+
+            async def _complete_round() -> None:
+                await asyncio.sleep(0)
+                await self.broadcast_event(
+                    session_id,
+                    {"event_type": "chat.final", "content": "progress checked", "rid": 2},
+                )
+                await self.broadcast_event(
+                    session_id,
+                    {
+                        "event_type": "chat.processing_status",
+                        "session_id": session_id,
+                        "rid": 2,
+                        "is_processing": False,
+                        "is_complete": True,
+                    },
+                )
+
+            asyncio.create_task(_complete_round())
+            return True, None
+
+    manager = _FakeManager()
+    manager.add_waiter("sess-group-heartbeat", "req-browser", asyncio.Queue())
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
+    monkeypatch.setattr(
+        team_helpers, "get_session_metadata", _group_session_metadata("sess-group-heartbeat")
+    )
+    request = AgentRequest(
+        session_id="sess-group-heartbeat",
+        request_id="hb-run-group",
+        channel_id="web",
+        metadata={"automation": {"kind": "heartbeat", "run_id": "hb-run-group"}},
+        params={"query": "check run_team progress", "automation": {"kind": "heartbeat"}},
+        user_id="owner",
+    )
+
+    heartbeat_token = team_helpers.bind_team_heartbeat_service(SimpleNamespace(admission=object()))
+    try:
+        chunks = [
+            chunk
+            async for chunk in team_helpers.process_team_message_stream(
+                request, {"query": "check run_team progress"}, object()
+            )
+        ]
+    finally:
+        team_helpers.reset_team_heartbeat_service(heartbeat_token)
+
+    assert len(delivered) == 1
+    payload = delivered[0]
+    # Never a public group broadcast authored as the user.
+    assert isinstance(payload, GodViewMessage)
+    assert "check run_team progress" in payload.body
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_group_heartbeat_skips_cold_start_without_live_runtime(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    class _FakeManager(TeamManager):
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            raise AssertionError("a group heartbeat must not build a runtime")
+
+        async def interact(self, session_id: str, query, *, run_context=None):
+            raise AssertionError("a group heartbeat must not be delivered without a runtime")
+
+    async def _prepare(**kwargs):
+        return team_helpers._FirstTeamRequestPreparation(
+            recovered_runtime=False, query=kwargs["query"], hide_dm=False, debug=False,
+        )
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(team_helpers, "_prepare_first_team_request", _prepare)
+    monkeypatch.setattr(
+        team_helpers, "get_session_metadata", _group_session_metadata("sess-group-cold")
+    )
+    run_streaming = AsyncMock()
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", run_streaming)
+    request = AgentRequest(
+        session_id="sess-group-cold",
+        request_id="hb-run-cold",
+        channel_id="web",
+        metadata={"automation": {"kind": "heartbeat", "run_id": "hb-run-cold"}},
+        params={"query": "check progress"},
+        user_id="owner",
+    )
+
+    heartbeat_token = team_helpers.bind_team_heartbeat_service(SimpleNamespace(admission=object()))
+    try:
+        chunks = [
+            chunk
+            async for chunk in team_helpers.process_team_message_stream(
+                request, {"query": "check progress"}, object()
+            )
+        ]
+    finally:
+        team_helpers.reset_team_heartbeat_service(heartbeat_token)
+
+    assert [chunk.payload for chunk in chunks] == [None]
+    assert chunks[-1].is_complete is True
+    run_streaming.assert_not_called()
+
 @pytest.mark.anyio
 async def test_interactive_followup_attaches_after_headless_heartbeat(monkeypatch):
     """A user can consume a stream whose only previous waiter was Heartbeat."""
