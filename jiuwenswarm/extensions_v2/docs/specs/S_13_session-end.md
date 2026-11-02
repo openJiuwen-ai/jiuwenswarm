@@ -1,47 +1,38 @@
-# session.end 主会话删除收尾通知规约
+# session.end 会话运行结束通知规约
 
 | 项 | 值 |
 | --- | --- |
 | 编号 | S_13 / session-end |
-| 最近修订日期 | 2026-10-29 |
+| 最近修订日期 | 2026-11-02 |
 | 关联特性 | [F_24](../features/F_24_session-end.md) |
 
 ## 1. 输入、输出与填写规则
 
-输入为 frozen dataclass `SessionEndInput`，全部由平台填写，用户只读、原样传给 next。
+本次修订替代原永久删除专用契约，保留 session.start。平台构造 frozen dataclass SessionEndInput，用户只读并原样 next。
 
-| 字段 | 类型 / 默认 | 含义和实际填写内容 |
+| 字段 | 类型 / 默认 | 含义、填写内容与作用 |
 | --- | --- | --- |
-| session_id | str，必填 | 删除目标主会话的合法 ID，由 Runtime 的 SessionLifecycleTarget 提供 |
-| end_id | str，必填 | 此 Runtime 内第一次收尾通知的平台 UUID（32 位十六进制字符串）；同一未完成删除的重试不重新通知 |
-| reason | str，必填 | 首版固定 session_deleted，表示明确的永久删除收尾，不表示删除已提交 |
-| channel_id | str，必填 | Runtime 从保存元数据/原请求解析的渠道，缺失时为 default；不是当前网页连接 ID |
-| mode | str，必填 | 保存的主会话模式，例如 agent.plan；不提供 Team/子 Agent 的结束通知 |
+| reason | str，必填 | clear/resume/logout/prompt_input_exit/other 五值之一；当前实际资源释放和停机使用 other，不能把切页伪报成 resume |
+| session_id | str，必填 | 正在结束的真实 Runtime 主会话 ID，例如 demo-a；对应 Claude sessionId |
+| resume | SessionResume，必填 | 恢复资料对象；resume.id 等于本次 session_id，例如 demo-a；不是令牌或路径，不保证无持久记录时能够恢复 |
 
-默认输出为 frozen dataclass `SessionEndOutput`，构造器的三个字段都必填，实际由 CORE 提供：
+默认 CORE 返回 frozen dataclass SessionEndOutput(session_id: str)，回显原身份；不再提供 accepted/end_id、deny 或取消结束协议。USER 必须返回真实 next 回执。逐字段例子与用途唯一展开于 F_24 第 3 节。
 
-| 字段 | 类型 / 默认 | 含义与消费方式 |
-| --- | --- | --- |
-| accepted | bool，无省略默认 | 默认 CORE 返回严格 True，通知链已被接受；不是删除事务提交或全部外部资源成功的证明 |
-| session_id | str，无省略默认 | 原样回显平台删除目标，只读核对，不回填另一会话 |
-| end_id | str，无省略默认 | 原样回显本次 32 位十六进制 UUID 通知身份；不作为会话 ID 或重试参数 |
+## 2. 范围和不变量
 
-accepted 为严格 bool 且为 True，表示默认通知 CORE 已接受；session_id/end_id 原样回显平台目标和本次通知身份。三个字段均由 CORE 填写，不接收拒绝、改写、目录修改或取消删除的协议。accepted 不证明每个用户的外部资源已成功释放，也不代表删除事务已经提交。
+- SE-01：仅 Worker 持有 EventBus。装配注册类型、Matcher、Validator、默认 CORE，沿用共享 Builder/现有 Ops；无同名 Ops 或 Core API 变更。
+- SE-02：AgentRuntime.cleanup_session 和 Runtime.close 终止真实已登记运行时，先停稳执行，再在原内存资源释放前调用固定宿主结束参与者。永久删除只有确实终止活跃运行时经过该通知；离线存档删除不虚构运行。
+- SE-03：回复完成、取消生成、idle、界面切换/attach/detach 和 Supervisor 临时断连不等于结束。明确 client.disconnect 若实际释放运行，则通知 other；没有实际关闭路径的强杀/崩溃不保证通知。
+- SE-04：按 Runtime 内 session_id + Coordinator generation 合并至多一次通知尝试；重复 cleanup/随后停机不重放。同 ID 恢复形成新代次，新代次结束可再次通知；新登记等待旧代次通知和资源清理完成。
+- SE-05：USER 保存自己的状态或释放自己的资源，再 next；CORE 核对有效宿主调用、原输入、绑定会话，回显真实 session_id。平台继续原释放；事件不删除历史、不重新创建 Agent、不发送额外输入。
+- SE-06：所有输入及嵌套 resume.id 只读；伪造目标、提前回执、next 后替换身份无效，沿用既有 USER 故障隔离。作用域外无法自行 trigger 一个有效结束通知。
+- SE-07：整个通知等待预算默认 1.5 秒。异常/超时记日志并继续释放；超时失效作用域并请求取消，迟到任务不能再生成有效回执；包在途计数直到任务真实退出才释放，不承诺回滚外部副作用。
+- SE-08：Runtime.close 停稳执行后并发通知各主会话，之后释放资源并最后卸载扩展；不按会话数串行累计预算。停稳超时不伪造该代次正常结束。
+- SE-09：SessionContext 绑定真实目标；cwd 未确认则 None，project_root 仅使用已确认绝对目录；不使用进程 cwd 或初始化模型兜底。ops.session_context 是已有只读属性。
+- SE-10：固定宿主结束观察者与动态 KVC activity/delete 参与者分开组合。无扩展时保留原释放行为；卸载只撤销用户订阅。无跨进程重启 exactly-once，收尾必须幂等。
 
-## 2. 触发、范围和不变量
+## 3. 兼容与验收
 
-- SE-01：Worker 装配注册类型、matcher、Validator、默认 CORE，沿用一次 ops.build；无新增 Ops 或 agent-core 变更。
-- SE-02：AgentServer 构建 Runtime 时注入宿主删除参与者，在 Runtime 主会话永久删除的 release_resources 阶段派发。此时执行已 quiesce，原资源释放/Runner.release/删除目录在通知返回后继续；普通断连、foreground/inactive、归档和临时 Worker 回收不触发。
-- SE-03：默认 CORE 仅返回真实通知回执；原资源释放和文件删除仍由 Runtime 唯一执行，避免第二次释放。USER 释放自己按 session_id 管理的资源，再 next；不删除平台历史或调用删除入口重入。
-- SE-04：目标和来源来自平台。输入改写、伪造提前成功或后置修改回执无效，按 Core USER 故障隔离继续原有效链；在平台调用作用域外不能伪造此通知。
-- SE-05：每个 Runtime 对一个未完成删除至多尝试通知一次，开始通知即记录；重试不重放用户清理。删除提交后移除记录，成功重复删除由原 Runtime 去重。进程崩溃/重启不提供持久 exactly-once，用户释放操作应幂等。
-- SE-06：通知等待预算默认 2 秒。异常或超时记日志后继续原删除；超时使调用作用域失效并请求取消。忽略取消的用户任务可能晚退出，不允许再产生有效 CORE 回执；Runtime 的包在途计数直至任务退出才释放。无法强制取消用户在外部系统的副作用。
-- SE-07：原删除请求被取消时取消通知并传播 CancelledError，由原事务执行既有失败/补偿流程；不伪造成功删除。通知后的平台失败也不把已发生的用户清理回滚成未发生。
-- SE-08：SessionContext 只绑定真实目标 ID；cwd 未确认则 None，project_root 仅使用目标保存的绝对 project_dir。无进程 cwd 兜底、无模型激活或跨会话资料。Core 自带 ops.session_context 为只读属性。
-- SE-09：宿主固定参与者与 KVC 动态参与者分开组合；KVC 开关、suspend、release 不移除宿主通知。事件/用户代码不进入 Front/Supervisor，仍只有 Worker 持有 EventBus。
+旧 reason=session_deleted、end_id、accepted、事件 channel_id/mode 被替换为 reason/session_id/resume.id 和真实身份回执。恢复标识只描述身份，持久化关闭、未产生记录或随后永久删除时不承诺恢复。词表对齐 Claude Mods，但不声称产品已有全部 clear/resume/logout UI；有真实替换/退出入口的宿主才能提供相应原因。
 
-## 3. 兼容与验收入口
-
-无扩展装配时沿用原删除行为；用户安装包仅发布 Handler，只有真实永久删除才触发。卸载移除用户订阅，平台默认删除及 CORE 保留。本事件不与 PR06 按包激活一次的 session.start 一一配对；一个扩展实例可观察多个主会话结束。
-
-首版不提供 Claude 的 resume 信息、进程退出或切换会话语义。当前通知范围不是所有运行结束；差异、用户包、完整链和验证见 [F_24](../features/F_24_session-end.md)。
+Python 使用 session_id 对应 Claude sessionId。参考固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497，不把公开声明当引擎源码。当前验证与旧删除版本历史证据分别记录于 [F_24 第 6 节](../features/F_24_session-end.md#6-验收与未决问题)。

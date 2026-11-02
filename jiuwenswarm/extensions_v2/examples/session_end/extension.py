@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Keep user-owned per-Session cache and release it on terminal deletion."""
+"""Keep user-owned session state and release it when that Runtime run ends."""
 
 import logging
 
@@ -24,8 +24,8 @@ class SessionEndExample:
     async def on_end(self, event, ops, next_handler):
         session_id = ops.session_context.session_id
         released = self.cache.pop(session_id, None) is not None
-        logger.info("session end example: session=%s end=%s reason=%s released=%s",
-                    session_id, event.event_input.end_id, event.event_input.reason, released)
+        logger.info("session end example: session=%s reason=%s resume=%s released=%s",
+                    session_id, event.event_input.reason, event.event_input.resume.id, released)
         return await next_handler(event)
 
 
