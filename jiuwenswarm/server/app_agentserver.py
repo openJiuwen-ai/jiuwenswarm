@@ -91,6 +91,21 @@ def _install_common_providers() -> None:
     install_front()
 
 
+def _start_team_mysql_before_traffic() -> None:
+    """Create team tables before this process accepts chat.
+
+    Personal edition does not use Gateway MySQL, so this returns immediately.
+    """
+    from jiuwenswarm.infrastructure.db.team_mysql_actor import (
+        get_team_mysql_actor,
+        use_team_mysql,
+    )
+
+    if not use_team_mysql():
+        return
+    get_team_mysql_actor()
+
+
 async def _run(host: str, port: int) -> None:
     _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
@@ -110,6 +125,7 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - startup_t0,
     )
 
+    await asyncio.to_thread(_start_team_mysql_before_traffic)
     front = AgentServerFront(host=host, port=port)
     from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 

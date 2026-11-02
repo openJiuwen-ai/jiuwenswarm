@@ -730,3 +730,32 @@ async def test_denied_expert_request_does_not_write_history(monkeypatch):
     ]
     assert history == []
     assert chunks[0].payload["event_type"] == "chat.error"
+
+
+@pytest.mark.asyncio
+async def test_team_list_reads_session_metadata_without_cache(monkeypatch):
+    from jiuwenswarm.server.handlers import organization
+
+    seen = {}
+
+    def fake_meta(session_id, cache_bust=False, **kwargs):
+        seen["cache_bust"] = cache_bust
+        seen["session_id"] = session_id
+        return {"team_name": "owned-team"}
+
+    class _Manager:
+        def get_runtime_team_snapshot(self):
+            return {}
+
+        def get_active_team_name(self, _session_id):
+            return None
+
+    monkeypatch.setattr(organization, "get_session_metadata", fake_meta)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda _channel_id: _Manager(),
+    )
+    entries = await organization._team_list_entries("sess-owner", "web")
+    assert seen == {"cache_bust": True, "session_id": "sess-owner"}
+    assert entries[0]["team_id"] == "owned-team"
+    assert entries[0]["is_owner"] is True

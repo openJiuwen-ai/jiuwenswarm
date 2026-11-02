@@ -473,6 +473,36 @@ class SessionAdapter(GatewayAdapter):
                 or {}
             )
             if is_team_mode(metadata.get("mode")):
+                from jiuwenswarm.enterprise.edition import is_enterprise
+
+                if is_enterprise():
+                    try:
+                        from jiuwenswarm.enterprise.team.handlers import (
+                            request_identity,
+                        )
+                        from jiuwenswarm.enterprise.team.session_cleanup import (
+                            purge_team_for_deleted_session,
+                        )
+
+                        identity = request_identity(request)
+                        owner = identity.user_id or str(request.user_id or "").strip()
+                        from jiuwenswarm.infrastructure.db.team_mysql_actor import (
+                            run_team_store,
+                        )
+
+                        await run_team_store(
+                            purge_team_for_deleted_session,
+                            session_id=target,
+                            owner_user_id=owner,
+                            require_owner=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "[SessionAdapter] enterprise offline team purge failed: "
+                            "session_id=%s",
+                            target,
+                            exc_info=True,
+                        )
                 return build_error_response(
                     request,
                     "team session delete requires agent server",

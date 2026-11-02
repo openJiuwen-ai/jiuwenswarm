@@ -340,6 +340,18 @@ def register_web_http_api_routes(
             request, channel, "session.delete", {"session_id": session_id},
         )
 
+    @app.post(
+        "/api/v1/sessions/{session_id}/actions/switch",
+        tags=["sessions"],
+        summary="切换会话（Web RPC method=session.switch）",
+    )
+    async def session_switch(
+        session_id: str, request: Request, body: ChatActionBody | None = None,
+    ) -> Response:
+        payload = _body_dict(body)
+        payload["session_id"] = session_id
+        return await _unary(request, channel, "session.switch", payload)
+
     @app.get(
         "/api/v1/sessions/{session_id}/history",
         tags=["sessions"],
@@ -359,10 +371,10 @@ def register_web_http_api_routes(
     @app.get(
         "/api/v1/sessions/{session_id}/live",
         tags=["sessions"],
-        summary="订阅正在执行的定时任务会话",
+        summary="订阅会话实时推送",
     )
     async def session_live(session_id: str, request: Request) -> Response:
-        """把定时任务的执行结果以 SSE 推给已经打开的会话页。
+        """定时任务会话走 live_bus；其它企业版团队会话走 session live。
 
         The routed metadata lookup validates the caller and cron membership.
         Web execution sessions use ordinary Web session identifiers.
@@ -374,38 +386,37 @@ def register_web_http_api_routes(
         envelope = json.loads(metadata_response.body)
         if not envelope.get("ok"):
             return metadata_response
-        if not (envelope.get("data") or {}).get("cron_id"):
-            return JSONResponse({"error": "not_cron_session"}, status_code=404)
+        if (envelope.get("data") or {}).get("cron_id"):
+            from gateway.cron.live_bus import cron_live_bus
 
-        from gateway.cron.live_bus import cron_live_bus
+            queue = cron_live_bus.subscribe(sid, replay=True)
 
-        queue = cron_live_bus.subscribe(sid, replay=True)
+            async def _frames() -> AsyncIterator[str]:
+                try:
+                    while True:
+                        if await request.is_disconnected():
+                            return
+                        try:
+                            frame = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        except asyncio.TimeoutError:
+                            yield ": keepalive\n\n"
+                            continue
+                        event_name = str(frame.get("event") or "message")
+                        data = frame.get("payload") if isinstance(frame.get("payload"), dict) else frame
+                        data = {**data, "live_replay": bool(frame.get("replay"))}
+                        yield _sse_pack(sid, event_name, data)
+                finally:
+                    cron_live_bus.unsubscribe(sid, queue)
 
-        async def _frames() -> AsyncIterator[str]:
-            try:
-                while True:
-                    if await request.is_disconnected():
-                        return
-                    try:
-                        frame = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    except asyncio.TimeoutError:
-                        yield ": keepalive\n\n"
-                        continue
-                    event_name = str(frame.get("event") or "message")
-                    data = frame.get("payload") if isinstance(frame.get("payload"), dict) else frame
-                    data = {**data, "live_replay": bool(frame.get("replay"))}
-                    yield _sse_pack(sid, event_name, data)
-            finally:
-                cron_live_bus.unsubscribe(sid, queue)
-
-        return StreamingResponse(
-            _frames(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
+            return StreamingResponse(
+                _frames(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+        return await _session_live(request, channel, session_id)
 
     @app.post(
         "/api/v1/chat/completions",
@@ -738,6 +749,70 @@ async def _unary(
                 await channel.unregister_request_outbound(outbound)
             except Exception:  # noqa: BLE001
                 logger.debug("[WebHTTP] unregister_request_outbound failed", exc_info=True)
+
+
+async def _session_live(request: Request, channel: Any, session_id: str) -> Response:
+    """浏览器按会话订一次。灭灯和下一句 chat.send 都不结束它。"""
+    from gateway.channel_manager.web.outbound import HttpSseOutbound
+
+    req_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    if not is_enterprise():
+        return JSONResponse(
+            {
+                "request_id": req_id,
+                "ok": False,
+                "error": {"code": "NOT_FOUND", "message": "session live is enterprise team only"},
+            },
+            status_code=404,
+            headers=_response_headers(req_id, "session.live"),
+        )
+    sid = str(session_id or "").strip()
+    if not sid:
+        return JSONResponse(
+            {
+                "request_id": req_id,
+                "ok": False,
+                "error": {"code": "BAD_REQUEST", "message": "session_id is required"},
+            },
+            status_code=400,
+            headers=_response_headers(req_id, "session.live"),
+        )
+
+    async def gen() -> AsyncIterator[str]:
+        outbound = HttpSseOutbound(session_id=sid, path="/api/v1/sessions/live")
+        outbound.session_live = True
+        channel.register_request_outbound(outbound)
+        try:
+            async for frame in outbound.iter_open_frames(keepalive=10):
+                if await request.is_disconnected():
+                    break
+                if frame.get("type") == "keepalive":
+                    yield ": keepalive\n\n"
+                    continue
+                if frame.get("type") != "event":
+                    continue
+                payload = frame.get("payload") if frame.get("payload") is not None else {}
+                yield _sse_pack(req_id, str(frame.get("event") or "message"), payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[WebHTTP] session live failed: %s", exc)
+            yield _sse_pack(req_id, "chat.error", {"error": str(exc), "session_id": sid})
+        finally:
+            try:
+                await channel.unregister_request_outbound(outbound)
+            except Exception:  # noqa: BLE001
+                logger.debug("[WebHTTP] session live unregister failed", exc_info=True)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Request-Id": req_id,
+            "X-Accel-Buffering": "no",
+            "X-Web-RPC-Method": "session.live",
+        },
+    )
 
 
 async def _stream(

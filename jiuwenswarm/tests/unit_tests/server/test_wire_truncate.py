@@ -26,6 +26,26 @@ def test_ask_user_answer_is_restorable_history_event() -> None:
     assert "chat.ask_user_answer" in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
 
 
+def test_team_quota_notice_is_restorable_history_event() -> None:
+    # 人数上限拒绝只在当场弹出。落盘后必须放行，刷新才能把同一句提示读回来。
+    # 其它 chat.notice 仍不进可恢复历史。
+    from jiuwenswarm.server.wire_truncate import history_assistant_event_is_restorable
+
+    assert "chat.notice" not in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+    assert history_assistant_event_is_restorable(
+        {"event_type": "chat.notice", "notice_type": "team_quota"}
+    )
+    assert history_assistant_event_is_restorable(
+        {"event_type": "chat.notice", "notice_type": "requested_team_size"}
+    )
+    assert history_assistant_event_is_restorable(
+        {"event_type": "chat.notice", "notice_type": "team_teammate_quota"}
+    )
+    assert not history_assistant_event_is_restorable(
+        {"event_type": "chat.notice", "notice_type": "image_tool_fallback"}
+    )
+
+
 def test_chat_error_is_restorable_history_event() -> None:
     # chat.error 落盘后（interface.py:4040）刷新/恢复会话时需从历史恢复展示，
     # event_type 必须在后端白名单里放行，否则 read_history_cursor_page 在
