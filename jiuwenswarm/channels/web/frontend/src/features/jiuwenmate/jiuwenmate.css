@@ -4348,14 +4348,6 @@
   border-radius: 3px;
 }
 
-.jiuwenmate-profile__im-row > img.jiuwenmate-welink-logo {
-  width: auto;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-}
-
 .jiuwenmate-welink-qr-image {
   display: block;
   width: 240px;
@@ -4693,6 +4685,7 @@
 }
 
 .jiuwenmate-profile__im-row > img {
+  object-fit: contain;
   width: 28px;
   height: 28px;
   padding: 4px;
