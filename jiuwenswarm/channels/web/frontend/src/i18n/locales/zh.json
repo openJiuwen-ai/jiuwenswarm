@@ -3877,7 +3877,34 @@
       "uploadUnsafePath": "文件名包含不允许的字符或使用了系统保留名称，请重命名后上传",
       "uploadInvalidRequest": "上传请求无效或缺少文件，请重新选择文件后上传",
       "uninstallFailed": "卸载失败",
-      "uninstallFailedHint": "卸载失败，请稍后重试"
+      "uninstallFailedHint": "卸载失败，请稍后重试",
+      "uploadPermissionRequired": "未获得 Skill 上传资格，请申请或联系管理员授权",
+    "uploadPermissionCheckUnavailable": "Skill 上传资格校验服务暂不可用，请稍后重试"
+    },
+    "skillUpload": {
+      "entryApply": "申请上传资格",
+      "entryPending": "资格审核中",
+      "entryUnavailable": "资格校验不可用",
+    "entryRetry": "重试",
+      "entryCancel": "撤回申请",
+      "entryCancelling": "撤回中...",
+      "cancelConfirm": "确认撤回 Skill 上传资格申请？撤回后可重新提交。",
+      "cancelSuccess": "申请已撤回",
+      "cancelFailed": "撤回失败，请稍后重试",
+      "approvedNotice": "Skill 上传资格已通过审批，现在可以上传技能了",
+      "rejectedNotice": "Skill 上传资格申请已被驳回，可修改后重新提交",
+      "applyDialog": {
+        "title": "申请 Skill 上传资格",
+        "approverLabel": "审批人",
+        "approverPlaceholder": "请选择审批人",
+        "approverLoadFailed": "审批人列表加载失败，请稍后重试",
+        "reasonLabel": "申请说明",
+        "reasonPlaceholder": "请填写申请 Skill 上传资格的原因（1-500 字）",
+        "submit": "提交申请",
+        "submitting": "提交中...",
+        "submitFailed": "提交失败，请稍后重试",
+        "cancel": "取消"
+      }
     }
   },
   "agent": {

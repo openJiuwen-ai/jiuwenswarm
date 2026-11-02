@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import email.parser
 import email.policy
+import hashlib
 import json
 import logging
 import os
@@ -51,6 +52,8 @@ _SKILL_HTTP_ERROR_STATUS: dict[str, int] = {
     "SKILL_KNOWLEDGE_INPUT_CONFLICT": 400,
     "SKILL_VERSION_CONTENT_INVALID": 400,
     "SKILL_REBUILD_FAILED": 500,
+    "SKILL_UPLOAD_PERMISSION_REQUIRED": 403,
+    "SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE": 503,
 }
 
 
@@ -95,12 +98,39 @@ def parse_multipart_form(content_type: str, body: bytes) -> dict[str, Any]:
     return fields
 
 
+def _user_tag(caller_id: str) -> str:
+    """把调用者 user_id 编码为暂存目录名中的短标记（归属校验用）。"""
+    cid = str(caller_id or "").strip()
+    if not cid:
+        return "anon"
+    return hashlib.sha256(cid.encode("utf-8")).hexdigest()[:16]
+
+
+def _extract_user_tag(path_str: str) -> str | None:
+    """从暂存文件路径的父目录名中解析归属标记。"""
+    try:
+        parent = Path(path_str).parent.name
+    except (OSError, ValueError):
+        return None
+    if not parent.startswith("jiuwenswarm_skill_upload_"):
+        return None
+    parts = parent.split("_", 4)
+    if len(parts) < 5:
+        return None
+    return parts[4]
+
+
 def handle_skills_upload_temp_http(
     *,
     content_type: str,
     body: bytes,
+    caller_id: str = "",
 ) -> tuple[int, dict[str, Any]]:
-    """保存上传文件，返回后续 skills.* WebSocket RPC 使用的本地路径."""
+    """保存上传文件，返回后续 skills.* WebSocket RPC 使用的本地路径.
+
+    ``caller_id`` 用于在暂存目录名中标记文件归属，后续
+    ``handle_skills_import_upload`` 会校验调用者与归属一致。
+    """
     try:
         fields = parse_multipart_form(content_type, body)
         file_field = fields.get("file")
@@ -116,7 +146,7 @@ def handle_skills_upload_temp_http(
         ):
             raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
 
-        upload_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_upload_"))
+        upload_dir = Path(tempfile.mkdtemp(prefix=f"jiuwenswarm_skill_upload_{_user_tag(caller_id)}_"))
         dest = upload_dir / filename
         try:
             dest.write_bytes(bytes(file_field["content"]))
@@ -302,8 +332,15 @@ def handle_skills_import_http(
     content_type: str,
     body: bytes,
     use_local_manager: bool = False,
+    caller_id: str = "",
+    cluster_id: str = "",
 ) -> tuple[int, dict[str, Any]]:
-    """处理 ``POST /file-api/skills/import``，返回 (status, json_body)."""
+    """处理 ``POST /file-api/skills/import``，返回 (status, json_body).
+
+    ``caller_id`` / ``cluster_id`` 用于企业版 ``SKILL_UPLOAD_PERMISSION_ENFORCE``
+    开启时，让 ``SkillManager.handle_skills_import_upload`` 内的暂存归属校验
+    与上传资格复查能拿到当前用户身份（HTTP 端点不经 AgentServer 注入）。
+    """
     try:
         fields = parse_multipart_form(content_type, body)
         file_field = fields.get("file")
@@ -321,6 +358,12 @@ def handle_skills_import_http(
             zip_path = Path(tmpdir) / "upload.zip"
             zip_path.write_bytes(content)
             params = {"path": str(zip_path), "overwrite": overwrite}
+            cid = str(caller_id or "").strip()
+            clid = str(cluster_id or "").strip()
+            if cid:
+                params["_caller_user_id"] = cid
+            if clid:
+                params["_caller_cluster_id"] = clid
             if use_local_manager:
                 payload = _run_coro(SkillManager().handle_skills_import_upload(params))
             else:
@@ -411,3 +454,37 @@ def handle_skills_create_from_knowledge_http(
         if upload_dir is not None and use_local_manager:
             # Agent 路径由 Agent 侧清理；本地仅准备时留下给调用方，此处不删
             pass
+
+
+def handle_skills_uninstall_http(
+    *,
+    name: str,
+    origin: str = "",
+) -> tuple[int, dict[str, Any]]:
+    """处理 ``POST /file-api/skills/uninstall``，返回 (status, json_body).
+
+    企业版用户上传的 skill 安装在 gateway 本地 workspace；WS RPC
+    ``skills.uninstall`` 经 E2A 转发到 AgentServer，后者没有该 skill。
+    此函数直接用 gateway 本地 ``SkillManager`` 卸载，prebuilt/builtin
+    由 ``handle_skills_uninstall`` 内部保护拒绝。
+    """
+    try:
+        params: dict[str, Any] = {"name": name}
+        origin = str(origin or "").strip()
+        if origin:
+            params["origin"] = origin
+        payload = _run_coro(SkillManager().handle_skills_uninstall(params))
+        if not payload.get("success"):
+            code = str(payload.get("error_code") or payload.get("code") or "")
+            msg = str(payload.get("error_message") or payload.get("detail") or "uninstall failed")
+            if code == "prebuilt_not_removable":
+                return 403, skill_http_error_body("SKILL_BUILTIN_READ_ONLY", msg)
+            if code == "not_found":
+                return 404, skill_http_error_body("SKILL_NOT_FOUND", msg)
+            return 400, skill_http_error_body(code or "SKILL_INVALID_PACKAGE", msg)
+        return 200, payload
+    except SkillRpcError as exc:
+        return skill_http_error_status(exc.code), skill_http_error_body(exc.code, exc.message)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        logger.exception("[skills_multipart_http] uninstall failed: %s", exc)
+        return 500, skill_http_error_body("SKILL_INVALID_PACKAGE", str(exc))

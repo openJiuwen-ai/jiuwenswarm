@@ -2562,6 +2562,12 @@ class JiuWenSwarm:
                     params["_channel_id"] = str(request.channel_id or "").strip()
                 if handler_name == "handle_skills_files_get" and not params.get("session_id"):
                     params["session_id"] = params["_session_id"]
+            if handler_name == "handle_skills_import_upload":
+                # 暂存文件归属校验：校验调用者与上传者一致
+                params["_caller_user_id"] = str(getattr(request, "user_id", "") or "").strip()
+                # 上传资格复查（设计文档第 8 节）：WS 链路无 JWT，按 user_id +
+                # cluster_id（=bot_id）走 Manager 内部接口复查。
+                params["_caller_cluster_id"] = str(getattr(request, "bot_id", "") or "").strip()
             if handler_name in {
                 "handle_skills_retrieval_status",
                 "handle_skills_retrieval_index_build",

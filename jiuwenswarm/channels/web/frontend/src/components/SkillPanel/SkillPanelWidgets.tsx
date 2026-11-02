@@ -13,6 +13,88 @@ import { PageCard, type PageCardActionProps } from '../ui';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { MarketplacePluginItem } from './types';
 import { getSourceLabel } from './skillPanelUtils';
+import type { SkillUploadPermissionState } from '../../services/skillUploadPermissionApi';
+
+/** 企业版上传资格入口按钮：无资格可申请，审核中可撤回，校验不可用可重试。 */
+export function SkillUploadPermissionEntry({
+  state,
+  onApply,
+  onCancel,
+  onRetry,
+  cancelling = false,
+  retrying = false,
+}: {
+  state: SkillUploadPermissionState;
+  onApply: () => void;
+  onCancel: () => void;
+  onRetry?: () => void;
+  cancelling?: boolean;
+  retrying?: boolean;
+}) {
+  const { t } = useTranslation();
+  if (state.phase === 'checking' || state.phase === 'allowed') return null;
+  if (state.phase === 'pending') {
+    return (
+      <div className="flex items-center gap-2">
+        <span
+          className="flex items-center justify-center h-8 px-3 rounded-[16px] text-sm text-text-muted bg-card border border-border"
+          data-testid="skill-panel-create-permission-entry"
+          data-variant="pending"
+        >
+          {t('skills.skillUpload.entryPending')}
+        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={cancelling}
+          className="flex items-center justify-center h-8 px-3 rounded-[16px] text-sm text-text bg-card border border-border hover:bg-secondary disabled:opacity-60 disabled:cursor-not-allowed"
+          data-testid="skill-panel-create-permission-cancel-btn"
+          data-variant={cancelling ? 'cancelling' : 'idle'}
+        >
+          {cancelling ? t('skills.skillUpload.entryCancelling') : t('skills.skillUpload.entryCancel')}
+        </button>
+      </div>
+    );
+  }
+  if (state.phase === 'unavailable') {
+    // 查询失败：显示状态文案 + 独立"重试"按钮（设计 §6 要求"显示重试入口，不放行上传"）。
+    return (
+      <div className="flex items-center gap-2">
+        <span
+          className="flex items-center justify-center h-8 px-3 rounded-[16px] text-sm text-warn bg-card border border-border"
+          data-testid="skill-panel-create-permission-entry"
+          data-variant="unavailable"
+        >
+          {t('skills.skillUpload.entryUnavailable')}
+        </span>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={retrying}
+            className="flex items-center justify-center h-8 px-3 rounded-[16px] text-sm text-text bg-card border border-border hover:bg-secondary disabled:opacity-60 disabled:cursor-not-allowed"
+            data-testid="skill-panel-create-permission-retry-btn"
+            data-variant={retrying ? 'retrying' : 'idle'}
+          >
+            {retrying ? t('skills.skillUpload.entryCancelling') : t('skills.skillUpload.entryRetry')}
+          </button>
+        )}
+      </div>
+    );
+  }
+  // not-allowed：无资格，显示"申请上传资格"入口。
+  return (
+    <button
+      type="button"
+      onClick={() => onApply()}
+      className="flex items-center justify-center gap-1 h-8 w-[112px] rounded-[16px] text-sm text-text bg-card border border-border hover:bg-secondary"
+      data-testid="skill-panel-create-permission-entry"
+      data-variant={state.phase}
+    >
+      {t('skills.skillUpload.entryApply')}
+    </button>
+  );
+}
 
 /** 表单字段问号 tooltip（position: fixed，不受 overflow 裁剪） */
 export function FormFieldTooltip({ text }: { text: string }) {

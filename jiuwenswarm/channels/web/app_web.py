@@ -55,6 +55,21 @@ if TYPE_CHECKING:
         ShareImageRenderAuth,
     )
 
+<<<<<<< HEAD
+=======
+_share_image_export_manager: ShareImageExportManager | None = None
+_share_image_export_manager_lock = threading.Lock()
+
+# 写入 Skill 目录集合的端点：企业部署须持有上传资格（SKILL_UPLOAD_PERMISSION_ENFORCE）。
+_SKILL_UPLOAD_WRITE_PATHS = frozenset(
+    {
+        "/file-api/skills/upload-temp",
+        "/file-api/skills/import",
+        "/file-api/skills/create-from-knowledge",
+    }
+)
+
+>>>>>>> d665edb54 (feat(skill): enterprise upload permission gate and approval UI)
 
 class _BadRequestError(ValueError):
     """Client-supplied input the web handler cannot process.
@@ -2088,6 +2103,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 )
             self._write_json(403, {"error": "forbidden_origin"})
             return
+        if parsed.path in _SKILL_UPLOAD_WRITE_PATHS and not self._allow_skill_upload_write():
+            return
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
@@ -2193,6 +2210,27 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         length = self._parse_content_length()
         return self.rfile.read(length) if length > 0 else b""
 
+    def _allow_skill_upload_write(self) -> bool:
+        """企业部署的 Skill 上传资格门禁（``SKILL_UPLOAD_PERMISSION_ENFORCE``）。
+
+        企业版用户身份经 Authorization 头 / access cookie 信使校验；未启用
+        或校验通过返回 True，未放行则先写响应再返回 False。
+        """
+        from jiuwenswarm.channels.web.skill_upload_permission import (
+            SkillUploadPermissionError,
+            check_skill_upload_permission,
+        )
+
+        try:
+            check_skill_upload_permission(
+                authorization=self.headers.get("Authorization", ""),
+                access_cookie=self._get_auth_cookie("openjiuwen_access_token"),
+            )
+        except SkillUploadPermissionError as exc:
+            self._write_json(exc.status, exc.payload)
+            return False
+        return True
+
     def _handle_skills_upload_temp(self) -> None:
         from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
             handle_skills_upload_temp_http,
@@ -2201,6 +2239,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         status, payload = handle_skills_upload_temp_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
+            caller_id=self.headers.get("X-User-Id", ""),
         )
         self._write_json(status, payload)
 

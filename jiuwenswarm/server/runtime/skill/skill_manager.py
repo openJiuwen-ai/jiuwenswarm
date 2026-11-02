@@ -150,6 +150,10 @@ ERROR_SKILLHUB_DETAIL_NOT_FOUND = "SKILLHUB_DETAIL_NOT_FOUND"
 ERROR_SKILLHUB_DETAIL_FAILED = "SKILLHUB_DETAIL_FAILED"
 ERROR_SKILL_OPERATION_UNSUPPORTED = "SKILL_OPERATION_UNSUPPORTED"
 
+# Skill 上传资格门禁（与 skill_upload_permission.py 错误码对齐）
+ERROR_SKILL_UPLOAD_PERMISSION_REQUIRED = "SKILL_UPLOAD_PERMISSION_REQUIRED"
+ERROR_SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE = "SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE"
+
 _DETAIL_KEY_SKILLHUB_DETAIL_NOT_FOUND = "skills.swarmskillshub.errors.detailNotFound"
 _DETAIL_KEY_SKILLHUB_DETAIL_FAILED = "skills.swarmskillshub.errors.detailFailed"
 # 广场详情从产物回填 detail_desc 时的正文长度上限（字符）
@@ -5175,16 +5179,86 @@ class SkillManager:
         self._assert_skill_package_safe(skill_dir)
         return skill_dir
 
+    @staticmethod
+    def _verify_upload_ownership(path_str: str, caller_id: str) -> None:
+        """校验暂存文件归属：目录名中的 user_tag 必须与调用者匹配。
+
+        防止多用户环境下 A 上传的临时文件被 B 调 ``import_upload`` 安装。
+        匿名文件（anon 标记，``caller_id`` 缺失时上传）不强制归属。
+        """
+        from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            _extract_user_tag,
+            _user_tag,
+        )
+
+        file_tag = _extract_user_tag(path_str)
+        if file_tag is None:
+            return
+        caller_tag = _user_tag(caller_id)
+        if file_tag == "anon" or caller_tag == "anon":
+            return
+        if file_tag != caller_tag:
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "上传文件归属校验失败：文件不属于当前用户",
+            )
+
+    @staticmethod
+    def _verify_import_upload_permission(cluster_id: str, user_id: str) -> None:
+        """复查当前用户的 Skill 上传资格（设计文档第 8 节）。
+
+        WS RPC ``skills.import_upload`` 链路无原始 JWT，不能复用第一步 HTTP
+        的 token 缓存；改为按 ``user_id`` + ``cluster_id`` 调 Manager 内部
+        接口（``X-Internal-Token`` 鉴权）直查授权表。
+
+        - 企业版未启用门禁（``SKILL_UPLOAD_PERMISSION_ENFORCE`` 未开）时直接放行；
+        - 校验服务不可用（Manager 不可达 / 内部 token 未配）时 fail-closed
+          返回 ``SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE``，不默认放行；
+        - 未授权返回 ``SKILL_UPLOAD_PERMISSION_REQUIRED``。
+        """
+        from jiuwenswarm.channels.web.skill_upload_permission import (
+            SkillUploadPermissionError,
+            check_skill_upload_permission_by_user,
+        )
+
+        try:
+            check_skill_upload_permission_by_user(
+                cluster_id=cluster_id, user_id=user_id
+            )
+        except SkillUploadPermissionError as exc:
+            code = str(exc.payload.get("code") or "").strip()
+            if code == "SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE":
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_PERMISSION_CHECK_UNAVAILABLE,
+                    str(exc.payload.get("message") or "Skill 上传资格校验服务不可用"),
+                ) from exc
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_PERMISSION_REQUIRED,
+                str(exc.payload.get("message") or "未获得 Skill 上传资格"),
+            ) from exc
+
     async def handle_skills_import_upload(self, params: dict) -> dict:
         """浏览器上传的本地 ``.zip`` Skill 包安装到 workspace.
 
         仅接受 ``.zip``；``overwrite=false`` 且同名已存在时返回 ``SKILL_ALREADY_EXISTS``。
+
+        ``_caller_user_id``（由 AgentServer 注入）用于暂存文件归属校验，
+        防止 A 上传的临时文件被 B 调用安装到自己空间。
+
+        设计文档第 8 节：收到 ``skills.import_upload`` 请求时再次检查有效上传资格；
+        WS 链路无原始 JWT，按 ``_caller_user_id`` + ``_caller_cluster_id`` 走
+        Manager 内部接口复查（``check_skill_upload_permission_by_user``）。
         """
         params = params or {}
         path_str = str(params.get("path") or "").strip()
         overwrite = self._parse_overwrite(params.get("overwrite", False))
         if not path_str:
             raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少上传文件 path")
+
+        caller_id = str(params.get("_caller_user_id") or "").strip()
+        caller_cluster_id = str(params.get("_caller_cluster_id") or "").strip()
+        self._verify_upload_ownership(path_str, caller_id)
+        self._verify_import_upload_permission(caller_cluster_id, caller_id)
 
         src = Path(path_str)
         try:

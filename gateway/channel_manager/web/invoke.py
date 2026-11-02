@@ -51,6 +51,10 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.update",
     # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
     "skills.import_local",
+    # Skill 包上传安装：暂存文件经 /file-api/skills/upload-temp（HTTP 门禁）+ import_upload（WS RPC）。
+    "skills.import_upload",
+    # 卸载用户自上传 skill（prebuilt/builtin 由 SkillManager 内部拒绝）。
+    "skills.uninstall",
     "skills.enterprise.list",
     "skills.enterprise.install",
     "skills.enterprise.uninstall",
