@@ -75,7 +75,7 @@ def valid_receive_output(value: object) -> bool:
     if state is None or not state.active:
         return False
     if isinstance(value, SessionReceiveConsumed):
-        return state.receipt is None and valid_delivery_reason(value.consumed)
+        return not state.attempted and state.receipt is None and valid_delivery_reason(value.consumed)
     return isinstance(value, SessionReceiveResult) and state.receipt is not None and value == state.result
 
 

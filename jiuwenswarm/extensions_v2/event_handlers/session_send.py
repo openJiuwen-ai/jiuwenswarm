@@ -18,6 +18,13 @@ async def session_send_core(event: Event, ops: EventHandlerOps | None, next_hand
         raise ValueError("invalid session.send input")
     async with state.lock:
         state.require_active()
+        if state.failure is not None:
+            raise state.failure
         if state.receipt is None:
-            state.receipt = copy.deepcopy(await state.commit(event.event_input.text.strip()))
+            state.attempted = True
+            try:
+                state.receipt = copy.deepcopy(await state.commit(event.event_input.text.strip()))
+            except BaseException as failure:
+                state.failure = failure
+                raise
         return copy.deepcopy(state.receipt)

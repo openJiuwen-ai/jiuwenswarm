@@ -302,19 +302,76 @@
 - **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见[共享历史验证记录](#extv2-22-七项查询事件化历史验证记录)，协议见 [S_08](../specs/S_08_session-query-events.md)。
 
 
-### EXTV2-23 跨会话发送前扩展
+### EXTV2-18 激活实例首次输入前初始化
 
-- **特性与契约：** [F_25 session.send](../features/F_25_session-send.md)、[S_13](../specs/S_13_session-send.md)。沿用本轮确认的连续编号基线；!99 的 F_21～F_24、S_09～S_12 保留，新增接续 F_25/F_26、S_13/S_14，旧迁移表仅作历史别名追溯。
-- **范围：** 在既有 SessionMessageService 完成归属校验后触发源会话发送链，允许正文改写或显式拒绝；放行由 CORE 接入目标 receive 和原持久队列。Claude send 尚为 reserved，本地字段和差异明确写入特性。
-- **必要前置：** 已合入的 Worker EventBus/Registry/Builder，无新增 Core 能力，不依赖 !99。
-- **进展：** 刘瑜，开发中，2026-11-02；本轮验证未执行，结果归 F_25 第 6 节。
+- **目标与范围：** session.start 按 Worker 内包激活实例最多一次通知尝试；原生 chat.send unary/stream 在实际模型/目录绑定后、Agent 输入前等待门，不按每轮或重连重复。
+- **必要前置：** 既有 Bus/Registry/Runtime 激活事实、共享 Ops、原生输入边界；配套 Core handler_ids 公共候选筛选，不依赖 PR04 !83 或 PR05 !90 的功能与提交。
+- **责任与契约：** [F_21](../features/F_21_session-start.md) / [S_09](../specs/S_09_session-start.md)；事件/CORE/Manager 门归 Server，Core 只负责通用筛选。
+- **验收：** 多包/新包/重载/卸载重装、并发首输入、失败/取消/重入、防伪、原始 Ops 上下文、原生输入前调用顺序、实际 ZIP 与真实 Worker/模型链路。
+- **范围：** 无新 Ops、Team/Harness 入口、额外 Agent 输入或前端；保留现有进度编号，新增 EXTV2-18 对应 Server PR06。
 
-### EXTV2-24 跨会话接收入队前扩展
+### EXTV2-19 主会话结束通知与用户资源清理
 
-- **特性与契约：** [F_26 session.receive](../features/F_26_session-receive.md)、[S_14](../specs/S_14_session-receive.md)。
-- **范围：** 目标持久消息入队前触发 receive，origin/text/event 和 consumed 对齐 Claude 2.1.277；仅接入现有持久跨会话服务，不以类型枚举宣称其它渠道已实现。具体字段和案例在 feature 维护，不在 designs 另建文档。
-- **必要前置：** EXTV2-23 的原服务调用封装；与发送同 PR 交付，两份独立 feature/spec。
-- **进展：** 刘瑜，开发中，2026-11-02；本轮验证未执行，结果归 F_26 第 6 节。
+- **目标与范围：** 交付 `session.end`，在主会话真实运行结束时通知 USER 保存状态、释放资源；覆盖 Runtime 资源清理与正常停机，历史独立保留。普通回合完成、切页和 Supervisor 临时断连不触发。归入 10/30 第一批会话状态，Server PR10。
+- **责任与契约：** [S_10](../specs/S_10_session-end.md)、[F_22](../features/F_22_session-end.md)。event_types 只定义/校验/注册，event_handlers 默认 CORE 确认通知，Server 固定运行结束参与者实际 trigger；原 Runtime 继续唯一执行资源释放，通知不自动删除历史。
+- **必要前置：** 现有 Worker EventBus/Registry/Ops Build 与 Runtime 会话代次/固定结束参与者协议；不依赖未合入 PR04/05/06 或 Core !110。不与 session.start 按包激活实例一一配对。
+- **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、回合/切页非触发、历史保留、同 ID 新代次、卸载前通知与真实 Worker 接线；证据唯一入口见 [F_22 第 6 节](../features/F_22_session-end.md#6-验收与未决问题)。
+- **独立验证：** `test_session_end.py` 及 Runtime/Worker 结束与删除回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
+
+### EXTV2-20 界面与主会话关联建立通知
+
+- **目标与范围：** 交付 session.attach，复用现有 Web 的 view_id 和 Runtime 创建/切换提交事实，在 Worker 确认新关联后通知用户；归入 10/30 第一批会话状态，Server PR08。
+- **责任与契约：** [S_11](../specs/S_11_session-attach.md)、[F_23](../features/F_23_session-attach.md)。类型/校验/注册在 event_types，CORE 只确认关联；平台关联表和 trigger 在 Server 通知模块。Runtime 仅组合固定 foreground 观察者，不依赖 EventBus。
+- **必要前置：** 现有 Worker EventBus/Registry/Ops Build、Runtime 提交和 Web view_id；不依赖未合入 PR04/05/06/10 或 Core !110。无新增 Ops、前端请求或 Team 适配。
+- **验收标准：** 真实用户包、提交时点、两视图/切换/重放/稳定重连、输入回执保护、失效/缺失目标、超时/取消、KVC 共存、卸载与真实 Front/Supervisor/Worker；证据见 [F_23 第 6 节](../features/F_23_session-attach.md#6-验收与未决问题)。
+- **独立验证：** test_session_attach.py、test_session_attach_provisioner.py；现成包 examples/session_attach/。关联表在本 Runtime 内复用，PR08/11 原同 PR !95 开发，现随 Server !99 交付，解除文档为 F_24 / S_12，不将 ui.ready 或 Gateway 连接解释为 attach。
+
+### EXTV2-21 界面与主会话关联解除通知
+
+- **目标与范围：** 交付 session.detach；PR11 复用 PR08 关联表，原在同一 PR !95 开发，现随 Server !99 交付，特性文档保持独立。归入 10/30 第一批会话状态。
+- **责任与契约：** [S_12](../specs/S_12_session-detach.md)、[F_24](../features/F_24_session-detach.md)。平台先替换/移除一个 channel+view 的匹配关联，Worker EventBus 再通知；USER 清理自己的旧 attachment，默认 CORE 确认事实。
+- **必要前置：** EXTV2-20 的平台关联身份与旧 SessionContext；无新 Ops，不依赖 PR04/05/06/10 或 Core !110。新增 Server 显式 session.detach 请求，补现有 Web 转发表，不修改前端页面。
+- **验收标准：** 两视图隔离、切换顺序、重复/并发和过期身份、重连不误删、字段/回执保护、超时/取消、原会话/历史保持、用户卸载与真实 Front/Supervisor/Worker；结果见 F_24 第 6 节。
+- **边界：** 不将断线/隐藏推断为关闭；页面关闭接入者显式请求。不提供 surfaces Ops、session.end 联动或跨重启持久关联表。
+
+### 2026-10-31 Server 合并交付
+
+原未合入的 Server !92、!91、!93、!95 按此顺序整理到 [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)，相对当前目标分支保留四个独立提交。PR06 / PR10 / PR08 / PR11 是开发计划编号，业务与字段契约仍分别由原 feature/spec 维护；原 PR 保留为历史来源，统一撤下，不删除源分支或历史评审。
+
+| 提交顺序 | 原 PR | 交付内容 |
+| --- | --- | --- |
+| 1 | !92 | cwd/root/model/repo 的字段说明与用户接入文档 |
+| 2 | !91 | session.start、激活实例初始化门和 Core handler_ids 消费方 |
+| 3 | !93 | session.end 与主会话运行结束通知（2026-11-02 调整） |
+| 4 | !95 | session.attach/session.detach、关联表与固定 foreground 观察者 |
+
+**整个 Server 合并 PR 的硬前置是 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110)，先合入 Core，再合入 Server。** end/attach/detach 单项本身不需要 handler_ids；合并交付并不取消 start 的跨仓依赖。Core !110 同步合并最新目标分支，保留已合入的 EV-06/F_06 包信息能力，待合入的限定派发文档改为 EV-07/F_07。
+
+本次 Server 1744 项通过、3 项跳过；Core 587 项通过、1 项跳过。原生输入初始化等待、固定删除/foreground 观察者共存、历史与用量 Ops、模型上下文、Runtime 创建/切换/删除及 Gateway 转发在回归范围内。Gateway 断连清理的 1 项失败在未修改目标分支和本分支上独立复现，最终显式排除，未计入通过；证据与边界见 F_21 / F_22 / F_23 / F_24 第 6 节及本地 consolidate-server-prs-20261031 目录。历史真实模型证据保持原日期，本次未重跑。
+
+
+### 生命周期特性文档编号调整（2026-11-02）
+
+本次接续 PR !101 的 F_01～F_20 查询文档基线，四份生命周期特性顺延为 F_21～F_24；当前 PR !99 的 features 目录共有 24 份文档，连续且无重号。下表旧编号仅用于历史追溯；文件名、正文编号、验收 ID、规约和示例引用均使用当前编号。运行代码、公开字段、七章结构和历史验收日期、数量保持。
+
+| 历史编号与文件 | 当前编号与文件 | 特性 |
+| --- | --- | --- |
+| `F_22_session-start.md` | [F_21_session-start.md](../features/F_21_session-start.md) | session.start |
+| `F_24_session-end.md` | [F_22_session-end.md](../features/F_22_session-end.md) | session.end |
+| `F_25_session-attach.md` | [F_23_session-attach.md](../features/F_23_session-attach.md) | session.attach |
+| `F_26_session-detach.md` | [F_24_session-detach.md](../features/F_24_session-detach.md) | session.detach |
+
+
+#### 生命周期规约编号迁移
+
+| 历史规约文件 | 当前规约文件 | 主题 |
+| --- | --- | --- |
+| `S_12_session-start.md` | [S_09_session-start.md](../specs/S_09_session-start.md) | session.start |
+| `S_13_session-end.md` | [S_10_session-end.md](../specs/S_10_session-end.md) | session.end |
+| `S_14_session-attach.md` | [S_11_session-attach.md](../specs/S_11_session-attach.md) | session.attach |
+| `S_15_session-detach.md` | [S_12_session-detach.md](../specs/S_12_session-detach.md) | session.detach |
+
+当前 PR !99 的规约目录共 12 份文件，连续为 S_01～S_12。旧文件名仅在本表用于追溯；特性、规约正文和示例引用均使用当前名称。本轮仅文档编号和归属整理，运行代码及历史验证范围保持。
 
 ### EXTV2-22 文档编号映射
 
@@ -356,52 +413,19 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 
 独立进程验收使用真实 ZIP 安装、真实 JSONL/Git、平台 notify 和实际 Registry/Bus/Builder；模型为受控的已绑定运行快照，没有新增模型 API 请求。返回参数逐字段核对后卸载包、关闭装配。ui.render 被设置为一旦进入就失败，最终调用 0 次。未执行的浏览器、Claude 宿主和 Front/Supervisor 跨进程验收不列为通过。
 
-### EXTV2-18 激活实例首次输入前初始化
+### EXTV2-23 跨会话发送前扩展
 
-- **目标与范围：** session.start 按 Worker 内包激活实例最多一次通知尝试；原生 chat.send unary/stream 在实际模型/目录绑定后、Agent 输入前等待门，不按每轮或重连重复。
-- **必要前置：** 既有 Bus/Registry/Runtime 激活事实、共享 Ops、原生输入边界；配套 Core handler_ids 公共候选筛选，不依赖 PR04 !83 或 PR05 !90 的功能与提交。
-- **责任与契约：** [F_22](../features/F_22_session-start.md) / [S_12](../specs/S_12_session-start.md)；事件/CORE/Manager 门归 Server，Core 只负责通用筛选。
-- **验收：** 多包/新包/重载/卸载重装、并发首输入、失败/取消/重入、防伪、原始 Ops 上下文、原生输入前调用顺序、实际 ZIP 与真实 Worker/模型链路。
-- **范围：** 无新 Ops、Team/Harness 入口、额外 Agent 输入或前端；保留现有进度编号，新增 EXTV2-18 对应 Server PR06。
+- **特性与契约：** [F_25 session.send](../features/F_25_session-send.md)、[S_13](../specs/S_13_session-send.md)。沿用本轮确认的连续编号基线；!99 的 F_21～F_24、S_09～S_12 保留，新增接续 F_25/F_26、S_13/S_14，旧迁移表仅作历史别名追溯。
+- **范围：** 在既有 SessionMessageService 完成归属校验后触发源会话发送链，允许正文改写或显式拒绝；放行由 CORE 接入目标 receive 和原持久队列。Claude send 尚为 reserved，本地字段和差异明确写入特性。
+- **必要前置：** 已合入的 Worker EventBus/Registry/Builder，本轮基于已合入 !99 的平台继续接入，不新增 Core API。
+- **验证入口：** 新增投递测试、相关回归及独立进程 ZIP/磁盘元数据/SQLite/后台回调/卸载证据见 F_25 第 6 节；状态和负责人统一见第 4 节。
 
-### EXTV2-19 主会话结束通知与用户资源清理
+### EXTV2-24 跨会话接收入队前扩展
 
-- **目标与范围：** 交付 `session.end`，在主会话真实运行结束时通知 USER 保存状态、释放资源；覆盖 Runtime 资源清理与正常停机，历史独立保留。普通回合完成、切页和 Supervisor 临时断连不触发。归入 10/30 第一批会话状态，Server PR10。
-- **责任与契约：** [S_13](../specs/S_13_session-end.md)、[F_24](../features/F_24_session-end.md)。event_types 只定义/校验/注册，event_handlers 默认 CORE 确认通知，Server 固定运行结束参与者实际 trigger；原 Runtime 继续唯一执行资源释放，通知不自动删除历史。
-- **必要前置：** 现有 Worker EventBus/Registry/Ops Build 与 Runtime 会话代次/固定结束参与者协议；不依赖未合入 PR04/05/06 或 Core !110。不与 session.start 按包激活实例一一配对。
-- **验收标准：** 真实用户包、回执/目标保护、并发重复、错误/超时/取消、默认释放顺序、KVC 发布共存、跨会话/Team 排除、回合/切页非触发、历史保留、同 ID 新代次、卸载前通知与真实 Worker 接线；证据唯一入口见 [F_24 第 6 节](../features/F_24_session-end.md#6-验收与未决问题)。
-- **独立验证：** `test_session_end.py` 及 Runtime/Worker 结束与删除回归；现成包 `examples/session_end/`。不新增 Ops、前端入口或 Team 接线。
-
-### EXTV2-20 界面与主会话关联建立通知
-
-- **目标与范围：** 交付 session.attach，复用现有 Web 的 view_id 和 Runtime 创建/切换提交事实，在 Worker 确认新关联后通知用户；归入 10/30 第一批会话状态，Server PR08。
-- **责任与契约：** [S_14](../specs/S_14_session-attach.md)、[F_25](../features/F_25_session-attach.md)。类型/校验/注册在 event_types，CORE 只确认关联；平台关联表和 trigger 在 Server 通知模块。Runtime 仅组合固定 foreground 观察者，不依赖 EventBus。
-- **必要前置：** 现有 Worker EventBus/Registry/Ops Build、Runtime 提交和 Web view_id；不依赖未合入 PR04/05/06/10 或 Core !110。无新增 Ops、前端请求或 Team 适配。
-- **验收标准：** 真实用户包、提交时点、两视图/切换/重放/稳定重连、输入回执保护、失效/缺失目标、超时/取消、KVC 共存、卸载与真实 Front/Supervisor/Worker；证据见 [F_25 第 6 节](../features/F_25_session-attach.md#6-验收与未决问题)。
-- **独立验证：** test_session_attach.py、test_session_attach_provisioner.py；现成包 examples/session_attach/。关联表在本 Runtime 内复用，PR08/11 原同 PR !95 开发，现随 Server !99 交付，解除文档为 F_26 / S_15，不将 ui.ready 或 Gateway 连接解释为 attach。
-
-### EXTV2-21 界面与主会话关联解除通知
-
-- **目标与范围：** 交付 session.detach；PR11 复用 PR08 关联表，原在同一 PR !95 开发，现随 Server !99 交付，特性文档保持独立。归入 10/30 第一批会话状态。
-- **责任与契约：** [S_15](../specs/S_15_session-detach.md)、[F_26](../features/F_26_session-detach.md)。平台先替换/移除一个 channel+view 的匹配关联，Worker EventBus 再通知；USER 清理自己的旧 attachment，默认 CORE 确认事实。
-- **必要前置：** EXTV2-20 的平台关联身份与旧 SessionContext；无新 Ops，不依赖 PR04/05/06/10 或 Core !110。新增 Server 显式 session.detach 请求，补现有 Web 转发表，不修改前端页面。
-- **验收标准：** 两视图隔离、切换顺序、重复/并发和过期身份、重连不误删、字段/回执保护、超时/取消、原会话/历史保持、用户卸载与真实 Front/Supervisor/Worker；结果见 F_26 第 6 节。
-- **边界：** 不将断线/隐藏推断为关闭；页面关闭接入者显式请求。不提供 surfaces Ops、session.end 联动或跨重启持久关联表。
-
-### 2026-10-31 Server 合并交付
-
-原未合入的 Server !92、!91、!93、!95 按此顺序整理到 [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)，相对当前目标分支保留四个独立提交。PR06 / PR10 / PR08 / PR11 是开发计划编号，业务与字段契约仍分别由原 feature/spec 维护；原 PR 保留为历史来源，统一撤下，不删除源分支或历史评审。
-
-| 提交顺序 | 原 PR | 交付内容 |
-| --- | --- | --- |
-| 1 | !92 | cwd/root/model/repo 的字段说明与用户接入文档 |
-| 2 | !91 | session.start、激活实例初始化门和 Core handler_ids 消费方 |
-| 3 | !93 | session.end 与主会话运行结束通知（2026-11-02 调整） |
-| 4 | !95 | session.attach/session.detach、关联表与固定 foreground 观察者 |
-
-**整个 Server 合并 PR 的硬前置是 [agent-core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110)，先合入 Core，再合入 Server。** end/attach/detach 单项本身不需要 handler_ids；合并交付并不取消 start 的跨仓依赖。Core !110 同步合并最新目标分支，保留已合入的 EV-06/F_06 包信息能力，待合入的限定派发文档改为 EV-07/F_07。
-
-本次 Server 1744 项通过、3 项跳过；Core 587 项通过、1 项跳过。原生输入初始化等待、固定删除/foreground 观察者共存、历史与用量 Ops、模型上下文、Runtime 创建/切换/删除及 Gateway 转发在回归范围内。Gateway 断连清理的 1 项失败在未修改目标分支和本分支上独立复现，最终显式排除，未计入通过；证据与边界见 F_22 / F_24 / F_25 / F_26 第 6 节及本地 consolidate-server-prs-20261031 目录。历史真实模型证据保持原日期，本次未重跑。
+- **特性与契约：** [F_26 session.receive](../features/F_26_session-receive.md)、[S_14](../specs/S_14_session-receive.md)。
+- **范围：** 目标持久消息入队前触发 receive，origin/text/event 和 consumed 对齐 Claude 2.1.277；仅接入现有持久跨会话服务，不以类型枚举宣称其它渠道已实现。具体字段和案例在 feature 维护，不在 designs 另建文档。
+- **必要前置：** EXTV2-23 的原服务调用封装；与发送同 PR 交付，两份独立 feature/spec。
+- **验证入口：** 接收改写/消费、目标上下文和取消边界见 F_26 第 6 节；与发送共用同一组证据，不重复计数，状态和负责人统一见第 4 节。
 
 ## 3. 特性依赖关系与并行开发
 
@@ -446,6 +470,8 @@ flowchart TB
     A3 --> S20["EXTV2-20 界面主会话关联通知"]
     B1 --> S20
     S20 --> S21["EXTV2-21 界面主会话关联解除通知"]
+    B1 --> S23["EXTV2-23 跨会话发送前扩展"]
+    S23 --> S24["EXTV2-24 跨会话接收入队前扩展"]
     A4 --> B3
     B3 --> C1
 
@@ -482,6 +508,7 @@ flowchart LR
 | B 事件与 WebUI 服务 | EXTV2-05 → 06 → 07 | 05 依赖 01；06 依赖 05；07 依赖 04 与 06 | M1、M2 |
 | C Web 前端 | EXTV2-08 | 模拟帧可先行，联调依赖 07 | M1、M2 |
 | Server 能力 | EXTV2-13～16 | 13、14、16 依赖已有装配 / Ops 接线；15 依赖 13 的可信 cwd | 各特性独立验收，不据此完成 M1～M3 |
+| Server 跨会话投递 | EXTV2-23 → 24 | 基于已合入平台基座；共享原服务调用封装，两项同 PR；无需新增生命周期或 Core API | send / receive / 原消息队列联合验收 |
 
 顺序限制：`ops.build` 必须先于任何包安装；候选发布必须先于界面项发现；渲染服务必须先于上行回执校验。软依赖不写入硬前置，只在节点验收中体现。
 
@@ -523,6 +550,8 @@ flowchart LR
 | EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 2026-11-02 运行结束修订：1362 项回归通过，含 29 项定向；真实两个 Worker / 3 轮模型对话、用户资源收尾、历史保留、同 ID 恢复后再次结束、start 粒度保持和进程清理通过；见 F_24 / S_13 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_25 / S_14 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_26 / S_15 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
+| EXTV2-23 跨会话发送前扩展 | 已开发 | 刘瑜 | 本 PR，待合入 | 42 项新增测试、1514 项相关回归通过（2 项平台跳过）；独立 ZIP/磁盘元数据/SQLite/后台回调及卸载验收通过，见 F_25 第 6 节 | 2026-11-02 |
+| EXTV2-24 跨会话接收入队前扩展 | 已开发 | 刘瑜 | 与 EXTV2-23 同 PR，待合入 | 同一组证据，覆盖改写/消费、目标上下文、来源保护和取消，不重复计数；见 F_26 第 6 节 | 2026-11-02 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 

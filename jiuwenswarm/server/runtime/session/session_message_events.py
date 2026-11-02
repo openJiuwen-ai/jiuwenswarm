@@ -36,6 +36,8 @@ class _DeliveryInvocation:
     commit: CommitDelivery
     receipt: dict[str, Any] | None = None
     result: SessionReceiveResult | None = None
+    attempted: bool = False
+    failure: BaseException | None = None
     active: bool = True
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -114,7 +116,7 @@ async def route_session_message(
     The caller must authorize both sessions first. A disabled assembly keeps
     the original platform path; this function never invents a successful row.
     """
-    from jiuwenswarm.extensions_v2.assembly import get_extension_bus
+    from jiuwenswarm.extensions_v2.assembly import get_extension_bus, get_extension_manager
 
     if send_invocation() is not None or receive_invocation() is not None:
         raise SessionMessagingError("SESSION_SEND_REENTRANT", "nested send from a delivery hook is not allowed")
@@ -129,6 +131,11 @@ async def route_session_message(
 
     original = SessionSendInput(target_session_id, text, input_mode or "follow_up")
     state = _DeliveryInvocation(source_context, copy.deepcopy(original), receive)
+    manager = get_extension_manager()
+    runtime = manager.registry.runtime if manager is not None and manager.initialized else None
+    packages = tuple(record.package_id for record in runtime.active_packages()) if runtime is not None else ()
+    if runtime is not None:
+        runtime.begin_calls(packages)
     token = _SEND.set(state)
     try:
         result = await bus.trigger(Event(SESSION_SEND_EVENT, copy.deepcopy(original)), source_context)
@@ -144,3 +151,5 @@ async def route_session_message(
     finally:
         state.active = False
         _SEND.reset(token)
+        if runtime is not None:
+            runtime.end_calls(packages)
