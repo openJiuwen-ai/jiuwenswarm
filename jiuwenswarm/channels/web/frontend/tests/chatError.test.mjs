@@ -48,3 +48,18 @@ test('errors without a known code are shown as-is', () => {
   assert.equal(describeChatError({}, RAW, t), RAW);
   assert.equal(describeChatError({ code: 'something_else', upstream: true }, RAW, t), RAW);
 });
+
+test('ambiguous model-selection errors gain actionable guidance', () => {
+  // 回归：重名模型触发 "ambiguous legacy model name" 时，报错要告诉用户
+  // 怎么修（会话重选模型 / 编辑任务重选或重建），而不是只给技术文案。
+  const cronFailure = '[cron] 任务执行失败: ambiguous legacy model name; select a stable model_id';
+  assert.equal(
+    describeChatError({}, cronFailure, t),
+    `${cronFailure}\n<chat.modelNameAmbiguousHint>`,
+  );
+  const streamFailure = { code: 'AGENT_SERVER_ERROR' };
+  assert.equal(
+    describeChatError(streamFailure, 'ambiguous legacy model name; select a stable model_id', t),
+    'ambiguous legacy model name; select a stable model_id\n<chat.modelNameAmbiguousHint>',
+  );
+});

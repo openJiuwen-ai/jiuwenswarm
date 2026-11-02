@@ -1,5 +1,8 @@
 """Public permission questions must round-trip through real SDK continuation."""
 
+# Imported pytest fixtures intentionally share test parameter names.
+# ruff: noqa: F811
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +16,7 @@ from openjiuwen.core.session.interaction.interactive_input import InteractiveInp
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.interrupt.response import ToolCallInterruptRequest
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
@@ -81,6 +85,16 @@ async def _start(h, monkeypatch, *, mode="manual", kind="permission", count=1):
     monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
     h.verified_projection = Mock(wraps=stream_producers.build_verified_permission_ask_user_question)
     monkeypatch.setattr(stream_producers, "build_verified_permission_ask_user_question", h.verified_projection)
+    h.projection_diagnostics = []
+    original_parser = h.adapter._parse_stream_chunk
+
+    def parse(chunk, **kwargs):
+        parsed = original_parser(chunk, **kwargs)
+        if getattr(chunk, "type", None) in ("__interaction__", "controller_output", "answer"):
+            h.projection_diagnostics.append((chunk.type, repr(chunk.payload), parsed))
+        return parsed
+
+    monkeypatch.setattr(h.adapter, "_parse_stream_chunk", parse)
     monkeypatch.setattr(continuation, "_request", _stream_request)
     # The existing helper also inspects SDK state for its own assertions. Its
     # state-derived answer is deliberately discarded: only public output below
@@ -140,6 +154,19 @@ async def test_public_ask_question_keeps_independent_continuation(answer_host, m
     _questions_once(h, 0)
     assert len(h.script.calls) == 2 and len(h.dispatches) == 2
     assert "blue" in repr(h.script.calls[-1]) and h.executions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("kind", ["permission", "ask"])
+async def test_public_question_names_the_interrupt_it_answers(answer_host, monkeypatch, mode, kind):
+    h = answer_host
+    question = await _start(h, monkeypatch, mode=mode, kind=kind)
+    state = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    pending = [request for entry in state.interrupted_tools.values() for request in entry.interrupt_requests.values()]
+    assert question["interrupt_id"]
+    assert [question["interrupt_id"]] == [request.interrupt_id for request in pending]
+    assert question["kind"] == ("ask_user" if kind == "ask" else "permission")
 
 
 def _manual_interaction(call_id="manual-call"):

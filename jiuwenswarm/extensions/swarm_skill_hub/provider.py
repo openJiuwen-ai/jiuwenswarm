@@ -80,6 +80,7 @@ class SwarmSkillHubProvider(SkillSourceProvider):
         source_id: str = SWARM_SKILL_HUB_SOURCE_ID,
         display_name: str = "SwarmSkillHub",
         timeout: float = 60.0,
+        verify_ssl: bool = True,
     ) -> None:
         self.source_id = _text(source_id)
         self.display_name = _text(display_name) or self.source_id
@@ -87,11 +88,12 @@ class SwarmSkillHubProvider(SkillSourceProvider):
         if not self._base_url:
             raise ValueError("SwarmSkillHub base_url is required")
         self._timeout = timeout
+        self.verify_ssl = verify_ssl
         self._client: httpx.AsyncClient | None = None
 
     async def start(self) -> None:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self._timeout, follow_redirects=False)
+            self._client = httpx.AsyncClient(timeout=self._timeout, follow_redirects=False, verify=self.verify_ssl)
 
     async def close(self) -> None:
         client, self._client = self._client, None

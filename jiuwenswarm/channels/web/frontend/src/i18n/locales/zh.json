@@ -1676,6 +1676,7 @@
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
+    "modelNameAmbiguousHint": "模型目录中存在多条同名配置，无法确定要使用哪一条。聊天会话：在模型选择器中重新选择具体模型即可恢复；定时任务：请编辑该任务并重新选择模型，或删除后重新创建（在执行会话里换模型不会更新任务配置）。",
     "sessionArchived": "该会话已归档，无法继续对话。请恢复会话或新建会话。",
     "sessionDeleted": "该会话已被删除，无法继续对话。",
     "sessionOperationInProgress": "该会话正在执行归档或删除操作，请稍后再试。",
@@ -3376,6 +3377,7 @@
     "detailError": "加载详情失败",
     "detail": {
       "basicInfo": "基本信息",
+      "version": "版本",
       "versionManage": "版本管理",
       "versionsLoadFailed": "版本加载失败",
       "noVersions": "暂无版本记录",

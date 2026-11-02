@@ -167,6 +167,23 @@ export function shouldShowEnableSwitch(
   return !isPrebuiltSkill(skill);
 }
 
+/**
+ * 详情页当前版本展示文案。
+ * 优先 product ``version``，企业版可回退账本 ``version_id``；
+ * 已有前导 ``v``/``V`` 时不再加前缀，避免 ``v-1`` → ``vv-1``。
+ */
+export function formatSkillVersionLabel(
+  skill: Pick<SkillItem, 'version' | 'version_id'>,
+  options?: { allowVersionId?: boolean },
+): string | null {
+  const allowVersionId = Boolean(options?.allowVersionId);
+  const raw = String(
+    skill.version || (allowVersionId ? skill.version_id : '') || '',
+  ).trim();
+  if (!raw) return null;
+  return /^v/i.test(raw) ? raw : `v${raw}`;
+}
+
 /** 广场搜索结果列表 key：ClawHub 带 owner，避免同 slug 重复 key。 */
 export function hubMarketplaceItemKey(skill: MarketplacePluginItem): string {
   const source = skill.source || 'teamskillshub';
