@@ -1228,12 +1228,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const acceptedIso =
       timestampMsToIso(parseTimestampToMs(payload.input_timestamp)) ||
       timestampMsToIso(parseTimestampToMs(payload.timestamp));
-    if (!acceptedIso) return;
     const chatStore = useChatStore.getState();
-    chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
-      timestamp: acceptedIso,
-      isTimestampPending: false,
-    });
+    // 服务端确认输入：无论新旧后端是否带时间戳，都解除 @成员「待回复」占位的等待
+    // （见 sendMessage 登记处 isAcceptedPending 注释）。时间戳回填仍按原条件走。
+    if (acceptedIso) {
+      chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
+        timestamp: acceptedIso,
+        isTimestampPending: false,
+        isAcceptedPending: false,
+      });
+    } else {
+      chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
+        isAcceptedPending: false,
+      });
+    }
+    if (!acceptedIso) return;
     // 图片提示可先于 ACK/phase 到达；旧后端不带时间戳，提示会盖浏览器钟。
     // 将早于用户边界的同单提示移到边界上，避免落入上一轮；同刻按消息插入顺序排序。
     const noticeId = `notice-image_tool_fallback-${requestId}`;
@@ -2086,6 +2095,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         content: displayedContent,
         mediaItems,
         timestamp: new Date().toISOString(),
+        // runtime.accepted 到达前标记未确认：@成员「待回复」占位气泡等服务端确认后再弹
+        // （backfillOptimisticBubbleTimestamp 里一并清掉）。
+        isAcceptedPending: true,
         ...(waitForInputTimestamp ? { isTimestampPending: true } : {}),
         ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
       });

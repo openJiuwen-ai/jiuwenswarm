@@ -13,7 +13,12 @@ export function groupMessageContent(message: GroupMessage): string {
       content = content.split(file.path).join(file.name);
     }
   }
-  return content;
+  return message.sender === 'user' ? content : stripLeadingUserMention(content);
+}
+
+/** 成员回复常以「@user …」开头称呼用户，展示时剥掉该前缀（群聊里显式回显没有意义）。 */
+export function stripLeadingUserMention(content: string): string {
+  return content.replace(/^@user[\s:，、]+/u, '');
 }
 
 export function mergeMessages(current: GroupMessage[], incoming: GroupMessage[]): GroupMessage[] {
@@ -54,6 +59,58 @@ export function selectedMentions(content: string, selected: string[], members: G
     if (pattern.test(content)) mentions.push(member.member_name);
   }
   return mentions;
+}
+
+/** 用户气泡内容的一个片段：普通文本或一枚 @成员 提及 chip。 */
+export type GroupMentionPart = { kind: 'text'; text: string } | { kind: 'mention'; label: string };
+
+/** 把用户消息按 @成员 切成文本段与提及 chip（显示名最长优先，边界规则与输入框一致）。 */
+export function splitMentionParts(content: string, members: GroupMember[]): GroupMentionPart[] {
+  if (!content.includes('@')) return [{ kind: 'text', text: content }];
+  const labels = [...new Set(members.map((member) => member.display_name || member.member_name)
+    .filter(Boolean))].sort((a, b) => b.length - a.length);
+  if (!labels.length) return [{ kind: 'text', text: content }];
+  const pattern = new RegExp(
+    `@(${labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?=$|[\\s，。！？、,:：;；!?])`,
+    'g',
+  );
+  const parts: GroupMentionPart[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ kind: 'text', text: content.slice(lastIndex, match.index) });
+    }
+    parts.push({ kind: 'mention', label: match[1] });
+    lastIndex = pattern.lastIndex;
+  }
+  if (lastIndex < content.length) parts.push({ kind: 'text', text: content.slice(lastIndex) });
+  return parts;
+}
+
+/** @成员占位气泡的执行阶段（由成员当前执行快照推导，组件层再转 i18n 文案）。 */
+export type MentionExecutionPhase =
+  | { key: 'dispatching' }
+  | { key: 'planning' }
+  | { key: 'generating' }
+  | { key: 'executing'; completed: number | null; total: number | null }
+  | { key: 'reviewing' }
+  | { key: 'processing' };
+
+export function mentionExecutionPhase(execution: GroupExecution | undefined): MentionExecutionPhase {
+  if (!execution) return { key: 'dispatching' };
+  const status = execution.status;
+  if (status === 'planning') return { key: 'planning' };
+  if (status === 'in_review') return { key: 'reviewing' };
+  if (['running', 'in_progress'].includes(status)) {
+    const counts = taskCounts(execution.tasks);
+    const progress = execution.progress ?? (counts.total ? { completed: counts.completed, total: counts.total } : null);
+    // 无子任务（tasks 空且 progress.total=0）说明还在生成任务计划，
+    // 与执行卡片的「任务生成中」对齐，避免误显「正在执行任务…」。
+    if (!progress || !progress.total) return { key: 'generating' };
+    return { key: 'executing', completed: progress.completed, total: progress.total };
+  }
+  return { key: 'processing' };
 }
 
 export function safeAttachmentUrl(value: unknown): string | undefined {

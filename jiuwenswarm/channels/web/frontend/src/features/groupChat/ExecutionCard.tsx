@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { CheckCircle2, Circle, CircleAlert, CirclePause, Network, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { GroupExecution, GroupMessage } from './client';
@@ -60,17 +60,30 @@ export function ExecutionCard({ execution, result, renderAvatar }: {
   execution: GroupExecution; result?: GroupMessage; renderAvatar?: RenderAvatar;
 }) {
   const { t } = useTranslation();
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const [titleOverflow, setTitleOverflow] = useState(false);
   const singleAgent = execution.execution_kind === 'agent';
   const counts = taskCounts(execution.tasks ?? {});
-  const title = shortTaskName(execution.title || execution.task, t('groupChat.taskTitle'), 10);
+  const fullTitle = shortTaskName(execution.title || execution.task, t('groupChat.taskTitle'), Infinity);
   const owner = execution.member_name || execution.owner_member || execution.display_name;
   const ownerName = execution.display_name || execution.member_name || '';
   const progress = execution.progress && execution.progress.total > 0
     ? (execution.progress.completed / execution.progress.total) * 100 : undefined;
+  // 标题超宽时跑马灯：span 始终渲染完整标题，默认由 CSS 省略号截断；
+  // 用完整文本测溢出（span.scrollWidth > strong.clientWidth），溢出后启用横向滚动。
+  const headingRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const strong = headingRef.current?.querySelector('strong');
+    const span = titleRef.current;
+    setTitleOverflow(Boolean(strong && span && span.scrollWidth > strong.clientWidth));
+  }, [fullTitle]);
   return <article className="group-chat-execution" data-testid="group-chat-execution" data-variant={execution.execution_id}>
-    <header className="group-chat-execution-heading">
-      <Network size={16} aria-hidden /><strong data-testid="group-chat-execution-title"
-        title={shortTaskName(execution.title || execution.task, t('groupChat.taskTitle'), Infinity)}>{title}</strong>
+    <header className="group-chat-execution-heading" ref={headingRef}>
+      <Network size={16} aria-hidden />
+      <strong data-testid="group-chat-execution-title" title={fullTitle}
+        className={titleOverflow ? 'is-marquee' : undefined}>
+        <span ref={titleRef}>{fullTitle}</span>
+      </strong>
       {!singleAgent && <div className="group-chat-task-counts" data-testid="group-chat-task-counts">
         {(['total', 'running', 'completed', 'stopped', 'failed'] as const).map((key) => <span key={key}
           data-testid="group-chat-task-count" data-variant={key}>
