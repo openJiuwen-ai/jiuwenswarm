@@ -6553,6 +6553,16 @@
     "viewResult": "View task result",
     "sendFailed": "Unable to process this message. Please retry.",
     "sending": "Sending…",
+    "processing": "Processing…",
+    "mentionPhase": {
+      "dispatching": "Received, processing…",
+      "planning": "Planning tasks…",
+      "generating": "Generating task plan…",
+      "executing": "Executing tasks…",
+      "executingProgress": "Running subtasks ({{completed}}/{{total}})…",
+      "reviewing": "Reviewing results…",
+      "processing": "Processing…"
+    },
     "open": "Chat",
     "create": "New group chat",
     "defaultName": "New group",

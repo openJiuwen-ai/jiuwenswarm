@@ -108,6 +108,8 @@ export interface Message {
   timestamp: string;
   /** True until the server confirms this optimistic input's timestamp. */
   isTimestampPending?: boolean;
+  /** True until runtime.accepted confirms the server received this optimistic input. */
+  isAcceptedPending?: boolean;
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;
