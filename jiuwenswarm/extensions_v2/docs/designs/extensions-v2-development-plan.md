@@ -296,7 +296,7 @@
 ### EXTV2-22 七项只读查询事件化
 
 - **逐项特性文档：** [cwd](../features/F_13_session-cwd.md)；[root](../features/F_19_session-root.md)；[model](../features/F_14_session-model.md)；[repo](../features/F_15_session-repo.md)；[messages](../features/F_18_session-messages.md)；[turns](../features/F_20_session-turns.md)；[usage](../features/F_17_session-usage.md)。每篇只维护一个 Ops 与同名 Event，共享机制和既有实施证据移到 designs/session-query-events.md。
-- **编号登记：** 2026-11-02 按当前 features 目录归整为 F_01～F_20；F_17 为 usage、F_18 为 messages、F_19 为 root、F_20 为 turns，F_01～F_16 保留。维护者刘瑜；旧编号对应关系见[查询特性编号调整](session-query-events.md#特性文档编号调整2026-11-02)。F_27 公共说明已迁入设计目录，历史编号及在途 PR !99 的 F_22/F_24/F_25/F_26 继续保留记录，不新增占用。
+- **编号登记：** 2026-11-02 查询文档基线为 F_01～F_20；F_17 为 usage、F_18 为 messages、F_19 为 root、F_20 为 turns，F_01～F_16 保留。PR !99 生命周期文档接续为 F_21（start）、F_22（end）、F_23（attach）、F_24（detach）；两项更新合入后目录连续至 F_24。维护者刘瑜；查询旧编号对应关系见[查询特性编号调整](session-query-events.md#特性文档编号调整2026-11-02)，生命周期迁移由 PR !99 记录。F_27 公共说明已迁入设计目录，历史编号继续保留记录。
 - **范围：** cwd/root/model/repo/messages/turns/usage 七个同名查询事件、代理与默认 CORE；字段以 Claude 为主，同步既有用户示例和详细字段文档。
 - **依赖：** 已合入的 Core Bus/Builder 和平台读取服务；不依赖未合入生命周期 PR，不增加 Front/Supervisor EventBus。
 - **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见 [查询公共机制与特性索引](session-query-events.md)，协议见 [S_16](../specs/S_16_session-query-events.md)。
