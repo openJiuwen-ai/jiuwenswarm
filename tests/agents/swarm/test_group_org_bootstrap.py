@@ -3220,54 +3220,6 @@ async def test_fallback_root_output_skips_binary_deliverable(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_fallback_root_output_skips_binary_deliverable(monkeypatch, tmp_path):
-    from openjiuwen.agent_teams.paths import (
-        organization_workspace_dir,
-        reset_task_openjiuwen_home,
-        set_task_openjiuwen_home,
-    )
-
-    monkeypatch.setattr(bootstrap, "POLL_SECONDS", 0.01)
-    monkeypatch.setattr(bootstrap, "RESULT_GRACE_SECONDS", 0)
-    token = set_task_openjiuwen_home(tmp_path)
-    try:
-        summary_dir = organization_workspace_dir(ORG, SESSION) / "summary"
-        summary_dir.mkdir(parents=True)
-        report = summary_dir / "report.md"
-        report.write_text("architecture report", encoding="utf-8")
-        deck = summary_dir / "deck.pptx"
-        # A zip local file header: byte 11 (0x86) is not valid UTF-8.
-        deck.write_bytes(b"PK\x03\x04\x14\x00\x06\x00\x08\x00\x00\x86\x00\x00")
-
-        def _root(abstract: str, path) -> SimpleNamespace:
-            return SimpleNamespace(
-                output_abstract=abstract,
-                output_context=SimpleNamespace(result_uri=str(path)),
-            )
-
-        async def _round_state(_pool, _plan_id):
-            return "completed", [_root("text root", report), _root("deck root", deck)]
-
-        monkeypatch.setattr(bootstrap, "_round_state", _round_state)
-        # The Owner never submits, so the grace fallback reads root outputs.
-        future = asyncio.get_running_loop().create_future()
-        result, files = await asyncio.wait_for(
-            bootstrap._await_completed_result(
-                future, object(), "plan-1", session_id=SESSION, organization_id=ORG
-            ),
-            timeout=1.0,
-        )
-    finally:
-        reset_task_openjiuwen_home(token)
-
-    assert result == "text root\n\narchitecture report\n\ndeck root"
-    assert files == [
-        {"name": "report.md", "path": str(report.resolve())},
-        {"name": "deck.pptx", "path": str(deck.resolve())},
-    ]
-
-
-@pytest.mark.asyncio
 async def test_cancelled_owner_wait_marks_the_plan_failed(monkeypatch):
     plan = _stale_plan()
     plan["status"] = "running"
