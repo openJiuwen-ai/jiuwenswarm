@@ -262,12 +262,17 @@ def _protected_runtime_pids() -> set[str]:
     return pids
 
 
-def _whole_line_regex_engine(
+def _host_guard_engine(
     *,
     worktree_guard: bool,
     project_root: Path | None,
 ) -> Any:
-    """agent-shield engine that matches kill commands on the whole line."""
+    """dev-stable combination from ``HostGuardComponent``.
+
+    This branch is the only wired caller. Xiaoyi and develop are not
+    configured here. The kill check passes ``worktree_guard`` false because
+    ``_check_worktree_path_safety`` runs that check on its own engine.
+    """
 
     from agent_shield.tool_permission import PermissionEngine
 
@@ -279,8 +284,14 @@ def _whole_line_regex_engine(
     return PermissionEngine({
         "host_guard": {
             "enabled": True,
-            "whole_line_regex": True,
+            "shell_mismatch": False,
+            "python_name_kill": False,
+            "process_image_kill": True,
+            "segment_guard": False,
+            "join_continuations": False,
+            "pid_kill": "self_parent",
             "worktree_guard": worktree_guard,
+            "worktree_parser": "loose",
         },
         "runtime": runtime,
         "package_builtin_rules": False,
@@ -298,9 +309,9 @@ def _host_component_block(engine: Any, command: str) -> str | None:
 
 
 def _check_host_runtime(command: str) -> str | None:
-    """Whole-line kill regexes and the current/parent process check."""
+    """Image-name kills and the current/parent process check."""
 
-    engine = _whole_line_regex_engine(worktree_guard=False, project_root=None)
+    engine = _host_guard_engine(worktree_guard=False, project_root=None)
     return _host_component_block(engine, command)
 
 
@@ -318,7 +329,7 @@ def _check_worktree_path_safety(command: str) -> str | None:
         project_root = _context_project_root()
     except Exception:
         return None
-    engine = _whole_line_regex_engine(worktree_guard=True, project_root=project_root)
+    engine = _host_guard_engine(worktree_guard=True, project_root=project_root)
     return _host_component_block(engine, command)
 
 
