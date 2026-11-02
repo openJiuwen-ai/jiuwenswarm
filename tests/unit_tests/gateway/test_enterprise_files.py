@@ -6,14 +6,24 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from jiuwenswarm.common.obs_files import AttachmentStore, object_prefix
+from gateway.common.obs_files import AttachmentStore, object_prefix
 from gateway.channel_manager.web.enterprise_files import (
     register_enterprise_file_routes,
 )
 
 
 @pytest.mark.asyncio
-async def test_upload_uses_routing_scope_without_identity_service(monkeypatch):
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("../中文.txt", "中文.txt"),
+        ("file:with|bad*chars?.md", "file_with_bad_chars_.md"),
+        ("CON.md", "upload"),
+        ("", "upload"),
+        ("evil\u202egnp.md", "evilgnp.md"),
+    ],
+)
+async def test_upload_uses_routing_scope_without_identity_service(monkeypatch, filename, expected):
     app = FastAPI()
     monkeypatch.delenv("GATEWAY_IDENTITY_HTTP_URL", raising=False)
 
@@ -38,12 +48,12 @@ async def test_upload_uses_routing_scope_without_identity_service(monkeypatch):
                 "X-User-Id": "u",
             },
             json={
-                "filename": "../中文.txt",
+                "filename": filename,
                 "content_base64": base64.b64encode(b"hello").decode(),
             },
         )
         assert response.json()["ok"]
-        assert captured == [(b"hello", "中文.txt", object_prefix("g", "b", "u"))]
+        assert captured == [(b"hello", expected, object_prefix("g", "b", "u"))]
         invalid = await client.post(
             "/file-api/upload-obs", json={"content_base64": "!"}
         )

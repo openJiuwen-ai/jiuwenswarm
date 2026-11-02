@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Host mode assembly keeps PCS search callable without widening Core defaults."""
+"""Supported host modes keep PCS search callable without widening Core defaults."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from gateway.common.mode_matrix import NEW_CANONICAL_MODES
+from gateway.common.mode_matrix import NEW_CANONICAL_MODES, NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm import register_swarm_providers
 from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
@@ -29,7 +29,7 @@ from openjiuwen.harness.rails.agent_mode_rail import AgentModeRail
 
 _MODE_ROLES = [
     (mode, role)
-    for mode in sorted(NEW_CANONICAL_MODES)
+    for mode in sorted(NEW_CANONICAL_MODES - {NEW_TEAM_DESIGN})
     for role in (["leader", "teammate"] if mode.startswith("team.") else ["agent"])
 ]
 
@@ -59,7 +59,6 @@ async def test_host_modes_mount_pcs_and_allow_search(mode, role, tmp_path, monke
         plan_mode=SimpleNamespace(mode="plan" if mode.endswith(".plan") else "normal", plan_slug="pcs"),
     )
     mode_rail = None
-    sanitizer = None
     if role == "agent":
         is_code = ".code." in mode
         adapter_type = JiuwenSwarmCodeAdapter if is_code else JiuWenSwarmDeepAdapter
@@ -89,21 +88,15 @@ async def test_host_modes_mount_pcs_and_allow_search(mode, role, tmp_path, monke
             if spec.type == "swarm.code_agent_mode":
                 mode_rail = spec.build(language="en", context=context)
                 assert mode_rail is not None
-            elif spec.type == "swarm.designer_surface_sanitizer":
-                sanitizer = spec.build(language="en", context=context)
 
     assert pcs_rail is not None
     rail_factory.assert_called_once_with(home)
     pcs_rail.init.assert_called_once_with(agent)
     if mode.endswith(".plan") and role != "teammate":
         assert mode_rail is not None
-    if mode == "team.design" and role == "leader":
-        assert sanitizer is not None
     try:
         if mode_rail is not None:
             mode_rail.init(agent)
-        if sanitizer is not None:
-            sanitizer.init(agent)
         card = agent.ability_manager.get("pcs_search")
         assert card is not None
         ctx = SimpleNamespace(
@@ -123,14 +116,10 @@ async def test_host_modes_mount_pcs_and_allow_search(mode, role, tmp_path, monke
             assert not ctx.extra.get("_skip_tool", False)
             if mode.endswith(".plan") and role != "teammate":
                 assert [item.name for item in ctx.inputs.tools] == ["pcs_search"]
-        if sanitizer is not None:
-            await sanitizer.before_model_call(ctx)
         assert agent.ability_manager.get("pcs_search") is card
     finally:
         if mode_rail is not None:
             mode_rail.uninit(agent)
-        if sanitizer is not None:
-            sanitizer.uninit(agent)
         pcs_rail.uninit(agent)
         for card in list(agent.ability_manager.list()):
             agent.ability_manager.remove_ability(card.name)

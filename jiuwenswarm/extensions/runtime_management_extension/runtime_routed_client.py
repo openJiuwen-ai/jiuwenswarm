@@ -46,6 +46,7 @@ _INTERRUPT_METHODS = frozenset(
 )
 _ROUTELESS_METHODS = frozenset(
     {
+        "hub.expert_packages.catalog",
         "agent.reload_config",
         "agent.prewarm.sync",
         "agent.prewarm_sync",

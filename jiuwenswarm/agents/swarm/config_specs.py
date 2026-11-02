@@ -271,7 +271,6 @@ _DESIGN_RAIL_NAMES: tuple[str, ...] = (
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
-    registry.PERSONAL_CONTEXT,
 )
 
 _DESIGN_TOOL_NAMES: tuple[str, ...] = (
