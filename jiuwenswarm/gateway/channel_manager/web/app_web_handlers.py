@@ -6111,14 +6111,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_login import LOGIN_MANAGER
         from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for
+        import uuid
 
         cli_path = str(params.get("cli_path") or "welink-cli").strip() or "welink-cli"
         env_name = str(params.get("env") or "pro").strip() or "pro"
+        # A new QR must not run inside the directory that already holds the reader
+        # session. Logout and an abandoned scan were clearing that session while
+        # the saved account still looked bound.
+        staged = credential_dir_for(agent_id).parent / f"pending-{uuid.uuid4().hex}"
         started = await asyncio.to_thread(
             LOGIN_MANAGER.start,
             agent_id=agent_id,
             account=account,
-            credential_dir=credential_dir_for(agent_id),
+            credential_dir=staged,
             cli_path=cli_path,
             env_name=env_name,
         )
@@ -6160,14 +6165,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         lock = colleague_operation_locks.setdefault(config_id, asyncio.Lock())
         async with lock:
-            legacy_connections = []
-            if any(not item.get("config_id") for item in normalize_welink_section(load_welink_section())["bindings"]):
-                listed, failure = await _connection_request(
-                    ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id},
-                )
-                if failure is not None:
-                    raise PersistentAgentError(failure[1], code=failure[0])
-                legacy_connections = [item for item in listed.get("connections", []) if item.get("channel") == "welink"]
+            listed, failure = await _connection_request(
+                ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id},
+            )
+            if failure is not None:
+                raise PersistentAgentError(failure[1], code=failure[0])
+            legacy_connections = [item for item in listed.get("connections", []) if item.get("channel") == "welink"]
             async with welink_authorization_lock:
                 # Validate before creating a connection, moving credentials or applying config.
                 current = load_welink_section()
@@ -6189,6 +6192,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 raise PersistentAgentError(failure[1], code=failure[0])
             async with welink_authorization_lock:
                 agent_id = connected["agent_id"]
+                # attach_connection returns the office colleague. Keep the dedicated
+                # WeLink agent when that row already exists, so inbound still matches.
+                if agent_id == config_id:
+                    dedicated = [item["agent_id"] for item in legacy_connections
+                                 if item.get("agent_id") and item["agent_id"] != config_id]
+                    if len(dedicated) == 1:
+                        agent_id = dedicated[0]
                 stored_patch = {**patch, "account": account, "persistent_agent_id": agent_id, "config_id": config_id}
                 stored_patch.setdefault("credential_dir", str((existing or {}).get("credential_dir") or credential_dir_for(agent_id)))
                 apply_welink_authorization(load_welink_section(), stored_patch)

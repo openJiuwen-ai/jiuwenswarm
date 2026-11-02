@@ -482,7 +482,7 @@
         "fullAccessConfirm": "Full access opens all files available to the host OS account and permits network commands. Enable it for this employee?"
       },
       "feishuHint": "Authorize the agent and monitor its activity.",
-      "welinkHint": "Setup takes two steps: bind WeLink first, then create the assistant.",
+      "welinkHint": "Connect WeLink to assign tasks by mentioning this colleague in a group chat.",
       "authorize": "Authorize",
       "authorized": "Authorized",
       "cancelAuthorization": "Revoke",
@@ -600,7 +600,7 @@
       "deleteConversation": "Delete conversation",
       "rename": "Rename",
       "viewTrace": "View trace",
-      "composerPlaceholder": "What can I help with? Type \"/\" to reference skills and commands",
+      "composerPlaceholder": "What can I help with?",
       "defaultPermission": "Default permission",
       "autoMode": "Auto",
       "attach": "Add attachment",
