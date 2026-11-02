@@ -48,6 +48,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction impo
     sanitize_permission_ui_payload,
 )
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.enterprise import is_enterprise
 
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
@@ -1771,6 +1772,12 @@ def _format_question_from_interaction(
         "multi_select": False,
     }
     if source == "permission_interrupt":
+        if is_enterprise():
+            metadata = _extract_interaction_metadata(payload)
+            metadata.update(_extract_interrupt_metadata(value_obj))
+            matched_rule = metadata.get("matched_rule")
+            if isinstance(matched_rule, str) and matched_rule.strip():
+                question_data["matched_rule"] = redact_secret_values(matched_rule)
         if invocation_record is not None:
             question_data["card_id"] = invocation_record.key.invocation_id
         if reviewer_metadata:

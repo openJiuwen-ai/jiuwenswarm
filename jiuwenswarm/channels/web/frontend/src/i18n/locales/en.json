@@ -4839,6 +4839,7 @@
   },
   "authPrompt": {
     "title": "Authorization",
+    "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
