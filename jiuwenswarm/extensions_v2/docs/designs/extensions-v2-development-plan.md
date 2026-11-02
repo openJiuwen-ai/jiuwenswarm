@@ -302,6 +302,20 @@
 - **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见[共享历史验证记录](#extv2-22-七项查询事件化历史验证记录)，协议见 [S_08](../specs/S_08_session-query-events.md)。
 
 
+### EXTV2-23 跨会话发送前扩展
+
+- **特性与契约：** [F_25 session.send](../features/F_25_session-send.md)、[S_13](../specs/S_13_session-send.md)。沿用本轮确认的连续编号基线；!99 的 F_21～F_24、S_09～S_12 保留，新增接续 F_25/F_26、S_13/S_14，旧迁移表仅作历史别名追溯。
+- **范围：** 在既有 SessionMessageService 完成归属校验后触发源会话发送链，允许正文改写或显式拒绝；放行由 CORE 接入目标 receive 和原持久队列。Claude send 尚为 reserved，本地字段和差异明确写入特性。
+- **必要前置：** 已合入的 Worker EventBus/Registry/Builder，无新增 Core 能力，不依赖 !99。
+- **进展：** 刘瑜，开发中，2026-11-02；本轮验证未执行，结果归 F_25 第 6 节。
+
+### EXTV2-24 跨会话接收入队前扩展
+
+- **特性与契约：** [F_26 session.receive](../features/F_26_session-receive.md)、[S_14](../specs/S_14_session-receive.md)。
+- **范围：** 目标持久消息入队前触发 receive，origin/text/event 和 consumed 对齐 Claude 2.1.277；仅接入现有持久跨会话服务，不以类型枚举宣称其它渠道已实现。具体字段和案例在 feature 维护，不在 designs 另建文档。
+- **必要前置：** EXTV2-23 的原服务调用封装；与发送同 PR 交付，两份独立 feature/spec。
+- **进展：** 刘瑜，开发中，2026-11-02；本轮验证未执行，结果归 F_26 第 6 节。
+
 ### EXTV2-22 文档编号映射
 
 查询特性基线 F_01～F_20 连续，PR !99 的四份生命周期特性接续为 F_21～F_24。原查询特性编号仅在下表用于历史追溯；文件、正文和有效引用使用当前编号。
