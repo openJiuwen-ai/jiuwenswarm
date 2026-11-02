@@ -120,8 +120,10 @@ _OWNER_PROMPT_SUFFIX = (
     "expert team, including this Owner team, and leave each child OPEN. "
     "Do not set delegated_to_team_id and do not call org_delegate_task unless "
     "the user asks to delegate. Set each child's required_capabilities to "
-    "exactly [\"group-member:{that proxy's member_name}\"] so the matching "
-    "team is woken and claims it with org_claim_task. Create every child "
+    "exactly [\"group-member:{that proxy's member_name}\"]. Copy claim_capability "
+    "from the AgentGroup availability snapshot; do not substitute agent_group_name "
+    "or the display name. The matching team is then woken and claims it with "
+    "org_claim_task. Create every child "
     "before any of them finishes, and do not start this Owner team's own "
     "writing until the other children exist. Then review their submissions. "
     "When you selected SUMMARY_TEAM, call "
@@ -160,7 +162,8 @@ _OWNER_START_REMINDER = (
     "named. If the user named neither SUMMARY_TEAM nor HIERARCHICAL, choose one "
     "from the task. Then start the root if it is still CLAIMED and, in this "
     "turn, create one OPEN child per mentioned expert. Leave them claimable: "
-    "set required_capabilities to exactly [\"group-member:{member_name}\"] and "
+    "set required_capabilities to exactly [\"group-member:{member_name}\"] by "
+    "copying that team's claim_capability. Do not substitute agent_group_name, and "
     "do not delegate unless the user asks. Do not wait for one child to finish "
     "before creating the next. Do not "
     "use swarmflow, ordinary create_task, or org_create_and_invite_expert_team, "
@@ -2561,7 +2564,8 @@ async def _expert_row_status(task_pool: Any, task: Any) -> str:
             return "completed"
         if review_text in {"REJECTED", "NEEDS_REVISION"}:
             return "failed"
-        return "in_progress"
+        # Finished work with no accept or reject is waiting for review.
+        return "in_review"
     if text in {"CLAIMED", "IN_PROGRESS", "DELEGATED", "WAITING_SOURCES"}:
         return "in_progress"
     return "pending"
@@ -2633,7 +2637,8 @@ async def _await_completed_result(
 
     The wait has no time limit. It ends when the root fails, or when the
     round is complete and the Owner has submitted (or the grace fallback
-    applies). Returns the report and the Owner's final files.
+    applies). A team-database pool timeout while reading that status waits
+    and tries again. Returns the report and the Owner's final files.
     """
     loop = asyncio.get_running_loop()
     completed_at: float | None = None
@@ -2644,7 +2649,23 @@ async def _await_completed_result(
             await on_tick()
         if future.done() and not future.cancelled():
             submitted, submitted_files = _split_submission(future.result())
-        state, roots = await _round_state(task_pool, plan_id)
+        try:
+            state, roots = await _round_state(task_pool, plan_id)
+        except Exception as exc:
+            from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+            # Checkout gave up after pool_timeout. The organization is still
+            # running; this read holds no connection, so the next poll can proceed.
+            if not isinstance(exc, PoolTimeout):
+                raise
+            logger.warning(
+                "organization status read waited out the team db pool; retrying "
+                "session=%s plan=%s",
+                session_id,
+                plan_id,
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            continue
         if state == "failed":
             raise RuntimeError("organization root task failed")
         if state == "completed":
@@ -2657,17 +2678,20 @@ async def _await_completed_result(
                     organization_id=organization_id,
                 )
             if loop.time() - completed_at >= RESULT_GRACE_SECONDS:
+                files = _owner_final_files(
+                    [],
+                    roots,
+                    session_id=session_id,
+                    organization_id=organization_id,
+                )
                 fallback = _root_output(roots)
+                if not fallback and files:
+                    fallback = "\n".join(item["name"] for item in files)
                 if fallback:
                     logger.warning(
                         "owner did not submit the final report; using root output"
                     )
-                    return fallback, _owner_final_files(
-                        [],
-                        roots,
-                        session_id=session_id,
-                        organization_id=organization_id,
-                    )
+                    return fallback, files
                 raise RuntimeError("organization completed without a final report")
         await asyncio.sleep(POLL_SECONDS)
 
