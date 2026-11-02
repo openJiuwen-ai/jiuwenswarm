@@ -1015,14 +1015,33 @@ def _equipment_workspace(agent_workspace: Path | None = None) -> Path:
     return agent_workspace if agent_workspace is not None else get_agent_workspace_dir()
 
 
+def _agent_group_home(*, agent_workspace: Path | None = None) -> Path:
+    """Home directory that owns ``.agent_teams/agent_groups``.
+
+    Personal edition keeps the data root. Enterprise uses the tenant root
+    already bound on this request. An unbound enterprise call must not fall
+    back to the shared data root or the default tenant key.
+    """
+    if agent_workspace is not None:
+        # ``agent_workspace`` is ``<home>/agent/workspace``.
+        return agent_workspace.parent.parent
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    if is_enterprise():
+        bound = TenantContext.current_tenant_root()
+        if bound is None:
+            raise AgentGroupPackageError(
+                "agent_group requires a bound tenant",
+                "AGENT_GROUP_TENANT_REQUIRED",
+            )
+        return bound
+    return get_user_workspace_dir()
+
+
 def _kind_root(kind: str, *, agent_workspace: Path | None = None) -> Path:
     if kind == _AGENT_GROUP_KIND:
-        if agent_workspace is not None:
-            # ``agent_workspace`` is ``<jiuwenswarm-home>/agent/workspace``.
-            home = agent_workspace.parent.parent
-        else:
-            home = get_user_workspace_dir()
-        return home / ".agent_teams" / _AGENT_GROUP_KIND
+        return _agent_group_home(agent_workspace=agent_workspace) / ".agent_teams" / _AGENT_GROUP_KIND
     return _equipment_workspace(agent_workspace) / "plugins" / kind
 
 
@@ -4630,13 +4649,18 @@ def install_agent_group(params: dict) -> None:
 def ensure_builtin_agent_groups_installed() -> list[str]:
     """Install every AgentGroup shipped on the packaged shelf that was never seeded.
 
-    Runs at service start so a shipped group is selectable without a manual
-    install. A shelf package is seeded once per home (recorded in
-    ``.builtin_seeded``); an explicit uninstall is respected on later starts
-    instead of being undone by the next startup. A broken shelf entry is
-    logged, never raised, so one bad package cannot block startup; a local
-    package of the same name wins.
+    Personal edition seeds at process start, into the single data root.
+    Enterprise has no tenant at process start, so that call returns without
+    touching the shared data root. A shelf package is seeded once per home
+    (recorded in ``.builtin_seeded``); an explicit uninstall is respected
+    instead of being undone by the next seed. A broken shelf entry is
+    logged, never raised. A local package of the same name wins.
     """
+    from jiuwenswarm.enterprise.edition import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    if is_enterprise() and TenantContext.current_tenant_root() is None:
+        return []
     marker_path = _kind_root(_AGENT_GROUP_KIND) / ".builtin_seeded"
     try:
         seeded = set(marker_path.read_text(encoding="utf-8").split())
