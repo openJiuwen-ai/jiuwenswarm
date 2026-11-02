@@ -1826,8 +1826,9 @@ def _session_adapter_idle_ttl_default() -> int:
 
 class JiuWenSwarmDeepAdapter:
 
-    # Extensions (e.g. pptx_session_scope) look this up on the class.
+    # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
     _parse_stream_chunk = staticmethod(_parse_stream_chunk)
+    _build_model_from_entry = staticmethod(_build_model_from_entry)
     # 只有实际 Flash Adapter 延迟图片 SDK 初始化，其他 Adapter 在构造时完成。
     _defer_image_sdk_imports: ClassVar[bool] = False
     SESSION_ADAPTER_IDLE_TTL_SEC = _session_adapter_idle_ttl_default()
