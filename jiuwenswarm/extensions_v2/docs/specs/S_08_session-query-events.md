@@ -1,6 +1,6 @@
 # 会话七项查询事件公共协议
 
-最近修订 2026-10-31；本分支已实现。主责模块为 event_types/session_queries.py、query_dispatch.py、handler_ops/session_queries.py、event_handlers/session_queries.py。实施记录见 [查询公共机制与特性索引](../designs/session-query-events.md)。
+最近修订 2026-11-02；本分支已实现。主责模块为 event_types/session_queries.py、query_dispatch.py、handler_ops/session_queries.py、event_handlers/session_queries.py。本次仅归整编号、引用及文档归属，运行契约不变；逐项特性与历史验证入口见第 7 节。
 
 ## 1. 能力、粒度与调用位置
 
@@ -54,6 +54,49 @@ USER 可在 next 前后增加操作、返回合法替代值或明确拒绝；BUI
 - model：[S_04](S_04_session-model-ops.md)，返回字符串或 None
 - repo：[S_05](S_05_session-repo-ops.md)，返回 root/remote/internal/name
 - messages：[S_06](S_06_session-history-ops.md)，无参数数组；产品分页服务保留在内部
-- turns/usage：[S_11](S_11_session-usage-ops.md)，usage 对齐 context/rateLimits/可选 cost
+- turns/usage：[S_07](S_07_session-usage-ops.md)，usage 对齐 context/rateLimits/可选 cost
 
 不改变 append、files/read_file，也不扩展到 Team 或新的公共网络入口。原 Token Weather 渲染代码不改；验证只复用它订阅的 context.usage.updated 作为后端入口，收集七项返回参数。
+
+
+### 5.1 既有调用迁移
+
+| 旧代码涉及的方法 | 迁移方式 |
+| --- | --- |
+| cwd | 方法返回类型保持；内部现在派发 session.cwd。用户 Handler 新增拦截后可改变本次返回视图，真实执行目录不变。 |
+| root | 方法返回类型保持；内部现在派发 session.root。改写查询值不会改变平台项目绑定或文件访问根。 |
+| model | 旧 info['model_name'] / info.get('provider') 等访问改为直接消费字符串；需要模型配置详情的业务应使用自己已有的配置能力，不从名称反推供应商、凭据或激活状态。 |
+| repo | repo_root 改为 root；移除 branch/head/detached 访问。注意 linked worktree 的 root 现在对齐 Claude 的主工作树根；当前执行目录仍由 cwd() 给出。平台内部原 Git 身份读取服务保留。 |
+| messages | 删除 limit/cursor 参数和 page 包装；page['messages'][0]['content'] 改为 messages[-1]['text']。只需少量条目时在返回数组切片；产品原分页服务保留在平台内部，不作为新的第八个 Ops 暴露。 |
+| turns | 返回类型和默认口径保持；现在会派发 session.turns。不要再把累计收到的通知数当作权威轮次。 |
+| usage | 删除 breakdown=True/False；无明细用 usage()，需要已有分类用 breakdown='summary'。旧 context.context_window.input_tokens 改成 context.tokens，limit_tokens 改成 window，occupancy_rate 改成 percent（百分比单位）。旧 turn 不再是公开结果，单轮消耗仍可从现有用量通知的输入字段获取。 |
+
+调用者可从任何已绑定会话的业务 Handler 使用，不必须依赖用量通知。六项无参数，usage 可用参数对象或命名参数（两者不能混用）。返回值是独立视图，不修改平台真实状态、不缓存进 SessionContext、不自动触发界面更新。
+
+## 6. 平台接入与资源边界
+
+平台启动时先登记七项事件及唯一默认 CORE，再登记共享 BUILTIN 和 Ops Build Handler；现有 ops.build 创建一次方法目录。每个实际 Handler 的 Ops 由该目录及当次可信会话、包身份构造，业务调用不重新触发 ops.build，也不提前计算全部查询结果。
+
+实际读取由 server/runtime/session/query_views.py、query_repo.py、query_messages.py 和既有平台服务承担。query_dispatch.py 负责可信绑定、调用来源、重入保护、trigger 和解包；event_types/session_queries.py 只定义、校验和注册查询，不承载业务触发。平台内部的分页、模型详情、Git 分支/HEAD 和用量存储服务继续由原流程使用；旧直接读取帮助函数不作为当前公开查询 Ops 登记。
+
+用户包卸载/重载只撤销自己的 Hook，不撤销平台事件、默认 CORE 或共享 Ops。用户自有参数与缓存由插件管理；查询结果不写入 SessionContext，也不自动渲染。默认查询不发模型请求；显式 full 用量明细按专项规约拒绝，不悄悄降级或测量。其他已绑定可信上下文的业务 Handler 同样可以调用，不以 notify_context_usage 为前置。
+
+## 7. 特性与验收索引
+
+| Ops / Event | 独立特性 | 专项字段主责 |
+| --- | --- | --- |
+| session.cwd | [F_13](../features/F_13_session-cwd.md) | [S_03](S_03_session-workspace-ops.md) |
+| session.root | [F_19](../features/F_19_session-root.md) | [S_03](S_03_session-workspace-ops.md) |
+| session.model | [F_14](../features/F_14_session-model.md) | [S_04](S_04_session-model-ops.md) |
+| session.repo | [F_15](../features/F_15_session-repo.md) | [S_05](S_05_session-repo-ops.md) |
+| session.messages | [F_18](../features/F_18_session-messages.md) | [S_06](S_06_session-history-ops.md) |
+| session.turns | [F_20](../features/F_20_session-turns.md) | [S_07](S_07_session-usage-ops.md) |
+| session.usage | [F_17](../features/F_17_session-usage.md) | [S_07](S_07_session-usage-ops.md) |
+
+逐项字段、用户案例和独立验收在各 feature 维护；共享历史实施记录见[EXTV2-22 历史验证记录](../designs/extensions-v2-development-plan.md#extv2-22-七项查询事件化历史验证记录)，编号沿革见[文档编号映射](../designs/extensions-v2-development-plan.md#extv2-22-文档编号映射)。历史验证保留原日期和范围，本次文档整理不构成业务、模型或浏览器测试的新结果。
+
+对照依据为 Claude Code Mods 2.1.277 的固定公开类型声明，字段差异及本地未知值语义由各专项规约维护：
+
+- [Claude OpEventOf](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts#L5529-L5624)
+- [Claude Session API](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts#L2342-L2447)
+- [Claude 查询输出](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts#L5832-L5867)

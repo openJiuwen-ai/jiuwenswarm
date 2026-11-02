@@ -208,4 +208,4 @@ Web前端只呈现平台允许的组件、动作和样式。独立 Ops 不会自
 
 ## 2026-10-31 七项会话查询事件化
 
-已开放 cwd/root/model/repo/messages/turns/usage 采用 Ops→同名查询 Event→USER/BUILTIN/CORE 的路径，返回格式优先对齐 Claude。字段、兼容与逐项解释见 [S_16](../specs/S_16_session-query-events.md) 和 [查询公共机制与特性索引](session-query-events.md)。仅 Worker 持有 EventBus；验证返回参数，不介入原 Token Weather 渲染。
+已开放 cwd/root/model/repo/messages/turns/usage 采用 Ops→同名查询 Event→USER/BUILTIN/CORE 的路径，返回格式优先对齐 Claude。字段、兼容与逐项解释见 [S_08](../specs/S_08_session-query-events.md) 和 [查询协议与特性索引](../specs/S_08_session-query-events.md#7-特性与验收索引)。仅 Worker 持有 EventBus；验证返回参数，不介入原 Token Weather 渲染。
