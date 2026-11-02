@@ -2504,6 +2504,21 @@ function registerIpcHandlers() {
       return false;
     }
   });
+  // MCP Apps ui/open-link: any plain http(s) URL, no embedded credentials.
+  // Kept separate from the OAuth-only desktop:open-external-url above.
+  registerHandler('desktop:open-app-link', async url => {
+    try {
+      const target = new URL(String(url));
+      if (!['http:', 'https:'].includes(target.protocol)
+          || !target.hostname || target.username || target.password) {
+        return false;
+      }
+      await shell.openExternal(target.href);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   // 连接器隐式授权截取：部分远程 MCP（如百度网盘）官方只提供隐式授权——授权成功后
   // 302 到厂商的 login_success 静态页，access_token 放在 URL # 片段里。网页受同源策略
   // 限制读不到跨域跳转目标的 URL，Electron 作为浏览器宿主可以在导航事件层截取。

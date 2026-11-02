@@ -494,6 +494,10 @@ def _resolved():
     return recommendation_model_config()
 
 def test_by_default_topics_follow_the_model_new_chats_use(chat_config):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+        recommendation_model_options,
+    )
+
     config = _resolved()
     assert config is not None
     assert (config.model, config.base_url, config.api_key) == (
@@ -501,6 +505,9 @@ def test_by_default_topics_follow_the_model_new_chats_use(chat_config):
     # The entry leaves its window unset; the chain does not take the chat list's 256K default.
     assert config.context_window_tokens == 131072
     assert (config.effective_temperature, config.effective_top_p) == (0, 1)
+    options = recommendation_model_options(None)
+    assert options["selected_model"] == "mdl_chat"
+    assert "follow_main" not in {item["model_id"] for item in options["model_options"]}
 
 def test_a_chosen_model_is_kept_in_config_and_decides_the_model(chat_config):
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
@@ -516,8 +523,8 @@ def test_a_chosen_model_is_kept_in_config_and_decides_the_model(chat_config):
     assert load_recommendation_controls()["enabled"] is False
     assert "consent_version" not in chat_config.read_text(encoding="utf-8")
 
-    assert save_recommendation_model("follow_main") is True
-    assert _resolved().model == "chat-model"
+    assert save_recommendation_model("follow_main") is False
+    assert _resolved().model == "long-model"
 
 def test_a_complete_ark_environment_still_overrides_the_choice(chat_config, monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
@@ -965,14 +972,13 @@ def test_queue_drains_pre_attach_outcome_to_real_store_sink(tmp_path: Any) -> No
     )
     assert events[0]["payload"]["search_receipt"] == LIFECYCLE_SEARCH_RECEIPT
 
-def test_a_project_card_has_no_pause_and_its_dismissal_takes_off_only_that_card_until_undone(tmp_path: Any) -> None:
+def test_a_project_card_dismissal_takes_off_only_that_card(tmp_path: Any) -> None:
     scope = ("project:project-a", "project-a")
-    store = TopicStarterStore(tmp_path / "project-undo.sqlite3")
+    store = TopicStarterStore(tmp_path / "project-dismiss.sqlite3")
     _install_exact_exposure(store, scope=scope)
     queue = NewPageOutcomeQueue()
     assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
 
-    assert queue.publish(_signal(outcome="interest_paused", scope=scope)) == "rejected"
     assert queue.publish(_signal(outcome="not_interested", scope=scope)) == "recorded"
     assert queue.publish(_signal(outcome="not_interested", scope=scope)) == "rejected"
     feedback = InterestFeedback.from_state(
@@ -986,14 +992,7 @@ def test_a_project_card_has_no_pause_and_its_dismissal_takes_off_only_that_card_
                "prompt": "Compare uplift metrics", "source_memory_unit_ids": ["memory-causal-evaluation"]}
     assert feedback.still_wanted(sibling) is True
     assert feedback.still_wanted({**sibling, "title": "How should causal recommendation be evaluated?"}) is False
-    assert queue.publish(_signal(outcome="not_interested_undone", scope=scope)) == "recorded"
-    assert queue.publish(_signal(outcome="not_interested_undone", scope=scope)) == "rejected"
-    feedback = InterestFeedback.from_state(
-        load_latest_history_state(store), context_scope=scope[0], project_id=scope[1], now=LIFECYCLE_NOW + 3,
-    )
-    assert feedback.dismissed_units == frozenset()
-    assert feedback.version == 2
-    assert queue.publish(_signal(outcome="not_interested", scope=scope)) == "recorded"
+    assert feedback.version == 1
 
 def _not_interested_event(exposure_id: str, at: float) -> dict[str, Any]:
     return _ledger_event(
@@ -1228,7 +1227,6 @@ def _channel_event(
 
 class _TopicServiceStub:
     record_interaction = TopicService.record_interaction
-    _give_way_to_feedback = TopicService._give_way_to_feedback
     # A recommendation model is in force, so a read does not reload the configuration.
     ark_config = object()
     def schedule_news_check(self, *_args, **_kwargs):
@@ -1237,8 +1235,6 @@ class _TopicServiceStub:
     def __init__(self, store: TopicStarterStore) -> None:
         self.store = store
         self._news_refresh_task = None
-        # No replenishment runs here, so an undo or a pause has none to restart.
-        self._runs: dict[str, Any] = {}
         self.serve_calls: list[tuple[str, str, str | None]] = []
         self.exposure_calls: list[dict[str, Any]] = []
         self.successor_calls: list[tuple[str, str | None, str]] = []
@@ -1515,7 +1511,7 @@ async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
         "recorded": True
     }
     ws.request("ignored", "topic_starters.event", _ui_event(event_type="not_interested"))
-    assert (await _wait_response(ws, "ignored"))["payload"] == {"recorded": True, "pausable": True}
+    assert (await _wait_response(ws, "ignored"))["payload"] == {"recorded": True}
     ws.request(
         "direct",
         "topic_starters.event",
@@ -1654,14 +1650,14 @@ def _save_profile_with_dismissals(store: TopicStarterStore, times: tuple[float, 
     history.save_history_state(store, state, now=CHANNEL_NOW)
 
 @pytest.mark.asyncio
-async def test_dismissing_pausing_and_undoing_a_card_are_answered_and_refilled(
+async def test_dismissing_a_card_is_answered_and_refilled(
     tmp_path: Any,
     enabled_recommendation_consent,
 ) -> None:
     from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import InterestFeedback
 
-    store = TopicStarterStore(tmp_path / "dismiss-pause-undo.sqlite3")
+    store = TopicStarterStore(tmp_path / "dismiss.sqlite3")
     _install_manifest_and_card(store)
     # Two strikes written before a dismissal took off only its card stay as they were.
     _save_profile_with_dismissals(store, (CHANNEL_NOW - 200 * 86_400.0, CHANNEL_NOW - 100 * 86_400.0))
@@ -1674,29 +1670,20 @@ async def test_dismissing_pausing_and_undoing_a_card_are_answered_and_refilled(
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
 
-    def card_event(event_type: str) -> dict[str, Any]:
-        event = _ui_event(event_type="not_interested")
-        return {**event, "event_type": event_type}
-
     ws.request("exposure", "topic_starters.event", _ui_event(event_type="dynamic_exposure"))
     assert (await _wait_response(ws, "exposure"))["payload"] == {"recorded": True}
     replies = []
     for request_id, event_type in (
-        ("dismiss", "not_interested"), ("pause", "interest_paused"), ("pause-again", "interest_paused"),
-        ("undo-pause", "interest_pause_undone"), ("undo-dismiss", "not_interested_undone"),
-        ("dismiss-again", "not_interested"),
+        ("dismiss", "not_interested"), ("dismiss-again", "not_interested"),
     ):
-        ws.request(request_id, "topic_starters.event", card_event(event_type))
+        ws.request(request_id, "topic_starters.event", {**_ui_event(event_type="not_interested"), "event_type": event_type})
         replies.append((await _wait_response(ws, request_id))["payload"])
-    assert replies == [
-        {"recorded": True, "pausable": True}, {"recorded": True}, {"recorded": False},
-        {"recorded": True}, {"recorded": True}, {"recorded": True, "pausable": True},
-    ]
-    assert len(service.successor_calls) == 5
+    assert replies == [{"recorded": True}, {"recorded": False}]
+    assert len(service.successor_calls) == 1
     state = history.load_latest_history_state(store)
     feedback = InterestFeedback.load(store, state, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=CHANNEL_NOW)
     assert [item.status for item in feedback.permanent_directions] == []
-    assert len(state["memory_sidecar"]["negative_preferences"]) == 2 + 5
+    assert len(state["memory_sidecar"]["negative_preferences"]) == 2 + 1
 
     ws.release()
     await asyncio.wait_for(connection, timeout=5.0)
@@ -1882,6 +1869,161 @@ def test_preset_cards_serve_when_recommendation_is_off(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_dismissed_preset_card_is_resampled_from_the_corpus(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
+        NewPageOutcomeQueue,
+        TopicStarterStoreOutcomeSink,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        first = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert len(first["topics"]) == 4
+        assert service.record_exposure({
+            "session_id": "session-new",
+            "slate_id": first["slate_id"],
+            "manifest_id": first["manifest_id"],
+            "generation_batch_id": first["generation_batch_id"],
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "exposure_slice_id": first["exposure_slice_id"],
+            "topics": [{"card_revision_id": topic["id"]} for topic in first["topics"]],
+        }) is True
+
+        queue = NewPageOutcomeQueue()
+        assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
+        dismissed = first["topics"][0]
+        reply = service.record_interaction(
+            {
+                "session_id": "session-new",
+                "slate_id": first["slate_id"],
+                "event_type": "not_interested",
+                "topic_id": dismissed["id"],
+                "payload": {
+                    "manifest_id": first["manifest_id"],
+                    "generation_batch_id": first["generation_batch_id"],
+                    "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                    "project_id": None,
+                    "card_revision_id": dismissed["id"],
+                },
+            },
+            outcome_queue=queue,
+        )
+        assert reply["recorded"] is True
+
+        clock[0] += 1.0
+        refilled = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            slate_id=first["slate_id"],
+        )
+        # The preset screen stays full: the dismissed card is replaced by
+        # another corpus card instead of the page losing one.
+        assert refilled["available"] is True
+        assert len(refilled["topics"]) == 4
+        assert dismissed["id"] not in {topic["id"] for topic in refilled["topics"]}
+        assert refilled["manifest_id"] != first["manifest_id"]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_opened_preset_cards_are_resampled_from_the_corpus(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
+        NewPageOutcomeQueue,
+        TopicStarterStoreOutcomeSink,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        first = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert len(first["topics"]) == 4
+        assert service.record_exposure({
+            "session_id": "session-new",
+            "slate_id": first["slate_id"],
+            "manifest_id": first["manifest_id"],
+            "generation_batch_id": first["generation_batch_id"],
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "exposure_slice_id": first["exposure_slice_id"],
+            "topics": [{"card_revision_id": topic["id"]} for topic in first["topics"]],
+        }) is True
+
+        queue = NewPageOutcomeQueue()
+        assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
+        opened = first["topics"][:2]
+        for topic in opened:
+            assert service.record_interaction(
+                {
+                    "session_id": "session-new",
+                    "slate_id": first["slate_id"],
+                    "event_type": "topic_click",
+                    "topic_id": topic["id"],
+                    "payload": {
+                        "manifest_id": first["manifest_id"],
+                        "generation_batch_id": first["generation_batch_id"],
+                        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+                        "project_id": None,
+                        "card_revision_id": topic["id"],
+                    },
+                },
+                outcome_queue=queue,
+            )["recorded"] is True
+
+        # Returning to the welcome page reads without a slate: the two opened
+        # preset cards must not linger as a half-empty screen.
+        clock[0] += 1.0
+        reopened = service.serve(
+            "session-new",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+        )
+        assert reopened["available"] is True
+        assert len(reopened["topics"]) == 4
+        opened_starters = {topic["source_starter_id"] for topic in opened}
+        assert opened_starters.isdisjoint(
+            {topic["source_starter_id"] for topic in reopened["topics"]}
+        )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_turning_recommendation_on_prepares_past_the_preset_pool(tmp_path):
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import GLOBAL_NEW_CHAT_SCOPE
@@ -2014,6 +2156,39 @@ def test_global_exposure_keeps_corpus_cards_without_an_interest_id():
     assert [item["card_revision_id"] for item in selected] == ["revision-1"]
 
 
+def test_global_refill_keeps_corpus_cards_without_an_interest_id():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        _select_exposure,
+    )
+
+    cards = [
+        {
+            "card_id": f"cold-corpus:life-00{index}",
+            "card_revision_id": f"revision-{index}",
+            "source_starter_id": f"life-00{index}",
+            "interest_summary_id": None,
+            "selector_rank": index,
+            "cold_start": True,
+        }
+        for index in (1, 2, 3)
+    ]
+    selected = _select_exposure(
+        cards,
+        eligible_revision_ids={card["card_revision_id"] for card in cards},
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        window_index=0,
+        now=1_700_000_000.0,
+        shown_before=frozenset(),
+        retained_card_ids=tuple(card["card_id"] for card in cards),
+    )
+    # A dismissal refills from the previous slate; the preset cards it kept
+    # on screen must survive that read, not only the first one.
+    assert [item["card_revision_id"] for item in selected] == [
+        "revision-1", "revision-2", "revision-3",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_gateway_shutdown_skips_unavailable_product_lane_and_awaits_prepare_lane() -> None:
     calls: list[str] = []
@@ -2102,6 +2277,80 @@ def test_a_malformed_global_interest_candidate_is_dropped_alone() -> None:
     )
 
     assert [plan["candidate_id"] for plan in plans] == ["slot-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_name", ["DeepSeek-V4.1-Flash", "doubao-seed"])
+async def test_recommendation_request_disables_thinking_for_every_model(
+    model_name: str,
+) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    class _Message:
+        content = "{}"
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = model_name
+        usage = None
+        choices = [_Choice()]
+
+    captured: list[dict] = []
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.append(kwargs)
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(api_key="test", model=model_name, expected_model=model_name),
+        client_factory=lambda **_kwargs: _Client(),
+    )
+    await invoke("v6_utility_scorer", "system", "{}")
+
+    assert captured[0]["extra_body"] == {
+        "thinking": {"type": "disabled"},
+        "enable_thinking": False,
+    }
+    assert "reasoning_effort" not in captured[0]
+
+
+def test_memory_response_schema_omits_array_keywords_dashscope_rejects() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _v6_response_schema,
+    )
+
+    forbidden = {"uniqueItems", "contains", "minContains", "maxContains"}
+
+    def keywords(node: object) -> set[str]:
+        found: set[str] = set()
+        if isinstance(node, dict):
+            found.update(forbidden & set(node))
+            for value in node.values():
+                found.update(keywords(value))
+        elif isinstance(node, list):
+            for value in node:
+                found.update(keywords(value))
+        return found
+
+    for stage in ("memory_init", "memory_incremental"):
+        assert keywords(_v6_response_schema(stage)) == set()
 
 
 @pytest.mark.asyncio

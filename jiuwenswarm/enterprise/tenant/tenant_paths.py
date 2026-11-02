@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import shutil
 from pathlib import Path
@@ -17,7 +16,12 @@ from jiuwenswarm.enterprise.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 
-_TENANT_KEY_SEP = "::"
+# tenant_key 纯契约（_TENANT_KEY_SEP / normalize_tenant_key_part / build_tenant_key）
+# 真源已迁 gateway.common.tenant_key（下载 URL 签验两侧同码）；此处 re-export 保持既有链路。
+from gateway.common.tenant_key import (  # noqa: F401
+    build_tenant_key,
+    normalize_tenant_key_part,
+)
 
 __all__ = [
     "normalize_tenant_key_part",
@@ -28,31 +32,6 @@ __all__ = [
     "get_multi_tenant_user_workspace_dir",
     "seed_tenant_agent_workspace",
 ]
-
-
-def normalize_tenant_key_part(value: str | None, *, default: str = "default") -> str:
-    text = default if value is None else str(value).strip() or default
-    return text
-
-
-def build_tenant_key(
-    group_id: str | None = None,
-    bot_id: str | None = None,
-    user_id: str | None = None,
-) -> str:
-    """Compose a stable opaque ``tenant_key``.
-
-    先归一三元组并按 ``group_id::bot_id::user_id`` 拼接，再做 MD5 hex，
-    用作池缓存键与企业版 ``workspace_{tenant_key}`` 目录名，避免明文落盘/打日志。
-    """
-    raw = _TENANT_KEY_SEP.join(
-        (
-            normalize_tenant_key_part(group_id),
-            normalize_tenant_key_part(bot_id),
-            normalize_tenant_key_part(user_id),
-        )
-    )
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
 def get_agent_workspace_relative_dir() -> Path:

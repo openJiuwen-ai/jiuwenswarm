@@ -1,5 +1,5 @@
 """Enterprise HTTP transports customer identity independently of platform auth."""
-from jiuwenswarm.common import request_ext
+from gateway.common import request_ext
 from gateway.channel_manager.web import web_http_dispatch
 
 

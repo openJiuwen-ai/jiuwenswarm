@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import ast
 import importlib.util
+import io
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).parents[3]
@@ -15,11 +16,31 @@ def _classes(path: Path) -> set[str]:
     result: set[str] = set()
     files = [path] if path.is_file() else sorted(path.rglob("*.py"))
     for file in files:
-        tree = ast.parse(file.read_text(encoding="utf-8"))
-        result.update(
-            node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
-        )
+        # Tokenization avoids the shared AST recursion state bug in older CPython 3.11.
+        tokens = tokenize.generate_tokens(io.StringIO(file.read_text(encoding="utf-8")).readline)
+        for token in tokens:
+            if token.type == tokenize.NAME and token.string == "class":
+                result.add(next(tokens).string)
     return result
+
+
+def test_class_inventory_ignores_strings_and_comments(tmp_path: Path) -> None:
+    source = tmp_path / "classes.py"
+    source.write_text(
+        '"""class DocstringDecoy: pass"""\n'
+        '# class CommentDecoy: pass\n'
+        'text = "class StringDecoy: pass"\n'
+        'class Outer:\n'
+        '    class Nested:\n'
+        '        pass\n'
+        'def factory():\n'
+        '    class Local(Outer):\n'
+        '        pass\n',
+        encoding="utf-8",
+    )
+    expected = {"Outer", "Nested", "Local"}
+    assert _classes(source) == expected
+    assert _classes(tmp_path) == expected
 
 
 def test_jiuwen_swarm_declares_only_the_host_class() -> None:

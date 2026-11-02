@@ -1785,3 +1785,22 @@ def test_historical_remote_cli_imports_alias_migrated_modules(module_name: str) 
     migrated = importlib.import_module(f"jiuwenswarm.channels.cli.{module_name}")
 
     assert historical is migrated
+
+
+@pytest.mark.parametrize("interrupt_id", ["intr-1", ""])
+def test_answer_request_echoes_the_interrupt_id_of_the_question(interrupt_id):
+    original = AgentRequest(
+        request_id="req-1", channel_id="process_cli", session_id="s-1",
+        req_method=ReqMethod.CHAT_SEND, params={"mode": "agent"},
+    )
+    payload = {"event_type": "chat.ask_user_question", "request_id": "call-1", "source": "ask_user_interrupt"}
+    if interrupt_id:
+        payload["interrupt_id"] = interrupt_id
+    interaction = RuntimeEvent(request_id="req-1", channel_id="process_cli", session_id="s-1", payload=payload)
+
+    request, resume = app._answer_request(original, interaction, [{"selected_options": ["A"]}])
+
+    assert resume and request.req_method is ReqMethod.CHAT_SEND
+    assert request.params["request_id"] == "call-1"
+    assert request.params.get("interrupt_id", "") == interrupt_id
+    assert ("interrupt_id" in request.params) is bool(interrupt_id)

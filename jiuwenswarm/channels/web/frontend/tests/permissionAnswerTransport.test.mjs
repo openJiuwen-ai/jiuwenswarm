@@ -289,3 +289,46 @@ test('permission answers preserve a collaboration group after the experimental s
   await act(async () => socket.receive({ type: 'res', id: request.id, ok: true, payload: { accepted: true } }));
   assert.equal(await result, true);
 }));
+
+test('a permission answer echoes the event interrupt_id beside the unchanged request_id', async () => mounted(async ({ socket, observed }) => {
+  await deliver(socket, { ...payload(), interrupt_id: 'intr_1', kind: 'permission' });
+  const pending = useChatStore.getState().getRuntime(sessionId).pendingQuestions[0];
+  assert.equal(pending.interruptId, 'intr_1');
+  await act(async () => document.querySelector('[data-variant="allow-once"]').click());
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.send');
+  assert.equal(request.params.interrupt_id, 'intr_1');
+  assert.equal(request.params.request_id, 'sdk-request');
+  await respond(socket, request);
+  assert.deepEqual(observed.results, [true]);
+}));
+
+for (const [label, extra] of [['no', {}], ['an empty', { interrupt_id: '' }]]) {
+  test(`an event with ${label} interrupt_id answers without the key`, async () => mounted(async ({ socket }) => {
+    await deliver(socket, { ...payload(), ...extra });
+    await act(async () => document.querySelector('[data-variant="allow-once"]').click());
+    const request = socket.requests.at(-1);
+    assert.equal(request.method, 'chat.send');
+    assert.equal('interrupt_id' in request.params, false);
+    await respond(socket, request);
+  }));
+}
+
+test('a chat.user_answer echoes the event interrupt_id', async () => mounted(async ({ socket, observed }) => {
+  await deliver(socket, {
+    session_id: sessionId, request_id: 'other-request', interrupt_id: 'intr_2', kind: 'ask_user',
+    source: 'skill_evolution_approval',
+    questions: [{ header: 'Q', question: 'Continue?', options: [{ label: 'Yes' }] }],
+  });
+  let result;
+  await act(async () => { result = observed.api.sendUserAnswer(sessionId, 'other-request', [
+    { question: 'Continue?', selected_options: ['Yes'] },
+  ]); });
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.user_answer');
+  assert.equal(request.params.interrupt_id, 'intr_2');
+  assert.equal(request.params.request_id, 'other-request');
+  await respond(socket, request);
+  assert.equal(await result, true);
+  assert.deepEqual(useChatStore.getState().getRuntime(sessionId).pendingQuestions, []);
+}, createElement('div')));

@@ -526,6 +526,7 @@ async def test_typed_answer_copies_pending_source_metadata_card_and_owned_worksp
     )
     payload = {
         locator: "real-runtime-card",
+        "interrupt_id": "intr-card",
         "source": source,
         "approval_schema": "approval-v1",
         "evolution_meta": {"change": {"id": "approved-change"}},
@@ -554,6 +555,7 @@ async def test_typed_answer_copies_pending_source_metadata_card_and_owned_worksp
     assert answer.approval_schema == "approval-v1"
     assert answer.evolution_meta == {"change": {"id": "approved-change"}}
     assert answer.interaction_id == "real-runtime-card"
+    assert answer.interrupt_id == "intr-card"
     assert answer.channel_id == "process_cli"
     assert answer.session_id == "runtime-session"
     assert answer.mode == "agent.work.plan"

@@ -324,10 +324,25 @@ class CronTools:
         # not get persisted with an empty ``user_id`` and disappear from the
         # Web user's task list.  This is derived solely from the runtime route,
         # never from an LLM-supplied tool parameter.
-        push_metadata: dict[str, Any] = {}
+        #
+        # list/get/update 等工具参数经常是 {}，不带 group/bot；企业版 Gateway
+        # 会把空身份当成 default 筛任务 → 列表永远空。创建时会从路由写入
+        # params；这里对所有 action 同样补齐，并塞进 push metadata 兜底。
+        params = dict(params or {})
         route_user_id = str(r.user_id or "").strip()
+        route_group_id = str(r.group_id or "").strip()
+        route_bot_id = str(r.bot_id or "").strip()
+        if route_group_id and not str(params.get("group_id") or "").strip():
+            params["group_id"] = route_group_id
+        if route_bot_id and not str(params.get("bot_id") or "").strip():
+            params["bot_id"] = route_bot_id
+        push_metadata: dict[str, Any] = {}
         if route_user_id:
             push_metadata["_jiuwenswarm_cron_owner_user_id"] = route_user_id
+        if route_group_id:
+            push_metadata["_jiuwenswarm_cron_owner_group_id"] = route_group_id
+        if route_bot_id:
+            push_metadata["_jiuwenswarm_cron_owner_bot_id"] = route_bot_id
         command_id = f"cron-{uuid.uuid4().hex}"
         payload = {
             "request_id": r.request_id,
@@ -339,7 +354,7 @@ class CronTools:
                 "command_id": command_id,
                 "action": action,
                 "status": "ok",
-                "data": dict(params or {}),
+                "data": params,
                 "message": "",
             },
         }

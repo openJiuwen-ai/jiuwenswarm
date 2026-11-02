@@ -3,6 +3,7 @@ import { webRequest } from '../services/webClient';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
 import { jobBelongsToProject } from '../components/CronPanel/cronProjectDisplay';
 import type { Session } from '../types';
+import type { CronRunUpdate } from '../types/cron';
 
 export interface SidebarCronJob {
   id: string;
@@ -26,6 +27,9 @@ export function isWebChannelJob(targets?: string): boolean {
 }
 
 interface CronState {
+  runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
+  clearUnconfirmedRuns: () => void;
+  applyRunUpdate: (payload: Record<string, unknown>) => CronRunUpdate | null;
   jobs: SidebarCronJob[];
   isLoading: boolean;
   expandedCronGroups: Record<string, boolean>;
@@ -36,16 +40,12 @@ interface CronState {
   // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由
   lastRunSessionId: Record<string, string>;
   setLastRunSessionId: (jobId: string, sessionId: string) => void;
-  // job_id → 点击「立即执行」时记下的任务原话。占位推送常在 run_now 返回前到达，
-  // 用这份原文把用户气泡排到占位上面。
-  pendingRunSeedByJobId: Record<string, string>;
-  setPendingRunSeed: (jobId: string, seed: string) => void;
-  takePendingRunSeed: (jobId: string) => string;
   // 定时任务未读状态（is_placeholder=false 的广播到达时标记，点击后清除）
   unreadCronJobs: Record<string, boolean>;
   markCronJobUnread: (jobId: string) => void;
   clearCronJobUnread: (jobId: string) => void;
-  loadJobs: () => Promise<void>;
+  /** @returns 是否拉取成功；失败时保留已有列表，方便调用方重试。 */
+  loadJobs: () => Promise<boolean>;
   reload: () => Promise<void>;
   toggleCronGroup: (groupId: string) => void;
   loadCronSessions: (projectId: string, cronId: string) => Promise<void>;
@@ -61,6 +61,40 @@ function persistCronUnread(state: Record<string, boolean>) {
 }
 
 export const useCronStore = create<CronState>((set, get) => ({
+  runUpdates: {},
+  clearUnconfirmedRuns: () => set((state) => ({
+    runUpdates: Object.fromEntries(Object.entries(state.runUpdates).filter(([, run]) =>
+      run.status === 'succeeded' || run.status === 'failed')),
+  })),
+  applyRunUpdate: (payload) => {
+    if (
+      typeof payload.run_id !== 'string' || !payload.run_id ||
+      typeof payload.job_id !== 'string' || !payload.job_id ||
+      typeof payload.event_id !== 'string' ||
+      typeof payload.revision !== 'number' || !Number.isSafeInteger(payload.revision) || payload.revision < 1 ||
+      typeof payload.timestamp !== 'number' || !Number.isFinite(payload.timestamp) ||
+      typeof payload.notify !== 'boolean' ||
+      (payload.session_id != null && typeof payload.session_id !== 'string') ||
+      typeof payload.project_id !== 'string' ||
+      typeof payload.mode !== 'string' ||
+      (payload.job_name != null && typeof payload.job_name !== 'string') ||
+      (payload.error != null && typeof payload.error !== 'string') ||
+      !['pending', 'running', 'awaiting_approval', 'succeeded', 'failed'].includes(String(payload.status)) ||
+      !['started', 'paused', 'finished', 'reminder'].includes(String(payload.phase))
+    ) return null;
+    const previous = get().runUpdates[payload.run_id];
+    if (previous && (
+      previous.revision >= payload.revision ||
+      (['succeeded', 'failed'].includes(previous.status) && ['pending', 'running', 'awaiting_approval'].includes(String(payload.status)))
+    )) return null;
+    const update = payload as unknown as CronRunUpdate;
+    const runUpdate = { ...update, firstSeenAt: previous?.firstSeenAt ?? update.timestamp };
+    set((state) => {
+      const entries = Object.entries(state.runUpdates).filter(([key]) => key !== update.run_id).slice(-255);
+      return { runUpdates: { ...Object.fromEntries(entries), [update.run_id]: runUpdate } };
+    });
+    return update;
+  },
   jobs: [],
   isLoading: false,
   expandedCronGroups: {},
@@ -69,25 +103,6 @@ export const useCronStore = create<CronState>((set, get) => ({
   lastRunSessionId: {},
   setLastRunSessionId: (jobId, sessionId) =>
     set((s) => ({ lastRunSessionId: { ...s.lastRunSessionId, [jobId]: sessionId } })),
-  pendingRunSeedByJobId: {},
-  setPendingRunSeed: (jobId, seed) => {
-    const text = String(seed || '').trim();
-    if (!jobId || !text) return;
-    set((s) => ({
-      pendingRunSeedByJobId: { ...s.pendingRunSeedByJobId, [jobId]: text },
-    }));
-  },
-  takePendingRunSeed: (jobId) => {
-    const text = String(get().pendingRunSeedByJobId[jobId] || '').trim();
-    if (!jobId || !text) return '';
-    set((s) => {
-      if (!(jobId in s.pendingRunSeedByJobId)) return s;
-      const next = { ...s.pendingRunSeedByJobId };
-      delete next[jobId];
-      return { pendingRunSeedByJobId: next };
-    });
-    return text;
-  },
   unreadCronJobs: (() => {
     try {
       const value = JSON.parse(localStorage.getItem('jiuwenswarm_cron_unread') || '{}');
@@ -121,8 +136,12 @@ export const useCronStore = create<CronState>((set, get) => ({
       // 侧边栏是 Web 端工作区,只展示 targets 含 "web" 的定时任务
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
       set({ jobs: webJobs, isLoading: false });
+      return true;
     } catch {
-      set({ jobs: [], isLoading: false });
+      // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，
+      // 否则首屏失败后要等手动刷新才会再出现定时任务。
+      set({ isLoading: false });
+      return false;
     }
   },
 

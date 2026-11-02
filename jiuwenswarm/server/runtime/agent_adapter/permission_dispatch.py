@@ -44,8 +44,13 @@ class RootPermissionDispatch:
 
     def prepare_resume(
         self, inputs: dict[str, Any], *, root_session_id: str, loop_session: Any,
+        client_tool_resume: bool,
     ) -> dict[str, Any]:
-        """Reserve the exact head or prepare an ordinary SDK ask continuation."""
+        """Reserve the exact head or prepare an ordinary SDK ask continuation.
+
+        A client tool resume reserves no card: client results answer client
+        tool calls, never an approval (``validate_client_tool_answers``).
+        """
         self.queue.raise_if_quarantined(root_session_id)
         query = inputs.get("query")
         if not isinstance(query, InteractiveInput):
@@ -57,18 +62,12 @@ class RootPermissionDispatch:
             )
             if ((loop_session_id or "default").strip() or "default") != root_session_id:
                 raise RootPermissionQueueError("permission_queue_session_mismatch")
-        try:
-            answer = self.queue.reserve_answer(
-                root_session_id,
-                query,
-            )
-        except RootPermissionQueueError as exc:
-            if str(exc) != "permission_queue_empty":
-                raise
+        if client_tool_resume:
+            return put_root_nonpermission_resume_in_inputs(inputs, None)
+        answer = self._reserve_card_answer(root_session_id, query)
+        if answer is None:
             if self.queue.has_live(root_session_id=root_session_id):
-                raise RootPermissionQueueError(
-                    "nonpermission_resume_permission_conflict"
-                ) from exc
+                raise RootPermissionQueueError("nonpermission_resume_permission_conflict")
             return prepare_nonpermission_resume(
                 loop_session,
                 inputs,
@@ -84,6 +83,21 @@ class RootPermissionDispatch:
         prepared["query"] = answer.interactive_input
         prepared[ROOT_PERMISSION_ANSWER_KEY] = answer
         return prepared
+
+    def _reserve_card_answer(self, root_session_id: str, query: InteractiveInput) -> RootPermissionAnswer | None:
+        """Reserve the head card ``query`` answers; None when it names no card or the queue is empty.
+
+        A card is answered by its card id in ``user_inputs``. An input that
+        answers only by interrupt id answers an ordinary SDK interrupt.
+        """
+        if not query.user_inputs:
+            return None
+        try:
+            return self.queue.reserve_answer(root_session_id, query)
+        except RootPermissionQueueError as exc:
+            if str(exc) != "permission_queue_empty":
+                raise
+            return None
 
     def has_live(self, root_session_id: str | None) -> bool:
         return self.queue.has_live(root_session_id=root_session_id) or self.lock.locked() or bool(

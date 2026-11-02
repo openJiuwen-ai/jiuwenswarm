@@ -50,7 +50,7 @@ def _request(source="", channel_id="process_cli"):
         request_id="answer" if source else "root",
         channel_id=channel_id,
         session_id="session",
-        params={"source": source, "request_id": "card", "answers": []},
+        params={"source": source, "request_id": "card", "answers": [{"selected_options": ["allow_once"]}]},
     )
 
 

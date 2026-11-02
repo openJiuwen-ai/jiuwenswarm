@@ -56,7 +56,7 @@ from gateway.common.config import (
     update_preferred_language_in_config,
     update_updater_in_config,
 )
-from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
+from gateway.common.config_panel import config_set_handlers, models_handlers
 from gateway.common.model_catalog import ModelCatalog
 from gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -578,6 +578,9 @@ _FORWARD_REQ_METHODS = frozenset({
     "mcp.register_custom",
     "mcp.delete_custom",
     "mcp.save_credentials",
+    "mcp_app.list_tools",
+    "mcp_app.read_resource",
+    "mcp_app.call_tool",
     "extensions.list",
     "extensions.import",
     "extensions.delete",
@@ -798,6 +801,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.register_custom",
     "mcp.delete_custom",
     "mcp.save_credentials",
+    "mcp_app.list_tools",
+    "mcp_app.read_resource",
+    "mcp_app.call_tool",
     "extensions.list",
     "extensions.import",
     "extensions.delete",
@@ -2379,7 +2385,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """按请求 bot_id 从 Gateway 企业库解析对话模型，不下发凭据。"""
         from types import SimpleNamespace
 
-        from jiuwenswarm.common.request_identity import (
+        from gateway.common.request_identity import (
             apply_routing_metadata,
             normalize_routing_identity,
         )
@@ -2478,10 +2484,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _config_validate_model(ws, req_id, params, session_id)
 
     async def _model_resource_rpc(ws, req_id, params, session_id, operation):
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             delete_model_resource, upsert_model_group_resource, upsert_model_resource,
         )
-        from jiuwenswarm.common.model_errors import (
+        from gateway.common.model_errors import (
             MODEL_SELECTION_NOT_FOUND, MODEL_SELECTION_REFERENCED, ModelSelectionError,
         )
         from gateway.common.model_selection import ModelSelection
@@ -2981,46 +2987,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         AgentServer 输出与迁移前 Web fallback 投影（to_session_info）完全一致。
         """
         from openjiuwen_protocol.message import ReqMethod
-        from gateway.enterprise import is_enterprise
-        from gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        real_client = _resolve(agent_client)
-        # 个人版对齐 develop A2g：统一走 E2A。企业版在 legacy 共享目录且
-        # AgentServer 未就绪时允许本地列表（server.runtime / 无 AS 场景）。
-        if (
-            is_enterprise()
-            and is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.server.control.responses import parse_int_param
-            from jiuwenswarm.server.runtime.session.session_info import to_session_info
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_all_sessions_metadata,
-            )
-
-            raw_params = params if isinstance(params, dict) else {}
-            limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
-            offset = parse_int_param(raw_params, "offset", 0, minimum=0, maximum=10**9)
-            sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={
-                    "sessions": [to_session_info(item) for item in sessions],
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                },
-            )
-            return
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
             channel=channel,
-            agent_client=real_client,
+            agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
             params=params,
@@ -3144,38 +3115,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
         from openjiuwen_protocol.message import ReqMethod
-        from gateway.enterprise import is_enterprise
-        from gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        real_client = _resolve(agent_client)
-        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 rename 回退。
-        if (
-            is_enterprise()
-            and is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            from jiuwenswarm.server.runtime.session.session_rename import (
-                apply_session_rename,
-            )
-
-            ok, payload, error, code = apply_session_rename(
-                params if isinstance(params, dict) else {},
-                session_id,
-                init_channel_id=channel.channel_id,
-            )
-            await channel.send_response(
-                ws, req_id, ok=ok, payload=payload or {},
-                error=None if ok else error or "session.rename failed",
-                code=None if ok else code,
-            )
-            return
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
             channel=channel,
-            agent_client=real_client,
+            agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
             params=params,
@@ -3192,43 +3136,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         SESSION_PIN，AgentServer 注入目录 session_metadata）。
         """
         from openjiuwen_protocol.message import ReqMethod
-        from gateway.enterprise import is_enterprise
-        from gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        real_client = _resolve(agent_client)
-        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 pin 回退。
-        if (
-            is_enterprise()
-            and is_legacy_shared_directory_client(real_client)
-            and not getattr(real_client, "server_ready", True)
-        ):
-            raw_params = params if isinstance(params, dict) else {}
-            sid = raw_params.get("session_id")
-            pinned = raw_params.get("pinned")
-            if not isinstance(sid, str) or not sid.strip():
-                await channel.send_response(ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST")
-                return
-            if not isinstance(pinned, bool):
-                await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
-                return
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                set_session_pinned,
-            )
-
-            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
-            if result is None:
-                await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
-                return
-            new_pinned, new_order = result
-            await channel.send_response(ws, req_id, ok=True, payload={"pinned": new_pinned, "pin_order": new_order})
-            return
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
             channel=channel,
-            agent_client=real_client,
+            agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
             params=params,
@@ -5041,7 +4953,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _cron_agent_routing_metadata(ws):
         """把这次网页连接上的三个身份交给 Agent，用来打开对应工作区。"""
-        from jiuwenswarm.common.request_identity import apply_routing_metadata
+        from gateway.common.request_identity import apply_routing_metadata
 
         routing = getattr(ws, "_web_routing", None)
         if not isinstance(routing, dict):
@@ -5234,6 +5146,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
             # 体系），用后即弃、不落任务数据。
             params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
+            if str(params.get("targets") or "web").strip() == "web":
+                params["app_id"] = getattr(ws, "_jiuwen_app_id", "default") or "default"
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # 显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
             if (
@@ -5243,8 +5157,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ):
                 try:
                     from gateway.common.external_providers import provider
+                    from openjiuwen_protocol.provider_domains import (
+                        PROVIDER_DOMAIN_SESSION_METADATA,
+                    )
 
-                    meta = await provider("session_metadata").get_session_metadata_async(
+                    meta = await provider(
+                        PROVIDER_DOMAIN_SESSION_METADATA
+                    ).get_session_metadata_async(
                         session_id, cache_bust=True, user_id=user_id,
                     )
                     if isinstance(meta, dict):
@@ -5468,6 +5387,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=True, payload=payload)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
+        except ValueError as e:
+            # Disabled/expired jobs and other caller-fixable states: the client
+            # should not retry them as a server fault.
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
@@ -5852,7 +5775,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
-    from jiuwenswarm.common.schema.message import ReqMethod as _FileReq
+    from openjiuwen_protocol.message import ReqMethod as _FileReq
 
     for file_method in (
         _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,

@@ -122,6 +122,7 @@ export class SessionManager {
     answers: unknown[],
     source: string,
     mode: string,
+    interruptId = '',
   ): boolean {
     const sid = this._sessionId;
     if (!sid) return false;
@@ -131,6 +132,7 @@ export class SessionManager {
       answers,
       source,
       mode,
+      ...(interruptId ? { interrupt_id: interruptId } : {}),
     }, this.channelId);
     msg.id = requestId;
     return this.ws.send(msg);

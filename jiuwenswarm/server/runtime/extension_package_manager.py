@@ -2475,7 +2475,7 @@ async def list_agent_groups_with_hub(
 
 def _omit_enterprise_hidden_cards(cards: list[dict]) -> list[dict]:
     """企业版不展示依赖外部连接器的 Hub 包。保留 Hub 缓存标记。"""
-    from jiuwenswarm.server.runtime.enterprise_connector_packages import (
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
         hidden_from_enterprise,
     )
 
@@ -2494,7 +2494,7 @@ def _omit_enterprise_hidden_cards(cards: list[dict]) -> list[dict]:
 
 def _filter_allowed_cards(kind: str, cards: list[dict]) -> list[dict]:
     """企业版按允许名单收目录。保留 Hub 缓存标记。"""
-    from jiuwenswarm.server.runtime.package_allowlist import filter_cards
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import filter_cards
 
     filtered = filter_cards(kind, list(cards))
     cache = getattr(cards, "cache", None)
@@ -2506,13 +2506,13 @@ def _filter_allowed_cards(kind: str, cards: list[dict]) -> list[dict]:
 
 
 def _require_package_allowed(kind: str, package_id: str) -> None:
-    from jiuwenswarm.server.runtime.package_allowlist import require_allowed
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import require_allowed
 
     require_allowed(kind, package_id)
 
 
 def _package_allowed(kind: str, package_id: str) -> bool:
-    from jiuwenswarm.server.runtime.package_allowlist import allows
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
 
     return allows(kind, package_id)
 
@@ -2686,7 +2686,7 @@ async def show_agent_group_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None
 ) -> dict | None:
     """Return local group details or public Hub metadata before installation."""
-    from jiuwenswarm.server.runtime.enterprise_connector_packages import (
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
         hidden_from_enterprise,
     )
 
@@ -2956,7 +2956,7 @@ async def _show_equipment_with_hub(
 async def show_agent_template_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
-    from jiuwenswarm.server.runtime.enterprise_connector_packages import (
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
         hidden_from_enterprise,
     )
 
@@ -3198,7 +3198,7 @@ async def install_equipment_from_hub_gated(
 ) -> tuple[bool, dict[str, Any]]:
     kind_label = _hub_asset_kind(kind)
     requested_id = _lifecycle_package_id(params, kind_label)
-    from jiuwenswarm.server.runtime.enterprise_connector_packages import (
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
         hidden_from_enterprise,
     )
 
@@ -4532,7 +4532,7 @@ async def install_agent_group_with_hub(
 ) -> None:
     """Acquire a Hub group by its asset ID, then install its local runtime package."""
     requested_id = _lifecycle_package_id(params, "agent_group")
-    from jiuwenswarm.server.runtime.enterprise_connector_packages import (
+    from jiuwenswarm.enterprise.capabilities.experts.allowlist import (
         hidden_from_enterprise,
     )
 

@@ -1878,5 +1878,6 @@ recommendation:
   # null = 跟随程序默认；用户切换后保存 true/false
   topic_enabled: null
   prompt_enabled: null
-  # 话题推荐模型：follow_main 跟随新建对话的默认模型，或 models 中某个模型的 model_id。
+  # 话题推荐模型：models 中某个模型的 model_id。
+  # follow_main 只留给还没选过的旧配置，读取时按列表第一项解析，设置页不再提供这个选项。
   model: follow_main

@@ -14,11 +14,12 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.symphony import GraphArtifactStore
 
-from jiuwenswarm.symphony import service as service_module
-from jiuwenswarm.symphony.build import GraphBuildRuntimeFactory
-from jiuwenswarm.symphony.config import symphony_config_from_dict
-from jiuwenswarm.symphony.service import (
+from jiuwenswarm.runtime.symphony import service as service_module
+from jiuwenswarm.runtime.symphony.build import GraphBuildRuntimeFactory
+from jiuwenswarm.common.symphony_config import symphony_config_from_dict
+from jiuwenswarm.runtime.symphony.service import (
     SwarmSymphonyService,
     _cache_excludes_directory,
     _cache_excludes_file,
@@ -55,11 +56,11 @@ def _install_fake_status(monkeypatch, config, *, calls: list[int]):
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         fake_graph_status,
     )
 
@@ -100,7 +101,7 @@ async def test_real_status_scan_runs_once_for_unchanged_inputs(
         staticmethod(counting_scan),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     service = SwarmSymphonyService()
@@ -111,6 +112,47 @@ async def test_real_status_scan_runs_once_for_unchanged_inputs(
     assert scan_calls == [1]
     assert first["exists"] is False
     assert second == first
+
+
+@pytest.mark.asyncio
+async def test_warm_status_does_not_read_graph_and_damage_invalidates_cache(
+    monkeypatch,
+    tmp_path,
+):
+    config = _config(tmp_path)
+    artifact = GraphArtifactStore(config.paths.graph_dir).publish(
+        {"schema_version": "1.0", "generated_at": "2026-10-26T00:00:00Z"},
+        version="cache-test",
+    )
+    graph_reads = []
+    read_text = Path.read_text
+
+    def count_graph_reads(path, *args, **kwargs):
+        if path.name == "graph.json":
+            graph_reads.append(path)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", count_graph_reads)
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
+        lambda: config,
+    )
+    service = SwarmSymphonyService()
+
+    first = await service.graph_status()
+    assert first["exists"] is True
+    assert graph_reads
+    graph_reads.clear()
+
+    second = await service.graph_status()
+    assert second == first
+    assert graph_reads == []
+
+    artifact.graph_path.write_text("[]", encoding="utf-8")
+    damaged = await service.graph_status()
+    assert graph_reads
+    assert damaged["exists"] is False
+    assert damaged["stale"] is True
 
 
 @pytest.mark.asyncio
@@ -321,11 +363,11 @@ async def test_concurrent_cache_miss_scans_once(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         slow_graph_status,
     )
     service = SwarmSymphonyService()
@@ -367,11 +409,11 @@ async def test_invalidation_during_scan_does_not_cache_stale_result(
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.graph_status",
+        "jiuwenswarm.runtime.symphony.service.graph_status",
         blocking_graph_status,
     )
     service = SwarmSymphonyService()

@@ -783,6 +783,8 @@ class RuntimeSessionProvisioner:
             selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
             try:
                 if provision_input.cron_id and selection is not None:
+                    if selection.type != "model":
+                        raise ValueError("Scheduled task sessions only support a single model")
                     from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                     selection = ModelSelectionResolver().restore(selection)
@@ -797,6 +799,7 @@ class RuntimeSessionProvisioner:
                 raise SessionProvisionError(str(exc), code=getattr(exc, "code", "BAD_REQUEST")) from exc
             prewarm_eligible = (
                 not is_swarm
+                and not (provision_input.cron_id and channel_id == "web")
                 and not moa_enabled
                 and canonical_mode
                 in {

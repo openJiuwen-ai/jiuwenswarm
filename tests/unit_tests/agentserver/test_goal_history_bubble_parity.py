@@ -223,6 +223,31 @@ async def test_final_record_uses_first_delta_timestamp_and_completed_at(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", "Compare these screenshots"])
+async def test_image_supplement_boundary_preserves_original_text_and_images_in_history(monkeypatch, content):
+    images = [
+        {"type": "image", "filename": name, "path": f"/sessions/current/uploads/{name}",
+         "mime_type": "image/png", "size_bytes": 108}
+        for name in ("before.png", "after.png")
+    ]
+    records = await _run_stream(monkeypatch, [
+        {"event_type": "chat.input_received", "input_request_id": "image-steer",
+         "content": content, "media_items": images, "timestamp": 1800000000000,
+         "output_order": {"request_id": "original", "sequence": 1}},
+        {"event_type": "chat.final", "content": "The images differ."},
+    ], include_users=True)
+
+    supplement = next(record for record in records if record.get("request_id") == "image-steer")
+    assert supplement["content"] == content
+    assert supplement["extra"]["is_supplemental_input"] is True
+    assert supplement["extra"]["media_items"]["scope"] == "current_turn"
+    assert [item["path"] for item in supplement["extra"]["media_items"]["items"]] == [
+        item["path"] for item in images
+    ]
+    assert "jiuwenswarm_image_tool_context" not in supplement["content"]
+
+
+@pytest.mark.asyncio
 async def test_supplement_boundary_persists_visible_prefix_before_user_and_hides_old_tail(monkeypatch):
     sequence = 0
 

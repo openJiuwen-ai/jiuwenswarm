@@ -10,7 +10,7 @@ from jiuwenswarm.common.obs_files import AttachmentStore, object_prefix
 
 
 @pytest.mark.parametrize("value,expected", [
-    (None, "CERT_NONE"), ("", "CERT_NONE"), ("  ", "CERT_NONE"),
+    (None, "CERT_REQUIRED"), ("", "CERT_REQUIRED"), ("  ", "CERT_REQUIRED"),
     ("false", "CERT_NONE"), (" False ", "CERT_NONE"), ("0", "CERT_NONE"),
     ("no", "CERT_NONE"), ("OFF", "CERT_NONE"),
     ("true", "CERT_REQUIRED"), (" TRUE ", "CERT_REQUIRED"),

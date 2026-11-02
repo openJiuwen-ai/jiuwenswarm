@@ -865,6 +865,24 @@ class _CronFakeManager(_InactiveTeamRuntimeManagerMixin):
         return cls._completion.get(session_id)
 
     @classmethod
+    def cron_completion_owner(cls, session_id: str, request_id: str) -> dict:
+        return {"request_id": request_id, "stream_task": cls._stream_tasks.get(session_id)}
+
+    @classmethod
+    async def finish_cron_stream(cls, session_id: str, completion: dict, round_id) -> None:
+        task = cls.pop_stream_task(session_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await team_helpers._broadcast_event("tui", session_id, {
+            "event_type": "chat.processing_status", "is_processing": False, "rid": round_id,
+        })
+        cls.pop_cron_completion(session_id)
+
+    @classmethod
     def pop_stream_task(cls, session_id: str, *, generation: int | None = None) -> asyncio.Task | None:
         return cls._stream_tasks.pop(session_id, None)
 
@@ -6222,6 +6240,65 @@ async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeyp
     assert len(ask_events) == 1
     assert ask_events[0]["request_id"] == "tool-ask-1"
 
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_forwards_the_leader_pause_with_its_interrupt_id(monkeypatch):
+    from openjiuwen.core.single_agent.interrupt.response import ToolCallInterruptRequest
+
+    broadcasted: list[dict] = []
+    request = ToolCallInterruptRequest(
+        tool_call_id="tool-ask-1",
+        tool_name="ask_user",
+        tool_args='{"query": "Which colour?"}',
+        interrupt_id="intr_ask_1",
+        interrupt_kind="ask_user",
+    )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="__interaction__",
+            payload=SimpleNamespace(id="tool-ask-1", value=request),
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-ask-pause",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    ask_events = [
+        event
+        for event in broadcasted
+        if event.get("event_type") == "chat.ask_user_question"
+    ]
+    assert [(event["request_id"], event["interrupt_id"], event["kind"]) for event in ask_events] == [
+        ("tool-ask-1", "intr_ask_1", "ask_user"),
+    ]
+    assert ask_events[0]["questions"][0]["question"] == "Which colour?"
 
 def test_extract_query_directives_ignores_non_prefix():
     cleaned, hide_dm, debug = _TeamHelpersTestApi.extract_query_directives(
