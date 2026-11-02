@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 | F_29 / session-turns |
 | 建档日期 | 2026-10-31 |
-| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变 |
+| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变；同日补充查询结果的资料来源、读取函数、复用与新增边界及缺失处理，契约不变 |
 | 关联计划 | [EXTV2-22 / 七项只读查询事件化](../designs/extensions-v2-development-plan.md#extv2-22-七项只读查询事件化) |
 | 主责规约 | [S_16 查询公共协议](../specs/S_16_session-query-events.md)、[S_11](../specs/S_11_session-usage-ops.md) |
 
@@ -186,6 +186,8 @@ needs_review = None if turns is None else turns >= 10
 
 <a id="51-启动登记上下文绑定与-core-分工"></a>
 
+### 5.1 启动登记、上下文绑定与 CORE 分工
+
 event_types/session_queries.py 定义查询映射、Matcher、Validator 并注册同名事件及唯一 CORE；handler_ops/session_queries.py 创建封闭代理；query_dispatch.py 负责上下文、来源、重入保护、trigger 和结果解包；event_handlers/session_queries.py 提供共享查询 BUILTIN 与 CORE；实际读取由 server/runtime/session/query_views.py 及所属平台服务负责。
 
 启动阶段，Registry.init 触发一次 ops.build：其 CORE 创建 Builder，平台 BUILTIN 从 next 取得同一 Builder，登记七个 session 查询代理，Bus 保存方法目录。业务阶段，Core 在实际进入每个 Handler 前，用该目录、可信包身份和本次 SessionContext 创建 Ops；方法访问器自动注入当前 Ops。Builder 保存方法定义，查询结果在每次调用时产生。
@@ -213,6 +215,33 @@ notify_context_usage 把会话 ID、可信目录与可得快照整理为 Session
 七项联合示例见 [session_query_audit](../../examples/session_query_audit/)；其中 collect_session_parameters(ops) 是普通用户辅助函数，分别调用七个 Ops 后返回参数字典。它与本文单项业务规则的示例分别维护。共享机制、来源及取消边界见[公共设计第 5 节](../designs/session-query-events.md#5-接入与兼容方案)。
 
 源码位置：[事件与校验](../../event_types/session_queries.py)、[Ops 登记](../../handler_ops/session_ops.py)、[查询代理](../../handler_ops/session_queries.py)、[分派](../../query_dispatch.py)、[查询 CORE／BUILTIN](../../event_handlers/session_queries.py)、[平台读取](../../../server/runtime/session/query_views.py)、[现有平台通知入口](../../event_types/context_usage.py)。
+
+### 5.2 查询结果如何获取
+
+以下说明查询 USER 正常 `await next_handler(event)` 后，默认 CORE 如何取值。公开 `ops.session.turns()` 仍先经过同名 `session.turns` Event；`ops.session_context` 是 Core 绑定的只读属性，不负责采集资料。USER 短路返回合法 value 时不会执行下列默认读取；USER 在 next 返回后加工 value 时，Ops 拿到的是加工后的视图。
+
+```text
+SessionContext.session_id
+  → to_thread(read_session_turns, session_id)
+  → _read_records → read_committed_main_history
+  → 筛选保留主历史中的原生 user/human 输入
+  → request_id 优先去重，次用记录 id，旧记录按索引区分
+  → len(keys)
+  → Event 包装 value → Ops 返回非负整数或 None
+```
+
+| 阶段 | 具体从哪里获取 | 如何形成当前结果 |
+| --- | --- | --- |
+| 读取位置 | [read_session_turns](../../../server/runtime/session/session_statistics.py) 只凭 `context.session_id`，经 `_read_records` 读取严格主历史快照 | 不要求平台提前计算轮数放进 SessionContext；也不需要 cwd、model 或用量事件 |
+| 筛选口径 | 只保留 role 为 user/human 的记录；排除子 Agent、扩展消息、反馈、压缩摘要、cron/heartbeat、带 source 的记录等 | 统计的是当前保留历史内的原生用户输入，不是每一条 role=user 记录，也不是模型调用或工具调用次数 |
+| 去重 | 有非空 request_id 时用 request_id；否则用非空记录 id；两者都没有的旧记录用该条索引 | 同一请求若保存两条可计数记录，只算一轮；并非先取 messages() 数组再数 user，因为其工具结果也可以是 user 视图 |
+| 返回 | `len(keys)` 被包为 `{"value": count}` 后由代理解包 | 一份历史有两条同 request_id=r1 的原生输入、另有 r2 的输入及一条扩展 note，结果为 2；截断历史后统计也可能减少 |
+
+**复用与新增：** 原仓库已存在 [list_session_turns](../../../agents/harness/common/session_ops_service.py)，返回轮次预览、差异信息及 total；其 total 按 role=user 的既有逻辑计数。PR-05 新增 `read_session_turns`，复用同一主历史基础，但按此处的原生输入／去重口径只返回计数。当前默认 CORE 不直接调用 list_session_turns 或取它的 total；事件化改造只给这项读取加同名 Hook，不代表此前没有轮次查询。
+
+**缺失与失败：** 会话目录未知时返回 `None`；有效已有会话没有历史或没有可计数输入时返回 `0`。非法会话 ID 被拒绝；提交边界超时、读盘或历史结构错误报 `SessionStatisticsError`，不会把读取失败记作 0。
+
+共享查询 BUILTIN 只计时、记录调用来源并复制结果，具体读数由默认 CORE 委派平台服务完成；CORE 将结果包成 `{"value": ...}`，Ops 代理再校验、复制、解包。结果返回调用它的用户 Handler，是否保存为自有参数由用户决定，不自动写历史或进入 UI。
 
 ## 6. 验收与未决问题
 
