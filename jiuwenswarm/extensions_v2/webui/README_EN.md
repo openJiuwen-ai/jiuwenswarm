@@ -10,7 +10,7 @@ RenderNode(
 )
 ```
 
-Declaring a component does not enable its browser renderer. Plugin validation covers 19 catalog components (including `Avatar`, `FileTree` and `FilePreview`).
+Declaring a component does not enable its browser renderer. Plugin validation covers 20 catalog components (including `Avatar`, `FileTree`, `FilePreview` and `Dropdown`).
 See the [component contract](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md).
 
 All browser interactions use `webui.dispatch`. The host takes the node path and revision from the displayed instance:

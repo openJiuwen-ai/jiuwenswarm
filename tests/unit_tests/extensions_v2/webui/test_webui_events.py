@@ -262,8 +262,8 @@ async def test_valid_handler_can_replace_and_reply_and_old_revision_is_rejected(
 
 
 def test_component_event_catalog_excludes_deferred_features():
-    assert len(COMPONENT_RULES) == 19
-    assert {"Avatar", "FileTree", "FilePreview"} <= COMPONENT_RULES.keys()
+    assert len(COMPONENT_RULES) == 20
+    assert {"Avatar", "FileTree", "FilePreview", "Dropdown"} <= COMPONENT_RULES.keys()
     assert {name for rule in COMPONENT_RULES.values() for name in rule.get("events", {})} <= UPSTREAM_EVENTS
 
 

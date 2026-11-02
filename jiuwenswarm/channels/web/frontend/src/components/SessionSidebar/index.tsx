@@ -22,7 +22,13 @@ import type {
 } from '../../applicationPlugins/types';
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
-import { WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+
+const userMenuStyles: WebUIStyleOverrides = {
+  Dropdown: { className: 'icon-rail-user-trigger' },
+  Avatar: { className: 'icon-rail-user-avatar' },
+  Button: { className: 'icon-rail-user-signin' },
+};
 
 const pluginNavigationStyles: WebUIStyleOverrides = {
   Button: {
@@ -231,6 +237,14 @@ export function SessionSidebar({
         />
       ) : null}
       <EnterpriseContextSwitcher />
+
+      {/* Application-scope user entry mounted at the bottom of the icon rail. */}
+      <WebUIHost
+        slotId="application.sidebar.footer"
+        className="icon-rail-user-slot w-full items-center"
+        instanceClassName="flex w-full justify-center"
+        styles={userMenuStyles}
+      />
     </aside>
   );
 }

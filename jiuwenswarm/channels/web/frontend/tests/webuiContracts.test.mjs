@@ -24,11 +24,16 @@ function checkProps(name, input = {}) {
 
 test('catalog contains the supported components', () => {
   assert.deepEqual(componentCatalog.listComponents().map((rule) => rule.name).sort(), [
-    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Empty', 'FilePreview', 'FileTree', 'Iframe', 'Image', 'Input',
-    'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
+    'Avatar', 'Box', 'Button', 'Card', 'Divider', 'Dropdown', 'Empty', 'FilePreview', 'FileTree', 'Iframe',
+    'Image', 'Input', 'Panel', 'Select', 'Slider', 'Switch', 'Tabs', 'Tag', 'Text', 'TreeSelect',
   ].sort());
   assert.deepEqual(componentCatalog.getSlot('application.entry'), {
     id: 'application.entry',
+    display: 'single',
+    scope: 'application',
+  });
+  assert.deepEqual(componentCatalog.getSlot('application.sidebar.footer'), {
+    id: 'application.sidebar.footer',
     display: 'single',
     scope: 'application',
   });

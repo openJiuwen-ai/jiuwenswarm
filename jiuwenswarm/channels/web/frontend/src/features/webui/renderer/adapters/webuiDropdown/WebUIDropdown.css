@@ -1,0 +1,19 @@
+/* Baseline trigger affordance for the Dropdown adapter. Hosts may override via appearance. */
+.webui-dropdown__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.webui-dropdown__trigger:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.webui-dropdown__trigger[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

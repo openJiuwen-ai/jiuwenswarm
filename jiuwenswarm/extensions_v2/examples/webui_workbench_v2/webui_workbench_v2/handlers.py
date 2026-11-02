@@ -28,7 +28,14 @@ from .views import (
     SLOTS,
     TASK_INSTANCE,
     TURN_SLOTS,
+    USER_INSTANCE,
+    USER_LOGIN_ACTION,
+    USER_SELECT_ACTION,
+    WEATHER_HIDE_ACTION,
+    WEATHER_SHOW_ACTION,
     build_view,
+    signed_out_view,
+    user_menu_view,
     welcome_page,
 )
 from .workspace import apply_file_action, load_workspace
@@ -42,6 +49,7 @@ class WorkbenchHandlers:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionState] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._signed_in: dict[str, bool] = {}
 
     def handlers(self) -> tuple:
         return tuple(
@@ -61,6 +69,8 @@ class WorkbenchHandlers:
         target = request.target
         if target.slot_id == "application.entry":
             return await self._on_application_entry(request, ops, next_handler, event)
+        if target.slot_id == "application.sidebar.footer":
+            return await self._on_sidebar_footer(request, ops, next_handler, event)
         if target.package_id not in ("", PACKAGE_ID) or not target.session_id:
             return await next_handler(event)
         if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
@@ -89,6 +99,20 @@ class WorkbenchHandlers:
             if target.slot_id == "conversation.panel.right" and target.instance_key != INSTANCE:
                 return UiActionOutput(accepted=False, status="invalid_instance")
             action = request.payload.get("action_id")
+            if action in (WEATHER_HIDE_ACTION, WEATHER_SHOW_ACTION):
+                if (target.slot_id != "conversation.input.above" or target.instance_key != INSTANCE
+                        or request.event_type != "ui.click"):
+                    return UiActionOutput(accepted=False, status="invalid")
+                state.weather_visible = action == WEATHER_SHOW_ACTION
+                targets = {("conversation.input.above", INSTANCE)}
+                if ("application.settings", INSTANCE) in state.mounted:
+                    targets.add(("application.settings", INSTANCE))
+                failed_status = None
+                for slot, instance in sorted(targets):
+                    output = await self._render(ops, target.session_id, slot, instance, state)
+                    if output is None or output.status != "delivered":
+                        failed_status = output.status if output else "unavailable"
+                return UiActionOutput(accepted=failed_status is None, status=failed_status or "rendered")
             if isinstance(action, str) and action.startswith("workbench.files."):
                 data = request.payload.get("data", {})
                 if (target.slot_id != "conversation.panel.right" or target.instance_key != INSTANCE
@@ -150,6 +174,50 @@ class WorkbenchHandlers:
             return UiActionOutput(accepted=delivered, status="cleared" if delivered else (output.status if output else "unavailable"))
         return UiActionOutput(accepted=False, status="invalid")
 
+    async def _on_sidebar_footer(
+        self,
+        request: UiActionInput,
+        ops: EventHandlerOps | None,
+        next_handler: EventNext,
+        event: Event,
+    ) -> UiActionOutput:
+        """Render the application-scope user menu keyed by the browser connection."""
+        target = request.target
+        if target.package_id not in ("", PACKAGE_ID) or target.session_id:
+            return await next_handler(event)
+        if request.event_type != "ui.ready" and target.package_id != PACKAGE_ID:
+            return await next_handler(event)
+        if ops is None:
+            return UiActionOutput(accepted=False, status="unavailable")
+        connection = target.connection_id or "default"
+        if request.event_type == "ui.ready":
+            if target.instance_key not in ("", USER_INSTANCE):
+                return UiActionOutput(accepted=False, status="invalid_instance")
+            return await self._render_user_menu(ops, target, self._signed_in.get(connection, True))
+        if target.instance_key != USER_INSTANCE:
+            return UiActionOutput(accepted=False, status="invalid_instance")
+        if request.event_type == "ui.select":
+            data = request.payload.get("data")
+            if (request.payload.get("action_id") != USER_SELECT_ACTION
+                    or not isinstance(data, Mapping) or data.get("key") != "logout"):
+                return UiActionOutput(accepted=False, status="invalid")
+            self._signed_in[connection] = False
+            return await self._render_user_menu(ops, target, False)
+        if request.event_type == "ui.click" and request.payload.get("action_id") == USER_LOGIN_ACTION:
+            self._signed_in[connection] = True
+            return await self._render_user_menu(ops, target, True)
+        return UiActionOutput(accepted=False, status="invalid")
+
+    @staticmethod
+    async def _render_user_menu(ops: EventHandlerOps, target: RenderTarget, signed_in: bool) -> UiActionOutput:
+        output = await ops.ui.render(UiRenderInput(
+            target=replace(target, package_id=PACKAGE_ID, instance_key=USER_INSTANCE),
+            root=user_menu_view() if signed_in else signed_out_view(),
+        ))
+        delivered = output is not None and output.status == "delivered"
+        status = "rendered" if delivered else (output.status if output is not None else "unavailable")
+        return UiActionOutput(accepted=delivered, status=status)
+
     @staticmethod
     def _instances(target: RenderTarget) -> tuple[str, ...]:
         if target.slot_id in TURN_SLOTS:
@@ -181,8 +249,8 @@ class WorkbenchHandlers:
             else:
                 return "invalid"
             return "updated"
-        if action == "workbench.option" and args.get("field") == "auto_summary" and type(data.get("checked")) is bool:
-            state.auto_summary = data["checked"]
+        if action == "workbench.option" and args.get("field") == "weather_visible" and type(data.get("checked")) is bool:
+            state.weather_visible = data["checked"]
         elif action not in ("workbench.open", "workbench.refresh"):
             return "invalid"
         state.last_result = f"已更新 / Updated · {state.operations + 1} · {state.summary()}"
