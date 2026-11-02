@@ -2274,24 +2274,45 @@ def _final_file_path(raw: Any, *, session_id: str, organization_id: str) -> Path
     return resolved
 
 
+def _file_digest(path: Path) -> bytes | None:
+    """Content hash used to collapse a copied final file onto one attachment."""
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.digest()
+    except OSError:
+        return None
+
+
 def _owner_final_files(
     submitted: list, roots: list[Any], *, session_id: str, organization_id: str
 ) -> list[dict]:
     """Files the Owner delivered: complete_team_run attachments and the root result_uri.
 
     Child-task outputs are never scanned, so drafts stay out of the group post.
+    The same path is attached once. A later file with the same bytes, such as
+    the Owner's copy of the summary ``result_uri``, is omitted too. The first
+    path is the one that stays.
     """
     candidates = [item.get("path") for item in submitted if isinstance(item, dict)]
     for task in roots:
         context = getattr(task, "output_context", None)
         candidates.append(getattr(context, "result_uri", None))
     files: list[dict] = []
-    seen: set[str] = set()
+    seen_paths: set[str] = set()
+    seen_digests: set[bytes] = set()
     for raw in candidates:
         path = _final_file_path(raw, session_id=session_id, organization_id=organization_id)
-        if path is None or str(path) in seen:
+        if path is None or str(path) in seen_paths:
             continue
-        seen.add(str(path))
+        digest = _file_digest(path)
+        if digest is not None and digest in seen_digests:
+            continue
+        seen_paths.add(str(path))
+        if digest is not None:
+            seen_digests.add(digest)
         files.append({"name": path.name, "path": str(path)})
     return files
 
