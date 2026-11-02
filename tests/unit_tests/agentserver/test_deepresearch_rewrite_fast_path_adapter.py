@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_h
     RewriteHtmlTarget,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep import deepresearch_rewrite as rewrite_ops
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -187,7 +188,7 @@ async def test_html_target_comes_only_from_exact_active_interaction_session():
     }
     adapter, session, *_ = _adapter_with_active_session(state=target_state)
 
-    target = await adapter._load_deepresearch_rewrite_html_target("session-1")
+    target = await rewrite_ops._load_deepresearch_rewrite_html_target(adapter, "session-1")
 
     assert target == RewriteHtmlTarget(
         report_path="/workspace/report.rewrite.md",
@@ -208,7 +209,7 @@ async def test_html_target_rejects_mismatched_active_session_id():
         state=target_state,
     )
 
-    target = await adapter._load_deepresearch_rewrite_html_target("session-1")
+    target = await rewrite_ops._load_deepresearch_rewrite_html_target(adapter, "session-1")
 
     assert target is None
     session.get_state.assert_not_called()
@@ -221,7 +222,7 @@ async def test_persist_fast_path_turn_uses_active_session_and_commits_four_messa
     )
     result = _result()
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=result,
@@ -267,7 +268,7 @@ async def test_persist_fast_path_turn_rolls_back_best_effort_on_failure(failure_
         )
     )
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -311,7 +312,7 @@ async def test_commit_failure_restores_and_commits_the_previous_durable_snapshot
 
     context_engine.save_contexts.side_effect = capture_snapshot
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -344,7 +345,7 @@ async def test_restore_failure_marks_adapter_uncertain_and_attempts_save_and_com
         )
     )
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -370,7 +371,7 @@ async def test_partial_add_failure_removes_only_messages_owned_by_this_turn():
 
     context.add_messages = AsyncMock(side_effect=add_two_then_raise)
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -395,7 +396,7 @@ async def test_partial_add_success_return_is_detected_and_rolled_back():
 
     context.add_messages = AsyncMock(side_effect=add_only_two)
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -424,7 +425,7 @@ async def test_partial_add_rollback_uses_an_independent_message_snapshot():
 
     context.add_messages = AsyncMock(side_effect=add_two_then_raise)
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -457,7 +458,7 @@ async def test_mutate_then_raise_state_update_restores_previous_checkpoint():
 
     session.update_state.side_effect = mutate_then_raise_once
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -498,7 +499,7 @@ async def test_partial_state_update_success_return_is_detected_and_rolled_back()
     session.update_state.side_effect = update_only_target_once
     query = _query()
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         request_id="request-partial-state",
         query_sha256=hashlib.sha256(query.encode("utf-8")).hexdigest(),
@@ -526,7 +527,7 @@ async def test_save_contexts_return_without_local_state_update_is_rejected():
         _adapter_with_active_session(save_updates_state=False)
     )
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         query=_query(),
         result=_result(),
@@ -555,7 +556,7 @@ async def test_persist_fast_path_turn_rolls_back_then_propagates_cancellation(
     )
 
     with pytest.raises(asyncio.CancelledError) as raised:
-        await adapter._persist_deepresearch_rewrite_fast_path_turn(
+        await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
             session_id="session-1",
             query=_query(),
             result=_result(),
@@ -582,8 +583,8 @@ async def test_persist_failure_logs_only_exception_type():
     )
     error_log = Mock()
 
-    with patch.object(interface_module.logger, "error", error_log):
-        persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    with patch.object(rewrite_ops.logger, "error", error_log):
+        persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
             session_id="session-1",
             query=_query(),
             result=_result(),
@@ -597,14 +598,14 @@ async def test_persist_failure_logs_only_exception_type():
 
 
 @pytest.mark.asyncio
-async def test_html_followup_invokes_existing_tool_with_active_target():
+async def test_html_followup_invokes_existing_tool_with_active_target(monkeypatch):
     adapter, *_ = _adapter_with_active_session()
-    adapter._load_deepresearch_rewrite_html_target = AsyncMock(
+    monkeypatch.setattr(rewrite_ops, "_load_deepresearch_rewrite_html_target", AsyncMock(
         return_value=RewriteHtmlTarget(
             report_path="/workspace/report.rewrite.md",
             revision_id="rev_child",
         )
-    )
+    ))
 
     with patch(
         "jiuwenswarm.agents.harness.common.tools.deepresearch.rewrite_tools."
@@ -615,7 +616,7 @@ async def test_html_followup_invokes_existing_tool_with_active_target():
             )
         ),
     ) as html_tool:
-        result = await adapter._try_deepresearch_rewrite_html_followup(
+        result = await rewrite_ops._try_deepresearch_rewrite_html_followup(adapter,
             "生成 HTML",
             "session-1",
         )
@@ -632,11 +633,11 @@ async def test_html_followup_invokes_existing_tool_with_active_target():
 
 
 @pytest.mark.asyncio
-async def test_html_followup_missing_target_returns_adapter_guidance():
+async def test_html_followup_missing_target_returns_adapter_guidance(monkeypatch):
     adapter, *_ = _adapter_with_active_session()
-    adapter._load_deepresearch_rewrite_html_target = AsyncMock(return_value=None)
+    monkeypatch.setattr(rewrite_ops, "_load_deepresearch_rewrite_html_target", AsyncMock(return_value=None))
 
-    result = await adapter._try_deepresearch_rewrite_html_followup(
+    result = await rewrite_ops._try_deepresearch_rewrite_html_followup(adapter,
         "生成 HTML",
         "session-1",
     )
@@ -665,7 +666,7 @@ async def test_adapter_fast_path_plain_text_has_no_tool_or_model_side_effects():
         "deepresearch_commit_rewrite._func",
         new=AsyncMock(),
     ) as commit:
-        result = await adapter._try_deepresearch_rewrite_fast_path("普通消息")
+        result = await rewrite_ops._try_deepresearch_rewrite_fast_path(adapter, "普通消息")
 
     assert result is None
     prepare.assert_not_awaited()
@@ -686,7 +687,7 @@ async def test_adapter_disables_thinking_for_glm_rewrite_model():
         "run_rewrite_fast_path",
         new=AsyncMock(return_value=_result()),
     ) as run_fast_path:
-        await adapter._try_deepresearch_rewrite_fast_path(_query())
+        await rewrite_ops._try_deepresearch_rewrite_fast_path(adapter, _query())
 
     assert run_fast_path.await_args.kwargs["model_call_kwargs"] == {
         "extra_body": {"thinking": {"type": "disabled"}}
@@ -694,24 +695,24 @@ async def test_adapter_disables_thinking_for_glm_rewrite_model():
 
 
 @pytest.mark.asyncio
-async def test_rewrite_transaction_holds_core_send_then_control_locks_through_persist():
+async def test_rewrite_transaction_holds_core_send_then_control_locks_through_persist(monkeypatch):
     adapter, *_ = _adapter_with_active_session()
     result = _result()
 
-    async def run_tool(_query):
+    async def run_tool(_adapter, _query):
         assert adapter._instance._interaction_send_lock.locked()
         assert adapter._instance._interaction_control_lock.locked()
         return result
 
-    async def persist(**_kwargs):
+    async def persist(_adapter, **_kwargs):
         assert adapter._instance._interaction_send_lock.locked()
         assert adapter._instance._interaction_control_lock.locked()
         return True
 
-    adapter._try_deepresearch_rewrite_fast_path = run_tool
-    adapter._persist_deepresearch_rewrite_fast_path_turn = persist
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", run_tool)
+    monkeypatch.setattr(rewrite_ops, "_persist_deepresearch_rewrite_fast_path_turn", persist)
 
-    outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(),
         session_id="session-1",
         request_id="request-locks",
@@ -723,7 +724,7 @@ async def test_rewrite_transaction_holds_core_send_then_control_locks_through_pe
 
 
 @pytest.mark.asyncio
-async def test_html_transaction_holds_core_send_then_control_locks_through_tool():
+async def test_html_transaction_holds_core_send_then_control_locks_through_tool(monkeypatch):
     adapter, *_ = _adapter_with_active_session()
     expected = RewriteHtmlFollowupResult(
         status="completed",
@@ -731,14 +732,14 @@ async def test_html_transaction_holds_core_send_then_control_locks_through_tool(
         message="html done",
     )
 
-    async def run_html(_query, _session_id):
+    async def run_html(_adapter, _query, _session_id):
         assert adapter._instance._interaction_send_lock.locked()
         assert adapter._instance._interaction_control_lock.locked()
         return expected
 
-    adapter._try_deepresearch_rewrite_html_followup = run_html
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_html_followup", run_html)
 
-    outcome = await adapter._run_deepresearch_rewrite_html_transaction(
+    outcome = await rewrite_ops._run_deepresearch_rewrite_html_transaction(adapter,
         "生成 HTML",
         session_id="session-1",
     )
@@ -747,13 +748,13 @@ async def test_html_transaction_holds_core_send_then_control_locks_through_tool(
 
 
 @pytest.mark.asyncio
-async def test_core_send_waits_until_rewrite_transaction_releases_both_locks():
+async def test_core_send_waits_until_rewrite_transaction_releases_both_locks(monkeypatch):
     adapter, *_ = _adapter_with_active_session()
     tool_entered = asyncio.Event()
     allow_tool = asyncio.Event()
     send_entered = asyncio.Event()
 
-    async def run_tool(_query):
+    async def run_tool(_adapter, _query):
         tool_entered.set()
         await allow_tool.wait()
         return None
@@ -763,9 +764,9 @@ async def test_core_send_waits_until_rewrite_transaction_releases_both_locks():
             async with adapter._instance._interaction_control_lock:
                 send_entered.set()
 
-    adapter._try_deepresearch_rewrite_fast_path = run_tool
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", run_tool)
     rewrite_task = asyncio.create_task(
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id="request-linearized"
         )
     )
@@ -782,7 +783,7 @@ async def test_core_send_waits_until_rewrite_transaction_releases_both_locks():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_rewrites_are_serialized_and_failed_a_cannot_pop_successful_b():
+async def test_concurrent_rewrites_are_serialized_and_failed_a_cannot_pop_successful_b(monkeypatch):
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session(
             state={"schema_version": 0, "revision_id": "old"},
@@ -807,15 +808,15 @@ async def test_concurrent_rewrites_are_serialized_and_failed_a_cannot_pop_succes
             "revision_id": "rev_b",
         },
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(
         side_effect=[result_a, result_b]
-    )
+    ))
 
     outcome_a, outcome_b = await asyncio.gather(
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id="request-a"
         ),
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id="request-b"
         ),
     )
@@ -835,6 +836,7 @@ async def test_concurrent_rewrites_are_serialized_and_failed_a_cannot_pop_succes
 @pytest.mark.parametrize("cancel_count", [1, 2])
 async def test_consumer_cancel_after_commit_tool_waits_for_durable_checkpoint(
     cancel_count,
+    monkeypatch,
 ):
     save_entered = asyncio.Event()
     allow_save = asyncio.Event()
@@ -846,9 +848,9 @@ async def test_consumer_cancel_after_commit_tool_waits_for_durable_checkpoint(
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session(save_side_effect=blocking_save)
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
     task = asyncio.create_task(
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(),
             session_id="session-1",
             request_id="request-cancel",
@@ -875,12 +877,12 @@ async def test_consumer_cancel_after_commit_tool_waits_for_durable_checkpoint(
 
 
 @pytest.mark.asyncio
-async def test_consumer_cancel_seen_after_checkpoint_task_finished_still_propagates():
+async def test_consumer_cancel_seen_after_checkpoint_task_finished_still_propagates(monkeypatch):
     cancellation = asyncio.CancelledError("consumer-cancel")
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
     real_shield = asyncio.shield
     shield_calls = 0
 
@@ -894,7 +896,7 @@ async def test_consumer_cancel_seen_after_checkpoint_task_finished_still_propaga
 
     with patch.object(interface_module.asyncio, "shield", side_effect=finish_then_cancel):
         with pytest.raises(asyncio.CancelledError) as raised:
-            await adapter._run_deepresearch_rewrite_fast_path_transaction(
+            await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
                 _query(), session_id="session-1", request_id="request-finished-cancel"
             )
 
@@ -904,11 +906,11 @@ async def test_consumer_cancel_seen_after_checkpoint_task_finished_still_propaga
 
 
 @pytest.mark.asyncio
-async def test_consumer_cancel_before_child_publish_cancels_tool_without_checkpoint():
+async def test_consumer_cancel_before_child_publish_cancels_tool_without_checkpoint(monkeypatch):
     tool_entered = asyncio.Event()
     tool_cancelled = asyncio.Event()
 
-    async def blocked_before_publish(_query):
+    async def blocked_before_publish(_adapter, _query):
         tool_entered.set()
         try:
             await asyncio.Event().wait()
@@ -918,9 +920,9 @@ async def test_consumer_cancel_before_child_publish_cancels_tool_without_checkpo
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = blocked_before_publish
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", blocked_before_publish)
     task = asyncio.create_task(
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id="request-pre-publish"
         )
     )
@@ -939,6 +941,7 @@ async def test_consumer_cancel_before_child_publish_cancels_tool_without_checkpo
 @pytest.mark.parametrize("cancel_count", [1, 2])
 async def test_consumer_cancel_after_child_publish_drains_delivery_and_checkpoint(
     cancel_count,
+    monkeypatch,
 ):
     from jiuwenswarm.agents.harness.common.tools.deepresearch import rewrite_tools
 
@@ -946,7 +949,7 @@ async def test_consumer_cancel_after_child_publish_drains_delivery_and_checkpoin
     allow_delivery = asyncio.Event()
     delivery_count = 0
 
-    async def publish_then_deliver(_query):
+    async def publish_then_deliver(_adapter, _query):
         nonlocal delivery_count
         rewrite_tools._notify_rewrite_published(
             {
@@ -962,9 +965,9 @@ async def test_consumer_cancel_after_child_publish_drains_delivery_and_checkpoin
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = publish_then_deliver
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", publish_then_deliver)
     task = asyncio.create_task(
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id="request-post-publish"
         )
     )
@@ -993,10 +996,10 @@ async def test_consumer_cancel_after_child_publish_drains_delivery_and_checkpoin
 
 
 @pytest.mark.asyncio
-async def test_published_child_with_invalid_terminal_persists_safe_replay():
+async def test_published_child_with_invalid_terminal_persists_safe_replay(monkeypatch):
     from jiuwenswarm.agents.harness.common.tools.deepresearch import rewrite_tools
 
-    async def publish_then_return_invalid(_query):
+    async def publish_then_return_invalid(_adapter, _query):
         rewrite_tools._notify_rewrite_published(
             {
                 "report_path": "/workspace/report.rewrite.md",
@@ -1008,9 +1011,9 @@ async def test_published_child_with_invalid_terminal_persists_safe_replay():
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = publish_then_return_invalid
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", publish_then_return_invalid)
 
-    outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-invalid-published"
     )
 
@@ -1027,27 +1030,28 @@ async def test_published_child_with_invalid_terminal_persists_safe_replay():
     assert replay_state["entries"][0]["terminal_kind"] == "publish_uncertain"
     session.commit.assert_awaited_once_with()
 
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock()
-    replay = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock())
+    replay = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-invalid-published"
     )
 
     assert replay.status == "error"
     assert replay.error_code == "PUBLISH_STATE_UNCERTAIN"
-    adapter._try_deepresearch_rewrite_fast_path.assert_not_awaited()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_not_awaited()
     assert len(context.messages) == 4
 
 
 @pytest.mark.asyncio
 async def test_consumer_cancel_after_publish_preserves_cancel_when_runner_raises(
     caplog,
+    monkeypatch,
 ):
     from jiuwenswarm.agents.harness.common.tools.deepresearch import rewrite_tools
 
     published = asyncio.Event()
     allow_failure = asyncio.Event()
 
-    async def publish_then_raise(_query):
+    async def publish_then_raise(_adapter, _query):
         rewrite_tools._notify_rewrite_published(
             {
                 "report_path": "/workspace/report.rewrite.md",
@@ -1061,9 +1065,9 @@ async def test_consumer_cancel_after_publish_preserves_cancel_when_runner_raises
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = publish_then_raise
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", publish_then_raise)
     task = asyncio.create_task(
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id="request-publish-error"
         )
     )
@@ -1084,12 +1088,12 @@ async def test_consumer_cancel_after_publish_preserves_cancel_when_runner_raises
 
 
 @pytest.mark.asyncio
-async def test_cancel_while_waiting_for_core_lock_has_no_side_effects():
+async def test_cancel_while_waiting_for_core_lock_has_no_side_effects(monkeypatch):
     adapter, *_ = _adapter_with_active_session()
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
     await adapter._instance._interaction_send_lock.acquire()
     task = asyncio.create_task(
-        adapter._run_deepresearch_rewrite_fast_path_transaction(
+        rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(),
             session_id="session-1",
             request_id="request-wait-cancel",
@@ -1102,22 +1106,22 @@ async def test_cancel_while_waiting_for_core_lock_has_no_side_effects():
         await task
     adapter._instance._interaction_send_lock.release()
 
-    adapter._try_deepresearch_rewrite_fast_path.assert_not_awaited()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_replayed_request_id_returns_durable_terminal_without_second_tool_turn():
+async def test_replayed_request_id_returns_durable_terminal_without_second_tool_turn(monkeypatch):
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
     result = _result()
     result.commit_result["delivery_status"] = "delivered"
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=result)
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=result))
 
-    first = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    first = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-replay"
     )
-    second = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    second = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-replay"
     )
 
@@ -1131,7 +1135,7 @@ async def test_replayed_request_id_returns_durable_terminal_without_second_tool_
         "revision_id": "rev_child",
     }
     assert second.usage_metadata is None
-    adapter._try_deepresearch_rewrite_fast_path.assert_awaited_once_with(_query())
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_awaited_once_with(adapter, _query())
     assert len(context.messages) == 4
     session.commit.assert_awaited_once_with()
     replay_state = session.state_store["deepresearch_rewrite_fast_path_replays"]
@@ -1145,14 +1149,14 @@ async def test_replayed_request_id_returns_durable_terminal_without_second_tool_
 
 
 @pytest.mark.asyncio
-async def test_replay_state_is_bounded_and_request_ids_are_strict():
+async def test_replay_state_is_bounded_and_request_ids_are_strict(monkeypatch):
     adapter, session, _context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
 
     for index in range(35):
-        outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+        outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(),
             session_id="session-1",
             request_id=f"request-{index}",
@@ -1165,33 +1169,33 @@ async def test_replay_state_is_bounded_and_request_ids_are_strict():
     assert len(entries) == 32
     assert entries[0]["request_id"] == "request-3"
     assert entries[-1]["request_id"] == "request-34"
-    calls_before_invalid = adapter._try_deepresearch_rewrite_fast_path.await_count
+    calls_before_invalid = rewrite_ops._try_deepresearch_rewrite_fast_path.await_count
     assert (
-        await adapter._run_deepresearch_rewrite_fast_path_transaction(
+        await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id=""
         )
         is None
     )
     assert (
-        await adapter._run_deepresearch_rewrite_fast_path_transaction(
+        await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
             _query(), session_id="session-1", request_id="x" * 257
         )
         is None
     )
-    assert adapter._try_deepresearch_rewrite_fast_path.await_count == calls_before_invalid
+    assert rewrite_ops._try_deepresearch_rewrite_fast_path.await_count == calls_before_invalid
 
 
 @pytest.mark.asyncio
-async def test_replay_request_id_with_different_query_fails_closed_without_tool():
+async def test_replay_request_id_with_different_query_fails_closed_without_tool(monkeypatch):
     adapter, _session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
-    first = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
+    first = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-bound-query"
     )
 
-    replay = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    replay = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query().replace('"instruction": ""', '"instruction": "different"'),
         session_id="session-1",
         request_id="request-bound-query",
@@ -1200,17 +1204,17 @@ async def test_replay_request_id_with_different_query_fails_closed_without_tool(
     assert first is not None
     assert replay.status == "error"
     assert replay.error_code == "REPLAY_CONFLICT"
-    adapter._try_deepresearch_rewrite_fast_path.assert_awaited_once()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_awaited_once()
     assert len(context.messages) == 4
 
 
 @pytest.mark.asyncio
-async def test_replay_with_stale_target_fails_closed_without_reverting_latest_target():
+async def test_replay_with_stale_target_fails_closed_without_reverting_latest_target(monkeypatch):
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
-    first = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
+    first = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-stale-target"
     )
     latest_target = {
@@ -1220,27 +1224,27 @@ async def test_replay_with_stale_target_fails_closed_without_reverting_latest_ta
     }
     session.update_state({PENDING_HTML_EXPORT_STATE_KEY: latest_target})
 
-    replay = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    replay = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-stale-target"
     )
 
     assert first is not None
     assert replay.status == "error"
     assert replay.error_code == "REPLAY_CONFLICT"
-    adapter._try_deepresearch_rewrite_fast_path.assert_awaited_once()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_awaited_once()
     assert len(context.messages) == 4
     assert session.state_store[PENDING_HTML_EXPORT_STATE_KEY] == latest_target
 
 
 @pytest.mark.asyncio
-async def test_replay_checkpoint_canonicalizes_tool_result_and_rejects_oversize_state():
+async def test_replay_checkpoint_canonicalizes_tool_result_and_rejects_oversize_state(monkeypatch):
     adapter, session, _context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
     result = _result()
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=result)
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=result))
 
-    outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-canonical"
     )
 
@@ -1258,7 +1262,7 @@ async def test_replay_checkpoint_canonicalizes_tool_result_and_rejects_oversize_
     assert len(json.dumps(replay_state).encode("utf-8")) < 16_384
 
     replay_state["entries"][0]["action"] = "x" * 300_000
-    assert adapter._decode_deepresearch_rewrite_replays(replay_state) == []
+    assert rewrite_ops._decode_deepresearch_rewrite_replays(replay_state) == []
 
 
 @pytest.mark.asyncio
@@ -1267,7 +1271,7 @@ async def test_context_persist_failure_terminal_is_not_written_to_replay_ledger(
         _adapter_with_active_session()
     )
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         request_id="request-not-replayable",
         query_sha256=hashlib.sha256(_query().encode()).hexdigest(),
@@ -1281,7 +1285,7 @@ async def test_context_persist_failure_terminal_is_not_written_to_replay_ledger(
 
 
 @pytest.mark.asyncio
-async def test_report_delivery_failure_replays_fixed_safe_terminal_without_new_child():
+async def test_report_delivery_failure_replays_fixed_safe_terminal_without_new_child(monkeypatch):
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
@@ -1296,12 +1300,12 @@ async def test_report_delivery_failure_replays_fixed_safe_terminal_without_new_c
             "delivery_error_code": "transport-secret-code",
         },
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=result)
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=result))
 
-    first = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    first = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-delivery-failed"
     )
-    replay = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    replay = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-delivery-failed"
     )
 
@@ -1310,7 +1314,7 @@ async def test_report_delivery_failure_replays_fixed_safe_terminal_without_new_c
     assert replay.message == "改写版本已成功保留，但报告文件交付失败。"
     assert replay.commit_result["report_delivered"] is False
     assert len(context.messages) == 4
-    adapter._try_deepresearch_rewrite_fast_path.assert_awaited_once()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_awaited_once()
     entry = session.state_store["deepresearch_rewrite_fast_path_replays"]["entries"][0]
     assert entry["terminal_kind"] == "report_delivery_failed"
     assert "untrusted delivery details" not in repr(entry)
@@ -1335,7 +1339,7 @@ async def test_invalid_commit_terminal_is_not_persisted_or_replayed(commit_resul
         _adapter_with_active_session()
     )
 
-    persisted = await adapter._persist_deepresearch_rewrite_fast_path_turn(
+    persisted = await rewrite_ops._persist_deepresearch_rewrite_fast_path_turn(adapter,
         session_id="session-1",
         request_id="request-invalid-terminal",
         query_sha256=hashlib.sha256(_query().encode()).hexdigest(),
@@ -1349,49 +1353,49 @@ async def test_invalid_commit_terminal_is_not_persisted_or_replayed(commit_resul
 
 
 @pytest.mark.asyncio
-async def test_replay_corrupt_state_and_target_read_fail_closed_without_tool():
+async def test_replay_corrupt_state_and_target_read_fail_closed_without_tool(monkeypatch):
     adapter, session, _context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
     cyclic = {"schema_version": 1}
     cyclic["entries"] = cyclic
     session.state_store["deepresearch_rewrite_fast_path_replays"] = cyclic
 
-    assert adapter._decode_deepresearch_rewrite_replays(cyclic) == []
-    outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    assert rewrite_ops._decode_deepresearch_rewrite_replays(cyclic) == []
+    outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-corrupt"
     )
 
     assert outcome.status == "error"
     assert outcome.error_code == "REPLAY_CONFLICT"
-    adapter._try_deepresearch_rewrite_fast_path.assert_not_awaited()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_not_awaited()
 
     adapter, session, *_ = _adapter_with_active_session()
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
     session.get_state.side_effect = [None, RuntimeError("target-read-secret")]
-    outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-target-read"
     )
 
     assert outcome.status == "error"
     assert outcome.error_code == "REPLAY_CONFLICT"
-    adapter._try_deepresearch_rewrite_fast_path.assert_not_awaited()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_surrogate_query_fails_closed_without_tool_or_checkpoint():
+async def test_surrogate_query_fails_closed_without_tool_or_checkpoint(monkeypatch):
     adapter, session, _context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(return_value=_result())
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(return_value=_result()))
 
-    outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         "\ud800", session_id="session-1", request_id="request-surrogate"
     )
 
     assert outcome is None
-    adapter._try_deepresearch_rewrite_fast_path.assert_not_awaited()
+    rewrite_ops._try_deepresearch_rewrite_fast_path.assert_not_awaited()
     session.commit.assert_not_awaited()
 
 
@@ -1473,15 +1477,15 @@ async def test_parent_evicts_uncertain_child_without_waiting_for_idle_ttl():
         {"action": "x" * 65},
     ],
 )
-async def test_invalid_terminal_result_is_not_written_to_replay_checkpoint(overrides):
+async def test_invalid_terminal_result_is_not_written_to_replay_checkpoint(overrides, monkeypatch):
     adapter, session, context, _react_agent, _context_engine = (
         _adapter_with_active_session()
     )
-    adapter._try_deepresearch_rewrite_fast_path = AsyncMock(
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", AsyncMock(
         return_value=_result(**overrides)
-    )
+    ))
 
-    outcome = await adapter._run_deepresearch_rewrite_fast_path_transaction(
+    outcome = await rewrite_ops._run_deepresearch_rewrite_fast_path_transaction(adapter,
         _query(), session_id="session-1", request_id="request-invalid-result"
     )
 
@@ -1597,12 +1601,12 @@ async def test_nonstream_html_followup_returns_without_attach_or_fast_path(
         message="已生成美化后的 HTML。",
     )
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         AsyncMock(return_value=html_result),
     )
     fast_path = AsyncMock()
-    monkeypatch.setattr(adapter, "_try_deepresearch_rewrite_fast_path", fast_path)
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", fast_path)
 
     response = await adapter.process_message_impl(
         _request("生成 HTML", stream=False),
@@ -1674,9 +1678,9 @@ async def test_stream_replay_conflict_is_terminal_without_core_fallback(
             }
     session.state_store["deepresearch_rewrite_fast_path_replays"] = replay_state
     rewrite_tool = AsyncMock(return_value=_result())
-    monkeypatch.setattr(adapter, "_try_deepresearch_rewrite_fast_path", rewrite_tool)
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", rewrite_tool)
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         AsyncMock(return_value=None),
     )
@@ -1706,12 +1710,12 @@ async def test_stream_html_followup_has_priority_and_never_attaches(monkeypatch)
         message="已生成美化后的 HTML。",
     )
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         AsyncMock(return_value=html_result),
     )
     fast_path = AsyncMock()
-    monkeypatch.setattr(adapter, "_try_deepresearch_rewrite_fast_path", fast_path)
+    monkeypatch.setattr(rewrite_ops, "_try_deepresearch_rewrite_fast_path", fast_path)
 
     chunks = await _collect_stream(adapter, "生成 HTML")
 
@@ -1736,7 +1740,7 @@ async def test_nonstream_html_text_in_hitl_resume_goes_to_core_attach_and_send(m
         )
     )
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         html_followup,
     )
@@ -1765,7 +1769,7 @@ async def test_nonstream_structured_goal_never_enters_html_direct_path(monkeypat
     instance.attach_output.return_value = None
     html_followup = AsyncMock()
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         html_followup,
     )
@@ -1804,7 +1808,7 @@ async def test_stream_html_text_in_hitl_resume_goes_to_core_attach_and_send(monk
         )
     )
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         html_followup,
     )
@@ -1840,18 +1844,18 @@ async def test_stream_rewrite_fast_path_persists_before_yield_and_reports_usage(
     adapter, instance = _entry_adapter(monkeypatch)
     result = _result()
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_fast_path",
         AsyncMock(return_value=result),
     )
     persist = AsyncMock(return_value=persisted)
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_persist_deepresearch_rewrite_fast_path_turn",
         persist,
     )
@@ -1898,18 +1902,18 @@ async def test_stream_fast_path_error_does_not_synthesize_empty_final(monkeypatc
         commit_result=None,
     )
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_fast_path",
         AsyncMock(return_value=result),
     )
     persist = AsyncMock()
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_persist_deepresearch_rewrite_fast_path_turn",
         persist,
     )
@@ -1939,13 +1943,13 @@ async def test_stream_fast_path_cancellation_propagates_without_yield_or_attach(
 ):
     adapter, instance = _entry_adapter(monkeypatch)
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_html_followup",
         AsyncMock(return_value=None),
     )
     cancellation = asyncio.CancelledError("cancel-fast-path-secret")
     monkeypatch.setattr(
-        adapter,
+        rewrite_ops,
         "_try_deepresearch_rewrite_fast_path",
         AsyncMock(side_effect=cancellation),
     )

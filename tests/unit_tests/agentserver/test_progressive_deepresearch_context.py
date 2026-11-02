@@ -30,6 +30,9 @@ from jiuwenswarm.common.local_env_config import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.perf.context import clear_request_context, set_request_context
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _get_deepresearch_material_context,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
 
@@ -441,7 +444,7 @@ def test_material_paths_require_explicit_read_permission(permission, allowed):
         _resolve_permission_config_for_agent=Mock(return_value={'enabled': True}),
         _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=Mock(
             return_value=(PermissionLevel(permission) if permission else None, None)))))
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = _get_deepresearch_material_context(adapter)
     assert context['files'][0]['read_allowed'] is allowed
     assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
 
@@ -464,7 +467,7 @@ async def test_disabled_permissions_prepare_current_request_material(tmp_path):
         _permission_rail=None,
         _resolve_permission_config_for_agent=resolve_config,
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = _get_deepresearch_material_context(adapter)
     reference = await prepare_materials(context, 'e7c43dd6-2d6e-4093-8c97-4d894fd0fef1')
     payload = json.loads(Path(reference['path']).read_text())
     assert payload['materials'][0]['content'] == attachment.read_text()
@@ -482,7 +485,7 @@ def test_missing_material_permission_engine_stays_closed(config):
         _permission_rail=None,
         _resolve_permission_config_for_agent=Mock(return_value=config),
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = _get_deepresearch_material_context(adapter)
     assert context['files'][0]['read_allowed'] is False
 
 
@@ -493,6 +496,6 @@ def test_material_permission_config_failure_stays_closed():
         _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=check)),
         _resolve_permission_config_for_agent=Mock(side_effect=RuntimeError('configuration unavailable')),
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = _get_deepresearch_material_context(adapter)
     assert context['files'][0]['read_allowed'] is False
     check.assert_not_called()

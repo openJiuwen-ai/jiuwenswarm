@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch import execution as de
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _get_deepresearch_mcp_context,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as adapter_module
 from test_deepresearch_mcp_search import SERVER
 
@@ -52,7 +55,7 @@ def adapter_for(policy=None, disabled=(), *, registry=False):
 
 
 async def read(adapter):
-    result = adapter_module.JiuWenSwarmDeepAdapter._get_deepresearch_mcp_context(adapter)
+    result = _get_deepresearch_mcp_context(adapter)
     return await result if inspect.isawaitable(result) else result
 
 

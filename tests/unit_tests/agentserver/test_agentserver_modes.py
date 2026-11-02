@@ -2000,7 +2000,7 @@ def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monk
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_build_structured_ask_user_rail", lambda: ask_user_rail)
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(interface_deep_module, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
 
     asyncio.run(adapter._update_rails_for_mode("agent.fast"))
@@ -2191,8 +2191,8 @@ def test_deep_adapter_reconfigures_plan_evolution_rails_idempotently(monkeypatch
 
     monkeypatch.setattr(interface_deep_module, "get_agent_skills_dir", lambda: tmp_path)
 
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    asyncio.run(interface_deep_module._ensure_active_evolution_rails_registered(adapter))
+    asyncio.run(interface_deep_module._ensure_active_evolution_rails_registered(adapter))
 
     registered = adapter._instance._registered_rails
     assert (
@@ -2296,13 +2296,13 @@ def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(monkey
     monkeypatch.setattr(interface_deep_module, "get_agent_skills_dir", lambda: tmp_path)
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: language)
 
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    asyncio.run(interface_deep_module._ensure_active_evolution_rails_registered(adapter))
     first_rail = adapter._skill_evolution_rail
     assert first_rail is not None
     assert getattr(first_rail, "_language") == "cn"
 
     language = "en"
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    asyncio.run(interface_deep_module._ensure_active_evolution_rails_registered(adapter))
 
     registered = adapter._instance._registered_rails
     skill_rails = [
@@ -2921,7 +2921,7 @@ def test_deep_adapter_registers_ttse_rail_when_enabled(monkeypatch):
     ttse_rail = object()
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(interface_deep_module, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
     monkeypatch.setattr(
@@ -2958,7 +2958,7 @@ def test_deep_adapter_skips_ttse_rail_when_enabled_unset(monkeypatch):
     built = []
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(interface_deep_module, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(
         adapter,
         "_build_ttse_rail",
@@ -2994,7 +2994,7 @@ def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
     built = []
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(interface_deep_module, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(
         adapter,
         "_build_ttse_rail",
@@ -3035,7 +3035,7 @@ def test_deep_adapter_skips_ttse_rail_when_runtime_disabled_overrides_yaml(monke
     built = []
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(interface_deep_module, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(
         adapter,
         "_build_ttse_rail",
@@ -3069,7 +3069,7 @@ def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
 
     ttse_rail = object()
     yaml_enabled = {"value": True}
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(interface_deep_module, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
     monkeypatch.setattr(
         interface_deep_module,
@@ -3113,7 +3113,7 @@ def test_deep_adapter_mounts_and_exposes_consult_when_cache_omits_ttse(monkeypat
     ttse_rail = object()
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(interface_deep_module, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
     monkeypatch.setattr(

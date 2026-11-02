@@ -7,6 +7,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
+from jiuwenswarm.server.runtime.agent_adapter.deep import evolution as evolution_mod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _extract_followup_prompt
 
@@ -66,7 +67,9 @@ async def test_evolve_slash_checks_enabled_without_lazy_registering(monkeypatch)
     def _unexpected_store(*_args, **_kwargs):
         raise AssertionError("disabled evolution slash must not initialize evolution store")
 
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _unexpected_register)
+    monkeypatch.setattr(
+        adapter, "_ensure_active_evolution_rails_registered", _unexpected_register, raising=False
+    )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.evolution_slash.EvolutionStore",
         _unexpected_store,
@@ -97,7 +100,9 @@ async def test_evolve_slash_allows_team_without_lazy_registering(monkeypatch):
         assert context.evolution_enabled is True
         return {"output": "team slash handled", "result_type": "answer"}
 
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _unexpected_register)
+    monkeypatch.setattr(
+        adapter, "_ensure_active_evolution_rails_registered", _unexpected_register, raising=False
+    )
     monkeypatch.setattr(interface_deep_module, "handle_evolution_slash_command", _fake_handler)
 
     result = await adapter._handle_slash_command(  # pylint: disable=protected-access
@@ -189,7 +194,10 @@ async def test_evolve_slash_lazy_init_registers_active_review_rails(monkeypatch,
         _fake_configure,
     )
 
-    result = await adapter._ensure_evolution_rail_for_slash("agent.plan")  # pylint: disable=protected-access
+    result = await evolution_mod._ensure_evolution_rail_for_slash(  # pylint: disable=protected-access
+        adapter,
+        "agent.plan",
+    )
 
     assert result is None
     registered = adapter._instance.registered  # pylint: disable=protected-access
@@ -248,7 +256,7 @@ def test_sync_active_evolution_review_agent_after_reload_restores_retained_rail(
     monkeypatch.setattr(interface_deep_module, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
     monkeypatch.setattr(interface_deep_module, "SubagentRail", _FakeSubagentRail)
 
-    adapter._sync_active_evolution_review_agent_after_reload()  # pylint: disable=protected-access
+    evolution_mod._sync_active_evolution_review_agent_after_reload(adapter)  # pylint: disable=protected-access
 
     assert rail.registered_agent is instance
     assert adapter._skill_evolution_rail is rail  # pylint: disable=protected-access
@@ -267,7 +275,7 @@ def test_sync_active_evolution_review_agent_after_reload_skips_when_disabled():
     adapter._skill_evolution_rail = _FakeSkillEvolutionRail()  # pylint: disable=protected-access
     adapter._config_cache = {"evolution": {"enabled": False}}  # pylint: disable=protected-access
 
-    adapter._sync_active_evolution_review_agent_after_reload()  # pylint: disable=protected-access
+    evolution_mod._sync_active_evolution_review_agent_after_reload(adapter)  # pylint: disable=protected-access
 
 
 @pytest.mark.anyio
@@ -299,11 +307,13 @@ async def test_handle_user_answer_routes_regular_evolution_approval_without_requ
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
     seen: list[tuple[str, list[dict[str, list[str]]]]] = []
 
-    async def _fake_handle_evolution_approval(request_id: str, answers: list):
+    async def _fake_handle_evolution_approval(_adapter, request_id: str, answers: list):
         seen.append((request_id, answers))
         return True
 
-    monkeypatch.setattr(adapter, "_handle_evolution_approval", _fake_handle_evolution_approval)
+    monkeypatch.setattr(
+        interface_deep_module, "_handle_evolution_approval", _fake_handle_evolution_approval
+    )
 
     response = await adapter.handle_user_answer(
         AgentRequest(
@@ -337,7 +347,9 @@ async def test_handle_user_answer_does_not_route_call_interrupt_approval_to_regu
     async def _unexpected_handle_evolution_approval(*_args, **_kwargs):
         raise AssertionError("call_* interrupt approval must not use regular evolution rail")
 
-    monkeypatch.setattr(adapter, "_handle_evolution_approval", _unexpected_handle_evolution_approval)
+    monkeypatch.setattr(
+        interface_deep_module, "_handle_evolution_approval", _unexpected_handle_evolution_approval
+    )
 
     response = await adapter.handle_user_answer(
         AgentRequest(
@@ -424,7 +436,9 @@ async def test_agent_evolve_rollback_routes_to_slash_without_rail(monkeypatch):
         assert context.mode == "agent.plan"
         return {"result_type": "answer", "output": "rolled back"}
 
-    monkeypatch.setattr(adapter, "_ensure_evolution_rail_for_slash", _unexpected_ensure_rail)
+    monkeypatch.setattr(
+        adapter, "_ensure_evolution_rail_for_slash", _unexpected_ensure_rail, raising=False
+    )
     monkeypatch.setattr(interface_deep_module, "handle_evolution_slash_command", _fake_handler)
 
     result = await adapter._handle_slash_command(  # pylint: disable=protected-access

@@ -7,6 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools import deepresearch as dr
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _register_deepresearch_tool_cards,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
@@ -98,7 +101,7 @@ def test_adapter_registers_formal_tools_as_shared(monkeypatch):
     monkeypatch.setattr(adapter, "_register_shared_tool", _register_shared)
     cards: list[object] = []
 
-    adapter._register_deepresearch_tool_cards(cards)
+    _register_deepresearch_tool_cards(adapter, cards)
 
     assert registered_names == [tool.card.name for tool in tools]
     assert [card.name for card in cards] == registered_names
@@ -114,7 +117,7 @@ def test_adapter_registers_no_deepresearch_tools_when_disabled(monkeypatch):
     monkeypatch.setattr(adapter, "_register_shared_tool", register_shared)
     cards: list[object] = []
 
-    adapter._register_deepresearch_tool_cards(cards)
+    _register_deepresearch_tool_cards(adapter, cards)
 
     assert cards == []
 
@@ -142,7 +145,7 @@ def test_adapter_registration_failure_does_not_return_partial_cards_or_log_secre
     cards = [SimpleNamespace(name="existing")]
 
     with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="secret-api-key"):
-        adapter._register_deepresearch_tool_cards(cards)
+        _register_deepresearch_tool_cards(adapter, cards)
 
     assert [card.name for card in cards] == ["existing"]
     assert "secret-api-key" not in caplog.text

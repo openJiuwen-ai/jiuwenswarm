@@ -12,6 +12,9 @@ from jiuwenswarm.common.local_env_config import (
     reset_agent_env_ns,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _deepresearch_artifact_output_dir,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -61,7 +64,7 @@ def test_session_children_inherit_distinct_tenant_artifact_workspaces(
         str((tmp_path / "tenant-b").resolve()),
     ]
     assert [
-        child._deepresearch_artifact_output_dir() for child in children
+        _deepresearch_artifact_output_dir(child) for child in children
     ] == expected
     assert expected[0] != expected[1]
 

@@ -281,13 +281,16 @@ async def test_config_reload_matches_profile_and_cleans_historical_team_rail(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep._restore_omitted_reload_fields",
         MagicMock(return_value=None),
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._sync_active_evolution_review_agent_after_reload",
+        MagicMock(return_value=None),
+    )
     for name in (
         "_build_skill_rail", "_build_skill_credential_injection_rail",
         "_build_skill_active_state_rail", "_update_permission_rail",
         "_sync_multimodal_tools_for_runtime", "_sync_paid_search_tool_for_runtime",
         "_sync_symphony_tools_for_runtime", "_sync_skill_retrieval_tools_for_runtime",
-        "_commit_reload_fingerprints",
-        "_sync_active_evolution_review_agent_after_reload", "_rebind_late_read_rails_to_local",
+        "_commit_reload_fingerprints", "_rebind_late_read_rails_to_local",
     ):
         monkeypatch.setattr(adapter, name, MagicMock(return_value=None))
     for name in (

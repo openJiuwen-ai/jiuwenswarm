@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _get_deepresearch_mcp_context,
+)
 from jiuwenswarm.agents.harness.common.tools.deepresearch import execution as de
 from jiuwenswarm.agents.harness.common.tools.deepresearch import tools as dt
 
@@ -70,7 +73,7 @@ async def test_adapter_provider_requires_current_request_and_permission():
         _current_request_route={"request_id": "req-1", "session_id": "session-1"},
         _resolve_permission_config_for_agent=lambda **kwargs: {"enabled": False},
     )
-    read = JiuWenSwarmDeepAdapter._get_deepresearch_mcp_context
+    read = _get_deepresearch_mcp_context
     values = await read(adapter)
     assert values == [SERVER]
     values[0]["headers"].clear()
@@ -173,7 +176,7 @@ async def test_provider_rejects_cross_session_and_disabled_tool(session, disable
         _resolve_permission_config_for_agent=lambda **kw: {'enabled': False},
         _config_cache={},
     )
-    read = JiuWenSwarmDeepAdapter._get_deepresearch_mcp_context
+    read = _get_deepresearch_mcp_context
     assert await read(adapter) == []
 
 
@@ -218,7 +221,7 @@ async def test_provider_exposes_only_host_allowed_tools(level, rules, expected):
         _resolve_permission_config_for_agent=lambda **kw: policy,
         _permission_rail=SimpleNamespace(_engine=PermissionEngine(config=policy)),
     )
-    assert bool(await JiuWenSwarmDeepAdapter._get_deepresearch_mcp_context(adapter)) == expected
+    assert bool(await _get_deepresearch_mcp_context(adapter)) == expected
 
 
 @pytest.mark.asyncio
@@ -287,7 +290,7 @@ async def test_custom_mcp_keeps_host_tool_selection_without_keyword_classificati
         request.params['mcp_server_list'] = ['custom']
     registration = await adapter.register_request_scoped_office_claw_mcp(request)
     try:
-        grants = await adapter._get_deepresearch_mcp_context()
+        grants = await _get_deepresearch_mcp_context(adapter)
         assert len(grants) == 1
         assert set(grants[0].tools) == {'search_project', 'vendor_data'}
         adapter._disabled_tools_rail = SimpleNamespace(_disabled_tools={'vendor_data'})

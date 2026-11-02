@@ -17,14 +17,15 @@ warnings.filterwarnings(
 )
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as iface
+from jiuwenswarm.server.runtime.agent_adapter.deep import checkpoint_db
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
 @pytest.fixture(autouse=True)
 def _reset_checkpoint_singleton():
-    iface.reset_shared_checkpoint_for_tests()
+    checkpoint_db.reset_shared_checkpoint_for_tests()
     yield
-    iface.reset_shared_checkpoint_for_tests()
+    checkpoint_db.reset_shared_checkpoint_for_tests()
 
 
 def _make_adapter() -> JiuWenSwarmDeepAdapter:
@@ -110,7 +111,7 @@ def test_gateway_db_pool_kwargs_from_env(monkeypatch):
     monkeypatch.setenv("GATEWAY_DB_POOL_SIZE", "3")
     monkeypatch.setenv("GATEWAY_DB_MAX_OVERFLOW", "7")
     monkeypatch.setenv("GATEWAY_DB_POOL_TIMEOUT", "15")
-    kwargs = iface._gateway_db_pool_kwargs()
+    kwargs = checkpoint_db._gateway_db_pool_kwargs()
     assert kwargs["pool_size"] == 3
     assert kwargs["max_overflow"] == 7
     assert kwargs["pool_timeout"] == 15
@@ -124,7 +125,7 @@ def test_gateway_db_pool_kwargs_runtime_env_fallback(monkeypatch):
     monkeypatch.setenv("RUNTIME_DB_POOL_SIZE", "4")
     monkeypatch.setenv("RUNTIME_DB_MAX_OVERFLOW", "8")
     monkeypatch.setenv("RUNTIME_DB_POOL_TIMEOUT", "12")
-    kwargs = iface._gateway_db_pool_kwargs()
+    kwargs = checkpoint_db._gateway_db_pool_kwargs()
     assert kwargs["pool_size"] == 4
     assert kwargs["max_overflow"] == 8
     assert kwargs["pool_timeout"] == 12
@@ -135,13 +136,13 @@ async def test_build_mysql_engine_reuses_process_singleton(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     mock_engine = MagicMock(name="mysql_engine")
-    iface._shared_mysql_checkpoint_engine = mock_engine
+    checkpoint_db._shared_mysql_checkpoint_engine = mock_engine
 
     with patch(
         "sqlalchemy.ext.asyncio.create_async_engine",
         new=MagicMock(),
     ) as create_engine:
-        engine = await iface._build_mysql_async_engine()
+        engine = await checkpoint_db._build_mysql_async_engine()
 
     assert engine is mock_engine
     create_engine.assert_not_called()
@@ -152,13 +153,13 @@ async def test_build_postgresql_engine_reuses_process_singleton(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     mock_engine = MagicMock(name="pg_engine")
-    iface._shared_postgresql_checkpoint_engine = mock_engine
+    checkpoint_db._shared_postgresql_checkpoint_engine = mock_engine
 
     with patch(
         "sqlalchemy.ext.asyncio.create_async_engine",
         new=MagicMock(),
     ) as create_engine:
-        engine = await iface._build_postgresql_async_engine()
+        engine = await checkpoint_db._build_postgresql_async_engine()
 
     assert engine is mock_engine
     create_engine.assert_not_called()

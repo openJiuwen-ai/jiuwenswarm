@@ -1491,7 +1491,9 @@ def _interaction_goal_updated_payload(payload: Any) -> dict[str, Any]:
 
 
 def _valid_deepresearch_rewrite_request_id(request_id: object) -> bool:
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH
+    from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+        _DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH,
+    )
     return (
         isinstance(request_id, str)
         and 0 < len(request_id) <= _DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH
@@ -1518,7 +1520,9 @@ def _deepresearch_rewrite_replay_conflict() -> RewriteFastPathResult:
 def _deepresearch_rewrite_publish_uncertain(
     target: RewriteHtmlTarget | None = None,
 ) -> RewriteFastPathResult:
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE
+    from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+        _DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE,
+    )
     return RewriteFastPathResult(
         recognized=True,
         status="error",
@@ -1547,7 +1551,9 @@ def _deepresearch_rewrite_publish_uncertain(
 def _deepresearch_rewrite_terminal_kind(
     result: RewriteFastPathResult,
 ) -> str | None:
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE
+    from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+        _DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE,
+    )
     commit_result = result.commit_result
     target = (
         target_from_commit_result(commit_result)

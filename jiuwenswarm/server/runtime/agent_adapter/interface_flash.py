@@ -154,6 +154,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     wiki_lint,
     wiki_query,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _register_deepresearch_tool_cards,
+)
 from jiuwenswarm.telemetry.attributes import (
     JIUWENCLAW_AGENT_PROFILE,
     JIUWENCLAW_AGENT_RAILS,
@@ -671,7 +674,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] acp_chat registration failed: %s", exc)
 
-        self._register_deepresearch_tool_cards(tool_cards)
+        _register_deepresearch_tool_cards(self, tool_cards)
 
         # 动态加载环境变量配置的非侵入式工具扩展（AGENT_EXTRA_TOOLS，仅企业版）
         self._append_extra_tool_cards(tool_cards)

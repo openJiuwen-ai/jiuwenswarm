@@ -123,7 +123,7 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._refresh_stale_mcp_tool_lists = lambda: _async_none()  # type: ignore[method-assign]
     adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
     adapter._inject_model_selection_into_inputs = lambda *_args: None  # type: ignore[method-assign]
-    adapter._deepresearch_artifact_output_dir = lambda _path: ""  # type: ignore[method-assign]
+    adapter._deepresearch_artifact_output_dir = lambda _adapter, _path=None: ""  # type: ignore[method-assign]
     adapter._wants_attach_goal = lambda _params: False  # type: ignore[method-assign]
     adapter._structured_goal_op_from_request = lambda _request: None  # type: ignore[method-assign]
     adapter._should_parse_tui_goal_slash = lambda **_kwargs: False  # type: ignore[method-assign]
@@ -134,6 +134,7 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
         "_wants_attach_goal",
         "_structured_goal_op_from_request",
         "_should_parse_tui_goal_slash",
+        "_deepresearch_artifact_output_dir",
     ):
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep." + _moved_name,

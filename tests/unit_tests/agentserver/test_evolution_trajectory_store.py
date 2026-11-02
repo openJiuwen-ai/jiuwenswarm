@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from jiuwenswarm.common.utils import get_agent_evolution_trajectories_dir, get_agent_root_dir
+from jiuwenswarm.server.runtime.agent_adapter.deep import evolution as evolution_mod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -44,8 +45,9 @@ def test_build_skill_evolution_rail_passes_trajectory_span_processor(tmp_path, m
             return_value=object(),
         ),
     ):
-        rail = adapter._build_skill_evolution_rail(
-            {"react": {"evolution": {"enabled": True}}}
+        rail = evolution_mod._build_skill_evolution_rail(
+            adapter,
+            {"react": {"evolution": {"enabled": True}}},
         )
 
     assert rail is not None
@@ -76,13 +78,13 @@ async def test_ensure_active_evolution_rails_passes_trajectory_span_processor(tm
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep.configure_skill_evolution_runtime",
             configure,
         ),
-        patch.object(adapter, "_refresh_active_evolution_rail_refs", MagicMock()),
+        patch.object(evolution_mod, "_refresh_active_evolution_rail_refs", MagicMock()),
         patch(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep._set_skill_evolution_triggers",
             MagicMock(),
         ),
     ):
-        await adapter._ensure_active_evolution_rails_registered()
+        await evolution_mod._ensure_active_evolution_rails_registered(adapter)
 
     configure.assert_awaited_once()
     kwargs = configure.await_args.kwargs

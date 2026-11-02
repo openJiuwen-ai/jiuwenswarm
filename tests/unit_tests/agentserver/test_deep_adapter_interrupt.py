@@ -15,6 +15,10 @@ import pytest
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _deepresearch_artifact_output_dir,
+    _get_deepresearch_tool_context,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
@@ -210,7 +214,7 @@ async def test_team_stream_binds_a2a_resource_context(
     adapter._project_dir = None
     adapter._workspace_dir = None
     monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", lambda _inputs: None)
-    monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: None)
+    monkeypatch.setattr(interface_deep, "_deepresearch_artifact_output_dir", lambda _adapter, _path=None: None)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep._prepare_multimodal_image_inputs", lambda _request, inputs: inputs
     )
@@ -267,7 +271,7 @@ async def test_team_stream_binds_a2a_resource_context(
 @pytest.mark.parametrize("params_only", [False, True])
 async def test_nonstream_entry_captures_a2a_resource_snapshot(monkeypatch, params_only):
     adapter = _make_message_adapter(monkeypatch)
-    monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: "")
+    monkeypatch.setattr(interface_deep, "_deepresearch_artifact_output_dir", lambda _adapter, _path=None: "")
     monkeypatch.setattr(adapter, "_handle_slash_command", AsyncMock(return_value={"result_type": "goal_control"}))
     request = AgentRequest(
         request_id="snapshot-request", channel_id="web", session_id="snapshot-session",
@@ -952,7 +956,7 @@ def test_deepresearch_tool_context_keeps_session_workspace_snapshot(
         _workspace_dir=str(tmp_path / "agent-workspace"),
     )
 
-    context = adapter._get_deepresearch_tool_context()
+    context = _get_deepresearch_tool_context(adapter)
 
     assert Path(context["output_dir"]) == session_workspace.resolve()
 
@@ -966,7 +970,7 @@ def test_artifact_output_uses_session_project_when_request_omits_workspace(
         _workspace_dir=str(tmp_path / "agent-workspace"),
     )
 
-    assert Path(adapter._deepresearch_artifact_output_dir()) == (
+    assert Path(_deepresearch_artifact_output_dir(adapter)) == (
         session_workspace.resolve()
     )
 
@@ -1036,7 +1040,7 @@ def test_progressive_deepresearch_context_keeps_request_workspace(
         "output_dir": str(request_workspace),
     }
 
-    assert adapter._get_deepresearch_tool_context()["output_dir"] == str(
+    assert _get_deepresearch_tool_context(adapter)["output_dir"] == str(
         request_workspace.resolve()
     )
 
@@ -1060,7 +1064,7 @@ def test_runtime_route_keeps_artifact_leaf_lexical(tmp_path: Path) -> None:
         _workspace_dir=str(agent_workspace),
     )
 
-    assert adapter._deepresearch_artifact_output_dir() == str(
+    assert _deepresearch_artifact_output_dir(adapter) == str(
         agent_workspace.resolve() / "projects"
     )
 

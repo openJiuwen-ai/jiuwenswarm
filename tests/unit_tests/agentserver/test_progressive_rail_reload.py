@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter import interface_code as interface_code_module
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -230,13 +232,17 @@ async def test_code_adapter_reconcile_only_removes_evolution_rails(monkeypatch):
     adapter._evolution_interrupt_rail = object()
     ensure = AsyncMock()
     unconfigure = AsyncMock()
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", ensure)
-    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(
+        adapter, "_ensure_active_evolution_rails_registered", ensure, raising=False
+    )
+    monkeypatch.setattr(
+        interface_code_module, "_unconfigure_active_evolution_rails", unconfigure
+    )
 
     await adapter._reconcile_evolution_rails()
 
     ensure.assert_not_awaited()
-    unconfigure.assert_awaited_once_with()
+    unconfigure.assert_awaited_once_with(adapter)
 
 
 def _prepare_reload_adapter(
@@ -319,7 +325,7 @@ def _prepare_reload_adapter(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep._restore_omitted_reload_fields", MagicMock())
     monkeypatch.setattr(adapter, "_commit_reload_fingerprints", MagicMock())
     monkeypatch.setattr(
-        adapter, "_sync_active_evolution_review_agent_after_reload", MagicMock()
+        interface_deep_module, "_sync_active_evolution_review_agent_after_reload", MagicMock()
     )
     monkeypatch.setattr(adapter, "_sync_mcp_servers_for_runtime", AsyncMock())
     monkeypatch.setattr(adapter, "_fan_out_reload_to_session_adapters", AsyncMock())
@@ -393,14 +399,18 @@ async def test_reconcile_evolution_rails_uses_current_mode_owner(
         adapter._skill_evolution_rail = object()
     calls: list[str] = []
 
-    async def _ensure():
+    async def _ensure(_adapter):
         calls.append("ensure")
 
-    async def _unconfigure():
+    async def _unconfigure(_adapter):
         calls.append("unconfigure")
 
-    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _ensure)
-    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", _unconfigure)
+    monkeypatch.setattr(
+        interface_deep_module, "_ensure_active_evolution_rails_registered", _ensure
+    )
+    monkeypatch.setattr(
+        interface_deep_module, "_unconfigure_active_evolution_rails", _unconfigure
+    )
 
     await adapter._reconcile_evolution_rails()
 
@@ -414,7 +424,9 @@ async def test_reconcile_evolution_rails_skips_unconfigure_without_live_rails(
     adapter = JiuWenSwarmDeepAdapter()
     adapter._config_cache = {"evolution": {"enabled": False}}
     unconfigure = AsyncMock()
-    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", unconfigure)
+    monkeypatch.setattr(
+        interface_deep_module, "_unconfigure_active_evolution_rails", unconfigure
+    )
 
     await adapter._reconcile_evolution_rails()
 

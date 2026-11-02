@@ -61,6 +61,13 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     build_progressive_tool_rail_from_config,
     parse_int,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _get_deepresearch_tool_context,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.evolution import (
+    _build_skill_evolution_rail,
+    _unconfigure_active_evolution_rails,
+)
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
@@ -884,7 +891,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             language=self._resolve_runtime_language(),
             agent_id=self._tool_owner_id(),
             agent_card_id=self._tool_owner_id(),
-            deepresearch_context_provider=self._get_deepresearch_tool_context,
+            deepresearch_context_provider=lambda: _get_deepresearch_tool_context(self),
             active_skill_provider=self._get_progressive_active_skill,
         )
         if rail is not None:
@@ -1174,7 +1181,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_skill_evolution_rail_via_config(self) -> Any:
         """构建 SkillEvolutionRail."""
-        return self._build_skill_evolution_rail(get_config())
+        return _build_skill_evolution_rail(self, get_config())
 
     # ─── Subagent 配置 ──────────────────────────
 
@@ -1394,7 +1401,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._skill_evolution_rail is not None
             or self._evolution_interrupt_rail is not None
         ):
-            await self._unconfigure_active_evolution_rails()
+            await _unconfigure_active_evolution_rails(self)
 
     def _build_code_agent_rail(self) -> CodeAgentRail | None:
         """构建 CodeAgentRail，管理 /agents 创建的自定义 agent。"""

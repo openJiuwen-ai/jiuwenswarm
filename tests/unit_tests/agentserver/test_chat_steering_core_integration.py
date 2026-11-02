@@ -139,7 +139,7 @@ def _isolate_configuration(monkeypatch, adapter, model):
     monkeypatch.setattr(
         adapter, "_inject_extension_config_into_inputs", lambda *_: None
     )
-    monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda *_: None)
+    monkeypatch.setattr(interface_deep, "_deepresearch_artifact_output_dir", lambda *_: None)
     monkeypatch.setattr(
         adapter, "_update_permission_rail", lambda *_args, **_kwargs: None
     )

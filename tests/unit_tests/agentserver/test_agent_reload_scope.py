@@ -444,7 +444,7 @@ async def test_deep_adapter_global_reload_marks_sessions_stale_without_fanout(mo
             MagicMock(return_value=([], [])),
         ),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_make_deep_agent_config", MagicMock(return_value=object())),
-        patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_active_evolution_review_agent_after_reload", MagicMock()),
+        patch.object(interface_module, "_sync_active_evolution_review_agent_after_reload", MagicMock()),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_mcp_servers_for_runtime", _async_noop),
     ):
         await parent.reload_agent_config(
@@ -557,7 +557,7 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
         ),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_make_deep_agent_config", _make_config),
         patch.object(
-            interface_module.JiuWenSwarmDeepAdapter,
+            interface_module,
             "_sync_active_evolution_review_agent_after_reload",
             MagicMock(),
         ),

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import importlib
 import json
 import logging
@@ -26,12 +25,10 @@ import uuid
 from collections import Counter
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, ClassVar, List, Optional, Tuple, cast
-from urllib.parse import quote_plus
-
 import yaml
 from openjiuwen.core.context_engine.schema.config import CompressionRecallConfig, ContextEngineConfig
 from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
@@ -151,17 +148,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch import (
     reset_deepresearch_route,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_fast_path import (
-    RewriteFastPathResult,
     run_rewrite_fast_path,
-)
-from jiuwenswarm.agents.harness.common.tools.deepresearch.deepresearch_rewrite_html_followup import (
-    PENDING_HTML_EXPORT_STATE_KEY,
-    RewriteHtmlFollowupResult,
-    RewriteHtmlTarget,
-    decode_html_tool_result,
-    is_html_followup_request,
-    target_from_commit_result,
-    target_from_state,
 )
 from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
     _account_deepresearch_sdk_usage,
@@ -174,9 +161,6 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
     _coerce_circuit_breaker_threshold,
     _cron_execution_checkpointer,
     _cron_session_has_context,
-    _deepresearch_rewrite_publish_uncertain,
-    _deepresearch_rewrite_replay_conflict,
-    _deepresearch_rewrite_terminal_kind,
     _deepresearch_usage_summary,
     _enterprise_resource_id_from_request,
     _extract_deepresearch_sdk_usage,
@@ -239,7 +223,6 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
     _structured_goal_op_from_request,
     _sys_operation_isolation_key,
     _ttse_consult_knobs,
-    _valid_deepresearch_rewrite_request_id,
     _wants_attach_goal,
 )
 from jiuwenswarm.server.runtime.agent_adapter.deep.model_factory import (
@@ -298,6 +281,30 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
     _stage_request_mcp_tools,
     _suspend_subagent_permission_rails,
     find_team_skill_rail,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep import checkpoint_db as _checkpoint_db
+from jiuwenswarm.server.runtime.agent_adapter.deep.checkpoint_db import (
+    _build_mysql_async_engine,
+    _build_postgresql_async_engine,
+    ensure_persistent_checkpointer,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _build_deepresearch_execution_rail,
+    _deepresearch_artifact_output_dir,
+    _get_deepresearch_tool_context,
+    _register_deepresearch_tool_cards,
+    _run_deepresearch_rewrite_fast_path_transaction,
+    _run_deepresearch_rewrite_html_transaction,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.evolution import (
+    _ensure_active_evolution_rails_registered,
+    _get_disk_evolution_store,
+    _handle_evolution_approval,
+    _handle_governance_approval,
+    _on_evolution_watcher_done,
+    _sync_active_evolution_review_agent_after_reload,
+    _unconfigure_active_evolution_rails,
+    _watch_evolution_and_push,
 )
 
 if TYPE_CHECKING:
@@ -386,25 +393,6 @@ def _ask_user_questions_key(payload: dict) -> str:
         return repr(payload.get("questions"))
 
 
-_DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY = "deepresearch_rewrite_fast_path_replays"
-_DEEPRESEARCH_REWRITE_REPLAY_SCHEMA_VERSION = 1
-_DEEPRESEARCH_REWRITE_REPLAY_MAX_ENTRIES = 32
-_DEEPRESEARCH_REWRITE_REQUEST_ID_MAX_LENGTH = 256
-_DEEPRESEARCH_REWRITE_REPLAY_MAX_BYTES = 256 * 1024
-_DEEPRESEARCH_REWRITE_REPLAY_PATH_MAX_BYTES = 4096
-_DEEPRESEARCH_REWRITE_REPLAY_TERMINAL_KINDS = frozenset(
-    {"success", "report_delivery_failed", "publish_uncertain"}
-)
-_DEEPRESEARCH_REWRITE_SUCCESS_MESSAGE = (
-    "本轮改写已完成。若报告已是最终版本，请回复‘生成 HTML’；"
-    "如需继续改写，可直接选择下一处内容。"
-)
-_DEEPRESEARCH_REWRITE_DELIVERY_FAILURE_MESSAGE = (
-    "改写版本已成功保留，但报告文件交付失败。"
-)
-_DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE = (
-    "改写版本状态不确定，请刷新会话后重试。"
-)
 _DEEPRESEARCH_CHECKPOINT_UNCERTAIN = "DEEPRESEARCH_CHECKPOINT_UNCERTAIN"
 _DEEPRESEARCH_CHECKPOINT_UNCERTAIN_MESSAGE = (
     "会话检查点状态不确定，请重试以重新加载会话。"
@@ -1043,97 +1031,6 @@ def _resolve_observability_mode(params: dict[str, Any]) -> str:
             return str(deprecate_mode(composed_mode[2]))
     return str(deprecate_mode(raw_mode))
 
-_PERSISTENT_CHECKPOINTER_LOCK: asyncio.Lock | None = None
-_PERSISTENT_CHECKPOINTER_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
-_PERSISTENT_CHECKPOINTER_LOCK_INIT = threading.Lock()
-_PERSISTENT_CHECKPOINTER_READY = False
-_shared_checkpoint_checkpointer: Any = None
-_shared_mysql_checkpoint_engine: Any = None
-_shared_postgresql_checkpoint_engine: Any = None
-
-
-def reset_shared_checkpoint_for_tests() -> None:
-    """Reset process-wide checkpoint singleton (tests only)."""
-    global _shared_checkpoint_checkpointer, _PERSISTENT_CHECKPOINTER_READY
-    global _PERSISTENT_CHECKPOINTER_LOCK, _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-    global _shared_mysql_checkpoint_engine, _shared_postgresql_checkpoint_engine
-    _shared_checkpoint_checkpointer = None
-    _PERSISTENT_CHECKPOINTER_READY = False
-    _PERSISTENT_CHECKPOINTER_LOCK = None
-    _PERSISTENT_CHECKPOINTER_LOCK_LOOP = None
-    _shared_mysql_checkpoint_engine = None
-    _shared_postgresql_checkpoint_engine = None
-
-
-def _gateway_db_pool_kwargs() -> dict[str, Any]:
-    """SQLAlchemy 连接池参数（``GATEWAY_DB_POOL_*`` / ``RUNTIME_DB_POOL_*``）。"""
-
-    def _int_env(*names: str, default: int) -> int:
-        for name in names:
-            raw = os.getenv(name, "").strip()
-            if not raw:
-                continue
-            try:
-                return int(raw)
-            except ValueError:
-                continue
-        return default
-
-    return {
-        "pool_size": _int_env("GATEWAY_DB_POOL_SIZE", "RUNTIME_DB_POOL_SIZE", default=2),
-        "max_overflow": _int_env("GATEWAY_DB_MAX_OVERFLOW", "RUNTIME_DB_MAX_OVERFLOW", default=20),
-        "pool_timeout": _int_env("GATEWAY_DB_POOL_TIMEOUT", "RUNTIME_DB_POOL_TIMEOUT", default=30),
-        "pool_recycle": 3600,
-        "pool_pre_ping": True,
-    }
-
-
-def _running_loop() -> asyncio.AbstractEventLoop | None:
-    try:
-        return asyncio.get_running_loop()
-    except RuntimeError:
-        return None
-
-
-async def _get_persistent_checkpointer_lock() -> asyncio.Lock:
-    """Lazy-init or rebind the process-wide checkpointer lock to the running loop.
-
-    ``asyncio.Lock`` binds to the loop of its first ``acquire()``; any later
-    acquire from a different loop raises ``RuntimeError("... is bound to a
-    different event loop")``. The first call may have happened on a transient
-    loop (test harness, ephemeral worker) that is gone by the time AgentServer's
-    main loop needs the lock. To stay correct under that drift we:
-
-    1. Lazily construct the Lock inside the caller's running loop (guarded by a
-       ``threading.Lock`` so concurrent first-acquires from different threads
-       cannot create two Locks).
-    2. Before returning, verify the Lock is still bound to the current loop. If
-       it is bound to a dead/foreign loop, drop and rebuild it so the caller can
-       re-acquire safely. This rebinding is also done under the threading guard.
-
-    After ``_PERSISTENT_CHECKPOINTER_READY`` flips True no one acquires the lock,
-    so rebinding is a no-op for the steady state.
-    """
-    global _PERSISTENT_CHECKPOINTER_LOCK, _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-    current = _running_loop()
-    if current is None:
-        raise RuntimeError(
-            "_get_persistent_checkpointer_lock must be called from a running event loop"
-        )
-    with _PERSISTENT_CHECKPOINTER_LOCK_INIT:
-        bound = _PERSISTENT_CHECKPOINTER_LOCK_LOOP
-        if _PERSISTENT_CHECKPOINTER_LOCK is None or bound is None or bound is not current:
-            if bound is not None and bound is not current and not bound.is_closed():
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] _PERSISTENT_CHECKPOINTER_LOCK rebound: "
-                    "old_loop=%r new_loop=%r (lock repr=%r)",
-                    bound,
-                    current,
-                    _PERSISTENT_CHECKPOINTER_LOCK,
-                )
-            _PERSISTENT_CHECKPOINTER_LOCK = asyncio.Lock()
-            _PERSISTENT_CHECKPOINTER_LOCK_LOOP = current
-    return _PERSISTENT_CHECKPOINTER_LOCK
 
 # Persistence identity of the single-agent card. It is the entity segment of
 # every checkpointer key ("{session_id}:agent:{card_id}:..."), so it must stay
@@ -2155,351 +2052,6 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] ContextProcessorRail create failed: %s", exc)
         return None
-
-
-def _patch_compiler_for_on_conflict():
-    """使 MySQL 和 PostgreSQL SQLAlchemy 编译器支持 SQLite 的 ON CONFLICT DO UPDATE.
-
-    openjiuwen SDK 的 DbBasedKVStore 硬编码了 SQLite upsert 语法.
-    此 patch 在 SQL 编译阶段将 ON CONFLICT ... DO UPDATE 翻译为对应数据库的语法,
-    使 checkpoint 可以正常写入 MySQL/PostgreSQL.
-    """
-    try:
-        from sqlalchemy.ext.compiler import compiles
-        from sqlalchemy.dialects.sqlite.dml import OnConflictDoUpdate
-
-        @compiles(OnConflictDoUpdate, "mysql")
-        def _mysql_on_conflict_do_update(element, compiler, **kw):
-            values = getattr(element, "_update_values", None)
-            set_pairs = []
-            if isinstance(values, dict):
-                for col_key in values:
-                    col_name = compiler.preparer.format_column(col_key)
-                    set_pairs.append(f"{col_name} = VALUES({col_name})")
-            if not set_pairs:
-                set_pairs.append("value = VALUES(value)")
-            return f"\nON DUPLICATE KEY UPDATE {', '.join(set_pairs)}"
-
-        @compiles(OnConflictDoUpdate, "postgresql")
-        def _postgresql_on_conflict_do_update(element, compiler, **kw):
-            values = getattr(element, "_update_values", None)
-            set_pairs = []
-            if isinstance(values, dict):
-                for col_key in values:
-                    col_name = compiler.preparer.format_column(col_key)
-                    set_pairs.append(f"{col_name} = EXCLUDED.{col_name}")
-            if not set_pairs:
-                set_pairs.append("value = EXCLUDED.value")
-            return f" ON CONFLICT (key) DO UPDATE SET {', '.join(set_pairs)}"
-    except Exception:
-        pass
-
-
-_patch_compiler_for_on_conflict()
-
-
-async def _build_mysql_async_engine():
-    """构建 / 复用 checkpoint MySQL AsyncEngine。
-
-    连接参数从 ``GATEWAY_DB_*`` 读取；池参数见 ``GATEWAY_DB_POOL_*``。
-    进程内复用同一 engine，避免每个 agent 再建独立连接池。
-    未配置 ``GATEWAY_DB_HOST`` 或非企业版时返回 None，由调用方决定是否回退 SQLite。
-    配置了 ``GATEWAY_DB_HOST`` 但连接/初始化失败时抛出异常，避免静默回退到 SQLite。
-    注意：SQLite 不扛并发，并发时会报：(sqlite3.OperationalError) disk I/O error
-    """
-    global _shared_mysql_checkpoint_engine
-    if not is_enterprise():
-        return None
-    if _shared_mysql_checkpoint_engine is not None:
-        return _shared_mysql_checkpoint_engine
-    db_host = os.getenv("GATEWAY_DB_HOST", "").strip()
-    if not db_host:
-        return None
-    try:
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        db_port = os.getenv("GATEWAY_DB_PORT", "3306").strip()
-        db_user = os.getenv("GATEWAY_DB_USER", "root").strip()
-        db_password = os.getenv("GATEWAY_DB_PASSWORD", "").strip()
-        db_name = os.getenv("GATEWAY_DB_NAME", "openjiuwen_gateway").strip()
-        # URL-encode 用户名/密码，避免特殊字符（如 @ : / # %）破坏连接串解析
-        _encoded_user = quote_plus(db_user)
-        _encoded_password = quote_plus(db_password)
-        # 先连接不指定库，自动建库
-        server_url = (
-            f"mysql+aiomysql://{_encoded_user}:{_encoded_password}"
-            f"@{db_host}:{db_port}?charset=utf8mb4"
-        )
-        temp_engine = create_async_engine(server_url, echo=False)
-        async with temp_engine.begin() as conn:
-            await conn.execute(
-                text(
-                    f"CREATE DATABASE IF NOT EXISTS `{db_name}` "
-                    f"DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                )
-            )
-        await temp_engine.dispose()
-
-        # 再连接目标库
-        db_url = (
-            f"mysql+aiomysql://{_encoded_user}:{_encoded_password}"
-            f"@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
-        )
-        pool_kwargs = _gateway_db_pool_kwargs()
-        engine = create_async_engine(db_url, **pool_kwargs)
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] checkpoint MySQL engine created: %s:%s/%s "
-            "pool_size=%s max_overflow=%s pool_timeout=%s",
-            db_host,
-            db_port,
-            db_name,
-            pool_kwargs["pool_size"],
-            pool_kwargs["max_overflow"],
-            pool_kwargs["pool_timeout"],
-        )
-
-        # 确保 kv_store.value 列为 LONGTEXT，避免 checkpoint 序列化数据被截断
-        async with engine.begin() as conn:
-            result = await conn.execute(
-                text(
-                    "SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA = :db AND TABLE_NAME = 'kv_store' AND COLUMN_NAME = 'value'"
-                ),
-                {"db": db_name},
-            )
-            row = result.fetchone()
-            if row is None:
-                await conn.execute(
-                    text(
-                        "CREATE TABLE IF NOT EXISTS kv_store ("
-                        "`key` VARCHAR(512) PRIMARY KEY,"
-                        "`value` LONGTEXT NOT NULL"
-                        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
-                    )
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store table created with value LONGTEXT"
-                )
-            elif str(row[0]).upper() != "LONGTEXT":
-                await conn.execute(
-                    text(
-                        "ALTER TABLE kv_store MODIFY COLUMN `value` LONGTEXT NOT NULL"
-                    )
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store.value altered to LONGTEXT"
-                )
-
-        _shared_mysql_checkpoint_engine = engine
-        return engine
-    except Exception as exc:
-        logger.error(
-            "[JiuWenSwarmDeepAdapter] failed to create checkpoint MySQL engine: %s",
-            exc,
-        )
-        raise
-
-
-async def _build_postgresql_async_engine():
-    """构建 / 复用 checkpoint PostgreSQL AsyncEngine。
-
-    连接参数从 ``GATEWAY_DB_*`` 读取；池参数见 ``GATEWAY_DB_POOL_*``。
-    进程内复用同一 engine，避免每个 agent 再建独立连接池。
-    未配置 ``GATEWAY_DB_HOST`` 或非企业版时返回 None，由调用方决定是否回退 SQLite。
-    配置了 ``GATEWAY_DB_HOST`` 但连接/初始化失败时抛出异常，避免静默回退到 SQLite。
-    注意：SQLite 不扛并发，并发时会报：(sqlite3.OperationalError) disk I/O error
-    """
-    global _shared_postgresql_checkpoint_engine
-    if not is_enterprise():
-        return None
-    if _shared_postgresql_checkpoint_engine is not None:
-        return _shared_postgresql_checkpoint_engine
-    db_host = os.getenv("GATEWAY_DB_HOST", "").strip()
-    if not db_host:
-        return None
-    try:
-        from sqlalchemy import text
-        from openjiuwen_runtime.foundation.db.postgresql_handler import PostgreSQLHandler
-
-        db_port = os.getenv("GATEWAY_DB_PORT", "5432").strip()
-        db_user = os.getenv("GATEWAY_DB_USER", "postgres").strip()
-        db_password = os.getenv("GATEWAY_DB_PASSWORD", "").strip()
-        db_name = os.getenv("GATEWAY_DB_NAME", "openjiuwen_gateway").strip()
-        pg_schema = os.getenv("GATEWAY_PG_SCHEMA", "public").strip() or "public"
-        handler = PostgreSQLHandler(
-            host=db_host,
-            port=int(db_port),
-            database=db_name,
-            schema=pg_schema,
-            user=db_user,
-            password=db_password,
-        )
-        # init_database 幂等：确保目标库与 schema 存在（schema 存在是 search_path 生效的前提）
-        await handler.init_database()
-        await handler.connect()
-        engine = handler.get_engine()
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] checkpoint PostgreSQL engine created: %s:%s/%s schema=%s",
-            db_host,
-            db_port,
-            db_name,
-            pg_schema,
-        )
-
-        # 确保 kv_store.value 列为 TEXT，避免 checkpoint 序列化数据被截断
-        async with engine.begin() as conn:
-            result = await conn.execute(
-                text(
-                    "SELECT data_type FROM information_schema.columns "
-                    "WHERE table_catalog = :db AND table_schema = :schema "
-                    "AND table_name = 'kv_store' AND column_name = 'value'"
-                ),
-                {"db": db_name, "schema": pg_schema},
-            )
-            row = result.fetchone()
-            if row is None:
-                await conn.execute(
-                    text(
-                        "CREATE TABLE IF NOT EXISTS kv_store ("
-                        "key VARCHAR(512) PRIMARY KEY,"
-                        "value TEXT NOT NULL"
-                        ")"
-                    )
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store table created with value TEXT"
-                )
-            elif str(row[0]).lower() != "text":
-                await conn.execute(
-                    text("ALTER TABLE kv_store ALTER COLUMN value TYPE TEXT")
-                )
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] kv_store.value altered to TEXT"
-                )
-
-        _shared_postgresql_checkpoint_engine = engine
-        return engine
-    except Exception as exc:
-        logger.error(
-            "[JiuWenSwarmDeepAdapter] failed to create checkpoint PostgreSQL engine: %s",
-            exc,
-        )
-        raise
-
-
-async def ensure_persistent_checkpointer() -> None:
-    """Ensure the process-wide default checkpointer uses sqlite / MySQL / PostgreSQL persistence."""
-    global _PERSISTENT_CHECKPOINTER_READY, _shared_checkpoint_checkpointer
-
-    if _PERSISTENT_CHECKPOINTER_READY:
-        if _shared_checkpoint_checkpointer is not None:
-            CheckpointerFactory.set_default_checkpointer(_shared_checkpoint_checkpointer)
-        return
-
-    t_cp_start = time.perf_counter()
-    lock = await _get_persistent_checkpointer_lock()
-    acquired = False
-    try:
-        try:
-            await lock.acquire()
-        except RuntimeError as acquire_exc:
-            logger.exception(
-                "[JiuWenSwarmDeepAdapter] _PERSISTENT_CHECKPOINTER_LOCK acquire failed: %s "
-                "(lock repr=%r, running_loop=%r)",
-                acquire_exc,
-                lock,
-                asyncio.get_event_loop(),
-            )
-            raise
-        acquired = True
-        if _PERSISTENT_CHECKPOINTER_READY:
-            if _shared_checkpoint_checkpointer is not None:
-                CheckpointerFactory.set_default_checkpointer(_shared_checkpoint_checkpointer)
-            return
-
-        try:
-            PersistenceCheckpointerProvider()
-            checkpoint_path = get_checkpoint_dir()
-            conf: dict[str, Any] = {
-                "db_type": "sqlite",
-                "db_path": f"{checkpoint_path}/checkpoint",
-            }
-
-            # 企业版：CHECKPOINT_DB_TYPE=mysql|postgresql 时改用对应库（复用 GATEWAY_DB_*）
-            checkpoint_db_type = os.getenv("CHECKPOINT_DB_TYPE", "").strip().lower()
-            if is_enterprise():
-                from openjiuwen_runtime.foundation.db.utils import is_mysql, is_postgresql
-                if is_mysql(checkpoint_db_type):
-                    mysql_engine = await _build_mysql_async_engine()
-                    if mysql_engine is not None:
-                        conf["db_client"] = mysql_engine
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] use mysql db_client for checkpointer"
-                        )
-                elif is_postgresql(checkpoint_db_type):
-                    postgresql_engine = await _build_postgresql_async_engine()
-                    if postgresql_engine is not None:
-                        conf["db_client"] = postgresql_engine
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] use postgresql db_client for checkpointer"
-                        )
-
-            checkpointer = await CheckpointerFactory.create(
-                CheckpointerConfig(type="persistence", conf=conf),
-            )
-            # [PERF] 打点:包一层计时,定位每轮 checkpoint restore/save 的真实耗时
-            import functools as _perf_ft
-
-            def _perf_wrap_cp(_name, _fn):
-                if not asyncio.iscoroutinefunction(_fn):
-                    return _fn
-
-                @_perf_ft.wraps(_fn)
-                async def _timed(*args, **kwargs):
-                    _t0 = time.perf_counter()
-                    try:
-                        return await _fn(*args, **kwargs)
-                    finally:
-                        logger.info(
-                            "[PERF] checkpoint.%s ms=%.1f",
-                            _name,
-                            (time.perf_counter() - _t0) * 1000,
-                        )
-
-                return _timed
-
-            for _cp_name in dir(checkpointer):
-                if _cp_name.startswith("_"):
-                    continue
-                try:
-                    _cp_attr = getattr(checkpointer, _cp_name)
-                except Exception:  # noqa: BLE001
-                    continue
-                if callable(_cp_attr):
-                    try:
-                        setattr(checkpointer, _cp_name, _perf_wrap_cp(_cp_name, _cp_attr))
-                    except Exception:  # noqa: BLE001
-                        pass
-            _shared_checkpoint_checkpointer = checkpointer
-            CheckpointerFactory.set_default_checkpointer(checkpointer)
-            _PERSISTENT_CHECKPOINTER_READY = True
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] persistent checkpointer ready: %s elapsed_ms=%.1f",
-                checkpoint_path / "checkpoint",
-                (time.perf_counter() - t_cp_start) * 1000,
-            )
-        except Exception as exc:
-            logger.error(
-                "[JiuWenSwarmDeepAdapter] fail to setup checkpoint due to: %s "
-                "elapsed_ms=%.1f",
-                exc,
-                (time.perf_counter() - t_cp_start) * 1000,
-            )
-            raise RuntimeError("persistent checkpointer initialization failed") from exc
-    finally:
-        if acquired:
-            lock.release()
 
 
 _MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
@@ -6429,7 +5981,7 @@ class JiuWenSwarmDeepAdapter:
                 # Fall back to process-default checkpointer so create_instance can proceed.
                 await ensure_persistent_checkpointer()
                 if self._checkpointer is None:
-                    self._checkpointer = _shared_checkpoint_checkpointer
+                    self._checkpointer = _checkpoint_db._shared_checkpoint_checkpointer
                 self._bind_checkpointer_to_rails()
 
 
@@ -8370,7 +7922,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _track_skill_sleep_task(self, task: asyncio.Task) -> None:
         """Track background sleep tasks with evolution watcher set."""
-        task.add_done_callback(self._on_evolution_watcher_done)
+        task.add_done_callback(lambda task: _on_evolution_watcher_done(self, task))
         self._evolution_watcher_tasks.add(task)
 
     async def _reconcile_skill_sleep_rail(self) -> None:
@@ -8417,43 +7969,6 @@ class JiuWenSwarmDeepAdapter:
                 exc,
             )
             return None
-
-    def _build_skill_evolution_rail(self, config: dict[str, Any]) -> SkillEvolutionRail | None:
-        """Build SkillEvolutionRail.
-
-        Product contract: while the rail is mounted, generated experiences always
-        persist (``rail.auto_save=True``). Automatic version merge after
-        persistence is gated per-skill by ``resolve_skill_evolution_action``
-        (``selfEvolution=auto`` only).
-        """
-        if not get_skill_evolution_enabled(config):
-            return None
-        from openjiuwen.extensions.observability.demand import (
-            get_trajectory_span_processor,
-        )
-
-        try:
-            evolution_triggers = get_passive_skill_evolution_triggers(config)
-            model_name = self._default_model_name or config.get("model_name", "gpt-4")
-            skill_evolution_rail = SkillEvolutionRail(
-                skills_dir=self._resolve_skill_dirs(),
-                llm=self._model,
-                model=model_name,
-                review_runtime=EvolutionReviewRuntime(),
-                review_trigger=evolution_triggers["review_trigger"],
-                signal_trigger=evolution_triggers["signal_trigger"],
-                auto_save=True,
-                disabled_skills=merge_evolution_disabled_skills(
-                    self._skill_manager.list_execution_disabled_skills()
-                ),
-                trajectory_span_processor=get_trajectory_span_processor(),
-            )
-            self._skill_evolution_rail = skill_evolution_rail
-            logger.info("[JiuWenSwarmDeepAdapter] SkillEvolutionRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] SkillEvolutionRail create failed: %s", exc)
-            skill_evolution_rail = None
-        return skill_evolution_rail
 
     def _ttse_bank_path(self) -> str:
         """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob.
@@ -8687,56 +8202,6 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] TTSERail unregister failed: %s", exc)
 
-    async def _ensure_active_evolution_rails_registered(self) -> None:
-        """Configure, register, and cache single-agent skill evolution rails."""
-        if self._instance is None:
-            return
-
-        resolved_language = self._resolve_runtime_language()
-        evolution_triggers = get_passive_skill_evolution_triggers(self._config_cache)
-        if (
-            self._skill_evolution_rail is not None
-            and getattr(self._skill_evolution_rail, "_language", None) != resolved_language
-        ):
-            await self._unconfigure_active_evolution_rails()
-
-        disabled_skills = merge_evolution_disabled_skills(
-            self._skill_manager.list_execution_disabled_skills()
-            if self._skill_manager is not None
-            else []
-        )
-        from openjiuwen.extensions.observability.demand import (
-            get_trajectory_span_processor,
-        )
-
-        await configure_skill_evolution_runtime(
-            self._instance,
-            skills_dir=self._resolve_skill_dirs(),
-            llm=self._model,
-            model=self._default_model_name
-            or self._config_cache.get("model_name", "gpt-4"),
-            review_trigger=evolution_triggers["review_trigger"],
-            signal_trigger=evolution_triggers["signal_trigger"],
-            auto_save=True,
-            disabled_skills=disabled_skills,
-            language=resolved_language,
-            trajectory_span_processor=get_trajectory_span_processor(),
-        )
-        self._refresh_active_evolution_rail_refs()
-        if self._skill_evolution_rail is not None:
-            sync_evolution_disabled_skills(self._skill_evolution_rail, disabled_skills)
-            _set_skill_evolution_triggers(
-                self._skill_evolution_rail,
-                review_trigger=evolution_triggers["review_trigger"],
-                signal_trigger=evolution_triggers["signal_trigger"],
-            )
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillEvolutionRail configured "
-                "(review_trigger=%s, signal_trigger=%s)",
-                evolution_triggers["review_trigger"],
-                evolution_triggers["signal_trigger"],
-            )
-
     async def refresh_enabled_skills_from_db(self) -> bool:
         """workspace Skill 状态变更后刷新启用集并热替换 ``SkillUseRail``。
 
@@ -8850,73 +8315,6 @@ class JiuWenSwarmDeepAdapter:
         )
         return True
 
-    async def _unconfigure_active_evolution_rails(self) -> None:
-        """Remove cached single-agent evolution rails before rebuilding them."""
-        if self._instance is None:
-            return
-
-        rails = [
-            rail
-            for rail in (self._skill_evolution_rail, self._evolution_interrupt_rail)
-            if rail is not None
-        ]
-        try:
-            unconfigure_skill_evolution(self._instance, team=False)
-        except AttributeError:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] evolution bulk unconfigure unavailable"
-            )
-        unregister = getattr(self._instance, "unregister_rail", None)
-        if callable(unregister):
-            for rail in rails:
-                await unregister(rail)
-        stale_rails = getattr(self._instance, "_stale_rails", None)
-        if isinstance(stale_rails, list):
-            removed_ids = {id(rail) for rail in rails}
-            self._instance._stale_rails = [  # pylint: disable=protected-access
-                rail for rail in stale_rails if id(rail) not in removed_ids
-            ]
-        self._skill_evolution_rail = None
-        self._evolution_interrupt_rail = None
-
-    def _refresh_active_evolution_rail_refs(self) -> None:
-        """Refresh cached rail references after agent-core runtime configure."""
-        if self._instance is None:
-            return
-        find_rails = getattr(self._instance, "find_rails_by_type", None)
-        if not callable(find_rails):
-            return
-
-        regular_rails = find_rails((SkillEvolutionRail,))
-        self._skill_evolution_rail = None
-        for rail in regular_rails:
-            if isinstance(rail, SkillEvolutionRail) and not isinstance(
-                rail, EvolutionInterruptRail
-            ):
-                self._skill_evolution_rail = rail
-                break
-        interrupt_rails = find_rails((EvolutionInterruptRail,))
-        self._evolution_interrupt_rail = next(iter(interrupt_rails), None)
-        subagent_rails = find_rails((SubagentRail,))
-        self._subagent_rail = next(iter(subagent_rails), None)
-
-    def _sync_active_evolution_review_agent_after_reload(self) -> None:
-        """Restore SkillEvolutionRail-owned review subagent after DeepAgent hot reload."""
-        if self._instance is None or self._skill_evolution_rail is None:
-            return
-        if not get_evolution_enabled(self._config_cache):
-            return
-
-        register_review_agent = getattr(
-            self._skill_evolution_rail,
-            "_register_evolution_review_agent",
-            None,
-        )
-        if callable(register_review_agent):
-            register_review_agent(self._instance)
-
-        self._refresh_active_evolution_rail_refs()
-
     def _build_skill_create_rail(self, config: dict[str, Any]) -> SkillCreateRail | None:
         """Build SkillCreateRail for new skill creation proposals.
 
@@ -8963,25 +8361,6 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] JiuSwarmStreamEventRail create failed: %s", exc)
             stream_event_rail = None
         return stream_event_rail
-
-    def _build_deepresearch_execution_rail(
-        self,
-    ) -> DeepResearchExecutionRail | None:
-        """Build the native HITL bridge for deepresearch_execute."""
-        try:
-            rail = DeepResearchExecutionRail(model_provider=lambda: self._model,
-                                             materials_context_provider=self._get_deepresearch_material_context,
-                                             mcp_context_provider=self._get_deepresearch_mcp_context)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] DeepResearchExecutionRail create success"
-            )
-            return rail
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] DeepResearchExecutionRail create failed: %s",
-                exc,
-            )
-            return None
 
     @staticmethod
     def _build_context_overflow_recovery_rail() -> ContextOverflowRecoveryRail | None:
@@ -9536,7 +8915,7 @@ class JiuWenSwarmDeepAdapter:
             language=self._resolve_runtime_language(),
             agent_id=self._tool_owner_id(),
             agent_card_id=self._tool_owner_id(),
-            deepresearch_context_provider=self._get_deepresearch_tool_context,
+            deepresearch_context_provider=lambda: _get_deepresearch_tool_context(self),
             active_skill_provider=self._get_progressive_active_skill,
         )
         if rail is not None:
@@ -9591,114 +8970,6 @@ class JiuWenSwarmDeepAdapter:
             # disabled_tools is a security boundary. Refuse to initialize or
             # hot-reload with the blacklist silently disabled (fail closed).
             raise
-
-    async def _get_deepresearch_mcp_context(self) -> list[dict[str, Any]]:
-        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import get_search_mcp_context
-
-        def request_state():
-            return (getattr(self, "_deepresearch_mcp_snapshot", None),
-                    self._active_office_claw_mcp, self._current_request_route)
-
-        def resolve_permission_config(**kwargs):
-            return self._resolve_permission_config_for_agent(**kwargs)
-
-        return await get_search_mcp_context(
-            self, registry_provider=get_mcp_server_registry,
-            owner_policy_provider=get_effective_permissions_config,
-            request_state=request_state,
-            resolve_permission_config=resolve_permission_config,
-        )
-
-    def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
-        # Per-session adapter snapshot survives long-lived runner Task boundaries.
-        context = copy.deepcopy(self._current_request_route.get("materials_context"))
-        if context is None:
-            return None
-        if not context["files"]:
-            return context
-        try:
-            permission_config = self._resolve_permission_config_for_agent(
-                session_id=str(self._current_request_route.get("session_id") or "")
-            )
-        except Exception:
-            # Unknown policy must not authorize material reads or expose config data.
-            logger.warning("[DeepResearch] Material permission configuration unavailable")
-            permission_config = {}
-        enabled = permission_config.get("enabled") if isinstance(permission_config, dict) else None
-        engine = getattr(getattr(self, "_permission_rail", None), "_engine", None)
-        from openjiuwen.harness.security.models import PermissionLevel
-        for item in context["files"]:
-            if enabled is False:
-                # A disabled permission system intentionally has no PermissionRail.
-                item["read_allowed"] = True
-            elif enabled is not True or engine is None:
-                item["read_allowed"] = False
-            else:
-                level, _ = engine.check_tool_permission_directly("read_file", {"file_path": item.get("path", "")})
-                item["read_allowed"] = level == PermissionLevel.ALLOW
-        return context
-
-    def _get_deepresearch_tool_context(self) -> dict[str, str]:
-        """Return the adapter-owned route that survives runner task boundaries.
-
-        Prefers the per-session-adapter ``_current_request_route`` snapshot
-        (captured from request.* at chat request entry) so deepresearch_stream
-        progress pushes bind to the originating session/request even when
-        concurrent requests leak module-level ``_CRON_TOOL_*`` bindings into
-        background tool tasks. Falls back to ``_runtime_cron_tool_context``
-        for cron-triggered paths that don't populate the snapshot.
-        """
-        route = self._current_request_route
-        if route.get("session_id"):
-            scope = RuntimeScopeKey.from_adapter(
-                self, session_id=route["session_id"]
-            )
-            output_dir = str(route.get("output_dir") or "").strip()
-            return {
-                "request_id": str(route.get("request_id") or ""),
-                "channel_id": str(route.get("channel_id") or ""),
-                "session_id": scope.session_id,
-                "service_id": scope.service_id,
-                "agent_id": scope.agent_id,
-                "workspace_key": scope.workspace_key,
-                "output_dir": self._deepresearch_artifact_output_dir(
-                    route.get("output_dir")
-                ),
-            }
-        context = self._runtime_cron_tool_context
-        metadata = context.metadata if isinstance(context.metadata, dict) else {}
-        scope = RuntimeScopeKey.from_adapter(self, session_id=context.session_id)
-        request_workspace = metadata.get("workspace_dir") or metadata.get("project_dir")
-        return {
-            "request_id": str(metadata.get("request_id") or ""),
-            "channel_id": str(context.channel_id or ""),
-            "session_id": scope.session_id,
-            "service_id": scope.service_id,
-            "agent_id": scope.agent_id,
-            "workspace_key": scope.workspace_key,
-            "output_dir": self._deepresearch_artifact_output_dir(
-                metadata.get("project_dir")
-            ),
-        }
-
-    def _deepresearch_artifact_output_dir(
-        self, request_workspace: str | None = None
-    ) -> str:
-        """Return the current session workspace, or the legacy artifact root."""
-        normalized_request_workspace = (
-            request_workspace.strip()
-            if isinstance(request_workspace, str)
-            else ""
-        )
-        session_workspace = normalized_request_workspace or str(
-            getattr(self, "_project_dir", None) or ""
-        ).strip()
-        if session_workspace:
-            return str(Path(session_workspace).expanduser().resolve())
-        workspace = Path(
-            getattr(self, "_workspace_dir", None) or get_agent_workspace_dir()
-        ).expanduser().resolve()
-        return str(workspace / "projects")
 
     async def refresh_skill_rails(self) -> None:
         """轻量刷新 skill 相关 rail，避免全量重建 agent 实例.
@@ -9861,7 +9132,7 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo(
                 "_deepresearch_execution_rail",
-                self._build_deepresearch_execution_rail,
+                lambda: _build_deepresearch_execution_rail(self),
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             # opt-in: AGENT_EXTENSION_CONFIG_DEBUG_RAIL=1 (default off)
@@ -10588,14 +9859,6 @@ class JiuWenSwarmDeepAdapter:
             )
         return register_tool(tool, owner_id)
 
-    def _register_deepresearch_tool_cards(self, tool_cards: list[Any]) -> None:
-        """Register the formal DeepResearch surface as process-shared tools."""
-        registered_cards = [
-            self._register_shared_tool(tool).card
-            for tool in get_deepresearch_tools()
-        ]
-        tool_cards.extend(registered_cards)
-
     def _append_extra_tool_cards(self, tool_cards: list[Any]) -> None:
         """Append extra tools loaded from AGENT_EXTRA_TOOLS to ``tool_cards``.
 
@@ -10860,7 +10123,7 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] acp_chat registration failed: %s", exc)
 
-        self._register_deepresearch_tool_cards(tool_cards)
+        _register_deepresearch_tool_cards(self, tool_cards)
 
         # 动态加载环境变量配置的非侵入式工具扩展（AGENT_EXTRA_TOOLS，仅企业版）
         self._append_extra_tool_cards(tool_cards)
@@ -11595,7 +10858,7 @@ class JiuWenSwarmDeepAdapter:
             # registered before configure are dropped — re-sync after configure.
             self._sync_multimodal_tools_for_runtime()
             self._commit_reload_fingerprints(reload_fingerprints)
-            self._sync_active_evolution_review_agent_after_reload()
+            _sync_active_evolution_review_agent_after_reload(self)
 
             await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
 
@@ -11747,7 +11010,7 @@ class JiuWenSwarmDeepAdapter:
                 service_id=scope.service_id,
                 agent_id=scope.agent_id,
                 workspace_key=scope.workspace_key,
-                output_dir=self._deepresearch_artifact_output_dir(
+                output_dir=_deepresearch_artifact_output_dir(self,
                     normalized_metadata.get("project_dir")
                 ),
             )
@@ -11937,12 +11200,12 @@ class JiuWenSwarmDeepAdapter:
     async def _reconcile_evolution_rails(self) -> None:
         """Apply evolution rail configuration through its runtime owner."""
         if get_evolution_enabled(self._config_cache):
-            await self._ensure_active_evolution_rails_registered()
+            await _ensure_active_evolution_rails_registered(self)
         elif (
             self._skill_evolution_rail is not None
             or self._evolution_interrupt_rail is not None
         ):
-            await self._unconfigure_active_evolution_rails()
+            await _unconfigure_active_evolution_rails(self)
 
         ttse_wrap = {"react": {"ttse": self._resolved_ttse_config()}}
         if get_ttse_enabled(ttse_wrap):
@@ -14906,7 +14169,7 @@ class JiuWenSwarmDeepAdapter:
                 evolution_meta_from_params(request.params),
             )
         elif request_id.startswith("skill_evolve_"):
-            resolved = await self._handle_evolution_approval(request_id, answers)
+            resolved = await _handle_evolution_approval(self, request_id, answers)
         elif _is_interrupt_skill_evolution_approval_params(request_id, request.params):
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] interrupt evolution approval received via "
@@ -14914,7 +14177,7 @@ class JiuWenSwarmDeepAdapter:
                 request_id,
             )
         elif _is_regular_skill_evolution_approval_params(request.params):
-            resolved = await self._handle_evolution_approval(request_id, answers)
+            resolved = await _handle_evolution_approval(self, request_id, answers)
         elif _is_subagent_approval_answer(request_id, request.params):
             # 子代理委托审批（Skill 加载/工具权限）：按 source 或 request_id 前缀
             # 路由回主会话的 SubagentApprovalRegistry pending Future。
@@ -15064,57 +14327,6 @@ class JiuWenSwarmDeepAdapter:
         )
         return None
 
-    async def _handle_evolution_approval(self, request_id: str, answers: list) -> bool:
-        """Handle evolution approval via SkillEvolutionRail.on_approve/on_reject.
-
-        Uses the optimizer path: calls rail.on_approve() for accepted records
-        which will flush to store and solidify, or rail.on_reject() to discard.
-        """
-        rail = self._skill_evolution_rail
-        if rail is None:
-            logger.warning("[JiuWenSwarmDeepAdapter] evolution approval failed: no SkillEvolutionRail")
-            return False
-
-        record_ids_by_index = record_ids_from_pending_approval(rail, request_id)
-        accepted, approved_record_ids = approved_record_ids_from_answers(
-            answers,
-            EVOLUTION_ACCEPT_LABELS,
-            record_ids_by_index,
-        )
-
-        if accepted:
-            pending_snapshots = getattr(rail, "_pending_approval_snapshots", None)
-            pending = (
-                pending_snapshots.get(request_id)
-                if isinstance(pending_snapshots, dict)
-                else None
-            )
-            skill_for_rebuild = str(getattr(pending, "skill_name", "") or "").strip()
-            await approve_evolution_records(
-                rail,
-                request_id,
-                approved_record_ids,
-                legacy_fallback=True,
-            )
-            logger.info("[JiuWenSwarmDeepAdapter] evolution approval accepted: request_id=%s", request_id)
-            if skill_for_rebuild:
-                self._queue_auto_rebuild_skill(
-                    skill_for_rebuild,
-                    source=AUTO_REBUILD_SOURCE_MANUAL,
-                    request_id=request_id,
-                    push_metrics=False,
-                )
-                self._schedule_pending_auto_rebuild(request_id)
-        else:
-            await reject_evolution_records(
-                rail,
-                request_id,
-                legacy_fallback=True,
-            )
-            logger.info("[JiuWenSwarmDeepAdapter] evolution approval rejected: request_id=%s", request_id)
-
-        return True
-
     # ------------------------------------------------------------------
     # Team Skill approval handlers
     # ------------------------------------------------------------------
@@ -15212,7 +14424,7 @@ class JiuWenSwarmDeepAdapter:
                 channel_id,
             )
         if rail_kind == "regular":
-            return await self._handle_governance_approval(request_id, answers, "simplify")
+            return await _handle_governance_approval(self, request_id, answers, "simplify")
 
         if find_team_skill_rail(request_id, channel_id) is not None:
             return await self._handle_team_simplify_approval(
@@ -15221,7 +14433,7 @@ class JiuWenSwarmDeepAdapter:
                 session_id,
                 channel_id,
             )
-        return await self._handle_governance_approval(request_id, answers, "simplify")
+        return await _handle_governance_approval(self, request_id, answers, "simplify")
 
 
 
@@ -15282,40 +14494,9 @@ class JiuWenSwarmDeepAdapter:
             invalid_output=f"已为 Skill '{skill_name}' 生成演进经验，但审批事件为空或格式无效。",
         )
 
-    async def _handle_governance_approval(
-        self, request_id: str, answers: list, kind: str
-    ) -> bool:
-        """Unified handler for simplify governance approvals."""
-        rail = self._skill_evolution_rail
-        if rail is None:
-            logger.warning("[JiuWenSwarmDeepAdapter] governance approval failed: no SkillEvolutionRail")
-            return False
-
-        accept_labels = {"执行"} if kind == "simplify" else set()
-        accepted = any(
-            isinstance(ans, dict)
-            and bool(accept_labels & set(ans.get("selected_options", [])))
-            for ans in answers
-        )
-
-        if kind == "simplify":
-            if accepted:
-                await rail.on_approve_simplify(request_id)
-            else:
-                await rail.on_reject_simplify(request_id)
-
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] governance %s %s: request_id=%s",
-            kind, "accepted" if accepted else "rejected", request_id,
-        )
-        return True
-
     # ------------------------------------------------------------------
     # Evolution version management (archives / rollback / rebuild)
     # ------------------------------------------------------------------
-
-    def _get_disk_evolution_store(self):
-        return evolution_version_ctl.get_disk_evolution_store(self._resolve_skill_dirs())
 
     def _should_auto_merge_evolved_skill(self, skill_name: str) -> bool:
         """Return True when per-skill selfEvolution resolves to ``auto``.
@@ -15332,67 +14513,13 @@ class JiuWenSwarmDeepAdapter:
         )
         return action == "auto"
 
-    def _queue_auto_rebuild_skill(
-        self,
-        skill_name: str,
-        *,
-        source: str = AUTO_REBUILD_SOURCE_MANUAL,
-        session_id: str = "",
-        channel_id: str | None = None,
-        request_id: str = "",
-        push_metrics: bool | None = None,
-    ) -> None:
-        name = str(skill_name or "").strip()
-        if not name:
-            return
-        if not self._should_auto_merge_evolved_skill(name):
-            return
-        # Keep the first queued delivery context; later sessions must not overwrite.
-        if name in self._pending_auto_rebuild_jobs:
-            return
-        self._pending_auto_rebuild_jobs[name] = auto_rebuild_job(
-            name,
-            source=source,
-            session_id=session_id,
-            channel_id=channel_id,
-            request_id=request_id,
-            push_metrics=push_metrics,
-        )
-
-    def _take_pending_auto_rebuild_jobs(self) -> list[AutoRebuildJob]:
-        pending = list(self._pending_auto_rebuild_jobs.values())
-        self._pending_auto_rebuild_jobs.clear()
-        return pending
-
-    def _take_pending_auto_rebuild_skills(self) -> list[str]:
-        """Compatibility drain used by tests; prefer ``_take_pending_auto_rebuild_jobs``."""
-        return [job.skill_name for job in self._take_pending_auto_rebuild_jobs()]
-
-
-    def _filter_unreported_generated_items(
-        self,
-        skill_name: str,
-        items: list[dict[str, str]],
-    ) -> list[dict[str, str]]:
-        """Drop entry ids already pushed from this adapter (full-snapshot guard)."""
-        fresh: list[dict[str, str]] = []
-        for item in items:
-            entry_id = str(item.get("id") or "").strip()
-            if not entry_id:
-                continue
-            key = _generated_metric_id_key(skill_name, entry_id)
-            if key in self._auto_evolution_generated_ids:
-                continue
-            self._auto_evolution_generated_ids.add(key)
-            fresh.append(item)
-        return fresh
 
     async def handle_skills_evolution_archives(self, params: dict) -> dict[str, Any]:
         """RPC: skills.evolution.archives — list rollback archive versions."""
         skill_name = evolution_version_ctl.safe_path_name(
             params.get("name") or params.get("skill_name"), "skill"
         )
-        store = self._get_disk_evolution_store()
+        store = _get_disk_evolution_store(self)
         if not store.skill_exists(skill_name):
             raise ValueError(f"未找到 Skill '{skill_name}'")
         subject = evolution_version_ctl.resolve_subject(store, skill_name)
@@ -15427,7 +14554,7 @@ class JiuWenSwarmDeepAdapter:
                 [skills_base] if skills_base else self._resolve_skill_dirs()
             )
         else:
-            store = self._get_disk_evolution_store()
+            store = _get_disk_evolution_store(self)
 
         result = await evolution_version_ctl.do_evolve_rollback(store, skill_name, version)
         if not result.get("ok"):
@@ -15514,7 +14641,7 @@ class JiuWenSwarmDeepAdapter:
             store = (
                 evolution_version_ctl.get_disk_evolution_store(store_dirs)
                 if store_dirs is not None
-                else self._get_disk_evolution_store()
+                else _get_disk_evolution_store(self)
             )
             prepared = await evolution_version_ctl.prepare_rebuild_followup(
                 store,
@@ -15705,120 +14832,8 @@ class JiuWenSwarmDeepAdapter:
             )
             return False
 
-    def _schedule_pending_auto_rebuild(self, request_id: str | None = None) -> None:
-        """Fire-and-forget version merge for skills queued after experience persist."""
-        if not self._pending_auto_rebuild_jobs:
-            return
-        existing = self._auto_rebuild_task
-        if existing is not None and not existing.done():
-            # In-flight runner drains pending under the lock (and re-checks after).
-            return
-        rid = str(request_id or "auto-rebuild").strip() or "auto-rebuild"
-        self._auto_rebuild_task = asyncio.create_task(
-            self._run_auto_rebuild_skills_detached(request_id=rid),
-            name=f"auto-rebuild-{rid}",
-        )
-
-    async def _skill_has_live_evolution_records(self, skill_name: str) -> bool:
-        """Return True when disk evolutions.json has at least one live entry."""
-        try:
-            store = self._get_disk_evolution_store()
-            subject = evolution_version_ctl.resolve_subject(store, skill_name)
-            evo_log = await store.load_full_evolution_log(
-                skill_name,
-                subject_kind=str(subject.get("kind") or "skill") or None,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] could not inspect live evolutions for "
-                "skill=%s: %s",
-                skill_name,
-                exc,
-            )
-            # Fail open: let generate_evolution_merge_version decide.
-            return True
-        entries = getattr(evo_log, "entries", None) or []
-        return bool(entries)
 
 
-    async def _run_auto_rebuild_skills_detached(self, *, request_id: str | None = None) -> None:
-        """Background auto version merge gated by per-skill selfEvolution=auto."""
-        try:
-            async with self._auto_rebuild_lock:
-                while True:
-                    jobs = self._take_pending_auto_rebuild_jobs()
-                    if not jobs:
-                        break
-                    for job in jobs:
-                        skill_name = job.skill_name
-                        job_request_id = job.request_id or request_id
-                        if not self._should_auto_merge_evolved_skill(skill_name):
-                            logger.info(
-                                "[JiuWenSwarmDeepAdapter] skip auto rebuild: request_id=%s "
-                                "skill=%s reason=selfEvolution_not_auto",
-                                job_request_id,
-                                skill_name,
-                            )
-                            continue
-                        if not await self._skill_has_live_evolution_records(skill_name):
-                            logger.info(
-                                "[JiuWenSwarmDeepAdapter] skip auto rebuild: request_id=%s "
-                                "skill=%s reason=no_evolution_records",
-                                job_request_id,
-                                skill_name,
-                            )
-                            continue
-                        try:
-                            result = await self.generate_evolution_merge_version(
-                                skill_name=skill_name
-                            )
-                            new_version = ""
-                            success = False
-                            if isinstance(result, dict):
-                                success = bool(result.get("success"))
-                                new_version = str(result.get("new_version") or "").strip()
-                            if success and new_version:
-                                await _push_auto_rebuild_published_metric(
-                                    job,
-                                    version=new_version,
-                                    request_id=job_request_id,
-                                )
-                        except Exception as exc:
-                            logger.warning(
-                                "[JiuWenSwarmDeepAdapter] auto rebuild failed: "
-                                "request_id=%s skill=%s error=%s",
-                                job_request_id,
-                                skill_name,
-                                exc,
-                            )
-        finally:
-            # Close race: skills queued after last empty take while this task was
-            # still marked running (coalesced schedule). Re-arm if needed.
-            if self._pending_auto_rebuild_jobs:
-                self._schedule_pending_auto_rebuild(request_id)
-
-
-
-    async def _ensure_evolution_rail_for_slash(self, mode: str) -> str | None:
-        """Check evolution availability for slash commands; lazily init rail if needed.
-
-        Returns None when the rail is (or becomes) available, or an error message string.
-        """
-        # 合并后演进能力在 agent 模式可用（兼容历史 agent.plan token）。
-        if mode not in ("agent", "agent.plan"):
-            display_mode = str(mode or "当前").strip() or "当前"
-            return f"{display_mode} 模式下演进功能不可用。"
-        if not get_evolution_enabled(self._config_cache):
-            return "演进功能未启用。"
-        await self._ensure_active_evolution_rails_registered()
-        if self._skill_evolution_rail is None:
-            return "演进功能初始化失败。"
-
-        # SkillCreateRail requires skill_create config
-        if get_skill_create_enabled(self._config_cache):
-            if self._skill_create_rail is None:
-                self._skill_create_rail = self._build_skill_create_rail(self._config_cache)
-        return None
 
 
     async def _handle_slash_command(
@@ -16244,744 +15259,6 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] 标记 todo cancelled 失败: %s", exc)
             return None
 
-    def _active_deepresearch_session(self, session_id: str) -> Any | None:
-        """Return the already-bound product session only for an exact id match."""
-        if not isinstance(session_id, str) or not session_id:
-            return None
-        instance = getattr(self, "_instance", None)
-        session = getattr(instance, "_interaction_session", None)
-        get_session_id = getattr(session, "get_session_id", None)
-        if session is None or not callable(get_session_id):
-            return None
-        try:
-            active_session_id = get_session_id()
-        except Exception:  # noqa: BLE001
-            return None
-        if not isinstance(active_session_id, str) or active_session_id != session_id:
-            return None
-        return session
-
-    async def _load_deepresearch_rewrite_html_target(
-        self,
-        session_id: str,
-    ) -> RewriteHtmlTarget | None:
-        """Restore the trusted HTML target from the active product session."""
-        session = self._active_deepresearch_session(session_id)
-        if session is None:
-            return None
-        try:
-            return target_from_state(
-                session.get_state(PENDING_HTML_EXPORT_STATE_KEY)
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "[DeepResearchRewriteHtmlFollowup] restore target failed "
-                "session_id=%s error_type=%s",
-                session_id,
-                type(exc).__name__,
-            )
-            return None
-
-    async def _try_deepresearch_rewrite_html_followup(
-        self,
-        query: object,
-        session_id: str,
-    ) -> RewriteHtmlFollowupResult | None:
-        """Handle an explicit HTML follow-up without routing through the model."""
-        if not is_html_followup_request(query):
-            return None
-
-        target = await self._load_deepresearch_rewrite_html_target(session_id)
-        if target is None:
-            return RewriteHtmlFollowupResult(
-                status="error",
-                error_code="TARGET_UNAVAILABLE",
-                message=(
-                    "未找到可生成 HTML 的已完成改写版本。"
-                    "建议先继续改写并生成新的 Markdown 版本，再生成 HTML。"
-                ),
-            )
-
-        from jiuwenswarm.agents.harness.common.tools.deepresearch import rewrite_tools
-
-        try:
-            raw_result = await rewrite_tools.deepresearch_generate_rewrite_html._func(  # pylint: disable=protected-access
-                report_path=target.report_path,
-                revision_id=target.revision_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "[DeepResearchRewriteHtmlFollowup] HTML tool failed "
-                "session_id=%s error_type=%s",
-                session_id,
-                type(exc).__name__,
-            )
-            raw_result = None
-        return decode_html_tool_result(raw_result)
-
-    async def _run_deepresearch_rewrite_html_transaction(
-        self,
-        query: object,
-        *,
-        session_id: str,
-    ) -> RewriteHtmlFollowupResult | None:
-        """Linearize trusted-target loading and HTML generation with Core work."""
-        if self._deepresearch_rewrite_tx_uncertain:
-            return None
-        instance = getattr(self, "_instance", None)
-        send_lock = getattr(instance, "_interaction_send_lock", None)
-        control_lock = getattr(instance, "_interaction_control_lock", None)
-        keep_open = getattr(instance, "_should_keep_interaction_open_locked", None)
-        if send_lock is None or control_lock is None or not callable(keep_open):
-            return None
-        async with send_lock:
-            async with control_lock:
-                if keep_open():
-                    return None
-                return await self._try_deepresearch_rewrite_html_followup(
-                    query,
-                    session_id,
-                )
-
-    async def _try_deepresearch_rewrite_fast_path(
-        self,
-        query: object,
-    ) -> RewriteFastPathResult | None:
-        from jiuwenswarm.agents.harness.common.tools.deepresearch import rewrite_tools
-        from jiuwenswarm.common.thinking.adapter import adapt_thinking
-        from jiuwenswarm.common.thinking.types import thaw_llm_call_kwargs
-
-        model_call_kwargs = thaw_llm_call_kwargs(
-            adapt_thinking("off", model=self._model).llm_call_kwargs
-        )
-        return await run_rewrite_fast_path(
-            query,
-            model_invoke=self._model.invoke,
-            prepare_invoke=rewrite_tools.deepresearch_prepare_rewrite._func,  # pylint: disable=protected-access
-            commit_invoke=rewrite_tools.deepresearch_commit_rewrite._func,  # pylint: disable=protected-access
-            model_call_kwargs=model_call_kwargs,
-        )
-
-
-    def _decode_deepresearch_rewrite_replays(
-        self,
-        value: object,
-    ) -> list[tuple[str, str, RewriteFastPathResult, dict[str, object]]]:
-        try:
-            encoded_state = json.dumps(
-                value,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        except (RecursionError, TypeError, ValueError):
-            return []
-        invalid_state = (
-            len(encoded_state) > _DEEPRESEARCH_REWRITE_REPLAY_MAX_BYTES
-            or not isinstance(value, dict)
-            or set(value) != {"schema_version", "entries"}
-            or value.get("schema_version")
-            != _DEEPRESEARCH_REWRITE_REPLAY_SCHEMA_VERSION
-        )
-        if invalid_state:
-            return []
-        raw_entries = value.get("entries")
-        if (
-            not isinstance(raw_entries, list)
-            or len(raw_entries) > _DEEPRESEARCH_REWRITE_REPLAY_MAX_ENTRIES
-        ):
-            return []
-        decoded = []
-        seen_request_ids = set()
-        for entry in raw_entries:
-            if not isinstance(entry, dict) or set(entry) != {
-                "request_id",
-                "query_sha256",
-                "terminal_kind",
-                "action",
-                "target",
-            }:
-                return []
-            request_id = entry.get("request_id")
-            query_sha256 = entry.get("query_sha256")
-            terminal_kind = entry.get("terminal_kind")
-            action = entry.get("action")
-            raw_target = entry.get("target")
-            target = target_from_state(raw_target)
-            invalid_entry = (
-                not _valid_deepresearch_rewrite_request_id(request_id)
-                or not isinstance(query_sha256, str)
-                or len(query_sha256) != 64
-                or any(character not in "0123456789abcdef" for character in query_sha256)
-                or request_id in seen_request_ids
-                or terminal_kind not in _DEEPRESEARCH_REWRITE_REPLAY_TERMINAL_KINDS
-                or (
-                    action not in {"polish", "expand", "shorten"}
-                    and not (terminal_kind == "publish_uncertain" and action is None)
-                )
-                or target is None
-                or len(target.report_path.encode("utf-8"))
-                > _DEEPRESEARCH_REWRITE_REPLAY_PATH_MAX_BYTES
-            )
-            if invalid_entry:
-                return []
-            commit_result = {
-                "status": "completed",
-                "report_delivered": terminal_kind == "success",
-                "report_path": target.report_path,
-                "revision_id": target.revision_id,
-            }
-            delivery_failed = terminal_kind == "report_delivery_failed"
-            publish_uncertain = terminal_kind == "publish_uncertain"
-            decoded.append(
-                (
-                    request_id,
-                    query_sha256,
-                    RewriteFastPathResult(
-                        recognized=True,
-                        status="error" if publish_uncertain else "completed",
-                        action=action,
-                        error_code=(
-                            "PUBLISH_STATE_UNCERTAIN"
-                            if publish_uncertain
-                            else (
-                                "REPORT_DELIVERY_FAILED" if delivery_failed else None
-                            )
-                        ),
-                        message=(
-                            _DEEPRESEARCH_REWRITE_PUBLISH_UNCERTAIN_MESSAGE
-                            if publish_uncertain
-                            else (
-                                _DEEPRESEARCH_REWRITE_DELIVERY_FAILURE_MESSAGE
-                                if delivery_failed
-                                else _DEEPRESEARCH_REWRITE_SUCCESS_MESSAGE
-                            )
-                        ),
-                        usage_metadata=None,
-                        prepare_ms=0.0,
-                        model_ms=0.0,
-                        commit_ms=0.0,
-                        total_ms=0.0,
-                        model_calls=0,
-                        model_output_adjustments=(),
-                        model_output_error_reason=None,
-                        commit_result=commit_result,
-                    ),
-                    target.to_state(),
-                )
-            )
-            seen_request_ids.add(request_id)
-        return decoded
-
-    def _encode_deepresearch_rewrite_replay_entry(
-        self,
-        request_id: str,
-        query_sha256: str,
-        result: RewriteFastPathResult,
-        target: RewriteHtmlTarget,
-    ) -> dict[str, object]:
-        return {
-            "request_id": request_id,
-            "query_sha256": query_sha256,
-            "terminal_kind": _deepresearch_rewrite_terminal_kind(result),
-            "action": result.action,
-            "target": target.to_state(),
-        }
-
-
-
-
-    def _load_deepresearch_rewrite_replay(
-        self,
-        session_id: str,
-        request_id: str,
-        query_sha256: str,
-    ) -> tuple[bool, RewriteFastPathResult | None]:
-        session = self._active_deepresearch_session(session_id)
-        if session is None:
-            return False, None
-        try:
-            state = session.get_state(_DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY)
-            current_target = target_from_state(
-                session.get_state(PENDING_HTML_EXPORT_STATE_KEY)
-            )
-        except Exception:  # noqa: BLE001
-            return True, None
-        decoded_replays = self._decode_deepresearch_rewrite_replays(state)
-        if not decoded_replays and state is not None:
-            is_empty_state = (
-                isinstance(state, dict)
-                and set(state) == {"schema_version", "entries"}
-                and state.get("schema_version")
-                == _DEEPRESEARCH_REWRITE_REPLAY_SCHEMA_VERSION
-                and state.get("entries") == []
-            )
-            if not is_empty_state:
-                return True, None
-        for saved_request_id, saved_query_sha256, result, saved_target in decoded_replays:
-            if saved_request_id == request_id:
-                if (
-                    saved_query_sha256 != query_sha256
-                    or current_target is None
-                    or saved_target != current_target.to_state()
-                ):
-                    return True, None
-                return True, result
-        return False, None
-
-    async def _run_deepresearch_rewrite_fast_path_transaction(
-        self,
-        query: object,
-        *,
-        session_id: str,
-        request_id: str,
-    ) -> RewriteFastPathResult | None:
-        """Linearize the irreversible rewrite and its conversation checkpoint."""
-        if (
-            not _valid_deepresearch_rewrite_request_id(request_id)
-            or self._deepresearch_rewrite_tx_uncertain
-        ):
-            return None
-        instance = getattr(self, "_instance", None)
-        send_lock = getattr(instance, "_interaction_send_lock", None)
-        control_lock = getattr(instance, "_interaction_control_lock", None)
-        keep_open = getattr(instance, "_should_keep_interaction_open_locked", None)
-        if send_lock is None or control_lock is None or not callable(keep_open):
-            return None
-
-        async with send_lock:
-            async with control_lock:
-                if keep_open():
-                    return None
-                if not isinstance(query, str):
-                    return None
-                try:
-                    query_sha256 = hashlib.sha256(
-                        query.encode("utf-8")
-                    ).hexdigest()
-                except UnicodeEncodeError:
-                    return None
-                replay_found, replay = self._load_deepresearch_rewrite_replay(
-                    session_id,
-                    request_id,
-                    query_sha256,
-                )
-                if replay_found:
-                    return replay or _deepresearch_rewrite_replay_conflict()
-                from jiuwenswarm.agents.harness.common.tools.deepresearch import (
-                    rewrite_tools,
-                )
-
-                published = False
-                published_target = None
-
-                def mark_published(publish_result: dict[str, object]) -> None:
-                    nonlocal published, published_target
-                    published = True
-                    published_target = target_from_commit_result(
-                        {
-                            "status": "completed",
-                            "report_path": publish_result.get("report_path"),
-                            "revision_id": publish_result.get("revision_id"),
-                        }
-                    )
-
-                observe_rewrite_publish = getattr(
-                    rewrite_tools, "_observe_rewrite_publish"
-                )
-                with observe_rewrite_publish(mark_published):
-                    fast_path_task = asyncio.create_task(
-                        self._try_deepresearch_rewrite_fast_path(query)
-                    )
-                consumer_cancellation: asyncio.CancelledError | None = None
-                task_failure: BaseException | None = None
-                result = None
-                try:
-                    result = await asyncio.shield(fast_path_task)
-                except asyncio.CancelledError as exc:
-                    current_task = asyncio.current_task()
-                    inner_task_cancelled = (
-                        fast_path_task.done()
-                        and fast_path_task.cancelled()
-                        and current_task is not None
-                        and current_task.cancelling() == 0
-                    )
-                    if inner_task_cancelled:
-                        fast_path_task.result()
-                    consumer_cancellation = exc
-                    published_when_cancelled = published
-                    if not published_when_cancelled:
-                        fast_path_task.cancel()
-                    while not fast_path_task.done():
-                        try:
-                            await asyncio.shield(fast_path_task)
-                        except asyncio.CancelledError as repeated_exc:
-                            if consumer_cancellation is None:
-                                consumer_cancellation = repeated_exc
-                        except Exception as inner_exc:  # noqa: BLE001
-                            task_failure = inner_exc
-                            break
-                    if task_failure is None:
-                        if fast_path_task.cancelled():
-                            task_failure = asyncio.CancelledError()
-                        else:
-                            try:
-                                result = fast_path_task.result()
-                            except asyncio.CancelledError as inner_exc:
-                                task_failure = inner_exc
-                            except Exception as inner_exc:  # noqa: BLE001
-                                task_failure = inner_exc
-                    if not published_when_cancelled and not published:
-                        raise consumer_cancellation from None
-                except Exception as exc:  # noqa: BLE001
-                    if not published:
-                        raise
-                    task_failure = exc
-
-                if published:
-                    result_target = (
-                        target_from_commit_result(result.commit_result)
-                        if isinstance(result, RewriteFastPathResult)
-                        else None
-                    )
-                    invalid_published_result = (
-                        task_failure is not None
-                        or
-                        not isinstance(result, RewriteFastPathResult)
-                        or result.status != "completed"
-                        or published_target is None
-                        or result_target != published_target
-                    )
-                    if invalid_published_result:
-                        if task_failure is not None:
-                            logger.error(
-                                "[DeepResearchRewriteFastPath] post-publish runner "
-                                "failed session_id=%s error_type=%s",
-                                session_id,
-                                type(task_failure).__name__,
-                            )
-                        result = _deepresearch_rewrite_publish_uncertain(
-                            published_target
-                        )
-                        if published_target is None:
-                            self._deepresearch_rewrite_tx_uncertain = True
-                            if consumer_cancellation is not None:
-                                raise consumer_cancellation
-                            return result
-                elif task_failure is not None:
-                    if consumer_cancellation is not None:
-                        raise consumer_cancellation
-                    raise task_failure
-                if result is None or result.status != "completed":
-                    if not (
-                        isinstance(result, RewriteFastPathResult)
-                        and result.error_code == "PUBLISH_STATE_UNCERTAIN"
-                    ):
-                        return result
-                persistence_task = asyncio.create_task(
-                    self._persist_deepresearch_rewrite_fast_path_turn(
-                        session_id=session_id,
-                        request_id=request_id,
-                        query_sha256=query_sha256,
-                        query=query,
-                        result=result,
-                    )
-                )
-                while True:
-                    try:
-                        persisted = await asyncio.shield(persistence_task)
-                        break
-                    except asyncio.CancelledError as exc:
-                        if consumer_cancellation is None:
-                            consumer_cancellation = exc
-                        if persistence_task.done():
-                            if persistence_task.cancelled():
-                                self._deepresearch_rewrite_tx_uncertain = True
-                                raise exc
-                            persisted = persistence_task.result()
-                            break
-                if (
-                    not persisted
-                    and result.error_code == "PUBLISH_STATE_UNCERTAIN"
-                ):
-                    self._deepresearch_rewrite_tx_uncertain = True
-                if consumer_cancellation is not None:
-                    raise consumer_cancellation
-                if persisted:
-                    return result
-                return replace(
-                    result,
-                    error_code="CONTEXT_PERSIST_FAILED",
-                    message=(
-                        "改写版本已生成，但无法保存到当前会话上下文。"
-                        "请刷新会话后再继续操作。"
-                    ),
-                )
-
-    async def _persist_deepresearch_rewrite_fast_path_turn(
-        self,
-        *,
-        session_id: str,
-        request_id: str | None = None,
-        query_sha256: str | None = None,
-        query: object,
-        result: RewriteFastPathResult,
-    ) -> bool:
-        """Persist a fast rewrite as one valid tool-call conversation turn."""
-        if not isinstance(query, str):
-            return False
-
-        terminal_kind = _deepresearch_rewrite_terminal_kind(result)
-        html_target = target_from_commit_result(result.commit_result)
-        if terminal_kind is None or html_target is None:
-            return False
-        replay_request_id = (
-            request_id
-            if _valid_deepresearch_rewrite_request_id(request_id)
-            and (
-                terminal_kind == "report_delivery_failed"
-                or terminal_kind == "publish_uncertain"
-                or result.error_code is None
-            )
-            else None
-        )
-        session = self._active_deepresearch_session(session_id)
-        instance = getattr(self, "_instance", None)
-        react_agent = getattr(instance, "react_agent", None)
-        init_context = getattr(react_agent, "_init_context", None)
-        context_engine = getattr(react_agent, "context_engine", None)
-        if (
-            session is None
-            or not callable(init_context)
-            or context_engine is None
-        ):
-            return False
-
-        context = None
-        context_messages_before = None
-        owned_messages = ()
-        previous_target = None
-        previous_replay_state = None
-        messages_added = False
-        state_updated = False
-
-        async def rollback() -> bool:
-            restored = True
-            if messages_added and context is not None:
-                try:
-                    current_messages = context.get_messages()
-                    before_count = len(context_messages_before)
-                    owned_tail = current_messages[before_count:]
-                    if (
-                        current_messages[:before_count] != context_messages_before
-                        or len(owned_tail) > len(owned_messages)
-                        or any(
-                            actual != expected
-                            for actual, expected in zip(owned_tail, owned_messages)
-                        )
-                    ):
-                        raise RuntimeError("context ownership cannot be proven")
-                    if owned_tail:
-                        context.pop_messages(len(owned_tail), with_history=True)
-                    if context.get_messages() != context_messages_before:
-                        raise RuntimeError("context rollback cannot be proven")
-                except Exception as rollback_exc:  # noqa: BLE001
-                    logger.warning(
-                        "[DeepResearchRewriteFastPath] message rollback failed "
-                        "session_id=%s error_type=%s",
-                        session_id,
-                        type(rollback_exc).__name__,
-                    )
-                    restored = False
-            if state_updated:
-                try:
-                    restored_state = {
-                        PENDING_HTML_EXPORT_STATE_KEY: previous_target,
-                    }
-                    if replay_request_id is not None:
-                        restored_state[_DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY] = (
-                            previous_replay_state
-                        )
-                    session.update_state(restored_state)
-                except Exception as rollback_exc:  # noqa: BLE001
-                    logger.warning(
-                        "[DeepResearchRewriteFastPath] state rollback failed "
-                        "session_id=%s error_type=%s",
-                        session_id,
-                        type(rollback_exc).__name__,
-                    )
-                    restored = False
-            if messages_added or state_updated:
-                try:
-                    restored_context_states = await context_engine.save_contexts(session)
-                    if (
-                        not isinstance(restored_context_states, dict)
-                        or session.get_state("context") != restored_context_states
-                    ):
-                        raise RuntimeError(
-                            "context rollback local state was incomplete"
-                        )
-                except asyncio.CancelledError as rollback_exc:
-                    logger.warning(
-                        "[DeepResearchRewriteFastPath] context rollback save "
-                        "cancelled session_id=%s error_type=%s",
-                        session_id,
-                        type(rollback_exc).__name__,
-                    )
-                    restored = False
-                except Exception as rollback_exc:  # noqa: BLE001
-                    logger.warning(
-                        "[DeepResearchRewriteFastPath] context rollback save failed "
-                        "session_id=%s error_type=%s",
-                        session_id,
-                        type(rollback_exc).__name__,
-                    )
-                    restored = False
-                try:
-                    await session.commit()
-                except asyncio.CancelledError as rollback_exc:
-                    logger.warning(
-                        "[DeepResearchRewriteFastPath] checkpoint rollback commit "
-                        "cancelled session_id=%s error_type=%s",
-                        session_id,
-                        type(rollback_exc).__name__,
-                    )
-                    restored = False
-                except Exception as rollback_exc:  # noqa: BLE001
-                    logger.warning(
-                        "[DeepResearchRewriteFastPath] checkpoint rollback commit "
-                        "failed "
-                        "session_id=%s error_type=%s",
-                        session_id,
-                        type(rollback_exc).__name__,
-                    )
-                    restored = False
-            if not restored:
-                self._deepresearch_rewrite_tx_uncertain = True
-            return restored
-
-        try:
-            previous_target = session.get_state(PENDING_HTML_EXPORT_STATE_KEY)
-            if replay_request_id is not None:
-                if not isinstance(query_sha256, str):
-                    return False
-                previous_replay_state = session.get_state(
-                    _DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY
-                )
-            next_state = {
-                PENDING_HTML_EXPORT_STATE_KEY: html_target.to_state(),
-            }
-            if replay_request_id is not None:
-                existing_entries = self._decode_deepresearch_rewrite_replays(
-                    previous_replay_state
-                )
-                encoded_entries = []
-                for (
-                    saved_request_id,
-                    saved_query_sha256,
-                    saved_result,
-                    saved_target,
-                ) in existing_entries:
-                    if saved_request_id == replay_request_id:
-                        continue
-                    encoded_entries.append(
-                        self._encode_deepresearch_rewrite_replay_entry(
-                            saved_request_id,
-                            saved_query_sha256,
-                            saved_result,
-                            RewriteHtmlTarget(
-                                report_path=saved_target["report_path"],
-                                revision_id=saved_target["revision_id"],
-                            ),
-                        )
-                    )
-                encoded_entries.append(
-                    self._encode_deepresearch_rewrite_replay_entry(
-                        replay_request_id,
-                        query_sha256,
-                        result,
-                        html_target,
-                    )
-                )
-                replay_state = {
-                    "schema_version": _DEEPRESEARCH_REWRITE_REPLAY_SCHEMA_VERSION,
-                    "entries": encoded_entries[
-                        -_DEEPRESEARCH_REWRITE_REPLAY_MAX_ENTRIES:
-                    ],
-                }
-                decoded_entries = self._decode_deepresearch_rewrite_replays(
-                    replay_state
-                )
-                expected_request_ids = [
-                    entry["request_id"] for entry in replay_state["entries"]
-                ]
-                if [entry[0] for entry in decoded_entries] != expected_request_ids:
-                    return False
-                next_state[_DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY] = replay_state
-            context = await init_context(session)
-            context_messages_before = list(context.get_messages())
-            tool_call_id = f"rewrite-fast-path-{uuid.uuid4().hex}"
-
-            from openjiuwen.core.foundation.llm import (
-                AssistantMessage,
-                ToolMessage,
-                UserMessage,
-            )
-            from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
-
-            tool_call = ToolCall(
-                id=tool_call_id,
-                type="function",
-                name="deepresearch_commit_rewrite",
-                arguments="{}",
-            )
-            tool_result = json.dumps(
-                result.commit_result,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            owned_messages = (
-                UserMessage(content=query),
-                AssistantMessage(content="", tool_calls=[tool_call]),
-                ToolMessage(content=tool_result, tool_call_id=tool_call_id),
-                AssistantMessage(content=result.message),
-            )
-            messages_added = True
-            await context.add_messages(list(owned_messages))
-            current_messages = list(context.get_messages())
-            before_count = len(context_messages_before)
-            if (
-                current_messages[:before_count] != context_messages_before
-                or tuple(current_messages[before_count:]) != owned_messages
-            ):
-                raise RuntimeError("context message write was incomplete")
-            state_updated = True
-            session.update_state(next_state)
-            if any(
-                session.get_state(key) != expected
-                for key, expected in next_state.items()
-            ):
-                raise RuntimeError("session state write was incomplete")
-            context_states = await context_engine.save_contexts(session)
-            if (
-                not isinstance(context_states, dict)
-                or session.get_state("context") != context_states
-            ):
-                raise RuntimeError("context local state write was incomplete")
-            await session.commit()
-            return True
-        except asyncio.CancelledError:
-            await rollback()
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "[DeepResearchRewriteFastPath] persist tool result failed "
-                "session_id=%s error_type=%s",
-                session_id,
-                type(exc).__name__,
-            )
-            await rollback()
-            return False
-
     def _is_stream_rewrite_fast_path_eligible(
         self,
         request: AgentRequest,
@@ -17204,7 +15481,7 @@ class JiuWenSwarmDeepAdapter:
             scope="|".join(
                 str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)
             ),
-            output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
+            output_dir=_deepresearch_artifact_output_dir(self, request.params.get("project_dir")),
         )
         self._current_request_route = {
             "materials_context": material_context,
@@ -17212,7 +15489,7 @@ class JiuWenSwarmDeepAdapter:
             "request_id": request.request_id or "",
             "channel_id": request.channel_id or "",
             "resource_id": extract_routing_triple(request.metadata, request.params)[1] or "",
-            "output_dir": self._deepresearch_artifact_output_dir(
+            "output_dir": _deepresearch_artifact_output_dir(self,
                 request.params.get("project_dir")
                 if isinstance(request.params, dict)
                 else None
@@ -17444,7 +15721,7 @@ class JiuWenSwarmDeepAdapter:
                 goal_stream_request=False,
             ):
                 html_followup_result = (
-                    await self._run_deepresearch_rewrite_html_transaction(
+                    await _run_deepresearch_rewrite_html_transaction(self,
                         query,
                         session_id=session_id,
                     )
@@ -18044,7 +16321,7 @@ class JiuWenSwarmDeepAdapter:
             scope="|".join(
                 str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)
             ),
-            output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
+            output_dir=_deepresearch_artifact_output_dir(self, request.params.get("project_dir")),
         )
         self._current_request_route = {
             "materials_context": material_context,
@@ -18052,7 +16329,7 @@ class JiuWenSwarmDeepAdapter:
             "request_id": rid or "",
             "channel_id": cid or "",
             "resource_id": extract_routing_triple(request.metadata, request.params)[1] or "",
-            "output_dir": self._deepresearch_artifact_output_dir(
+            "output_dir": _deepresearch_artifact_output_dir(self,
                 inputs.get("workspace_dir") or inputs.get("project_dir")
             ),
         }
@@ -18635,7 +16912,7 @@ class JiuWenSwarmDeepAdapter:
             html_followup_result = None
             if direct_path_eligible:
                 html_followup_result = (
-                    await self._run_deepresearch_rewrite_html_transaction(
+                    await _run_deepresearch_rewrite_html_transaction(self,
                         query,
                         session_id=session_id,
                     )
@@ -18660,7 +16937,7 @@ class JiuWenSwarmDeepAdapter:
 
             if direct_path_eligible:
                 fast_path_result = (
-                    await self._run_deepresearch_rewrite_fast_path_transaction(
+                    await _run_deepresearch_rewrite_fast_path_transaction(self,
                         query,
                         session_id=session_id,
                         request_id=rid,
@@ -19591,9 +17868,9 @@ class JiuWenSwarmDeepAdapter:
 
             if self._skill_evolution_rail is not None:
                 task = asyncio.create_task(
-                    self._watch_evolution_and_push(rid, cid, session_id)
+                    _watch_evolution_and_push(self, rid, cid, session_id)
                 )
-                task.add_done_callback(self._on_evolution_watcher_done)
+                task.add_done_callback(lambda task: _on_evolution_watcher_done(self, task))
                 self._evolution_watcher_tasks.add(task)
             if self._ttse_rail is not None:
                 ttse_task = asyncio.create_task(
@@ -21178,290 +19455,6 @@ class JiuWenSwarmDeepAdapter:
 
         return total_tokens
 
-    async def _watch_evolution_and_push(self, rid: str, cid: str, session_id: str) -> None:
-        """Poll passive evolution events and push progress, approval, and terminal status."""
-        from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
-
-        push_context = EvolutionPushContext(
-            transport=WebSocketGatewayPushTransport(),
-            channel_id=cid,
-            session_id=session_id,
-        )
-
-        async def _push_status(status: str, stage: str, message: str = "") -> None:
-            await push_evolution_status(
-                push_context,
-                build_evolution_status_update(rid, status, stage, message),
-                build_server_push_message,
-                include_payload_request_id=False,
-            )
-
-        async def _push_approval(evt) -> None:
-            await push_evolution_event(
-                push_context,
-                rid,
-                evt,
-                build_server_push_message,
-            )
-
-        async def _cleanup_evolution_rail(*, cancel: bool = False) -> None:
-            if self._skill_evolution_rail is None:
-                return
-            try:
-                rail = self._skill_evolution_rail
-                if cancel:
-                    cancel_fn = getattr(rail, "cancel_pending_evolution", None)
-                    if cancel_fn is not None:
-                        await cancel_fn()
-                        return
-                await rail.cleanup_background_tasks()
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] evolution cleanup failed: request_id=%s "
-                    "session_id=%s error=%s",
-                    rid,
-                    session_id,
-                    exc,
-                )
-
-        try:
-            if self._skill_evolution_rail is None:
-                return
-
-            active = False
-            last_event_at = time.monotonic()
-            event_timeout_sec = resolve_evolution_event_timeout_sec(
-                self._skill_evolution_rail,
-                fallback_sec=TEAM_EVOLUTION_EVENT_TIMEOUT_SEC,
-            )
-
-            while True:
-                if self._skill_evolution_rail is None:
-                    return
-
-                events = await self._skill_evolution_rail.drain_pending_approval_events(wait=False) or []
-                if not events:
-                    idle_for = time.monotonic() - last_event_at
-                    if idle_for >= event_timeout_sec:
-                        logger.warning(
-                            "[JiuWenSwarmDeepAdapter] evolution watcher timed out: "
-                            "request_id=%s session_id=%s idle_for=%.1fs",
-                            rid,
-                            session_id,
-                            idle_for,
-                        )
-                        if active:
-                            message = (
-                                f"Evolution analysis timed out after "
-                                f"{event_timeout_sec:.0f}s without host events"
-                            )
-                            await _push_status("end", "hidden", message)
-                        # Drain any queued auto rebuilds before abandoning the watcher.
-                        self._schedule_pending_auto_rebuild(rid)
-                        await _cleanup_evolution_rail(cancel=True)
-                        return
-                    await asyncio.sleep(TEAM_EVOLUTION_IDLE_SLEEP_SEC)
-                    continue
-                last_event_at = time.monotonic()
-
-                # Queue + schedule on persist (``auto_approved``) immediately.
-                # Direct-LLM rebuild does not share DeepAgent, so do not wait for
-                # watcher terminal. Do not treat ``completed`` as persist: SDK may
-                # emit stage=completed with skill_name for ``no_evolution_no_records``,
-                # and team rail emits completed when a request is merely ready.
-                # Per-skill gate: only selfEvolution=auto is queued inside
-                # ``_queue_auto_rebuild_skill``. Terminal paths still schedule as a
-                # no-op-safe safety net when pending is empty.
-                for evt in events:
-                    payload = event_payload_dict(evt)
-                    meta = evolution_meta_from_payload(payload) or {}
-                    skill_name = str(
-                        payload.get("skill_name")
-                        or meta.get("skill_name")
-                        or ""
-                    ).strip()
-                    raw_stage = str(
-                        payload.get("stage") or meta.get("stage") or ""
-                    ).strip().lower()
-                    if skill_name and raw_stage == "auto_approved":
-                        try:
-                            store = self._get_disk_evolution_store()
-                            subject = evolution_version_ctl.resolve_subject(store, skill_name)
-                            items = await snapshot_auto_evolution_metric_items(
-                                store,
-                                skill_name,
-                                subject_kind=str(subject.get("kind") or "skill") or None,
-                                request_id=rid,
-                            )
-                            new_items = self._filter_unreported_generated_items(
-                                skill_name, items
-                            )
-                            if not new_items:
-                                logger.warning(
-                                    "[JiuWenSwarmDeepAdapter] skip generated metrics: "
-                                    "request_id=%s skill=%s reason=no_new_items "
-                                    "snapshot_count=%s",
-                                    rid,
-                                    skill_name,
-                                    len(items),
-                                )
-                            else:
-                                await push_evolution_generated(
-                                    push_context,
-                                    request_id=rid,
-                                    skill_name=skill_name,
-                                    items=new_items,
-                                    build_push_message=build_server_push_message,
-                                    source="auto",
-                                )
-                        except Exception as exc:
-                            logger.warning(
-                                "[JiuWenSwarmDeepAdapter] auto generated metrics "
-                                "push failed: request_id=%s skill=%s error=%s",
-                                rid,
-                                skill_name,
-                                exc,
-                            )
-                        self._queue_auto_rebuild_skill(
-                            skill_name,
-                            source=AUTO_REBUILD_SOURCE_WATCHER,
-                            session_id=session_id,
-                            channel_id=cid,
-                            request_id=rid,
-                            push_metrics=True,
-                        )
-                        self._schedule_pending_auto_rebuild(rid)
-
-                visible_progress_statuses = visible_evolution_progress_from_events(events)
-                just_started_with_progress = None
-                if not active:
-                    start_progress_statuses = visible_regular_evolution_start_progress(
-                        visible_progress_statuses
-                    )
-                    if start_progress_statuses:
-                        just_started_with_progress = start_progress_statuses[0]
-
-                if just_started_with_progress is not None:
-                    start_stage = just_started_with_progress.stage
-                    start_message = just_started_with_progress.message
-                    await _push_status("start", start_stage, start_message)
-                    active = True
-
-                await push_evolution_progress(
-                    push_context,
-                    rid,
-                    events,
-                    parse_stream_chunk=_parse_stream_chunk,
-                    build_push_message=build_server_push_message,
-                )
-
-                progress_statuses_to_push = visible_progress_statuses
-                if just_started_with_progress is not None:
-                    progress_statuses_to_push = [
-                        progress_status
-                        for progress_status in visible_progress_statuses
-                        if progress_status is not just_started_with_progress
-                    ]
-                for progress_status in progress_statuses_to_push:
-                    if progress_status.terminal:
-                        continue
-                    await _push_status("progress", progress_status.stage, progress_status.message)
-
-                approval_events = [evt for evt in events if is_evolution_approval_event(evt)]
-                if approval_events:
-                    if not active:
-                        await _push_status("start", "approval_required", "")
-                        active = True
-                    for evt in approval_events:
-                        await _push_approval(evt)
-                    await _push_status("end", "approval_required", "")
-                    await _cleanup_evolution_rail()
-                    return
-
-                outcomes = [
-                    evolution_outcome_from_event(evt)
-                    for evt in events
-                    if is_evolution_outcome_event(evt)
-                ]
-                if outcomes:
-                    outcome = outcomes[-1]
-                    stage = str(outcome.get("status") or "completed").strip().lower()
-                    message = str(outcome.get("message") or "")
-                    if stage in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES:
-                        end_stage = "hidden"
-                    else:
-                        end_stage = stage or "completed"
-                    if (
-                        not active
-                        and (
-                            end_stage == "hidden"
-                            or end_stage in TEAM_EVOLUTION_NOOP_STAGES
-                        )
-                    ):
-                        self._schedule_pending_auto_rebuild(rid)
-                        await _cleanup_evolution_rail()
-                        return
-                    if not active:
-                        await _push_status("start", end_stage, message)
-                        active = True
-                    await _push_status(
-                        "end",
-                        end_stage,
-                        message or "Evolution analysis completed",
-                    )
-                    await _cleanup_evolution_rail()
-                    # Safety net: primary schedule is on auto_approved (direct LLM).
-                    self._schedule_pending_auto_rebuild(rid)
-                    return
-
-                terminal_progress = [
-                    terminal
-                    for terminal in (team_evolution_terminal_progress(evt) for evt in events)
-                    if terminal is not None
-                ]
-                if terminal_progress:
-                    terminal = terminal_progress[-1]
-                    end_stage = terminal_stage(terminal) or "no_evolution_generated"
-                    if end_stage in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES:
-                        end_stage = "hidden"
-                    if (
-                        not active
-                        and (
-                            end_stage == "hidden"
-                            or end_stage in TEAM_EVOLUTION_NOOP_STAGES
-                        )
-                    ):
-                        await _cleanup_evolution_rail()
-                        self._schedule_pending_auto_rebuild(rid)
-                        return
-                    if not active:
-                        await _push_status(
-                            "start",
-                            end_stage,
-                            str(terminal.get("message") or ""),
-                        )
-                        active = True
-                    await _push_status(
-                        "end",
-                        end_stage,
-                        str(terminal.get("message") or ""),
-                    )
-                    await _cleanup_evolution_rail()
-                    # Safety net: primary schedule is on auto_approved (direct LLM).
-                    self._schedule_pending_auto_rebuild(rid)
-                    return
-        except asyncio.CancelledError:
-            try:
-                await _cleanup_evolution_rail(cancel=True)
-            finally:
-                raise
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] evolution watcher failed: %s", exc)
-            try:
-                await _push_status("end", "hidden", "")
-            except Exception:
-                pass
-
     async def _cleanup_ttse_background_tasks(self, rid: str, session_id: str) -> None:
         """Wait for TTSE background induction without draining approval events."""
         rail = self._ttse_rail
@@ -21479,17 +19472,6 @@ class JiuWenSwarmDeepAdapter:
                 session_id,
                 exc,
             )
-
-    def _on_evolution_watcher_done(self, task: asyncio.Task) -> None:
-        """Callback when an evolution watcher task completes.
-
-        Discards the task from the tracking set and logs any exception.
-        """
-        self._evolution_watcher_tasks.discard(task)
-        try:
-            task.result()
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] evolution watcher task exception: %s", exc)
 
     def _on_ttse_cleanup_done(self, task: asyncio.Task) -> None:
         """Drop a finished TTSE cleanup task and log a normal failure."""

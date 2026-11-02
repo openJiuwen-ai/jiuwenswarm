@@ -32,6 +32,9 @@ from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import 
 )
 from jiuwenswarm.agents.harness.common.tools import deepresearch
 from jiuwenswarm.agents.harness.common.tools.deepresearch import execution
+from jiuwenswarm.server.runtime.agent_adapter.deep.deepresearch_rewrite import (
+    _register_deepresearch_tool_cards,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
@@ -133,7 +136,7 @@ async def runtime(monkeypatch, setup):
             config["react"]["disabled_tools"] = ["deepresearch_execute"]
         rails = _build_rails(monkeypatch, adapter, config)
         cards = []
-        adapter._register_deepresearch_tool_cards(cards)
+        _register_deepresearch_tool_cards(adapter, cards)
         agent = DeepAgent(AgentCard(id="flash-" + uuid4().hex, name="flash-research"))
         agent.configure(DeepAgentConfig(
             rails=rails, tools=cards, enable_task_loop=False,
