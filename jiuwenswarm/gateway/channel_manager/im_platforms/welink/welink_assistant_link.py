@@ -2,9 +2,9 @@
 
 """One long-lived assistant gateway connection.
 
-WeLink only delivers an @ mention while this connection stays registered.
-Messages that were not @-mentioned never arrive here; the employee CLI still
-polls those. Both kinds of reply go out on this same socket: an @ answer
+WeLink delivers an @ mention and a private chat while this connection stays
+registered. Ordinary group messages never arrive here; the employee CLI still
+polls those. Replies go out on this same socket: an @ or private answer
 finishes the task WeLink opened, and a polled answer is an unsolicited push.
 A second connection for the same credential is rejected.
 """
@@ -18,7 +18,8 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from collections.abc import Mapping
 from typing import Any, Awaitable, Callable
 
 from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_assistant_send import (
@@ -51,6 +52,8 @@ class Mention:
     tool_session_id: str
     trace_id: str
     media: tuple[Any, ...] = ()
+    direct: bool = False
+    mention_accounts: tuple[str, ...] = ()
 
 
 @dataclass
@@ -89,20 +92,36 @@ def _same_text(left: str, right: str) -> bool:
     return bool(folded) and folded == norm(right)
 
 
+_GROUP_SESSION_TYPES = {"group", "groupchat", "group_chat", "chat_type_group_msg", "group_msg", "normal_group"}
+
+
+def _conversation(platform: Mapping[str, Any], payload: Mapping[str, Any], business: Mapping[str, Any], sender_id: str) -> tuple[str, bool]:
+    """Return the chat id and whether this task is a private conversation."""
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_messages import _DIRECT_KINDS
+
+    session_type = str(
+        platform.get("businessSessionType") or payload.get("chatType") or business.get("chatType") or ""
+    ).strip().lower()
+    session_id = str(platform.get("businessSessionId") or "").split("#", 1)[0].strip()
+    group_id = str(payload.get("imGroupId") or business.get("imGroupId") or "").strip()
+    if session_type in _GROUP_SESSION_TYPES or (group_id and group_id != "0" and session_type not in _DIRECT_KINDS):
+        return (session_id or group_id, False)
+    peer = session_id or sender_id
+    if not peer:
+        return ("", False)
+    return (peer if peer.startswith("p2p:") else f"p2p:{peer}", True)
+
+
 def parse_mention(frame: dict[str, Any]) -> Mention | None:
-    """Read one group @ task. Other downstream frames are not mentions."""
+    """Read one group @ task or one private chat. Other downstream frames are not mentions."""
     if frame.get("type") != "invoke" or frame.get("action") != "chat":
         return None
     payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
     ext = payload.get("extParameters") if isinstance(payload.get("extParameters"), dict) else {}
     business = _as_mapping(ext.get("businessExtParam"))
     platform = _as_mapping(ext.get("platformExtParam"))
-    group_id = ""
-    if str(platform.get("businessSessionType") or "") == "group" and platform.get("businessSessionId"):
-        group_id = str(platform.get("businessSessionId")).split("#", 1)[0]
-    if not group_id:
-        group_id = str(payload.get("imGroupId") or business.get("imGroupId") or "").strip()
     sender_id = str(business.get("senderId") or payload.get("sendUserAccount") or "").strip()
+    group_id, direct = _conversation(platform, payload, business, sender_id)
     sender_name = str(
         business.get("senderName") or platform.get("senderName") or payload.get("sendUserName") or sender_id
     ).strip()
@@ -121,6 +140,8 @@ def parse_mention(frame: dict[str, Any]) -> Mention | None:
         return None
     if not group_id or not sender_id:
         return None
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_messages import at_accounts_in_nodes
+
     return Mention(
         message_id=message_id or f"mention-{tool_session_id}",
         group_id=group_id,
@@ -130,6 +151,8 @@ def parse_mention(frame: dict[str, Any]) -> Mention | None:
         tool_session_id=tool_session_id,
         trace_id=trace_id,
         media=media,
+        direct=direct,
+        mention_accounts=at_accounts_in_nodes(payload, business, platform),
     )
 
 
@@ -222,12 +245,13 @@ class AssistantLink:
         self._ready.clear()
 
     def send_text(self, group_id: str, text: str, source_message_id: str = "", *,
-                  on_prepared: Callable[[str, str, str], None] | None = None) -> str:
+                  on_prepared: Callable[[str, str, str], None] | None = None,
+                  finish_task: bool = True) -> str:
         """Send one reply. An open @ task for this message is finished in place."""
         if not group_id.strip() or not text:
             raise AssistantSendError("missing_assistant_credential")
         box: queue.Queue[Any] = queue.Queue(1)
-        self._commands.put(("send", group_id, text, source_message_id, box, on_prepared))
+        self._commands.put(("send", group_id, text, source_message_id, box, on_prepared, finish_task))
         try:
             result = box.get(timeout=25)
         except queue.Empty as exc:
@@ -392,7 +416,10 @@ class AssistantLink:
         assert slot is not None
         self._send_qa_event(socket, slot, {"protocol": "cloud", "type": "step.start", "properties": {"messageId": slot.reply_message_id}})
         slot.opened = True
-        logger.info("[Welink] mention group_id=%s message_id=%s", mention.group_id, mention.message_id)
+        logger.info(
+            "[Welink] mention group_id=%s message_id=%s direct=%s",
+            mention.group_id, mention.message_id, mention.direct,
+        )
         handler = self._on_mention
         loop = self._loop
         if handler is None or loop is None:
@@ -427,17 +454,30 @@ class AssistantLink:
             if kind == "close":
                 self._close_slot(socket, command[1], quiet=True)
                 continue
-            _kind, group_id, text, source_message_id, box, on_prepared = command
+            _kind, group_id, text, source_message_id, box, on_prepared, finish_task = command
             try:
-                box.put(self._send_text(socket, group_id, text, source_message_id, on_prepared=on_prepared))
+                box.put(self._send_text(socket, group_id, text, source_message_id, on_prepared=on_prepared, finish_task=finish_task))
             except AssistantSendError as exc:
                 box.put(exc)
             except Exception as exc:
                 box.put(AssistantSendError(type(exc).__name__))
 
     def _send_text(self, socket: Any, group_id: str, text: str, source_message_id: str, *,
-                   on_prepared: Callable[[str, str, str], None] | None = None) -> str:
-        slot = self._take_slot(source_message_id, group_id)
+                   on_prepared: Callable[[str, str, str], None] | None = None,
+                   finish_task: bool = True) -> str:
+        if finish_task:
+            slot = self._take_slot(source_message_id, group_id)
+        else:
+            # A notice must not consume the task needed for the eventual final answer.
+            with self._lock:
+                canonical = self._aliases.get((group_id, source_message_id), source_message_id)
+                slot = self._slots.get(canonical) if source_message_id else None
+                if slot is None or slot.group_id != group_id:
+                    raise AssistantSendError("direct_session_closed")
+                suffix = uuid.uuid4().hex[:12]
+                slot = replace(slot, reply_message_id=f"msg_notice_{suffix}", part_id=f"prt_notice_{suffix}")
+        if slot is None and group_id.startswith("p2p:"):
+            raise AssistantSendError("direct_session_closed")
         if slot is None:
             suffix = uuid.uuid4().hex[:12]
             message_id, frames = build_group_frames(group_id, text, suffix=suffix, trace_id=uuid.uuid4().hex)
@@ -451,6 +491,10 @@ class AssistantLink:
             return message_id
         if on_prepared is not None:
             on_prepared(slot.reply_message_id, slot.tool_session_id, slot.trace_id)
+        if not finish_task:
+            self._send_qa_event(socket, slot, {
+                "protocol": "cloud", "type": "step.start", "properties": {"messageId": slot.reply_message_id},
+            })
         self._send_qa_event(
             socket,
             slot,
@@ -461,6 +505,8 @@ class AssistantLink:
             },
         )
         self._send_qa_event(socket, slot, {"protocol": "cloud", "type": "step.done", "properties": {"messageId": slot.reply_message_id}})
+        if not finish_task:
+            return slot.reply_message_id
         self._send_raw(
             socket,
             {
@@ -478,11 +524,17 @@ class AssistantLink:
 
     def _take_slot(self, source_message_id: str, group_id: str) -> _QaSlot | None:
         with self._lock:
-            canonical = self._aliases.get((group_id, source_message_id), source_message_id)
-            slot = self._slots.get(canonical)
-            if slot is not None and slot.group_id == group_id:
-                return self._slots.pop(canonical)
-        return None
+            if source_message_id:
+                canonical = self._aliases.get((group_id, source_message_id), source_message_id)
+                slot = self._slots.get(canonical)
+                if slot is not None and slot.group_id == group_id:
+                    return self._slots.pop(canonical)
+                return None
+            matches = [slot for slot in self._slots.values() if slot.group_id == group_id]
+            if not matches:
+                return None
+            oldest = min(matches, key=lambda slot: slot.created_at)
+            return self._slots.pop(oldest.message_id)
 
     def _close_slot(self, socket: Any, message_id: str, *, quiet: bool) -> None:
         with self._lock:

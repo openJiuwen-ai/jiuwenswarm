@@ -73,7 +73,10 @@ def apply_welink_authorization(current: Mapping[str, Any] | None, patch: Mapping
     merged = normalize_welink_section(current)
     account = str(patch.get("account") or "").strip()
     if account and merged.get("account") and account.casefold() != str(merged["account"]).casefold():
-        raise ValueError("WeLink account must match the shared reader account")
+        # A new employee scan replaces the shared reader. Assistant setup cannot.
+        if not patch.get("cli_authorized"):
+            raise ValueError("WeLink account must match the shared reader account")
+        merged["account"] = account
     for key, value in patch.items():
         if key not in _BINDING_KEYS and key not in ("bindings", "account"):
             merged[key] = value
@@ -85,11 +88,23 @@ def apply_welink_authorization(current: Mapping[str, Any] | None, patch: Mapping
     if patch.get("cli_authorized") and "reader_credential_dir" not in patch and patch.get("credential_dir"):
         merged["reader_credential_dir"] = patch["credential_dir"]
     if agent:
+        config_id = str(patch.get("config_id") or "").strip()
         entry = next((item for item in merged["bindings"] if item["persistent_agent_id"] == agent), None)
+        if entry is None and config_id:
+            # The office agent still holds this colleague's legacy binding. Saving moves it
+            # onto the connection agent instead of adding a second copy of the same AK.
+            entry = next((item for item in merged["bindings"]
+                          if item["persistent_agent_id"] == config_id or str(item.get("config_id") or "") == config_id), None)
         if entry is None:
             entry = {"persistent_agent_id": agent}
             merged["bindings"].append(entry)
+        previous_credential = str(entry.get("assistant_credential_id") or "")
+        incoming_credential = str(patch.get("assistant_credential_id") or "")
         entry.update({key: value for key, value in patch.items() if key in _BINDING_KEYS})
+        # A new AK is a different WeLink assistant. Keep the learned member id only for the same credential.
+        if (incoming_credential and previous_credential and incoming_credential != previous_credential
+                and "assistant_account" not in patch):
+            entry["assistant_account"] = ""
         entry["enabled"] = patch.get("enabled", True)
     # Completing the shared login activates every complete assistant.
     if patch.get("cli_authorized"):
@@ -167,6 +182,61 @@ def manual_assistant_patch(*, agent_id: str, account: str, credential_id: str, s
         "assistant_credential_id": credential,
         "assistant_secret": stored_secret,
     }
+
+
+def assign_learned_assistant_account(section: dict[str, Any], *, agent_id: str, credential_id: str, account: str) -> bool:
+    """Record one learned group member id. True when this binding owns it afterwards.
+
+    A different existing value is left untouched. An id already owned by another
+    colleague or another credential is refused.
+    """
+    learned = account.strip()
+    agent = agent_id.strip()
+    credential = credential_id.strip()
+    if not learned or not agent or not credential or not isinstance(section, dict):
+        return False
+    bindings = section.get("bindings")
+    entries = [item for item in bindings if isinstance(item, dict)] if isinstance(bindings, list) else [section]
+    for item in entries:
+        if str(item.get("assistant_account") or "") != learned:
+            continue
+        owner = str(item.get("persistent_agent_id") or item.get("agent_id") or "")
+        owner_credential = str(item.get("assistant_credential_id") or "")
+        if owner != agent or owner_credential != credential:
+            return False
+    for item in entries:
+        owner = str(item.get("persistent_agent_id") or item.get("agent_id") or "")
+        owner_credential = str(item.get("assistant_credential_id") or "")
+        if owner != agent or owner_credential != credential:
+            continue
+        existing = str(item.get("assistant_account") or "")
+        if existing == learned:
+            return True
+        if existing:
+            return False
+        item["assistant_account"] = learned
+        return True
+    return False
+
+
+def learn_assistant_account(agent_id: str, credential_id: str, account: str) -> bool:
+    """Persist a learned member id for the credential that sent the message."""
+    owned = False
+
+    def save(data):
+        nonlocal owned
+        channels = data.setdefault("channels", {})
+        section = channels.get("welink")
+        if isinstance(section, dict):
+            owned = assign_learned_assistant_account(
+                section, agent_id=agent_id, credential_id=credential_id, account=account,
+            )
+        return data
+
+    from jiuwenswarm.common.config import update_config
+
+    update_config(save)
+    return owned
 
 
 def load_welink_section() -> dict[str, Any]:

@@ -177,6 +177,9 @@ _ensure_req_method("JIUWENMATE_DINGTALK_AUTH_BEGIN", "jiuwenmate.dingtalk_auth.b
 _ensure_req_method("JIUWENMATE_DINGTALK_AUTH_POLL", "jiuwenmate.dingtalk_auth.poll")
 _ensure_req_method("JIUWENMATE_DINGTALK_AUTH_CANCEL", "jiuwenmate.dingtalk_auth.cancel")
 _ensure_req_method("JIUWENMATE_DINGTALK_AUTH_DISCONNECT", "jiuwenmate.dingtalk_auth.disconnect")
+_ensure_req_method("JIUWENMATE_WELINK_OFFICE_STATUS", "jiuwenmate.welink_office.status")
+_ensure_req_method("JIUWENMATE_WELINK_OFFICE_CONNECT", "jiuwenmate.welink_office.connect")
+_ensure_req_method("JIUWENMATE_WELINK_OFFICE_DISCONNECT", "jiuwenmate.welink_office.disconnect")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")

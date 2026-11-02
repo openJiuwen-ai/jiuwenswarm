@@ -55,6 +55,9 @@ export const JIUWENMATE_METHODS = {
   channelList: 'jiuwenmate.channel.list',
   channelMessages: 'jiuwenmate.channel.messages',
   channelTrace: 'jiuwenmate.channel.trace',
+  welinkOfficeStatus: 'jiuwenmate.welink_office.status',
+  welinkOfficeConnect: 'jiuwenmate.welink_office.connect',
+  welinkOfficeDisconnect: 'jiuwenmate.welink_office.disconnect',
   agentMailStatus: 'jiuwenmate.agent_mail.status',
   agentMailAuthBegin: 'jiuwenmate.agent_mail.auth.begin',
   agentMailAuthPoll: 'jiuwenmate.agent_mail.auth.poll',
@@ -76,6 +79,13 @@ export interface JiuwenMateDingTalkAuthStatus {
   user_code?: string;
   account?: string;
   organization?: string;
+}
+
+export interface JiuwenMateWelinkOfficeStatus {
+  status: 'connected' | 'not_connected' | 'unavailable';
+  email?: string;
+  account?: string;
+  reason?: string;
 }
 
 export interface JiuwenMateAgentMailStatus {
@@ -155,6 +165,7 @@ export interface JiuwenMateConversation {
   updatedAt: string;
   lastMessage?: string;
   pinned?: boolean;
+  unread?: boolean;
 }
 
 /** A private message and what became of it; replies are only the outputs the colleague's final answer adopted. */
@@ -581,6 +592,7 @@ export function toConversation(value: unknown): JiuwenMateConversation {
     updatedAt: text(wire.updated_at),
     ...(lastMessage ? { lastMessage } : {}),
     ...(typeof wire.pinned === 'boolean' ? { pinned: wire.pinned } : {}),
+    ...(typeof wire.unread === 'boolean' ? { unread: wire.unread } : {}),
   };
 }
 
@@ -1128,6 +1140,15 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async channelTrace(agentId: string, groupId: string): Promise<{ startedAt: string; rows: JiuwenMateTraceRow[] }> {
       return toChannelTrace(await request(JIUWENMATE_METHODS.channelTrace, { agent_id: agentId, group_id: groupId }));
+    },
+    async welinkOfficeStatus(agentId: string): Promise<JiuwenMateWelinkOfficeStatus> {
+      return record(await request(JIUWENMATE_METHODS.welinkOfficeStatus, { agent_id: agentId })).welink_office as JiuwenMateWelinkOfficeStatus;
+    },
+    async connectWelinkOffice(agentId: string, email: string): Promise<JiuwenMateWelinkOfficeStatus> {
+      return record(await request(JIUWENMATE_METHODS.welinkOfficeConnect, { agent_id: agentId, email })).welink_office as JiuwenMateWelinkOfficeStatus;
+    },
+    async disconnectWelinkOffice(agentId: string): Promise<JiuwenMateWelinkOfficeStatus> {
+      return record(await request(JIUWENMATE_METHODS.welinkOfficeDisconnect, { agent_id: agentId })).welink_office as JiuwenMateWelinkOfficeStatus;
     },
     async agentMailStatus(agentId: string): Promise<JiuwenMateAgentMailStatus> {
       return record(await request(JIUWENMATE_METHODS.agentMailStatus, { agent_id: agentId })).agent_mail as JiuwenMateAgentMailStatus;

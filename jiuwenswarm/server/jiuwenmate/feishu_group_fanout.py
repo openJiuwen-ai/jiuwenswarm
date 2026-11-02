@@ -280,7 +280,7 @@ def create_default_persistent_group_fanout(
 
     delivery_service = (
         ResultDeliveryService(
-            sessions, namespace_id="local", channels=frozenset({"feishu", "dingtalk"}),
+            sessions, namespace_id="local", channels=frozenset({"feishu", "dingtalk", "welink"}),
             send_delivery=send_delivery, archive_delivery=archive_delivery,
         )
         if send_delivery is not None
@@ -311,18 +311,9 @@ def create_default_persistent_group_fanout(
                     return "active"
                 return "unknown"
             if getattr(group, "platform", "") == "welink":
-                from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_binding
+                from jiuwenswarm.server.jiuwenmate.welink_inbound import welink_group_membership_status
 
-                binding = configured_welink_binding()
-                if (
-                    binding is not None
-                    and binding.namespace_id == access.namespace_id
-                    and binding.agent_id == access.agent_id
-                    and binding.account == access.app_id
-                    and access.status == "active"
-                ):
-                    return "active"
-                return "unknown"
+                return welink_group_membership_status(access)
             bindings = resolve_configured_feishu_bindings("feishu", access.app_id)
             if len(bindings) != 1 or (bindings[0].namespace_id, bindings[0].agent_id) != (
                     access.namespace_id, access.agent_id):

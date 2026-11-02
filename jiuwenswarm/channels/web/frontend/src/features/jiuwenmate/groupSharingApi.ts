@@ -154,8 +154,8 @@ function snapshot(value: unknown, configId: string): GroupSharingSnapshot {
 
 export function createGroupSharingApi(request: JiuwenMateRequest) {
   return {
-    async list(configId: string): Promise<GroupSharingSnapshot> {
-      return snapshot(await request('jiuwenmate.sharing.list', { agent_id: configId }), configId);
+    async list(configId: string, markRead = false): Promise<GroupSharingSnapshot> {
+      return snapshot(await request('jiuwenmate.sharing.list', { agent_id: configId, ...(markRead ? { mark_read: true } : {}) }), configId);
     },
     async decide(configId: string, approvalId: string, decision: SharingDecision): Promise<GroupSharingSnapshot> {
       return snapshot(await request('jiuwenmate.sharing.decide', {
