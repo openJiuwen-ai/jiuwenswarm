@@ -250,15 +250,16 @@ class WorkerRuntime:
             await trajectory_gateway_hint_bridge.unbind()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Worker] trajectory hint bridge unbind failed: %s", exc)
+        stop = getattr(self.server, "stop", None)
+        if callable(stop):
+            await stop()
+        # Runtime must emit session.end while USER handlers are still loaded.
         try:
             from jiuwenswarm.extensions_v2.assembly import shutdown_extensions
 
             await shutdown_extensions()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Worker] extension v2 shutdown failed: %s", exc)
-        stop = getattr(self.server, "stop", None)
-        if callable(stop):
-            await stop()
         try:
             from jiuwenswarm.agents.harness.team.team_manager import shutdown_team_observability
 

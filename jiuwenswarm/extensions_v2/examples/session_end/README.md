@@ -1,26 +1,23 @@
-# Session end / 主会话结束清理示例
+# Session end / 会话运行结束收尾示例
 
-这是用户扩展包，不是产品默认包。它在已有 `context.usage.updated` 通知中按 session_id 保存自己的项目根缓存，在主会话永久删除前的 `session.end` 通知中移除该会话的缓存；日志中的 released 表示本包是否确实删除过缓存。
+这是用户扩展包。已有 context.usage.updated 为本包建立按 session_id 管理的项目根缓存；真实 Runtime 会话运行结束时，session.end 让它保存恢复标识并清理自己的活跃缓存。结束本次运行不要求删除历史。
 
 ## 使用方法
 
-1. 使用包含 PR10 的 Server 和当前既有 agent-core；不要求先合入 PR04/05/06。
-2. 将本目录的 manifest.yaml、extension.py 打到 ZIP 根目录，通过已有 `/extension install "D:\extensions\session-end.zip"` 或 extensions.v2.install 管理入口安装。
-3. 正常发送消息并等待有效用量通知，用户缓存随之建立；通过现有会话永久删除操作删除这个主会话。
-4. 日志出现 `session end example: ... reason=session_deleted released=True`，平台随后继续原资源释放和删除。没有预建缓存时 released=False 是合法幂等清理，CORE 仍正常接收通知。
+1. 把 manifest.yaml 和 extension.py 放到 ZIP 根目录，使用已有扩展安装入口安装。
+2. 正常聊天，等待已有用量通知建立用户缓存。该事件仅用于示例准备资源，不是 session.end 的触发前置。
+3. 通过真实会话资源释放或正常 Worker 停机结束运行；通知在扩展卸载前执行。
+4. 查看日志 session end example: session=... reason=other resume=... released=True。没有预建缓存时 released=False 合法；CORE 仍回显真实 session_id。
+5. 原平台历史保持原有持久化策略；恢复同一持久 ID 后重新建立资源，新运行结束时会再收到通知。
 
-用户只注册 USER Handler，不提供 session_id/结束原因，不定义平台事件/CORE，不调用 notify 或修改 Adapter。Handler 的 event.event_input 为平台 dataclass；所有字段只读。ops.session_context 是当前只读会话入口，已有 root 查询按平台资料返回；本包不创建 Builder 或 EventBus。
+USER 输入只有 reason、session_id、resume.id，全由平台填写。reason 对齐 clear/resume/logout/prompt_input_exit/other；当前原生关闭入口使用 other，不新增对应远程方法。返回 await next_handler(event) 得到的 SessionEndOutput(session_id)，移除旧 accepted/end_id/session_deleted 用法。ops.session_context 是平台绑定的只读入口，不是用户负责收集上下文的函数。
 
-`return await next_handler(event)` 继续原通知链。默认 CORE 只确认通知，accepted 不等于平台删除已经提交，也不保证每个外部资源都释放成功。不要在这个 Hook 内重入 session.delete 或删除平台目录。实际连接或外部资源由用户以幂等方式释放；清理预算默认 2 秒，超时/异常后平台继续原删除。
+默认 1.5 秒预算，异常/超时后原 Runtime 继续释放。用户只释放自己拥有的连接、缓存和任务；不要删除平台目录或重入同一会话的结束/恢复。普通回复完成、取消当前生成、界面切换、attach/detach、Supervisor 暂时断连均不构成结束；明确 client.disconnect 若实际释放运行则通知。崩溃或强杀无法保证通知。
 
-断开网页、归档、每轮执行完成和临时 Worker 回收不会触发此通知。它不与按包激活实例触发的 session.start 一一配对，不涉及 Team/子 Agent。卸载只撤销本包订阅，不删除产品会话和平台默认处理；真实外部资源还应由用户按其资源生命周期安排卸载/异常补偿。
-
-完整字段、调用链、错误和验收见 [F_24](../../docs/features/F_24_session-end.md) 与 [S_13](../../docs/specs/S_13_session-end.md)。
+不新增 Ops、EventBus、Adapter 或前端渲染。Team/子 Agent 未接入。完整字段与平台调用链见 [F_24](../../docs/features/F_24_session-end.md) 和 [S_13](../../docs/specs/S_13_session-end.md)。
 
 ## English
 
-Install manifest.yaml and extension.py as a ZIP through the existing extension management interface. This user package caches the bound project root after a normal native turn reports usage, then removes only its own per-Session cache when the host emits session.end during permanent main-Session deletion.
+This user package caches its own session state from the existing usage notification and releases it when the actual Runtime session run ends. The host notifies plugins after quiescence, before resource release and plugin teardown. Persisted history is independent of this notification and may be resumed through the original platform API.
 
-The host supplies immutable target/reason fields, package identity and SessionContext. Call next_handler(event) to continue the notification chain. Its CORE acknowledges the notification; Runtime alone continues native release and deletion. No new user Ops, custom Adapter, EventBus or dependency on the pending PR04/05/06 is required.
-
-Cleanup is best-effort, bounded by a two-second wait budget, and should be idempotent. An acknowledgement is not a committed delete result. Disconnect, archive, idle eviction and turn completion do not emit this event; Team/subagent lifecycles and process-exit notifications are outside scope. Uninstall removes the user subscription without changing the platform's default deletion. See F_24/S_13 for fields, failures and evidence.
+Read the immutable reason, session_id and resume.id; return the actual SessionEndOutput(session_id) from next_handler(event). Native Runtime release and shutdown currently report other. The default notification budget is 1.5 seconds. Cleanup is best-effort and idempotent. Turn completion, ordinary view transitions and temporary Supervisor disconnects do not end the run. An explicit client disconnect that releases Runtime resources does. Hard termination cannot guarantee delivery. No extra Ops or UI integration is required.

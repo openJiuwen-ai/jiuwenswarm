@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Default acknowledgement; Runtime remains the sole resource-release owner."""
+"""Echo the ending session; Runtime remains the resource-release owner."""
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventNext
 
@@ -16,7 +16,7 @@ async def session_end_core(
     ops: EventHandlerOps | None,
     next_handler: EventNext,
 ) -> SessionEndOutput:
-    """Acknowledge the real target without invoking deletion a second time."""
+    """Confirm the real ending run without deleting its persisted transcript."""
     del next_handler
     state = current_end_invocation()
     if not valid_end_input(event.event_input):
@@ -25,5 +25,5 @@ async def session_end_core(
     if context is None or context.session_id != state.original.session_id:
         raise RuntimeError("session.end requires its bound SessionContext")
     if state.receipt is None:
-        state.receipt = SessionEndOutput(True, state.original.session_id, state.original.end_id)
+        state.receipt = SessionEndOutput(state.original.session_id)
     return state.receipt

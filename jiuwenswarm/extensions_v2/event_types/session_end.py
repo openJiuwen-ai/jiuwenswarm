@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Host-owned input, receipt and validators for terminal Session cleanup."""
+"""Host-owned input and receipt for an ending Runtime session run."""
 
 from __future__ import annotations
 
@@ -12,29 +12,33 @@ from dataclasses import dataclass
 
 from openjiuwen.core.events import ExtensionEventBus
 
+from jiuwenswarm.runtime.session_lifecycle import SessionRunEndReason
 from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
 
 SESSION_END_EVENT = "session.end"
 
 
 @dataclass(frozen=True, slots=True)
-class SessionEndInput:
-    """Immutable target and reason supplied by the Runtime delete boundary."""
+class SessionResume:
+    """The persisted identity a caller may resume, if it has saved history."""
 
-    session_id: str
-    end_id: str
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEndInput:
+    """Immutable engine facts, matching Claude reason/sessionId/resume."""
+
     reason: str
-    channel_id: str
-    mode: str
+    session_id: str
+    resume: SessionResume
 
 
 @dataclass(frozen=True, slots=True)
 class SessionEndOutput:
-    """Actual notification receipt, independent of the final delete result."""
+    """The actual ending session identity echoed by CORE."""
 
-    accepted: bool
     session_id: str
-    end_id: str
 
 
 @dataclass
@@ -64,6 +68,8 @@ def valid_end_input(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and type(value) is SessionEndInput and value == state.original
+        and type(value.resume) is SessionResume and value.resume.id == value.session_id
+        and value.reason in {reason.value for reason in SessionRunEndReason}
     )
 
 
@@ -73,7 +79,7 @@ def valid_end_output(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and state.receipt is not None and type(value) is SessionEndOutput
-        and type(value.accepted) is bool and value == state.receipt
+        and value == state.receipt
     )
 
 

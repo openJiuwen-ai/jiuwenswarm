@@ -234,7 +234,7 @@ async def test_team_delete_finalizes_participant_that_prepared_it(env, monkeypat
     assert not provisioner._prepared_session_deletes
 
 
-async def test_terminal_extension_notification_precedes_real_delete_and_deduplicates(env, tmp_path, monkeypatch):
+async def test_deleting_a_live_run_notifies_once_before_release(env, tmp_path, monkeypatch):
     import json
     import jiuwenswarm.extensions_v2.assembly as assembly
     from jiuwenswarm.server.runtime.session.end_notifications import ExtensionSessionEndParticipant
@@ -270,7 +270,7 @@ def create_extension():
     host = await assembly.install_extensions()
     assert host is not None
     participant = ExtensionSessionEndParticipant()
-    registry = RuntimeParticipantRegistry(host_delete=(participant,))
+    registry = RuntimeParticipantRegistry(host_run_end=(participant,))
     registry.replace_session_participants(activity=(), delete=(env.participant,))
     runtime = AgentRuntime(
         agent_manager=Manager(env.events), initializer=AsyncMock(), plan_controller=Plan(env.events),
@@ -281,13 +281,15 @@ def create_extension():
     try:
         assert (await host.manager.install([source]))[0].status == "SUCCESS"
         await runtime.cleanup_session(channel_id="web", session_id="terminal")
-        assert not output.exists()  # Temporary cleanup is not logical Session end.
+        assert not output.exists()  # An offline history has no active Runtime run.
+        await runtime._register_session(channel_id="web", session_id="terminal")
         results = await asyncio.gather(*(runtime.delete_session(channel_id="web", session_id="terminal") for _ in range(2)))
         assert all(result.ok and result.deleted for result in results)
         rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
         assert len(rows) == 1 and rows[0]["exists_after_core"] is True
-        assert rows[0]["receipt"]["accepted"] is True and rows[0]["session_id"] == "terminal"
-        assert not path.exists() and not participant._attempted
+        assert rows[0]["receipt"] == {"session_id": "terminal"}
+        assert rows[0]["session_id"] == "terminal"
+        assert not path.exists() and participant._attempted == {"terminal": 1}
         assert env.events.count("runner.release") == 1
     finally:
         await assembly.shutdown_extensions()
