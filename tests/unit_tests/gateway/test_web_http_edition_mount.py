@@ -41,6 +41,8 @@ def test_mapped_routes_for_edition_strips_a2a_ingress(mapped_mod: ModuleType) ->
     enterprise = mapped_mod.mapped_routes_for_edition(enterprise=True)
     assert any("/a2a/ingress" in r.path for r in personal)
     assert not any("/a2a/ingress" in r.path for r in enterprise)
+    assert not any(r.rpc_method == "team.create" for r in personal)
+    assert any(r.rpc_method == "team.create" for r in enterprise)
     assert not any("/a2a/outbound" in r.path for r in personal)
     assert not any("/a2a/outbound" in r.path for r in enterprise)
     assert not any(r.path.startswith("/agent-templates") for r in personal)
