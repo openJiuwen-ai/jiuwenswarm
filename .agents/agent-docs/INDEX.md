@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 24 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 27 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -20,9 +20,9 @@ generated: true
 | [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
 | [gateway/channel_manager/web](#module-4) | 1 |
 | [gateway/message_handler](#module-5) | 1 |
-| [jiuwenswarm](#module-6) | 3 |
+| [jiuwenswarm](#module-6) | 5 |
 | [jiuwenswarm/channels/web](#module-7) | 1 |
-| [jiuwenswarm/channels/web/frontend](#module-8) | 3 |
+| [jiuwenswarm/channels/web/frontend](#module-8) | 4 |
 | [jiuwenswarm/gateway/channel_manager/web](#module-9) | 1 |
 | [jiuwenswarm/observability](#module-10) | 1 |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-11) | 2 |
@@ -81,6 +81,8 @@ generated: true
 | [SDD-0009](designs/archive/SDD-0009-jiuwen-tui-swarmflow-human-session-adaptation/design.md) | D | jiuwen TUI 适配 SwarmFlow 三算子（human / human_session / agent_session） | @chenchunzhou | agent_teams/workflow, jiuwenswarm | — | — |
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | agent_teams/workflow, jiuwenswarm | — | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | agent_teams/workflow, jiuwenswarm | — | — |
+| [F_20261030_2018_teammate-swarmflow-adaptation](features/F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | jiuwenswarm | jiuwenswarm/agents/harness/team/handlers/workflow_state.py, jiuwenswarm/agents/harness/team/handlers/workflow_monitor_handler.py, jiuwenswarm/server/runtime/agent_adapter/team_helpers.py, jiuwenswarm/server/wire_truncate.py, jiuwenswarm/channels/web/frontend/src/components/teamArea/RunGroupHeader.tsx, jiuwenswarm/channels/web/frontend/src/components/teamArea/runGrouping.ts, jiuwenswarm/channels/web/frontend/src/components/teamArea/TaskPlanningPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/teamArea/TeamMembersPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/teamArea/teamMemberSnapshot.ts, jiuwenswarm/channels/web/frontend/src/stores/teamSliceApply.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/src/features/teamMemberSnapshot.ts | agent-core:SDD-0031（非本仓或待定位） |
+| [B_20261030_2020_pause-refires-consumed-popups](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261030_2020_pause-refires-consumed-popups.md) | B | 暂停/取消后已消费的 human 弹窗被重放层重投 | xiajing | jiuwenswarm | jiuwenswarm/server/runtime/agent_adapter/team_helpers.py, jiuwenswarm/server/supervisor/worker_dispatcher.py, jiuwenswarm/server/runtime/agent_adapter/worker_event_store.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts | 无独立 D：三层链根因（触发层不清场→重放层带过期帧→消费层无 dedup）的组合修复，弹窗往返语义权威在 agent-core SDD-0031 §5。 |
 
 <a id="module-7"></a>
 
@@ -98,6 +100,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0026](designs/proposals/SDD-0026-trajectory-observability-web-ui/design.md) | D | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | @alan_cheng | jiuwenswarm/channels/web/frontend | — | — |
 | [F_20261029_1757_mcp-app-agent-stack-refresh](features/F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
+| [B_20261030_1250_org-snapshot-removes-mirrored-workers](bugfix/jiuwenswarm/channels/web/frontend/B_20261030_1250_org-snapshot-removes-mirrored-workers.md) | B | 组织 UI 快照投影整表覆盖导致镜像 workflow worker 从成员面板消失 | xiajing | jiuwenswarm/channels/web/frontend | jiuwenswarm/channels/web/frontend/src/stores/teamSliceApply.ts, jiuwenswarm/channels/web/frontend/src/stores/teamSelectorStore.ts, jiuwenswarm/channels/web/frontend/tests/teamSliceApply.test.mjs | 无独立 D：对既有"快照完整替换"契约（跨 Team 切换不串数据）的成员级例外修复，属 F_20261027_1026 特性线的验证期 bugfix，无独立设计文档。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
 
 <a id="module-9"></a>
