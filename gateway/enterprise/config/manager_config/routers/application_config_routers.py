@@ -155,7 +155,7 @@ async def list_package_allowlist_catalog():
 
 def _without_hidden_hub_items(payload: dict[str, Any]) -> dict[str, Any]:
     """管理端目录去掉企业版不提供的 Hub 包。本路由只在企业版注册。"""
-    from jiuwenswarm.common.schema.package_allowlist import HIDDEN_HUB_ASSET_IDS
+    from openjiuwen_protocol.package_allowlist import HIDDEN_HUB_ASSET_IDS
 
     items = payload.get("items")
     if not isinstance(items, list):

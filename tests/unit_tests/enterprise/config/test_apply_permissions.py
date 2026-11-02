@@ -4,32 +4,7 @@
 
 from __future__ import annotations
 
-import sys
-from types import ModuleType, SimpleNamespace
-
-
-def _install_gateway_protocol_stub() -> None:
-    """Minimal stub so enterprise_config package import works without the wire package."""
-    if "gateway_protocol.e2a.agent_models" in sys.modules:
-        return
-    root = ModuleType("gateway_protocol")
-    e2a = ModuleType("gateway_protocol.e2a")
-    agent_models = ModuleType("gateway_protocol.e2a.agent_models")
-    for name in (
-        "AgentRequest",
-        "AgentResponse",
-        "AgentResponseChunk",
-        "PermissionContext",
-    ):
-        setattr(agent_models, name, type(name, (), {}))
-    sys.modules["gateway_protocol"] = root
-    sys.modules["gateway_protocol.e2a"] = e2a
-    sys.modules["gateway_protocol.e2a.agent_models"] = agent_models
-    root.e2a = e2a
-    e2a.agent_models = agent_models
-
-
-_install_gateway_protocol_stub()
+from types import SimpleNamespace
 
 from jiuwenswarm.enterprise.config.config_provider import _apply_enterprise_policy
 from jiuwenswarm.enterprise.config.effective.apply_permissions import (

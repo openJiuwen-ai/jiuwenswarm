@@ -12,20 +12,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from gateway_protocol.hooks import AgentServerChatHookContext
-from gateway_protocol.hooks import AgentServerHookEvents
-
 from gateway.common.mode_matrix import is_team_mode
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.request import CHAT_TURN_METHODS
 
 logger = logging.getLogger(__name__)
-
-_CHAT_HOOK_METHODS = (
-    ReqMethod.CHAT_SEND,
-    ReqMethod.CHAT_RESUME,
-    ReqMethod.CHAT_ANSWER,
-)
 
 
 def request_query_text(request: AgentRequest) -> str:
@@ -39,14 +33,14 @@ def request_query_text(request: AgentRequest) -> str:
 
 
 def should_trigger_before_chat_request(request: AgentRequest) -> bool:
-    return request.req_method in _CHAT_HOOK_METHODS
+    return request.req_method in CHAT_TURN_METHODS
 
 
 async def trigger_before_chat_request(request: AgentRequest) -> None:
     """让扩展插件先看一眼聊天输入。插件可以改参数，这里不回包。"""
     if not should_trigger_before_chat_request(request):
         return
-    from jiuwenswarm.extensions import ExtensionRegistry
+    from gateway.extensions.registry import ExtensionRegistry
 
     params = request.params if isinstance(request.params, dict) else {}
     if not isinstance(request.params, dict):
