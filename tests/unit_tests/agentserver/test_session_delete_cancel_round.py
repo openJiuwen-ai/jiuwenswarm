@@ -38,10 +38,19 @@ class _Manager:
     def __init__(self, agent) -> None:
         self._agent = agent
         self.lookup_calls: list[tuple[str, str]] = []
+        self.prewarm_waits: list[str] = []
+        self.prewarm_gate: asyncio.Event | None = None
+        self.prewarm_entered = asyncio.Event()
 
     def get_agent_for_session(self, channel_id, session_id):
         self.lookup_calls.append((channel_id, session_id))
         return self._agent
+
+    async def wait_for_session_prewarm(self, session_id):
+        self.prewarm_waits.append(session_id)
+        self.prewarm_entered.set()
+        if self.prewarm_gate is not None:
+            await self.prewarm_gate.wait()
 
 
 class _TeamManager:
@@ -197,6 +206,71 @@ async def test_delete_cancels_before_waiting_for_checkpointer(wiring):
     finally:
         release.set()
         await task
+
+
+@pytest.mark.asyncio
+async def test_delete_waits_for_inflight_session_prewarm_before_cancel(wiring):
+    """A: create 的异步尾巴（warm pool prepare）未落地时，delete 必须先等再拆。"""
+    session_dir, *_ = wiring
+    target = session_dir.name
+    spy = _SpyAgent()
+    server = _make_server(session_dir.parent, target, spy)
+    gate = asyncio.Event()
+    server._agent_manager.prewarm_gate = gate
+
+    task = asyncio.create_task(
+        server._handle_session_delete(None, _request(target), asyncio.Lock())
+    )
+    try:
+        await asyncio.wait_for(server._agent_manager.prewarm_entered.wait(), 1)
+        # 预热未落地前不得进入 cancel（否则就是空转）
+        assert spy.requests == []
+        gate.set()
+        await task
+    finally:
+        gate.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert server._agent_manager.prewarm_waits == [target]
+    assert len(spy.requests) == 1
+    assert not session_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_proceeds_when_prewarm_wait_times_out(wiring, monkeypatch):
+    """A 的超时兜底：预热挂死时不能把 delete 永久卡住。"""
+    session_dir, *_ = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, _SpyAgent())
+    monkeypatch.setattr(aws, "_SESSION_PREWARM_WAIT_SEC", 0.01)
+    server._agent_manager.prewarm_gate = asyncio.Event()  # 永不 set
+
+    await asyncio.wait_for(
+        server._handle_session_delete(None, _request(target), asyncio.Lock()), 2
+    )
+    assert not session_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_failed_payload_carries_runtime_detail(wiring):
+    """E: DELETE_FAILED 回包要带"哪类运行态没清掉"，不能只有固定文案。"""
+    session_dir, _evicted, _released, _killed, sent, _tm = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, _SpyAgent())
+
+    async def cleanup(**_):
+        raise RuntimeError(
+            "cleanup_session_runtime failed for 1 agent(s): "
+            "retained=adapter.session_adapter_locks"
+        )
+
+    server._agent_manager.cleanup_session_runtime = cleanup
+    await server._handle_session_delete(None, _request(target), asyncio.Lock())
+
+    assert sent and sent[-1]["status"] == "failed"
+    details = sent[-1]["body"]["details"]
+    assert details["code"] == "DELETE_FAILED"
+    assert "retained=adapter.session_adapter_locks" in details["detail"]
 
 
 async def _try_chat(server, target):
