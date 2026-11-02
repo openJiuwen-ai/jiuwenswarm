@@ -2,7 +2,8 @@
 
 """Async byte stream for one IPC connection.
 
-POSIX uses a Unix domain socket. Windows uses a named pipe via the stdlib
+Resident POSIX uses a Unix domain socket; Front-attached mode uses loopback
+TCP on every platform. Windows resident mode uses a named pipe via the stdlib
 ``multiprocessing.connection`` transport, bridged onto the event loop.
 """
 

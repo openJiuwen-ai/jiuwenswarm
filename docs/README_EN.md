@@ -217,6 +217,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Windows and macOS desktop auto-update design, flow, and key modules (including pre-release pushes).</td>
     </tr>
     <tr>
+      <td width="22%"><strong>HarmonyOS Runtime IPC</strong></td>
+      <td width="28%"><a href="en/HarmonyOS_Runtime_IPC.md">Enable and Test</a></td>
+      <td width="50%">Front-owned loopback IPC, Worker lifecycle and HarmonyOS packaging acceptance.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Developer Documentation</strong></td>
       <td width="28%"><a href="en/developer_guide.md">Developer Guide</a></td>
       <td width="50%">Source setup, debugging flow, and secondary development materials.</td>

@@ -69,6 +69,9 @@ def _peer_uid(sock: object) -> int | None:
 class IpcServer:
     """Accept supervisor connections on a Unix socket or a Windows named pipe."""
 
+    reconnectable = True
+    generation: int | None = None
+
     def __init__(self, path: str) -> None:
         self.path = path
         self._queue: asyncio.Queue[IpcConnection] = asyncio.Queue()

@@ -6,11 +6,11 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-02T11:35+08:00 -->
+<!-- generated-at: 2026-11-02T20:49+08:00 -->
 
 # 设计文档索引 (INDEX)
 
-> 开发前 3 · 开发中 0 · 开发后 3 · 已否决 0
+> 开发前 3 · 开发中 1 · 开发后 3 · 已否决 0
 
 按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出，全局统计按文档去重。
 
@@ -24,6 +24,11 @@ generated: true
 | [jiuwenswarm/channels/web/frontend](#module-4) | 1 |
 | [jiuwenswarm/gateway/channel_manager/web](#module-5) | 1 |
 | [jiuwenswarm/observability](#module-6) | 1 |
+| [jiuwenswarm/server/ipc](#module-7) | 1 |
+| [jiuwenswarm/server/supervisor](#module-8) | 1 |
+| [jiuwenswarm/server/worker](#module-9) | 1 |
+| [jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile](#module-10) | 1 |
+| [jiuwenswarm_harmony_pc/hnp](#module-11) | 1 |
 
 <a id="module-1"></a>
 
@@ -88,3 +93,53 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
+
+<a id="module-7"></a>
+
+## jiuwenswarm/server/ipc
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+
+<a id="module-8"></a>
+
+## jiuwenswarm/server/supervisor
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+
+<a id="module-9"></a>
+
+## jiuwenswarm/server/worker
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+
+<a id="module-10"></a>
+
+## jiuwenswarm_harmony_pc/entry/src/main/resources/rawfile
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+
+<a id="module-11"></a>
+
+## jiuwenswarm_harmony_pc/hnp
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
