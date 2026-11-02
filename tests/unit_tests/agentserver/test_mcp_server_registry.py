@@ -118,11 +118,7 @@ async def test_add_duplicate_and_invalid(registry: McpServerRegistry, monkeypatc
     assert again[0]["ok"] is False
     assert again[0]["error"] == "already exists"
     assert again[1]["ok"] is False
-    assert (
-        "安全拦截" in again[1]["error"]
-        or "dangerous" in again[1]["error"].lower()
-        or "-e" in again[1]["error"]
-    )
+    assert "配置校验未通过" in again[1]["error"] and "-e" in again[1]["error"]
 
 
 @pytest.mark.asyncio

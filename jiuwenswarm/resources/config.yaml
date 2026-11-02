@@ -640,14 +640,14 @@ react:
   # ProgressiveToolRail: 工具延迟加载，固定 eager_tools schema，deferred 工具通过
   # tools_search → invoke_tool 间接调用，最大化 prefix cache 命中率。
   tool_lazy_load:
-    enabled: true                  # 总开关，默认关闭
+    enabled: true                  # 总开关
     eager_tools:                    # 常驻可见工具列表
       - tools_search
       - invoke_tool
       - web_search
       - fetch_webpage
       - ask_user
-      - task_tool
+      - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
       - send_file_to_user
       - list_files
       - read_file
@@ -663,7 +663,6 @@ react:
       - todo_create
       - todo_list
       - todo_modify
-      - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
       - subagent_spawn              # 运行时六个工具常驻，否则主 agent 每次都要先 tools_search 再 invoke_tool
       - subagent_wait
       - subagent_list
@@ -676,7 +675,9 @@ react:
       - write_memory
       - edit_memory
       - external_memory_search
-    enable_for_models:             # 模型白名单（空=全部启用）
+    # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
+    # 懒加载依赖模型读懂 tools_search → invoke_tool，加入新模型前需先验证。
+    enable_for_models:
       - glm
       - deepseek
     subagents:                      # 子 agent 延迟加载配置
