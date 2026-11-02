@@ -24,7 +24,7 @@ function Report-Progress([int]$Percent, [string]$Status, [string]$Detail = '', [
     if (-not $Force -and ([DateTime]::UtcNow-$script:progressWritten).TotalMilliseconds -lt 200) { return }
     try {
         $stage=$ProgressPath+'.new'
-        [IO.File]::WriteAllText($stage,([string]$script:progressValue+"`n"+$Status+"`n"+$Detail),$utf8)
+        [IO.File]::WriteAllText($stage,([string]$script:progressValue+"`n"+$Status+"`n"+$Detail+"`n"),$utf8)
         if ([IO.File]::Exists($ProgressPath)) { [IO.File]::Replace($stage,$ProgressPath,[NullString]::Value) }
         else { [IO.File]::Move($stage,$ProgressPath) }
         $script:progressWritten=[DateTime]::UtcNow

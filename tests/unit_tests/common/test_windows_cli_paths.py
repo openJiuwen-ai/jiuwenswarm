@@ -244,7 +244,7 @@ def test_preservation_progress_does_not_change_verified_result(tmp_path, preserv
     assert result.returncode == 0, result.stderr
     record = json.loads(report.read_text(encoding="utf-8"))
     retained = Path(record["mappings"][0]["backup"]) if mode == "Preserve" else root / "global"
-    assert progress.read_text(encoding="utf-8").splitlines()[:2] == ["100", "CLI environment ready."]
+    assert progress.read_text(encoding="utf-8").splitlines() == ["100", "CLI environment ready.", ""]
     assert (retained / "unknown-user-file").read_bytes() == (source / "unknown-user-file").read_bytes()
     assert not progress.with_suffix(".txt.new").exists()
 

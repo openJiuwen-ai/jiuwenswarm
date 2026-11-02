@@ -63,6 +63,36 @@ end;
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup 6")
+@pytest.mark.parametrize("detail", ["", "4 / 10 files"])
+def test_progress_writer_updates_status_with_optional_detail(tmp_path, monkeypatch, detail):
+    source = (ROOT / "scripts/preserve-windows-cli.ps1").read_text(encoding="utf-8")
+    reporter = source[source.index("function Report-Progress("):source.index("function Full-Path(")]
+    helper = tmp_path / "reporter.ps1"
+    helper.write_text(
+        'param([string]$ProgressPath)\n'
+        '$utf8 = New-Object Text.UTF8Encoding($false)\n'
+        '$script:progressValue=0\n'
+        '$script:progressWritten=[DateTime]::MinValue\n' + reporter +
+        f"Report-Progress 100 'CLI environment ready.' '{detail}' -Force\n"
+        'Start-Sleep -Milliseconds 300\n', encoding="utf-8",
+    )
+    run, text = _run_edge_installer(tmp_path, monkeypatch, r'''
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var Code: Integer;
+begin
+  ShowWindowsCliStatus('Preserving CLI environment...');
+  if not RunCliProcess(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "@HELPER@" -ProgressPath "@PROGRESS@"',
+    '@PROGRESS@', 0, 300, Code) then RaiseException('Progress writer failed');
+  Log('[report] status=' + CliStatusLabel.Caption + '; detail=' + CliDetailLabel.Caption + '; end');
+  Result := '';
+end;
+'''.replace("@HELPER@", str(helper)).replace("@PROGRESS@", str(tmp_path / "progress.txt")))
+    assert run.returncode == 0, text
+    assert f"[report] status=CLI environment ready.; detail={detail}; end" in text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup 6")
 def test_preparation_failure_after_preservation_restores_error_page_and_exit(tmp_path, monkeypatch):
     run, text = _run_edge_installer(tmp_path, monkeypatch, r'''
 function PrepareToInstall(var NeedsRestart: Boolean): String;
