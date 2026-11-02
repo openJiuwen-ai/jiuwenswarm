@@ -22,7 +22,7 @@ from jiuwenswarm.server.lifecycle import Readiness
 @pytest.mark.parametrize("outcome", ["success", "hub-error", "unexpected-error"])
 async def test_ws_hub_catalog_reaches_query_without_admission_or_tenant(monkeypatch, outcome):
     envelope = E2AEnvelope(
-        request_id="catalog-ws", channel="gateway", method=ReqMethod.HUB_EQUIPMENT_CATALOG.value, params={},
+        request_id="catalog-ws", channel="gateway", method=ReqMethod.HUB_EXPERT_PACKAGES_CATALOG.value, params={},
     )
     request = parse_raw_message(json.dumps(envelope.to_dict()))
     assert is_control_method(request)

@@ -468,9 +468,16 @@ as cancellation rather than being classified as a `chat.error`.
 
 ## Management Hub equipment catalog
 
+This catalog contains only Hub `agent_template` and `agent_group` packages for
+administrator allowlist configuration. It excludes plugin, MCP and local installed
+packages, and does not apply user allowlist filtering. The existing package catalog/lifecycle
+family (including `agent_groups.*`, `agent_templates.*` and plugin package queries) retains
+its user-facing discovery, local-state and permission semantics. The boundary is management
+authorization candidates versus user-facing discovery/lifecycle, not mutually exclusive asset types.
+
 The enterprise management endpoint `GET /api/v1/package-allowlists/catalog` sends the
-sessionless E2A method `hub.equipment.catalog` to Server. Its Server HTTP endpoint is
-`GET /api/v1/hub/equipment/catalog`. Parameters are empty; neither a user nor a session
+sessionless E2A method `hub.expert_packages.catalog` to Server. Its Server HTTP endpoint is
+`GET /api/v1/hub/expert-packages/catalog`. Parameters are empty; neither a user nor a session
 is required. The request bypasses Runtime session allocation and Agent execution
 initialization. Server retains Hub lookup, pagination, caching and deduplication.
 Gateway retains management authentication and fixed hidden-package filtering and

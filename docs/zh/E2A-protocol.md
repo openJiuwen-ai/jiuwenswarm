@@ -411,9 +411,15 @@ Agent → 网关 → 客户端的**每一条**出站记录（含流式多帧）�
 
 ## 管理端 Hub 专家目录查询
 
+该目录仅包含 Hub 专家模板包（`agent_template`）和专家团队包（`agent_group`），供管理员配置授权。
+不包含 plugin、MCP 或本地安装包，也不按用户白名单过滤。已有包目录/生命周期接口族
+（包含 `agent_groups.*`、`agent_templates.*` 和 plugin 包查询）继续负责用户侧包发现与操作，
+保留其本地状态及权限语义。两族接口按“管理端授权候选目录”与“用户侧包发现/生命周期”
+划分用途，不是按互不重叠的包类型划分。
+
 企业管理接口 `GET /api/v1/package-allowlists/catalog` 通过无会话 E2A 方法
-`hub.equipment.catalog` 查询 Server；对应 Server HTTP 路径为
-`GET /api/v1/hub/equipment/catalog`。请求参数为空，无需用户或会话，不进行 Runtime
+`hub.expert_packages.catalog` 查询 Server；对应 Server HTTP 路径为
+`GET /api/v1/hub/expert-packages/catalog`。请求参数为空，无需用户或会话，不进行 Runtime
 会话分配，也不初始化 Agent 执行。Server 复用现有 Hub 查询、分页、缓存和去重逻辑；
 Gateway 保留管理链路鉴权及固定隐藏包过滤，不再导入 Server 的查询实现。
 

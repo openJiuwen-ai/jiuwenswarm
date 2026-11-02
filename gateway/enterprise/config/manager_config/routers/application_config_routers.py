@@ -156,7 +156,7 @@ async def list_package_allowlist_catalog(request: Request):
         client = client()
     ok, payload = await fetch_agent_unary(
         agent_client=client,
-        req_method=ReqMethod.HUB_EQUIPMENT_CATALOG,
+        req_method=ReqMethod.HUB_EXPERT_PACKAGES_CATALOG,
         params={},
         session_id=None,
         user_id=None,

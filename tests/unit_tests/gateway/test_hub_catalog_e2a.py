@@ -84,7 +84,7 @@ async def test_catalog_runtime_uses_default_http_without_routing(monkeypatch):
     http = SimpleNamespace(send_request=AsyncMock(return_value=response))
     client = RuntimeRoutedAgentClient(route_client=route, http_client=http)
     await client.connect("")
-    envelope = E2AEnvelope(request_id="catalog", channel="gateway", method=ReqMethod.HUB_EQUIPMENT_CATALOG.value, params={})
+    envelope = E2AEnvelope(request_id="catalog", channel="gateway", method=ReqMethod.HUB_EXPERT_PACKAGES_CATALOG.value, params={})
     assert await client.send_request(envelope) is response
     http.send_request.assert_awaited_once_with(envelope, base_url="http://management-server:8766")
     route.route.assert_not_awaited()

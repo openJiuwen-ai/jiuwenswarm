@@ -100,7 +100,7 @@ _ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
 # package does not define this member yet.
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
 # Management-only Hub catalog; remove the shim once the protocol pin ships it.
-_ensure_req_method("HUB_EQUIPMENT_CATALOG", "hub.equipment.catalog")
+_ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")
 # MCP Apps host bridge (io.modelcontextprotocol/ui); 协议包当前 pin 尚未定义。
 _ensure_req_method("MCP_APP_LIST_TOOLS", "mcp_app.list_tools")
 _ensure_req_method("MCP_APP_READ_RESOURCE", "mcp_app.read_resource")
