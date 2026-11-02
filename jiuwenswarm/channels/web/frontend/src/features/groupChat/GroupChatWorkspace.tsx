@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   AtSign, Bot, ChevronLeft, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
 } from 'lucide-react';
@@ -24,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { executionResult, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { executionResult, groupMessageContent, mentionExecutionPhase, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -134,6 +134,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const atBottom = useRef(true);
   const knownMessages = useRef(new Set<string>());
   const animatedMessages = useRef(new Set<string>());
+  // 本浏览器会话内发出的用户消息 client_message_id：@成员「待回复」占位只对它们生效，
+  // 刷新/重进后历史消息不弹占位（见 pendingMentionMembers 推导）。
+  const sessionSentIds = useRef(new Set<string>());
   const trackMessages = useCallback((incoming: GroupMessage[], animate: boolean) => {
     for (const message of incoming) {
       if (animate && !knownMessages.current.has(message.message_id) && message.sender !== 'user') {
@@ -351,6 +354,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     const signature = JSON.stringify(body);
     if (request.current?.signature !== signature) request.current = { signature, token: crypto.randomUUID() };
     const token = request.current.token;
+    sessionSentIds.current.add(token);
     const draft = input;
     const draftMentions = mentions;
     const pendingId = `pending-${token}`;
@@ -454,6 +458,33 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
   const agentCount = group?.members.length ?? 0;
 
+  // 本会话每条带 @ 的用户消息，各自记录尚未回音的被 @ 成员：
+  // 消息下方独立挂「弹动三点」占位气泡（文案随成员当前执行阶段实时变化），谁回复谁的占位消失，
+  // 多条提问互不顶替。仅限本浏览器会话发出的消息，刷新后不重现；乐观 pending 阶段不弹。
+  const pendingMentionsByMessage = (() => {
+    const pending = new Map<string, { memberName: string; execution: GroupExecution | undefined }[]>();
+    if (!group) return pending;
+    for (const message of messages) {
+      if (message.sender !== 'user' || message.pending
+        || !sessionSentIds.current.has(message.client_message_id)) continue;
+      const mentioned = message.mentions?.length
+        ? message.mentions
+        : selectedMentions(groupMessageContent(message), [], group.members);
+      if (!mentioned.length) continue;
+      const waiting = mentioned.flatMap((memberName) => {
+        if (messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) return [];
+        // executions 已按 created_at 升序（mergeExecutions），pop 取该成员消息之后最新一次执行。
+        const execution = executions.filter((item) =>
+          (item.member_name === memberName || item.owner_member === memberName)
+          && item.created_at * 1000 >= message.timestamp).pop();
+        if (execution && FINISHED_EXECUTIONS.has(execution.status)) return [];
+        return [{ memberName, execution }];
+      });
+      if (waiting.length) pending.set(message.message_id, waiting);
+    }
+    return pending;
+  })();
+
   return <section className="group-chat-workspace has-conversation" data-testid="group-chat-workspace">
     <div className="group-chat-main" data-testid="group-chat-main">
     <header className="group-chat-header">
@@ -501,19 +532,42 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           </div>}
           {timeline.map((item) => item.execution ? <ExecutionCard key={item.id} execution={item.execution}
             result={executionResult(item.execution, messages)} renderAvatar={memberAvatar} /> : item.message && (
-            <article key={item.id} id={`group-chat-message-${item.id}`} className={`group-chat-message${item.message.sender === 'user' ? ' is-user' : ''}`}
-              data-testid="group-chat-message" data-variant={item.id}>
-              {item.message.sender !== 'user' && <header data-testid="group-chat-message-header">
-                <TeamMemberAvatar member={item.message.sender} className="group-chat-message-avatar" alt="" />
-                <strong>{item.message.sender_name || item.message.sender}</strong>
-                <time dateTime={new Date(item.at).toISOString()}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-              </header>}
-              <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} />
-              {item.message.pending && <small className="group-chat-muted" data-testid="group-chat-message-pending">
-                {t('groupChat.sending')}
-              </small>}
-              {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
-            </article>
+            <Fragment key={item.id}>
+              <article id={`group-chat-message-${item.id}`} className={`group-chat-message${item.message.sender === 'user' ? ' is-user' : ''}`}
+                data-testid="group-chat-message" data-variant={item.id}>
+                {item.message.sender !== 'user' && <header data-testid="group-chat-message-header">
+                  <TeamMemberAvatar member={item.message.sender} className="group-chat-message-avatar" alt="" />
+                  <strong>{item.message.sender_name || item.message.sender}</strong>
+                  <time dateTime={new Date(item.at).toISOString()}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+                </header>}
+                <GroupMessageContent message={item.message} animate={animatedMessages.current.has(item.id)} members={group.members} />
+                {item.message.pending && <small className="group-chat-muted" data-testid="group-chat-message-pending">
+                  {t('groupChat.sending')}
+                </small>}
+                {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
+              </article>
+              {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution }) => {
+                const member = group.members.find((item2) => item2.member_name === memberName);
+                const phase = mentionExecutionPhase(execution);
+                const phaseLabel = phase.key === 'executing' && phase.total
+                  ? t('groupChat.mentionPhase.executingProgress', { completed: phase.completed ?? 0, total: phase.total })
+                  : t(`groupChat.mentionPhase.${phase.key}`);
+                return <article key={`mention-pending-${item.id}-${memberName}`}
+                  className="group-chat-message group-chat-mention-pending"
+                  data-testid="group-chat-mention-pending" data-variant={memberName}>
+                  <header data-testid="group-chat-mention-pending-header">
+                    <TeamMemberAvatar member={memberName} className="group-chat-message-avatar" alt="" />
+                    <strong>{member?.display_name || memberName}</strong>
+                  </header>
+                  <div className="group-chat-mention-pending__bubble">
+                    <span className="group-chat-mention-pending__dots" aria-hidden="true"><i /><i /><i /></span>
+                    <span className="group-chat-mention-pending__stack">
+                      <span>{phaseLabel}</span>
+                    </span>
+                  </div>
+                </article>;
+              })}
+            </Fragment>
           ))}
         </div>
         <div className="group-chat-composer-area">
