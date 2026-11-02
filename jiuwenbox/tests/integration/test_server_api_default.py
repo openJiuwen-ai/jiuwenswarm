@@ -5828,6 +5828,15 @@ class TestDefaultPolicyAPI:
         return policy["network"]["egress"]["blocked_ips"]
 
     @staticmethod
+    def test_bundled_default_policy_cgroup_limits():
+        """The bundled default policy caps each sandbox at 512 MiB and one CPU."""
+        policy = SecurityPolicy.model_validate(_DEFAULT_POLICY)
+        assert policy.cgroup.memory_max == 512 * 1024 * 1024
+        # One core is quota=period at the 100ms cgroup period.
+        assert policy.cgroup.cpu_max == (100_000, 100_000)
+        assert policy.cgroup.pids_max is None
+
+    @staticmethod
     def test_get_default_policy(client):
         resp = client.get("/api/v1/policies")
         assert resp.status_code == 200, resp.text
@@ -5836,6 +5845,9 @@ class TestDefaultPolicyAPI:
         assert data["network"]["mode"] in ("isolated", "host")
         assert "egress" in data["network"]
         assert "ingress" in data["network"]
+        assert data["cgroup"]["memory_max"] == 512 * 1024 * 1024
+        assert data["cgroup"]["cpu_max"] == [100_000, 100_000]
+        assert data["cgroup"]["pids_max"] is None
 
     @staticmethod
     def test_get_default_policy_matches_inherited_sandbox_policy(client):
@@ -5847,6 +5859,7 @@ class TestDefaultPolicyAPI:
 
         effective = client.get(f"/api/v1/policies/{sandbox_id}").json()
         assert effective["network"] == default["network"]
+        assert effective["cgroup"] == default["cgroup"]
 
     @staticmethod
     def test_put_policies_without_flag_leaves_default_untouched(
