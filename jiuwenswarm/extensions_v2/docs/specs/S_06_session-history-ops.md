@@ -4,9 +4,9 @@
 | --- | --- |
 | 编号 | S_06 / session-history-ops |
 | 最近修订日期 | 2026-10-31 |
-| 关联特性与字段填写手册 | [F_16 追加](../features/F_16_session-append.md) / [F_23 查询](../features/F_23_session-messages.md) |
+| 关联特性与字段填写手册 | [F_16 追加](../features/F_16_session-append.md) / [F_18 查询](../features/F_18_session-messages.md) |
 
-本规约维护稳定边界和不变量。[F_16 第 3 节](../features/F_16_session-append.md#3-事件契约)逐字段说明事件输入、message/origin 嵌套字段和输出；[第 4 节](../features/F_16_session-append.md#4-方法契约)说明 append 参数、默认值、填写示例和迁移。[F_23 第 4 节](../features/F_23_session-messages.md#4-方法契约)独立说明 messages 的无参数调用、消息数组字段和错误；两份 feature 共用本规约，不复制另一套不变量。追加类型实现于 event_types/session_history.py，查询协议实现于 event_types/session_queries.py，不另维护一份完整 Schema。
+本规约维护稳定边界和不变量。[F_16 第 3 节](../features/F_16_session-append.md#3-事件契约)逐字段说明事件输入、message/origin 嵌套字段和输出；[第 4 节](../features/F_16_session-append.md#4-方法契约)说明 append 参数、默认值、填写示例和迁移。[F_18 第 4 节](../features/F_18_session-messages.md#4-方法契约)独立说明 messages 的无参数调用、消息数组字段和错误；两份 feature 共用本规约，不复制另一套不变量。追加类型实现于 event_types/session_history.py，查询协议实现于 event_types/session_queries.py，不另维护一份完整 Schema。
 
 ## 1. 公开接口
 
@@ -16,7 +16,7 @@
 
 `ops.session.append(note)` 接受新格式 `{id, message}` 或兼容旧格式 `{id, role, content}`；同一原请求必须连参数格式一起保持重试。新 message 只允许 user/assistant/system 文本消息，不能制造工具调用/结果或媒体。平台固定会话和包身份、来源和行 uuid；追加 transcript_only，不启动 Agent。旧事件字段 content/source/role/message_id 已被结构化输入替代，旧回执 message 的产品记录应改读 history_record。
 
-`ops.session.messages()` 现在触发 `session.messages` 查询链，返回最近最多 4096 项、按旧到新排列的 role/text/toolUses/toolResults 数组；没有 limit/cursor 参数或 page 包装。未知历史为空数组，读取故障不冒充空数组。逐字段解释见 F_23，公共封装和拒绝协议见 [S_16](S_16_session-query-events.md)。底层产品历史分页服务仍保留，不作为新的公开 Ops。
+`ops.session.messages()` 现在触发 `session.messages` 查询链，返回最近最多 4096 项、按旧到新排列的 role/text/toolUses/toolResults 数组；没有 limit/cursor 参数或 page 包装。未知历史为空数组，读取故障不冒充空数组。逐字段解释见 F_18，公共封装和拒绝协议见 [S_16](S_16_session-query-events.md)。底层产品历史分页服务仍保留，不作为新的公开 Ops。
 
 ## 2. 平台覆盖
 
@@ -44,7 +44,7 @@ event_types 只定义/校验/注册，history_events 触发，history_message �
 
 新公开事件/回执在未合入 PR 内迁移，旧 append 方法字符串参数保留；旧历史格式不强制迁移。旧 JSON 写入模式保留既有写行为；底层旧分页 helper 仍可报 HISTORY_FORMAT_UNSUPPORTED，公开 messages 数组不接收游标。历史查询空结果不等于错误，保存文件成功不保证所有派生元数据原子提交或 fsync 断电耐久。
 
-追加事件/方法的字段、运行链、迁移见 F_16；只读 messages 的数组字段、查询事件和独立用户包见 F_23。联合示例仍见 session_history_audit README，历史验证分清两份文档各自覆盖范围。本次不引入 agentId/Team 范围，不恢复 server.request.handle，新增同名消息查询事件，机制见 S_16。
+追加事件/方法的字段、运行链、迁移见 F_16；只读 messages 的数组字段、查询事件和独立用户包见 F_18。联合示例仍见 session_history_audit README，历史验证分清两份文档各自覆盖范围。本次不引入 agentId/Team 范围，不恢复 server.request.handle，新增同名消息查询事件，机制见 S_16。
 
 
 ## 5. session.messages 当前公开字段
