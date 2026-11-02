@@ -1,3 +1,15 @@
+---
+title: 配置多模态模型后，Code 未按 Work 规则加载工具
+author: null
+author_note: 历史作者待确认；缺少原 owner 和可靠创建署名
+id: B_20261026_1602_code-multimodal-loading
+type: B
+modules: []
+files: []
+designs: null
+design_note: 历史设计关联待核实，不等同于没有关联设计
+---
+
 # 配置多模态模型后，Code 未按 Work 规则加载工具
 
 | 项 | 值 |

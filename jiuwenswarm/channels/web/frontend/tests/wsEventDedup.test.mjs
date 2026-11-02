@@ -173,3 +173,48 @@ test('other chat events with the same request_id are unchanged', () => {
   assert.equal(first, second);
   assert.doesNotMatch(first, /::proc:/);
 });
+
+test('chat.error stream failure and cron failure record stay distinct', () => {
+  // 回归：gateway 的 _finish_failed_stream 与 cron 调度器的失败记录推送共用
+  // request_id（间隔 < 1500ms），旧键只认 rid 会把第二条当重复投递吞掉，
+  // 失败原因（如 ambiguous legacy model name）对用户全程不可见。
+  const streamFailure = {
+    session_id: session,
+    event_type: 'chat.error',
+    request_id: requestId,
+    error: 'ambiguous legacy model name; select a stable model_id',
+    code: 'AGENT_SERVER_ERROR',
+    is_complete: true,
+  };
+  const cronFailureRecord = {
+    ...streamFailure,
+    error: '[cron] 任务执行失败: ambiguous legacy model name; select a stable model_id',
+    cron_session_stream: true,
+  };
+  assert.notEqual(
+    makeEventDedupKey('chat.error', streamFailure),
+    makeEventDedupKey('chat.error', cronFailureRecord),
+  );
+});
+
+test('duplicate chat.error redelivery with the same request_id still matches', () => {
+  const payload = {
+    session_id: session,
+    event_type: 'chat.error',
+    request_id: requestId,
+    error: 'boom',
+    is_complete: true,
+  };
+  assert.equal(
+    makeEventDedupKey('chat.error', payload),
+    makeEventDedupKey('chat.error', payload),
+  );
+});
+
+test('chat.error without an error string keeps the request-level key', () => {
+  const base = { session_id: session, event_type: 'chat.error', request_id: requestId };
+  assert.equal(
+    makeEventDedupKey('chat.error', base),
+    makeEventDedupKey('chat.error', { ...base, timestamp: 1 }),
+  );
+});
