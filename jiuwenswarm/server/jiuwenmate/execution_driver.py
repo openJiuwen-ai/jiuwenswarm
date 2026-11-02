@@ -41,6 +41,7 @@ from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
 from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
+from jiuwenswarm.server.jiuwenmate.welink_office_tool import prepare_welink_office_invocation, welink_execution_guidance
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_tool import (
     DingTalkCliCommitGuard,
     dingtalk_execution_guidance,
@@ -253,6 +254,7 @@ class ExecutionDriver:
                 item for item in (
                     guidance,
                     dingtalk_execution_guidance(record.route_snapshot, card=published_spec.card),
+                    welink_execution_guidance(record.route_snapshot),
                     _session_workspace_guidance(record.session_id, session_workspace, output_dir),
                     vision_guidance(),
                 ) if item
@@ -271,6 +273,10 @@ class ExecutionDriver:
                 self._dingtalk_cli_runtime,
                 request_input=record.request_input,
                 route_snapshot=record.route_snapshot,
+            )
+            spec = prepare_welink_office_invocation(
+                spec, context, request_input=record.request_input, route_snapshot=record.route_snapshot,
+                settings_path=self._windows.db_path,
             )
             dingtalk_commit_guard.bind_context(context)
             group_cli = None

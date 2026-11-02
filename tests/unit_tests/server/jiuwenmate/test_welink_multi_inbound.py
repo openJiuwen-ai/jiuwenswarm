@@ -20,6 +20,16 @@ def config():
             for agent in ("a", "b")]}}}
 
 
+def test_two_bound_colleagues_stay_active_in_a_shared_group():
+    access = SimpleNamespace(status="active", namespace_id="local", agent_id="b", app_id="reader")
+    assert inbound.welink_group_membership_status(access, config()) == "active"
+    assert inbound.configured_welink_binding(config()) is None
+    stranger = SimpleNamespace(status="active", namespace_id="local", agent_id="c", app_id="reader")
+    assert inbound.welink_group_membership_status(stranger, config()) == "unknown"
+    left = SimpleNamespace(status="left", namespace_id="local", agent_id="b", app_id="reader")
+    assert inbound.welink_group_membership_status(left, config()) == "unknown"
+
+
 def test_multiple_bindings_and_legacy_reader_are_distinct():
     bindings = inbound.configured_welink_bindings(config())
     assert [item.agent_id for item in bindings] == ["a", "b"]
@@ -63,6 +73,22 @@ def fanout(tmp_path, monkeypatch):
             get_colleague=lambda *args: SimpleNamespace(enabled=True),
             current_snapshot=lambda ns, agent: SimpleNamespace(agent_id=agent),
             read_settings=lambda ns, agent: SimpleNamespace(group_reply_mode=modes[agent])))
+
+
+@pytest.mark.asyncio
+async def test_private_chat_opens_a_direct_request_for_that_colleague(fanout):
+    message = event(chat_type="p2p", chat_id="p2p:person", message_id="dm1", text="介绍一下你自己")
+    assert (await inbound.accept_welink_message(fanout, message)).value == "handled"
+    call = fanout._agent_manager.scheduler.accept.call_args
+    request = call.kwargs["request_input"]
+    assert request.kind == "direct_message"
+    assert request.reply_target == "p2p:person"
+    assert request.source.message_id == "dm1"
+    assert call.kwargs["route_snapshot"].target_id == "p2p:person"
+    assert call.kwargs["route_snapshot"].source_message_id == "dm1"
+    echo = event(chat_type="p2p", chat_id="p2p:person", message_id="dm2", sender_kind="agent")
+    assert (await inbound.accept_welink_message(fanout, echo)).value == "handled"
+    assert fanout._agent_manager.scheduler.accept.call_count == 1
 
 
 @pytest.mark.asyncio

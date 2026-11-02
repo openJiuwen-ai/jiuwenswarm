@@ -910,6 +910,14 @@ export function ColleagueWorkspacePage({
               <ColleagueAvatar colleague={ownerOf(record.agentId) ?? colleague} size="medium" />
               <span className="jiuwenmate-records__conversation-copy">
                 <strong>{ownerOf(record.agentId)?.name ?? record.agentId}</strong>
+                {record.id === SHARING_CONVERSATION_ID && record.unread ? (
+                  <span
+                    role="img"
+                    aria-label={t('jiuwenmate.sharing.unread')}
+                    data-testid="jiuwenmate-sharing-unread"
+                    style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--color-feedback-danger)' }}
+                  />
+                ) : null}
                 <small>{record.id === SHARING_CONVERSATION_ID ? t('jiuwenmate.sharing.title') : record.lastMessage || record.title}</small>
               </span>
               <time>{new Date(record.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time>

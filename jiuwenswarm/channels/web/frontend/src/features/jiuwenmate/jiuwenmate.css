@@ -4774,6 +4774,13 @@
   min-width: 0;
 }
 
+.jiuwenmate-profile__mail-form {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  width: 100%;
+}
+
 .jiuwenmate-profile__mail-content h3,
 .jiuwenmate-profile__mail-content p {
   margin: 0;

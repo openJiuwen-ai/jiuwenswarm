@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from .welink_binding import normalize_welink_section
+from .welink_binding import learn_assistant_account, normalize_welink_section
 from .welink_cli import WelinkCli
 from .welink_connect import WelinkChannel, WelinkConfig
 from .welink_reader import WelinkReader
@@ -64,6 +64,10 @@ class WelinkRuntime:
             if key in self.channels:
                 continue
             channel = WelinkChannel(config, self.router)
+            channel.remember_account = (
+                lambda account, agent_id=config.agent_id, credential_id=config.assistant_credential_id:
+                learn_assistant_account(agent_id, credential_id, account)
+            )
             channel.set_inbound_handler(self.handler)
             self.channels[key] = channel
             self.manager.register_channel(channel)
