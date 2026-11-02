@@ -319,13 +319,14 @@ class TeamMonitorHandler(BaseMonitorHandler):
             from openjiuwen.agent_teams.context import set_session_id, reset_session_id
             token = set_session_id(self._session_id)
             try:
-                messages = await self._monitor.get_messages()
-                for message in messages:
-                    if message.message_id == message_id:
-                        protocol = self._normalize_message_protocol(message.protocol)
-                        content = self._normalize_message_content(message.content or "", protocol)
-                        return content, protocol
-                return "", "plain"
+                # Point query by primary key: never pull the
+                # whole mailbox just to resolve one event's content.
+                message = await self._monitor.get_message(message_id)
+                if message is None:
+                    return "", "plain"
+                protocol = self._normalize_message_protocol(message.protocol)
+                content = self._normalize_message_content(message.content or "", protocol)
+                return content, protocol
             finally:
                 reset_session_id(token)
         except Exception as e:

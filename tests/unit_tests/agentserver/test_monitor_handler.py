@@ -105,6 +105,8 @@ class _FakeMonitor:
         self._task_dao = task_dao
         if task_dao is not None:
             self._db = _FakeDb(task_dao)
+        # Call counter so tests can assert the point-query path was taken.
+        self.get_message_call_count = 0
 
     async def start(self) -> None:
         pass
@@ -145,6 +147,14 @@ class _FakeMonitor:
 
     async def get_messages(self) -> list[_FakeMessage]:
         return list(self._messages)
+
+    async def get_message(self, message_id: str) -> _FakeMessage | None:
+        """Mirror TeamMonitor.get_message: primary-key point query."""
+        self.get_message_call_count += 1
+        for m in self._messages:
+            if m.message_id == message_id:
+                return m
+        return None
 
     @contextlib.contextmanager
     def _bound_session(self):
@@ -457,6 +467,72 @@ async def test_convert_plain_protocol_message_keeps_json_like_text_unchanged() -
 
         assert converted["event"]["protocol"] == "plain"
         assert converted["event"]["content"] == raw_content
+    finally:
+        await handler.stop()
+
+
+@pytest.mark.anyio
+async def test_message_content_resolved_via_point_query_not_full_scan() -> None:
+    """_get_message_display 必须走 get_message 点查，
+    不得再经 get_messages 全量拉取。"""
+    event = MonitorEvent(
+        event_type=MonitorEventType.MESSAGE,
+        team_name="team-1",
+        timestamp=123,
+        message_id="msg-point",
+        from_member_name="team_leader",
+        to_member_name="worker-1",
+    )
+    monitor = _FakeMonitor(
+        members=[],
+        leader_member_name=None,
+        events=[event],
+        messages=[_FakeMessage(message_id="msg-point", content="point body")],
+    )
+
+    async def _explode_get_messages():
+        raise AssertionError("handler must not use the full-scan get_messages path")
+
+    monitor.get_messages = _explode_get_messages
+    handler = TeamMonitorHandler(monitor, "sess-monitor")
+
+    await handler.start()
+    try:
+        converted = await anext(handler.events())
+
+        assert converted["event"]["content"] == "point body"
+        assert converted["event"]["protocol"] == "plain"
+        assert monitor.get_message_call_count == 1
+    finally:
+        await handler.stop()
+
+
+@pytest.mark.anyio
+async def test_message_event_unknown_message_id_degrades_to_empty_content() -> None:
+    """点查未命中（消息不存在/hide_dm 隐藏）时与旧行为一致：空内容 plain。"""
+    event = MonitorEvent(
+        event_type=MonitorEventType.MESSAGE,
+        team_name="team-1",
+        timestamp=123,
+        message_id="msg-gone",
+        from_member_name="team_leader",
+        to_member_name="worker-1",
+    )
+    monitor = _FakeMonitor(
+        members=[],
+        leader_member_name=None,
+        events=[event],
+        messages=[],
+    )
+    handler = TeamMonitorHandler(monitor, "sess-monitor")
+
+    await handler.start()
+    try:
+        converted = await anext(handler.events())
+
+        assert converted["event"]["content"] == ""
+        assert converted["event"]["protocol"] == "plain"
+        assert monitor.get_message_call_count == 1
     finally:
         await handler.stop()
 
