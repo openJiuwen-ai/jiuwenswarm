@@ -92,10 +92,11 @@ ui:
 | `conversation.panel.right` | `list` | 右侧工作区，可并列多个实例；插件实例与原生页签并列 |
 | `conversation.header.title.after` | `list` | 会话标题之后，横向排列 |
 | `conversation.header.actions` | `list` | 会话头部操作区，横向排列 |
-| `conversation.turn.content.after` | `list` | 单轮回复内容之后，按 `instance_key=requestId` 归属 |
+| `conversation.session.content.after` | `list` | 单轮回复内容之后、footer 之前，只在 footer 可见的最后一条助手消息挂载一次，按 `instance_key=requestId` 归属 |
 | `conversation.turn.footer.actions` | `list` | 单轮回复 meta 行，横向排列 |
 | `message.assistant.meta` | `list` | 助手消息 meta 行，按 `instance_key=requestId` 对应单轮实例 |
 | `application.entry` | `single` | 应用范围的首次访问入口 |
+| `application.sidebar.footer` | `single` | 左侧图标栏底部的应用范围入口区 |
 | `application.settings` | `list` | 设置页内容区 |
 | `application.menu` | `list` | 左侧导航栏，点击进入 `application.menu.main` |
 | `application.menu.main` | `single` | 应用菜单主页面 |
@@ -104,6 +105,7 @@ ui:
 
 槽位是平台预定义位置，插件只能选择，不能新增。前端在没有实例时不渲染容器。
 `application.entry` 为应用范围的 single 入口，由 `WebUIEntryHost` 在浏览器首次访问时挂载；ready 被接受后写入访问标记，后续刷新跳过挂载，clear 或失败关闭入口。
+`application.sidebar.footer` 同为应用范围的 single 槽位，由 `WebUIHost` 在左侧图标栏底部挂载，不要求聊天会话；没有实例时不渲染容器。
 `application.menu`、`task.function`、`application.settings` 仍为会话范围，新建空对话中不挂载。
 平台在 `webui/constants.py` 的 `SLOT_SPECS` 中维护槽位的范围和展示模式；范围及目标字段见
 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)。新增槽位还需要接入前端，不能只改后端表项；
@@ -321,4 +323,4 @@ render → Handler → replace；前端测试使用 jsdom 验证页面点击产�
 - 目录随生效记录刷新、包卸载后目录失效尚未单独验证；当前用例只覆盖实例清理。
 - 本地化资源已声明和校验，但尚未参与标题解析。
 - 界面项不支持运行时禁用、灰度或按用户过滤。
-- 当前槽位为 14 个位置：13 个会话语境位置（含单轮与助手消息 meta 位置）和应用范围的 `application.entry`；新增槽位时，前后端登记的名称、范围和展示模式必须一致，未知槽位或范围不一致的目标会被拒绝。
+- 当前槽位为 15 个位置：13 个会话语境位置（含单轮与助手消息 meta 位置）和应用范围的 `application.entry`、`application.sidebar.footer`；新增槽位时，前后端登记的名称、范围和展示模式必须一致，未知槽位或范围不一致的目标会被拒绝。

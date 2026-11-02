@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-10-31。关联设计：[F_01](../features/F_01_antd-components.md)。
+最近修订：2026-11-02。关联设计：[F_01](../features/F_01_antd-components.md)。
 
 ## 范围与适用条件
 
@@ -8,9 +8,9 @@
 目录登记与页面渲染是独立职责；登记规则不等于已启用对应组件或槽位。
 
 `componentCatalog` 声明 Box、Text、Button、Input、Switch、Select、TreeSelect、Slider、Tabs、
-Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe。字段、默认值、必填与事件数据的唯一实现定义在
+Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview、Iframe、Dropdown。字段、默认值、必填与事件数据的唯一实现定义在
 [`catalog/components/`](../../catalog/components/)，本文不复制完整属性表。
-槽位目录包含应用范围的 `application.entry`，其余 13 个槽位为会话范围。
+槽位目录包含应用范围的 `application.entry` 与 `application.sidebar.footer`，其余 13 个槽位为会话范围。
 
 ## 接口与不变量
 
@@ -51,6 +51,7 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   Button 逐字显示插件标签，不自动在两个中文字之间添加空格。
 - C-18：Iframe 仅在内容激活且连接有效时持有浏览上下文；隐藏或断连时卸载 iframe，
   重新激活或 src 改变后重新加载，不保留旧文档。
+  相对路径与 HTTP(S) 来源均使用不含 `allow-same-origin` 的固定 sandbox；加载提示不覆盖整页、不拦截鼠标。
 - C-19：Input 只为已绑定的 ui.change 派发 `{value, isComposing}`；组合输入结束发送一次提交值，
   其后浏览器重复的同值提交不再派发。未绑定 change 时允许本地编辑；disabled、readOnly 和断连时不派发。
   合法 replace 重新初始化输入值，拒绝的更新保留当前草稿；清空发送空字符串。
@@ -73,6 +74,8 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
 - C-25：Tabs 的 ui.change 发送当前激活页的 `{activeKey}`，切换只派发该事件，隐藏页内容不派发其他事件。
   未绑定时仍可本地切换；disabled 页签与断连时不可切换；初始化与合法 replace 不派发事件。
   默认保留已挂载的隐藏页内容状态，destroyOnHidden 时切回后重新初始化。
+- C-26：Dropdown 的触发区由子节点提供，点击或键盘展开不派发事件；菜单项选中时只为已绑定的 `ui.select` 发送 `{key}`，
+  key 必须存在于 `items` 且菜单项未禁用；初始化与合法 replace 不派发事件。`items` 为空、key 重复或 label 为空时规则拒绝。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。
@@ -87,7 +90,7 @@ TreeSelect 另外声明 ui.change，用于承载整体选择值。
 包含 action_id、args、data、node_key 和 revision 的完整 payload 序列化后按 maxFrameBytes 校验，默认上限为 256 KiB。
 前后端遍历全部 Tabs 内容，
 隐藏内容也计入 8 层、512 节点预算，Panel/Iframe 不能嵌套为普通子节点。
-`application.entry` 使用 application 范围，以当前 Web 连接为身份，不要求会话；其他槽位使用 session 范围。
+`application.entry` 与 `application.sidebar.footer` 使用 application 范围，以当前 Web 连接为身份，不要求会话；其他槽位使用 session 范围。
 
 验证入口为 `npm run test:webui-contracts`、`npm run test:webui-protocol`、
 `npm run test:webui-runtime`、`npm run test:webui-events`、`npm run test:webui-renderer`

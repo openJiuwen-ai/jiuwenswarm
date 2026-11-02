@@ -958,12 +958,12 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
-        {!isUser && !isStreaming && message.outputOrder?.requestId ? (
+        {!isUser && !isStreaming && !hideMeta && message.outputOrder?.requestId ? (
           <WebUIHost
-            slotId="conversation.turn.content.after"
+            slotId="conversation.session.content.after"
             sessionId={activeSessionId}
             instanceKey={message.outputOrder.requestId}
-            className="mt-2"
+            className="mt-2 mb-3"
           />
         ) : null}
 

@@ -3928,6 +3928,20 @@
   pointer-events: none;
 }
 
+.chat-input-webui-above {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--color-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.chat-input-webui-above > .webui-host-instance {
+  min-width: 0;
+}
+
 .chat-input-local-alert {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) 22px;

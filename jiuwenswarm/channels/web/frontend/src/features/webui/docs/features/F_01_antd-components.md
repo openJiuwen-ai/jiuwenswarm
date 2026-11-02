@@ -1,13 +1,13 @@
 # WebUI 组件目录与渲染适配
 
-建档日期：2026-10-30。最近修订：2026-10-31。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
+建档日期：2026-10-30。最近修订：2026-11-02。关联契约：[S_01 组件规则](../specs/S_01_components.md)。
 本文件说明组件目录、属性校验器与渲染适配器的职责；整体运行时与页面渲染见
 [F_08 前端渲染](../../../../../../../../extensions_v2/docs/features/F_08_frontend-render.md)。
 
 ## 背景与范围
 
 组件目录集中描述组件属性、事件数据和槽位规则，供校验器及其他消费者查询。
-目录包含 19 个组件（包括 `Avatar`、`FileTree`、`FilePreview`），并登记应用范围的 `application.entry` 与 13 个会话范围槽位。登记组件或槽位只表示可查询其规则，
+目录包含 20 个组件（包括 `Avatar`、`FileTree`、`FilePreview` 与 `Dropdown`），并登记应用范围的 `application.entry`、`application.sidebar.footer` 与 13 个会话范围槽位。登记组件或槽位只表示可查询其规则，
 实际显示仍取决于渲染器注册和页面挂载。
 
 ## 方案与取舍
@@ -57,7 +57,9 @@ Box 将 direction、gap、align、justify、wrap 和 flex 映射为 Ant Design F
 Text 使用 Typography.Text，映射 monospace、max_lines 与语义 tone；Button 将 `ui.click` 交给节点绑定发送，断连或 disabled 时禁用。
 按钮关闭中文双字自动插空格，保留插件原始标签。
 Card、Divider、Empty、Image 和 Tag 使用对应 Ant Design 组件；Panel 只渲染内容，标题由宿主负责。
-Iframe 保留 sandbox 与 referrerPolicy 限制，隐藏或断连时释放浏览上下文，重新激活后重新加载。
+Iframe 固定使用 sandbox（脚本、表单、弹窗、模态框与下载白名单），不允许 `allow-same-origin`，并保留 referrerPolicy 限制。
+加载提示为不拦截鼠标的角标，避免子资源未加载完时阻挡文档内的点击；隐藏或断连时释放浏览上下文，重新激活后重新加载。
+安全取舍和兼容限制见 [F_08 的 Iframe 决策](../../../../../../../../extensions_v2/docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互)。
 
 Input 使用 Ant Design Input 管理本地编辑值，优先从 value、defaultValue 初始化。
 已声明的 `ui.change` 发送 `{value, isComposing}`；未绑定事件时仍可编辑。
@@ -93,6 +95,10 @@ Tabs 使用 Ant Design Tabs 管理本地激活页，activeKey 优先于 defaultA
 隐藏页内容通过内容激活边界停用，其节点绑定在不可见期间释放，因此不会派发事件。
 默认保留已挂载隐藏页的本地状态，destroyOnHidden 时卸载并在切回后重新初始化；页签内容计入 8 层与 512 节点预算。
 
+Dropdown 使用 Ant Design Dropdown 渲染触发区与菜单，触发区由子节点提供，菜单项来自 `items` 数组。
+点击或键盘展开由组件本地管理，不派发事件；菜单项选中时为已绑定的 `ui.select` 发送 `{key}`，
+禁用项与断连时不派发。`danger` 菜单项由库渲染告警样式，`placement` 控制弹出方向。
+
 插件不能提供 style 或 className。宿主可通过 `WebUIStyleOverrides` 按组件注入外观，
 宿主样式优先；Box 与 Button 还可使用原生元素承接宿主布局和按钮样式。
 适配器保留库组件的属性和交互语义，不复制整套控件实现。
@@ -109,5 +115,5 @@ Tabs 使用 Ant Design Tabs 管理本地激活页，activeKey 优先于 defaultA
 `test:webui-protocol`、`test:webui-runtime`、`test:webui-transport` 和 `test:webui-renderer` 验证。
 `test:webui-components` 使用真实适配器验证布局、文本、按钮派发、Switch 状态与 change/click、
 Select 选择/搜索/清空、TreeSelect 选择/整体值/清空、Slider 数值变更、Tabs 页签切换与内容重建、
-宿主外观、主题继承和 Iframe 生命周期。
+Dropdown 菜单展开与 ui.select、宿主外观、主题继承和 Iframe 生命周期。
 `test:webui-input` 定向验证 Input 的 click、change 与 Enter 数据、组合输入保护、禁用、草稿更新和 WebClient 传输封装。

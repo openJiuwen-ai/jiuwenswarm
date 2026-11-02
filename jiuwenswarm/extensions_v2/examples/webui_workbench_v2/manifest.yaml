@@ -12,6 +12,7 @@ ui:
   apiVersion: 1
   items:
     - {type: web.slot.contribution, id: workbench.entry, slot: application.entry, order: 40, renderer: {kind: webui-tree}}
+    - {type: web.slot.contribution, id: workbench.user, slot: application.sidebar.footer, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.menu, slot: application.menu, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.main, slot: application.menu.main, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.task, slot: task.function, order: 40, renderer: {kind: webui-tree}}
@@ -21,7 +22,7 @@ ui:
     - {type: web.slot.contribution, id: workbench.below, slot: conversation.input.below, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.details, slot: conversation.panel.right, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.iframe, slot: conversation.panel.right, order: 41, renderer: {kind: webui-tree}}
-    - {type: web.slot.contribution, id: workbench.turn, slot: conversation.turn.content.after, order: 40, renderer: {kind: webui-tree}}
+    - {type: web.slot.contribution, id: workbench.turn, slot: conversation.session.content.after, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.turn.actions, slot: conversation.turn.footer.actions, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.title, slot: conversation.header.title.after, order: 40, renderer: {kind: webui-tree}}
     - {type: web.slot.contribution, id: workbench.actions, slot: conversation.header.actions, order: 40, renderer: {kind: webui-tree}}

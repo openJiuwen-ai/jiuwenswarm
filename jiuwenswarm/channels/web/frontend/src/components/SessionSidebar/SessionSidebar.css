@@ -126,3 +126,61 @@
   flex: 1 1;
   min-height: 8px;
 }
+
+/* ============================================
+   WebUI user entry (application.sidebar.footer)
+   ============================================ */
+
+/* Slot container: keep the entry centered and clear of the window edge.
+   The host renders a column flex box; horizontal centering needs align-items. */
+.icon-rail-user-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding-bottom: 12px;
+}
+
+/* The per-instance wrapper stretches by default; center the adapter inside it. */
+.icon-rail-user-slot > .webui-host-instance {
+  display: flex;
+  justify-content: center;
+}
+
+/* Dropdown trigger: same footprint as the rail nav items. */
+.icon-rail-user-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.icon-rail-user-trigger:hover,
+.icon-rail-user-trigger[aria-expanded='true'] {
+  background: var(--color-sidebar-nav-active);
+}
+
+.icon-rail-user-trigger:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* Avatar ring keeps the image readable on the sidebar surface. */
+.icon-rail-user-avatar {
+  box-shadow: 0 0 0 1px var(--color-border-default);
+}
+
+/* Signed-out placeholder keeps the rail rhythm. */
+.icon-rail-user-signin {
+  width: 48px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  font-size: 12px;
+}

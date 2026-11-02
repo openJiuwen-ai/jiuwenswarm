@@ -11,7 +11,7 @@ RenderNode(
 ```
 
 这只声明视图与动作，组件是否能显示取决于宿主是否已接入对应渲染器。
-插件端校验支持 19 种目录组件（含 `Avatar`、`FileTree` 与 `FilePreview`）。
+插件端校验支持 20 种目录组件（含 `Avatar`、`FileTree`、`FilePreview` 与 `Dropdown`）。
 组件列表和字段规则见 [组件规约](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
 
 浏览器统一调用 `webui.dispatch`。宿主从已显示的实例和节点补齐请求，插件不应自己生成 node_key 或 revision：
