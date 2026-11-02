@@ -519,14 +519,19 @@ export function SkillPanel({
     [withSession],
   );
 
-  // 进入“我的技能”详情时自动加载版本列表（原刷新按钮已移除），切换技能时先清空旧数据再重新拉取
+  // 进入“我的技能”详情时自动加载版本列表（原刷新按钮已移除），切换技能时先清空旧数据再重新拉取。
+  // 企业版详情只展示当前版本，不拉历史版本列表。
   useEffect(() => {
     if (!selectedSkill) return;
     setSkillVersions([]);
     setSkillVersionsDefault(null);
+    if (enterpriseEdition) {
+      setVersionsLoadState('idle');
+      return;
+    }
     fetchSkillVersions(selectedSkill.name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSkill?.name]);
+  }, [selectedSkill?.name, enterpriseEdition]);
 
   const handleRebuild = useCallback(
     async (skillName: string, version: string | null) => {
