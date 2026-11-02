@@ -5,204 +5,192 @@
 | 编号 | F_24 / session-end |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-31，合并至 Server !99；2026-11-02，按 session.append 统一文档格式；同日按用户决定将删除专用通知调整为会话运行结束通知 |
+| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录 |
 | 计划与进度 | [EXTV2-19 / Server PR10](../designs/extensions-v2-development-plan.md#extv2-19-主会话结束通知与用户资源清理) |
 | 主责规约 | [S_13](../specs/S_13_session-end.md) |
 
 ## 1. 范围、状态与依据
 
-2026-11-02 修订：保留 session.start 的包激活初始化语义；将 session.end 改为“当前会话运行结束时，给插件一次收尾机会”。Worker 内的 AgentRuntime 释放真实会话运行资源及整体关闭时通知 USER；退出本次运行不要求删除持久历史。同一持久 ID 再次进入 Runtime 后是新代次，可以在新代次结束时再次通知。
+本项保留“当前主会话运行结束时，给插件一次收尾机会”的语义，不恢复旧删除专用设计。本次 session_id 改为与 Claude 一致的公开 sessionId；reason/resume.id 保持，默认回执仅含 sessionId。平台的真实运行代次、去重和停止结果仍留在 Runtime，不加入公开字段。
 
-首版删除专用实现及其证据保留在第 6 节历史记录，不作为新契约验收。当前实现和本次验证以第 6 节最新记录为准。业务代码在 Server/Runtime；event_types 保留定义、校验和注册，event_handlers 保留默认 CORE。只覆盖主 Agent 会话；不新增前端、同名 Ops 或 Team/子 Agent 结束协议。
+对照 [Claude 官方类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497，文件头 2.1.277。2026-11-02 重新下载官方 main 与固定文件，内容一致；这是此次字段核对的依据，不混用传统大写 SessionStart/SessionEnd Hooks。本地事件仍是 Python frozen dataclass，None 表示对应可选值缺失，并非直接接收任意 TypeScript/JSON 对象。
 
 ## 2. 能力说明与 Claude 对照
 
-Claude Mods 固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497（声明头 2.1.277）将 session.end 定义为运行结束的只读通知，输入包含 reason、sessionId、resume，默认返回 sessionId。参考的是小写 Mods 事件；不混用传统大写 SessionEnd Hooks 的字段。
+`session.end` 在平台真正停稳某个主会话运行后、释放该运行资源前通知 USER。插件可以保存自己按会话维护的摘要、关闭会话专用连接或任务，然后 next；CORE 核对可信结束通知并回显 sessionId，平台继续原释放。一次 query/模型回合完成不触发，结束运行也不要求删除历史。
 
-本地平台停稳真实运行后，向 USER 提供结束原因、会话身份与恢复标识。USER 可以保存自己的摘要、释放连接、停止自己的任务，然后 next；CORE 核验可信通知并回显原会话身份，原 Runtime 继续资源释放。存档仍由原平台持有，事件不自动删除或恢复存档。
-
-| 项 | 本次实现 | 与 Claude 定义的关系 |
+| 项 | Claude Mods 2.1.277 | 本次实现与使用影响 |
 | --- | --- | --- |
-| 触发事实 | 一个已注册 Runtime 会话代次结束；包括真实资源清理和正常 Runtime 停机 | 对齐运行收尾用途，移除“必须永久删除”的前提 |
-| 输入 | reason、session_id、resume.id | session_id 为 Python 写法，对应 sessionId；resume.id 是真实恢复身份 |
-| 原因 | clear/resume/logout/prompt_input_exit/other | 对齐原因词表；当前原生资源清理、正常 Worker/Runtime 关闭使用 other。没有对应业务时不伪造 clear/resume/logout |
-| 输出 | SessionEndOutput(session_id) | 对齐默认回显会话身份；移除 accepted/end_id |
-| 运行模式 | Worker 可以同时持有多个会话 | 普通界面切换会保留后台运行，不等同于 Claude 替换当前运行 |
-| 时间预算 | 本通知链默认 1.5 秒 | 对齐固定 Claude Mods 的默认结束预算；超时不阻止原释放 |
-| CORE 职责 | 验证可信通知、会话及原输入，回显身份；宿主随后继续原释放 | 集成顺序由本地 Runtime 持有，不把 Claude 内部实现当作本地源码 |
-
-session.start 仍按包激活实例初始化一次，与按会话运行代次触发的 end 不一一配对。一个包激活期间可以观察多个会话的多个运行结束。
+| 输入 | reason / sessionId / resume | 字段名及结构对齐，Python 公共属性同样为 sessionId |
+| 原因 | clear / resume / logout / prompt_input_exit / other | 使用相同词表；当前原生资源清理和 Runtime 停机为 other，不伪造尚无业务的原因 |
+| 输出 | sessionId | 仅回显实际结束身份，不返回 accepted/end_id |
+| 结束与恢复 | 运行结束后通过持久 ID 恢复 | 主会话运行代次结束；历史可保留，同 ID 新运行结束可再次通知 |
+| 关联收尾 | 会话结束时客户端 detach(reason=end) | Server 组合入口先解除该运行仍关联的客户端，再在同一结束预算内发 end |
 
 ## 3. 事件契约
 
 ### 3.1 触发前后与粒度
 
 ```text
-真实结束入口：cleanup_session(...) / Runtime.close(...)
-  → Runtime Coordinator 停稳目标代次执行，确认 CLOSED
+平台真实入口 cleanup_session(A) / Runtime.close()
+  → Coordinator 停稳目标真实代次执行，确认 CLOSED
   → 按 session_id + generation 合并同次通知尝试
-  → 固定宿主参与者 ExtensionSessionEndParticipant.session_run_ended
-  → 平台从目标资料构造 SessionContext、reason、session_id、resume.id
-  → bind_end_invocation
-  → await Worker bus.trigger(Event("session.end", input), context)
-  → USER Handler 保存自己的资料、释放自己的资源
-  → await next_handler(event)
-  → session_end_core 校验有效调用、原输入及绑定会话
-  → 返回实际 SessionEndOutput(session_id)
-  → USER 原样返回 → Bus → 宿主通知任务
-  → 原 Runtime 继续内存资源清理
-  → Runtime 整体关闭时，所有结束通知之后才卸载扩展
+  → 固定宿主 ExtensionSessionEndParticipant.session_run_ended
+  → 构造只读 SessionContext(A) 和 SessionEndInput(reason, sessionId, resume)
+  → Server 若仍有 A 的客户端关联：先移除全部旧关联，通知 detach(reason="end")
+  → bind_end_invocation → await bus.trigger(Event("session.end", input), context_A)
+  → Core 为 USER 创建 Ops，绑定结束会话与当前包
+  → USER 保存自己的摘要、释放自己的 A 专用资源
+  → await next_handler(event) → 剩余 Handler → session_end_core
+  → CORE 核对有效宿主调用、原输入与绑定会话
+  → 返回 SessionEndOutput(sessionId=A)
+  → USER 原样返回 → 平台通知任务 → Runtime 继续原内存资源释放
+  → 整个 Runtime 关闭时，结束通知之后才卸载扩展
 ```
 
-永久删除在确实终止已注册运行时也经过该通知，随后原删除业务继续；仅有离线存档时不虚构运行结束。普通回复完成、取消当前生成、idle 状态、attach/detach、界面切换不触发。Supervisor 暂时断开而 Worker 常驻不触发；明确 client.disconnect 若实际调用 cleanup_session 终止该运行，则以 other 通知。
-
-同一代次最多尝试一次，重复 cleanup 和随后的 Runtime.close 不重放。恢复同一 ID 会由 Coordinator 分配新 generation，新运行结束再通知。新代次登记等待旧代次的通知和平台清理结束，避免旧清理释放新运行。
+一个已登记且停稳的 Runtime 主会话代次最多尝试一次。重复 cleanup 或随后 close 不重放；同一持久 ID 恢复后会登记新 generation，新运行结束可再次通知。普通回复完成、取消当前生成、idle、单纯界面切换/关联变化和传输重连不触发。删除已登记运行也会结束它；仅有离线存档时不虚构运行结束。
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
-实际导入位置是 jiuwenswarm.extensions_v2.event_types.session_end。输入为 frozen dataclass，以下构造器只说明平台生成后的形状，用户无需调用它或自行 trigger：
+实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_end`。以下构造器说明平台生成后的可观察形状；USER 无需自行构造或 trigger 此生命周期事件。输入字段全部只读，没有可改写字段。
 
 ```python
 from jiuwenswarm.extensions_v2.event_types.session_end import SessionEndInput, SessionResume
 
-SessionEndInput(
-    reason='other',
-    session_id='demo-session-a',
-    resume=SessionResume(id='demo-session-a'),
-)
+SessionEndInput(reason="other", sessionId="demo-session-a",
+                resume=SessionResume(id="demo-session-a"))
 ```
 
 | 字段 | 类型 / 是否总有 | 准确含义 | 应该填写什么、示例 | Handler 权限 |
 | --- | --- | --- | --- | --- |
-| reason | str，必填，无省略默认 | 为什么终止当前运行，用于日志、matcher 及选择用户收尾策略；不表示永久删除 | 平台当前资源释放和停机填写 other；有真实清空、替换、登出或主动退出语义的宿主才可分别提供 clear/resume/logout/prompt_input_exit | 只读；不把普通切页改成 resume，不回填 session_deleted |
-| session_id | str，必填，无省略默认 | 本次结束的主会话身份，用于定位用户自己按会话保存的缓存、任务和连接；对应 Claude sessionId | Runtime 已登记且已停稳的会话 ID，例如 demo-session-a；不是当前界面 ID、包 ID 或另一目标 | 只读，必须与 ops.session_context.session_id 一致 |
-| resume | SessionResume，必填，无省略默认 | 恢复资料对象，说明以后应使用哪个持久会话身份；不携带恢复内容或授权 | 平台填写 SessionResume(id='demo-session-a')；用户访问 event.event_input.resume.id，不当字典索引 | 对象及嵌套 id 均只读 |
-| resume.id | str，必填，无省略默认 | 原会话的恢复 ID。可保存到用户自己的摘要中，之后通过平台已有恢复入口使用；不是一次性令牌 | 等于本次 session_id，例如 demo-session-a；无历史、持久化关闭或后续存档被删除时，此 ID 不保证可恢复 | 只读；不能改成另一个会话来读取它的资料 |
-
-reason 词表含义：clear 表示宿主清空并替换旧运行；resume 表示宿主恢复另一个运行并结束旧运行；logout 表示登出结束；prompt_input_exit 表示用户主动退出交互运行；other 表示其他真实结束，例如正常非交互任务完成、Runtime 停机或实际运行资源释放。这是结束原因词表，不代表本产品已经提供全部对应的远程方法或 UI。
+| reason | str，必填，无省略默认 | 为什么结束本次运行，用于日志、matcher 和用户收尾策略；不表示是否永久删除 | 宿主按真实业务填写 clear / resume / logout / prompt_input_exit / other。当前资源释放与正常停机为 other，不填 session_deleted | 只读；不能据此取消结束 |
+| sessionId | str，必填，无省略默认 | 本次结束的主会话身份，用于定位本包按会话维护的资源 | Runtime 已登记且已停稳的真实会话 ID，如 demo-session-a；须与 ops.session_context.session_id 一致，不填窗口 ID 或包 ID | 只读；Python 也使用这一大小写 |
+| resume | SessionResume，必填 | 以后可用于恢复该持久会话身份的资料对象；不携带历史正文或授权 | 平台填写 SessionResume(id="demo-session-a")；USER 使用 value.resume.id 属性，不把它当 dict 索引 | 对象及嵌套字段只读 |
+| resume.id | str，嵌套必填 | 原会话的恢复 ID。可保存到用户摘要，之后交由平台原恢复入口使用 | 等于本次 sessionId，如 demo-session-a。没有写过历史、关闭持久化或存档后来被删除时，不能保证可恢复 | 只读；不是一次性访问令牌 |
 
 #### 本次 Handler 的会话上下文与包身份
 
-平台参与者另外构造可信 SessionContext，并与 Event 一起传给 bus.trigger。Core 为实际进入的 Handler 创建 Ops 并绑定上下文；ops.session_context 是已有只读属性，不收集上下文、不组装事件。
+Event 输入与 `SessionContext` 是平台分别传入 `bus.trigger` 的两份资料。Core 给实际进入的 USER Handler 创建 Ops，绑定可信会话和包身份。`ops.session_context` 是已有只读属性，不采集资料、不组装上下文；`next_handler(event)` 继续当前事件链，不创建另一个事件。
 
-| 字段 | 类型 / 是否必有 | 含义与应该填写什么 |
-| --- | --- | --- |
-| ops.session_context.session_id | str，必有 | 与输入 session_id 相同，平台确定本次 Ops 查询哪个结束会话；用户只读 |
-| ops.session_context.cwd | str 或 None | 此结束入口没有确认活跃执行目录时为 None，不使用 Worker 的进程目录兜底 |
-| metadata.project_root | str 或 None | 只使用平台已确认的绝对 project_dir；例如 D:/projects/demo，缺失或相对路径为 None |
-| ops.package_metadata.package_id | str，必有 | Core 绑定的实际 USER 扩展包身份，不从用户可改写的事件输入读取 |
+| 入口 | 准确含义、来源与使用方式 |
+| --- | --- |
+| `ops.session_context.session_id` | 平台确定的本次查询会话身份。attach 绑定新会话，detach 绑定旧会话，end 绑定结束的会话；不能通过改 Event 切换查询目标 |
+| `ops.session_context.cwd` | 仅有真实执行目录时才提供。start 来自原生 Adapter 已绑定目录；attach/detach/end 未确认时为 None，不使用 Worker 进程目录兜底 |
+| `ops.session_context.metadata["project_root"]` | 平台已确认的项目根观察值；缺失时按相应查询返回 None。不是自动推导的 Git 根，也不为通知创建项目 |
+| `ops.package_metadata.package_id` | Core 绑定的实际 USER 包身份，用于区分本包资源；不是当前会话身份，用户不自行填写 |
 
-### 3.3 输出：每个字段表达什么、如何消费
+已有 cwd/root/model 等查询使用此可信入口。没有目录或模型资料时按各查询契约返回缺失值；不要求先发生用量事件，也不为展示初始化新模型。
+
+### 3.3 输出：真实回执与结果消费
+
+下面是默认 CORE 生成的输出形状，不是让 USER 自行返回假成功。合法 Handler 原样返回 `await next_handler(event)` 的真实结果；没有 deny 或 accepted 包装，也不能通过改回执改变平台事实。
 
 ```python
 from jiuwenswarm.extensions_v2.event_types.session_end import SessionEndOutput
 
-SessionEndOutput(session_id='demo-session-a')
+SessionEndOutput(sessionId="demo-session-a")
 ```
 
-| 字段 | 类型 / 是否总有 | 含义、填写内容与消费方式 |
+| 字段 | 类型 / 返回时机 | 含义与调用方怎样使用 |
 | --- | --- | --- |
-| session_id | str，必填，无省略默认 | 默认 CORE 原样回显实际结束会话 ID，例如 demo-session-a。USER 必须返回 await next_handler(event) 得到的真实回执；宿主核对该回执，随后继续原资源释放。它不证明所有外部资源已释放，也不表示存档删除成功 |
+| sessionId | str，必填，无省略默认 | 默认 CORE 原样回显实际结束会话。USER 返回 next 的真实结果，宿主核对后继续原释放。它不证明进程已经退出、外部资源全部释放或历史删除成功 |
 
-输入和输出都没有 deny 或 accepted 包装。用户不提前构造假回执、不改写输入、不在 next 之后更换身份。作用域外直接 trigger 不构成合法的运行结束。
+### 3.4 注册、筛选、处理示例
 
-### 3.4 USER Handler：保存摘要并释放本包缓存
+例如插件在 A 的每次用量更新后保存活跃摘要。平台真正清理 A 的运行或正常关闭 Worker 时，on_end 按 sessionId 清理 A 的活跃缓存，记录 reason 与 resume.id；B 的缓存不受影响。示例包记录真实清理日志；若需要跨进程持久保存摘要，应使用用户自己的存储能力，不能把普通内存字典当作已落盘。
+
+下列代码来自 [现有示例包](../../examples/session_end/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
 
 ```python
-class SessionSummary:
+"""Keep user-owned session state and release it when that Runtime run ends."""
+
+import logging
+
+logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_end")
+
+
+class SessionEndExample:
+    """A user's Session resources, independent of platform history ownership."""
+
     def __init__(self):
         self.cache = {}
-        self.completed = {}
 
     def register(self, registrar):
-        registrar.register_event_handler('context.usage.updated', self.on_usage, {}, 'user')
-        registrar.register_event_handler('session.end', self.on_end, {}, 'user')
+        registrar.register_event_handler("context.usage.updated", self.on_usage, {}, "user")
+        registrar.register_event_handler("session.end", self.on_end, {}, "user")
 
     async def on_usage(self, event, ops, next_handler):
-        sid = ops.session_context.session_id
-        self.cache[sid] = {'project_root': await ops.session.root()}
+        self.cache[ops.session_context.session_id] = {"project_root": await ops.session.root()}
         return await next_handler(event)
 
     async def on_end(self, event, ops, next_handler):
-        value = event.event_input
-        saved = self.cache.pop(value.session_id, None)
-        receipt = await next_handler(event)
-        self.completed[receipt.session_id] = {
-            'reason': value.reason,
-            'resume_id': value.resume.id,
-            'summary': saved,
-        }
-        return receipt
+        session_id = ops.session_context.session_id
+        released = self.cache.pop(session_id, None) is not None
+        logger.info("session end example: session=%s reason=%s resume=%s released=%s",
+                    session_id, event.event_input.reason, event.event_input.resume.id, released)
+        return await next_handler(event)
 
 
 def create_extension():
-    return SessionSummary()
+    return SessionEndExample()
 ```
 
-用户在会话 A 中聊天，on_usage 按绑定身份建立自己的摘要。之后 A 的运行资源真实释放，或 Worker 正常关闭，on_end 保存恢复 ID、移除本包的 A 活跃缓存，并取得默认 CORE 回执。平台历史不因本通知删除；以后通过原平台恢复 A，用户可以重新建立活跃缓存。若 A 没有预建缓存，pop 返回 None 仍是合法幂等收尾。示例 completed 仅为包内说明，跨进程保存应使用用户自己的持久化能力。
+## 4. 方法契约
 
-## 4. 方法能力
+### 4.1 用户方法与平台入口
 
-### 4.1 用户方法
-
-没有新增 ops.session.end()。用户安装包只注册 USER Handler；不修改 Adapter，不创建 EventBus/Builder，不自行提供平台上下文。复用已有 root、messages 等查询时，仍受其各自契约与结束阶段可用资料约束。没有资料时按相应查询契约返回缺失值，不能初始化另一个会话或模型。
-
-### 4.2 平台内部入口、参数与返回
+没有新增 `ops.session.end()`。宿主已有 Python 入口为：
 
 ```python
-await runtime.cleanup_session(
-    channel_id='web', session_id='demo-session-a',
-    end_reason=SessionRunEndReason.OTHER,
-)
-await runtime.close(end_reason=SessionRunEndReason.OTHER)
+await runtime.cleanup_session(channel_id="web", session_id="demo-session-a")
+await runtime.close()
 ```
 
-以上是宿主 Python API 调用形状，不是用户新增远程 Ops。导入 SessionRunEndReason 的位置为 jiuwenswarm.runtime.session_lifecycle。
+这些平台方法仍采用 Python session_id 参数，不是 Event 的公开 sessionId。end_reason 可由宿主传入 SessionRunEndReason 五值之一，默认 OTHER；无效原因在资源变化前拒绝。cleanup_session 返回原 Manager 清理 bool，close 返回 None；不拿事件回执冒充最终清理成功。reset_plan_state 沿用原 API 与删除事务补偿规则。
 
-| 参数 / 返回 | 类型 / 默认 | 准确含义和实际填写内容 |
-| --- | --- | --- |
-| cleanup_session.channel_id | str，必填 | 原平台已有路由渠道，例如 web；结束事件身份仍来自已登记的运行 |
-| cleanup_session.session_id | str，必填 | 平台确实要结束并清理的目标运行；无已注册代次时不触发事件 |
-| reset_plan_state | bool，默认 True | 原有清理选项；删除事务使用 False 保留原补偿顺序，与结束原因无关 |
-| end_reason | SessionRunEndReason，默认 OTHER | 宿主传入五值之一；无效原因在清理前拒绝。当前产品原生调用保持默认 other，不添加虚假的 clear/resume/logout 请求 |
-| cleanup_session 返回 | bool | 原 AgentManager 的资源清理结果，不是事件回执；实际失败或取消仍按原 API 传播 |
-| close 返回 | None | 原 Runtime 的关闭结果；不会用 session.end 回执代替实际关闭成功 |
+### 4.2 旧 Handler / 回执迁移
 
-平台参与者接收 SessionRunEndEvent(target, generation, reason)，generation 是 Coordinator 的真实运行代次，只用于宿主去重，不暴露到公共事件输入。Worker 不把普通 foreground_changed 当作结束。
+这些生命周期特性尚在 Server !99 中修订；旧示例应按下表迁移。平台内部的 snake_case 身份、稳定视图和校验状态继续保留，不因公开字段简化而削弱隔离。
 
-## 5. 实现与兼容
-
-### 5.1 注册与运行职责
-
-Worker 启动时注册事件类型、Matcher、Validator、默认 CORE；既有 ops.build 保存共享能力目录。业务发生时按本次可信上下文创建 Handler Ops，不重跑 ops.build。此通知没有新增业务 BUILTIN。
-
-| 位置 | 实际职责 |
+| 旧用法 | 当前写法与影响 |
 | --- | --- |
-| [Runtime 生命周期协议](../../../runtime/session_lifecycle.py) | 定义结束原因、真实代次结束事实、固定宿主参与者接口；不包含 USER 业务 |
-| [AgentRuntime](../../../runtime/service.py) | 停稳执行、合并同代次通知；新代次等待旧清理；close 并发通知各会话后继续释放 |
-| [平台通知模块](../../../server/runtime/session/end_notifications.py) | 准备可信 SessionContext、输入、1.5 秒预算、调用作用域和包在途计数；实际 trigger |
-| [事件定义](../../event_types/session_end.py) | frozen dataclass、匹配、输入输出校验及注册，无业务 trigger |
-| [默认 CORE](../../event_handlers/session_end.py) | 校验当前有效宿主调用、完整原输入与绑定会话；创建并复用 SessionEndOutput(session_id) |
-| [Worker 停机](../../../server/worker/lifecycle.py) | server.stop / Runtime.close 在 shutdown_extensions 之前，保持 USER Handler 可用 |
-| [用户示例](../../examples/session_end/README.md) | 在已有事件准备自己的状态，真实运行结束后保存/释放；不介入 ui.render |
+| event.event_input.session_id | event.event_input.sessionId；matcher 改为 sessionId |
+| result.session_id | result.sessionId；原样保留 await next_handler(event) 的真实回执 |
+| SessionContext.session_id / runtime.cleanup_session(session_id=...) | 平台上下文和 Python 方法参数仍保持 snake_case，不做全仓文本替换 |
+| accepted / end_id / reason=session_deleted | 均不属于当前契约；按 reason/sessionId/resume 处理 |
+| 把本次回执当作历史删除或 Worker 退出结果 | 只确认结束通知；原平台继续释放，历史可保留 |
 
-### 5.2 失败、超时和重复
+## 5. 接入与兼容方案
 
-默认等待预算 1.5 秒；USER 异常、非法改写由既有 Core 隔离；平台通知失败/超时记日志后继续原释放。超时使调用作用域失效并请求取消；忽略取消的用户代码可能晚退出，在途计数直到任务真正退出才归零。不能保证撤销它已经提交到外部系统的操作。
+Worker 启动时注册事件类型、Matcher、Validator 和唯一默认 CORE；已有 `ops.build` 的 CORE 创建 Builder、BUILTIN 登记共享 Ops 方法，Registry 保存能力目录。业务发生时使用该目录创建绑定本次 SessionContext 的 Ops，不重跑 ops.build。这四条业务通知没有新增专门的 BUILTIN Handler。
 
-关闭入口被取消时保留实际取消语义，不伪造成功回执；已尝试代次不自动重放。Coordinator 停稳超时则不发该代次的正常结束通知。进程崩溃、强制杀进程或不进入正常关闭的信号无法保证 Hook。多个会话的停机通知并发等待，避免按会话数累加预算。
+USER 处理本包资源，通过 `return await next_handler(event)` 继续本条链。默认 CORE 只确认真实平台通知，不再次执行创建、切换、删除或关闭。输入均只读；提前短路伪造回执、修改输入、在 next 之后换身份无效，沿既有 Core USER 故障隔离处理。真实宿主操作的所有权和最终成功判断仍在原平台业务。
 
-### 5.3 从旧删除版本迁移
+[Runtime](../../../runtime/service.py) 持有停稳、代次去重和实际释放；[平台通知模块](../../../server/runtime/session/end_notifications.py) 构造上下文、设置预算、在途计数和实际 trigger；[默认 CORE](../../event_handlers/session_end.py) 校验原输入和绑定身份，仅返回 sessionId。Server 组合入口把关联清理回调接入同一结束任务；独立 Runtime 没有关联表时无需创建一个。
 
-| 旧用法 | 新用法 |
-| --- | --- |
-| reason == session_deleted | 根据真实结束原因处理，当前原生资源释放/停机为 other；需要区分永久删除时继续依赖原删除业务结果 |
-| event.event_input.end_id | 移除；不要把 session_id 当作跨所有运行永不重复的通知 ID，用户收尾应幂等 |
-| event.event_input.channel_id / mode | 从相应可信平台资料读取需要的信息；本通知只保留 Claude 对应字段 |
-| result.accepted | 移除，返回 await next_handler(event) 的真实 session_id 回执 |
-| 只有删除会话才清理缓存 | 真正运行结束也清理活跃资源，存档可保留，恢复后重新建立资源 |
+宿主结束任务默认总预算 1.5 秒，包括关联收尾与 end 通知。失败/超时记日志后继续原释放，不允许 USER 拒绝或替换结果；原关闭取消仍按实际取消传播。已尝试不自动重放，忽略取消的任务可能晚退出，在途计数直到实际退出才释放。崩溃、强杀或执行未能停稳时不保证正常结束 Hook；不承诺撤销已提交外部操作。
+
+字段范围以 [S_13](../specs/S_13_session-end.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
+
+### 2026-11-02 Claude Mods 字段修订
+
+四项生命周期及字段定向用例共 **94 项通过**，包含在同一次最终回归的 **1365 项通过** 内，不重复累计。最终范围包括全部 extensions_v2、全部 Runtime、Worker 关闭、原生会话删除/归档和切换接线。5 项平台条件跳过：符号链接、命名管道及 3 项 Unix socket 用例。两个未修改的 LoopBeat 50ms 计时断言在本机存在约 47ms 读数；本分支与未修改基线分别保留复现，最终显式排除两项，不改阈值、不计为通过。
+
+真实 Front → Supervisor → 子 Worker 验证：两个独立 Worker、3 轮真实模型对话，所有生命周期 USER Handler 在真实子进程中执行；没有 mock EventBus、Ops、模型或 Adapter，也没有介入 ui.render。3 次 end 均使用 reason/sessionId/resume，CORE 回显 sessionId；同 ID 在新 Worker 恢复后再次结束，先完成对应关联的 detach(end)，会话运行资源实际清理，历史逐字节保留并可续聊。 两个 Worker PID 均已退出、端口关闭。
+
+现成 HTML 的 A/B 教学案例也重新验证：A 在当前真实 start/usage CORE 下共享同一实例规则；B 的 SQLite HTTP 查询通过，但其模型发现/工具调用仍为教学宿主模拟，不把它当作上述真实模型工具使用证据。
+
+证据目录：`D:/work_space/.codex-temp/align-session-mods-fields-20261102`，包括 final.log/xml/json、contracts.xml、focused-first.xml、baseline-liveness.xml、examples-verified.json。真实进程记录在 `D:/work_space/.codex-temp/align-session-mods-fields-20261102/real-150258`：result.json、USER JSONL、原生请求/响应、explicit-detach.json、两个 cleanup.json 和源码摘要。Core 使用 !110 的 0b5dd43f179be0a41ef2bd4bf0d43950bec9a92f；本次不新增 Core API。尚未执行远端 CI 或原生非 Windows 验收。
+
+文档按 F_16 session.append 的七段结构维护；输入/输出对象、逐字段含义/填写/用途、USER 示例、平台入口、迁移与调用链分别展开。字段修订前的旧结果保留在以下历史区，不作为本次新契约的通过证据。
+
+文档与本地 HTML 核对通过：四份特性保持 session.append 的同一七段结构，8 个输入/输出对象实际构造、28 段 Python 示例语法、120 个本地链接通过（跨仓链接按配套 Core 核对）。HTML 的生命周期调用链、字段表和实际函数已更新，A/B 完整案例逐字保留；桌面/手机视口无页面横向溢出，复制按钮及页面脚本通过。这是独立静态文档渲染检查，不计作产品浏览器 UI 验收。
+
+本次重点覆盖：公开字段/回执及 matcher 大小写、可信 SessionContext 保持、同实例初始化去重、多窗口与切换、过期关联/输入改写/假回执拒绝、真实运行结束的 detach/end 顺序、超时/取消和进程清理。旧日期的验证不自动算成本次重新执行。
+
+<details><summary>此前版本的验证记录：字段或触发范围以相应日期为准</summary>
 
 ### 2026-11-02 运行结束版本
 
@@ -260,8 +248,12 @@ result.json、user-handler-results.jsonl、各删除/归档响应、日志和 so
 
 </details>
 
+</details>
+
 ## 7. 参考资料
 
-- [S_13](../specs/S_13_session-end.md)、[内置事件开发指南](../designs/builtin-event-development-guide.md)。
-- [Claude 固定声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)、[Claude Mods Session 参考](https://code.claude.com/docs/en/plugins/mods/reference#session)。
-- [现成用户包](../../examples/session_end/README.md)、[事件定义](../../event_types/session_end.py)、[默认 CORE](../../event_handlers/session_end.py)、[平台通知](../../../server/runtime/session/end_notifications.py)。
+- [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionEndInput/Result；参照小写 Mods 事件。
+- [主责规约 S_13](../specs/S_13_session-end.md)。
+- [事件定义与校验](../../event_types/session_end.py)、[默认 CORE](../../event_handlers/session_end.py)。
+- [示例包说明](../../examples/session_end/README.md)。
+- [session.append 文档格式基准](F_16_session-history-ops.md)。

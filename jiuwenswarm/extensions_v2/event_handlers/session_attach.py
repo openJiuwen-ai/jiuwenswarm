@@ -22,12 +22,11 @@ async def session_attach_core(
     if not valid_attach_input(event.event_input):
         raise ValueError("session.attach input cannot be changed")
     context = ops.session_context if ops is not None else None
-    if context is None or context.session_id != state.original.session_id:
+    if context is None or context.session_id != state.session_id:
         raise RuntimeError("session.attach requires its bound SessionContext")
     if not await state.validate_target():
         raise RuntimeError("session.attach target is no longer available")
     state = current_attach_invocation()
     if state.receipt is None:
-        value = state.original
-        state.receipt = SessionAttachOutput(True, value.session_id, value.surface_id, value.attachment_id)
+        state.receipt = SessionAttachOutput(state.original.clientId)
     return state.receipt

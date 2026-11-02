@@ -13,30 +13,27 @@ from dataclasses import dataclass
 from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.extensions_v2.event_types.session_surface import (
+    RenderSurface, RenderViewport, valid_surface, valid_viewport,
+)
 
 SESSION_ATTACH_EVENT = "session.attach"
 
 
 @dataclass(frozen=True, slots=True)
 class SessionAttachInput:
-    """A concrete view's association, committed by the platform."""
+    """A client's rendering observations, matching Claude Mods field names."""
 
-    session_id: str
-    surface_id: str
-    attachment_id: str
-    channel_id: str
-    mode: str
-    previous_session_id: str | None
+    surface: RenderSurface
+    clientId: str
+    viewport: RenderViewport | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class SessionAttachOutput:
     """Actual CORE acknowledgement while this association is still current."""
 
-    accepted: bool
-    session_id: str
-    surface_id: str
-    attachment_id: str
+    clientId: str
 
 
 @dataclass
@@ -46,6 +43,7 @@ class AttachInvocation:
     original: SessionAttachInput
     is_current: Callable[[], bool]
     validate_target: Callable[[], Awaitable[bool]]
+    session_id: str
     owner: asyncio.Task | None = None
     active: bool = True
     receipt: SessionAttachOutput | None = None
@@ -68,6 +66,8 @@ def valid_attach_input(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and state.is_current() and type(value) is SessionAttachInput and value == state.original
+        and valid_surface(value.surface) and type(value.clientId) is str and bool(value.clientId)
+        and valid_viewport(value.viewport)
     )
 
 
@@ -77,7 +77,7 @@ def valid_attach_output(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and state.is_current() and state.receipt is not None and type(value) is SessionAttachOutput
-        and type(value.accepted) is bool and value == state.receipt
+        and type(value.clientId) is str and value == state.receipt
     )
 
 

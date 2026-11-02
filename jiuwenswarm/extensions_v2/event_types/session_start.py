@@ -9,37 +9,30 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
 
 from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface, valid_surface
 
 SESSION_START_EVENT = "session.start"
 
 
 @dataclass(frozen=True, slots=True)
 class SessionStartInput:
-    """Host-owned activation and first-input observation facts."""
+    """Claude Mods start observations; activation identity stays with the host."""
 
-    package_id: str
-    generation: int
-    session_id: str
-    request_id: str
-    channel_id: str
-    cwd: str | None
-    project_root: str | None
-    is_interactive: bool
+    cwd: str
+    surface: RenderSurface | None
+    isInteractive: bool
 
 
 @dataclass(frozen=True, slots=True)
 class SessionStartOutput:
-    """The actual notification receipt, not a resource initialization promise."""
+    """The actual cwd echoed by CORE, without changing the running directory."""
 
-    accepted: bool
-    package_id: str
-    generation: int
-    session_id: str
-    request_id: str
+    cwd: str
 
 
 @dataclass
@@ -47,6 +40,7 @@ class StartInvocation:
     """Call-local facts owned by the host dispatch boundary."""
 
     original: SessionStartInput
+    session_id: str
     owner: asyncio.Task | None
     active: bool = True
     receipt: SessionStartOutput | None = None
@@ -69,6 +63,10 @@ def valid_start_input(value: object) -> bool:
     return (
         state is not None and state.active and state.owner is asyncio.current_task()
         and isinstance(value, SessionStartInput) and value == state.original
+        and isinstance(value.cwd, str) and bool(value.cwd)
+        and (Path(value.cwd).is_absolute() or PureWindowsPath(value.cwd).is_absolute())
+        and (value.surface is None or valid_surface(value.surface))
+        and type(value.isInteractive) is bool
     )
 
 
@@ -83,16 +81,17 @@ def valid_start_output(value: object) -> bool:
 
 
 @contextmanager
-def bind_start_invocation(value: SessionStartInput) -> Iterator[StartInvocation]:
+def bind_start_invocation(value: SessionStartInput, *, session_id: str) -> Iterator[StartInvocation]:
     """Bind validation facts for one platform-owned notification scope.
 
     Args:
         value: Immutable target activation and first-input facts.
+        session_id: Trusted identity kept outside the public event payload.
 
     Yields:
         Validation state for the platform dispatcher and default CORE receipt.
     """
-    state = StartInvocation(value, asyncio.current_task())
+    state = StartInvocation(value, session_id, asyncio.current_task())
     token = _INVOCATION.set(state)
     try:
         yield state

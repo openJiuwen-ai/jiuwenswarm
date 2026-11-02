@@ -56,7 +56,7 @@ async def test_switch_commit_observes_view_once_and_abort_never_notifies(tmp_pat
             await provisioner.abort_session_provision(aborted)
         assert observer.associations.get("web","native-view") is first
         assert caplog.text.count("session attach example:") == 1
-        assert "accepted=True" in caplog.text
+        assert "surface=desktop client=web:native-view" in caplog.text
         assert registry.snapshot_activity() == ()
     finally:
         logger.removeHandler(caplog.handler)
@@ -103,7 +103,7 @@ async def test_replacement_notifies_old_view_only_after_commit(tmp_path, monkeyp
             await provisioner.commit_session_provision(second, timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY, context=context)
             await provisioner.commit_session_provision(second, timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY, context=context)
         assert caplog.text.count("session detach example:") == 1
-        assert "session=native-first" in caplog.text and "reason=switch accepted=True" in caplog.text
+        assert "session=native-first" in caplog.text and "client=web:native-view reason=detach" in caplog.text
         assert observer.associations.get("web", "native-view").session_id == "native-second"
         assert (sessions / "native-first/metadata.json").is_file()
     finally:

@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from dataclasses import dataclass
 import logging
 import math
 from pathlib import Path
@@ -21,7 +23,10 @@ from jiuwenswarm.extensions_v2.event_types.session_attach import (
     SessionAttachInput,
     bind_attach_invocation,
 )
-from jiuwenswarm.runtime.session_lifecycle import SessionForegroundEvent, SessionKind
+from jiuwenswarm.extensions_v2.event_types.session_surface import (
+    RenderSurface, RenderViewport, valid_surface, valid_viewport,
+)
+from jiuwenswarm.runtime.session_lifecycle import SessionForegroundEvent, SessionKind, SessionRunEndEvent
 
 if TYPE_CHECKING:
     from openjiuwen.core.events import ExtensionEventBus
@@ -30,42 +35,74 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _SURFACE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 SESSION_ATTACH_TIMEOUT_SECONDS = 2.0
+SESSION_ATTACHMENT_KEY = "session_attachment"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionAssociation:
+    """Host-owned association version, separate from the public event input."""
+
+    session_id: str
+    surface_id: str
+    attachment_id: str
+    channel_id: str
+    mode: str
+    previous_session_id: str | None
+    surface: RenderSurface
+    client_id: str
+    viewport: RenderViewport | None = None
+
+    def event_input(self) -> SessionAttachInput:
+        """Expose only the fields declared by Claude's attach event."""
+        return SessionAttachInput(self.surface, self.client_id, self.viewport)
 
 
 class SessionAssociationStore:
     """Runtime-local view bindings; event ids are issued only on real changes."""
 
     def __init__(self) -> None:
-        self._views: dict[tuple[str, str], SessionAttachInput] = {}
+        self._views: dict[tuple[str, str], SessionAssociation] = {}
         self._contexts: dict[tuple[str, str], SessionContext] = {}
 
-    def get(self, channel_id: str, surface_id: str) -> SessionAttachInput | None:
+    def get(self, channel_id: str, surface_id: str) -> SessionAssociation | None:
         """Return immutable current facts for a specific view."""
         return self._views.get((channel_id, surface_id))
 
-    def commit(self, event: SessionForegroundEvent, context: SessionContext | None = None) -> SessionAttachInput | None:
+    def commit(
+        self, event: SessionForegroundEvent, context: SessionContext, *,
+        surface: RenderSurface, viewport: RenderViewport | None = None,
+    ) -> SessionAssociation | None:
         """Commit a confirmed main-Session view change, ignoring exact replays."""
         target = event.target.descriptor
         key = (target.channel_id, event.view_id)
         previous = self._views.get(key)
         if previous is not None and previous.session_id == target.session_id:
             return None
-        value = SessionAttachInput(
+        if not valid_surface(surface) or not valid_viewport(viewport):
+            raise ValueError("session.attach requires valid rendering observations")
+        value = SessionAssociation(
             session_id=target.session_id, surface_id=event.view_id, attachment_id=uuid.uuid4().hex,
             channel_id=target.channel_id, mode=target.mode,
             previous_session_id=previous.session_id if previous is not None else None,
+            surface=surface, client_id=f"{target.channel_id}:{event.view_id}", viewport=viewport,
         )
         self._views[key] = value
-        self._contexts[key] = context if context is not None else SessionContext(target.session_id)
+        metadata = dict(context.metadata)
+        metadata[SESSION_ATTACHMENT_KEY] = {
+            "attachment_id": value.attachment_id, "view_id": value.surface_id,
+            "channel_id": value.channel_id, "mode": value.mode,
+            "previous_session_id": value.previous_session_id,
+        }
+        self._contexts[key] = SessionContext(context.session_id, cwd=context.cwd, metadata=metadata)
         return value
 
-    def context(self, value: SessionAttachInput) -> SessionContext:
+    def context(self, value: SessionAssociation) -> SessionContext:
         """Read the original context before replacing or releasing its binding."""
         if not self.is_current(value):
             raise ValueError("association is no longer current")
         return self._contexts[(value.channel_id, value.surface_id)]
 
-    def is_current(self, value: SessionAttachInput) -> bool:
+    def is_current(self, value: SessionAssociation) -> bool:
         """A replaced association cannot later be acknowledged as current."""
         return self.get(value.channel_id, value.surface_id) is value
 
@@ -73,6 +110,10 @@ class SessionAssociationStore:
         """Discard the observed main association when the view leaves scope."""
         self._views.pop((channel_id, surface_id), None)
         self._contexts.pop((channel_id, surface_id), None)
+
+    def for_session(self, session_id: str) -> tuple[SessionAssociation, ...]:
+        """Snapshot the concrete clients still associated with one ending run."""
+        return tuple(value for value in self._views.values() if value.session_id == session_id)
 
 
 def _confirmed_context(event: SessionForegroundEvent) -> SessionContext | None:
@@ -100,14 +141,22 @@ def _confirmed_context(event: SessionForegroundEvent) -> SessionContext | None:
 class ExtensionSessionAttachParticipant:
     """Translate committed view transitions into bounded USER notifications."""
 
-    def __init__(self, *, timeout_seconds: float = SESSION_ATTACH_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self, *, timeout_seconds: float = SESSION_ATTACH_TIMEOUT_SECONDS,
+        surfaces: Mapping[str, RenderSurface] | None = None,
+    ) -> None:
         if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("session.attach timeout must be finite and positive")
+        surfaces = dict(surfaces) if surfaces is not None else {"web": "desktop"}
+        if any(not isinstance(channel, str) or not channel or not valid_surface(surface)
+               for channel, surface in surfaces.items()):
+            raise ValueError("session.attach requires a host-declared rendering surface")
         self.associations = SessionAssociationStore()
         self._timeout = timeout_seconds
         self._serial = 0
         self._latest: dict[tuple[str, str], int] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._surfaces = surfaces
 
     async def foreground_changed(self, event: SessionForegroundEvent) -> None:
         """Commit valid view facts before notifying, preserving replay semantics."""
@@ -116,6 +165,9 @@ class ExtensionSessionAttachParticipant:
         if not event.visible:
             return
         descriptor = event.target.descriptor
+        surface = self._surfaces.get(descriptor.channel_id)
+        if surface is None:
+            return
         if not isinstance(event.view_id, str) or _SURFACE_ID.fullmatch(event.view_id) is None:
             raise ValueError("session.attach requires a valid view_id")
         if not is_valid_session_id(descriptor.session_id):
@@ -138,7 +190,7 @@ class ExtensionSessionAttachParticipant:
         # transition, and another view must not supply its former identity.
         previous = self.associations.get(*key)
         previous_context = self.associations.context(previous) if previous is not None else None
-        value = self.associations.commit(event, context)
+        value = self.associations.commit(event, context, surface=surface)
         if value is None:
             return
         if previous is not None:
@@ -148,10 +200,12 @@ class ExtensionSessionAttachParticipant:
         bus, manager = get_extension_bus(), get_extension_manager()
         if bus is None or manager is None or not manager.initialized:
             return
+        context = self.associations.context(value)
         async def validate_target() -> bool:
             return await asyncio.to_thread(_confirmed_context, event) is not None
 
-        state = AttachInvocation(value, lambda: self.associations.is_current(value), validate_target)
+        state = AttachInvocation(value.event_input(), lambda: self.associations.is_current(value),
+                                 validate_target, value.session_id)
         task = asyncio.create_task(self._dispatch(bus, manager, state, context), name="extension-session-attach")
         self._tasks.add(task)
         task.add_done_callback(self._task_done)
@@ -196,7 +250,7 @@ class ExtensionSessionAttachParticipant:
 
     async def _notify_detach(
         self,
-        value: SessionAttachInput,
+        value: SessionAssociation,
         context: SessionContext,
         *,
         reason: str,
@@ -205,14 +259,30 @@ class ExtensionSessionAttachParticipant:
         from jiuwenswarm.extensions_v2.event_types.session_detach import SessionDetachInput
         from jiuwenswarm.server.runtime.session.detach_notifications import notify_session_detach
 
-        facts = SessionDetachInput(
-            value.session_id, value.surface_id, value.attachment_id, value.channel_id,
-            value.mode, reason, next_session_id,
-        )
+        facts = SessionDetachInput(value.surface, value.client_id, "end" if reason == "end" else "detach")
+        metadata = dict(context.metadata)
+        association = dict(metadata[SESSION_ATTACHMENT_KEY])
+        association.update(cause=reason, next_session_id=next_session_id)
+        metadata[SESSION_ATTACHMENT_KEY] = association
+        context = SessionContext(context.session_id, cwd=context.cwd, metadata=metadata)
         await notify_session_detach(
             facts, context, lambda: not self.associations.is_current(value),
             timeout_seconds=self._timeout, tasks=self._tasks, task_done=self._task_done,
         )
+
+    async def release_for_end(self, event: SessionRunEndEvent) -> None:
+        """Detach all clients of a stopped run before its session.end notice."""
+        values = self.associations.for_session(event.target.descriptor.session_id)
+        pending = [(value, self.associations.context(value)) for value in values]
+        # Remove all old facts before yielding, including when a hook times out.
+        for value, _context in pending:
+            self._serial += 1
+            self._latest[(value.channel_id, value.surface_id)] = self._serial
+            self.associations.forget_view(value.channel_id, value.surface_id)
+        await asyncio.gather(*(
+            self._notify_detach(value, context, reason="end", next_session_id=None)
+            for value, context in pending
+        ))
 
     @staticmethod
     async def _dispatch(

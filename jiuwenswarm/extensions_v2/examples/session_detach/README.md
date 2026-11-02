@@ -1,13 +1,25 @@
-# Session Detach 用户示例 / User example
+# session.detach 用户示例
 
-将 manifest.yaml 和 extension.py 放在 ZIP 根目录，通过现有 extensions.v2.install 安装。无需修改平台业务方法或构造 SessionContext。包订阅 attach 初始化自己的资源，并在 detach 按 attachment_id 清理自己的旧资源，原样 next/返回。示例只记录日志，不自动渲染、不写历史、不结束会话。
+`session.detach` 告知插件“这个客户端已经离开旧会话”。USER 按旧关联身份取消自己的刷新、订阅或缓存，再 next；CORE 只确认旧关联确实已解除并回显 clientId。它本身不停止 Agent、不删除会话历史、不移除同一会话的其他客户端，也不负责执行第二次解除。
 
-Package manifest.yaml and extension.py at the ZIP root, then install through extensions.v2.install. The package registers USER handlers only. It owns resources by attachment_id and cleans up the old identity without touching another view or a newer association. It does not create SessionContext, render UI, write history or end Sessions.
+示例包由扩展管理入口安装，manifest 的 module 指向 extension.py。它只注册 USER Handler；事件、默认 CORE、SessionContext 和触发入口由 Worker 平台提供，不需要用户改业务方法或创建 EventBus。
 
-现有创建/切换链自动产生关联变化通知。主动离开接入者可通过现有请求传输发送 session.detach，params 必须是该次 attach 的 session_id、view_id（surface_id）和 attachment_id；channel 沿用原请求。身份过期不能移除新关联，重复请求不重复通知。页面关闭的自动上报不在本示例内；不能用 WebSocket 断开推断视图关闭。
+输入示意：
 
-Committed create/switch transitions notify automatically. An explicit leave uses the session.detach Server request with the exact session_id, view_id (surface_id) and attachment_id obtained from attach. The routed channel remains unchanged. Stale identities cannot remove a newer association. Repeated removal does not notify twice. Browser close reporting is a client responsibility; a transport disconnect alone does not detach.
+```python
+from jiuwenswarm.extensions_v2.event_types.session_detach import SessionDetachInput
 
-完整字段与行为见 [F_26](../../docs/features/F_26_session-detach.md)、[S_15](../../docs/specs/S_15_session-detach.md)。失败/超时不恢复已解除关联；旧清理应按 attachment_id 幂等，不按视图名删除新资源。通知只提供旧会话上下文，目录/模型缺失时保留原只读 Ops 缺省语义。
+SessionDetachInput(surface="desktop", clientId="web:view-main", reason="detach")
+```
 
-See F_26 and S_15 for all fields and error semantics. Notification failure does not restore a released binding. Cleanup must be idempotent by attachment_id. Missing directory/model facts retain the existing read-only Ops defaults.
+默认输出示意：
+
+```python
+from jiuwenswarm.extensions_v2.event_types.session_detach import SessionDetachOutput
+
+SessionDetachOutput(clientId="web:view-main")
+```
+
+例如窗口 V 从 A 切到 B：旧 detach 绑定 A、clientId 仍为 web:V，插件按旧 attachment_id 取消 A 的刷新任务；随后新 attach 绑定 B，同一个 clientId 对应新的 attachment_id。迟到的 A 清理只能删旧键，不会误删 B 的资源。若只是关停 A 的运行，则对仍看 A 的窗口发送 reason=end，B 的窗口继续保留。
+
+具体字段、填写内容、触发粒度、完整调用链与旧字段迁移见 [F_26](../../docs/features/F_26_session-detach.md)，公共契约见 [S_15](../../docs/specs/S_15_session-detach.md)。示例不介入 ui.render，日志与实际结果参数用于观察。

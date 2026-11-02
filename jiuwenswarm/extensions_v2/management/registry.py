@@ -34,6 +34,7 @@ from openjiuwen.core.extension.versions import Version, parse_version
 
 from jiuwenswarm.extensions_v2.management.session_start import SessionStartGate
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartOutput
+from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ class ExtensionManager:
         request_id: str,
         channel_id: str,
         is_interactive: bool,
+        surface: RenderSurface | None = None,
     ) -> tuple[SessionStartOutput, ...]:
         """Initialize current Worker activations without holding management locks."""
         self._require_ready()
@@ -109,7 +111,7 @@ class ExtensionManager:
         if gate is None:
             raise RuntimeError("session.start gate is not initialized")
         return await gate.ensure_started(context, request_id=request_id, channel_id=channel_id,
-                                         is_interactive=is_interactive)
+                                         is_interactive=is_interactive, surface=surface)
 
     async def install(self, paths: Sequence[Path]) -> list[ActivationReport]:
         """Install each source through ``package.install``."""
