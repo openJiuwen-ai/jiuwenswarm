@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 | F_14 / session-model |
 | 归档日期 | 2026-10-26 |
-| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变 |
+| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变；同日补充查询结果的资料来源、读取函数、复用与新增边界及缺失处理，契约不变 |
 | 关联计划 | [EXTV2-22 / 七项只读查询事件化](../designs/extensions-v2-development-plan.md#extv2-22-七项只读查询事件化) |
 | 主责规约 | [S_16 查询公共协议](../specs/S_16_session-query-events.md)、[S_04](../specs/S_04_session-model-ops.md) |
 
@@ -189,6 +189,8 @@ label = "模型未知" if model is None else model
 
 <a id="51-启动登记上下文绑定与-core-分工"></a>
 
+### 5.1 启动登记、上下文绑定与 CORE 分工
+
 event_types/session_queries.py 定义查询映射、Matcher、Validator 并注册同名事件及唯一 CORE；handler_ops/session_queries.py 创建封闭代理；query_dispatch.py 负责上下文、来源、重入保护、trigger 和结果解包；event_handlers/session_queries.py 提供共享查询 BUILTIN 与 CORE；实际读取由 server/runtime/session/query_views.py 及所属平台服务负责。
 
 启动阶段，Registry.init 触发一次 ops.build：其 CORE 创建 Builder，平台 BUILTIN 从 next 取得同一 Builder，登记七个 session 查询代理，Bus 保存方法目录。业务阶段，Core 在实际进入每个 Handler 前，用该目录、可信包身份和本次 SessionContext 创建 Ops；方法访问器自动注入当前 Ops。Builder 保存方法定义，查询结果在每次调用时产生。
@@ -216,6 +218,32 @@ notify_context_usage 把会话 ID、可信目录与可得快照整理为 Session
 七项联合示例见 [session_query_audit](../../examples/session_query_audit/)；其中 collect_session_parameters(ops) 是普通用户辅助函数，分别调用七个 Ops 后返回参数字典。它与本文单项业务规则的示例分别维护。共享机制、来源及取消边界见[公共设计第 5 节](../designs/session-query-events.md#5-接入与兼容方案)。
 
 源码位置：[事件与校验](../../event_types/session_queries.py)、[Ops 登记](../../handler_ops/session_ops.py)、[查询代理](../../handler_ops/session_queries.py)、[分派](../../query_dispatch.py)、[查询 CORE／BUILTIN](../../event_handlers/session_queries.py)、[平台读取](../../../server/runtime/session/query_views.py)、[现有平台通知入口](../../event_types/context_usage.py)。
+
+### 5.2 查询结果如何获取
+
+以下说明查询 USER 正常 `await next_handler(event)` 后，默认 CORE 如何取值。公开 `ops.session.model()` 仍先经过同名 `session.model` Event；`ops.session_context` 是 Core 绑定的只读属性，不负责采集资料。USER 短路返回合法 value 时不会执行下列默认读取；USER 在 next 返回后加工 value 时，Ops 拿到的是加工后的视图。
+
+```text
+SessionContext.metadata.get("session_model_info")
+  ├─ 非 None → sanitize_model_info(snapshot)
+  └─ None / 缺键 → to_thread(get_session_model_info, context.session_id)
+                     → 会话目录 / metadata.json
+  → 取 info["model_name"]，没有可用名称则 None
+  → Event 返回 {"value": 名称或 None} → Ops 返回 str 或 None
+```
+
+| 阶段 | 具体从哪里获取 | 如何形成当前结果 |
+| --- | --- | --- |
+| 运行快照优先 | 读取 `metadata["session_model_info"]`；现成平台入口用 `capture_runtime_model_info` 复制已经绑定的主模型名称，再由 notify 存入上下文 | 非 None 快照必须经 `sanitize_model_info` 校验；不会因为快照非法而偷偷换用旧记录。此分支不需要再读文件 |
+| 无运行快照时 | query_views.py 的 `_model` 在线程中调用 [get_session_model_info](../../../server/runtime/session/model_selection_store.py)，参数只取 `context.session_id` | 通过 `_metadata_path` 定位 `get_agent_sessions_dir()/session_id/metadata.json`，读取已保存的选择资料；不创建模型客户端 |
+| 保存资料的名称边界 | 有 `model_selection` 时只保留稳定选择 ID，不解析为名称；没有该选择且有旧字段 `model` 时才读取该字符串 | 只有选择 ID、没有运行快照的会话，公开 model 结果仍可为 None；不会用全局默认模型或工厂补造一个名称 |
+| 公开投影 | `_model` 从经清理的 info 中取 `model_name`，不是返回整个 info | `model_name="demo-model"` 时 Event 为 `{"value":"demo-model"}`，Ops 直接返回 `"demo-model"`；provider、selection、source、activated 不在公开返回中 |
+
+**复用与新增：** 原仓库已有按会话 ID 读保存选择的 `get_session_model_selection`，并已有会话 metadata 存储。PR-02 新增 `capture_runtime_model_info`、`sanitize_model_info`、`get_session_model_info` 等只读适配；当前默认读取实际调用的是 get_session_model_info，不是把旧选择 ID 当名称。事件化改造新增 `_model` 的名称投影与同名 Hook。相关函数见 [model_selection_store.py](../../../server/runtime/session/model_selection_store.py)。
+
+**缺失与失败：** 快照缺失且元数据文件不存在、没有名称，或仅保存稳定选择 ID 时返回 `None`。无效快照、非法 metadata JSON 或选择结构按相应校验／读取错误传播；查询不激活、切换模型，也不发模型请求。
+
+共享查询 BUILTIN 只计时、记录调用来源并复制结果，具体读数由默认 CORE 委派平台服务完成；CORE 将结果包成 `{"value": ...}`，Ops 代理再校验、复制、解包。结果返回调用它的用户 Handler，是否保存为自有参数由用户决定，不自动写历史或进入 UI。
 
 ## 6. 验收与未决问题
 
