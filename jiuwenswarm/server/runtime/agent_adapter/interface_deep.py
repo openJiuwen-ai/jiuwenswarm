@@ -1026,8 +1026,11 @@ class JiuWenSwarmDeepAdapter:
     """
 
     def _install_file_soft_delete(self) -> None:
-        """开关为真时把软删除 DLL 装进当前进程。失败只记日志，下次创建会再试。"""
-        if sys.platform != "win32":
+        """开关为真时把软删除 DLL 装进当前进程。失败只记日志，下次创建会再试。
+
+        仅个人版。企业版不在 Windows 上运行，没有回收站。
+        """
+        if is_enterprise() or sys.platform != "win32":
             return
         try:
             from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
