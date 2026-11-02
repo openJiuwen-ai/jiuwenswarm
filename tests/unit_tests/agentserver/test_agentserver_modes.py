@@ -14,6 +14,18 @@ from jiuwenswarm.common.config import get_ttse_enabled
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
+from jiuwenswarm.server.runtime.agent_adapter.deep import progressive_tools as progressive_tools_module
+
+
+def _patch_interface_deep_get_config(monkeypatch, config):
+    """Patch get_config on both facade and progressive_tools binding site.
+
+    ``_merge_ttse_config`` lives in progressive_tools and closes over that
+    module's ``get_config``; patching only ``interface_deep`` is not enough.
+    """
+    getter = (lambda: config) if not callable(config) else config
+    monkeypatch.setattr(interface_deep_module, "get_config", getter)
+    monkeypatch.setattr(progressive_tools_module, "get_config", getter)
 
 
 class FakeWebSocket:
@@ -175,7 +187,7 @@ def test_progressive_eager_tools_skip_ttse_consult_when_master_disabled():
 
 
 def test_progressive_eager_tools_skip_ttse_consult_when_enabled_unset(monkeypatch):
-    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    _patch_interface_deep_get_config(monkeypatch, {})
     rail = interface_deep_module.build_progressive_tool_rail_from_config(
         {
             "tool_lazy_load": {
@@ -209,7 +221,7 @@ def test_ttse_eager_and_mount_agree_on_enabled_default(
     ttse, expect_mounted, expect_eager, monkeypatch
 ):
     """With empty yaml, eager consult matches get_ttse_enabled on missing/false enabled."""
-    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    _patch_interface_deep_get_config(monkeypatch, {})
     react = {"ttse": ttse}
     assert get_ttse_enabled({"react": react}) is expect_mounted
     assert get_ttse_enabled(react) is expect_mounted
@@ -233,10 +245,9 @@ def test_ttse_eager_and_mount_agree_on_enabled_default(
 
 def test_ttse_eager_inherits_yaml_when_runtime_omits_key(monkeypatch):
     """Sparse OfficeAce cache must not strip first-turn consult while the rail mounts."""
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
     )
     react = {"tool_lazy_load": {"enabled": True, "eager_tools": ["read_file"]}}
     merged = interface_deep_module._merge_ttse_config(react)
@@ -252,10 +263,9 @@ def test_ttse_eager_inherits_yaml_when_runtime_omits_key(monkeypatch):
 
 
 def test_ttse_runtime_disabled_overrides_yaml_for_eager(monkeypatch):
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
     )
     react = {
         "tool_lazy_load": {"enabled": True, "eager_tools": ["read_file", "ttse_consult"]},
@@ -2924,10 +2934,9 @@ def test_deep_adapter_registers_ttse_rail_when_enabled(monkeypatch):
     monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"enabled": True}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"enabled": True}}},
     )
 
     asyncio.run(adapter._update_rails_for_mode("agent"))
@@ -2965,7 +2974,7 @@ def test_deep_adapter_skips_ttse_rail_when_enabled_unset(monkeypatch):
         lambda _config: built.append("built") or object(),
     )
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
-    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    _patch_interface_deep_get_config(monkeypatch, {})
 
     asyncio.run(adapter._update_rails_for_mode("agent"))
 
@@ -3001,10 +3010,9 @@ def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
         lambda _config: built.append("built") or object(),
     )
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"enabled": False}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"enabled": False}}},
     )
 
     asyncio.run(adapter._update_rails_for_mode("agent"))
@@ -3042,10 +3050,9 @@ def test_deep_adapter_skips_ttse_rail_when_runtime_disabled_overrides_yaml(monke
         lambda _config: built.append("built") or object(),
     )
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"enabled": True}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"enabled": True}}},
     )
 
     asyncio.run(adapter._update_rails_for_mode("agent"))
@@ -3071,9 +3078,8 @@ def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
     yaml_enabled = {"value": True}
     monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
+    _patch_interface_deep_get_config(
+        monkeypatch,
         lambda: {"react": {"ttse": {"enabled": yaml_enabled["value"]}}},
     )
 
@@ -3116,10 +3122,9 @@ def test_deep_adapter_mounts_and_exposes_consult_when_cache_omits_ttse(monkeypat
     monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
     )
 
     asyncio.run(adapter._reconcile_evolution_rails())
@@ -3177,7 +3182,7 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: shared_ws)
-    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    _patch_interface_deep_get_config(monkeypatch, {})
     monkeypatch.setattr(
         "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: fake_processor,
@@ -3226,7 +3231,7 @@ def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", lambda **kwargs: kwargs)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    _patch_interface_deep_get_config(monkeypatch, {})
     monkeypatch.setattr(
         "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: None,
@@ -3255,10 +3260,9 @@ def test_build_ttse_rail_ignores_configured_store_path(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"store_path": str(tmp_path / "yaml-bank.json")}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"store_path": str(tmp_path / "yaml-bank.json")}}},
     )
     monkeypatch.setattr(
         "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
@@ -3293,10 +3297,9 @@ def test_build_ttse_rail_ignores_configured_inject_mode(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        interface_deep_module,
-        "get_config",
-        lambda: {"react": {"ttse": {"inject_mode": "legacy_system"}}},
+    _patch_interface_deep_get_config(
+        monkeypatch,
+        {"react": {"ttse": {"inject_mode": "legacy_system"}}},
     )
     monkeypatch.setattr(
         "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
@@ -3333,7 +3336,7 @@ def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    _patch_interface_deep_get_config(monkeypatch, {})
     monkeypatch.setattr(
         "openjiuwen.core.memory.lite.embeddings.OpenAICompatibleEmbeddingProvider",
         FakeProvider,
@@ -3385,7 +3388,7 @@ def test_build_ttse_rail_skips_embedding_when_incomplete(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    _patch_interface_deep_get_config(monkeypatch, {})
     monkeypatch.setattr(
         "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: object(),
