@@ -4,7 +4,7 @@
 | --- | --- |
 | 编号 | F_13 / session-cwd |
 | 建档日期 | 2026-10-26 |
-| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变 |
+| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变；同日补充查询结果的资料来源、读取函数、复用与新增边界及缺失处理，契约不变 |
 | 关联计划 | [EXTV2-22 / 七项只读查询事件化](../designs/extensions-v2-development-plan.md#extv2-22-七项只读查询事件化) |
 | 主责规约 | [S_16 查询公共协议](../specs/S_16_session-query-events.md)、[S_03](../specs/S_03_session-workspace-ops.md) |
 
@@ -182,6 +182,8 @@ label = "目录未知" if cwd is None else cwd
 
 <a id="51-启动登记上下文绑定与-core-分工"></a>
 
+### 5.1 启动登记、上下文绑定与 CORE 分工
+
 event_types/session_queries.py 定义查询映射、Matcher、Validator 并注册同名事件及唯一 CORE；handler_ops/session_queries.py 创建封闭代理；query_dispatch.py 负责上下文、来源、重入保护、trigger 和结果解包；event_handlers/session_queries.py 提供共享查询 BUILTIN 与 CORE；实际读取由 server/runtime/session/query_views.py 及所属平台服务负责。
 
 启动阶段，Registry.init 触发一次 ops.build：其 CORE 创建 Builder，平台 BUILTIN 从 next 取得同一 Builder，登记七个 session 查询代理，Bus 保存方法目录。业务阶段，Core 在实际进入每个 Handler 前，用该目录、可信包身份和本次 SessionContext 创建 Ops；方法访问器自动注入当前 Ops。Builder 保存方法定义，查询结果在每次调用时产生。
@@ -209,6 +211,30 @@ notify_context_usage 把会话 ID、可信目录与可得快照整理为 Session
 七项联合示例见 [session_query_audit](../../examples/session_query_audit/)；其中 collect_session_parameters(ops) 是普通用户辅助函数，分别调用七个 Ops 后返回参数字典。它与本文单项业务规则的示例分别维护。共享机制、来源及取消边界见[公共设计第 5 节](../designs/session-query-events.md#5-接入与兼容方案)。
 
 源码位置：[事件与校验](../../event_types/session_queries.py)、[Ops 登记](../../handler_ops/session_ops.py)、[查询代理](../../handler_ops/session_queries.py)、[分派](../../query_dispatch.py)、[查询 CORE／BUILTIN](../../event_handlers/session_queries.py)、[平台读取](../../../server/runtime/session/query_views.py)、[现有平台通知入口](../../event_types/context_usage.py)。
+
+### 5.2 查询结果如何获取
+
+以下说明查询 USER 正常 `await next_handler(event)` 后，默认 CORE 如何取值。公开 `ops.session.cwd()` 仍先经过同名 `session.cwd` Event；`ops.session_context` 是 Core 绑定的只读属性，不负责采集资料。USER 短路返回合法 value 时不会执行下列默认读取；USER 在 next 返回后加工 value 时，Ops 拿到的是加工后的视图。
+
+```text
+SessionContext.cwd
+  → read_session_query("session.cwd", {}, context)
+  → _path(context.cwd, "session.cwd")
+  → Event 返回 {"value": 绝对路径或 None} → Ops 返回该路径或 None
+```
+
+| 阶段 | 具体从哪里获取 | 如何形成当前结果 |
+| --- | --- | --- |
+| 平台资料 | 现成回合入口在 interface_deep.py 调用 Core 的 `get_cwd()`，把当前执行目录作为 `cwd` 传给 `notify_context_usage` | 通知桥接构造 `SessionContext(cwd=cwd, ...)`；其他平台入口也可提供自己的可信 cwd，用户不需要再填写路径 |
+| 查询身份 | 代理从 `ops.session_context` 取得绑定上下文，校验其中的 `session_id` | 会话 ID 用于确认当前查询所属会话；本项不按 ID 再读会话目录，也不取 Worker 的进程 cwd |
+| 默认 CORE | [read_session_query / query_views.py](../../../server/runtime/session/query_views.py) 的 cwd 分支只调用 `_path(context.cwd, event_type)` | 校验宿主绝对路径的形式后原样返回；不扫描磁盘、不验证目录存在、不执行 chdir |
+| 返回 | `session_query_core` 包成 `{"value": cwd}`；代理校验并解包 | `cwd="D:/projects/demo/src"` 时，`await ops.session.cwd()` 得到同一个字符串；没有额外结果字典 |
+
+**复用与新增：** 执行目录来源复用平台已有的 Core cwd 上下文。PR-01 新增了扩展侧的工作区读取适配；七项事件化改造再增加 `session.cwd` 查询 Hook 和代理，并由 query_views.py 承接默认读取。不是重新实现一套目录发现机制。
+
+**缺失与失败：** 绑定 `cwd=None` 时返回 `None`；空字符串、相对路径报 `ValueError`，非字符串且非 None 报 `TypeError`。即使 session_id 有效，也不会自动改读磁盘、项目根或进程目录。
+
+共享查询 BUILTIN 只计时、记录调用来源并复制结果，具体读数由默认 CORE 委派平台服务完成；CORE 将结果包成 `{"value": ...}`，Ops 代理再校验、复制、解包。结果返回调用它的用户 Handler，是否保存为自有参数由用户决定，不自动写历史或进入 UI。
 
 ## 6. 验收与未决问题
 
