@@ -28,10 +28,12 @@ def server(monkeypatch):
     return module.AgentWebSocketServer.__new__(module.AgentWebSocketServer)
 
 
-def history_request(*, stream: bool, cursor=None, limit=50):
+def history_request(*, stream: bool, cursor=None, limit=50, max_bytes=None):
     params = {"session_id": "cursor-session", "cursor": cursor}
     if limit is not None:
         params["limit"] = limit
+    if max_bytes is not None:
+        params["max_bytes"] = max_bytes
     return AgentRequest(
         request_id="cursor-request",
         channel_id="desktop",
@@ -65,10 +67,11 @@ async def test_cursor_history_returns_batch_metadata(server, monkeypatch, stream
         "scanned_bytes": 128,
     }
 
-    def read_page(session_id, *, cursor, limit, is_restorable):
+    def read_page(session_id, *, cursor, limit, max_bytes, is_restorable):
         assert session_id == "cursor-session"
         assert cursor is None
         assert limit == 50
+        assert max_bytes == module._HISTORY_CURSOR_DEFAULT_MAX_BYTES
         assert is_restorable(batch["messages"][0]) is True
         return batch
 
@@ -106,7 +109,7 @@ async def test_cursor_history_rejects_invalid_limit(server, stream):
     await handler(ws, history_request(stream=stream, limit=0), asyncio.Lock())
     payload = parse_payload(ws.sent[0], stream)
     assert payload["code"] == "INVALID_HISTORY_CURSOR"
-    assert "between 1 and 50" in payload["error"]
+    assert "between 1 and 1000" in payload["error"]
     if stream:
         assert payload["event_type"] == "chat.error"
 
@@ -144,4 +147,46 @@ def test_cursor_history_empty_session_returns_metadata(tmp_path, monkeypatch):
         "snapshot_id": None,
         "snapshot_end": 0,
         "scanned_bytes": 0,
+        "wire_bytes": 0,
     }
+
+
+def test_cursor_history_accepts_large_batch_and_byte_budget(monkeypatch):
+    captured = {}
+
+    def read_page(session_id, *, cursor, limit, max_bytes, is_restorable):
+        captured.update(session_id=session_id, cursor=cursor, limit=limit, max_bytes=max_bytes)
+        return {
+            "messages": [],
+            "next_cursor": None,
+            "has_more": False,
+            "snapshot_id": None,
+            "snapshot_end": 0,
+            "scanned_bytes": 0,
+            "wire_bytes": 0,
+        }
+
+    monkeypatch.setattr(module, "read_history_cursor_page", read_page)
+    result = module.AgentWebSocketServer.get_conversation_history_cursor(
+        "cursor-session",
+        None,
+        limit=500,
+        max_bytes=2 * 1024 * 1024,
+    )
+
+    assert captured == {
+        "session_id": "cursor-session",
+        "cursor": None,
+        "limit": 500,
+        "max_bytes": 2 * 1024 * 1024,
+    }
+    assert result["messages"] == []
+
+
+def test_cursor_history_rejects_invalid_max_bytes():
+    with pytest.raises(module.InvalidHistoryCursor, match="max_bytes"):
+        module.AgentWebSocketServer.get_conversation_history_cursor(
+            "cursor-session",
+            None,
+            max_bytes=1,
+        )

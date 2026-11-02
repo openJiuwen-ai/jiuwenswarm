@@ -429,6 +429,83 @@ def test_cursor_initial_page_on_over_1000_records_stays_bounded(tmp_path, monkey
     assert page["scanned_bytes"] < path.stat().st_size // 2
 
 
+def test_cursor_supports_500_record_pages(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_500"
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {"id": f"r-{index}", "role": "user", "content": "x" * 100}
+            for index in range(650)
+        ],
+    )
+
+    first = session_history.read_history_cursor_page(
+        session_id,
+        cursor=None,
+        limit=500,
+        is_restorable=_all_records,
+    )
+    second = session_history.read_history_cursor_page(
+        session_id,
+        cursor=first["next_cursor"],
+        limit=500,
+        is_restorable=_all_records,
+    )
+
+    assert len(first["messages"]) == 500
+    assert first["has_more"] is True
+    assert len(second["messages"]) == 150
+    assert second["has_more"] is False
+    assert [item["id"] for item in first["messages"][:2]] == ["r-649", "r-648"]
+    assert second["messages"][-1]["id"] == "r-0"
+
+
+def test_cursor_stops_at_byte_budget_without_losing_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_byte_budget"
+    records = [
+        {"id": f"r-{index}", "role": "user", "content": "x" * 1000}
+        for index in range(20)
+    ]
+    _write_jsonl(tmp_path / session_id / "history.jsonl", records)
+
+    cursor = None
+    restored = []
+    pages = 0
+    while True:
+        page = session_history.read_history_cursor_page(
+            session_id,
+            cursor=cursor,
+            limit=500,
+            max_bytes=8 * 1024,
+            is_restorable=_all_records,
+        )
+        restored.extend(page["messages"])
+        pages += 1
+        assert page["wire_bytes"] <= 8 * 1024
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            break
+
+    assert pages > 1
+    assert [item["id"] for item in restored] == [f"r-{index}" for index in reversed(range(20))]
+
+
+def test_cursor_rejects_invalid_byte_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    with pytest.raises(session_history.InvalidHistoryCursor, match="max_bytes"):
+        session_history.read_history_cursor_page(
+            "cursor_bad_budget",
+            cursor=None,
+            limit=500,
+            max_bytes=1,
+            is_restorable=_all_records,
+        )
+
+
 def test_cursor_initial_read_flushes_queued_history_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.delenv("JIUWENSWARM_USE_LEGACY_HISTORY_JSON", raising=False)
