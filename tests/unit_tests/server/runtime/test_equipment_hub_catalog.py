@@ -95,7 +95,7 @@ def test_list_catalog_reads_both_kinds(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [item["id"] for item in payload["items"]] == ["group-b", "asset-a"]
 
 
-def test_enterprise_catalog_omits_connector_packages(
+def test_catalog_reader_keeps_connector_packages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hidden = "794db1bfe8884d6897d62d3584894a59"
@@ -133,16 +133,17 @@ def test_enterprise_catalog_omits_connector_packages(
     )
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     personal = asyncio.run(list_hub_equipment_catalog(_Port()))
-    assert [item["id"] for item in personal["items"]] == [
+    listed = [
         "32c223d69b834c35b40bc3935c6f9f67",
         "group-b",
         hidden,
         "asset-a",
     ]
+    assert [item["id"] for item in personal["items"]] == listed
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     enterprise = asyncio.run(list_hub_equipment_catalog(_Port()))
-    assert [item["id"] for item in enterprise["items"]] == ["group-b", "asset-a"]
+    assert [item["id"] for item in enterprise["items"]] == listed
 
 
 def test_list_catalog_returns_error_when_hub_fails(monkeypatch: pytest.MonkeyPatch) -> None:

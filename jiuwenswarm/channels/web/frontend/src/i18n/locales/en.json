@@ -2016,6 +2016,9 @@
     },
     "uploading": "Uploading...",
     "uploadFailed": "Upload failed",
+    "steerImagesOnly": "Immediate input supports uploaded images only. Wait for image uploads to finish; other files must remain queued.",
+    "steerImageUnavailable": "This Agent cannot read images yet. Enable image input for the main model or configure an image understanding tool, then try again.",
+    "steerDeliveryFailed": "Could not combine the original task and supplemental input into a complete answer. Please try again.",
     "retry": "Retry",
     "deleteLongPress": "Delete, long press for more actions",
     "deleteAttachment": "Delete attachment",
@@ -2514,6 +2517,14 @@
     }
   },
   "cron": {
+    "execution": {
+      "pending": "Waiting to run",
+      "running": "Executing",
+      "awaiting_approval": "Awaiting approval",
+      "succeeded": "Last run completed",
+      "failed": "Last run failed",
+      "startFailed": "Scheduled task “{{name}}” could not start: {{reason}}"
+    },
     "title": "Scheduled Task Management",
     "subtitle": "Manage scheduled tasks with cron expressions, including creating, enabling, and deleting tasks",
     "create": "Create",
@@ -2617,6 +2628,7 @@
       "placeholderProject": "-",
       "placeholderEffectiveDate": "Select effective date",
       "missingFieldsHint": "Still needed: {{fields}}",
+      "modelUnavailable": "The selected model “{{model}}” is unavailable. Check the model configuration.",
       "scheduleAlreadyExpiredHint": "The selected run time is already in the past, please choose another",
       "charCount": "{{count}}/{{max}}",
       "maxLengthReachedHint": "Maximum length reached ({{max}} characters)"
@@ -2782,6 +2794,7 @@
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
+      "sessionOpenFailed": "The task was triggered, but its session could not be opened. Open it from the task's session list.",
       "expiredCannotRunNow": "Task has expired and cannot be run",
       "disabledCannotRunNow": "Task is stopped and cannot be run",
       "expiredCannotEnable": "Task has expired and cannot be enabled",
@@ -3187,16 +3200,19 @@
       "disabled": "Disabled",
       "builtin": "Builtin",
       "prebuilt": "Prebuilt",
-      "user": "User-installed"
+      "user": "User-installed",
+      "local": "Local"
     },
     "mySkillsGroups": {
       "added": "Added Skills",
       "prebuilt": "Prebuilt Skills",
       "builtin": "Built-in Skills",
+      "local": "Local Skills",
       "skillPack": "Skill Packs"
     },
     "noPrebuiltSkills": "No prebuilt skills",
     "noUserSkills": "No user-installed skills",
+    "noLocalSkills": "No local skills",
     "skillTypes": {
       "skill": "Skill Pack",
       "skillpack": "Skill Pack",
@@ -5580,5 +5596,17 @@
     "reject": "Reject",
     "approve": "Authorize",
     "waiting": "Processing..."
+  },
+  "mcpApp": {
+    "loading": "Loading app…",
+    "loadFailed": "Could not load app",
+    "approvalPrompt": "The app wants to run",
+    "messagePrompt": "{{app}} wants to send this message to the Agent",
+    "sendMessage": "Send",
+    "cancelMessage": "Cancel",
+    "allow": "Allow",
+    "deny": "Deny",
+    "allowAlways": "Always allow in this app",
+    "readOnlyHint": "The server marks this tool as read-only (not verified)."
   }
 }

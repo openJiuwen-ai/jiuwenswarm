@@ -30,7 +30,7 @@ import {
 import { Switch } from '../Switch';
 import { resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
 import { isEnterprise } from '../../edition';
-import { isAdminManagedSkill, shouldShowEnableSwitch } from './skillPanelUtils';
+import { isAdminManagedSkill, shouldShowEnableSwitch, shouldShowSkillPublish } from './skillPanelUtils';
 import { buildSkillVersionOptions } from './skillVersionOptions';
 import type {
   EvolutionEntry,
@@ -390,8 +390,10 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     Boolean(packPlugin && packPlugin.plugin_name === selectedSkill.name && packPlugin.skills.length > 1);
   // 技能包含有已卸载成员时整包被禁用，且不允许直接启用（需重新下载完整技能包）
   const isPackBlocked = (selectedSkill.blocked_members?.length ?? 0) > 0;
-  const adminManaged = isAdminManagedSkill(selectedSkill);
-  const showEnableSwitch = shouldShowEnableSwitch(selectedSkill, isEnterprise());
+  const enterpriseEdition = isEnterprise();
+  const adminManaged = isAdminManagedSkill(selectedSkill, enterpriseEdition);
+  const showEnableSwitch = shouldShowEnableSwitch(selectedSkill, enterpriseEdition);
+  const showPublish = shouldShowSkillPublish(selectedSkill, enterpriseEdition);
   return renderShell(
     {
       avatar: { name: skillDisplayName, testId: 'skill-panel-my-detail-avatar' },
@@ -432,7 +434,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
               ? [t('skills.skillTypes.skillpack')]
               : undefined,
     },
-    /* 右侧操作按钮；企业预置/内置不展示编辑、卸载、发布；企业版预置/内置可启停 */
+    /* 右侧：编辑/卸载见 adminManaged；启停见 showEnableSwitch；发布见 showPublish */
     <div className="flex items-center flex-shrink-0">
       {!adminManaged ? (
         <div className="relative">
@@ -517,7 +519,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
       >
         {t('skills.actions.goTry')}
       </button>
-      {!adminManaged ? (
+      {showPublish ? (
         <button
           type="button"
           className="ml-2 flex items-center justify-center rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 whitespace-nowrap"

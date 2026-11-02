@@ -2743,3 +2743,81 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         sandbox_block[key] = merged[key]
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
     return merged
+
+
+def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
+    saved = _normalize_model_entry(entry)
+    model_config = saved.get("model_config_obj")
+    if isinstance(model_config, dict) and "reasoning_level" in model_config:
+        from gateway.common.reasoning_config import normalize_reasoning_level
+
+        raw_level = model_config["reasoning_level"]
+        level = normalize_reasoning_level(raw_level)
+        if raw_level is not None and str(raw_level).strip() and level is None:
+            raise ValueError("Invalid reasoning_level")
+        # PyYAML reads unquoted on/off as booleans; keep the editable DTO stable.
+        model_config["reasoning_level"] = DoubleQuotedScalarString(level or "")
+    saved.setdefault("model_id", _new_business_id("mdl"))
+
+    def _mutate(data):
+        nonlocal saved
+        candidate = _models_for_write(data)
+        _require_editable_model(candidate, saved["model_id"])
+        defaults = candidate.setdefault("defaults", [])
+        for index, current in enumerate(defaults):
+            if current.get("model_id") == saved["model_id"]:
+                _protect_model_key(saved, current)
+                saved = _merge_model_update(current, saved)
+                defaults[index] = saved
+                break
+        else:
+            _protect_model_key(saved, {})
+            defaults.append(saved)
+        if entry.get("is_default") is True:
+            for current in defaults:
+                current["is_default"] = current["model_id"] == saved["model_id"]
+        _validate_model_candidate(candidate)
+        return data
+
+    update_config(_mutate)
+    return saved
+
+
+def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
+    from gateway.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
+
+    saved = deepcopy(group)
+    saved.setdefault("model_group_id", _new_business_id("mgp"))
+    # Keep per-group timeouts; legacy routing strategies remain inactive in model-pool mode.
+    routing = saved.pop("routing", None)
+    if isinstance(routing, dict):
+        timeouts = {
+            key: routing[key]
+            for key in ("timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout")
+            if key in routing
+        }
+        if timeouts:
+            saved["routing"] = timeouts
+    for route in saved.get("routes") or []:
+        if isinstance(route, dict):
+            route.setdefault("route_id", _new_business_id("rte"))
+
+    def _mutate(data):
+        candidate = _models_for_write(data)
+        groups = candidate.setdefault("groups", [])
+        for index, current in enumerate(groups):
+            if current.get("model_group_id") == saved["model_group_id"]:
+                groups[index] = saved
+                break
+        else:
+            groups.append(saved)
+        if saved.get("is_default"):
+            for current in groups:
+                current["is_default"] = current["model_group_id"] == saved["model_group_id"]
+        _validate_model_candidate(candidate)
+        if saved.get("enabled", True) and not any(route.get("enabled", True) for route in saved["routes"]):
+            raise ModelSelectionError(MODEL_GROUP_INVALID, "enabled model group must contain an enabled route")
+        return data
+
+    update_config(_mutate)
+    return saved

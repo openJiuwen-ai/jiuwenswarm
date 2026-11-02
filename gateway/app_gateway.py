@@ -1977,7 +1977,7 @@ async def _run(
     from gateway.enterprise import is_enterprise
 
     if is_enterprise():
-        from jiuwenswarm.extensions.redis import init_gateway_redis_from_config
+        from gateway.extensions.redis import init_gateway_redis_from_config
         from gateway.storage_assembly.setup import start_gateway_storage
 
         try:
@@ -3352,10 +3352,10 @@ async def _run(
                 )
                 if not enabled:
                     logger.info("[App] channels.ssh.%s, SshChannel disabled", reason)
-                elif client_type != "agentos_router":
+                elif client_type not in {"agentos_router", "adx_router"}:
                     logger.warning(
                         "[App] channels.ssh.enabled=true but gateway.agent_client.type=%s "
-                        "(require agentos_router); SshChannel will not start",
+                        "(require agentos_router or adx_router); SshChannel will not start",
                         client_type,
                     )
                 else:

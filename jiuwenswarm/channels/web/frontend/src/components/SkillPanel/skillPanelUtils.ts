@@ -108,6 +108,17 @@ export function isPrebuiltSkill(skill: Pick<SkillItem, 'source_type'>): boolean 
 }
 
 /**
+ * 本地技能：磁盘扫描 / 本地导入登记（source=local，或 origin 为 local / local:…）。
+ * 与广场用户自装（source_type=user 且 source 为 hub 等）区分，便于单独页签展示。
+ */
+export function isLocalSkill(skill: Pick<SkillItem, 'source' | 'origin'>): boolean {
+  const source = String(skill.source || '').trim();
+  if (source === 'local') return true;
+  const origin = String(skill.origin || '').trim();
+  return origin === 'local' || origin.startsWith('local:');
+}
+
+/**
  * 内置技能。广场自装（source_type=user）即使同名也不算内置；
  * 兼容旧列表仅 source=builtin 且未标成 user。
  */
@@ -119,11 +130,28 @@ export function isBuiltinSkill(skill: Pick<SkillItem, 'source_type' | 'source'>)
 }
 
 /**
- * 企业预置 / 内置：不展示编辑、卸载、发布。
- * （后端也会拒绝 uninstall；启停见 shouldShowEnableSwitch。）
+ * 不展示编辑、卸载的技能（发布见 shouldShowSkillPublish）。
+ * - 预置：各版本均管理员托管
+ * - 内置：仅企业版托管；个人版与 origin/develop 一致，可编辑/卸载
+ * （后端也会拒绝对应 uninstall；启停见 shouldShowEnableSwitch。）
  */
-export function isAdminManagedSkill(skill: Pick<SkillItem, 'source_type' | 'source'>): boolean {
-  return isPrebuiltSkill(skill) || isBuiltinSkill(skill);
+export function isAdminManagedSkill(
+  skill: Pick<SkillItem, 'source_type' | 'source'>,
+  enterpriseEdition = false,
+): boolean {
+  if (isPrebuiltSkill(skill)) return true;
+  return enterpriseEdition && isBuiltinSkill(skill);
+}
+
+/**
+ * 是否展示技能详情「发布」入口。
+ * 与编辑/卸载一致：非管理员托管技能可发布（企业版仅屏蔽 prebuilt/builtin）。
+ */
+export function shouldShowSkillPublish(
+  skill: Pick<SkillItem, 'source_type' | 'source'>,
+  enterpriseEdition: boolean,
+): boolean {
+  return !isAdminManagedSkill(skill, enterpriseEdition);
 }
 
 /**

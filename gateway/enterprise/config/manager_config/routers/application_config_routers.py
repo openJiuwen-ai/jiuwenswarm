@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -149,8 +149,23 @@ async def list_package_allowlist_catalog():
     """本集群 Hub 目录。不做允许名单过滤，失败时 data 里带空 items 和 error。"""
     from jiuwenswarm.server.runtime.equipment_hub_catalog import list_hub_equipment_catalog
 
-    payload = await list_hub_equipment_catalog()
+    payload = _without_hidden_hub_items(await list_hub_equipment_catalog())
     return ResponseModel(code=200, message="success", data=payload)
+
+
+def _without_hidden_hub_items(payload: dict[str, Any]) -> dict[str, Any]:
+    """管理端目录去掉企业版不提供的 Hub 包。本路由只在企业版注册。"""
+    from jiuwenswarm.common.schema.package_allowlist import HIDDEN_HUB_ASSET_IDS
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return payload
+    kept = [
+        row
+        for row in items
+        if str((row or {}).get("id") or "").strip() not in HIDDEN_HUB_ASSET_IDS
+    ]
+    return {**payload, "items": kept}
 
 
 @application_config_router.put("/cron-policy", response_model=ResponseModel)

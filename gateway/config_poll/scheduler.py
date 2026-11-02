@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 
-from jiuwenswarm.common.config import get_config
+from gateway.common.config import get_config
 from gateway.enterprise import is_enterprise
 
 from .db import POLL_TABLES

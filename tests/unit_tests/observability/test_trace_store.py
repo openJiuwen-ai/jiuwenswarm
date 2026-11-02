@@ -422,6 +422,72 @@ def test_a_span_name_lives_exactly_as_long_as_its_frames(tmp_path: Path) -> None
     test_logger.info("span names are swept with the last frame that used them")
 
 
+@pytest.mark.asyncio
+async def test_frame_pages_skip_ineligible_traces_without_losing_the_cursor(
+    tmp_path: Path,
+) -> None:
+    """A frame page walks frame_seq and filters each frame by its trace.
+
+    Frames of a trace the viewer may not see sit between eligible ones and
+    after the last of them. They must neither appear in a page, nor stop the
+    cursor short, nor count toward the watermark a reader resumes against.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path, discard_final_span_frames=False)
+    store.initialize()
+
+    def frame(trace_id: str, sequence: int) -> StreamFrameData:
+        return StreamFrameData(
+            session_id="session-1",
+            execution_subject_id="main",
+            trace_id=trace_id,
+            span_id=_ROOT_SPAN_ID,
+            sequence=sequence,
+            kind="text-delta",
+            timestamp_unix_nano=1_000 + sequence,
+            text=f"{trace_id[0]}{sequence}",
+        )
+
+    try:
+        store.write_records([
+            _stored_record(),
+            _stored_record(trace_id=_SECOND_TRACE_ID, agent_mode="unknown.mode"),
+        ])
+        # frame_seq 1..6, eligible ones at 1, 3 and 5.
+        store.write_records([], frames=[
+            frame(_TRACE_ID, 0),
+            frame(_SECOND_TRACE_ID, 0),
+            frame(_TRACE_ID, 1),
+            frame(_SECOND_TRACE_ID, 1),
+            frame(_TRACE_ID, 2),
+            frame(_SECOND_TRACE_ID, 2),
+        ])
+    finally:
+        store.close()
+
+    reader = AsyncTrajectoryReader(database_path)
+    first = await reader.get_stream_frames("session-1", since_frame_seq=0, limit=2)
+    assert first is not None
+    assert [item["frame_seq"] for item in first["frames"]] == [1, 3]
+    assert [item["text"] for item in first["frames"]] == ["10", "11"]
+    assert first["frame_seq"] == 5
+    assert first["has_more"] is True
+    assert first["reset"] is False
+    assert first["next_since_frame_seq"] == 3
+
+    second = await reader.get_stream_frames(
+        "session-1",
+        since_frame_seq=first["next_since_frame_seq"],
+        limit=2,
+    )
+    assert second is not None
+    assert [item["frame_seq"] for item in second["frames"]] == [5]
+    assert second["has_more"] is False
+    assert second["reset"] is False
+    assert second["next_since_frame_seq"] == 5
+    test_logger.info("frame pages skipped another trace's frames in place")
+
+
 def test_store_preserves_exact_raw_and_records_hash_conflict(tmp_path: Path) -> None:
     database_path = tmp_path / "trajectory.sqlite3"
     store = TrajectoryStore(database_path)

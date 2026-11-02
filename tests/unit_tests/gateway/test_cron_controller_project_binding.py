@@ -101,10 +101,10 @@ def _listed_job(job_id: str, **fields):
 
 @pytest.mark.asyncio
 async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
-    """用户、群、机器人不传就是 default。不传项目编号则每个项目都返回。空项目编号只要默认项目。"""
+    """用户、群、机器人不传就是空串。不传项目编号则每个项目都返回。空项目编号只要默认项目。"""
     jobs = [
-        _listed_job("home", project_id="", user_id="default", group_id="default", bot_id="default"),
-        _listed_job("job_a", project_id="proj_1", user_id="alice", group_id="default", bot_id="default"),
+        _listed_job("home", project_id="", user_id="", group_id="", bot_id=""),
+        _listed_job("job_a", project_id="proj_1", user_id="alice", group_id="", bot_id=""),
         _listed_job("job_c", project_id="", user_id="alice", group_id="g1", bot_id="b1"),
     ]
 
@@ -121,7 +121,7 @@ async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
     every_project = await controller.list_jobs(
         user_id="alice",
         group_id="",
-        bot_id="default",
+        bot_id="",
     )
     assert [job["id"] for job in every_project] == ["job_a"]
 
@@ -129,9 +129,13 @@ async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
         project_id="proj_1",
         user_id="alice",
         group_id="",
-        bot_id="default",
+        bot_id="",
     )
     assert [job["id"] for job in personal_project] == ["job_a"]
+
+    # 显式空串与默认值一致：只命中空身份，不把 None 混进来。
+    empty_owner = await controller.list_jobs(user_id="", group_id="", bot_id="")
+    assert [job["id"] for job in empty_owner] == ["home"]
 
     enterprise = await controller.list_jobs(
         project_id="",
@@ -143,12 +147,44 @@ async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_jobs_none_user_id_skips_user_filter() -> None:
+    """显式 user_id=None 才跳过用户维；默认值必须是 ""，不能是 None。
+
+    None 只留给确定需要全量列表的内部路径。对外入口应传空串，避免跨用户可见。
+    """
+    jobs = [
+        _listed_job("home", project_id="", user_id="", group_id="", bot_id=""),
+        _listed_job("job_a", project_id="proj_1", user_id="alice", group_id="", bot_id=""),
+        _listed_job("job_c", project_id="", user_id="alice", group_id="g1", bot_id="b1"),
+    ]
+
+    async def list_jobs():
+        return list(jobs)
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=_FakeScheduler(),
+    )
+
+    # 仅关键字参数：默认值在 __kwdefaults__。user_id 默认必须是 ""，不能是 None。
+    kwdefaults = controller.list_jobs.__kwdefaults__
+    assert kwdefaults is not None
+    assert kwdefaults["user_id"] == ""
+    assert kwdefaults["group_id"] == ""
+    assert kwdefaults["bot_id"] == ""
+    assert kwdefaults["project_id"] is None
+
+    listed = await controller.list_jobs(user_id=None, group_id="", bot_id="")
+    assert [job["id"] for job in listed] == ["home", "job_a"]
+
+
+@pytest.mark.asyncio
 async def test_list_jobs_hides_projects_the_gate_rejects() -> None:
     """身份对上了，项目现在不能跑，列表里仍然不出现。同一项目同一用户只问一次。"""
     jobs = [
-        _listed_job("open", project_id="proj_1", user_id="alice", group_id="default", bot_id="default"),
-        _listed_job("also_open", project_id="proj_1", user_id="alice", group_id="default", bot_id="default"),
-        _listed_job("blocked", project_id="proj_hidden", user_id="alice", group_id="default", bot_id="default"),
+        _listed_job("open", project_id="proj_1", user_id="alice", group_id="", bot_id=""),
+        _listed_job("also_open", project_id="proj_1", user_id="alice", group_id="", bot_id=""),
+        _listed_job("blocked", project_id="proj_hidden", user_id="alice", group_id="", bot_id=""),
     ]
     asked: list[tuple] = []
 
@@ -166,8 +202,8 @@ async def test_list_jobs_hides_projects_the_gate_rejects() -> None:
     listed = await controller.list_jobs(
         project_id="proj_1",
         user_id="alice",
-        group_id="default",
-        bot_id="default",
+        group_id="",
+        bot_id="",
     )
     assert [job["id"] for job in listed] == ["open", "also_open"]
     assert asked == [("proj_1", "alice")]
@@ -184,10 +220,10 @@ async def test_list_jobs_hides_projects_the_gate_rejects() -> None:
 
 @pytest.mark.asyncio
 async def test_get_job_uses_the_same_identity_defaults() -> None:
-    """不传时只命中默认项目和 default 身份。对不上返回空，且不询问项目能不能跑。"""
+    """不传时只命中默认项目和空身份。对不上返回空，且不询问项目能不能跑。"""
     jobs = {
-        "home": _listed_job("home", project_id="", user_id="default", group_id="default", bot_id="default"),
-        "job_a": _listed_job("job_a", project_id="proj_1", user_id="alice", group_id="default", bot_id="default"),
+        "home": _listed_job("home", project_id="", user_id="", group_id="", bot_id=""),
+        "job_a": _listed_job("job_a", project_id="proj_1", user_id="alice", group_id="", bot_id=""),
     }
 
     async def get_job(job_id):
@@ -208,7 +244,7 @@ async def test_get_job_uses_the_same_identity_defaults() -> None:
         project_id="proj_1",
         user_id="alice",
         group_id="",
-        bot_id="default",
+        bot_id="",
     )
     assert found["id"] == "job_a"
     assert await controller.get_job("job_a", project_id="proj_1", user_id="bob") is None
@@ -217,9 +253,9 @@ async def test_get_job_uses_the_same_identity_defaults() -> None:
 
 @pytest.mark.asyncio
 async def test_run_now_checks_tenant_before_trigger() -> None:
-    """两边都先核对用户、群、机器人。对不上不触发。不传按 default。不看项目编号。"""
+    """两边都先核对用户、群、机器人。对不上不触发。不传按空身份。不看项目编号。"""
     jobs = {
-        "home": SimpleNamespace(id="home", user_id="default", group_id="default", bot_id="default", project_id="proj_x"),
+        "home": SimpleNamespace(id="home", user_id="", group_id="", bot_id="", project_id="proj_x"),
         "alice": SimpleNamespace(id="alice", user_id="alice", group_id="g1", bot_id="b1", project_id=""),
     }
     triggered: list[str] = []
@@ -467,9 +503,9 @@ async def test_create_job_without_mcp_passes_none(monkeypatch) -> None:
 
     create_call = cc._store.create_calls[0]
     assert create_call["mcp"] is None
-    assert create_call["group_id"] == "default"
-    assert create_call["bot_id"] == "default"
-    assert create_call["user_id"] == "default"
+    assert create_call["group_id"] == ""
+    assert create_call["bot_id"] == ""
+    assert create_call["user_id"] == ""
 
 
 @pytest.mark.asyncio

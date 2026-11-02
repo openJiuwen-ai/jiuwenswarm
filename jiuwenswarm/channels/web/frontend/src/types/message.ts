@@ -120,6 +120,8 @@ export interface Message {
    * 仅作为「任务用时」终点，避免 live 一直停在首包 delta 时间、刷新后变成 final 落盘时间。
    */
   completedAt?: string;
+  /** Server completion time before ISO rounding, bounding output already restored from history. */
+  outputReplayUntil?: number;
   /** 前端渲染身份，避免业务 id 重复或历史 prepend 导致 React key 抖动 */
   renderKey?: string;
   /** 仅用于大历史渐进发布；实时消息没有该标记。 */
@@ -225,6 +227,21 @@ export interface ToolResult {
   /** 仅 symphony_compose_graph 的合法 planned_graph Mermaid 展示投影。 */
   mermaid?: string;
   reviewer?: AutoReviewerMetadata;
+  /** MCP Apps：工具声明了 ui:// 界面时，由后端附带的渲染所需信息。 */
+  mcpApp?: McpAppResult;
+}
+
+/** MCP Apps (io.modelcontextprotocol/ui) tool-result projection. */
+export interface McpAppResult {
+  /** MCP server name, used for mcp_app.* RPCs. */
+  server: string;
+  /** Tool name on that server (not the model-facing mcp_<server>_<tool>). */
+  tool: string;
+  /** ui:// resource holding the app HTML. */
+  resourceUri: string;
+  arguments: Record<string, unknown>;
+  /** Raw CallToolResult (content / structuredContent / _meta / isError). */
+  toolResult?: Record<string, unknown>;
 }
 
 export type ToolExecutionStatus = 'pending' | 'timeout' | 'completed' | 'error';

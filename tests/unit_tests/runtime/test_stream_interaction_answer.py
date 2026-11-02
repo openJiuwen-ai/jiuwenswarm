@@ -921,7 +921,12 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
         finally:
             closed.append(get_current_runtime())
 
+    def assert_control_owner(event):
+        owner = _execution(harness.coordinator.snapshot_session(SESSION_ID), "question_1")
+        assert event.payload["execution_id"] == owner.execution_id
+
     async def accepted(event):
+        assert_control_owner(event)
         assert get_current_runtime() is harness.runtime
         acknowledgements.append(event)
 
@@ -930,9 +935,12 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
     async with aclosing(stream):
         async with asyncio.timeout(1):
             if not smart:
-                assert (await anext(stream)).event_type == "runtime.accepted"
+                acknowledgement = await anext(stream)
+                assert acknowledgement.event_type == "runtime.accepted"
+                assert_control_owner(acknowledgement)
             for index in range(300):
                 event = await anext(stream)
+                assert_control_owner(event)
                 assert event.event_type == ("chat.reasoning" if index % 2 == 0 else "chat.delta")
                 assert event.payload["content"] == str(index)
                 assert get_current_runtime() is None
@@ -941,7 +949,9 @@ async def test_permission_chat_send_streams_large_continuation_before_eof(harnes
         assert len(acknowledgements) == int(smart)
         harness.admission.end_control.assert_not_awaited()
         finish.set()
-        assert [event.event_type async for event in stream] == ["chat.final"]
+        remaining = [event async for event in stream]
+        assert [event.event_type for event in remaining] == ["chat.final"]
+        assert_control_owner(remaining[0])
     assert closed == [harness.runtime]
     harness.admission.begin_control.assert_awaited_once_with(SESSION_ID)
     harness.admission.end_control.assert_awaited_once_with(SESSION_ID)
@@ -987,3 +997,38 @@ async def test_permission_ack_callback_failure_closes_stream_and_releases_contro
     events = await _collect(harness.runtime.stream(request, trigger_hook=False))
     assert [event.event_type for event in events] == ["runtime.accepted"]
     assert harness.admission.end_control.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("invalid", ["empty", "missing", "null", "object", "tuple", "member"])
+async def test_malformed_permission_answer_keeps_original_execution(harness, streaming, invalid):
+    from jiuwenswarm.runtime.interaction import InteractionAnswerError
+
+    await _seed_waiting(harness)
+    before = harness.coordinator.snapshot_session(SESSION_ID)
+    clears = harness.admission.clear_interaction_pending.await_count
+    delivered = Mock(wraps=harness.agent.deliver_control_input)
+    harness.agent.deliver_control_input = delivered
+    request = _answer(source="permission_interrupt").to_agent_request()
+    values = {"empty": [], "null": None, "object": {}, "tuple": ({},), "member": [None]}
+    if invalid == "missing":
+        request.params.pop("answers")
+    else:
+        request.params["answers"] = values[invalid]
+    with pytest.raises(InteractionAnswerError):
+        if streaming:
+            await _collect(harness.runtime.stream(request, trigger_hook=False))
+        else:
+            await harness.runtime.invoke(request, trigger_hook=False)
+    after = harness.coordinator.snapshot_session(SESSION_ID)
+    assert after.generation == before.generation
+    assert after.executions == before.executions
+    assert harness.admission.clear_interaction_pending.await_count == clears
+    assert harness.coordinator.has_control_target(SESSION_ID, "question_1")
+    delivered.assert_not_called()
+    await _collect(harness.runtime.stream(
+        _answer(source="permission_interrupt").to_agent_request(), trigger_hook=False,
+    ))
+    assert delivered.call_count == 1
+    assert not harness.coordinator.has_control_target(SESSION_ID, "question_1")

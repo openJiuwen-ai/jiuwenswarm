@@ -40,7 +40,7 @@ async def update_channel_in_config(channel_id: str, conf: dict[str, Any]) -> Non
     """合并 ``channels[channel_id]`` 顶层字段。"""
     repo = get_channel_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_channel_in_config as _yaml
+        from gateway.common.config import update_channel_in_config as _yaml
 
         _yaml(channel_id, conf)
         return
@@ -56,7 +56,7 @@ async def replace_channel_subsection_with_cleanup(
     """整段替换 subsection，并丢掉不在 ``keep_keys`` 里的旧字段。"""
     repo = get_channel_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             replace_channel_subsection_with_cleanup as _yaml,
         )
 
@@ -75,7 +75,7 @@ async def update_channel_subsection_in_config(
     """更新 ``channels[channel_id][subsection_id]``。dict 合并，其它类型整段替换。"""
     repo = get_channel_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_channel_subsection_in_config as _yaml,
         )
 
@@ -94,7 +94,7 @@ async def update_channel_app_field(
     """更新 ``apps[]`` 里匹配 ``app_id`` 的那一项。"""
     repo = get_channel_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_channel_app_field as _yaml
+        from gateway.common.config import update_channel_app_field as _yaml
 
         return _yaml(
             channel_id, app_identifier, field_values, app_id_key=app_id_key
@@ -113,7 +113,7 @@ async def update_xiaoyi_runtime_in_config(
     """更新 ``channels.xiaoyi`` 运行时身份，必要时同步 ``apps[].push_id``。"""
     repo = get_channel_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_xiaoyi_runtime_in_config as _yaml
+        from gateway.common.config import update_xiaoyi_runtime_in_config as _yaml
 
         _yaml(conf, api_id=api_id, agent_id=agent_id)
         return

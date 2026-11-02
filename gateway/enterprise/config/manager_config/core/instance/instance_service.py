@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+from gateway.common.security.link_mtls import LinkMTLSConfig
 
 from ...infrastructure.config import Settings, get_settings
 

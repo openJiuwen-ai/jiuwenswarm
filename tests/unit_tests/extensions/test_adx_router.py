@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
@@ -110,6 +111,51 @@ def _router(config, *, auth_client=None):
 
 def _request(user='alice', rid='same-id', **params):
     return E2AEnvelope(request_id=rid, user_id=user, channel='web', method='chat.send', params=params)
+
+
+async def test_connect_warmup_survives_a_timed_out_foreground_waiter(monkeypatch):
+    router, clients = _router(_config(monkeypatch))
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    original_create = router._create_agent
+
+    async def delayed_create(info):
+        started.set()
+        await finish.wait()
+        return await original_create(info)
+
+    router._create_agent = delayed_create
+    await router.connect('')
+    try:
+        router._schedule_connect_warmup('alice')
+        warmup = router._warmup_tasks.get('alice')
+        assert warmup is not None
+        await asyncio.wait_for(started.wait(), timeout=3)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(router.send_request(_request()), timeout=0.01)
+        assert not warmup.done()
+        finish.set()
+        await asyncio.wait_for(warmup, timeout=3)
+        response = await router.send_request(_request(rid='after-timeout'))
+        assert response.ok
+        assert len(router.test_api.creates) == len(clients) == 1
+    finally:
+        finish.set()
+        await router.shutdown()
+
+
+async def test_connect_warmup_can_be_disabled_by_router_settings(monkeypatch):
+    config = _config(monkeypatch)
+    config = replace(config, router=replace(config.router, connect_warmup_enabled=False))
+    router, clients = _router(config)
+    await router.connect('')
+    try:
+        router._schedule_connect_warmup('alice')
+        assert not router._warmup_tasks
+        assert not router.test_api.creates
+        assert not clients
+    finally:
+        await router.shutdown()
 
 
 async def test_users_and_first_creates_are_isolated_and_coalesced(monkeypatch):
@@ -236,3 +282,46 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
         assert all('/api/agent/' not in request.url.path for request in router.test_api.requests)
     finally:
         await router.shutdown()
+
+
+
+@pytest.mark.parametrize('existing', [False, True])
+async def test_native_placement_is_available_to_strict_registry_on_first_post(monkeypatch, existing):
+    from gateway.extensions.agentos.agentos_router.models import AgentInfo
+    from gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig
+
+    api = EnvironmentAPI()
+    identifier = 'test-alice+jiuwenswarm'
+    placement = {'id': identifier, 'tenant_id': 'appliance', 'status': 'running',
+                 'node_ip': '172.30.58.2', 'sandbox_ip': '100.96.201.131'}
+    if existing:
+        api.environments[identifier] = dict(placement)
+
+    def environment(request):
+        response = api.handle(request)
+        if request.method == 'POST':
+            api.environments[identifier].update(placement)
+        return response
+
+    registered = []
+
+    def strict_registry(request):
+        body = json.loads(request.content)
+        assert body['node'] == placement['node_ip'], 'Registry requires the real node at initial registration'
+        assert body['address'] == placement['sandbox_ip']
+        assert body['instance_id'] == identifier
+        registered.append(body)
+        return httpx.Response(200, json={**body, 'status': '运行'})
+
+    control = AdxControlClient(_config(monkeypatch), transport=httpx.MockTransport(environment))
+    registry = RegistryClient(RegistryConfig(endpoint='http://registry.example'))
+    registry._http = httpx.AsyncClient(base_url='http://registry.example', transport=httpx.MockTransport(strict_registry))
+    try:
+        sandbox = await control.create_sandbox(namespace='test', name='alice+jiuwenswarm',
+            workspace='/home/agentos/alice', runtime_spec={'rootfs': {'imageurl': 'agentos-supervisor:v1'}})
+        await registry.register_agent(AgentInfo(user_id='alice', agent_type='jiuwenswarm',
+            sandbox_id=sandbox.sandbox_id, metadata={'sandbox': sandbox.metadata}))
+        assert len(registered) == 1
+    finally:
+        await control.close()
+        await registry.close()

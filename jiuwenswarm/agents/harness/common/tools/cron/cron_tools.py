@@ -169,7 +169,7 @@ class CronToolRoute:
     model_name: str = ""  # 当前会话模型；创建任务时缺省继承，保证定时执行一致
     user_id: str = ""  # 发起会话的用户路由键；AgentOS 下随 E2A 请求透传，供 job 归属创建者
     group_id: str = ""  # 企业版群身份；随 E2A metadata.routing 透传，供 Gateway 查企业模型库
-    bot_id: str = ""  # 企业版机器人身份；缺省会被 normalize 成 default，查库会空
+    bot_id: str = ""  # 企业版机器人身份；缺省保持空，企业创建路径必须由 Gateway 用真实 routing 盖回
 
 
 class CronTools:
@@ -324,10 +324,25 @@ class CronTools:
         # not get persisted with an empty ``user_id`` and disappear from the
         # Web user's task list.  This is derived solely from the runtime route,
         # never from an LLM-supplied tool parameter.
-        push_metadata: dict[str, Any] = {}
+        #
+        # list/get/update 等工具参数经常是 {}，不带 group/bot；企业版 Gateway
+        # 会把空身份当成 default 筛任务 → 列表永远空。创建时会从路由写入
+        # params；这里对所有 action 同样补齐，并塞进 push metadata 兜底。
+        params = dict(params or {})
         route_user_id = str(r.user_id or "").strip()
+        route_group_id = str(r.group_id or "").strip()
+        route_bot_id = str(r.bot_id or "").strip()
+        if route_group_id and not str(params.get("group_id") or "").strip():
+            params["group_id"] = route_group_id
+        if route_bot_id and not str(params.get("bot_id") or "").strip():
+            params["bot_id"] = route_bot_id
+        push_metadata: dict[str, Any] = {}
         if route_user_id:
             push_metadata["_jiuwenswarm_cron_owner_user_id"] = route_user_id
+        if route_group_id:
+            push_metadata["_jiuwenswarm_cron_owner_group_id"] = route_group_id
+        if route_bot_id:
+            push_metadata["_jiuwenswarm_cron_owner_bot_id"] = route_bot_id
         command_id = f"cron-{uuid.uuid4().hex}"
         payload = {
             "request_id": r.request_id,
@@ -339,7 +354,7 @@ class CronTools:
                 "command_id": command_id,
                 "action": action,
                 "status": "ok",
-                "data": dict(params or {}),
+                "data": params,
                 "message": "",
             },
         }
@@ -644,8 +659,8 @@ class CronTools:
         # 用 build_job（不落盘）拿到规范化视图（含 round-trip 校验）供返回与转发。
         # user_id：优先工具参数，其次当前请求路由上下文（AgentOS 随 E2A 请求透传），
         # 保证 agent 创建的任务归属发起会话的用户，web 端按 user_id 隔离时可见。
-        # group_id/bot_id：企业版必须带真实路由，否则空值会被 normalize 成 default，
-        # Gateway 按 default 查企业模型库会得到空名单。
+        # group_id/bot_id：企业版必须带真实路由；空串不再收成 default，
+        # Gateway 会用 chat routing 盖回，否则企业创建会因缺身份失败。
         job = self._local_store.build_job(
             job_id=str(normalized.get("id") or "").strip() or None,
             name=str(normalized.get("name") or "").strip(),

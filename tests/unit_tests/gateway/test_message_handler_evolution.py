@@ -1145,10 +1145,10 @@ async def test_fire_and_forget_cancel_forwards_cancelled_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_forward_loop_cancel_intent_uses_fire_and_forget(
+async def test_forward_loop_cancel_intent_awaits_agent_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CHAT_CANCEL intent=cancel 必须 fire_and_forget，避免堵 _forward_loop。"""
+    """CHAT_CANCEL intent=cancel 必须 await AS，避免先推假成功、亲和漂走时 killed=0。"""
     handler = _TestMessageHandler.create()
     notify_modes: list[str] = []
 
@@ -1159,7 +1159,7 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
     await handler.start_forwarding()
     try:
         cancel_msg = Message(
-            id="cancel-fire-and-forget",
+            id="cancel-await-interrupt",
             type="req",
             channel_id="web",
             session_id="sess-1",
@@ -1168,12 +1168,13 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
             ok=True,
             req_method=ReqMethod.CHAT_CANCEL,
             is_stream=False,
+            metadata={"ws_id": "ws-stop-1"},
         )
         await handler.publish_user_messages(cancel_msg)
         deadline = asyncio.get_running_loop().time() + 2.0
         while not notify_modes and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.01)
-        assert notify_modes == ["fire_and_forget"]
+        assert notify_modes == ["await"]
     finally:
         await handler.stop_forwarding()
 

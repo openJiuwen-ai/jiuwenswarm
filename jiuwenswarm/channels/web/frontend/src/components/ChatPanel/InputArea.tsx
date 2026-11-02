@@ -4445,7 +4445,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         </button>
                         {!isDesignLanding && (
                         <>
-                        {!enterprise && (
                         <div className="chat-attach-menu-item-anchor">
                           <button
                             type="button"
@@ -4741,7 +4740,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           ) : null}
                           {agentTooltipNode}
                         </div>
-                        )}
                         {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter
                     ._ensure_chat_extensions 对 team 模式直接短路，见
                     interface_deep.py），继续展示这个入口只会让用户以为选了插件/MCP 会生效，

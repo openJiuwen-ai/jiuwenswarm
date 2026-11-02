@@ -26,7 +26,7 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
     SystemPromptPriority,
 )
-from jiuwenswarm.symphony.llm import (
+from jiuwenswarm.runtime.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     bind_request_llm_config,
     reset_request_llm_config,
@@ -1004,7 +1004,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
 
     def _orchestration_enabled(self) -> bool:
         try:
-            from jiuwenswarm.symphony.config import load_symphony_config
+            from jiuwenswarm.common.symphony_config import load_symphony_config
 
             config_base = self._resolve_config_base()
             config = (

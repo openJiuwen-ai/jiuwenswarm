@@ -445,6 +445,31 @@ class WebChannel(BaseWsChannel):
         peers.update(self.delivery.peers_for_session(sid))
         return peers
 
+    def _matches_cron_recipient(self, peer: Any, msg: Message) -> bool:
+        """Retain application and tenant scope for scheduler-owned output."""
+        from gateway.enterprise import is_enterprise
+
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        enterprise = is_enterprise()
+        owner = str(metadata.get("user_id") or payload.get("user_id") or "").strip()
+        if owner and (enterprise or owner != "default"):
+            if self.connection_user_id(peer) != owner:
+                return False
+        routing = metadata.get("routing") or {}
+        peer_routing = getattr(peer, "_web_routing", None) or {}
+        for key in ("group_id", "bot_id"):
+            expected = str(routing.get(key) or "").strip()
+            if expected and (enterprise or expected != "default"):
+                if str(peer_routing.get(key) or "default").strip() != expected:
+                    return False
+        if not msg.app_id:
+            return True
+        return any(
+            key.app_id == msg.app_id and peer in clients
+            for key, clients in self._clients_by_key.items()
+        ) or getattr(peer, "_jiuwen_app_id", None) == msg.app_id
+
     # ── 帧发送 API（公开给处理器使用）─────────────────────
 
     async def send_response(
@@ -1035,6 +1060,7 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            or event_name == "cron.run.updated"
         )
 
     @staticmethod
@@ -1099,6 +1125,7 @@ class WebChannel(BaseWsChannel):
                 # 不能把它的流式输出复用到上一轮用户消息上。
                 "request_id", "turn_request_id", "execution_id", "final_mode", "segment_id",
                 "output_phase_id", "output_suppressed", "output_order", "timestamp",
+                "delivery_reconciled",
                 "message_origin", "session_message_id", "cross_session",
                 "team_name", "team_id",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
@@ -1110,6 +1137,9 @@ class WebChannel(BaseWsChannel):
                 # 为空 → 赞/踩按钮不出现（ProactiveRecommendationCard 按 proactiveRecId
                 # 条件渲染按钮）。
                 "proactive_rec_id",
+                # Keep the public-stream marker through payload reduction;
+                # see .agents/agent-docs/specs/gateway/cron/S_01_web-cron-session.md.
+                "cron_session_stream",
             ):
                 _val = msg.payload.get(_key)
                 if _val is not None:
@@ -1179,18 +1209,25 @@ class WebChannel(BaseWsChannel):
             )
             return
 
+        if self._resolve_event_name(msg) == "cron.run.updated":
+            frame = self._serialize_frame(msg, None)
+            for client in self.clients:
+                if not self._matches_cron_recipient(client, msg):
+                    continue
+                self._enqueue_send(client, frame)
+            return
+
         # ── 定时任务推 web：不绑定旧 session_id，以支持关闭 tab/换设备；但在
-        # AgentOS / 企业版必须按 job.user_id 限定接收者。
-        # 个人版空 user_id / 占位 ``default`` 广播是独立于企业的兼容修复。
-        if (
-            msg.event_type == EventType.CHAT_FINAL
-            and isinstance(msg.payload, dict)
-            and isinstance(msg.payload.get("cron"), dict)
-        ):
+        # AgentOS 下必须按 job.user_id 限定接收者。空 user_id 是历史单用户任务，
+        # 仍保持原有广播行为。
+        payload = msg.payload
+        cron_payload = payload.get("cron") if isinstance(payload, dict) else None
+        is_cron_push = isinstance(cron_payload, dict) and not payload.get("cron_session_stream")
+        if msg.event_type == EventType.CHAT_FINAL and is_cron_push:
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
-            # ``default`` 是个人版没填用户时写进任务的占位，不是登录名。
-            # 按它过滤会和当前网页连接对不上，结果只留在历史里，不刷新就看不到。
+            # 个人版没填用户是空串；历史误写成 ``default`` 的也当无主。
+            # 按登录名过滤会对不上当前网页连接，结果只留在历史里，不刷新就看不到。
             from gateway.enterprise.edition import is_enterprise
 
             if not is_enterprise() and (not cron_user_id or cron_user_id == "default"):
@@ -1379,7 +1416,13 @@ class WebChannel(BaseWsChannel):
             )
             return
         if not ws_set:
-            ws_set |= self._peers_for_session(msg.session_id)
+            cron_stream = bool(metadata.get("cron_session_stream") or (
+                isinstance(msg.payload, dict) and msg.payload.get("cron_session_stream")
+            ))
+            for peer in self._peers_for_session(msg.session_id):
+                if cron_stream and not self._matches_cron_recipient(peer, msg):
+                    continue
+                ws_set.add(peer)
         if not ws_set:
             logger.info(
                 "[WebChannel] session_id=%s has no connected ws, dropping msg id=%s ws_id=%s",
@@ -1529,6 +1572,8 @@ class WebChannel(BaseWsChannel):
           - chat.interrupt_result: pause/supplement/resume 视为仍在处理,
             其余 intent(cancel)视为已结束
         """
+        if isinstance(msg.payload, dict) and msg.payload.get("output_suppressed") is True:
+            return
         if msg.type != "event":
             return
         payload = msg.payload if isinstance(msg.payload, dict) else None
@@ -1604,7 +1649,7 @@ class WebChannel(BaseWsChannel):
         if not baseline or self.agent_client is None:
             return
         from gateway.routing.e2a_proxy import fetch_agent_unary
-        from jiuwenswarm.common.request_identity import apply_routing_metadata
+        from gateway.common.request_identity import apply_routing_metadata
 
         try:
             ok, payload = await fetch_agent_unary(
@@ -1689,7 +1734,7 @@ class WebChannel(BaseWsChannel):
             ws, _flat_query, remote, route_type="ws",
         )
         # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
-        from jiuwenswarm.common.request_identity import normalize_routing_identity
+        from gateway.common.request_identity import normalize_routing_identity
         from gateway.enterprise import is_enterprise
 
         _routing = normalize_routing_identity(
@@ -1707,6 +1752,7 @@ class WebChannel(BaseWsChannel):
         # ── V2: 从 query 提取身份字段，构造默认 RoutingKey ──
         # session_id 和 agent_id 可能在首条消息中更新
         _app_id = _flat_query.get("app_id", "default")
+        setattr(ws, "_jiuwen_app_id", _app_id)
         _mode = _flat_query.get("mode", "agent")
         _agent_id = _flat_query.get("agent_id", "default")
         _raw_initial_sid = _flat_query.get("session_id")
@@ -2044,7 +2090,7 @@ class WebChannel(BaseWsChannel):
             sessions.add(session_id)
 
         if method == "chat.send":
-            from jiuwenswarm.common.request_identity import apply_routing_metadata
+            from gateway.common.request_identity import apply_routing_metadata
 
             try:
                 params = await self._process_files(
@@ -2078,7 +2124,7 @@ class WebChannel(BaseWsChannel):
         # Preserve client top-level is_stream (e.g. command.goal set/resume).
         # chat.send / history.get still become stream in _normalize_gateway_message
         # even when the client omits this field.
-        from jiuwenswarm.common.request_identity import (
+        from gateway.common.request_identity import (
             apply_routing_metadata,
             normalize_routing_identity,
         )

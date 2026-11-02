@@ -1882,7 +1882,7 @@ class SkillManager:
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             skill_retrieval_artifact_root,
         )
-        from jiuwenswarm.symphony.skill_retrieval import SkillTaxonomyRuntime
+        from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
         return SkillTaxonomyRuntime(
             records_provider=records_provider or self._skill_retrieval_records,
@@ -2225,7 +2225,7 @@ class SkillManager:
 
     async def handle_skills_graph_build(self, params: dict) -> dict:
         """Start a background Skill Graph build."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         value = (params or {}).get("force", False)
         force = (
@@ -2237,36 +2237,36 @@ class SkillManager:
 
     async def handle_skills_graph_status(self, params: dict) -> dict:
         """Return Skill Graph build and freshness status."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().graph_status()
 
     async def handle_skills_graph_get(self, params: dict) -> dict:
         """Return the current published Skill Graph."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().graph()
 
     async def handle_skills_graph_cancel(self, params: dict) -> dict:
         """Cancel the active Skill Graph build while retaining checkpoints."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().cancel_build()
 
     async def handle_skills_experience_list(self, params: dict) -> dict:
         """List retained Symphony experience candidates."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return get_swarm_symphony_service().list_experience_candidates()
 
     async def handle_skills_experience_request(self, params: dict) -> dict:
         """Re-open one retained candidate through the normal approval prompt."""
-        from jiuwenswarm.symphony.experience import _parse_recipe_reference
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.experience import _parse_recipe_reference
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         allowed = {
             "recipe_id",
@@ -4770,10 +4770,14 @@ class SkillManager:
             if raw_name
             else None
         )
-        if (
-            installation is not None
-            and str(installation.get("source_type") or "").strip() in {"builtin", "prebuilt"}
-        ):
+        # 预置：各版本均不可卸载。内置：仅企业版不可卸载（个人版与 develop 一致，
+        # 由下方 _uninstall_skill_body 按源码内置目录判定是否真正不可删）。
+        source_type = (
+            str(installation.get("source_type") or "").strip()
+            if installation is not None
+            else ""
+        )
+        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
@@ -11603,7 +11607,11 @@ class SkillManager:
             )
 
     async def handle_skills_web_uninstall(self, params: dict) -> dict:
-        """企业 Web 卸载兼容入口：允许删除 source_type 为 user 或未标记的安装。"""
+        """Web 卸载兼容入口。
+
+        与 ``handle_skills_uninstall`` 一致：预置各版本不可卸；内置仅企业版不可卸；
+        user / 未标记可卸。真正删除仍委托 ``handle_skills_uninstall``。
+        """
 
         name = str(params.get("name") or "").strip()
         if not name:
@@ -11645,8 +11653,9 @@ class SkillManager:
                 "error_code": "not_found",
                 "error_message": f"skill `{name}` is not installed",
             }
+        # 与 handle_skills_uninstall 同一分版策略，避免个人版 builtin 在此入口被误拒。
         source_type = str(installation.get("source_type") or "").strip()
-        if source_type not in {"", "user"}:
+        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",

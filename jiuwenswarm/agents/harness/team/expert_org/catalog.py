@@ -95,7 +95,7 @@ class JiuwenExpertGroupCatalog:
     def list(*, capabilities: set[str] | None = None) -> list[ExpertGroupDescriptor]:
         required = set(capabilities or ())
         results: list[ExpertGroupDescriptor] = []
-        from jiuwenswarm.server.runtime.package_allowlist import allows
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import allows
 
         for name, package_dir in _iter_agent_group_dirs():
             if not allows("agent_group", name):
@@ -116,7 +116,7 @@ class JiuwenExpertGroupCatalog:
 
     @staticmethod
     def get(name: str) -> ExpertGroupDescriptor:
-        from jiuwenswarm.server.runtime.package_allowlist import require_allowed
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import require_allowed
 
         group_name = str(name).strip()
         require_allowed("agent_group", group_name)

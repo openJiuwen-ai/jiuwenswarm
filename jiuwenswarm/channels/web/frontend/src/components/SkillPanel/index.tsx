@@ -32,6 +32,7 @@ import {
   getSourceLabel,
   isAdminManagedSkill,
   isBuiltinSkill,
+  isLocalSkill,
   isPrebuiltSkill,
   normalizeSkillItem,
   shouldShowEnableSwitch,
@@ -72,16 +73,16 @@ function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const MY_SKILLS_EMPTY_KEY: Record<
-  'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user',
-  string
-> = {
+type MySkillsSubTab = 'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user' | 'local';
+
+const MY_SKILLS_EMPTY_KEY: Record<MySkillsSubTab, string> = {
   all: 'skills.noMatches',
   enabled: 'skills.noEnabledSkills',
   disabled: 'skills.noDisabledSkills',
   builtin: 'skills.noBuiltinSkills',
   prebuilt: 'skills.noPrebuiltSkills',
   user: 'skills.noUserSkills',
+  local: 'skills.noLocalSkills',
 };
 
 function MySkillsGroupHeader({ label }: { label: string }) {
@@ -175,9 +176,7 @@ export function SkillPanel({
   const enterpriseEdition = isEnterprise();
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
-  const [mySkillsSubTab, setMySkillsSubTab] = useState<
-    'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user'
-  >('all');
+  const [mySkillsSubTab, setMySkillsSubTab] = useState<MySkillsSubTab>('all');
   const [marketplaceCategory, setMarketplaceCategory] = useState<(typeof MARKETPLACE_CATEGORIES)[number]>('all');
   const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience' | 'members'>('content');
   /** 企业版技能广场：按已接入技能源动态生成页签 */
@@ -959,17 +958,22 @@ export function SkillPanel({
       case 'prebuilt':
         filtered = filtered.filter((s) => s.source_type === 'prebuilt');
         break;
+      case 'local':
+        filtered = filtered.filter((s) => isLocalSkill(s));
+        break;
       case 'user':
-        filtered = filtered.filter((s) => s.source_type === 'user');
+        // 用户自装：广场等安装的 source_type=user；本地扫描/导入单独进「本地」页签
+        filtered = filtered.filter((s) => s.source_type === 'user' && !isLocalSkill(s));
         break;
       default:
-        // 企业版「全部」：企业预置 > 内置 > 用户自装
+        // 企业版「全部」：本地 > 用户自装 > 预置 > 内置
         if (enterpriseEdition) {
           const priority = (s: SkillItem) => {
-            if (s.source_type === 'prebuilt') return 0;
-            if (s.source_type === 'builtin' || s.source === 'builtin') return 1;
-            if (s.source_type === 'user') return 2;
-            return 3;
+            if (isLocalSkill(s)) return 0;
+            if (s.source_type === 'user') return 1;
+            if (s.source_type === 'prebuilt') return 2;
+            if (s.source_type === 'builtin' || s.source === 'builtin') return 3;
+            return 4;
           };
           filtered = [...visibleSkills].sort((a, b) => priority(a) - priority(b));
         }
@@ -978,7 +982,7 @@ export function SkillPanel({
     return filtered;
   }, [visibleSkills, mySkillsSubTab, installedSkillNames, enterpriseEdition]);
 
-  // 分组展示：技能包 / 预置 / 用户自装(或已添加) / 内置。
+  // 分组展示：技能包 / 本地 / 用户自装(或已添加) / 预置 / 内置。
   const skillPackSkills = useMemo(
     () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
     [mySkillsFiltered],
@@ -995,11 +999,39 @@ export function SkillPanel({
     () => mySkillsFiltered.filter((s) => isBuiltinSkill(s) && s.skill_type !== 'skillpack'),
     [mySkillsFiltered],
   );
+  const localSkills = useMemo(
+    () =>
+      enterpriseEdition
+        ? mySkillsFiltered.filter((s) => isLocalSkill(s) && s.skill_type !== 'skillpack')
+        : [],
+    [enterpriseEdition, mySkillsFiltered],
+  );
+  /**
+   * 企业技能源面板安装态对照：只传带 origin 的已装技能 + 需名称回退的 builtin/prebuilt。
+   * 不能传 skills 全量，否则同名广场自装/本地技能会把未装企业源条目误判为已安装。
+   */
+  const enterpriseSourceLocalSkills = useMemo(
+    () =>
+      skills
+        .filter(
+          (s) =>
+            Boolean(String(s.origin || '').trim()) || isBuiltinSkill(s) || isPrebuiltSkill(s),
+        )
+        .map((s) => ({
+          name: s.name,
+          display_name: s.display_name,
+          origin: s.origin,
+          skill_type: s.skill_type,
+          source_type: s.source_type,
+        })),
+    [skills],
+  );
   const otherSkills = useMemo(
     () =>
       mySkillsFiltered.filter((s) => {
         if (s.skill_type === 'skillpack' || isBuiltinSkill(s)) return false;
         if (enterpriseEdition && isPrebuiltSkill(s)) return false;
+        if (enterpriseEdition && isLocalSkill(s)) return false;
         return true;
       }),
     [enterpriseEdition, mySkillsFiltered],
@@ -1125,8 +1157,9 @@ export function SkillPanel({
     const labelTags: string[] = [];
     const builtinCard = isBuiltinSkill(skill);
     const prebuiltCard = isPrebuiltSkill(skill);
-    // 内置/预置已有类型标签，不再重复写「来源：…」
-    if (!builtinCard && !prebuiltCard) {
+    const localCard = isLocalSkill(skill);
+    // 内置/预置/本地已有类型标签，不再重复写「来源：…」
+    if (!builtinCard && !prebuiltCard && !localCard) {
       labelTags.push(
         `${t('skills.sourceLabel')}: ${getSourceLabel(skill.source, t, skill.is_builtin_source, skill.source_type)}`,
       );
@@ -1143,14 +1176,16 @@ export function SkillPanel({
         labelTags.push(t('skills.memberCountSuffix', { count: skill.member_count }));
       }
     }
-    // 仅真正的内置/预置打标签；广场用户自装即使与内置同名也不标「内置」
+    // 仅真正的内置/预置/本地打标签；广场用户自装即使与内置同名也不标「内置」
     if (prebuiltCard) {
       labelTags.push(t('skills.mySkillsTabs.prebuilt'));
     } else if (builtinCard) {
       labelTags.push(t('skills.mySkillsTabs.builtin'));
+    } else if (localCard) {
+      labelTags.push(t('skills.mySkillsTabs.local'));
     }
 
-    const adminManaged = isAdminManagedSkill(skill);
+    const adminManaged = isAdminManagedSkill(skill, enterpriseEdition);
     const showEnableSwitch = shouldShowEnableSwitch(skill, enterpriseEdition);
     const actionContent = (
       <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -1276,7 +1311,6 @@ export function SkillPanel({
           pauseHubFetching();
           setMarketplaceSubView('list');
         }
-
         setActiveTab('my');
       } else {
         // 企业版不展示技能图谱
@@ -1356,14 +1390,17 @@ export function SkillPanel({
     // 固定区（header/toolbar）：page-shell 限宽 1400px 居中，与下方滚动列共用内容线
     <div className="page-shell flex-none">
       <PageHeader title={t('skills.title')} subtitle={t('skills.subtitle')}>
-        <button
-          onClick={() => setSourceModalOpen(true)}
-          className="flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak hover:text-text"
-          data-testid="skill-panel-source-manager-btn"
-        >
-          <SourceManagerIcon className="w-4 h-4" />
-          {t('skills.actions.sourceManager')}
-        </button>
+        {/* 企业版技能源由管理端/企业技能源接入，不暴露个人版源管理入口 */}
+        {!enterpriseEdition && (
+          <button
+            onClick={() => setSourceModalOpen(true)}
+            className="flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak hover:text-text"
+            data-testid="skill-panel-source-manager-btn"
+          >
+            <SourceManagerIcon className="w-4 h-4" />
+            {t('skills.actions.sourceManager')}
+          </button>
+        )}
         <button
           onClick={() => {
             if (activeTab === 'graph') {
@@ -1407,7 +1444,7 @@ export function SkillPanel({
         <div className="flex items-center gap-3" data-testid="skill-panel-toolbar-actions">
           {activeTab === 'my' && (
             <>
-              {/* 企业版：全部 / 企业预置 / 内置 / 用户自装；个人版：全部 / 启用 / 禁用 / 内置 */}
+              {/* 企业版：全部 / 企业预置 / 内置 / 用户自装 / 本地；个人版：全部 / 启用 / 禁用 / 内置 */}
               <FilterDropdown
                 open={enableFilterOpen}
                 onToggle={(v) => {
@@ -1416,16 +1453,17 @@ export function SkillPanel({
                 onClose={() => setEnableFilterOpen(false)}
                 value={mySkillsSubTab}
                 onChange={(v) => {
-                  setMySkillsSubTab(v as typeof mySkillsSubTab);
+                  setMySkillsSubTab(v as MySkillsSubTab);
                   setEnableFilterOpen(false);
                 }}
                 options={
                   enterpriseEdition
                     ? [
                         { value: 'all', label: t('skills.mySkillsTabs.all') },
+                        { value: 'local', label: t('skills.mySkillsTabs.local') },
+                        { value: 'user', label: t('skills.mySkillsTabs.user') },
                         { value: 'prebuilt', label: t('skills.mySkillsTabs.prebuilt') },
                         { value: 'builtin', label: t('skills.mySkillsTabs.builtin') },
-                        { value: 'user', label: t('skills.mySkillsTabs.user') },
                       ]
                     : [
                         { value: 'all', label: t('skills.mySkillsTabs.all') },
@@ -1476,15 +1514,17 @@ export function SkillPanel({
 
   const renderModals = () => (
     <>
-      <SourceManagerModal
-        open={sourceModalOpen}
-        sessionId={sessionId}
-        onClose={() => setSourceModalOpen(false)}
-        onNavigateToSettings={() => {
-          setSourceModalOpen(false);
-          onNavigateToSettings?.();
-        }}
-      />
+      {!enterpriseEdition && (
+        <SourceManagerModal
+          open={sourceModalOpen}
+          sessionId={sessionId}
+          onClose={() => setSourceModalOpen(false)}
+          onNavigateToSettings={() => {
+            setSourceModalOpen(false);
+            onNavigateToSettings?.();
+          }}
+        />
+      )}
       <SkillNetSearchModal
         open={skillNetModalOpen}
         sessionId={sessionId}
@@ -1676,17 +1716,25 @@ export function SkillPanel({
               )}
               {listState === 'success' && (
                 <>
-                  {skillPackSkills.length > 0 && (
+                  {/* 企业版「全部」：本地 → 用户自装 → 预置 → 内置；技能包仍单独成组置后。个人版保持技能包置顶。 */}
+                  {!enterpriseEdition && skillPackSkills.length > 0 && (
                     <>
                       <MySkillsGroupHeader label={t('skills.mySkillsGroups.skillPack')} />
                       <div className="card-grid-auto mb-6">{skillPackSkills.map(renderMySkillCard)}</div>
+                    </>
+                  )}
+                  {enterpriseEdition && localSkills.length > 0 && (
+                    <>
+                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.local')} />
+                      <div className="card-grid-auto mb-6">{localSkills.map(renderMySkillCard)}</div>
                     </>
                   )}
                   {otherSkills.length > 0 && (
                     <>
                       {(prebuiltSkills.length > 0 ||
                         builtinSkills.length > 0 ||
-                        skillPackSkills.length > 0) && (
+                        skillPackSkills.length > 0 ||
+                        localSkills.length > 0) && (
                         <MySkillsGroupHeader
                           label={t(
                             enterpriseEdition
@@ -1707,7 +1755,13 @@ export function SkillPanel({
                   {builtinSkills.length > 0 && (
                     <>
                       <MySkillsGroupHeader label={t('skills.mySkillsGroups.builtin')} />
-                      <div className="card-grid-auto">{builtinSkills.map(renderMySkillCard)}</div>
+                      <div className="card-grid-auto mb-6">{builtinSkills.map(renderMySkillCard)}</div>
+                    </>
+                  )}
+                  {enterpriseEdition && skillPackSkills.length > 0 && (
+                    <>
+                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.skillPack')} />
+                      <div className="card-grid-auto">{skillPackSkills.map(renderMySkillCard)}</div>
                     </>
                   )}
                 </>
@@ -1786,8 +1840,10 @@ export function SkillPanel({
                       lockedSourceId={marketplaceSourceId}
                       installedSkillOrigins={installedSkillOrigins}
                       installedStateLoaded
+                      localSkills={enterpriseSourceLocalSkills}
                       externalSearchQuery={debouncedMarketplaceSearch}
                       onInstalled={() => fetchSkills()}
+                      onGoToChat={handleGoToChat}
                     />
                   ) : null}
                 </div>

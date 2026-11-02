@@ -79,11 +79,11 @@ async def apply_audit_log_config_table(ctx: TableApplyContext) -> None:
 
 async def apply_log_masking_rule_table(ctx: TableApplyContext) -> None:
     try:
-        from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
+        from gateway.common.log_masking.engine import LogMaskingEngine
     except ImportError:
         logger.warning(
             "[ConfigPoll] log_masking_rule apply skipped "
-            "(jiuwenswarm.infrastructure.log_masking not present)"
+            "(gateway.common.log_masking not present)"
         )
         return
 

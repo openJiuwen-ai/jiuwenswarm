@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Protocol
 
-from jiuwenswarm.common.secrets import SecretStore
+from gateway.common.secrets import SecretStore
 
 
 _CREDENTIAL_PREFIX = "a2a/outbound/"

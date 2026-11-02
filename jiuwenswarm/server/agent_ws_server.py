@@ -109,6 +109,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
+from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.schema.agent import (
@@ -1274,6 +1275,10 @@ class AgentWebSocketServer:
             ping_interval: float | None = 30.0,
             ping_timeout: float | None = 300.0,
     ) -> None:
+        # MCP Apps: patch MCPTool.invoke before any request can create MCP
+        # tools (openjiuwen binds invoke per instance at construction).
+        from jiuwenswarm.server.runtime.mcp.apps import apply_mcp_apps_patch
+        apply_mcp_apps_patch()
         self._host = host
         self._port = port
         self._ping_interval = ping_interval
@@ -1388,7 +1393,8 @@ class AgentWebSocketServer:
 
         service = SessionMessageService(
             store=SessionMessageStore(
-                get_agent_root_dir() / "session_messages.sqlite3"
+                get_agent_root_dir() / "session_messages.sqlite3",
+                journal_mode=workspace_sqlite_journal_mode(get_config()) or "WAL",
             ),
             admission=self._heartbeat_runtime.admission,
             execute=self.execute_internal_session_message,
@@ -1585,7 +1591,7 @@ class AgentWebSocketServer:
         try:
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
-            from jiuwenswarm.symphony.config import (
+            from jiuwenswarm.common.symphony_config import (
                 evolution_flow_enabled,
                 load_symphony_config,
             )
@@ -1595,7 +1601,7 @@ class AgentWebSocketServer:
                 return True
             import importlib
 
-            service_module = await asyncio.to_thread(importlib.import_module, "jiuwenswarm.symphony.service")
+            service_module = await asyncio.to_thread(importlib.import_module, "jiuwenswarm.runtime.symphony.service")
             get_swarm_symphony_service = service_module.get_swarm_symphony_service
 
             await get_swarm_symphony_service().start()
@@ -1800,7 +1806,7 @@ class AgentWebSocketServer:
         preparation.register("personal_context", self._start_personal_context_best_effort)
         self._personal_context_start_task = preparation.start("personal_context")
         preparation.register("symphony", self._start_symphony_recovery,
-                             imports=("jiuwenswarm.symphony.config",))
+                             imports=("jiuwenswarm.common.symphony_config",))
         # 登录模型的 id_token 一小时过期：在用且快过期的，请Gateway续期后推回来
 
         async def _start_login_refresh() -> None:
@@ -2345,7 +2351,7 @@ class AgentWebSocketServer:
                 self._ensure_app_services().adapter_registry = self._adapter_registry
 
         try:
-            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+            from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
             await get_swarm_symphony_service().close()
         except Exception as exc:  # noqa: BLE001
@@ -3070,6 +3076,13 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.MCP_SAVE_CREDENTIALS:
                 await self._handle_mcp_save_credentials(ws, request, send_lock)
                 return
+            if request.req_method in (
+                ReqMethod.MCP_APP_LIST_TOOLS,
+                ReqMethod.MCP_APP_READ_RESOURCE,
+                ReqMethod.MCP_APP_CALL_TOOL,
+            ):
+                await self._handle_mcp_app(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.COMMAND_SANDBOX:
                 await self._handle_command_sandbox(ws, request, send_lock)
                 return
@@ -3207,8 +3220,15 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
                 params = request.params if isinstance(request.params, dict) else {}
+                # Runtime owns exact execution cancellation for a
+                # target_request_id. Do not first terminate every response
+                # stream in the Session bucket.
                 owner_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
-                if owner_stop or self._is_targeted_expert_cancel_request(request):
+                if (
+                    params.get("target_request_id")
+                    or owner_stop
+                    or self._is_targeted_expert_cancel_request(request)
+                ):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -6663,6 +6683,8 @@ class AgentWebSocketServer:
                 timestamp=timestamp,
                 event_type=event_type,
                 mode=mode,
+                extra={"cron_failure_record": True, "error": str(content)}
+                if params.get("cron_failure_record") is True else None,
             )
             # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
             # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入
@@ -10337,6 +10359,43 @@ class AgentWebSocketServer:
                 ok=False,
                 payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
             )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_mcp_app(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Handle ``mcp_app.*`` RPCs: the MCP Apps host bridge to MCP servers."""
+        from jiuwenswarm.server.runtime.mcp import apps as mcp_apps
+
+        params = request.params or {}
+        server = str(params.get("server") or "").strip()
+        try:
+            if request.req_method == ReqMethod.MCP_APP_LIST_TOOLS:
+                payload = {"tools": await mcp_apps.list_app_tools(server)}
+            elif request.req_method == ReqMethod.MCP_APP_READ_RESOURCE:
+                payload = await mcp_apps.read_app_resource(server, params.get("uri"))
+            else:
+                payload = await mcp_apps.call_app_tool(
+                    server, params.get("tool"), params.get("arguments")
+                )
+            ok = True
+        except KeyError as exc:
+            ok, payload = False, {"error": str(exc), "code": "MCP_NOT_FOUND"}
+        except PermissionError as exc:
+            ok, payload = False, {"error": str(exc), "code": "MCP_APP_FORBIDDEN"}
+        except ValueError as exc:
+            ok, payload = False, {"error": str(exc), "code": "MCP_BAD_REQUEST"}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] %s failed: %s", request.req_method, exc)
+            ok, payload = False, {"error": str(exc), "code": "MCP_INTERNAL"}
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)

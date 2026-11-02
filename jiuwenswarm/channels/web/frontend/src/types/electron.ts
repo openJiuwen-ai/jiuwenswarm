@@ -77,6 +77,7 @@ export interface JiuwenElectronDesktopApi {
   onShareImageExportProgress: (callback: (progress: ElectronShareImageExportProgress) => void) => () => void;
   downloadFile: (url: string, filename: string) => Promise<boolean | { ok: boolean; cancelled?: boolean }>;
   installUpdate: (installerPath: string) => Promise<boolean>;
+  openAppLink: (url: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;
   beginBlobSave: (
     filename: string,
