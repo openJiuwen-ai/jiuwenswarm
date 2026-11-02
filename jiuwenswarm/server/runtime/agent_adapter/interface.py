@@ -3687,14 +3687,22 @@ class JiuWenSwarm:
             try:
                 state.update(manager_fn(session_id))
             except Exception:  # noqa: BLE001 - diagnostics must not mask the failure
-                pass
+                logger.debug(
+                    "[JiuWenSwarm] session_runtime_state(session_manager) failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
         adapter = self._adapter
         adapter_fn = getattr(adapter, "session_runtime_state", None) if adapter is not None else None
         if callable(adapter_fn):
             try:
                 state.update(adapter_fn(session_id))
             except Exception:  # noqa: BLE001 - diagnostics must not mask the failure
-                pass
+                logger.debug(
+                    "[JiuWenSwarm] session_runtime_state(adapter) failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
         return state
 
     async def cancel_inflight_work(self, log_prefix: str = "[gateway disconnect] ") -> None:

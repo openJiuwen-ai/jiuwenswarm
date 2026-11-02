@@ -252,6 +252,42 @@ async def test_delete_proceeds_when_prewarm_wait_times_out(wiring, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delete_continues_when_prewarm_wait_raises(wiring):
+    """P2: 预热任务自身异常不能把 delete 中断在 teardown 之前。"""
+    session_dir, _evicted, _released, _killed, sent, _tm = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, _SpyAgent())
+
+    async def _boom(_sid):
+        raise RuntimeError("prewarm exploded")
+
+    server._agent_manager.wait_for_session_prewarm = _boom
+    await server._handle_session_delete(None, _request(target), asyncio.Lock())
+
+    assert not session_dir.exists()
+    assert sent and sent[-1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_delete_continues_when_prewarm_task_is_cancelled(wiring):
+    """P2: 预热任务被取消（pool 关闭等）也不能让 delete 无回包。"""
+    session_dir, _evicted, _released, _killed, sent, _tm = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, _SpyAgent())
+
+    async def _cancelled(_sid):
+        raise asyncio.CancelledError
+
+    server._agent_manager.wait_for_session_prewarm = _cancelled
+    await asyncio.wait_for(
+        server._handle_session_delete(None, _request(target), asyncio.Lock()), 2
+    )
+
+    assert not session_dir.exists()
+    assert sent and sent[-1]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_delete_failed_payload_carries_runtime_detail(wiring):
     """E: DELETE_FAILED 回包要带"哪类运行态没清掉"，不能只有固定文案。"""
     session_dir, _evicted, _released, _killed, sent, _tm = wiring

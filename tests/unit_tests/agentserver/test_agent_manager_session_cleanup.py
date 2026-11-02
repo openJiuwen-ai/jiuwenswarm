@@ -39,6 +39,12 @@ class _RetainedSessionRuntimeAgent(_SessionRuntimeAgent):
     def has_session_runtime(self, session_id: str | None = None) -> bool:
         return True
 
+    def session_runtime_state(self, session_id: str | None = None) -> dict[str, bool]:
+        return {
+            "adapter.session_adapters": False,
+            "adapter.session_adapter_locks": True,
+        }
+
 
 class _BlockingRootCleanupAgent(_SessionRuntimeAgent):
     def __init__(self) -> None:
@@ -319,8 +325,10 @@ async def test_cleanup_session_runtime_rejects_retained_session_state() -> None:
     agent = _RetainedSessionRuntimeAgent(has_session_runtime=True)
     manager.agents["tui"] = {"code:normal:/tmp/busy-project": agent}
 
-    with pytest.raises(RuntimeError, match="failed for 1 agent"):
+    with pytest.raises(RuntimeError, match="failed for 1 agent") as excinfo:
         await manager.cleanup_session_runtime(
             channel_id="tui",
             session_id="tui_busy_session",
         )
+    # 真实诊断组装：错误消息里要指出是哪个容器没清掉
+    assert "retained[adapter.session_adapter_locks]" in str(excinfo.value)

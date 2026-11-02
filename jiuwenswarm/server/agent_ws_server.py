@@ -4985,17 +4985,31 @@ class AgentWebSocketServer:
                 # （空转）、cleanup 又会把"刚注册"的运行态判成删不掉 → DELETE_FAILED。
                 wait_prewarm = getattr(self._agent_manager, "wait_for_session_prewarm", None)
                 if callable(wait_prewarm):
+                    # 有界等待：超时、预热任务自身异常或被取消都只缩短等待，
+                    # 绝不能在 cancel/cleanup 之前把 delete 中断掉（否则既无回包
+                    # 也不清理运行态）。asyncio.wait 不会把任务异常抛给等待者。
+                    waiter = asyncio.ensure_future(wait_prewarm(target))
                     try:
-                        await asyncio.wait_for(
-                            wait_prewarm(target),
-                            timeout=_SESSION_PREWARM_WAIT_SEC,
+                        done, _ = await asyncio.wait(
+                            {waiter}, timeout=_SESSION_PREWARM_WAIT_SEC
                         )
-                    except asyncio.TimeoutError:
+                    except asyncio.CancelledError:
+                        waiter.cancel()
+                        raise
+                    if not done:
+                        waiter.cancel()
                         logger.warning(
                             "[AgentWebSocketServer] session.delete: session prewarm still "
                             "running after %.1fs, continuing teardown session_id=%s",
                             _SESSION_PREWARM_WAIT_SEC,
                             target,
+                        )
+                    elif not waiter.cancelled() and waiter.exception() is not None:
+                        logger.warning(
+                            "[AgentWebSocketServer] session.delete: session prewarm failed, "
+                            "continuing teardown session_id=%s error=%s",
+                            target,
+                            waiter.exception(),
                         )
                 if not is_team_mode:
                     # session.delete must also stop what the session *does*, not
