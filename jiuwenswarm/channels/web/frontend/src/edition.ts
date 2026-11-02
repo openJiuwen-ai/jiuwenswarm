@@ -20,7 +20,6 @@ export function isEnterprise(): boolean {
 
 /** Enterprise deployment administration belongs to Manager, not User Web. */
 export const ENTERPRISE_HIDDEN_NAV_ITEMS = [
-  'connectorMarket',
   'experiments',
   'personalContext',
   'personalContextSettings',
