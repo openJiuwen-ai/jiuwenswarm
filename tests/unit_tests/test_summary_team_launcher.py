@@ -291,14 +291,41 @@ def test_summary_outline_does_not_expand_unrequested_work(monkeypatch):
         "disagreements that would change the conclusion",
         "Do not add research, risk lists, or verification items the user did not request",
     )
-    assert "Return the complete draft" in spec.agents["delivery-drafter"].system_prompt
-    leader_prompt = spec.agents["leader"].system_prompt
-    assert "root_task and summary_task" in leader_prompt
-    assert "facts must come only from bound sources" in leader_prompt
-    assert "stop after successful submission" in leader_prompt
-    assert "correct the reported fields and retry without restarting drafting" in leader_prompt
-    assert "source disagreements and missing evidence" in spec.agents["source-integrator"].system_prompt
-    drafter_prompt = spec.agents["delivery-drafter"].system_prompt
-    assert "Do not automatically produce a long report or redo specialist work" in drafter_prompt
-    assert "copy it unchanged" in drafter_prompt
-    assert "Set result_type to the actual delivered format" in drafter_prompt
+
+    for name in ("leader", "source-integrator"):
+        for phrase in outline:
+            assert phrase in prompts[name], name
+    assert (
+        "Do not add research, risk lists, or verification items the user did not request"
+        in prompts["delivery-drafter"]
+    )
+
+
+def test_summary_prompts_use_one_absolute_summary_directory(monkeypatch):
+    """Writing a final file and result_uri share the framework summary directory."""
+    prompts = _summary_prompts(monkeypatch)
+    summary_dir = str(organization_workspace_dir("org-1", "session-1") / "summary")
+
+    assert summary_dir.startswith("/")
+    assert summary_dir in prompts["leader"]
+    assert summary_dir in prompts["delivery-drafter"]
+    assert summary_dir not in prompts["source-integrator"]
+    assert "pass that same absolute path as result_uri" in prompts["leader"]
+    assert "omit result_uri" in prompts["leader"]
+    assert "report that same absolute path" in prompts["delivery-drafter"]
+    assert "do not invent a path" in prompts["delivery-drafter"]
+
+
+def test_summary_messages_do_not_require_claim_task(monkeypatch):
+    """A message assignment is complete unless view_task shows an internal task for that member."""
+    prompts = _summary_prompts(monkeypatch)
+
+    assert "Do not also create an internal task for work assigned by message" in prompts["leader"]
+    for name in ("source-integrator", "delivery-drafter"):
+        prompt = prompts[name]
+        assert "overrides the autonomous claim loop" in prompt
+        assert "assigns this work by message" in prompt
+        assert "view_task shows an internal task assigned to you" in prompt
+        assert "do not call claim_task" in prompt
+        assert "claim_task(status=completed)" not in prompt
+        assert "org_claim_task" not in prompt
