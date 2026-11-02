@@ -56,6 +56,7 @@ _REASONING_TRACE_LOG_BATCH = 5
 
 _LLM_IO_TRACE_PATCH_APPLIED = False
 
+
 def _log_latency_pre_llm_once(request_id: str | None) -> None:
     """Mark ③ endpoint once per request, right before provider call."""
     if _LATENCY_PRE_LLM_MARKED.get():
@@ -65,6 +66,7 @@ def _log_latency_pre_llm_once(request_id: str | None) -> None:
         "[latency] stage=3 name=pre_llm request_id=%s",
         (request_id or "").strip() or "-",
     )
+
 
 def _apply_llm_io_trace_patch() -> None:
     """Monkey Patch Model.invoke/stream 添加 LLM IO trace 日志."""

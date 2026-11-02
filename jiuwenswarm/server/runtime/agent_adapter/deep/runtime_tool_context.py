@@ -43,6 +43,7 @@ _RUNTIME_TOOL_A2A_POLICY_ID: ContextVar[str] = ContextVar(
     "runtime_tool_a2a_policy_id", default=""
 )
 
+
 @dataclass
 class _DeepResearchRouteContextToken:
     token: Token[dict[str, object] | None] | None
@@ -61,21 +62,26 @@ class _RuntimeCronContextTokens:
     resource_id: Token[str] | None = None
     a2a_policy_id: Token[str] | None = None
 
+
 def get_runtime_tool_session_id() -> str | None:
     """Session id bound for the current agent tool invocation (ContextVar)."""
     return _CRON_TOOL_SESSION_ID.get()
+
 
 def get_runtime_tool_channel_id() -> str:
     """Channel id bound for the current agent tool invocation (ContextVar)."""
     return _CRON_TOOL_CHANNEL_ID.get()
 
+
 def get_runtime_tool_metadata() -> dict[str, Any] | None:
     """Request metadata bound for the current agent tool invocation (ContextVar)."""
     return _CRON_TOOL_METADATA.get()
 
+
 def get_runtime_tool_resource_id() -> str:
     """Manager-owned resource id for the current tool invocation."""
     return _RUNTIME_TOOL_RESOURCE_ID.get()
+
 
 def get_runtime_tool_a2a_policy_id() -> str:
     """A2A policy selected by the current enterprise Agent template."""
@@ -93,6 +99,7 @@ _CRON_TOOL_NAMES = frozenset(
         "cron_preview_job",
     }
 )
+
 
 class _RuntimeCronToolContext:
     """Stable cron tool context proxy backed by per-task contextvars."""

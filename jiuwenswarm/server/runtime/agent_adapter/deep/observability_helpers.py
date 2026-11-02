@@ -30,6 +30,7 @@ def _resolve_observability_mode(params: dict[str, Any]) -> str:
             return str(deprecate_mode(composed_mode[2]))
     return str(deprecate_mode(raw_mode))
 
+
 def _extract_iteration_from_obj(value: Any) -> int | None:
     """Best-effort parse iteration from chunk/payload/dict."""
     if value is None:
@@ -55,6 +56,7 @@ def _extract_iteration_from_obj(value: Any) -> int | None:
             return int(raw)
         return None
     return None
+
 
 def _extract_iteration_from_chunk(chunk: Any) -> int | None:
     """Extract iteration from stream chunk object."""

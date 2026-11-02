@@ -26,6 +26,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.progressive_tools import (
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
 
+
 def _agent_def_to_subagent_config(
     agent_def: AgentDefinition,
     model: Any,
@@ -45,8 +46,6 @@ def _agent_def_to_subagent_config(
             才采用 ``spec.sys_operation``，因此 workspace 也要一并写入 spec，否则
             会落到一套带 ``restrict_to_sandbox`` 约束的新 LOCAL SysOperation。
     """
-    from openjiuwen.harness.schema.config import SubAgentConfig
-
     # Resolve model: if agent_def specifies a model name, look it up in cache
     resolved_model = model
     if agent_def.model and isinstance(model_cache, dict):
@@ -98,6 +97,7 @@ def _agent_def_to_subagent_config(
         enable_task_loop=True,
         rails=custom_rails,
     )
+
 
 def _load_custom_subagents(
     workspace_dir: str,

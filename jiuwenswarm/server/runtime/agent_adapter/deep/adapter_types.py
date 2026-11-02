@@ -32,7 +32,8 @@ _SKILL_RETRIEVAL_TOOL_NAMES = frozenset(
     }
 )
 
-@dataclass
+
+@dataclass(frozen=True)
 class _GitSnapshot:
     """Git state as of a conversation's first turn, held for its whole life.
 
@@ -82,6 +83,7 @@ _MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
     "code.team": {"cn": "代码集群模式", "en": "Code Team Mode"},
 }
 
+
 class OfficeClawMcpBuiltinNameConflict(RuntimeError):
     """A request-scoped connector tool's short name collides with a *built-in*
     agent tool (not a foreign request-scoped tool).
@@ -96,6 +98,7 @@ class OfficeClawMcpBuiltinNameConflict(RuntimeError):
     def __init__(self, message: str, *, existing_id: str = "") -> None:
         super().__init__(message)
         self.existing_id = existing_id
+
 
 @dataclass
 class _RequestMcpToolBuffers:

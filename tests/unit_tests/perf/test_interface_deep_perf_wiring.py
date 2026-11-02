@@ -10,12 +10,23 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[3]
 _DEEP = _ROOT / "jiuwenswarm" / "server" / "runtime" / "agent_adapter" / "interface_deep.py"
+_ADAPTER_STATICS = (
+    _ROOT
+    / "jiuwenswarm"
+    / "server"
+    / "runtime"
+    / "agent_adapter"
+    / "deep"
+    / "adapter_statics.py"
+)
 _CODE = _ROOT / "jiuwenswarm" / "server" / "runtime" / "agent_adapter" / "interface_code.py"
 _CONFIG_YAML = _ROOT / "jiuwenswarm" / "resources" / "config.yaml"
 
 
 def test_interface_deep_wires_request_summary_rail() -> None:
-    src = _DEEP.read_text(encoding="utf-8")
+    deep_src = _DEEP.read_text(encoding="utf-8")
+    statics_src = _ADAPTER_STATICS.read_text(encoding="utf-8")
+    combined = deep_src + "\n" + statics_src
     required = (
         "from jiuwenswarm.perf.interface_hooks import",
         "set_perf_summary_context",
@@ -29,7 +40,7 @@ def test_interface_deep_wires_request_summary_rail() -> None:
         "record_deepresearch_sdk_token_usage",
         "_account_deepresearch_sdk_usage",
         "def _build_request_summary_rail",
-        'RequestSummaryRail(record_only=True)',
+        "RequestSummaryRail(record_only=True)",
         '_RailBuildInfo("_request_summary_rail"',
         "self._request_summary_rail",
         "def _mark_first_byte_once",
@@ -40,28 +51,38 @@ def test_interface_deep_wires_request_summary_rail() -> None:
         'mode in ("team", "team.plan", "code.team")',
         'mode == "auto_harness"',
     )
-    missing = [item for item in required if item not in src]
-    assert not missing, f"interface_deep missing perf wiring: {missing}"
+    missing = [item for item in required if item not in combined]
+    assert not missing, f"interface_deep/adapter_statics missing perf wiring: {missing}"
 
 
 def test_rail_builders_keep_staticmethod() -> None:
-    """留在类上的 builder 仍是 staticmethod；不读实例的 builder 是普通函数。"""
+    """类上 builder 以 ``_foo = staticmethod(_foo)`` 挂回；定义在 deep 子模块。"""
     tree = ast.parse(_DEEP.read_text(encoding="utf-8"))
-    found: dict[str, bool] = {}
-
-    class _Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if node.name == "_build_request_summary_rail":
-                found[node.name] = any(
-                    isinstance(d, ast.Name) and d.id == "staticmethod"
-                    for d in node.decorator_list
-                )
-            self.generic_visit(node)
-
-    _Visitor().visit(tree)
-    assert found == {"_build_request_summary_rail": True}
+    remounted = False
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for item in node.body:
+            if not isinstance(item, ast.Assign):
+                continue
+            if not any(
+                isinstance(t, ast.Name) and t.id == "_build_request_summary_rail"
+                for t in item.targets
+            ):
+                continue
+            value = item.value
+            remounted = (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "staticmethod"
+            )
+            break
+        if remounted:
+            break
+    assert remounted, "expected class remount: _build_request_summary_rail = staticmethod(...)"
 
     moved = {
+        "_build_request_summary_rail": _ADAPTER_STATICS,
         "_build_multimodal_image_rail": _ROOT
         / "jiuwenswarm/server/runtime/agent_adapter/deep/model_factory.py",
         "_build_task_execution_rail": _ROOT

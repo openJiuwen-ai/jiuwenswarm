@@ -19,6 +19,7 @@ from openjiuwen.harness.rails.context_engineer.context_processor_rail import Con
 
 logger = logging.getLogger(__name__)
 
+
 def _build_context_assemble_rail(
     disabled_tools: list[str] | None = None,
     tool_name_allowlist: list[str] | None = None,
@@ -94,6 +95,7 @@ def _build_context_assemble_rail(
         context_assemble_rail = None
     return context_assemble_rail
 
+
 def _sync_context_assemble_tool_allowlist(
     assemble: ContextAssembleRail | None,
     progressive: Any | None,
@@ -110,6 +112,7 @@ def _sync_context_assemble_tool_allowlist(
     eager = getattr(progressive, "eager_tools", None) or []
     setter(list(eager))
 
+
 def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[str, Any] | None:
     raw_config = (
         context_engine_cfg.get("session_memory_config")
@@ -120,6 +123,7 @@ def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[s
     if isinstance(raw_config, dict):
         return raw_config
     return None
+
 
 def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRail | None:
     """Build ContextProcessorRail with user config.

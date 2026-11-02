@@ -43,6 +43,7 @@ def _set_skill_evolution_triggers(
     rail.review_trigger = review_trigger
     rail.signal_trigger = signal_trigger
 
+
 def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
     """Legacy shim for tests/older call sites.
 
@@ -50,6 +51,7 @@ def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
     require a standalone permission engine initialization step.
     """
     return None
+
 
 def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
     """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
@@ -66,6 +68,7 @@ def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
 
     return model_routing_enabled(config)
 
+
 def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[str, Any]:
     if config_base is None:
         return copy.deepcopy(get_config())
@@ -76,6 +79,7 @@ def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[st
     # 键全部保留。create_instance 与 reload 共用，避免热更丢掉模板默认值。
     template = load_yaml_dict(resolve_shipped_template_config_path())
     return resolve_config_env_vars(fill_template_defaults(config_base, template))
+
 
 def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> ContextEngineConfig:
     """供 ``create_deep_agent(..., context_engine_config=...)`` 使用（与 agent-core 集成测试方法二一致）。
@@ -109,6 +113,7 @@ def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> Conte
         }
     )
 
+
 def _model_provider(model: Any) -> str:
     for owner in (model, getattr(model, "_client", None)):
         model_client_config = getattr(owner, "model_client_config", None)
@@ -116,6 +121,7 @@ def _model_provider(model: Any) -> str:
         if provider is not None:
             return str(getattr(provider, "value", provider) or "").strip()
     return ""
+
 
 def _deep_agent_kv_cache_affinity_config(
         react_cfg: dict[str, Any] | None,
@@ -140,6 +146,7 @@ def _deep_agent_kv_cache_affinity_config(
         enable_kv_cache_affinity=affinity_enabled,
     )
 
+
 def _try_add_cache_control(msg: Any) -> None:
     """Add cache_control to the last content block of a message.
 
@@ -162,6 +169,7 @@ def _try_add_cache_control(msg: Any) -> None:
         if isinstance(last_block, dict):
             last_block["cache_control"] = {"type": "ephemeral"}
 
+
 def _optional_enable_subagent_runtime(enabled: bool) -> dict[str, bool]:
     """Pass ``enable_subagent_runtime`` only when ``DeepAgentConfig`` accepts it.
 
@@ -176,6 +184,7 @@ def _optional_enable_subagent_runtime(enabled: bool) -> dict[str, bool]:
         DeepAgentConfig.__init__,
         {"enable_subagent_runtime": enabled},
     )
+
 
 def _agent_ras_kwargs_from_config(config_base: dict[str, Any] | None) -> dict[str, Any]:
     """Thin YAML gate for create_deep_agent ``agent_ras``.

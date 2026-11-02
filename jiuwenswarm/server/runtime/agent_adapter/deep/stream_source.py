@@ -22,6 +22,7 @@ STREAM_SOURCE_ID_FIELD = "stream_source_id"
 # SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
 _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
 
+
 def _is_foreign_stream_source(payload: Any) -> bool:
     """True when the frame was mirrored from a nested stream (subagent / skill node).
 
@@ -33,6 +34,7 @@ def _is_foreign_stream_source(payload: Any) -> bool:
         return False
     source_id = payload.get(STREAM_SOURCE_ID_FIELD)
     return isinstance(source_id, str) and bool(source_id) and source_id != "main"
+
 
 def _tool_result_lookup(payload: Any, *keys: str) -> Any:
     """Read a field from a tool_result payload or its nested ``tool_result`` dict."""
@@ -46,6 +48,7 @@ def _tool_result_lookup(payload: Any, *keys: str) -> Any:
             if value is not None and value != "":
                 return value
     return None
+
 
 def _is_outer_react_tool_result(payload: Any) -> bool:
     """True when this tool_result belongs to the outer ReAct agent, not SkillTurbo internals.
@@ -61,6 +64,7 @@ def _is_outer_react_tool_result(payload: Any) -> bool:
     if isinstance(tool_id, str) and tool_id.strip().endswith(_SKILL_TURBO_TOOL_ID_SUFFIX):
         return False
     return True
+
 
 def _ask_user_questions_key(payload: dict) -> str:
     """ask_user 卡片的 questions 规范化键，用于判定同一中断的重复通道。"""
