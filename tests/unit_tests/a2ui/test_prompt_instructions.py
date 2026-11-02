@@ -40,6 +40,30 @@ def test_a2ui_prompt_titles_input_components_with_text_h5():
     assert '{"literalString": ""}' in zh
 
 
+def test_a2ui_prompt_wraps_outermost_ui_in_card():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "outermost UI MUST be wrapped in a Card" in en
+    assert "Column for vertical" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "最外层 UI 统一用 Card 承载" in zh
+    assert "纵向 Column、横向 Row、重复列表 List" in zh
+
+
+def test_a2ui_prompt_enforces_single_parent_tree():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "single-parent" in en
+    assert "children.explicitList" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "单亲树" in zh
+    assert "不得再出现在任何 Column/Row/List 的 children.explicitList" in zh
+
+
 def test_a2ui_prompt_defines_hotel_booking_actions():
     instruction = build_a2ui_browser_workflow_instruction()
 
