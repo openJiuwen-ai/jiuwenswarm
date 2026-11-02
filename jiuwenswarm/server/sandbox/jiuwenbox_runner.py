@@ -34,6 +34,8 @@ from typing import Any, Optional
 
 import httpx
 
+from jiuwenswarm.edition import is_enterprise
+
 logger = logging.getLogger(__name__)
 
 # Linux ``prctl`` PR_SET_PDEATHSIG 选项常量 (来自 ``<linux/prctl.h>``);
@@ -120,7 +122,12 @@ def _apply_soft_delete_env(env: dict[str, str]) -> None:
 
     box-server 只继承白名单和 ``JIUWENBOX_*``。开关关闭时不导入软删除模块。
     模块缺失或 DLL 不存在时只记日志，沙箱照常启动，删除保持系统原样。
+    仅个人版。企业版不在 Windows 上运行，没有回收站，并清掉继承来的软删变量。
     """
+    if is_enterprise():
+        for key in [name for name in env if name.startswith("JIUWENBOX_SOFT_DELETE")]:
+            env.pop(key, None)
+        return
     already_requested = (
         env.get("JIUWENBOX_SOFT_DELETE") == "1"
         and (env.get("JIUWENBOX_SOFT_DELETE_DLL") or "").strip()
