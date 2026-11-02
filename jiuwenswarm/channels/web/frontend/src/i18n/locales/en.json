@@ -347,6 +347,7 @@
       "welinkSwitchAccount": "Switch account",
       "welinkAccountMissing": "No WeLink account yet. Finish the first scan first.",
       "welinkQr": "WeLink login QR code",
+      "welinkRedEditionHint": "WeLink setup is unavailable in this environment. Please switch to the red edition of WeLink.",
       "welinkFailed": "WeLink login failed",
       "appId": "API ID",
       "appIdPlaceholder": "Enter API ID",
