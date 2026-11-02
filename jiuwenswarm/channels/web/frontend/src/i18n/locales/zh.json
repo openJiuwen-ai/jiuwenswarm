@@ -1137,7 +1137,53 @@
     },
     "team": {
       "memberLanes": "成员轨迹泳道",
-      "members": "成员"
+      "members": "成员",
+      "schedule": {
+        "title": "调度控制",
+        "collapse": "收起调度控制",
+        "expand": "展开调度控制",
+        "summary": "{{tasks}} 个任务 · {{completed}} 个完成 · {{reviews}} 次 Review · {{reworks}} 次返工",
+        "controlRecords": "{{count}} 条 main 调度记录",
+        "anomalies": "{{count}} 个调度异常",
+        "assignee": "承担者",
+        "unassigned": "未指派",
+        "unknownMember": "未知成员",
+        "closeTask": "关闭任务详情",
+        "noReviews": "暂无 Review 记录",
+        "reviewCount_one": "{{count}} 次评审",
+        "reviewCount_other": "{{count}} 次评审",
+        "phase": {
+          "pending": "待处理",
+          "running": "执行中",
+          "in_review": "验收中",
+          "rework": "返工中",
+          "completed": "已完成",
+          "escalated": "已升级",
+          "cancelled": "已取消",
+          "unknown": "未知"
+        },
+        "decision": {
+          "pass": "通过",
+          "fail": "未通过",
+          "score": "得分 {{value}}",
+          "pending": "待投票",
+          "pendingScore": "待评分"
+        },
+        "event": {
+          "created": "任务创建",
+          "updated": "任务更新",
+          "unblocked": "依赖解除",
+          "started": "任务开工",
+          "submitted": "提交验收",
+          "vote": "Review 投票",
+          "revision": "要求返工",
+          "verified": "验收通过",
+          "cancelled": "任务取消",
+          "escalated": "验收升级",
+          "anomaly": "调度异常",
+          "team_completed": "团队完成"
+        }
+      }
     },
     "analysis": {
       "back": "返回对话",
@@ -1161,6 +1207,7 @@
         "replay": "只读复现中无法诊断，请先退出复现"
       },
       "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span",
+      "teamSummary": "{{members}} 名正式成员 · {{completed}}/{{tasks}} 个任务完成 · {{reviews}} 次 Review · {{spans}} 个 Span",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
