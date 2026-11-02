@@ -1,4 +1,4 @@
-"""上下文压缩、recap 与部分 compact。"""
+"""上下文压缩、usage/recap/btw/repair 与部分 compact。"""
 
 from __future__ import annotations
 
@@ -351,3 +351,428 @@ async def compact_partial(
         "summary": cleaned or summary.strip(),
         "summarized_count": summarized_count,
     }
+
+async def get_context_usage(adapter, session_id: str) -> dict[str, Any]:
+    """获取当前上下文窗口占用统计。
+
+    Args:
+        session_id: 会话ID
+
+    Returns:
+        包含上下文使用情况统计的字典:
+        - context_window_limit: 模型上下文窗口总 token 数
+        - total_tokens: 当前上下文已用 token 数
+        - system_prompt_tokens: 系统提示词 token 数
+        - messages_tokens: 对话消息 token 数
+        - tools_tokens: 工具定义 token 数
+        - occupancy_rate: 占用率 (0-100)
+        - message_count: 对话消息数量
+        - context_occupancy: 上下文占用详情（来自 deepagent）
+    """
+    if not adapter._is_session_scoped_adapter:
+        session_adapter = await adapter._get_or_create_session_adapter(session_id)
+        try:
+            return await session_adapter.get_context_usage(session_id=session_id)
+        finally:
+            await adapter._evict_idle_session_adapters()
+
+    if adapter._instance is None:
+        raise ValueError("Agent instance not available")
+
+    context_engine = adapter._instance.react_agent.context_engine
+    react_agent = adapter._instance.react_agent
+    context = context_engine.get_context(session_id=session_id)
+    if context is None:
+        return {
+            "context_window_limit": 0, "total_tokens": 0,
+            "system_prompt_tokens": 0, "messages_tokens": 0,
+            "tools_tokens": 0, "occupancy_rate": 0,
+            "message_count": 0, "context_occupancy": None,
+        }
+
+    # 分项估算：直接用 context engine 的 token counter
+    token_counter = context.token_counter()
+    from openjiuwen.core.foundation.tool import ToolInfo
+
+    # 系统提示词
+    system_prompt = adapter._get_agent_system_prompt()
+    if system_prompt and token_counter:
+        system_prompt_tokens = token_counter.count(system_prompt) or 0
+    elif system_prompt:
+        system_prompt_tokens = len(system_prompt) // 4
+    else:
+        system_prompt_tokens = 0
+
+    # 对话消息
+    context_messages = context.get_messages() or []
+    if context_messages and token_counter:
+        messages_tokens = token_counter.count_messages(context_messages) or 0
+    elif context_messages:
+        messages_tokens = sum(len(str(msg.content)) // 4 for msg in context_messages)
+    else:
+        messages_tokens = 0
+
+    # 工具定义
+    tools: list[ToolInfo] = []
+    if hasattr(react_agent, "ability_manager") and react_agent.ability_manager is not None:
+        for card in react_agent.ability_manager.list() or []:
+            if hasattr(card, "to_tool_info"):
+                tools.append(card.to_tool_info())
+            elif hasattr(card, "name") and hasattr(card, "description"):
+                tools.append(ToolInfo(
+                    name=card.name,
+                    description=card.description or "",
+                    parameters=getattr(card, "input_params", {}),
+                ))
+    if tools and token_counter:
+        tools_tokens = token_counter.count_tools(tools) or 0
+    else:
+        tools_tokens = 0
+
+    # 总量 & 窗口限制：优先用 DeepAgent 的准确值，回退到估算
+    total_tokens = system_prompt_tokens + messages_tokens + tools_tokens
+    context_window_limit = 0
+    occupancy_rate = 0.0
+    context_occupancy = None
+
+    try:
+        usage = adapter._instance.get_context_usage(session_id=session_id)
+        context_occupancy = usage
+        # DeepAgent 的 total_tokens 来自 usage_metadata，比估算更准确
+        da_total = usage.get("total_tokens", 0)
+        if da_total > 0:
+            total_tokens = da_total
+        context_window_limit = usage.get("context_window_tokens", 0)
+        occupancy_rate = usage.get("usage_percent", 0)
+    except Exception as exc:
+        logger.debug("[JiuWenSwarmDeepAdapter] DeepAgent.get_context_usage failed: %s", exc)
+        from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+        model_name = (
+            getattr(adapter._model_request_config, "model_name", "") or ""
+            if adapter._model_request_config else ""
+        )
+        context_window_limit = ContextUtils.resolve_context_max(model_name=model_name)
+        if context_window_limit > 0:
+            occupancy_rate = round(total_tokens / context_window_limit * 100, 1)
+
+    message_count = len(context_messages)
+
+    return {
+        "context_window_limit": context_window_limit,
+        "total_tokens": total_tokens,
+        "system_prompt_tokens": system_prompt_tokens,
+        "messages_tokens": messages_tokens,
+        "tools_tokens": tools_tokens,
+        "occupancy_rate": occupancy_rate,
+        "message_count": message_count,
+        "context_occupancy": context_occupancy,
+    }
+
+
+def _get_recent_messages(adapter, session_id: str, window: int = 30) -> list[Any]:
+    """从当前 agent 对话上下文中提取最近N条消息。
+
+    查找顺序：
+    1. 当前 adapter 的 context_engine（session-scoped adapter 自身或已加载的 parent）
+    2. 父 adapter 查找 session-scoped child adapter 的 context_engine
+       （解决 /btw 等侧查询在 parent adapter 上执行时，会话上下文在 child adapter
+       中而 parent 的 context_engine 未加载该 session 的问题）
+    3. 回退到从磁盘读取兼容格式的 history 文件
+    """
+    # --- 快速路径：当前 adapter 的 context_engine 已加载 ---
+    if adapter._instance is not None and adapter._instance.react_agent is not None:
+        context_engine = adapter._instance.react_agent.context_engine
+        context = context_engine.get_context(session_id=session_id)
+        if context is not None:
+            try:
+                all_messages = list(context.get_messages() or [])
+                if all_messages:
+                    return all_messages[-window:]
+            except Exception as exc:
+                logger.debug("[JiuWenSwarmDeepAdapter] _get_recent_messages from context_engine failed: %s", exc)
+
+    # --- 中间路径：从 session-scoped child adapter 的 context_engine 查找 ---
+    # 当 /btw 等侧查询在 parent adapter 上执行时，会话上下文实际在
+    # session-scoped child adapter 的内存中（context_engine），而非磁盘。
+    # 直接从内存读取可避免与异步写队列的"写后读"竞态。
+    if not getattr(adapter, "_is_session_scoped_adapter", False):
+        session_adapter = adapter._get_cached_session_adapter(session_id)
+        if session_adapter is not None:
+            inst = getattr(session_adapter, "_instance", None)
+            if inst is not None and getattr(inst, "react_agent", None) is not None:
+                ctx_eng = inst.react_agent.context_engine
+                ctx = ctx_eng.get_context(session_id=session_id)
+                if ctx is not None:
+                    try:
+                        all_msgs = list(ctx.get_messages() or [])
+                        if all_msgs:
+                            logger.debug(
+                                "[JiuWenSwarmDeepAdapter] _get_recent_messages: "
+                                "read %d messages from session-scoped adapter context_engine "
+                                "for session %s",
+                                len(all_msgs),
+                                session_id,
+                            )
+                            return all_msgs[-window:]
+                    except Exception as exc:
+                        logger.debug(
+                            "[JiuWenSwarmDeepAdapter] _get_recent_messages "
+                            "from session-scoped adapter context_engine failed: %s",
+                            exc,
+                        )
+
+    # --- 回退路径：从磁盘读取兼容格式 history ---
+    # 典型场景：/resume 之后，context_engine 还未加载新 session 的上下文，
+    # 但磁盘上已有该 session 的历史消息。
+    try:
+        from types import SimpleNamespace
+
+        from jiuwenswarm.server.runtime.session.session_history import (
+            load_history_records,
+        )
+        records = load_history_records(session_id)
+        if not records:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] _get_recent_messages: no history records on disk for session %s",
+                session_id,
+            )
+            return []
+
+        # 过滤出适合 recap 的消息记录
+        # 只保留 user 消息和 assistant 的最终回复 / compact summary
+        recapworthy = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            role = rec.get("role")
+            content = rec.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+
+            if role == "user":
+                recapworthy.append(SimpleNamespace(role="user", content=content))
+            elif role == "assistant":
+                # Goal-completed cards are UI-only history facts; never feed them
+                # back into model recap context.
+                if rec.get("is_goal_completed_message"):
+                    continue
+                event_type = rec.get("event_type")
+                # 只包含 assistant 的最终回复和 compact summary
+                if event_type in ("chat.final", "context.compact_summary") or not event_type:
+                    recapworthy.append(SimpleNamespace(role="assistant", content=content))
+
+        if not recapworthy:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] _get_recent_messages: no recap-worthy records on disk for session %s",
+                session_id,
+            )
+            return []
+
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] _get_recent_messages: loaded %d records from disk for session %s "
+            "(context_engine fallback)",
+            len(recapworthy),
+            session_id,
+        )
+        return recapworthy[-window:]
+    except Exception as exc:
+        logger.debug("[JiuWenSwarmDeepAdapter] _get_recent_messages disk fallback failed: %s", exc)
+        return []
+
+
+async def _get_agent_tools(adapter, session_id: str) -> list[Any]:
+    """取主 agent 当前 tools 列表（List[ToolInfo]），用于 btw/recap 透传给模型。
+
+    透传 tools schema 是为了与主 agent 保持 cache key 一致（openjiuwen 的
+    prompt cache 布局为 tools → system → messages，tools 段缺失会破坏前缀
+    匹配）。工具执行仍被禁用：btw/recap 单轮 + tool_use 检测丢弃。
+
+    查找顺序与 _get_recent_messages 一致：先当前 adapter 的 react_agent，
+    再 session-scoped child adapter（btw 在 parent 执行时 tools 在 child）。
+    返回空列表表示无工具可用，调用方应按不传 tools 处理（tools or None）。
+    """
+    async def _from(inst: Any) -> list[Any]:
+        ra = getattr(inst, "react_agent", None)
+        if ra is None:
+            return []
+        am = getattr(ra, "ability_manager", None)
+        if am is None or not callable(getattr(am, "list_tool_info", None)):
+            return []
+        try:
+            return list(await am.list_tool_info() or [])
+        except Exception as exc:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] _get_agent_tools list_tool_info failed: %s",
+                exc,
+            )
+            return []
+
+    # 1) 当前 adapter
+    if adapter._instance is not None:
+        tools = await _from(adapter._instance)
+        if tools:
+            return tools
+
+    # 2) session-scoped child adapter（btw 等侧查询在 parent 执行时 tools 在 child）
+    if not getattr(adapter, "_is_session_scoped_adapter", False):
+        session_adapter = adapter._get_cached_session_adapter(session_id)
+        if session_adapter is not None:
+            inst = getattr(session_adapter, "_instance", None)
+            if inst is not None:
+                return await _from(inst)
+
+    return []
+
+
+def _get_agent_system_prompt(adapter) -> str:
+    """Return the current agent's system prompt, or empty string if unavailable.
+
+    Result is cached since the system prompt is derived from project context
+    (CLAUDE.md, skills, etc.) which doesn't change within a session.
+    Reusing the same bytes is critical for prompt cache prefix matching.
+    """
+    if adapter._last_system_prompt:
+        return adapter._last_system_prompt
+    if adapter._instance is None or adapter._instance.react_agent is None:
+        return ""
+    react_agent = adapter._instance.react_agent
+    if hasattr(react_agent, "prompt_builder") and react_agent.prompt_builder is not None:
+        adapter._last_system_prompt = react_agent.prompt_builder.build()
+        return adapter._last_system_prompt
+    if hasattr(react_agent, "system_prompt_builder") and react_agent.system_prompt_builder is not None:
+        adapter._last_system_prompt = react_agent.system_prompt_builder.build()
+        return adapter._last_system_prompt
+    return ""
+
+
+async def generate_btw_answer(adapter, session_id: str, question: str) -> dict[str, Any]:
+    """回答 /btw 侧问题：独立、无工具、单轮 LLM 查询。
+
+    prompt cache 策略：
+    - 共享主 agent 的 system prompt（项目上下文、skills、CLAUDE.md 等）
+    - 保持消息原始格式（含 structured content blocks）以实现 byte-identical 前缀
+    - 最后一条 pre-prompt 消息添加 cache_control marker（ephemeral）
+    - btw prompt 不添加 cache_control（skipCacheWrite）
+    - 透传主 agent tools schema 保 cache key，但单轮 + tool_use 丢弃 = 禁止执行
+    - 不修改对话历史（read-only）
+
+    Args:
+        session_id: 会话ID
+        question: 用户侧问题
+
+    Returns:
+        {"status": "ok", "answer": "..."} 或 {"status": "no_context"|"failed", ...}
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.recap_prompts import (
+        RECENT_MESSAGE_WINDOW,
+        _build_btw_prompt,
+    )
+
+    # 1) 获取 system prompt（与主 agent 相同，已缓存）
+    system_prompt = adapter._get_agent_system_prompt()
+
+    # 2) 获取最近对话消息（保持原始格式，不做 str() 转换）
+    messages = adapter._get_recent_messages(session_id, window=RECENT_MESSAGE_WINDOW)
+    if not messages and not system_prompt:
+        return {"status": "no_context"}
+
+    # 2.5) 取主 agent tools（透传给模型以保 cache key；工具执行由单轮 +
+    #      tool_use 检测丢弃禁止，对齐 claude-code canUseTool:deny）
+    tools = await adapter._get_agent_tools(session_id)
+
+    # 3) 构建 btw prompt（system prompt 通过 SystemMessage 传递，不嵌入文本）
+    prompt = _build_btw_prompt(
+        question=question,
+        language=adapter._resolve_prompt_language(),
+    )
+
+    # 4) 调用模型 — system_prompt 作为 SystemMessage 前置，prompt 作为 UserMessage
+    # enable_prompt_caching=True 启用 cache_control marker
+    answer = await adapter._call_model_for_recap(
+        messages, prompt, system_prompt=system_prompt, enable_prompt_caching=True,
+        tools=tools or None,
+    )
+    if not answer:
+        return {"status": "failed", "error": "Model returned empty response"}
+
+    return {"status": "ok", "answer": answer.strip()}
+
+
+async def repair_model_response(adapter, prompt: str) -> str | None:
+    """Run a focused repair prompt using the currently selected chat model."""
+    if adapter._model is None:
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] repair skipped: no model instance available "
+            "(cache_keys=%s default=%s)",
+            list(adapter._model_cache)[:5], adapter._default_model_name or "<unset>",
+        )
+        return None
+    from openjiuwen.core.foundation.llm.schema.message import UserMessage
+
+    result = await adapter._model.invoke(
+        [UserMessage(content=prompt)],
+        temperature=0,
+    )
+    content = getattr(result, "content", None)
+    if isinstance(content, str):
+        return content
+    output = getattr(result, "output", None)
+    if isinstance(output, str):
+        return output
+    return str(result) if result is not None else None
+
+
+async def _count_full_context_tokens(
+    adapter,
+    context: Any,
+    react_agent: Any,
+    session_id: str,
+) -> int:
+    """计算完整上下文的 token 数（包含 system messages + context messages + tools）。
+    Args:
+        context: ModelContext 对象
+        react_agent: ReActAgent 对象
+        session_id: 会话ID
+
+    Returns:
+        完整上下文的 token 总数
+    """
+    from openjiuwen.core.foundation.tool import ToolInfo
+
+    token_counter = context.token_counter()
+    total_tokens = 0
+
+    # 1. 计算系统消息的 tokens
+    system_prompt = adapter._get_agent_system_prompt()
+
+    if system_prompt:
+        if token_counter is not None:
+            total_tokens += token_counter.count(system_prompt)
+        else:
+            total_tokens += len(system_prompt) // 4
+
+    # 2. 计算对话消息的 tokens
+    context_messages = context.get_messages()
+    if context_messages:
+        if token_counter is not None:
+            total_tokens += token_counter.count_messages(context_messages)
+        else:
+            total_tokens += sum(len(str(msg.content)) // 4 for msg in context_messages)
+
+    # 3. 计算工具定义的 tokens
+    tools: list[ToolInfo] = []
+    if hasattr(react_agent, "ability_manager") and react_agent.ability_manager is not None:
+        for card in react_agent.ability_manager.list() or []:
+            if hasattr(card, "to_tool_info"):
+                tools.append(card.to_tool_info())
+            elif hasattr(card, "name") and hasattr(card, "description"):
+                tools.append(ToolInfo(
+                    name=card.name,
+                    description=card.description or "",
+                    parameters=getattr(card, "input_params", {}),
+                ))
+
+    if tools and token_counter is not None:
+        total_tokens += token_counter.count_tools(tools)
+
+    return total_tokens
