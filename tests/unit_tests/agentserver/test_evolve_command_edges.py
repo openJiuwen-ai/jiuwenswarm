@@ -8,6 +8,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _extract_followup_prompt
 
 
 @pytest.mark.anyio
@@ -454,7 +455,7 @@ def test_agent_slash_followup_prompt_extraction_accepts_all_evolution_followups(
     }
 
     assert (
-        JiuWenSwarmDeepAdapter._extract_followup_prompt(result)  # pylint: disable=protected-access
+        _extract_followup_prompt(result)  # pylint: disable=protected-access
         == "review and continue code-runner"
     )
 
@@ -468,7 +469,8 @@ def _adapter_ready_for_followup_execution(monkeypatch: pytest.MonkeyPatch) -> Ji
     model = SimpleNamespace(model_config=SimpleNamespace(model_name="test-model"))
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
     monkeypatch.setattr(adapter, "_bind_runtime_cron_context", lambda **_kwargs: None)
-    monkeypatch.setattr(adapter, "_reset_runtime_cron_context", lambda _tokens: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._reset_runtime_cron_context", lambda _tokens: None)
     monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: model)
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     monkeypatch.setattr(adapter, "_mark_session_active", lambda _session_id: None)

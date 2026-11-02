@@ -52,7 +52,8 @@ def _build_rails(monkeypatch, adapter, config):
         )
 
     monkeypatch.setattr(adapter, "_instantiate_rails", focused)
-    monkeypatch.setattr(adapter, "_load_extra_rails_from_env", list)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._load_extra_rails_from_env", list)
     monkeypatch.setattr(adapter, "_build_flash_skill_selection_rail", lambda _: None)
     return adapter._build_agent_rails(config["react"], config, mode="flash")
 

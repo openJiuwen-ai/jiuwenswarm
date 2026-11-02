@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _approved_plan_exit_resume_tool_call_id
 
 
 def _default_ctx(server, request):
@@ -77,11 +78,11 @@ def test_approved_plan_exit_resume_is_detected() -> None:
     }
 
     assert (
-        JiuWenSwarmDeepAdapter._approved_plan_exit_resume_tool_call_id(params)
+        _approved_plan_exit_resume_tool_call_id(params)
         == "exit_plan_call_1"
     )
     assert (
-        JiuWenSwarmDeepAdapter._approved_plan_exit_resume_tool_call_id(
+        _approved_plan_exit_resume_tool_call_id(
             {**params, "answers": [{"selected_options": ["reject"]}]}
         )
         == ""

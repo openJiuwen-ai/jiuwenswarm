@@ -45,7 +45,8 @@ def _tool_policy_rails(monkeypatch, config, sub_mode, adapter=None):
         )
 
     monkeypatch.setattr(adapter, "_instantiate_rails", build_tool_policy)
-    monkeypatch.setattr(adapter, "_load_extra_rails_from_env", lambda: [])
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._load_extra_rails_from_env", lambda: [])
     monkeypatch.setattr(adapter, "_bind_checkpointer_to_rails", lambda: None)
     rails = adapter._build_agent_rails(config, {}, sub_mode=sub_mode)
     return adapter, rails
@@ -276,12 +277,16 @@ async def test_config_reload_matches_profile_and_cleans_historical_team_rail(
     monkeypatch.setattr(adapter, "_create_model", lambda *args: object())
     monkeypatch.setattr(adapter, "_make_deep_agent_config", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(adapter, "_omit_unchanged_reload_fields", lambda *args: ({}, {}))
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._restore_omitted_reload_fields",
+        MagicMock(return_value=None),
+    )
     for name in (
         "_build_skill_rail", "_build_skill_credential_injection_rail",
         "_build_skill_active_state_rail", "_update_permission_rail",
         "_sync_multimodal_tools_for_runtime", "_sync_paid_search_tool_for_runtime",
         "_sync_symphony_tools_for_runtime", "_sync_skill_retrieval_tools_for_runtime",
-        "_restore_omitted_reload_fields", "_commit_reload_fingerprints",
+        "_commit_reload_fingerprints",
         "_sync_active_evolution_review_agent_after_reload", "_rebind_late_read_rails_to_local",
     ):
         monkeypatch.setattr(adapter, name, MagicMock(return_value=None))

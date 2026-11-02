@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers import bootstrap as bootstrap_module  # noqa: F
 from jiuwenswarm.server.handlers import team as team_module
 from jiuwenswarm.server.handlers import session as session_handlers
 from jiuwenswarm.server.handlers import team as team_handlers
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
 
 def _all_patch_targets():
@@ -348,7 +349,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     "parser",
     [
         parse_stream_chunk,
-        getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk"),
+        _parse_stream_chunk,
     ],
     ids=["shared_stream_parser", "deep_adapter_parser"],
 )
@@ -418,7 +419,7 @@ def test_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
 
 
 def test_interface_deep_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     raw_output = {
         "success": True,
         "result": "# Skill Branch Explore",
@@ -468,7 +469,7 @@ def test_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
 
 
 def test_interface_deep_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     parsed = parse_chunk(
         types.SimpleNamespace(
             type="tool_result",
@@ -512,7 +513,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
 
 
 def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
-    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parse_chunk = _parse_stream_chunk
     parsed = parse_chunk(
         types.SimpleNamespace(
             type="chat.symphony_status",
@@ -3830,7 +3831,7 @@ def test_build_context_assemble_rail_returns_context_assemble_rail_instance(monk
     "parser",
     [
         parse_stream_chunk,
-        interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk,
+        interface_deep_module._parse_stream_chunk,
     ],
     ids=["shared", "deep-adapter"],
 )
@@ -3845,7 +3846,7 @@ def test_parse_stream_chunk_emits_empty_final_marker_after_streamed_content(pars
         },
     )
 
-    if parser is interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk:
+    if parser is interface_deep_module._parse_stream_chunk:
         # Deep adapter needs the already-streamed text to decide trailer-only
         # vs drain-rescue when has_streamed was set by tiny/blank deltas.
         parsed = parser(
@@ -3870,7 +3871,7 @@ def test_deep_parse_keeps_final_body_when_stream_flag_lacks_visible_text():
             }
         },
     )
-    parsed = interface_deep_module.JiuWenSwarmDeepAdapter._parse_stream_chunk(
+    parsed = interface_deep_module._parse_stream_chunk(
         chunk,
         _has_streamed_content=True,
         _streamed_text="",

@@ -56,13 +56,21 @@ def _assemble_flash(monkeypatch, *, turbo_enabled=True):
         }:
             monkeypatch.setattr(adapter, name, Mock(return_value=None))
     monkeypatch.setattr(interface_deep, "_build_context_processor_rail", lambda **_: None)
-    monkeypatch.setattr(adapter, "_load_extra_rails_from_env", lambda: [])
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._load_extra_rails_from_env", lambda: [])
     monkeypatch.setattr(adapter, "_bind_checkpointer_to_rails", lambda: None)
     monkeypatch.setattr(adapter, "_filesystem_rail_enabled_for_profile", lambda: False)
     monkeypatch.setattr(adapter, "_task_execution_rail_enabled", lambda: True)
+    task_builder = Mock(return_value=None)
+    skill_protocol_builder = Mock(return_value=None)
+    monkeypatch.setattr(interface_deep, "_build_task_execution_rail", task_builder)
+    monkeypatch.setattr(interface_deep, "_build_skill_protocol_prompt_rail", skill_protocol_builder)
+    monkeypatch.setattr(interface_deep, "_build_heartbeat_rail", lambda: None)
+    monkeypatch.setattr(interface_deep, "_build_avatar_rail", lambda: None)
+    monkeypatch.setattr(interface_deep, "_build_llm_retry_rail", lambda: None)
     rails = adapter._build_agent_rails(config["react"], config, mode="flash")
-    adapter._build_task_execution_rail.assert_not_called()
-    adapter._build_skill_protocol_prompt_rail.assert_not_called()
+    task_builder.assert_not_called()
+    skill_protocol_builder.assert_not_called()
     artifact_rails = [rail for rail in rails if isinstance(rail, CodingArtifactPostProcessRail)]
     assert artifact_rails == [adapter._flash_artifact_post_process_rail]
     assert not artifact_rails[0]._coauthor_header_enabled
