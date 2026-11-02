@@ -269,18 +269,23 @@ def test_enterprise_schema_catalogue_covers_audit_and_tenant_cron() -> None:
 
 @pytest.mark.asyncio
 async def test_gateway_startup_does_not_load_execution_memory(monkeypatch):
-    from unittest.mock import AsyncMock
+    import builtins
 
-    from jiuwenswarm.agents.harness.common.memory import config as memory
     from gateway.storage_assembly.setup import wire_enterprise_persistent_repositories_async
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.delenv("GATEWAY_STORAGE_REPOSITORIES", raising=False)
     monkeypatch.delenv("GATEWAY_SESSION_MAP_REPOSITORY", raising=False)
-    reload_memory = AsyncMock()
-    reload_task_memory = AsyncMock()
-    monkeypatch.setattr(memory, "reload_memory_config_from_gateway_db", reload_memory)
-    monkeypatch.setattr(memory, "reload_task_memory_config_from_gateway_db", reload_task_memory)
+    original_import = builtins.__import__
+    execution_imports = []
+
+    def reject_execution_memory(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("jiuwenswarm.agents.harness.common.memory"):
+            execution_imports.append(name)
+            raise AssertionError("Gateway storage must not import execution memory")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", reject_execution_memory)
     ctx = _test_ctx()
     monkeypatch.setattr(
         "gateway.storage_assembly.setup.create_gateway_storage_context",
@@ -289,7 +294,6 @@ async def test_gateway_startup_does_not_load_execution_memory(monkeypatch):
     wired = await setup_gateway_storage_repositories({})
     try:
         await wire_enterprise_persistent_repositories_async(ctx, {})
-        reload_memory.assert_not_awaited()
-        reload_task_memory.assert_not_awaited()
+        assert execution_imports == []
     finally:
         await teardown_gateway_storage_repositories(wired)
