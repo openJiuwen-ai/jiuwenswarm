@@ -48,10 +48,9 @@ import {
 import {
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
-  collectTopCategories,
+  collectCategories,
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
-  OTHER_CATEGORY,
 } from '../node_modules/.cache/agent-management/viewModel.js';
 import {
   advancePendingInstallQueue,
@@ -541,25 +540,29 @@ test('catalog view model filters mine/search and returns the full filtered list'
     scope: 'catalog',
     category: 'Engineering',
     query: '',
-    categories: new Set(['Engineering']),
   });
   assert.deepEqual(
     productCatalog.items.map((item) => item.id),
     ['b', 'hub-c'],
   );
 
-  // 分类页签改由已加载数据动态统计（#5902）：不在页签集合内的 category 归入"其他"。
-  assert.deepEqual(collectTopCategories(['Design', 'Engineering', 'Engineering', '']), ['Engineering', 'Design']);
-  const otherCatalog = buildCatalogViewModel(catalog, {
-    scope: 'catalog',
-    category: OTHER_CATEGORY,
-    query: '',
-    categories: new Set(['Design']),
-  });
+  // 分类页签改由已加载数据动态统计（#5902）：市场有几个分类出几个页签，
+  // 按频次排序但不截断（超过 6 个也全保留），也不再自建 "Other" 聚合类型。
   assert.deepEqual(
-    otherCatalog.items.map((item) => item.id),
-    ['b', 'hub-c'],
+    collectCategories(['Design', 'Engineering', 'Engineering', '']),
+    ['Engineering', 'Design'],
   );
+  assert.equal(
+    collectCategories(['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8']).length,
+    8,
+  );
+  // category 直接与后端自由字符串精确比对，不再有"其他"兜底分组。
+  const unmatchedCatalog = buildCatalogViewModel(catalog, {
+    scope: 'catalog',
+    category: 'Research',
+    query: '',
+  });
+  assert.deepEqual(unmatchedCatalog.items.map((item) => item.id), []);
 });
 
 test('My Experts keeps its own capability descriptions across catalog refreshes', () => {

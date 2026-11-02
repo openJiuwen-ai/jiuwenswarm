@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AgentGroupCatalogItem, RequestStatus } from '../../features/agentManagement';
-import { OTHER_CATEGORY } from '../../features/agentManagement';
 import { CategoryTabs, EmptyState } from '../ui';
 // 深引入而非 ../ui barrel：本组件会被 esbuild 独立打包进测试
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
@@ -17,10 +16,8 @@ type GroupCatalogPageProps = {
   items: AgentGroupCatalogItem[];
   query: string;
   category: string;
-  /** 分类页签：由父组件从已加载组目录动态统计（collectTopCategories），不再使用写死枚举 */
+  /** 分类页签：由父组件从已加载组目录动态统计（collectCategories），市场有几个分类出几个页签 */
   categories?: readonly string[];
-  /** 组目录中是否存在未进分类页签的条目（含空 category），决定是否显示"其他"页签 */
-  hasOtherCategory?: boolean;
   installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
@@ -39,7 +36,6 @@ export function GroupCatalogPage({
   query,
   category,
   categories = [],
-  hasOtherCategory = false,
   installation = 'all',
   status,
   error,
@@ -125,14 +121,6 @@ export function GroupCatalogPage({
                 value: item,
                 label: t(`agentManagement.categories.${item}`, { defaultValue: item }),
               })),
-              ...(hasOtherCategory
-                ? [
-                    {
-                      value: OTHER_CATEGORY,
-                      label: t(`agentManagement.categories.${OTHER_CATEGORY}`, { defaultValue: OTHER_CATEGORY }),
-                    },
-                  ]
-                : []),
             ]}
             value={category}
             onChange={onCategoryChange}

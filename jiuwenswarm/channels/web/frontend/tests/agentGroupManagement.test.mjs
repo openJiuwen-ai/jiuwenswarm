@@ -10,9 +10,8 @@ import {
 } from '../node_modules/.cache/agent-group-management/port.js';
 import {
   buildGroupCatalogViewModel,
-  collectTopCategories,
+  collectCategories,
   mergeAgentGroupDetailWithCatalog,
-  OTHER_CATEGORY,
 } from '../node_modules/.cache/agent-group-management/viewModel.js';
 import {
   normalizeAgentGroupDetail,
@@ -164,25 +163,29 @@ test('group view model separates catalog and mine scopes and excludes tags from 
   }, 'zh');
   const item = normalizeAgentGroupListItem(rawGroup, 'zh');
   // 分类页签改由已加载数据动态统计（#5902）：category 直接与后端自由字符串比对，
-  // 不再映射写死的 ProductDevelopment 等枚举别名。
-  assert.deepEqual(collectTopCategories(['engineering', 'research', 'engineering', '']), ['engineering', 'research']);
+  // 不再映射写死的 ProductDevelopment 等枚举别名；市场有几个分类出几个页签，
+  // 不截断、不自建 "Other" 聚合类型。
+  assert.deepEqual(collectCategories(['engineering', 'research', 'engineering', '']), ['engineering', 'research']);
+  assert.equal(
+    collectCategories(['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7']).length,
+    7,
+  );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'catalog',
       category: 'engineering',
       query: '',
-      categories: new Set(['engineering']),
     }).totalItems,
     1,
   );
+  // 不存在的分类精确比对后为空，不再归入"其他"兜底分组。
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'catalog',
-      category: OTHER_CATEGORY,
+      category: 'research',
       query: '',
-      categories: new Set(['research']),
     }).totalItems,
-    1,
+    0,
   );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {

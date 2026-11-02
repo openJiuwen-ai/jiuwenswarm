@@ -46,7 +46,7 @@ import {
   agentManagementReducer,
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
-  collectTopCategories,
+  collectCategories,
   initialAgentManagementState,
   isPreviewableFile,
   mergeAgentDetailWithCatalog,
@@ -387,25 +387,24 @@ export function AgentManagementPanel({
 
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
   const [groupInstallationFilter, setGroupInstallationFilter] = useState<InstallationFilter>('all');
-  // 分类页签从已加载目录动态统计（对齐插件广场）：后端 category 是 manifest/Hub 自由字符串，
-  // 写死枚举会导致大部分条目归不进任何页签（#5902）。
-  const topCategories = useMemo(
-    () => collectTopCategories(state.catalog.map((item) => item.category)),
+  // 分类页签从广场可见目录（builtin+hub）动态统计（对齐插件广场）：后端 category 是
+  // manifest/Hub 自由字符串，写死枚举会导致大部分条目归不进任何页签（#5902）。
+  // 统计集合必须与列表可见集合一致——state.catalog 还含"我的"（local）条目，
+  // 否则本地专家的自定义分类会生成一个点进去为空的页签（#5902 回归）。
+  // 市场有几个分类就出几个页签，不截断、不自建 "Other" 聚合类型。
+  const plazaCatalog = useMemo(
+    () => state.catalog.filter((item) => item.source === 'builtin' || item.source === 'hub'),
     [state.catalog],
   );
-  const topCategorySet = useMemo(() => new Set(topCategories), [topCategories]);
-  const hasOtherCategory = useMemo(
-    () => state.catalog.some((item) => !topCategorySet.has(item.category.trim())),
-    [state.catalog, topCategorySet],
+  const categories = useMemo(
+    () => collectCategories(plazaCatalog.map((item) => item.category)),
+    [plazaCatalog],
   );
-  const groupTopCategories = useMemo(
-    () => collectTopCategories(groupCatalog.map((item) => item.category)),
+  // 组目录侧 groupCatalog 已是 builtin+hub（buildGroupCatalogViewModel 在 catalog 作用域过滤），
+  // 直接统计全部分类，保持与市场一致。
+  const groupCategories = useMemo(
+    () => collectCategories(groupCatalog.map((item) => item.category)),
     [groupCatalog],
-  );
-  const groupTopCategorySet = useMemo(() => new Set(groupTopCategories), [groupTopCategories]);
-  const hasGroupOtherCategory = useMemo(
-    () => groupCatalog.some((item) => !groupTopCategorySet.has(item.category.trim())),
-    [groupCatalog, groupTopCategorySet],
   );
   const catalogView = useMemo(
     () =>
@@ -417,10 +416,9 @@ export function AgentManagementPanel({
           // Marketplace results are already filtered by Hub. Reapplying a
           // client-side substring filter would discard name/tag matches.
           query: '',
-          categories: topCategorySet,
         },
       ),
-    [state.catalog, category, installationFilter, topCategorySet],
+    [state.catalog, category, installationFilter],
 
   );
   const mineView = useMemo(
@@ -439,9 +437,8 @@ export function AgentManagementPanel({
         category: groupCategory,
         query: '',
         installation: groupInstallationFilter,
-        categories: groupTopCategorySet,
       }),
-    [groupCatalog, groupCategory, groupInstallationFilter, groupTopCategorySet],
+    [groupCatalog, groupCategory, groupInstallationFilter],
   );
   const groupMineView = useMemo(
     () => buildGroupCatalogViewModel(groupMine, {
@@ -1492,8 +1489,7 @@ export function AgentManagementPanel({
               items={view === 'teams' ? groupCatalogView.items : groupMineView.items}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
-              categories={view === 'teams' ? groupTopCategories : []}
-              hasOtherCategory={view === 'teams' && hasGroupOtherCategory}
+              categories={view === 'teams' ? groupCategories : []}
               installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
@@ -1517,8 +1513,7 @@ export function AgentManagementPanel({
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
               category={category}
-              categories={isMine ? [] : topCategories}
-              hasOtherCategory={!isMine && hasOtherCategory}
+              categories={isMine ? [] : categories}
               installation={installationFilter}
               status={
                 !isMine &&

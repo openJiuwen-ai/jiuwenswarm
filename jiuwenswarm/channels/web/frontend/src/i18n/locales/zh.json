@@ -3746,8 +3746,7 @@
       "Communication": "通讯协作",
       "Engineering": "产品研发",
       "Life": "生活方式",
-      "Custom": "自定义",
-      "Other": "其他"
+      "Custom": "自定义"
     },
     "actions": {
       "working": "处理中",

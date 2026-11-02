@@ -15,10 +15,12 @@ export type GroupCatalogViewModel = {
   totalItems: number;
 };
 
-/** Category tabs are derived from the loaded data (top N by frequency); the rest falls into "other". */
-export const OTHER_CATEGORY = 'Other';
-
-export function collectTopCategories(categories: readonly string[], topN = 6): string[] {
+/**
+ * Category tabs are derived from the loaded marketplace data: every distinct
+ * non-empty category becomes a tab, ordered by frequency. No artificial
+ * "Other" bucket is synthesized, so tabs stay consistent with the catalog.
+ */
+export function collectCategories(categories: readonly string[]): string[] {
   const counts = new Map<string, number>();
   for (const raw of categories) {
     const category = raw.trim();
@@ -27,15 +29,12 @@ export function collectTopCategories(categories: readonly string[], topN = 6): s
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([key]) => key)
-    .slice(0, topN);
+    .map(([key]) => key);
 }
 
-function matchesDynamicCategory(category: string, itemCategory: string, topCategories: ReadonlySet<string>): boolean {
+function matchesCategory(category: string, itemCategory: string): boolean {
   if (!category) return true;
-  const normalized = itemCategory.trim();
-  if (category === OTHER_CATEGORY) return !topCategories.has(normalized);
-  return normalized === category;
+  return itemCategory.trim() === category;
 }
 
 export function findFirstPreviewableFile(entries: DefinitionFileEntry[]): string | null {
@@ -108,12 +107,9 @@ export function buildCatalogViewModel(
     scope: CatalogScope;
     category: string;
     query: string;
-    /** Category values shown as tabs (from collectTopCategories); values outside it fall into "other". */
-    categories?: ReadonlySet<string>;
   },
 ): CatalogViewModel {
   const query = options.query.trim().toLocaleLowerCase();
-  const topCategories = options.categories ?? new Set<string>();
   const items = catalog.filter((item) => {
     if (options.scope === 'catalog' && item.source !== 'builtin' && item.source !== 'hub') {
       return false;
@@ -121,7 +117,7 @@ export function buildCatalogViewModel(
     if (options.scope === 'mine' && item.source !== 'local' && !item.installed) {
       return false;
     }
-    if (options.scope === 'catalog' && !matchesDynamicCategory(options.category, item.category, topCategories)) {
+    if (options.scope === 'catalog' && !matchesCategory(options.category, item.category)) {
       return false;
     }
     if (!query) {
@@ -143,12 +139,9 @@ export function buildGroupCatalogViewModel(
     category: string;
     query: string;
     installation?: 'all' | 'installed' | 'uninstalled';
-    /** Category values shown as tabs (from collectTopCategories); values outside it fall into "other". */
-    categories?: ReadonlySet<string>;
   },
 ): GroupCatalogViewModel {
   const query = options.query.trim().toLocaleLowerCase();
-  const topCategories = options.categories ?? new Set<string>();
   const filtered = catalog.filter(item => {
     if (options.scope === 'catalog' && item.source !== 'builtin' && item.source !== 'hub') return false;
     if (options.scope === 'mine' && item.source !== 'local' && !item.installed) return false;
@@ -158,7 +151,7 @@ export function buildGroupCatalogViewModel(
       item.installed !== (options.installation === 'installed')
     )
       return false;
-    if (options.scope === 'catalog' && !matchesDynamicCategory(options.category, item.category, topCategories)) return false;
+    if (options.scope === 'catalog' && !matchesCategory(options.category, item.category)) return false;
     if (!query) return true;
     if (options.scope === 'mine') return matchesAssetName(query, [item.displayName]);
     const tags = item.tags.map(tag => tag.label).join(' ');
