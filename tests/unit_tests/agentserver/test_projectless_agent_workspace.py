@@ -116,6 +116,74 @@ def test_projectless_task_workspace_adds_numeric_suffix_for_same_day_collision(
     assert second.root_dir.name == "chat-2"
 
 
+def test_projectless_task_workspace_keeps_long_session_ids_separate(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tmp_path / "Documents"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(tmp_path / "registry"))
+
+    shared_prefix = "session-" + "x" * 64
+    first = get_projectless_task_workspace(shared_prefix + "-a")
+    second = get_projectless_task_workspace(shared_prefix + "-b")
+
+    assert first.root_dir != second.root_dir
+    assert get_projectless_task_workspace(shared_prefix + "-a") == first
+    assert get_projectless_task_workspace(shared_prefix + "-b") == second
+
+
+def test_projectless_task_workspace_reuses_legacy_long_session_binding(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tmp_path / "Documents"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(tmp_path / "registry"))
+    session_id = "session-" + "x" * 64
+    legacy_key = projectless_workspace._slugify(session_id, fallback="default")
+    legacy_root = projectless_workspace._allocate_task_root(
+        projectless_workspace.get_projectless_tasks_dir(), "2026-01-01", legacy_key
+    )
+    projectless_workspace._write_task_metadata(
+        legacy_root, session_id=session_id, task_name="existing task"
+    )
+    projectless_workspace._write_registered_root(
+        projectless_workspace.get_projectless_tasks_dir(), legacy_key, legacy_root
+    )
+
+    assert get_projectless_task_workspace(session_id).root_dir == legacy_root
+
+
+def test_projectless_agent_code_task_files_stay_in_their_own_workspace(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tmp_path / "Documents"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(tmp_path / "registry"))
+    internal_dir = tmp_path / "internal"
+    internal_dir.mkdir()
+
+    def paths(session_id, task_name):
+        return resolve_runtime_workspace_paths(
+            internal_workspace_dir=internal_dir,
+            project_dir=None,
+            workspace_dir=None,
+            cwd=str(internal_dir),
+            session_id=session_id,
+            task_name=task_name,
+            bind_request=True,
+        )
+
+    agent = paths("agent-session", "创建报告")
+    code = paths("code-session", "实现页面")
+    (agent.cwd / "draft.txt").write_text("agent draft", encoding="utf-8")
+    (agent.outputs_dir / "report.txt").write_text("agent result", encoding="utf-8")
+    (code.cwd / "draft.txt").write_text("code draft", encoding="utf-8")
+
+    assert agent.runtime_workspace_root != code.runtime_workspace_root
+    assert paths("agent-session", "标题已更改") == agent
+    assert (agent.outputs_dir / "report.txt").read_text(encoding="utf-8") == "agent result"
+    assert (code.cwd / "draft.txt").read_text(encoding="utf-8") == "code draft"
+    assert not (code.outputs_dir / "report.txt").exists()
+    assert not (internal_dir / "draft.txt").exists()
+
+
 def test_linux_documents_dir_honors_xdg_user_dirs(tmp_path, monkeypatch):
     config_dir = tmp_path / "xdg"
     config_dir.mkdir()
