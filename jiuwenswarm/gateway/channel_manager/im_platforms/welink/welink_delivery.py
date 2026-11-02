@@ -42,11 +42,13 @@ class DeliveryJournal:
             row = conn.execute('SELECT * FROM receipts WHERE idempotency_key=?', (key,)).fetchone()
         return dict(row) if row is not None else None
 
-    def prepare(self, key: str, group_id: str, text: str, baseline_id: str, assistants: set[str]) -> bool:
+    def prepare(self, key: str, group_id: str, text: str, baseline_id: str, assistants: set[str],
+                *, serialize_identical: bool = True) -> bool:
         """Commit before enqueueing any socket write; serialize indistinguishable replies."""
         with self._connection() as conn:
             if conn.execute('SELECT 1 FROM receipts WHERE idempotency_key=? OR '
-                            '(group_id=? AND text=? AND status=?)', (key, group_id, text, 'unknown')).fetchone():
+                            '(? AND group_id=? AND text=? AND status=?)',
+                            (key, serialize_identical, group_id, text, 'unknown')).fetchone():
                 return False
             conn.execute('INSERT INTO receipts(idempotency_key,group_id,text,baseline_id,assistants,status) '
                          'VALUES (?,?,?,?,?,?)', (key, group_id, text, baseline_id, json.dumps(sorted(assistants)), 'unknown'))
@@ -76,6 +78,7 @@ class DeliveryJournal:
         return {'outcome': 'unknown', 'error_code': 'WELINK_AWAITING_HISTORY'}
 
     def reconcile(self, key: str, messages: list[WelinkHistoryMessage]) -> dict:
+        learned = ""
         with self._connection() as conn:
             row = conn.execute('SELECT * FROM receipts WHERE idempotency_key=?', (key,)).fetchone()
             if row is not None and row['status'] == 'unknown':
@@ -88,13 +91,20 @@ class DeliveryJournal:
                                len(assistants) == 1 and baseline.isdigit() and message.message_id.isdigit()
                                and int(message.message_id) > int(baseline)))]
                 ids = {message.message_id for message in matches}
-                if len(ids) == 1:
+                senders = {message.sender_id for message in matches}
+                # With several possible senders, only the exact outgoing message id
+                # can identify this assistant. Matching text alone can belong to a peer.
+                if len(ids) == 1 and len(senders) == 1:
                     external_id = next(iter(ids))
                     used = conn.execute('SELECT 1 FROM receipts WHERE group_id=? AND external_message_id=?',
                                         (row['group_id'], external_id)).fetchone()
                     if used is None:
                         conn.execute('UPDATE receipts SET status=?,external_message_id=? WHERE idempotency_key=?',
                                      ('delivered', external_id, key))
+                        learned = next(iter(senders))
                 elif not ids and row['rejected']:
                     conn.execute('UPDATE receipts SET status=? WHERE idempotency_key=?', ('failed', key))
-        return self.outcome(key)
+        result = self.outcome(key)
+        if learned and result.get('outcome') == 'delivered':
+            result['learned_sender'] = learned
+        return result

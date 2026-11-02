@@ -25,6 +25,8 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_messages imp
     WelinkMedia,
     is_image_media,
     parse_auth_status,
+    contact_mail_note,
+    mention_accounts_in_history,
     parse_cli_json,
     parse_history_messages,
     parse_group_members,
@@ -77,6 +79,7 @@ class WelinkChannel(BaseChannel):
         self._inbound_handler: WelinkInboundHandler | None = None
         self._cli = WelinkCli(config.cli_path, Path(config.reader_credential_dir or config.credential_dir), env_name=config.env_name)
         self._link: AssistantLink | None = None
+        self.remember_account: Callable[[str], bool] | None = None
 
     @property
     def channel_id(self) -> str:
@@ -120,7 +123,16 @@ class WelinkChannel(BaseChannel):
                 await asyncio.Event().wait()
             else:
                 cursors = CursorStore(Path(self.config.credential_dir) / "cursors.json")
-                await self._poll_loop(WelinkPoller(self._cli, self.config.account, cursors))
+                from .welink_subscriptions import MentionSubscriptions
+                subscriptions = MentionSubscriptions(
+                    Path(self.config.reader_credential_dir or self.config.credential_dir) / "mention-subscriptions.sqlite3",
+                    self.config.account,
+                )
+                await self._poll_loop(WelinkPoller(
+                    self._cli, self.config.account, cursors,
+                    registered_groups=lambda: subscriptions.groups({self.config.assistant_credential_id: self.config.agent_id}),
+                    revoke_group=subscriptions.revoke,
+                ))
         finally:
             link = self._link
             self._link = None
@@ -128,8 +140,10 @@ class WelinkChannel(BaseChannel):
                 await asyncio.to_thread(link.stop)
 
     async def _poll_loop(self, poller: WelinkPoller) -> None:
+        # Do not replay discovery-era or differently owned pending messages.
+        owner = json.dumps([self.config.account, self.config.agent_id, self.config.assistant_credential_id])
         pending_path = Path(self.config.credential_dir) / (
-            "pending-" + hashlib.sha256(self.config.account.encode()).hexdigest()[:24] + ".json"
+            "registered-pending-" + hashlib.sha256(owner.encode()).hexdigest()[:24] + ".json"
         )
         pending: list[WelinkHistoryMessage] = []
         if pending_path.is_file():
@@ -149,6 +163,11 @@ class WelinkChannel(BaseChannel):
                         message = pending[0]
                         if not self._running:
                             break
+                        registered = getattr(poller, "_registered_groups", None)
+                        if registered is not None and message.group_id not in registered():
+                            pending.pop(0)
+                            await asyncio.to_thread(self._save_pending, pending_path, pending)
+                            continue
                         accepted = await self._deliver(message)
                         if accepted:
                             poller.commit(message.group_id, message.message_id)
@@ -193,6 +212,11 @@ class WelinkChannel(BaseChannel):
             text = text.replace("[[agent:" + str(target.get("agent_id", "")) + "]]", str(target.get("display_name") or target.get("name") or target.get("agent_id") or ""))
         if not chat_id or not text or not idempotency_key:
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
+        if chat_id.startswith("p2p:"):
+            return await self.send_direct_text(
+                chat_id=chat_id, text=text, source_message_id=source_message_id,
+                idempotency_key=idempotency_key,
+            )
         async with self._delivery_lock:
             journal = self._delivery_journal()
             if journal.get(idempotency_key) is not None:
@@ -205,7 +229,7 @@ class WelinkChannel(BaseChannel):
             if time.monotonic() < self._preflight_retry_at:
                 return {"outcome": "pending", "error_code": "WELINK_SEND_PREFLIGHT_BACKOFF"}
             try:
-                assistants = await asyncio.to_thread(self._allowed_assistants, chat_id)
+                assistants = await asyncio.to_thread(self._send_candidates, chat_id, refresh_unknown=True)
                 if not assistants:
                     raise ValueError("assistant membership unavailable")
                 history = await asyncio.to_thread(self._history, chat_id)
@@ -229,6 +253,49 @@ class WelinkChannel(BaseChannel):
                 logger.warning("[Welink] send awaiting reconciliation chat_id=%s", chat_id)
             return journal.outcome(idempotency_key)
 
+    async def send_persistent_result(
+        self, *, chat_id: str, text: str, source_message_id: str | None = None,
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        """Deliver host notices through the assistant and preserve the actual outcome."""
+        if chat_id.startswith("p2p:"):
+            return await self.send_direct_text(
+                chat_id=chat_id, text=text, source_message_id=source_message_id or "", keep_task_open=True,
+                idempotency_key=idempotency_key,
+            )
+        return await self.send_group_text(
+            chat_id=chat_id, text=text, source_message_id=source_message_id or "",
+            idempotency_key=idempotency_key,
+        )
+
+    async def send_direct_text(self, *, chat_id: str, text: str, source_message_id: str = "",
+                               idempotency_key: str = "", keep_task_open: bool = False) -> dict[str, Any]:
+        """Persist private sends; a socket write alone cannot confirm delivery."""
+        if not chat_id.startswith("p2p:") or not text or not idempotency_key:
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
+        async with self._delivery_lock:
+            journal = self._delivery_journal()
+            if journal.get(idempotency_key) is not None:
+                return await self.reconcile_group_text(chat_id=chat_id, idempotency_key=idempotency_key)
+            link = self._link
+            if link is None:
+                return {"outcome": "pending", "error_code": "WELINK_ACCOUNT_NOT_CONNECTED"}
+            # Private replies use an exact task slot, not text-based history matching.
+            prepared = await asyncio.to_thread(
+                journal.prepare, idempotency_key, chat_id, text, "", set(), serialize_identical=False,
+            )
+            if not prepared:
+                return await self.reconcile_group_text(chat_id=chat_id, idempotency_key=idempotency_key)
+            try:
+                await asyncio.to_thread(
+                    link.send_text, chat_id, text, source_message_id, finish_task=not keep_task_open,
+                    on_prepared=lambda message_id, session_id, trace_id: journal.mark_wire(
+                        idempotency_key, message_id, session_id, trace_id),
+                )
+            except Exception:
+                logger.warning("[Welink] private send awaiting confirmation chat_id=%s", chat_id)
+            return await self.reconcile_group_text(chat_id=chat_id, idempotency_key=idempotency_key)
+
     def _delivery_journal(self):
         from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_delivery import DeliveryJournal
 
@@ -240,12 +307,13 @@ class WelinkChannel(BaseChannel):
             self._journal = DeliveryJournal(Path(self.config.credential_dir) / f"deliveries-{identity}.sqlite3")
         return self._journal
 
-    def _allowed_assistants(self, chat_id: str, *, force_refresh: bool = False) -> set[str]:
+    def _reader_assistants(self, chat_id: str, *, force_refresh: bool = False) -> set[str]:
+        """Reader-owned assistant member ids currently in the group. Empty when the group is not shared."""
         membership = MembershipStore(Path(self.config.reader_credential_dir or self.config.credential_dir) / "membership.json")
         record = membership.get(chat_id)
         age = time.time() - membership.checked_at(chat_id)
         if not force_refresh and record is not None and 0 <= age < MEMBERSHIP_TTL_SECONDS:
-            return self._own_assistants(set(record[1])) if record[0] else set()
+            return set(record[1]) if record[0] else set()
         result = self._cli.query_group_members(chat_id)
         if not result.ok:
             raise ValueError("membership query unavailable")
@@ -257,7 +325,37 @@ class WelinkChannel(BaseChannel):
         members = parse_group_members(payload)
         if not any(member.account == self.config.account for member in members):
             return set()
-        return self._own_assistants(reader_assistant_accounts(members, self.config.account))
+        return reader_assistant_accounts(members, self.config.account)
+
+    def _allowed_assistants(self, chat_id: str, *, force_refresh: bool = False) -> set[str]:
+        return self._own_assistants(self._reader_assistants(chat_id, force_refresh=force_refresh))
+
+    def _send_candidates(self, chat_id: str, *, refresh_unknown: bool = False) -> set[str]:
+        """Accounts that may confirm this send.
+
+        A known member id must be in the group. Before it is known, every reader-owned
+        assistant in the group is a candidate; an exact outgoing message id identifies it.
+        A fresh "not shared" cache still blocks reconciliation. Sending may refresh it,
+        because an @ can arrive before the reader has classified the new member.
+        """
+        accounts = self._reader_assistants(chat_id)
+        if refresh_unknown and not accounts and not self.config.assistant_account.strip():
+            accounts = self._reader_assistants(chat_id, force_refresh=True)
+        owned = self._own_assistants(accounts)
+        if owned or self.config.assistant_account.strip():
+            return owned
+        return accounts
+
+    def _remember_assistant_account(self, account: str) -> None:
+        learned = account.strip()
+        current = self.config.assistant_account.strip()
+        if not learned or learned == current or (current and current != learned):
+            return
+        sink = self.remember_account
+        if sink is not None and not sink(learned):
+            return
+        self.config.assistant_account = learned
+        logger.info("[Welink] learned assistant member mapping agent=%s", self.config.agent_id)
 
     def _own_assistants(self, accounts: set[str]) -> set[str]:
         identity = self.config.assistant_account or self.config.assistant_credential_id
@@ -288,13 +386,24 @@ class WelinkChannel(BaseChannel):
             return {"outcome": "unknown", "error_code": "WELINK_RECEIPT_UNAVAILABLE"}
         if row["status"] != "unknown":
             return journal.outcome(idempotency_key)
+        if chat_id.startswith("p2p:"):
+            # The group-history API cannot verify private messages. Only correlated
+            # rejection is conclusive; absent an acknowledgement, do not resend.
+            result = await asyncio.to_thread(journal.reconcile, idempotency_key, [])
+            if result.get("outcome") == "unknown":
+                result["error_code"] = "WELINK_PRIVATE_DELIVERY_UNCONFIRMED"
+            return result
         try:
-            if not await asyncio.to_thread(self._allowed_assistants, chat_id):
+            if not await asyncio.to_thread(self._send_candidates, chat_id):
                 return {"outcome": "unknown", "error_code": "WELINK_MEMBERSHIP_UNAVAILABLE"}
             history = await asyncio.to_thread(self._history, chat_id)
-            return await asyncio.to_thread(journal.reconcile, idempotency_key, history)
+            result = await asyncio.to_thread(journal.reconcile, idempotency_key, history)
         except Exception:
             return {"outcome": "unknown", "error_code": "WELINK_HISTORY_UNAVAILABLE"}
+        learned = str(result.pop("learned_sender", "") or "")
+        if learned:
+            self._remember_assistant_account(learned)
+        return result
 
     def _logged_in(self) -> bool:
         try:
@@ -305,6 +414,11 @@ class WelinkChannel(BaseChannel):
         return bool(status.ok and logged_in)
 
     async def _on_mention(self, mention: Mention) -> bool:
+        if not mention.direct:
+            from .welink_subscriptions import MentionSubscriptions
+            directory = Path(self.config.reader_credential_dir or self.config.credential_dir)
+            subscriptions = MentionSubscriptions(directory / "mention-subscriptions.sqlite3", self.config.account)
+            subscriptions.register(self.config.assistant_credential_id, self.config.agent_id, mention.group_id)
         message = WelinkHistoryMessage(
             message_id=mention.message_id,
             sender_id=mention.sender_id,
@@ -312,11 +426,13 @@ class WelinkChannel(BaseChannel):
             text=mention.text,
             group_id=mention.group_id,
             media=tuple(item for item in mention.media if isinstance(item, WelinkMedia)),
+            mention_accounts=mention.mention_accounts,
         )
-        return await self._deliver(message, from_mention=True)
+        return await self._deliver(message, from_mention=True, direct=mention.direct)
 
     async def _deliver(self, message: Any, *, from_mention: bool = False,
-                       first_observation: bool = False, visible_from: str = "") -> bool:
+                       first_observation: bool = False, visible_from: str = "",
+                       direct: bool = False) -> bool:
         link = self._link
         if (
             not from_mention
@@ -339,12 +455,15 @@ class WelinkChannel(BaseChannel):
             "message_id": (link.canonical_message_id(message.group_id, message.message_id)
                            if link is not None else message.message_id),
             "chat_id": message.group_id,
-            "chat_type": "group",
+            "chat_type": "p2p" if direct else "group",
             "sender_id": message.sender_id,
             "sender_name": message.sender_name or message.sender_id,
             "received_at": getattr(message, "received_at", "") or datetime.now(timezone.utc).isoformat(),
         }
         text, local_files = self._text_with_local_media(message)
+        note = await asyncio.to_thread(self._mention_mail_note, message, from_mention, direct)
+        if note:
+            text = f"{text}\n{note}"
         event["text"] = text
         if local_files:
             event["local_files"] = local_files
@@ -358,6 +477,27 @@ class WelinkChannel(BaseChannel):
             return True
         logger.warning("[Welink] inbound rejected: message_id=%s disposition=%s", message.message_id, value)
         return value == "rejected"
+
+    def _mention_mail_note(self, message: Any, from_mention: bool, direct: bool) -> str:
+        """Resolve @ accounts to personMail. History supplies atAccountList; contact detail supplies the mailbox."""
+        accounts = [item.strip() for item in getattr(message, "mention_accounts", ()) or ()
+                    if isinstance(item, str) and item.strip()]
+        if from_mention and not direct:
+            try:
+                page = self._cli.query_history(message.group_id, None)
+                accounts.extend(mention_accounts_in_history(
+                    parse_cli_json(getattr(page, "stdout", "") or ""), message.message_id))
+            except Exception:
+                logger.info("[Welink] mention account lookup unavailable group_id=%s", message.group_id)
+        unique = tuple(dict.fromkeys(accounts))
+        if not unique:
+            return ""
+        try:
+            detail = self._cli.run(["contact", "detail", *unique], timeout=30)
+        except Exception:
+            logger.info("[Welink] contact detail unavailable")
+            return ""
+        return contact_mail_note(unique, parse_cli_json(getattr(detail, "stdout", "") or ""))
 
     def _text_with_local_media(self, message: WelinkHistoryMessage) -> tuple[str, tuple[str, ...]]:
         """Download cloud-drive shares and point the colleague at the local file."""

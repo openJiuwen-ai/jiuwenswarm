@@ -477,7 +477,7 @@ export function ToolPanel({
     return (
       <div
         data-testid={testId}
-        className="bg-panel h-full overflow-hidden flex-[0_0_368px] flex flex-col min-w-[320px] max-w-[40vw]"
+        className="bg-panel h-full overflow-hidden flex flex-1 flex-col min-w-[320px]"
       >
         <div className="h-full bg-panel flex flex-col overflow-hidden">
           <ExpandedPanel

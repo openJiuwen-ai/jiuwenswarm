@@ -1200,6 +1200,7 @@ class AgentWebSocketServer:
         self._feishu_runtime_lock = asyncio.Lock()
         self._feishu_group_fanout = None
         self._feishu_agent_manager = None
+        self._dingtalk_group_poller = None
         self._result_delivery_waiters: dict[str, asyncio.Future] = {}
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
@@ -2199,6 +2200,7 @@ class AgentWebSocketServer:
                 thinking_notice_sender=self._send_thinking_notice,
                 verify_membership=self._inspect_feishu_group,
             )
+            poller = None
             try:
                 await manager.start()
                 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE
@@ -2216,11 +2218,19 @@ class AgentWebSocketServer:
                     await manager.recover(
                         namespace_id, channels=channels, include_unrouted=False,
                     )
+                dingtalk_inbound = getattr(fanout, "dingtalk_inbound", None)
+                if dingtalk_inbound is not None:
+                    from jiuwenswarm.server.jiuwenmate.dingtalk_group_polling import DingTalkGroupPoller
+                    poller = DingTalkGroupPoller(manager, dingtalk_inbound)
+                    await poller.start()
             except BaseException:
+                if poller is not None:
+                    await poller.aclose()
                 await manager.aclose()
                 raise
             self._feishu_group_fanout = fanout
             self._feishu_agent_manager = manager
+            self._dingtalk_group_poller = poller
             logger.info("[AgentWebSocketServer] shared JiuwenMate IM runtime started")
             return fanout
 
@@ -2231,10 +2241,16 @@ class AgentWebSocketServer:
             return
         async with lock:
             manager = getattr(self, "_feishu_agent_manager", None)
+            poller = getattr(self, "_dingtalk_group_poller", None)
             self._feishu_agent_manager = None
             self._feishu_group_fanout = None
-            if manager is not None:
-                await manager.aclose()
+            self._dingtalk_group_poller = None
+            try:
+                if poller is not None:
+                    await poller.aclose()
+            finally:
+                if manager is not None:
+                    await manager.aclose()
 
     async def _inspect_feishu_group(self, app_id: str, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, object]:
         """Ask the owning Gateway to verify current membership; never authorize from history alone."""

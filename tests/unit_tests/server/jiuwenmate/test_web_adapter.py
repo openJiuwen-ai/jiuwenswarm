@@ -354,3 +354,48 @@ async def test_colleagues_live_in_the_local_namespace(host):
     service = host.adapter._colleagues()
     assert [view.name for view in service.list_colleagues(WEB_NAMESPACE)] == ["研发同事"]
     assert service.list_colleagues("other") == []
+
+
+async def test_welink_mail_settings_follow_colleague_connection_and_are_live(host, monkeypatch):
+    from types import SimpleNamespace
+    from jiuwenswarm.server.jiuwenmate import welink_office_settings as module
+    from jiuwenswarm.server.jiuwenmate import welink_inbound
+    from jiuwenswarm.server.jiuwenmate.welink_office_tool import ConfiguredOfficeRuntime
+    config_id = (await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())).payload['colleague']['agent_id']
+    before = await host.call(ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS, agent_id=config_id)
+    assert before.ok and before.payload['welink_office']['reason'] == 'WELINK_NOT_BOUND'
+    im_id = host.adapter._colleagues().attach_connection('local', config_id, 'welink', 'owner:'+config_id)
+    binding = SimpleNamespace(agent_id=im_id, account='owner', cli_path='welink-cli', reader_credential_dir=str(host.tmp_path / 'reader'), env_name='pro')
+    monkeypatch.setattr(welink_inbound, 'configured_welink_bindings', lambda: (binding,))
+    monkeypatch.setattr(welink_inbound, 'welink_binding_for_agent', lambda _: binding)
+    monkeypatch.setattr(module, 'parse_auth_status', lambda *args: (True, 'owner'))
+    class Cli:
+        calls = []
+        def __init__(self, *args, **kwargs): pass
+        def auth_status(self): return SimpleNamespace(ok=True, stdout='', stderr='')
+        def run(self, args, timeout=30):
+            self.calls.append(args)
+            return SimpleNamespace(ok=True, stdout='{"success":true,"events":[]}')
+    monkeypatch.setattr(module, 'WelinkCli', Cli)
+    monkeypatch.setattr('jiuwenswarm.server.jiuwenmate.welink_office_tool.WelinkCli', Cli)
+    connected = await host.call(ReqMethod.JIUWENMATE_WELINK_OFFICE_CONNECT, agent_id=config_id, email='owner@example.com')
+    assert connected.ok, connected.payload
+    assert connected.payload['welink_office']['status'] == 'connected'
+    runtime = ConfiguredOfficeRuntime(host.adapter._manager.db_path, binding)
+    calendar_result = runtime.execute('req-calendar', 'calendar.list', {'start': '2026-11-02', 'end': '2026-11-03'})
+    assert calendar_result['status'] == 'ok', (calendar_result, host.adapter._manager.db_path)
+    assert ['calendar', 'list', '--start', '2026-11-02', '--end', '2026-11-03'] in Cli.calls
+    disconnected = await host.call(ReqMethod.JIUWENMATE_WELINK_OFFICE_DISCONNECT, agent_id=config_id)
+    assert disconnected.ok
+    assert runtime.execute('req-calendar2', 'calendar.list', {'start': '2026-11-02', 'end': '2026-11-03'})['code'] == 'WELINK_OFFICE_NOT_CONNECTED'
+    missing = await host.call(ReqMethod.JIUWENMATE_WELINK_OFFICE_CONNECT, agent_id='missing', email='owner@example.com')
+    assert not missing.ok
+
+
+def test_welink_office_rpcs_are_forwarded_to_runtime():
+    for method in (ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS,
+                   ReqMethod.JIUWENMATE_WELINK_OFFICE_CONNECT,
+                   ReqMethod.JIUWENMATE_WELINK_OFFICE_DISCONNECT):
+        assert method.value in JiuwenMateWebAdapter.methods
+        assert method.value in app_web_handlers._FORWARD_REQ_METHODS
+        assert method.value in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS

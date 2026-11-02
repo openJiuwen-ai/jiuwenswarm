@@ -489,11 +489,11 @@ export function TaskPlanningPanel({
           <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
 
           <div
-            className="min-h-0 flex-1 overflow-y-auto rounded-lg bg-secondary p-6"
+            className="min-h-0 flex-1 overflow-auto rounded-lg bg-secondary p-6"
             data-testid="team-area-task-planning-board"
           >
             <div
-              className="grid min-w-[920px] gap-5"
+              className="grid min-w-[940px] gap-5"
               style={{ gridTemplateColumns: 'repeat(4, minmax(220px, 1fr))' }}
               data-testid="team-area-task-planning-board-columns"
             >

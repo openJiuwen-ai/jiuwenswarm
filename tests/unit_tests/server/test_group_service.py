@@ -538,6 +538,43 @@ async def test_history_restores_public_messages_without_starting_runtime(service
 
 
 @pytest.mark.asyncio
+async def test_history_waits_for_live_backend_database_initialization(
+    service, monkeypatch
+):
+    group = await create(service)
+    calls = []
+    backend = SimpleNamespace(
+        db=SimpleNamespace(
+            initialize=AsyncMock(side_effect=lambda: calls.append("initialize"))
+        ),
+        group_conversation=AsyncMock(return_value=object()),
+        message_manager=object(),
+    )
+
+    async def sync_history(conversation, message_manager):
+        calls.append("sync")
+        return []
+
+    monkeypatch.setattr(gs, "sync_history", sync_history)
+    service.backend_resolver.return_value = backend
+
+    result = await service.history(
+        group["group_id"], {}, user_id="owner", channel_id="web"
+    )
+
+    assert result == {
+        "group_id": group["group_id"],
+        "messages": [],
+        "total": 0,
+        "limit": 50,
+        "offset": 0,
+        "next_offset": None,
+    }
+    assert calls == ["initialize", "sync"]
+    backend.group_conversation.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_delete_cleans_private_runs_and_preserves_group_after_failure(
     service, monkeypatch
 ):
@@ -989,3 +1026,22 @@ def test_empty_group_does_not_declare_disabled_installed_clis(monkeypatch):
     )
     assemble_group_members(spec, [])
     assert spec.external_cli_agents == []
+
+
+@pytest.mark.asyncio
+async def test_delete_cleans_runs_kept_under_the_outer_team_home(service, monkeypatch):
+    from jiuwenswarm.agents.swarm.group_chat import group_runs_dir
+
+    group = await create(service)
+    runs = group_runs_dir(group["team_name"])
+    runs.mkdir(parents=True)
+    (runs / "one.json").write_text(
+        json.dumps({"team_name": "group-expert-one", "session_id": "group-run-one"})
+    )
+    (runs / "one").mkdir()
+    remove = AsyncMock(return_value=True)
+    monkeypatch.setattr(gs.Runner, "delete_agent_team", remove)
+    service.runtime.delete_session.return_value = SimpleNamespace(ok=True)
+    await service.delete(group["group_id"], user_id="owner", channel_id="web")
+    assert remove.await_args.kwargs["team_name"] == "group-expert-one"
+    assert not runs.exists()

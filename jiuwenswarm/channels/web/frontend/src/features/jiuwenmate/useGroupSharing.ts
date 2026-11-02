@@ -17,7 +17,7 @@ interface InboxState {
 }
 
 /** Query independently of ordinary Requests. No card content is sent to chat or the model. */
-export function useGroupSharing(api: GroupSharingApi, configId: string, connectionEpoch: number) {
+export function useGroupSharing(api: GroupSharingApi, configId: string, connectionEpoch: number, markRead = false) {
   const [state, setState] = useState<InboxState | null>(null);
   const [now, setNow] = useState(Date.now);
   const operations = useRef<{
@@ -45,7 +45,7 @@ export function useGroupSharing(api: GroupSharingApi, configId: string, connecti
       // Background polls keep the existing card, focus and controls steady.
       if (foreground || current.data === null) update({ loading: true });
       try {
-        const data = await api.list(configId);
+        const data = await api.list(configId, markRead && document.visibilityState === 'visible');
         if (active && token === sequence) update({ data, loadError: false });
       } catch {
         if (active && token === sequence) update({ loadError: true });
@@ -105,7 +105,7 @@ export function useGroupSharing(api: GroupSharingApi, configId: string, connecti
       window.removeEventListener('focus', poll);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [api, configId, connectionEpoch]);
+  }, [api, configId, connectionEpoch, markRead]);
 
   const current = state?.api === api && state.configId === configId ? state : null;
   return {

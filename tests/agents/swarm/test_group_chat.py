@@ -137,8 +137,10 @@ def test_existing_expert_capabilities_are_kept(tmp_path, monkeypatch):
 
 @pytest.fixture
 def proxy(tmp_path, monkeypatch):
+    from openjiuwen.agent_teams.paths import reset_task_openjiuwen_home, set_task_openjiuwen_home
     from jiuwenswarm.agents.swarm import assembly
 
+    home = set_task_openjiuwen_home(tmp_path / "core")
     monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", lambda *a, **kw: None)
     backend = SimpleNamespace(
         conversation_mode="group_chat",
@@ -163,9 +165,10 @@ def proxy(tmp_path, monkeypatch):
     )
     pause = AsyncMock()
     monkeypatch.setattr(gc.Runner, "pause_agent_team", pause)
-    return gc.RunTeam(
+    yield gc.RunTeam(
         backend, context, spec().model_dump(mode="json", exclude={"build_context"})
     )
+    reset_task_openjiuwen_home(home)
 
 
 @pytest.mark.asyncio
@@ -231,12 +234,7 @@ async def test_stream_without_submission_fails_and_can_retry(proxy, monkeypatch)
     result = await proxy.invoke({"run_id": "one", "task": "task"})
     assert not result.success and "without submitting" in result.error
     proxy.backend.append_group_message.assert_not_awaited()
-    conversation = await proxy.backend.group_conversation()
-    state = json.loads(
-        next(
-            (conversation.history_path.parent / "team-runs").glob("*.json")
-        ).read_text()
-    )
+    state = json.loads(next(gc.group_runs_dir("public-group").glob("*.json")).read_text())
     assert state["status"] == "interrupted"
 
 
@@ -414,26 +412,28 @@ def test_private_completion_tool_exposes_new_name():
     assert gc.COMPLETE_RUN == "swarm.group_complete_team_run"
 
 
-def test_new_run_ticket_and_workspace_use_short_hashes(tmp_path):
-    from jiuwenswarm.agents.swarm.group_chat import (
-        RUN_PATH_HASH_LENGTH,
-        run_ticket_path,
-        run_workspace_path,
-    )
-
+def test_new_run_files_sit_under_the_outer_team_home(tmp_path):
     key = "a" * 64
-    runs = tmp_path / "team-runs"
-    assert run_ticket_path(runs, key) == runs / f"{key[:RUN_PATH_HASH_LENGTH]}.json"
-    assert run_workspace_path(runs, key) == runs / key[:RUN_PATH_HASH_LENGTH] / "workspace"
+    runs, legacy = tmp_path / "runs", tmp_path / "team-runs"
+    assert gc.run_ticket_path(runs, legacy, key) == runs / f"{key[:12]}.json"
+    assert gc.run_workspace_path(runs, legacy, key) == runs / key[:12]
 
 
-def test_legacy_full_hash_run_ticket_and_workspace_stay_in_place(tmp_path):
-    from jiuwenswarm.agents.swarm.group_chat import run_ticket_path, run_workspace_path
-
+@pytest.mark.parametrize("name", ["b" * 64, "b" * 12])
+def test_run_files_of_older_layouts_stay_in_place(tmp_path, name):
     key = "b" * 64
-    runs = tmp_path / "team-runs"
-    (runs / key / "workspace").mkdir(parents=True)
-    (runs / f"{key}.json").write_text("{}", encoding="utf-8")
-    assert run_ticket_path(runs, key) == runs / f"{key}.json"
+    runs, legacy = tmp_path / "runs", tmp_path / "team-runs"
+    (legacy / name / "workspace").mkdir(parents=True)
+    (legacy / f"{name}.json").write_text("{}", encoding="utf-8")
+    assert gc.run_ticket_path(runs, legacy, key) == legacy / f"{name}.json"
     # A recovered private team still points at the workspace saved in its first spec.
-    assert run_workspace_path(runs, key) == runs / key / "workspace"
+    assert gc.run_workspace_path(runs, legacy, key) == legacy / name / "workspace"
+
+
+def test_run_paths_leave_room_under_the_windows_limits():
+    assert gc.RUN_PATH_HASH_LENGTH == 12
+    team = "jiuwen_team_web_1a18bde044a_f1ea2469dbcf"
+    # A real reported home; the directory limit is 247 and the file limit 259.
+    runs = rf"C:\Users\75797\.jiuwenswarm\.agent_teams\{team}\runs"
+    assert len(rf"{runs}\{'c' * gc.RUN_PATH_HASH_LENGTH}") <= 110
+    assert len(rf"{runs}\org-{'d' * gc.RUN_PATH_HASH_LENGTH}.json") <= 120

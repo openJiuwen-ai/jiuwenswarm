@@ -67,6 +67,52 @@ def test_empty_yaml_values_are_typed_before_channels_start():
     assert dingtalk_channel_settings({"client_id": "app", "client_secret": None}, **BASES) == []
 
 
+@pytest.mark.parametrize("location", ["legacy", "shared", "app"])
+def test_file_settings_reach_the_started_channel(location):
+    credentials = {"client_id": "app", "client_secret": "fake-secret"}
+    options = {
+        "max_download_size": 4096, "download_timeout": 15, "send_file_allowed": False,
+        "enable_file_download": False, "workspace_dir": "custom-workspace",
+    }
+    if location == "legacy":
+        raw = {**credentials, **options}
+    elif location == "shared":
+        raw = {"apps": [credentials], **options}
+    else:
+        raw = {"apps": [{**credentials, **options}]}
+
+    settings, = dingtalk_channel_settings(raw, **BASES)
+    config = DingTalkConfig.model_validate(settings)
+    assert config.model_dump(include=set(options)) == options
+
+
+@pytest.mark.parametrize("override", [True, False])
+def test_app_file_settings_override_shared_values_and_unset_values_inherit(override):
+    shared = {
+        "max_download_size": 4096, "download_timeout": 15, "send_file_allowed": True,
+        "enable_file_download": True, "workspace_dir": "shared-workspace",
+    }
+    app_options = {
+        "max_download_size": 8192, "download_timeout": 30, "send_file_allowed": False,
+        "enable_file_download": False, "workspace_dir": "",
+    } if override else dict.fromkeys(shared)
+    raw = {**shared, "apps": [{"client_id": "app", "client_secret": "fake-secret", **app_options}]}
+
+    settings, = dingtalk_channel_settings(raw, **BASES)
+    config = DingTalkConfig.model_validate(settings)
+    assert config.model_dump(include=set(shared)) == (app_options if override else shared)
+
+
+def test_unset_file_settings_keep_channel_defaults():
+    raw = {"client_id": "app", "client_secret": "fake-secret"}
+    settings, = dingtalk_channel_settings(raw, **BASES)
+    config = DingTalkConfig.model_validate(settings)
+    assert config.max_download_size == 100 * 1024 * 1024
+    assert config.download_timeout == 60
+    assert config.send_file_allowed is True and config.enable_file_download is True
+    assert config.workspace_dir == ""
+
+
 @pytest.mark.parametrize("allow_from", ["staff-only", [123456], ["staff-a", None], {"staff-a": True}])
 def test_a_malformed_allowlist_never_admits_everyone(allow_from):
     raw = {"client_id": "app", "client_secret": "fake-secret", "allow_from": allow_from}
@@ -465,6 +511,59 @@ async def test_attachment_mode_keeps_the_file_in_the_group_chat(tmp_path):
     assert request.args[0] == "https://api.example.invalid/v1.0/robot/groupMessages/send"
     assert request.kwargs["json"]["msgKey"] == "sampleFile"
     assert '"fileType": "pptx"' in request.kwargs["json"]["msgParam"]
+
+
+@pytest.mark.parametrize("has_text", [False, True])
+@pytest.mark.parametrize("field,error_code", [
+    ("invalidStaffIdList", "DINGTALK_TARGET_INVALID"),
+    ("flowControlledStaffIdList", "DINGTALK_RATE_LIMITED"),
+    ("filteredStaffIdList", "DINGTALK_TARGET_FILTERED"),
+])
+@pytest.mark.asyncio
+async def test_attachment_rejected_targets_are_not_reported_as_delivered(field, error_code, has_text):
+    channel = _channel()
+    channel._http.post.return_value = httpx.Response(200, json={
+        "processQueryKey": "receipt-test", field: ["staff-test"],
+    })
+
+    result = await channel.send_persistent_result(
+        chat_id="staff-test", text="caption" if has_text else None, source_message_id=None,
+        idempotency_key="delivery-test", file_key="media-test", share_mode="attachment",
+    )
+
+    assert result == {"outcome": "failed", "error_code": error_code, "file_key": "media-test"}
+    assert channel._http.post.await_count == 1
+
+
+@pytest.mark.parametrize("retry_status", [200, 401])
+@pytest.mark.asyncio
+async def test_attachment_replaces_a_revoked_cached_token_once(retry_status):
+    channel = _channel()
+    channel._http.post.return_value = httpx.Response(401, json={})
+    arguments = {
+        "chat_id": "staff-test", "text": None, "source_message_id": None,
+        "idempotency_key": "delivery-test", "file_key": "media-test", "share_mode": "attachment",
+    }
+
+    result = await channel.send_persistent_result(**arguments)
+
+    assert result == {"outcome": "pending", "error_code": "DINGTALK_TOKEN_EXPIRED", "file_key": "media-test"}
+    assert channel._access_token is None
+    assert channel._http.post.await_count == 1
+    channel._http.post.side_effect = [
+        httpx.Response(200, json={"accessToken": "fake-new-token", "expireIn": 7200}),
+        httpx.Response(retry_status, json={"processQueryKey": "receipt-test"} if retry_status == 200 else {}),
+    ]
+
+    result = await channel.send_persistent_result(**arguments)
+
+    expected = {"outcome": "delivered", "external_message_id": "receipt-test"} if retry_status == 200 else {
+        "outcome": "failed", "error_code": "DINGTALK_REJECTED",
+    }
+    assert result == {**expected, "file_key": "media-test"}
+    assert channel._http.post.await_count == 3
+    request = channel._http.post.await_args
+    assert request.kwargs["headers"]["x-acs-dingtalk-access-token"] == "fake-new-token"
 
 
 @pytest.mark.asyncio

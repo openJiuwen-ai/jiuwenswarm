@@ -549,11 +549,20 @@ class AgentManager:
         self, namespace_id: str, agent_id: str, conversation: ConversationRef
     ) -> list[RequestView]:
         """Requests of the colleague's Session in this conversation, oldest first; empty before first contact."""
-        session = await asyncio.to_thread(self._sessions.find_session, namespace_id, agent_id, conversation)
-        if session is None:
-            return []
-        states = await asyncio.to_thread(self._sessions.session_requests, namespace_id, session.session_id)
-        return [await self._view(state, conversation.key) for state in states]
+        def read_states() -> list[RequestState]:
+            session = self._sessions.find_session(namespace_id, agent_id, conversation)
+            if session is None:
+                return []
+            return self._sessions.session_requests(namespace_id, session.session_id)
+
+        states = await asyncio.to_thread(read_states)
+        # Read scheduler state after request states, on the event loop, as in a single view.
+        running = frozenset(run.record.request_id for run in self._scheduler.running)
+
+        def read_views() -> list[RequestView]:
+            return [self._read_view(state, conversation.key, state.record.request_id in running) for state in states]
+
+        return await asyncio.to_thread(read_views)
 
     async def latest_conversation_message(
         self, namespace_id: str, agent_id: str, conversation: ConversationRef
@@ -610,13 +619,21 @@ class AgentManager:
         if resolver is not None and resolver(namespace_id, config_id) is not None:
             raise PersistentAgentError("owner approvals require the colleague configuration", code="FORBIDDEN")
 
-    async def sharing_list(self, namespace_id: str, config_id: str, *, access: AccessSnapshot) -> dict:
+    async def sharing_list(self, namespace_id: str, config_id: str, *, access: AccessSnapshot,
+                           mark_read: bool = False) -> dict:
+        read_started = self._clock()
         await asyncio.to_thread(self._require_sharing_owner, namespace_id, config_id, access)
         await asyncio.to_thread(self.sharing_repository.expire_pending, now=self._clock())
         data = await asyncio.to_thread(
             self.sharing_repository.list_for_owner, namespace_id, config_id, owner_principal=access.principal_ref,
         )
         await self.group_sharing.enrich_owner_view(data, namespace_id)
+        if mark_read:
+            from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
+            await asyncio.to_thread(
+                WebConversationStore(self.db_path).mark_read, namespace_id, config_id,
+                APPROVAL_CONVERSATION, through=read_started,
+            )
         return {**data, "conversation_id": APPROVAL_CONVERSATION}
 
     async def decide_sharing(
@@ -748,19 +765,16 @@ class AgentManager:
     async def _view(self, state: RequestState, conversation_key: str) -> RequestView:
         # The scheduler's running set changes on the event loop, so it is read here and not in the thread.
         running = any(run.record.request_id == state.record.request_id for run in self._scheduler.running)
-        replies, files, reason, draft = await asyncio.to_thread(self._result, state)
-        control = await asyncio.to_thread(self._control.control_of, state.record.namespace_id, state.record.request_id)
-        deliveries = await asyncio.to_thread(
-            self._sessions.result_deliveries, state.record.namespace_id, state.record.request_id
-        )
+        return await asyncio.to_thread(self._read_view, state, conversation_key, running)
+
+    def _read_view(self, state: RequestState, conversation_key: str, running: bool) -> RequestView:
+        replies, files, reason, draft = self._result(state)
+        control = self._control.control_of(state.record.namespace_id, state.record.request_id)
+        deliveries = self._sessions.result_deliveries(state.record.namespace_id, state.record.request_id)
         status_of = {delivery["output_id"]: delivery["status"] for delivery in deliveries}
         files = tuple({**item, "delivery_status": status_of.get(item["output_id"])} for item in files)
-        recovery = await asyncio.to_thread(
-            self._recovery.recovery_of, state.record.namespace_id, state.record.request_id
-        )
-        approval = await asyncio.to_thread(
-            self._permission_approvals.pending_for_request, state.record.namespace_id, state.record.request_id
-        )
+        recovery = self._recovery.recovery_of(state.record.namespace_id, state.record.request_id)
+        approval = self._permission_approvals.pending_for_request(state.record.namespace_id, state.record.request_id)
         return RequestView(
             state=state,
             running=running,
@@ -845,7 +859,7 @@ class AgentManager:
                     approval.namespace_id, approval.request_id,
                 ).record.request_input.kind == "direct_message"} if route.channel == "dingtalk" else {}),
                 "text": (
-                    "跨群分享正在等待 Agent 所有者在 WorkSwarm 私聊中批准。"
+                    "跨群分享需要所有者审批。请所有者打开 Web → 对应 AI 同事 → 跨群分享审批 处理；在群里回复“批准”不会生效。"
                     if business_sharing else
                     f"该员工需要确认一次工具操作（15 分钟内有效）：\n{calls}\n" + approval_instructions(approval)
                 ),
@@ -870,7 +884,7 @@ class AgentManager:
             needs_link = row["native_approval_id"] is None or call["tool_call_id"] not in row["tool_call_ids"]
             self.sharing_repository.bind_call(reference, approval.approval_id, call["tool_call_id"])
             if needs_link:
-                self.group_sharing.notify_owner(row["scope"])
+                self.group_sharing.notify_owner(row["scope"], row["approval_id"])
         return business
 
     async def _send_permission_notice(self, message: dict[str, object]) -> None:

@@ -13,9 +13,10 @@ test('conversation sidebar matches the 1-1 and 1-2 reference width', async () =>
   assert.match(largeScreenRules, /\.conversation-sidebar\s*\{\s*width:\s*320px;\s*min-width:\s*320px;/);
 });
 
-test('expanded artifact panel uses the 1-4 and 1-5 reference width', async () => {
+test('expanded tool panel fills the remaining workspace width', async () => {
   const source = await readSource('src/components/ToolPanel/index.tsx');
-  assert.match(source, /flex-\[0_0_368px\]/);
+  assert.match(source, /className="bg-panel h-full overflow-hidden flex flex-1 flex-col min-w-\[320px\]"/);
+  assert.doesNotMatch(source, /flex-\[0_0_368px\]|max-w-\[40vw\]|planningBoardActive/);
 });
 
 test('employee chat uses the conversation list as the first content column', async () => {

@@ -93,11 +93,11 @@ class GroupSharingService:
             "query": query.model_dump(mode="json"),
         }, current_group
 
-    def notify_owner(self, scope: dict[str, Any]) -> None:
+    def notify_owner(self, scope: dict[str, Any], notification_key: str | None = None) -> None:
         """Create a durable owner-only conversation without making a model request."""
-        WebConversationStore(self.repository.db_path).touch(
+        WebConversationStore(self.repository.db_path).notify(
             scope["namespace_id"], scope["config_id"], APPROVAL_CONVERSATION,
-            text="跨群分享审批", now=self._clock(),
+            text="跨群分享审批", now=self._clock(), notification_key=notification_key or scope["request_id"],
         )
 
     async def enrich_owner_view(self, data: dict, namespace_id: str = "local") -> None:
@@ -288,7 +288,7 @@ class GroupSharingService:
             approved_hits.extend(frozen.hits)
             approved_artifacts.extend(frozen.artifacts)
         if pending_rows:
-            await asyncio.to_thread(self.notify_owner, pending_rows[0]["scope"])
+            await asyncio.to_thread(self.notify_owner, pending_rows[0]["scope"], pending_rows[0]["approval_id"])
             raise core.GroupContentApprovalRequired(
                 "跨群内容分享需要所有者逐个批准来源群。",
                 approval_id=pending_rows[0]["approval_id"],

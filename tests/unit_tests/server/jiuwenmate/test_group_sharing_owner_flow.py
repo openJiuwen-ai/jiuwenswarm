@@ -362,3 +362,16 @@ async def test_restart_settles_decided_approval_of_an_already_failed_request(hos
     assert json.loads(await backend.get(key))["interruption"] is None
     assert not resumed
 
+
+
+async def test_opening_owner_sharing_inbox_marks_notification_read(host, monkeypatch):
+    agent_id, request, row, manager, resumed = await start_sharing(host, monkeypatch)
+    conversations = await host.conversations(agent_id)
+    assert next(item for item in conversations if item["conversation_id"] == "sharing-approvals")["unread"]
+    await host.call(ReqMethod.JIUWENMATE_SHARING_LIST, agent_id=agent_id)
+    assert next(item for item in await host.conversations(agent_id)
+                if item["conversation_id"] == "sharing-approvals")["unread"]
+    response = await host.call(ReqMethod.JIUWENMATE_SHARING_LIST, agent_id=agent_id, mark_read=True)
+    assert response.ok
+    assert not next(item for item in await host.conversations(agent_id)
+                    if item["conversation_id"] == "sharing-approvals")["unread"]

@@ -55,12 +55,38 @@ export const JIUWENMATE_METHODS = {
   channelList: 'jiuwenmate.channel.list',
   channelMessages: 'jiuwenmate.channel.messages',
   channelTrace: 'jiuwenmate.channel.trace',
+  welinkOfficeStatus: 'jiuwenmate.welink_office.status',
+  welinkOfficeConnect: 'jiuwenmate.welink_office.connect',
+  welinkOfficeDisconnect: 'jiuwenmate.welink_office.disconnect',
   agentMailStatus: 'jiuwenmate.agent_mail.status',
   agentMailAuthBegin: 'jiuwenmate.agent_mail.auth.begin',
   agentMailAuthPoll: 'jiuwenmate.agent_mail.auth.poll',
   agentMailAuthCancel: 'jiuwenmate.agent_mail.auth.cancel',
   agentMailDisconnect: 'jiuwenmate.agent_mail.disconnect',
+  dingtalkAuthStatus: 'jiuwenmate.dingtalk_auth.status',
+  dingtalkAuthBegin: 'jiuwenmate.dingtalk_auth.begin',
+  dingtalkAuthPoll: 'jiuwenmate.dingtalk_auth.poll',
+  dingtalkAuthCancel: 'jiuwenmate.dingtalk_auth.cancel',
+  dingtalkAuthDisconnect: 'jiuwenmate.dingtalk_auth.disconnect',
 } as const;
+
+export interface JiuwenMateDingTalkAuthStatus {
+  status: 'unavailable' | 'not_connected' | 'authorizing' | 'connected' | 'error';
+  cli_version: string | null;
+  error_code?: 'org_access_denied' | 'authorization_expired' | 'authorization_failed';
+  operation_id?: string;
+  auth_url?: string;
+  user_code?: string;
+  account?: string;
+  organization?: string;
+}
+
+export interface JiuwenMateWelinkOfficeStatus {
+  status: 'connected' | 'not_connected' | 'unavailable';
+  email?: string;
+  account?: string;
+  reason?: string;
+}
 
 export interface JiuwenMateAgentMailStatus {
   status: 'unavailable' | 'not_connected' | 'authorizing' | 'connected' | 'error';
@@ -139,6 +165,7 @@ export interface JiuwenMateConversation {
   updatedAt: string;
   lastMessage?: string;
   pinned?: boolean;
+  unread?: boolean;
 }
 
 /** A private message and what became of it; replies are only the outputs the colleague's final answer adopted. */
@@ -565,6 +592,7 @@ export function toConversation(value: unknown): JiuwenMateConversation {
     updatedAt: text(wire.updated_at),
     ...(lastMessage ? { lastMessage } : {}),
     ...(typeof wire.pinned === 'boolean' ? { pinned: wire.pinned } : {}),
+    ...(typeof wire.unread === 'boolean' ? { unread: wire.unread } : {}),
   };
 }
 
@@ -1031,7 +1059,7 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
             config_id: colleague.configId,
             client_id: credentials.appId,
             client_secret: credentials.appSecret,
-            robot_code: credentials.robotCode ?? '',
+            ...(credentials.robotCode !== undefined ? { robot_code: credentials.robotCode } : {}),
           }
         : { config_id: colleague.configId, app_id: credentials.appId, app_secret: credentials.appSecret });
     },
@@ -1113,6 +1141,15 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     async channelTrace(agentId: string, groupId: string): Promise<{ startedAt: string; rows: JiuwenMateTraceRow[] }> {
       return toChannelTrace(await request(JIUWENMATE_METHODS.channelTrace, { agent_id: agentId, group_id: groupId }));
     },
+    async welinkOfficeStatus(agentId: string): Promise<JiuwenMateWelinkOfficeStatus> {
+      return record(await request(JIUWENMATE_METHODS.welinkOfficeStatus, { agent_id: agentId })).welink_office as JiuwenMateWelinkOfficeStatus;
+    },
+    async connectWelinkOffice(agentId: string, email: string): Promise<JiuwenMateWelinkOfficeStatus> {
+      return record(await request(JIUWENMATE_METHODS.welinkOfficeConnect, { agent_id: agentId, email })).welink_office as JiuwenMateWelinkOfficeStatus;
+    },
+    async disconnectWelinkOffice(agentId: string): Promise<JiuwenMateWelinkOfficeStatus> {
+      return record(await request(JIUWENMATE_METHODS.welinkOfficeDisconnect, { agent_id: agentId })).welink_office as JiuwenMateWelinkOfficeStatus;
+    },
     async agentMailStatus(agentId: string): Promise<JiuwenMateAgentMailStatus> {
       return record(await request(JIUWENMATE_METHODS.agentMailStatus, { agent_id: agentId })).agent_mail as JiuwenMateAgentMailStatus;
     },
@@ -1127,6 +1164,21 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async disconnectAgentMail(agentId: string): Promise<JiuwenMateAgentMailStatus> {
       return record(await request(JIUWENMATE_METHODS.agentMailDisconnect, { agent_id: agentId })).agent_mail as JiuwenMateAgentMailStatus;
+    },
+    async dingtalkAuthStatus(agentId: string, connectionKey: string): Promise<JiuwenMateDingTalkAuthStatus> {
+      return record(await request(JIUWENMATE_METHODS.dingtalkAuthStatus, { agent_id: agentId, connection_key: connectionKey })).dingtalk_auth as JiuwenMateDingTalkAuthStatus;
+    },
+    async beginDingTalkAuth(agentId: string, connectionKey: string): Promise<JiuwenMateDingTalkAuthStatus> {
+      return record(await request(JIUWENMATE_METHODS.dingtalkAuthBegin, { agent_id: agentId, connection_key: connectionKey })).authorization as JiuwenMateDingTalkAuthStatus;
+    },
+    async pollDingTalkAuth(agentId: string, connectionKey: string, operationId: string): Promise<JiuwenMateDingTalkAuthStatus> {
+      return record(await request(JIUWENMATE_METHODS.dingtalkAuthPoll, { agent_id: agentId, connection_key: connectionKey, operation_id: operationId })).dingtalk_auth as JiuwenMateDingTalkAuthStatus;
+    },
+    async cancelDingTalkAuth(agentId: string, connectionKey: string, operationId: string): Promise<JiuwenMateDingTalkAuthStatus> {
+      return record(await request(JIUWENMATE_METHODS.dingtalkAuthCancel, { agent_id: agentId, connection_key: connectionKey, operation_id: operationId })).dingtalk_auth as JiuwenMateDingTalkAuthStatus;
+    },
+    async disconnectDingTalkAuth(agentId: string, connectionKey: string): Promise<JiuwenMateDingTalkAuthStatus> {
+      return record(await request(JIUWENMATE_METHODS.dingtalkAuthDisconnect, { agent_id: agentId, connection_key: connectionKey })).dingtalk_auth as JiuwenMateDingTalkAuthStatus;
     },
     /** Sends a private message; resending the same message id returns the request it already created. */
     async sendMessage(

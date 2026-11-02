@@ -38,7 +38,7 @@ GROUP_MEMBER_TEMPLATE = "swarm.group_member_template"
 GROUP_CLI_KINDS = ("claude", "codex")
 # Per-template fields that a kind-level launch config cannot carry.
 CLI_MEMBER_ONLY_FIELDS = frozenset({"skills", "skill_conflict"})
-# Hash length in team-runs file names; full 64-character hashes exceed Windows MAX_PATH.
+# Hash length in run file names; full 64-character hashes exceed Windows MAX_PATH.
 RUN_PATH_HASH_LENGTH = 12
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _results: dict[str, asyncio.Future] = {}
@@ -235,24 +235,36 @@ def cli_launch_config(config) -> dict:
     return config.model_dump(mode="json", exclude=set(CLI_MEMBER_ONLY_FIELDS))
 
 
-def run_ticket_path(runs_dir: Path, key: str) -> Path:
-    """Return the run ticket for ``key``, keeping a legacy full-hash ticket in place."""
-    legacy = runs_dir / f"{key}.json"
-    if legacy.is_file():
-        return legacy
+def group_runs_dir(team_name: str) -> Path:
+    """Private-run state of one group, under its outer team's home.
+
+    The group history directory alone is about 206 characters on a Windows
+    home, so run state kept below it left little room under the
+    247-character directory limit. Here a private workspace is about 99.
+    """
+    from openjiuwen.agent_teams.paths import team_home
+
+    return team_home(team_name) / "runs"
+
+
+def run_ticket_path(runs_dir: Path, legacy_dir: Path, key: str) -> Path:
+    """Return the run ticket for ``key``, keeping a ticket of an older layout in place."""
+    for path in (legacy_dir / f"{key}.json", legacy_dir / f"{key[:RUN_PATH_HASH_LENGTH]}.json"):
+        if path.is_file():
+            return path
     return runs_dir / f"{key[:RUN_PATH_HASH_LENGTH]}.json"
 
 
-def run_workspace_path(runs_dir: Path, team_key: str) -> Path:
-    """Return a private team's workspace, keeping a legacy full-hash directory in place.
+def run_workspace_path(runs_dir: Path, legacy_dir: Path, team_key: str) -> Path:
+    """Return a private team's workspace, keeping a directory of an older layout in place.
 
     A recovered private team keeps the workspace root saved in its first spec,
     so an existing directory must not move.
     """
-    legacy = runs_dir / team_key
-    if legacy.is_dir():
-        return legacy / "workspace"
-    return runs_dir / team_key[:RUN_PATH_HASH_LENGTH] / "workspace"
+    for path in (legacy_dir / team_key, legacy_dir / team_key[:RUN_PATH_HASH_LENGTH]):
+        if path.is_dir():
+            return path / "workspace"
+    return runs_dir / team_key[:RUN_PATH_HASH_LENGTH]
 
 
 def track_leader_reply(chunk, reply: list[str]) -> None:
@@ -762,7 +774,9 @@ class RunTeam(_GroupTool):
         from jiuwenswarm.agents.swarm.assembly import enrich_team_spec_for_swarm
 
         conversation = await self.backend.group_conversation()
-        state_path = run_ticket_path(conversation.history_path.parent / "team-runs", key)
+        runs_dir = group_runs_dir(self.backend.team_name)
+        legacy_runs = conversation.history_path.parent / "team-runs"
+        state_path = run_ticket_path(runs_dir, legacy_runs, key)
         state = (
             json.loads(state_path.read_text(encoding="utf-8"))
             if state_path.exists()
@@ -784,7 +798,7 @@ class RunTeam(_GroupTool):
             if child.workspace is not None:
                 child.workspace = child.workspace.model_copy(
                     update={
-                        "root_path": str(run_workspace_path(state_path.parent, team_key)),
+                        "root_path": str(run_workspace_path(runs_dir, legacy_runs, team_key)),
                     }
                 )
             # Build fresh host context for the private team, not the proxy's workspace.

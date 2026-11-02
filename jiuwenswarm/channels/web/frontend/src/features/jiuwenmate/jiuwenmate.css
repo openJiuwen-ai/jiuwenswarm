@@ -1588,8 +1588,9 @@
   grid-column: 1;
   grid-row: 1;
   display: flex;
-  width: 100%;
-  min-width: 0;
+  width: 368px;
+  flex: 0 1 auto;
+  min-width: 240px;
   min-height: 0;
   flex-direction: column;
   gap: 12px;
@@ -1865,6 +1866,7 @@
   grid-row: 1;
   position: relative;
   display: flex;
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
@@ -1915,7 +1917,9 @@
   grid-column: 3;
   grid-row: 1;
   display: flex;
-  min-width: 0;
+  width: 400px;
+  flex: 0 1 auto;
+  min-width: 280px;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
@@ -2253,21 +2257,23 @@
 }
 
 .jiuwenmate-composer {
-  display: grid;
-  gap: 10px;
-  padding: 12px 14px 10px;
+  padding: 14px 12px 12px 16px;
   border: 1px solid var(--jm-border-strong);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 4%);
+  border-radius: 20px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-chat-composer-shadow);
+  font-size: 14px;
 }
 
 .jiuwenmate-composer textarea {
-  min-height: 48px;
+  width: 100%;
+  min-height: 56px;
+  max-height: 180px;
   border: 0;
   outline: 0;
   background: transparent;
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.7;
   resize: none;
 }
 
@@ -2284,6 +2290,8 @@
 }
 
 .jiuwenmate-composer__toolbar {
+  min-height: 34px;
+  margin-top: 8px;
   justify-content: space-between;
 }
 
@@ -2594,7 +2602,7 @@
 .jiuwenmate-session-view footer {
   display: grid;
   flex-shrink: 0;
-  width: min(720px, 100%);
+  width: min(816px, calc(100% - 64px));
   gap: 6px;
   margin: 0 auto;
   padding-bottom: 12px;
@@ -4647,10 +4655,9 @@
 }
 
 .jiuwenmate-profile__im-platform-connection {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
   gap: 8px;
   min-width: 0;
   padding-top: 8px;
@@ -4732,6 +4739,24 @@
   background: var(--jm-surface);
 }
 
+.jiuwenmate-profile__dingtalk-auth-card {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  max-width: 100%;
+  padding: 14px 16px;
+}
+
+.jiuwenmate-profile__dingtalk-auth-identity {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.jiuwenmate-profile__dingtalk-auth-identity .jiuwenmate-profile__mail-note {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .jiuwenmate-profile__mail-icon {
   display: grid;
   width: 44px;
@@ -4747,6 +4772,13 @@
   justify-items: start;
   gap: 12px;
   min-width: 0;
+}
+
+.jiuwenmate-profile__mail-form {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  width: 100%;
 }
 
 .jiuwenmate-profile__mail-content h3,
@@ -5953,10 +5985,18 @@
     display: none;
   }
 
+  .jiuwenmate-workspace .resize-divider { display: none; }
+
+  .jiuwenmate-workspace:not(.jiuwenmate-workspace--collapsed) .jiuwenmate-records {
+    width: 100% !important;
+    flex: 1 1 auto;
+  }
+
   .jiuwenmate-workspace--panel-open .jiuwenmate-side-panel {
     position: absolute;
     z-index: 5;
     inset: 0;
+    width: 100% !important;
     grid-column: 1;
   }
 

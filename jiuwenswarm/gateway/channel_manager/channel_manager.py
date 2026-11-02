@@ -142,7 +142,7 @@ class ChannelManager(ABC):
         Gateway resolves and verifies that file without receiving an absolute path.
         """
         channel_id = payload.get("channel", "feishu")
-        if channel_id not in {"feishu", "dingtalk"}:
+        if channel_id not in {"feishu", "dingtalk", "welink"}:
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_CHANNEL"}
         app_id = payload.get("app_id")
         chat_id = payload.get("chat_id")
@@ -355,6 +355,14 @@ class ChannelManager(ABC):
         if len(matches) != 1:
             return {"outcome": "failed", "error_code": "WELINK_ACCOUNT_AMBIGUOUS"}
         try:
+            if _payload.get("is_direct_message") is True and not reconcile:
+                source_message_id = _payload.get("source_message_id")
+                return await matches[0].send_direct_text(
+                    chat_id=chat_id,
+                    text=text,
+                    idempotency_key=idempotency_key,
+                    source_message_id=source_message_id if isinstance(source_message_id, str) else "",
+                )
             if reconcile:
                 return await matches[0].reconcile_group_text(chat_id=chat_id, idempotency_key=idempotency_key)
             source_message_id = _payload.get("source_message_id")
