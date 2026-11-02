@@ -17,6 +17,7 @@ from openjiuwen.core.sys_operation import SysOperation
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.schema.config import SubAgentConfig
 
+from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import DisabledToolsRail
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.agent_adapter.deep.progressive_tools import (
     build_progressive_tool_rail_from_config,
@@ -84,6 +85,9 @@ def _agent_def_to_subagent_config(
         )
         if progressive_rail is not None:
             custom_rails = [progressive_rail]
+
+    if "ttse_consult" in (agent_def.disallowed_tools or []):
+        custom_rails = [*(custom_rails or []), DisabledToolsRail(["ttse_consult"])]
 
     return SubAgentConfig(
         agent_card=card,

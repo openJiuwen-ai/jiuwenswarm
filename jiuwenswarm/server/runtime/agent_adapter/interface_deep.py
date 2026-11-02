@@ -5090,6 +5090,52 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+    def _subagent_ttse_consult_dependencies(self) -> Any | None:
+        """子 Agent 查询父 TTSE 内部状态的唯一入口；始终读取当前实例。"""
+        from jiuwenswarm.agents.harness.common.rails.subagent_ttse_consult_rail import (
+            TTSEConsultDependencies,
+        )
+
+        if self._is_code_agent:
+            return None
+        rail = self._ttse_rail
+        config = self._resolved_ttse_config()
+        if rail is None or not get_ttse_enabled({"ttse": config}):
+            return None
+        if not coerce_config_bool(config.get("inject_enabled"), True):
+            return None
+        disabled = resolve_string_or_list_config(self._config_cache.get("disabled_tools"))
+        live_disabled = getattr(self._disabled_tools_rail, "_disabled_tools", ())
+        if "ttse_consult" in disabled or "ttse_consult" in live_disabled:
+            return None
+        store = getattr(rail, "_ttse_store", None)
+        rail_config = getattr(rail, "_ttse_config", None)
+        if store is None or rail_config is None or not rail_config.inject_enabled:
+            return None
+        return TTSEConsultDependencies(
+            store=store,
+            max_chars=int(getattr(rail_config, "consult_max_chars", 8000) or 8000),
+            max_rules=int(getattr(rail_config, "consult_max_rules", 40) or 40),
+            default_top_k=int(getattr(rail_config, "consult_top_k", 8) or 8),
+            rrf_k=int(getattr(rail_config, "consult_rrf_k", 60) or 60),
+            retrieve_mode=str(getattr(rail_config, "consult_retrieve_mode", "hybrid")),
+        )
+
+    def _bind_subagent_ttse_wiring(self) -> None:
+        """为非 Code 实例装配查询入口，能力由父级 TTSE 状态和开关决定。"""
+        if self._instance is None or self._is_code_agent:
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.tools.subagent_executor.ttse import (
+                install_subagent_ttse_wiring,
+            )
+
+            install_subagent_ttse_wiring(
+                self._instance, self._subagent_ttse_consult_dependencies,
+            )
+        except Exception:
+            logger.warning("[subagent.ttse] wiring installation failed", exc_info=True)
+
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
@@ -9124,6 +9170,7 @@ class JiuWenSwarmDeepAdapter:
                 )
                 self._bind_subagent_model_resolver()
                 self._bind_subagent_authorization_wiring()
+                self._bind_subagent_ttse_wiring()
 
                 _apply_llm_io_trace_patch()
 
@@ -11102,6 +11149,10 @@ class JiuWenSwarmDeepAdapter:
             react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
             skill_turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
             enabled = skill_turbo_config.get("enabled", False) if isinstance(skill_turbo_config, dict) else False
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] skill_turbo enabled=%s (config.react.skill_turbo.enabled)",
+                enabled,
+            )
             if not enabled:
                 logger.info("[JiuWenSwarmDeepAdapter] SkillTurbo disabled, skipping tool registration")
                 return
@@ -11137,6 +11188,11 @@ class JiuWenSwarmDeepAdapter:
             react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
             skill_turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
             enabled = skill_turbo_config.get("enabled", False) if isinstance(skill_turbo_config, dict) else False
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] skill_turbo enabled=%s "
+                "(config.react.skill_turbo.enabled, SkillTurboPromptRail)",
+                enabled,
+            )
             if not enabled:
                 return None
 
@@ -11176,6 +11232,11 @@ class JiuWenSwarmDeepAdapter:
             react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
             skill_turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
             enabled = skill_turbo_config.get("enabled", False) if isinstance(skill_turbo_config, dict) else False
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] skill_turbo enabled=%s "
+                "(config.react.skill_turbo.enabled, SkillTurboDeliverySummaryRail)",
+                enabled,
+            )
             if not enabled:
                 return None
 
