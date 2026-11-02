@@ -2935,6 +2935,12 @@ function AppContent({
           chatStore.enqueuePendingQuestion(sessionId, item.payload);
         }
       },
+      onAnsweredQuestionReplay: (items) => {
+        // 运行中的会话可能先从 runtime 快照收到已答问题，历史到达后再清理。
+        const chatStore = useChatStore.getState();
+        chatStore.ensureRuntime(sessionId);
+        chatStore.markQuestionsAnswered(sessionId, items.map((item) => item.payload.request_id));
+      },
       onError: (message) => {
         console.warn('[history.restore]', message);
       },

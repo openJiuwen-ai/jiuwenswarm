@@ -2902,6 +2902,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...evolutionMetaPayload,
           });
         }
+        if (effectiveSource === 'ask_user_interrupt') {
+          // 后端快照可能仍带着这道题，恢复执行时会重新派发；登记后不再入队。
+          useChatStore.getState().markQuestionsAnswered(sessionId, [requestId]);
+        }
         if (pendingMatches && pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
         }

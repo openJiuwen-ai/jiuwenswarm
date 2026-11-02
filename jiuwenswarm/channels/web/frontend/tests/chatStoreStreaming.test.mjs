@@ -275,3 +275,32 @@ test('reviewer-only progress preserves the running tool lifecycle', () => {
     useChatStore.getState().removeRuntime(sessionId);
   }
 });
+
+test('answered ask_user questions are dropped and never re-enqueued from runtime replay', () => {
+  const sessionId = 'answered-ask-user-replay';
+  const store = useChatStore.getState();
+  store.ensureRuntime(sessionId);
+  const question = (requestId) => ({
+    request_id: requestId,
+    source: 'ask_user_interrupt',
+    questions: [{ header: '调研对象', question: '指什么？', options: [{ label: 'A' }] }],
+  });
+
+  try {
+    store.enqueuePendingQuestion(sessionId, question('call-stale'));
+    store.enqueuePendingQuestion(sessionId, question('call-live'));
+    store.markQuestionsAnswered(sessionId, ['call-stale']);
+    assert.deepEqual(
+      useChatStore.getState().getRuntime(sessionId).pendingQuestions.map((item) => item.request_id),
+      ['call-live'],
+    );
+
+    store.enqueuePendingQuestion(sessionId, question('call-stale'));
+    assert.deepEqual(
+      useChatStore.getState().getRuntime(sessionId).pendingQuestions.map((item) => item.request_id),
+      ['call-live'],
+    );
+  } finally {
+    store.removeRuntime(sessionId);
+  }
+});
