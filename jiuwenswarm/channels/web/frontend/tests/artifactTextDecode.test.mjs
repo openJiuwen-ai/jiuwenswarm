@@ -5,9 +5,18 @@ import { decodeTextBytes } from '../node_modules/.cache/artifact-text-decode/fil
 
 const bytes = (...values) => Uint8Array.from(values);
 
-// GBK encodings of "中文" / "交易策略报告"
+// GBK encodings of "中文" / "交易策略报告".
+// Both are deliberately invalid UTF-8, which is what makes the fallback
+// reachable: 0xd0 / 0xc4 are 11xxxxxx and never valid trail bytes, and 0xbd is
+// a stray continuation byte. The guard test below pins this property.
 const GBK_ZHONGWEN = bytes(0xd6, 0xd0, 0xce, 0xc4);
 const GBK_TRADING = bytes(0xbd, 0xbb, 0xd2, 0xd7, 0xb2, 0xdf, 0xc2, 0xd4, 0xb1, 0xa8, 0xb8, 0xe6);
+
+test('gbk fixtures are rejected by the strict utf-8 decoder', () => {
+  const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
+  assert.throws(() => strictUtf8.decode(GBK_ZHONGWEN), TypeError);
+  assert.throws(() => strictUtf8.decode(GBK_TRADING), TypeError);
+});
 
 test('ascii passes through unchanged', () => {
   assert.equal(decodeTextBytes(Buffer.from('# EUR/CNY report\n', 'utf8')), '# EUR/CNY report\n');
@@ -57,4 +66,46 @@ test('empty payload decodes to an empty string', () => {
 test('binary-ish payload never throws', () => {
   const raw = bytes(0xff, 0x00, 0x81, 0x3a, 0xfe, 0x7f);
   assert.equal(typeof decodeTextBytes(raw), 'string');
+});
+
+test('module evaluation never requires a supported TextDecoder', async () => {
+  const RealTextDecoder = globalThis.TextDecoder;
+  // Every label rejected: a module-scope `new TextDecoder('gbk')` would throw
+  // here and take docx/pdf/image previews down with it.
+  globalThis.TextDecoder = class {
+    constructor(label) {
+      throw new RangeError(`unsupported encoding label: ${label}`);
+    }
+  };
+  try {
+    const isolated = await import(
+      `../node_modules/.cache/artifact-text-decode/filePreviewModel.mjs?no-decoder=${Date.now()}`
+    );
+    assert.equal(typeof isolated.decodeTextBytes, 'function');
+    assert.equal(isolated.decodeTextBytes(new Uint8Array()), '');
+  } finally {
+    globalThis.TextDecoder = RealTextDecoder;
+  }
+});
+
+test('a runtime without gbk support degrades instead of failing', async () => {
+  const RealTextDecoder = globalThis.TextDecoder;
+  class GbklessTextDecoder extends RealTextDecoder {
+    constructor(label, options) {
+      if (String(label).toLowerCase() === 'gbk') throw new RangeError(`unsupported encoding label: ${label}`);
+      super(label, options);
+    }
+  }
+  globalThis.TextDecoder = GbklessTextDecoder;
+  try {
+    const isolated = await import(
+      `../node_modules/.cache/artifact-text-decode/filePreviewModel.mjs?no-gbk=${Date.now()}`
+    );
+    assert.equal(isolated.decodeTextBytes(Buffer.from('plain ascii', 'utf8')), 'plain ascii');
+    const degraded = isolated.decodeTextBytes(GBK_ZHONGWEN);
+    assert.equal(typeof degraded, 'string');
+    assert.ok(degraded.includes('�'), degraded);
+  } finally {
+    globalThis.TextDecoder = RealTextDecoder;
+  }
 });
