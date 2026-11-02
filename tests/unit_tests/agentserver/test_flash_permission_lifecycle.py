@@ -41,6 +41,16 @@ def writing_tool(path, writes):
     )
 
 
+def _tool_result_text(result) -> str:
+    """Flatten tool execute payloads without list/tuple repr backslash doubling."""
+    if isinstance(result, (list, tuple)):
+        return "\n".join(_tool_result_text(item) for item in result)
+    content = getattr(result, "content", None)
+    if content is not None:
+        return str(content)
+    return str(result)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "permission,approved,expected",
@@ -479,8 +489,13 @@ async def test_concurrent_workspaces_deny_foreign_target_and_keep_next_turn(
             ma.execute(ctxa, ca.inputs.tool_call, ca.session),
             mb.execute(ctxb, cb.inputs.tool_call, cb.session),
         )
-        assert str(a) in str(results[0]) and str(b) not in str(results[0])
-        assert str(b) in str(results[1]) and str(a) not in str(results[1])
+        # Prefer write side-effects: str(path) in str(list/tuple) is false on
+        # Windows because list/tuple __str__ uses repr() and doubles backslashes.
+        assert writes_a == [str(a)] and writes_b == [str(b)]
+        assert str(a) in _tool_result_text(results[0])
+        assert str(b) not in _tool_result_text(results[0])
+        assert str(b) in _tool_result_text(results[1])
+        assert str(a) not in _tool_result_text(results[1])
         forged = ca.inputs.tool_call.model_copy(update={"id": "b-forged"})
         denied = await mb.execute(ctxb, forged, cb.session)
         assert "PERMISSION_DENIED" in str(denied)
