@@ -396,6 +396,33 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.permission_rails import (
     _sync_permission_workspace as _sync_permission_workspace_impl,
     _update_permission_rail as _update_permission_rail_impl,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.hitl_stream import (
+    _commit_hitl_pause_before_card as _commit_hitl_pause_before_card_impl,
+    _consume_hitl_live_card_for_answer as _consume_hitl_live_card_for_answer_impl,
+    _dedupe_ask_user_card as _dedupe_ask_user_card_impl,
+    _invalidate_all_hitl_card_instances as _invalidate_all_hitl_card_instances_impl,
+    _is_stale_hitl_card_answer as _is_stale_hitl_card_answer_impl,
+    _mark_interrupt_idle_inmemory as _mark_interrupt_idle_inmemory_impl,
+    _mark_interrupt_paused_inmemory as _mark_interrupt_paused_inmemory_impl,
+    _mark_interrupt_resumed_inmemory as _mark_interrupt_resumed_inmemory_impl,
+    _mark_round_end_inmemory as _mark_round_end_inmemory_impl,
+    _register_hitl_card_instance as _register_hitl_card_instance_impl,
+    guard_stale_interrupt_response as guard_stale_interrupt_response_impl,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.sandbox_runtime import (
+    _apply_local_sysop_to_all_rails as _apply_local_sysop_to_all_rails_impl,
+    _create_local_sys_operation as _create_local_sys_operation_impl,
+    _create_sandbox_sys_operation as _create_sandbox_sys_operation_impl,
+    _create_sys_operation as _create_sys_operation_impl,
+    _init_workspace_on_host as _init_workspace_on_host_impl,
+    _iter_adapter_rails as _iter_adapter_rails_impl,
+    _rebind_late_read_rails_to_local as _rebind_late_read_rails_to_local_impl,
+    _release_sys_operations as _release_sys_operations_impl,
+    _resolve_project_dir_for_sandbox as _resolve_project_dir_for_sandbox_impl,
+    _resolve_sys_operation as _resolve_sys_operation_impl,
+    _retain_sys_operation as _retain_sys_operation_impl,
+    apply_sandbox_runtime_patch as apply_sandbox_runtime_patch_impl,
+)
 
 if TYPE_CHECKING:
     from openjiuwen.harness.schema.config import SubAgentConfig
@@ -5971,822 +5998,47 @@ class JiuWenSwarmDeepAdapter:
         runtime: dict[str, Any] | None = None,
         project_dir: str | None = None,
     ) -> SysOperationCard | None:
-        """Create a sandbox SysOperationCard.
-
-        Delegates the actual construction to ``sysop_builder.py`` so that both
-        ``interface_deep.py`` and ``interface_code.py`` share one implementation.
-
-        历史上这是 ``@staticmethod``——但 sysop_builder 现在需要知道适配器形态
-        (``is_code_agent`` 决定是否把 ``project_dir`` 挂为 rw bind), 这个信号是
-        instance state (``self._is_code_agent``, 基类默认 False, ``JiuwenSwarm
-        CodeAdapter`` 子类 override 成 True), staticmethod 拿不到。 因此必须降
-        成 instance method 才能透传; 调用方相应把 ``JiuWenSwarmDeepAdapter
-        ._create_sandbox_sys_operation(...)`` 改成 ``self._create_sandbox_
-        sys_operation(...)``, 走类 MRO 让 Code 子类覆写时也能命中。
-
-        Args:
-            sandbox_url: jiuwenbox HTTP base url.
-            sandbox_type: provider 名 (jiuwenbox).
-            runtime: ``sandbox`` 字段字典 (含 enabled / files / excluded_commands
-                / idle_ttl_seconds / idle_check_interval), 来自
-                ``get_sandbox_runtime``.
-            project_dir: 用户项目目录 (一般是 ``trusted_dirs[0]``); 仅在
-                ``self._is_code_agent=True`` 时被 :func:`build_filesystem_policy`
-                消费作为 rw bind mount, 否则 (deep adapter 等通用形态) 完全
-                忽略——sysop_builder 不会有 cwd / env 之类的 fallback 接管。
-        """
-        runtime = runtime or {}
-        shared_dir: str | None = None
-        if is_enterprise() and self._workspace_dir:
-            # 企业多租户：挂载当前 workspace 根，修复下载路径权限
-            shared_dir = str(Path(self._workspace_dir).resolve().parent.parent)
-        card = create_sandbox_sysop_card(
-            sandbox_url,
-            sandbox_type,
-            files_runtime=runtime.get("files"),
-            excluded_commands=runtime.get("excluded_commands"),
-            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
-            idle_check_interval=runtime.get("idle_check_interval"),
-            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
-            project_dir=project_dir,
-            is_code_agent=self._is_code_agent,
-            startup_mode=get_sandbox_startup_mode(),
-            shared_dir=shared_dir,
-        )
-        return card
+        return _create_sandbox_sys_operation_impl(self, sandbox_url, sandbox_type, runtime=runtime, project_dir=project_dir)
 
     def _resolve_project_dir_for_sandbox(self) -> str | None:
-        """Best-effort lookup of the user project directory for sandbox builds.
-
-        Prefers ``self._project_dir``,
-        then falls back to ``self._instance_overrides["project_dir"]`` which
-        :meth:`AgentManager.get_agent` populates from ``trusted_dirs[0]``.
-        Returning ``None`` lets :func:`build_filesystem_policy` use its own
-        fallback chain, but the agent-server cwd usually isn't what we want
-        so callers should treat ``None`` as "policy will mount cwd, which
-        may shadow secrets" and at minimum log it.
-        """
-        direct = getattr(self, "_project_dir", None)
-        if direct:
-            return str(direct)
-        overrides = getattr(self, "_instance_overrides", None)
-        if isinstance(overrides, dict):
-            value = overrides.get("project_dir")
-            if value:
-                return str(value)
-        return None
+        return _resolve_project_dir_for_sandbox_impl(self)
 
 
 
     def _create_sys_operation(self) -> SysOperation | None:
-        """Resolve this adapter's sys operation and take a reference on it.
-
-        Wraps :meth:`_resolve_sys_operation` with the bookkeeping that keeps
-        ``Runner.resource_mgr`` from growing without bound: the resolved id is
-        retained here and released in :meth:`cleanup`. The new reference is taken
-        *before* the previous one is dropped, so rebuilding the agent (a skill or
-        plugin install re-runs ``create_instance``) onto the same sandbox id never
-        lets the refcount hit zero and unregister a resource still in use.
-
-        Returns:
-            The resolved SysOperation, or None when registration failed.
-        """
-        previously_retained = list(self._retained_sys_operation_ids)
-        # 读盘用的本地 sysop 与 agent 沙箱 sysop 可能是两份：重建 agent 时不能
-        # 把仍在用的 local 一并 release，否则 rail 会拿着已注销引用。
-        local_keep_id: str | None = None
-        if self._local_sys_operation is not None:
-            local_keep_id = str(self._local_sys_operation.id)
-
-        sys_operation = self._resolve_sys_operation()
-        if sys_operation is not None:
-            self._retain_sys_operation(str(sys_operation.id))
-            try:
-                from jiuwenswarm.server.runtime.workspace.fs_quota_guard import (
-                    install_write_quota_guard,
-                )
-
-                install_write_quota_guard(sys_operation)
-            except Exception:  # noqa: BLE001
-                logger.debug(
-                    "[JiuWenSwarmDeepAdapter] install write quota guard failed",
-                    exc_info=True,
-                )
-
-        to_release = [sid for sid in previously_retained if sid != local_keep_id]
-        # agent 与 local 共用同一张卡时：新 retain 已加上，只丢掉上一轮那一票。
-        same_card_as_local = (
-            sys_operation is not None
-            and local_keep_id is not None
-            and str(sys_operation.id) == local_keep_id
-        )
-        prior_local_retain = (
-            local_keep_id is not None
-            and previously_retained.count(local_keep_id) >= 1
-        )
-        if same_card_as_local and prior_local_retain:
-            to_release.append(local_keep_id)
-        self._release_sys_operations(to_release)
-        return sys_operation
+        return _create_sys_operation_impl(self)
 
     def _retain_sys_operation(self, sys_operation_id: str) -> None:
-        """Record one adapter-held reference on a registered sys operation.
-
-        Args:
-            sys_operation_id: Id of the sys operation this adapter now depends on.
-        """
-        self._retained_sys_operation_ids.append(sys_operation_id)
-        with _SYS_OPERATION_REFCOUNT_LOCK:
-            _SYS_OPERATION_REFCOUNTS[sys_operation_id] = (
-                _SYS_OPERATION_REFCOUNTS.get(sys_operation_id, 0) + 1
-            )
+        return _retain_sys_operation_impl(self, sys_operation_id)
 
     def _release_sys_operations(self, sys_operation_ids: list[str] | None = None) -> None:
-        """Drop adapter-held references and unregister the ones left unused.
-
-        Removing a sys operation also removes the ~16 fs/shell/code tools derived
-        from it (``ResourceMgr.remove_sys_operation``), which is exactly the state
-        that used to survive every evicted session adapter. Failures are logged
-        and swallowed: this runs on the cleanup path and must not stop it.
-
-        Args:
-            sys_operation_ids: Subset of this adapter's retained ids to release.
-                Defaults to every id it still holds, which is what ``cleanup``
-                wants.
-        """
-        if sys_operation_ids is None:
-            ids_to_release = list(self._retained_sys_operation_ids)
-        else:
-            ids_to_release = list(sys_operation_ids)
-        if not ids_to_release:
-            return
-
-        unused_ids: list[str] = []
-        unheld_ids: list[str] = []
-        with _SYS_OPERATION_REFCOUNT_LOCK:
-            for sys_operation_id in ids_to_release:
-                if sys_operation_id in self._retained_sys_operation_ids:
-                    self._retained_sys_operation_ids.remove(sys_operation_id)
-                held = _SYS_OPERATION_REFCOUNTS.get(sys_operation_id, 0)
-                if held <= 0:
-                    # Releasing a reference this adapter never took. Removing the
-                    # resource here could pull it out from under a live holder,
-                    # so leave it registered and surface the bookkeeping bug.
-                    unheld_ids.append(sys_operation_id)
-                    continue
-                remaining = held - 1
-                if remaining > 0:
-                    _SYS_OPERATION_REFCOUNTS[sys_operation_id] = remaining
-                    continue
-                _SYS_OPERATION_REFCOUNTS.pop(sys_operation_id, None)
-                unused_ids.append(sys_operation_id)
-
-        for sys_operation_id in unheld_ids:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] sys_operation release skipped, no reference held: %s",
-                sys_operation_id,
-            )
-
-        for sys_operation_id in unused_ids:
-            try:
-                # Quiet idempotence: only remove what is still registered, so a
-                # second cleanup (or one after Runner.stop cleared everything) is
-                # a no-op rather than an error.
-                if Runner.resource_mgr.get_sys_operation(sys_operation_id) is None:
-                    continue
-                Runner.resource_mgr.remove_sys_operation(sys_operation_id)
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] sys_operation released: %s",
-                    sys_operation_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] sys_operation release failed: id=%s error=%s",
-                    sys_operation_id,
-                    exc,
-                )
-
-        # 本地读盘 sysop 若已不在本 adapter retain 列表里，清掉缓存，避免下次
-        # 误以为还能复用已注销实例。
-        local = self._local_sys_operation
-        if local is not None:
-            local_id = str(getattr(local, "id", "") or "")
-            if not local_id or local_id not in self._retained_sys_operation_ids:
-                self._local_sys_operation = None
+        return _release_sys_operations_impl(self, sys_operation_ids)
 
     def _resolve_sys_operation(self) -> SysOperation | None:
-        """Create a sys operation.
-
-        是否走沙箱由 ``config.yaml::sandbox.enabled`` 决定（同时要求
-        ``sandbox.url`` / ``sandbox.type`` 已配置）。其他 sandbox 字段
-        (``excluded_commands`` / ``files`` / ``idle_ttl_seconds`` /
-        ``idle_check_interval``) 透传给 ``create_sandbox_sysop_card``,
-        分别写入 ``launcher_config.extra_params`` 与 ``launcher_config`` 上
-        的同名字段。
-
-        注意: 每次都从 ``get_sandbox_endpoint()`` 读最新 sandbox.url/type, 因为
-        ``/sandbox enable`` 会动态写入这两个字段; yuanrong 也会填默认占位 url。
-
-        副作用: 在 ``self._sys_operation_card`` 保存生成或复用的 SysOperationCard，
-        供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。
-        """
-        try:
-            endpoint = get_sandbox_endpoint()
-            sandbox_type = endpoint.get("type") or None
-            # box-server 端口运行时分配且可变, 优先取 runner 本轮存活的 endpoint,
-            # 避免陈旧 url 钉进 isolation key 与 card base_url; 端口进 key 后,
-            # 端口变 → 新 key → 新 card, 不被 registry 去重复用旧端口。
-            # 仅 jiuwenbox 覆盖: get_owned_endpoint 与 sandbox.type 无关, 对其它
-            # type 会误用 jiuwenbox 端点污染其 isolation key。runner 未 spawn
-            # (冷启动窗口) / 进程死亡 / 非本 runner 拥有时返回 None, 回落 config。
-            sandbox_url = endpoint.get("url") or None
-            if sandbox_type == "jiuwenbox":
-                try:
-                    owned = JiuwenBoxRunner.instance().get_owned_endpoint()
-                    if owned is not None:
-                        sandbox_url = f"http://{owned[0]}:{owned[1]}"
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[sandbox_lifecycle] resolve live sandbox endpoint from runner "
-                        "failed, fall back to config/holder url: %s", exc,
-                    )
-            runtime = get_sandbox_runtime()
-            sysop_card: SysOperationCard | None
-            if runtime.get("enabled") and sandbox_url and sandbox_type:
-                # 走 ``self.`` 而不是 ``JiuWenSwarmDeepAdapter.``——_create_sandbox_
-                # sys_operation 已从 staticmethod 改成 instance method (要透传
-                # ``self._is_code_agent``), 用类名直接调会绕过 MRO 把 Code 子类
-                # 的 override (如果将来需要的话) 静默吃掉, 且 staticmethod 时代
-                # 的 caller 风格不再适用。
-                sysop_card = self._create_sandbox_sys_operation(
-                    sandbox_url,
-                    sandbox_type,
-                    runtime=runtime,
-                    project_dir=self._resolve_project_dir_for_sandbox(),
-                )
-            else:
-                sysop_card = create_local_sysop_card()
-            if sysop_card is None:
-                logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: sysop_card is None")
-                return None
-            self._sys_operation_card = sysop_card
-            isolation_key_template = _sys_operation_isolation_key(sysop_card)
-            registered_sys_operation = (
-                _get_registered_sys_operation_by_isolation_key(
-                    isolation_key_template
-                )
-            )
-            if registered_sys_operation is not None:
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] reuse registered sys_operation: %s",
-                    registered_sys_operation.id,
-                )
-                return registered_sys_operation
-
-            result = Runner.resource_mgr.add_sys_operation(sysop_card)
-            if result.is_err():
-                registered_sys_operation = (
-                    _get_registered_sys_operation_by_isolation_key(
-                        isolation_key_template
-                    )
-                )
-                if registered_sys_operation is not None:
-                    logger.info(
-                        "[JiuWenSwarmDeepAdapter] reuse registered sys_operation after add failure: %s",
-                        registered_sys_operation.id,
-                    )
-                    return registered_sys_operation
-                logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", result.msg())
-                return None
-            # 仅在真正 add 成功（非复用）时打 create_sandbox UA
-            if runtime.get("enabled") and sandbox_url and sandbox_type:
-                from jiuwenswarm.common.audit_emit import emit_audit_ua
-                from jiuwenswarm.common.audit_net import resolve_peer_ip
-
-                emit_audit_ua(
-                    SUBMDL="sandbox",
-                    PROC="create_sandbox",
-                    sandbox_type=sandbox_type,
-                    DSTIP=resolve_peer_ip(sandbox_url),
-                )
-            return Runner.resource_mgr.get_sys_operation(sysop_card.id)
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", exc)
-            return None
+        return _resolve_sys_operation_impl(self)
 
     def _create_local_sys_operation(self) -> SysOperation | None:
-        """只创建/复用本地 SysOperation，给读盘类 rail 用；与沙箱实例分离。"""
-        _t0 = time.monotonic()
-        cached = self._local_sys_operation
-        if cached is not None:
-            cached_id = str(getattr(cached, "id", "") or "")
-            still_held = bool(
-                cached_id and cached_id in self._retained_sys_operation_ids
-            )
-            still_registered = bool(
-                cached_id
-                and Runner.resource_mgr.get_sys_operation(cached_id) is not None
-            )
-            if still_held and still_registered:
-                logger.info(
-                    "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse=1 "
-                    "elapsed_ms=%.1f",
-                    self._agent_id,
-                    (time.monotonic() - _t0) * 1000,
-                )
-                return cached
-            # 上一轮 recreate 已 release/unregister：丢掉脏缓存，下面重建。
-            self._local_sys_operation = None
-        existing = self._sys_operation
-        if existing is not None and getattr(existing, "mode", None) == OperationMode.LOCAL:
-            existing_id = str(getattr(existing, "id", "") or "")
-            if existing_id and existing_id not in self._retained_sys_operation_ids:
-                self._retain_sys_operation(existing_id)
-            self._local_sys_operation = existing
-            logger.info(
-                "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse_agent=1 "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                (time.monotonic() - _t0) * 1000,
-            )
-            return existing
-        try:
-            work_dir = self._workspace_dir or str(get_agent_root_dir())
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] create local-only sys_operation (work_dir=%s)",
-                work_dir,
-            )
-            sysop_card = create_local_sysop_card(work_dir=work_dir)
-            if sysop_card is None:
-                logger.info(
-                    "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
-                    "elapsed_ms=%.1f reason=card_none",
-                    self._agent_id,
-                    (time.monotonic() - _t0) * 1000,
-                )
-                return None
-            isolation_key = _sys_operation_isolation_key(sysop_card)
-            if isolation_key:
-                registered = _get_registered_sys_operation_by_isolation_key(
-                    isolation_key
-                )
-                if registered is not None:
-                    self._retain_sys_operation(str(registered.id))
-                    self._local_sys_operation = registered
-                    logger.info(
-                        "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=1 "
-                        "reuse_registered=1 elapsed_ms=%.1f",
-                        self._agent_id,
-                        (time.monotonic() - _t0) * 1000,
-                    )
-                    return registered
-            result = Runner.resource_mgr.add_sys_operation(sysop_card)
-            if result.is_err():
-                registered = (
-                    _get_registered_sys_operation_by_isolation_key(isolation_key)
-                    if isolation_key
-                    else None
-                )
-                if registered is not None:
-                    self._retain_sys_operation(str(registered.id))
-                    self._local_sys_operation = registered
-                    return registered
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] add local sys_operation failed: %s",
-                    result.msg(),
-                )
-                logger.info(
-                    "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
-                    "elapsed_ms=%.1f reason=add_err",
-                    self._agent_id,
-                    (time.monotonic() - _t0) * 1000,
-                )
-                return None
-            sysop_obj = Runner.resource_mgr.get_sys_operation(sysop_card.id)
-            if sysop_obj is not None:
-                self._retain_sys_operation(str(sysop_obj.id))
-            self._local_sys_operation = sysop_obj
-            if sysop_obj is not None:
-                try:
-                    from jiuwenswarm.server.runtime.workspace.fs_quota_guard import (
-                        install_write_quota_guard,
-                    )
-
-                    install_write_quota_guard(sysop_obj)
-                except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "[JiuWenSwarmDeepAdapter] install local write quota guard failed",
-                        exc_info=True,
-                    )
-            logger.info(
-                "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=%s "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                1 if sysop_obj is not None else 0,
-                (time.monotonic() - _t0) * 1000,
-            )
-            return sysop_obj
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] create local sys_operation failed: %s", exc
-            )
-            logger.info(
-                "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
-                "elapsed_ms=%.1f reason=exc",
-                self._agent_id,
-                (time.monotonic() - _t0) * 1000,
-            )
-            return None
+        return _create_local_sys_operation_impl(self)
 
     def _iter_adapter_rails(self) -> list[Any]:
-        """收集 adapter 上持有的 rail 实例。"""
-        rail_attrs = (
-            "_filesystem_rail",
-            "_skill_rail",
-            "_stream_event_rail",
-            "_task_execution_rail",
-            "_task_planning_rail",
-            "_context_assemble_rail",
-            "_context_processor_rail",
-            "_runtime_prompt_rail",
-            "_response_prompt_rail",
-            "_skill_protocol_prompt_rail",
-            "_security_rail",
-            "_memory_rail",
-            "_external_memory_rail",
-            "_heartbeat_rail",
-            "_skill_evolution_rail",
-            "_subagent_rail",
-            "_disabled_tools_rail",
-            "_permission_rail",
-            "_avatar_rail",
-            "_progressive_tool_rail",
-            "_skill_authorization_rail",
-            "_skill_active_state_rail",
-            "_skill_sleep_rail",
-            "_skill_credential_injection_rail",
-            "_llm_retry_rail",
-            "_skill_create_rail",
-            "_ask_user_rail",
-        )
-        rails: list[Any] = []
-        for attr in rail_attrs:
-            rail = getattr(self, attr, None)
-            if rail is not None:
-                rails.append(rail)
-        return rails
+        return _iter_adapter_rails_impl(self)
 
 
 
     def _apply_local_sysop_to_all_rails(self) -> None:
-        """按 ``AGENT_FILE_READ_BACKEND`` 把读文件类 rail 切到本地 sysop。"""
-        _t0 = time.monotonic()
-        backend = get_agent_file_read_backend()
-        if not agent_file_read_backend_is_local():
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] AGENT_FILE_READ_BACKEND=%s, skip local "
-                "sysop rail override (agent_id=%s)",
-                backend,
-                self._agent_id,
-            )
-            logger.info(
-                "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s skipped=1 "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
-            )
-            return
-
-        local_sysop = self._create_local_sys_operation()
-        if local_sysop is None:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] skip applying local sysop to rails: "
-                "local sysop unavailable"
-            )
-            logger.info(
-                "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s skipped=1 "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
-            )
-            return
-
-        agent_sysop = self._sys_operation
-        if self._instance is not None:
-            deep_cfg = getattr(self._instance, "deep_config", None)
-            if deep_cfg is not None and agent_sysop is not None:
-                deep_cfg.sys_operation = agent_sysop
-
-        rails: list[Any] = []
-        if self._instance is not None:
-            configured = getattr(self._instance, "configured_rails", None)
-            if callable(configured):
-                try:
-                    rails.extend(configured() or [])
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] configured_rails() failed: %s", exc
-                    )
-        rails.extend(self._iter_adapter_rails())
-
-        seen: set[int] = set()
-        local_applied = 0
-        sandbox_kept = 0
-        for rail in rails:
-            rid = id(rail)
-            if rid in seen:
-                continue
-            seen.add(rid)
-            if _is_sandbox_bound_rail(rail):
-                if agent_sysop is not None and _set_rail_sys_operation(
-                    rail, agent_sysop
-                ):
-                    sandbox_kept += 1
-                continue
-            if _set_rail_sys_operation(rail, local_sysop):
-                local_applied += 1
-
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] rail sysop: backend=%s local=%d sandbox_bound=%d "
-            "(deep_config keeps agent sysop)",
-            backend,
-            local_applied,
-            sandbox_kept,
-        )
-        logger.info(
-            "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s local=%d "
-            "sandbox_bound=%d elapsed_ms=%.1f",
-            self._agent_id,
-            backend,
-            local_applied,
-            sandbox_kept,
-            (time.monotonic() - _t0) * 1000,
-        )
+        return _apply_local_sysop_to_all_rails_impl(self)
 
     def _rebind_late_read_rails_to_local(self) -> None:
-        """把请求期才注册的读盘 rail 从沙箱通道切回本地。
-
-        ``register_rail`` 会用 agent 自己的 sysop（留给写文件、跑命令）覆盖 rail。
-        只换 rail 自己的通道，给今日/昨日日记这类只读。记忆工具手里那份通道
-        仍跟沙箱，搜索和写入不离开沙箱。
-        """
-        if not agent_file_read_backend_is_local():
-            return
-        local_sysop = self._create_local_sys_operation()
-        if local_sysop is None:
-            return
-        rebound: list[str] = []
-        for rail in (
-            self._context_assemble_rail,
-            self._memory_rail,
-            self._external_memory_rail,
-        ):
-            if rail is None or _is_sandbox_bound_rail(rail):
-                continue
-            if not _set_rail_sys_operation(rail, local_sysop):
-                continue
-            rebound.append(type(rail).__name__)
-        if not rebound:
-            return
-        logger.info(
-            "[SandboxPerf] late_read_rails local: agent_id=%s rails=%s",
-            self._agent_id,
-            ",".join(rebound),
-        )
+        return _rebind_late_read_rails_to_local_impl(self)
 
     async def _init_workspace_on_host(self) -> None:
-        """在宿主机初始化工作区，避免沙箱 DirectoryBuilder 串行建目录。
-
-        仅当 ``AGENT_FILE_READ_BACKEND=local``（默认）时执行。
-        整段落盘丢 ``asyncio.to_thread``，避免堵事件循环。
-        """
-        _t0 = time.monotonic()
-        backend = get_agent_file_read_backend()
-        if not agent_file_read_backend_is_local():
-            logger.info(
-                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s "
-                "skipped=1 reason=backend_sandbox elapsed_ms=%.1f",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
-            )
-            return
-
-        instance = self._instance
-        if instance is None:
-            return
-        deep_cfg = getattr(instance, "deep_config", None)
-        if deep_cfg is None:
-            return
-        if not getattr(deep_cfg, "auto_create_workspace", True):
-            return
-        workspace = getattr(deep_cfg, "workspace", None)
-        if workspace is None:
-            return
-
-        root_path = getattr(workspace, "root_path", None) or self._workspace_dir
-        if not root_path:
-            return
-
-        directories = list(getattr(workspace, "directories", None) or [])
-        language = str(
-            getattr(workspace, "language", None)
-            or self._resolve_runtime_language()
-            or "cn"
-        )
-        try:
-            from jiuwenswarm.server.runtime.agent_adapter.workspace_host_init import (
-                host_init_workspace_sync,
-            )
-
-            result = await asyncio.to_thread(
-                host_init_workspace_sync,
-                str(root_path),
-                directories,
-                language=language,
-            )
-            status = str((result or {}).get("status") or "")
-            if status == "skipped_marker":
-                logger.info(
-                    "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s "
-                    "skipped=1 reason=marker_exists elapsed_ms=%.1f",
-                    self._agent_id,
-                    backend,
-                    (time.monotonic() - _t0) * 1000,
-                )
-                return
-            if status == "quota_exceeded":
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] init_workspace_on_host blocked by quota: "
-                    "agent_id=%s path=%s",
-                    self._agent_id,
-                    root_path,
-                )
-                raise RuntimeError("WORKSPACE_QUOTA_EXCEEDED")
-            logger.info(
-                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s ok=1 "
-                "mode=%s dirs=%d elapsed_ms=%.1f path=%s",
-                self._agent_id,
-                backend,
-                status,
-                int((result or {}).get("dirs") or len(directories)),
-                (time.monotonic() - _t0) * 1000,
-                root_path,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] init_workspace_on_host failed: %s",
-                exc,
-            )
-            logger.info(
-                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s ok=0 "
-                "elapsed_ms=%.1f reason=exc",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
-            )
+        return await _init_workspace_on_host_impl(self)
 
 
     async def apply_sandbox_runtime_patch(
         self, runtime: dict[str, Any], *, files_changed: bool
     ) -> None:
-        """轻量级热更新沙箱 runtime 参数（无需重建 agent）.
-
-        - 通过 mutate 已构建 SysOperationCard 的 ``launcher_config.extra_params``
-          字典让 provider 下次 exec 时读到新值（provider 持 dict 引用）。
-        - ``files_changed=True`` 时:
-          - jiuwenbox: 调用 ``force_recreate_jiuwenbox_sandbox``
-          - yuanrong: 调用 ``delete_yuanrong_sandbox``，下次 op 懒创建新实例
-
-        Args:
-            runtime: ``get_sandbox_runtime()`` 当前完整 runtime。
-            files_changed: 是否触发文件 policy 变更; 仅 files.* 子命令需要 True。
-        """
-        card = self._sys_operation_card
-        if card is None or card.mode != OperationMode.SANDBOX:
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] apply_sandbox_runtime_patch skipped: "
-                "no active sandbox sys_operation"
-            )
-            return
-
-        launcher = card.gateway_config.launcher_config if card.gateway_config else None
-        if launcher is None:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] apply_sandbox_runtime_patch: missing launcher_config"
-            )
-            return
-
-        sandbox_type = str(getattr(launcher, "sandbox_type", "") or "").strip().lower()
-        if sandbox_type == "yuanrong":
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] yuanrong runtime patch "
-                "(files_changed=%s; policy/exclude ignored)",
-                files_changed,
-            )
-            if files_changed:
-                try:
-                    from openjiuwen.extensions.sys_operation.sandbox.providers.yuanrong import (
-                        build_yuanrong_shared_scope_key,
-                        delete_yuanrong_sandbox,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox import "
-                        "failed: %s",
-                        exc,
-                    )
-                    return
-                try:
-                    isolation_key = _sys_operation_isolation_key(card)
-                    shared_key = (
-                        build_yuanrong_shared_scope_key(
-                            str(launcher.base_url), str(isolation_key)
-                        )
-                        if isolation_key
-                        else None
-                    )
-                    deleted = await delete_yuanrong_sandbox(
-                        shared_key=shared_key,
-                        base_url=(
-                            str(launcher.base_url)
-                            if launcher.base_url and not shared_key
-                            else None
-                        ),
-                        reason="files_changed",
-                    )
-                    logger.info(
-                        "[JiuWenSwarmDeepAdapter] yuanrong sandbox deleted for "
-                        "recreate: %s",
-                        deleted,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox failed: %s",
-                        exc,
-                    )
-            return
-
-        extra = launcher.extra_params or {}
-        extra["excluded_commands"] = list(runtime.get("excluded_commands") or [])
-        extra["fallback_on_failure"] = bool(runtime.get("fallback_on_failure", False))
-        shared_dir: str | None = None
-        if is_enterprise() and self._workspace_dir:
-            shared_dir = str(Path(self._workspace_dir).resolve().parent.parent)
-        new_policy, upload_list = build_filesystem_policy(
-            runtime.get("files") or {},
-            project_dir=self._resolve_project_dir_for_sandbox(),
-            is_code_agent=self._is_code_agent,
-            startup_mode=get_sandbox_startup_mode(),
-            shared_dir=shared_dir,
-        )
-        extra["policy"] = new_policy
-        # provider 侧契约: 沙箱 sysop 永远带这两个 key, mode 固定 ``mount``,
-        # upload_list 当前一定是空 list。
-        extra["preserve_files_upload"] = upload_list
-        extra["preserve_file_sharing_mode"] = "mount"
-        extra.setdefault("policy_mode", "append")
-        launcher.extra_params = extra
-        logger.info(
-            "[JiuWenSwarmDeepAdapter] sandbox runtime patched "
-            "(exclude=%d, files_changed=%s, uploads=%d)",
-            len(extra["excluded_commands"]),
-            files_changed,
-            len(upload_list),
-        )
-
-        if files_changed:
-            try:
-                from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
-                    force_recreate_jiuwenbox_sandbox,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] force_recreate_jiuwenbox_sandbox import "
-                    "failed: %s",
-                    exc,
-                )
-                return
-            try:
-                new_sandbox_id = await force_recreate_jiuwenbox_sandbox(
-                    launcher.base_url,
-                    policy=new_policy,
-                    policy_mode=extra.get("policy_mode", "append"),
-                    preserve_files_upload=upload_list,
-                )
-                extra["sandbox_id"] = new_sandbox_id
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] sandbox instance recreated: %s",
-                    new_sandbox_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] force_recreate_jiuwenbox_sandbox "
-                    "failed: %s",
-                    exc,
-                )
+        return await apply_sandbox_runtime_patch_impl(self, runtime, files_changed=files_changed)
 
     @staticmethod
     def _build_filesystem_rail() -> SysOperationRail | None:
@@ -10615,67 +9867,7 @@ class JiuWenSwarmDeepAdapter:
         return ""
 
     async def _commit_hitl_pause_before_card(self, session_id: str, request_id: str) -> None:
-        """审批卡发出前先把暂停状态落盘，保证恢复请求能读到本轮上下文。"""
-        if self._instance is None:
-            return
-        session = getattr(self._instance, "_interaction_session", None)
-        if session is None:
-            return
-        react_agent = getattr(self._instance, "react_agent", None)
-        context_engine = getattr(react_agent, "context_engine", None) if react_agent is not None else None
-        committed = False
-        msg_count = 0
-        if context_engine is not None:
-            try:
-                ctx = context_engine.get_context(session_id=session_id)
-                msg_count = len(list(ctx.get_messages() or [])) if ctx is not None else 0
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[HITL-CTX] context probe before permission card failed: "
-                    "session_id=%s request_id=%s error=%s",
-                    session_id, request_id, exc,
-                )
-                ctx = None
-                msg_count = 0
-            if ctx is None or msg_count <= 0:
-                logger.info(
-                    "[HITL-CTX] checkpoint skip: no persistable context: "
-                    "session_id=%s request_id=%s msg_count=%s",
-                    session_id, request_id, msg_count,
-                )
-            else:
-                try:
-                    await context_engine.save_contexts(session)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[HITL-CTX] save contexts before permission card failed: "
-                        "session_id=%s request_id=%s error=%s",
-                        session_id, request_id, exc,
-                    )
-                else:
-                    try:
-                        await session.commit()
-                        committed = True
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "[HITL-CTX] interrupt commit before permission card failed: "
-                            "session_id=%s request_id=%s error=%s",
-                            session_id, request_id, exc,
-                        )
-        try:
-            self.mark_session_awaiting_tool_permission(session_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[HITL-CTX] mark awaiting permission failed: "
-                "session_id=%s request_id=%s error=%s",
-                session_id, request_id, exc,
-            )
-        if committed:
-            logger.info(
-                "[HITL-CTX] interrupt committed before permission card: "
-                "session_id=%s request_id=%s msg_count=%s",
-                session_id, request_id, msg_count,
-            )
+        return await _commit_hitl_pause_before_card_impl(self, session_id, request_id)
 
     async def _rehydrate_empty_cron_context(self, session_id: str, request_id: str) -> None:
         return await _rehydrate_empty_cron_context_impl(self, session_id, request_id)
@@ -16000,63 +15192,7 @@ class JiuWenSwarmDeepAdapter:
         emitted_request_ids: set[str],
         emitted_questions: dict[str, str],
     ) -> bool:
-        """ask_user 卡片去重与序号区分；返回 True 表示跳过本张卡。
-
-        - 同一中断的多通道重复（独立 ``__interaction__`` 与 controller 嵌套）：
-          同 call id + 同 questions → 跳过。
-        - 挂起表复用（跨请求）：该 base 仍有同 questions 的活卡挂起（作答
-          消费时销毁，见 _consume_hitl_live_card_for_answer）→ 重发原卡
-          而非生成新代。典型场景：乱序点击后 resume 重放会重新走到未作答
-          interrupt 的发卡点，若无此分支将诞生 ``{id}#{n+1}`` 新卡取代原卡
-          ——用户点回原卡即被 stale 守卫拒绝，空流被 relay-claw 空回弹启发式
-          误判中止（full.log 2026-09-28 事故形态）。重发同 request_id 对
-          relay-claw 五层幂等（注册早退 + 前端 requestId 去重），wire 协议
-          零变动；序号计数不动（不新增代次）。
-        - 同一外层 skill_acceleration_exec 内的第 N 次中断共用同一 call id：
-          questions 不同 → 卡片 request_id 改为 ``{id}#{n}`` 放行（前端才显示为
-          独立卡片）；作答回传时由 _build_interactive_input_from_answers 入口
-          剥掉后缀对齐 harness 原始 id。序号计数在 adapter 实例上跨请求存续。
-        """
-        if not isinstance(parsed, dict):
-            return False
-        if parsed.get("event_type") != "chat.ask_user_question":
-            return False
-        request_id = str(parsed.get("request_id") or "").strip()
-        if not request_id:
-            return False
-        questions_key = _ask_user_questions_key(parsed)
-        if any(
-            (fid == request_id or fid.startswith(f"{request_id}#"))
-            and qk == questions_key
-            for fid, qk in emitted_questions.items()
-        ):
-            return True
-        # 挂起表复用：活卡还挂着且 questions 一致 → 重发原卡（不改代次、
-        # 不动相位）；questions 不同则落回下方新代逻辑（合法 re-ask 场景）。
-        live_final = getattr(self, "_hitl_base_live_instance", {}).get(request_id)
-        live_questions = getattr(self, "_hitl_base_live_questions", {}).get(request_id)
-        if live_final and live_questions is not None and live_questions == questions_key:
-            parsed["request_id"] = live_final
-            emitted_request_ids.add(live_final)
-            emitted_questions[live_final] = questions_key
-            return False
-        final_id = self._outer_call_dedup.next_final_id(request_id)
-        emitted_request_ids.add(final_id)
-        emitted_questions[final_id] = questions_key
-        if final_id != request_id:
-            parsed["request_id"] = final_id
-        # 中断实例活性登记：新卡发出即取代同 base 的旧卡（旧卡应答将成为
-        # stale 被守卫拒绝）。同一中断的多通道重复已在上方 questions_key
-        # 判定中跳过，不会走到这里。
-        self._register_hitl_card_instance(
-            base_id=request_id, final_id=final_id, questions_key=questions_key
-        )
-        # 中断状态机：新卡片发出 → 相位重开为 paused（取消上一代终态）。
-        # 只标内存态（runtime/loop session）：HITL 中断时 checkpointer 的
-        # interrupt_agent_execute 会随 loop session 状态落盘；卡片本身是
-        # 低频事件，异步磁盘写不在此处（同步方法）展开。
-        self._mark_interrupt_paused_inmemory(card_id=final_id, source=str(parsed.get("source") or ""))
-        return False
+        return _dedupe_ask_user_card_impl(self, parsed, emitted_request_ids, emitted_questions)
 
     def _register_hitl_card_instance(
         self,
@@ -16065,250 +15201,31 @@ class JiuWenSwarmDeepAdapter:
         final_id: str,
         questions_key: str = "",
     ) -> None:
-        """登记新卡片实例并取代同 base 的旧卡（旧卡标记为死卡）。
-
-        questions_key 随活卡一起登记（挂起表复用判定用）；空串表示未知
-        questions（外部直接调用兼容路径），永不命中复用分支——落回新代
-        逻辑，保守安全。
-
-        死卡集供 guard_stale_interrupt_response 拒绝旧卡应答；被取代的
-        旧卡不再向前端广播失效事件——旧卡应答会被守卫拒绝，屏幕上的
-        旧卡由新卡到达自行覆盖或随会话清理。
-        """
-        try:
-            self._hitl_card_instances[final_id] = base_id
-            prev_live = self._hitl_base_live_instance.get(base_id)
-            if prev_live is not None and prev_live != final_id:
-                self._hitl_dead_card_ids.add(prev_live)
-            self._hitl_base_live_instance[base_id] = final_id
-            self._hitl_base_live_questions[base_id] = questions_key
-            # 有界注册表：防止长生命周期 adapter 无限增长
-            if len(self._hitl_card_instances) > 1024:
-                for old_id in list(self._hitl_card_instances.keys())[:512]:
-                    old_base = self._hitl_card_instances.pop(old_id, None)
-                    self._hitl_dead_card_ids.discard(old_id)
-                    # 淘汰条目若恰为该 base 的当前活卡，live/questions 一并
-                    # 摘除（否则两表泄漏指向已淘汰 final_id 的悬空条目）。
-                    if (
-                        old_base is not None
-                        and self._hitl_base_live_instance.get(old_base) == old_id
-                    ):
-                        self._hitl_base_live_instance.pop(old_base, None)
-                        self._hitl_base_live_questions.pop(old_base, None)
-                if len(self._hitl_dead_card_ids) > 2048:
-                    self._hitl_dead_card_ids.clear()
-        except Exception:  # noqa: BLE001 — 登记失败不影响发卡主流程
-            logger.debug(
-                "[JiuWenClaw] register hitl card instance failed base=%s final=%s",
-                base_id,
-                final_id,
-                exc_info=True,
-            )
+        return _register_hitl_card_instance_impl(self, base_id=base_id, final_id=final_id, questions_key=questions_key)
 
     def _invalidate_all_hitl_card_instances(self) -> None:
-        """终态/轮次结束：全部活卡转死卡（注册表未初始化时 no-op）。"""
-        live = getattr(self, "_hitl_base_live_instance", None)
-        dead = getattr(self, "_hitl_dead_card_ids", None)
-        if not isinstance(live, dict) or not isinstance(dead, set):
-            return
-        for final_id in live.values():
-            dead.add(final_id)
-        live.clear()
-        questions = getattr(self, "_hitl_base_live_questions", None)
-        if isinstance(questions, dict):
-            questions.clear()
+        return _invalidate_all_hitl_card_instances_impl(self)
 
     def _consume_hitl_live_card_for_answer(self, request: AgentRequest) -> None:
-        """作答被接受（stale 守卫放行后）：销毁该 base 的挂起表活条目。
-
-        挂起表的语义是"还挂着没有"而非"发过没有"：作答被接受即不再挂起。
-        条目销毁后，resume 重放若重新走到同 base 发卡点，说明答案未注入该
-        interrupt（或新 questions），按新代兜底而非误判复用。销毁不进死卡
-        集——同代卡的重复应答由 PermissionResponseLedger 按原始 id 幂等
-        去重（语义锚点 test_stale_answer_rejects_non_live_generation_of_
-        known_base：销毁后该卡应答 base 未登记，fail-open）。
-        """
-        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
-        base_id = strip_hitl_seq_suffix(str(params.get("request_id") or ""))
-        if not base_id:
-            return
-        live = getattr(self, "_hitl_base_live_instance", None)
-        if isinstance(live, dict):
-            live.pop(base_id, None)
-        questions = getattr(self, "_hitl_base_live_questions", None)
-        if isinstance(questions, dict):
-            questions.pop(base_id, None)
+        return _consume_hitl_live_card_for_answer_impl(self, request)
 
     def _is_stale_hitl_card_answer(self, final_id: str) -> bool:
-        """应答是否命中已死卡片实例（未登记的卡片 fail-open 由相位守卫裁决）。
-
-        序号后缀正判扩展：未登记的 ``{base}#{n}`` 应答，若其 base 的当前代卡
-        登记在案且不是该 id，同样判陈旧——同权限 re-ask 场景下，上层对旧代卡
-        的迟到应答与伪造代次不得进入 runtime（BUG20260928373903 复读风暴）；
-        当前代卡（同 base 顺序下一个权限门）不受影响（CR-1）。base 未登记仍
-        fail-open（重启恢复 / 未走登记发卡路径）。
-        """
-        if not final_id:
-            return False
-        dead_ids = getattr(self, "_hitl_dead_card_ids", frozenset())
-        if final_id in dead_ids:
-            return True
-        base_id = getattr(self, "_hitl_card_instances", {}).get(final_id)
-        if base_id is None:
-            live = getattr(self, "_hitl_base_live_instance", {})
-            suffix_base = strip_hitl_seq_suffix(final_id)
-            if suffix_base != final_id and suffix_base in live:
-                return live.get(suffix_base) != final_id
-            return False
-        live = getattr(self, "_hitl_base_live_instance", {}).get(base_id)
-        return live is not None and live != final_id
+        return _is_stale_hitl_card_answer_impl(self, final_id)
 
     def _mark_interrupt_paused_inmemory(self, *, card_id: str, source: str = "") -> None:
-        """新 HITL 卡片发出的内存态相位标记（best-effort，失败不阻断发卡）。"""
-        # getattr 防御：__new__ 构造的 adapter（单测）无 _instance 属性时
-        # no-op，保持 best-effort 约定（AttributeError 不得逃逸阻断发卡）。
-        instance = getattr(self, "_instance", None)
-        if instance is None:
-            return
-        try:
-            proxy = build_flag_proxy(
-                getattr(instance, "_interaction_session", None),
-                getattr(instance, "loop_session", None),
-            )
-            if proxy.sessions:
-                mark_interrupt_paused(proxy, card_id=card_id, source=source)
-        except Exception:  # noqa: BLE001 — 相位标记失败不影响发卡主流程
-            logger.debug(
-                "[JiuWenClaw] mark interrupt paused failed card_id=%s",
-                card_id,
-                exc_info=True,
-            )
+        return _mark_interrupt_paused_inmemory_impl(self, card_id=card_id, source=source)
 
     def _mark_interrupt_resumed_inmemory(self, *, source: str = "") -> None:
-        """应答受理并进入重放（RESUME_SIGNAL 到达）：相位 → resumed。
-
-        仅在当前相位为 paused 时转换（幂等：重复 resume 信号 / 其他相位
-        no-op），避免把状态机警告变成信号噪音。与 paused 标记同力度：只写
-        内存态，跨重启相位恢复由新卡发出的重开语义兜底。
-        """
-        instance = getattr(self, "_instance", None)
-        if instance is None:
-            return
-        try:
-            proxy = build_flag_proxy(
-                getattr(instance, "_interaction_session", None),
-                getattr(instance, "loop_session", None),
-            )
-            if not proxy.sessions:
-                return
-            phase = get_interrupt_phase(proxy)
-            if (phase or {}).get("phase") != PHASE_PAUSED:
-                return
-            mark_interrupt_resumed(proxy, source=source)
-        except Exception:  # noqa: BLE001 — 相位标记失败不影响重放主流程
-            logger.debug(
-                "[JiuWenClaw] mark interrupt resumed failed",
-                exc_info=True,
-            )
+        return _mark_interrupt_resumed_inmemory_impl(self, source=source)
 
     def _mark_interrupt_idle_inmemory(self) -> None:
-        """重放轮次正常完成且无新卡在飞：相位 → idle。
-
-        仅在当前相位为 resumed 时转换——paused（卡在飞等待作答）与终态
-        （cancel/supplement 的守卫语义需跨请求存活）均保持原状，普通轮次
-        （idle）no-op 避免 idle→idle 噪音。
-        """
-        instance = getattr(self, "_instance", None)
-        if instance is None:
-            return
-        try:
-            proxy = build_flag_proxy(
-                getattr(instance, "_interaction_session", None),
-                getattr(instance, "loop_session", None),
-            )
-            if not proxy.sessions:
-                return
-            phase = get_interrupt_phase(proxy)
-            if (phase or {}).get("phase") != PHASE_RESUMED:
-                return
-            mark_interrupt_idle(proxy)
-        except Exception:  # noqa: BLE001 — 相位标记失败不影响轮次收尾
-            logger.debug(
-                "[JiuWenClaw] mark interrupt idle failed",
-                exc_info=True,
-            )
+        return _mark_interrupt_idle_inmemory_impl(self)
 
     def _mark_round_end_inmemory(self) -> None:
-        """轮次正常完成且无新卡在飞：相位回 idle + 全部活卡转死卡。
-
-        idle 标记仅 resumed 时转换（paused/终态/普通轮次 no-op）；活卡
-        失效无条件执行——走到本调用点时本轮流内已无 pending 卡（在飞的
-        轮次走 paused 收尾分支），注册表残留的活卡必然是历史轮已答/被
-        绕开的死卡。失效后其应答由 ``guard_stale_interrupt_response``
-        回 ``stale_interrupt_response`` 拒绝，不再 fail-open 静默吞答案
-        （兑现注册表注释「轮次结束」失效语义）。
-        """
-        self._mark_interrupt_idle_inmemory()
-        self._invalidate_all_hitl_card_instances()
+        return _mark_round_end_inmemory_impl(self)
 
     async def guard_stale_interrupt_response(self, request: AgentRequest) -> bool:
-        """终态守卫：HITL 应答是否落在已被取消/补充的会话上（True = 过期，应拒绝）。
-
-        读取磁盘态（临时 session pre_run）与内存态（runtime session）的中断
-        相位；cancelled / supplemented 终态表示上一代中断已死——其卡片应答
-        一律拒绝，防止"点一张旧卡 → resume 重放 → 再弹新卡"的反馈循环与
-        死卡点击进入 runtime。守卫只读不写，失败时 fail-open（放行）。
-
-        P2 追加：活性卡守卫——应答 request_id 命中活性注册表中的死卡实例
-        （同 base 已被新卡取代）时同样拒绝；未登记的卡片 fail-open 交给
-        相位守卫裁决。
-        """
-        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
-        answer_card_id = str(params.get("request_id") or "").strip()
-        if self._is_stale_hitl_card_answer(answer_card_id):
-            logger.info(
-                "[JiuWenClaw] stale hitl card answer rejected: "
-                "session_id=%s card_id=%s request_id=%s",
-                getattr(request, "session_id", ""),
-                answer_card_id,
-                getattr(request, "request_id", ""),
-            )
-            return True
-        session_id = str(getattr(request, "session_id", "") or "").strip()
-        if not session_id or self._instance is None:
-            return False
-        try:
-            from openjiuwen.core.session.agent import create_agent_session
-            session = create_agent_session(session_id=session_id, card=self._instance.card)
-            await session.pre_run(inputs=None)
-            try:
-                runtime_session = getattr(self._instance, "_interaction_session", None)
-                proxy = build_flag_proxy(session, runtime_session)
-                stale = is_interrupt_terminal(proxy)
-                if stale:
-                    phase = get_interrupt_phase(proxy) or {}
-                    logger.info(
-                        "[JiuWenClaw] stale interrupt response rejected: "
-                        "session_id=%s phase=%s card_id=%s request_id=%s",
-                        session_id,
-                        phase.get("phase"),
-                        phase.get("card_id"),
-                        getattr(request, "request_id", ""),
-                    )
-                return stale
-            finally:
-                try:
-                    await session.post_run()
-                except Exception:
-                    logger.debug("[JiuWenClaw] guard post_run failed", exc_info=True)
-        except Exception:  # noqa: BLE001 — 守卫失败 fail-open
-            logger.warning(
-                "[JiuWenClaw] guard_stale_interrupt_response failed session_id=%s "
-                "(fail-open)",
-                session_id,
-                exc_info=True,
-            )
-            return False
+        return await guard_stale_interrupt_response_impl(self, request)
 
     async def _handle_memory_rail_by_config(self, mode: str):
         return await _handle_memory_rail_by_config_impl(self, mode)

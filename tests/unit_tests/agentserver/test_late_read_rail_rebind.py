@@ -6,18 +6,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_INTERFACE_DEEP = (
+_ADAPTER_DIR = (
     Path(__file__).resolve().parents[3]
     / "jiuwenswarm"
     / "server"
     / "runtime"
     / "agent_adapter"
-    / "interface_deep.py"
 )
+_INTERFACE_DEEP = _ADAPTER_DIR / "interface_deep.py"
+_SANDBOX_RUNTIME = _ADAPTER_DIR / "deep" / "sandbox_runtime.py"
 
 
 def _interface_deep_source() -> str:
     return _INTERFACE_DEEP.read_text(encoding="utf-8")
+
+
+def _sandbox_runtime_source() -> str:
+    return _SANDBOX_RUNTIME.read_text(encoding="utf-8")
 
 
 def _slice_after(text: str, marker: str) -> str:
@@ -29,7 +34,7 @@ def _slice_after(text: str, marker: str) -> str:
 
 def test_rebind_does_not_copy_tool_channel() -> None:
     """只换 rail 通道，不摸工具手里那份 sys_operation。"""
-    body = _slice_after(_interface_deep_source(), "def _rebind_late_read_rails_to_local")
+    body = _slice_after(_sandbox_runtime_source(), "def _rebind_late_read_rails_to_local")
     assert body
     body = body[:1600]
     assert "_set_rail_sys_operation" in body
