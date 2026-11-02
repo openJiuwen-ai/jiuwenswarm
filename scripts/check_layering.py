@@ -96,11 +96,7 @@ ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
     "gateway.auth",
 )
 
-KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {
-    "jiuwenswarm.server.runtime.package_allowlist": {
-        "gateway.config.enterprise.expressions",
-    },
-}
+KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
 # Enterprise / manager-config 合入临时白名单（gateway → server/agents/runtime/channels）。
 # 燃尽方向：经 adapter / 回调替代直 import 后再缩减。
@@ -126,17 +122,11 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
     "gateway.enterprise.config.manager_config.core.application_config.memory_config": {
         "jiuwenswarm.agents.harness.common.memory.config",
     },
-    "gateway.enterprise.config.manager_config.core.application_config.package_allowlist": {
-        "jiuwenswarm.server.runtime.package_allowlist",
-    },
     "gateway.enterprise.config.manager_config.core.application_config.task_memory_config": {
         "jiuwenswarm.agents.harness.common.memory.config",
     },
     "gateway.enterprise.config.manager_config.routers.application_config_routers": {
         "jiuwenswarm.server.runtime.equipment_hub_catalog",
-    },
-    "gateway.routing.agent_client": {
-        "jiuwenswarm.server.runtime.package_allowlist",
     },
     "gateway.storage_assembly.setup": {
         "jiuwenswarm.agents.harness.common.memory.config",

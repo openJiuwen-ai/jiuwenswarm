@@ -4500,29 +4500,6 @@
   margin-bottom: 0;
 }
 
-.chat-suggestions__label {
-  margin: 0 0 0.125rem;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
-  font-weight: 400;
-  line-height: 1.4;
-}
-
-.chat-suggestions__notice {
-  animation: chat-suggestions-notice-fade 8s ease-in forwards;
-}
-
-@keyframes chat-suggestions-notice-fade {
-  0%,
-  87.5% {
-    opacity: 1;
-  }
-
-  100% {
-    opacity: 0;
-  }
-}
-
 .chat-suggestion-card {
   position: relative;
   display: grid;
@@ -4712,10 +4689,6 @@
   .chat-suggestion-card__arrow,
   .chat-suggestion-card__dismiss {
     transition: none;
-  }
-
-  .chat-suggestions__notice {
-    animation: none;
   }
 }
 

@@ -5,13 +5,19 @@ from __future__ import annotations
 
 import copy
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from typing import Any
 
 from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.foundation.tool import ClientToolResult, ClientToolStatus, default_client_output
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-from openjiuwen.core.single_agent.interrupt.response import InterruptKind
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind, interrupt_kind_of
+from openjiuwen.core.single_agent.interrupt.state import (
+    INTERRUPTION_KEY,
+    PendingInterrupt,
+    match_answers,
+    pending_interrupts,
+)
 
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
     JiuwenSwarmPermissionInterruptRail,
@@ -28,8 +34,25 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import ToolInvocationKeyV1
 from jiuwenswarm.common.tool_display import extract_call_goal
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 
 logger = logging.getLogger(__name__)
+
+
+def _is_client_tool_request(request: Any) -> bool:
+    return interrupt_kind_of(request) == InterruptKind.CLIENT_TOOL
+
+
+_SUPERSEDED = "[INTERRUPTED - Superseded by new user input]"
+
+
+def _superseded_message(tool_call_id: str, tool_name: str, client_tool_ids: Collection[str]) -> ToolMessage:
+    """The result of a paused call fresh user input dropped; the client may already have run a client tool call."""
+    content = _SUPERSEDED
+    if tool_call_id in client_tool_ids:
+        cancelled = default_client_output(ClientToolResult(status=ClientToolStatus.CANCELLED), tool_name)
+        content = f"{_SUPERSEDED} {cancelled.error}"
+    return ToolMessage(tool_call_id=tool_call_id, content=content)
 
 
 def _permission_entries(state: Any) -> Iterator[tuple[Any, ToolInvocationKeyV1]]:
@@ -46,6 +69,8 @@ def _permission_entries(state: Any) -> Iterator[tuple[Any, ToolInvocationKeyV1]]
         ):
             raise RootPermissionQueueError("permission_continuation_state_invalid")
         inner_id, request = next(iter(requests.items()))
+        if _is_client_tool_request(request):
+            continue  # a client tool call of the same pause holds no card
         metadata = getattr(request, "metadata", None)
         key = ToolInvocationKeyV1.from_wire(
             metadata.get("tool_invocation_key") if isinstance(metadata, Mapping) else None
@@ -115,6 +140,9 @@ async def discard_permission_continuation(
             pending_tool_ids.append(tool_call_id)
         if pending != frozen:
             return False
+        # Client tool calls of the same pause are superseded with the cards.
+        client_tool_ids = [call.tool_call_id for call in _paused_client_tool_calls(state)]
+        pending_tool_ids.extend(client_tool_ids)
 
         ai_message = getattr(state, "ai_message", None)
         state_calls = list(getattr(ai_message, "tool_calls", None) or [])
@@ -180,12 +208,10 @@ async def discard_permission_continuation(
 
         added = 0
         try:
+            names = dict(state_signature)
             for tool_call_id in pending_tool_ids:
                 await context.add_messages(
-                    ToolMessage(
-                        tool_call_id=tool_call_id,
-                        content="[INTERRUPTED - Superseded by new user input]",
-                    )
+                    _superseded_message(tool_call_id, names[tool_call_id], client_tool_ids)
                 )
                 added += 1
             loop_session.update_state({INTERRUPTION_KEY: None})
@@ -312,12 +338,11 @@ async def discard_pending_permission_interrupt_for_target(
 
         added = 0
         try:
+            names = dict(state_signature)
+            client_tool_ids = {call.tool_call_id for call in _paused_client_tool_calls(state)}
             for tool_call_id in active_ids:
                 await context.add_messages(
-                    ToolMessage(
-                        tool_call_id=tool_call_id,
-                        content="[INTERRUPTED - Superseded by new user input]",
-                    )
+                    _superseded_message(tool_call_id, names[tool_call_id], client_tool_ids)
                 )
                 added += 1
             loop_session.update_state({INTERRUPTION_KEY: None})
@@ -455,18 +480,45 @@ def validate_manual_resume(loop_session: Any, query: InteractiveInput) -> None:
     """Retain the SDK's manual batch/subset contract during Smart activation."""
     state = loop_session.get_state(INTERRUPTION_KEY)
     interrupted = getattr(state, "interrupted_tools", None)
-    if not isinstance(interrupted, Mapping) or not query.user_inputs:
+    if not isinstance(interrupted, Mapping) or not (query.user_inputs or query.interrupt_answers):
         raise RootPermissionQueueError("interaction_resume_state_missing")
-    pending_ids = set()
     for entry in interrupted.values():
-        requests = getattr(entry, "interrupt_requests", None)
-        if not isinstance(requests, Mapping):
+        if not isinstance(getattr(entry, "interrupt_requests", None), Mapping):
             raise RootPermissionQueueError("interaction_resume_state_invalid")
-        pending_ids.update(requests)
-    # Manual SDK batches may answer a nonempty subset. Do not
-    # impose Smart's single-card or structured-ask contract.
-    if not set(query.user_inputs).issubset(pending_ids):
+    # Manual SDK batches may answer a nonempty subset, by tool call id or by
+    # interrupt id. Do not impose Smart's single-card or structured-ask contract.
+    if match_answers(query, pending_interrupts(state)).unmatched:
         raise RootPermissionQueueError("interaction_resume_identity_mismatch")
+
+
+def _paused_client_tool_calls(state: Any) -> list[PendingInterrupt]:
+    """The client tool calls a Session's interrupt state is paused on."""
+    return [interrupt for interrupt in pending_interrupts(state) if interrupt.kind == InterruptKind.CLIENT_TOOL]
+
+
+def validate_client_tool_answers(loop_session: Any, query: Any) -> None:
+    """Refuse a client tool resume unless it answers a paused client tool call, by interrupt id.
+
+    A result addressed to a call paused on an approval or a question (by
+    interrupt id or by tool call id) would be read as that answer, an approval
+    the user never gave, so it is refused. A result for a call no longer
+    paused answers nothing and is ignored; a resume of such results only is
+    refused, so the client drops them.
+    """
+    state = loop_session.get_state(INTERRUPTION_KEY) if loop_session is not None else None
+    pending = pending_interrupts(state)
+    clients = {interrupt.interrupt_id for interrupt in pending if interrupt.kind == InterruptKind.CLIENT_TOOL}
+    others = {interrupt.interrupt_id for interrupt in pending} - clients
+    answered = _interrupt_ids_answered(query)
+    if answered is None or not clients & answered or others & answered:
+        raise ClientToolAnswerMismatch("no paused client tool call waits on these results")
+
+
+def _interrupt_ids_answered(query: Any) -> set[str] | None:
+    """The interrupt ids a resume answers, or None unless it answers by interrupt id alone."""
+    if not isinstance(query, InteractiveInput) or query.raw_inputs is not None or query.user_inputs:
+        return None
+    return set(query.interrupt_answers)
 
 
 def prepare_nonpermission_resume(
@@ -478,17 +530,18 @@ def prepare_nonpermission_resume(
 ) -> dict[str, Any]:
     if loop_session is None or getattr(query, "raw_inputs", None) is not None:
         raise RootPermissionQueueError("interaction_resume_state_missing")
-    submitted = getattr(query, "user_inputs", None)
     state = loop_session.get_state(INTERRUPTION_KEY)
     interrupted = getattr(state, "interrupted_tools", None)
-    if not isinstance(submitted, Mapping) or not isinstance(interrupted, Mapping):
+    if not isinstance(interrupted, Mapping):
         raise RootPermissionQueueError("interaction_resume_state_missing")
-    expected: list[tuple[str, str, dict[str, Any]]] = []
+    expected: list[tuple[str, str, dict[str, Any], str]] = []
     for entry in interrupted.values():
         requests = getattr(entry, "interrupt_requests", None)
         if not isinstance(requests, Mapping):
             raise RootPermissionQueueError("interaction_resume_state_invalid")
         for inner_id, interrupt_request in requests.items():
+            if _is_client_tool_request(interrupt_request):
+                continue  # answered by its client; the call stays paused
             metadata = getattr(interrupt_request, "metadata", None)
             if not isinstance(metadata, Mapping) or "tool_invocation_key" in metadata:
                 raise RootPermissionQueueError(
@@ -500,11 +553,13 @@ def prepare_nonpermission_resume(
                     str(inner_id or "").strip(),
                     str(getattr(tool_call, "name", "") or "").strip(),
                     dict(metadata),
+                    interrupt_request.interrupt_id,
                 )
             )
-    if len(expected) != 1 or set(submitted) != {expected[0][0]}:
+    matched = match_answers(query, pending_interrupts(state))
+    if len(expected) != 1 or list(matched.answers) != [expected[0][3]] or matched.unmatched:
         raise RootPermissionQueueError("interaction_resume_identity_mismatch")
-    tool_call_id, tool_name, metadata = expected[0]
+    tool_call_id, tool_name, metadata, interrupt_id = expected[0]
     marker = RootNonPermissionResume(
         root_session_id=root_session_id,
         tool_call_id=tool_call_id,
@@ -520,7 +575,7 @@ def prepare_nonpermission_resume(
             raise RootPermissionQueueError("interaction_resume_ask_state_invalid")
         prepared_ask = prepare_ask_user_resume(
             continuation=continuation,
-            user_input=query,
+            answer=matched.answers[interrupt_id],
         )
         if prepared_ask is None:
             raise RootPermissionQueueError("interaction_resume_ask_answer_invalid")

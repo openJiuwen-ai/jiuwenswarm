@@ -97,6 +97,10 @@ class _MessageHandlerStreamTestApi(MessageHandler):
             metadata=metadata,
         )
 
+    @classmethod
+    def is_permission_resume(cls, env, session_id) -> bool:
+        return cls._is_permission_resume(env, session_id)
+
 
 class _TestableScheduler(CronSchedulerService):
     """Subclass that exposes protected members as public methods.
@@ -349,6 +353,74 @@ async def test_web_cron_allocation_failure_publishes_tenant_notification_without
         assert frame["payload"]["phase"] == "finished"
     finally:
         bus.unsubscribe(scope, queue)
+
+
+@pytest.mark.asyncio
+async def test_web_cron_failure_notification_carries_interrupt_reason(tmp_path):
+    """Interrupt failures keep their reason in result_text; the run hint must
+    expose it so the task list tooltip is not empty."""
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, targets="web")
+    handler = FakeMessageHandler()
+    scheduler = _make_scheduler(store, handler=handler)
+    reason = "[cron] 任务执行遇到审批中断，未返回结果内容"
+    state = CronRunState(
+        run_id=f"{job.id}:1234",
+        job_id=job.id,
+        wake_at_iso="",
+        push_at_iso="",
+        job_name=job.name,
+        targets="web",
+        status="failed",
+        result_text=reason,
+        exec_session_id="web_interrupt",
+        execution_session_allocated=True,
+        exec_mode="agent.work.normal",
+    )
+
+    await scheduler._notify_web_run(job, state, phase="finished")
+
+    notices = [
+        msg.payload for msg in handler.published
+        if (msg.payload or {}).get("event_type") == "cron.run.updated"
+    ]
+    assert notices
+    assert notices[-1]["status"] == "failed"
+    assert notices[-1]["error"] == reason
+
+
+@pytest.mark.asyncio
+async def test_run_now_rejects_disabled_and_expired_jobs(tmp_path):
+    """Rejecting before session allocation avoids the empty-session leak caused
+    by the wake handler dropping non-enabled jobs."""
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, targets="web")
+    scheduler = _make_scheduler(store)
+
+    await store.update_job(job.id, {"enabled": False})
+    with pytest.raises(ValueError, match="任务已暂停"):
+        await scheduler.trigger_run_now_info(job.id)
+
+    await store.update_job(job.id, {"enabled": True, "expired": True})
+    with pytest.raises(ValueError, match="任务已过期"):
+        await scheduler.trigger_run_now_info(job.id)
+    assert not scheduler.runs
+
+
+@pytest.mark.asyncio
+async def test_run_now_keeps_expired_proactive_tick_runnable(tmp_path):
+    """An expired proactive.tick schedule has no future fires, but the manual
+    probe stays allowed — the wake branch gates it on enabled alone too, and
+    rejecting here would leave the API/TUI callers without a manual trigger."""
+    store = CronJobStore(path=tmp_path / "jobs.json")
+    job = await _create_one_job(store, mode="proactive.tick")
+    scheduler = _make_scheduler(store)
+
+    await store.update_job(job.id, {"expired": True})
+    info = await scheduler.trigger_run_now_info(job.id)
+
+    assert info["session_id"].startswith("cron_")
+    assert info["run_id"] in scheduler.runs
 
 
 class BlockingAgentClient(FakeAgentClient):
@@ -2786,7 +2858,7 @@ class TestSingleAgentCronStream:
 
     @pytest.mark.parametrize(
         "event_type",
-        ["chat.ask_user_question", "plan.approval_required"],
+        ["chat.ask_user_question", "plan.approval_required", "chat.client_tool_request"],
     )
     @pytest.mark.asyncio
     async def test_interrupt_event_fails_fast_with_interrupt_message(
@@ -4032,3 +4104,15 @@ def test_cron_store_rejects_groups_on_create_and_update(package):
     with pytest.raises(ValueError, match="only support a single model"):
         mutations.apply_cron_job_patch(job, {"model_selection": group})
     assert job.model_name == "configured-model"
+
+
+def test_an_answer_resumes_a_cron_pause_only_when_it_answers_something():
+    resume = SimpleNamespace(params={
+        "source": "permission_interrupt",
+        "request_id": "perm-1",
+        "answers": [{"selected_options": ["allow_once"]}],
+    })
+    assert _MessageHandlerStreamTestApi.is_permission_resume(resume, "cron_job-1")
+
+    resume.params["answers"] = []
+    assert not _MessageHandlerStreamTestApi.is_permission_resume(resume, "cron_job-1")

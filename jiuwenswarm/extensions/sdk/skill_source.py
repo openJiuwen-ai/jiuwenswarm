@@ -21,7 +21,7 @@ import httpx
 
 try:
     from gateway.extensions.sdk.base import BaseExtension
-except ModuleNotFoundError:  # gateway_protocol is provided by the runtime image
+except ModuleNotFoundError:  # AgentServer-only envs may not install the gateway package
     class BaseExtension:  # type: ignore[no-redef]
         """Stand-in so AgentServer unit tests can import the SPI without the protocol package."""
 
@@ -72,6 +72,7 @@ class SourceConfig:
     download_policy: DownloadPolicy | None = None
     trust_policy: TrustPolicy | None = None
     options: Mapping[str, Any] = field(default_factory=dict)
+    verify_ssl: bool = True
 
 
 @dataclass(frozen=True)
@@ -238,6 +239,7 @@ class SkillSourceProvider(ABC):
     # SourceConfig.download_policy（管理面显式配置的 allowed_hosts 优先）；
     # 两者皆空时安装链路 fail-closed 拒绝下载。
     download_allowed_hosts: tuple[str, ...] = ()
+    verify_ssl: bool = True
 
     async def start(self) -> None:
         return None
@@ -303,7 +305,7 @@ class SkillSourceProvider(ABC):
             raise RuntimeError("skill 下载 URL 必须是 HTTP 或 HTTPS 地址")
         policy = download_policy or DownloadPolicy()
         timeout = max(30.0, policy.timeout_seconds or DownloadPolicy.timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, verify=self.verify_ssl) as client:
             resp = await client.get(download_url)
             if resp.is_redirect:
                 raise RuntimeError("skill 下载不支持自动跳转，请提供最终制品地址")

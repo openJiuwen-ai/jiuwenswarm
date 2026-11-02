@@ -57,9 +57,9 @@ function inheritDesignerModelChoice(sessionId: string, choice: DesignerModelChoi
 }
 
 /**
- * Bind the design session's chat runtime. The leader streams over the team
- * chain, so the shared MessageList and the websocket delta handler must treat
- * the session as a team session.
+ * Prepare the design runtime; the app route owns active-session selection.
+ * The leader streams over the team chain, so shared message rendering and
+ * websocket delta handling must treat this as a team session.
  */
 export function bindDesignerChatSession(sessionId: string): void {
   useChatStore.getState().ensureRuntime(sessionId);
@@ -71,7 +71,6 @@ export function bindDesignerChatSession(sessionId: string): void {
   if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
     useSessionStore.getState().setMode(sessionId, 'team');
   }
-  useChatStore.getState().setActiveSessionId(sessionId);
 }
 
 /** Seed persisted leader turns into an idle, empty chat runtime. */

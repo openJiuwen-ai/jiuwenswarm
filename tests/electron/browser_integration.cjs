@@ -72,7 +72,8 @@ function mcp(env) {
 async function main() {
   await build({ entryPoints: [path.join(__dirname, 'browser_fixture.tsx')], bundle: true,
     outfile: path.join(scratch, 'ui.js'), jsx: 'automatic', absWorkingDir: path.join(repo, 'jiuwenswarm/channels/web/frontend'),
-    nodePaths: [path.join(repo, 'jiuwenswarm/channels/web/frontend/node_modules')], define: { 'process.env.NODE_ENV': '"development"' } });
+    nodePaths: [path.join(repo, 'jiuwenswarm/channels/web/frontend/node_modules')],
+    define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': '{}' } });
   const server = http.createServer(async (req, res) => {
     if (req.url === '/browser-diagnostics') {
       const views = await electron.evaluate(async () => ({
@@ -116,7 +117,8 @@ async function main() {
     });
     electron = await launch();
     const ui = await electron.firstWindow();
-    await ui.getByTestId('desktop-browser-tabs').waitFor();
+    await ui.getByTestId('browser-test-ready').waitFor();
+    assert.equal(await ui.getByTestId('desktop-browser-pane').count(), 0);
     const payload = await electron.evaluate(() => global.browserTest.endpoints);
     await electron.evaluate(async ({ session }, base) => {
       await session.defaultSession.cookies.set({ url: base, name: 'trusted-ui-cookie', value: 'synthetic-ui-only' });
@@ -126,6 +128,8 @@ async function main() {
     const bob = mcp({ ...env, PLAYWRIGHT_MCP_MEMBER_ID: 'bob', PLAYWRIGHT_MCP_PANEL_LABEL: 'Bob' });
     await alice.init();
     await bob.init();
+    await ui.getByTestId('desktop-browser-tabs').waitFor();
+    assert.equal(await electron.evaluate(() => global.browserTest.browserViews.has('session-one')), false);
     const tools = await alice.request('tools/list');
     for (const name of ['browser_run_code', 'browser_run_code_unsafe', 'browser_snapshot']) {
       assert.ok(tools.tools.some(tool => tool.name === name), `Missing SDK tool ${name}`);
@@ -206,7 +210,41 @@ async function main() {
       for (let i = 0; i < 10; i++) await global.browserTest.ensureBrowserView(`idle-${i}`);
       for (const id of ids) if (!global.browserTest.browserViews.has(id)) throw new Error(`Evicted busy panel ${id}`);
     }, ids);
+    const alicePanel = panelIdentity('session-one', 'alice').panelId;
+    const retainedTarget = await electron.evaluate((_electron, id) => global.browserTest.browserViews.get(id).targetId, alicePanel);
+    await alice.tool('browser_run_code', { code: 'async page => page.evaluate(() => { window.reopenMarker = "same-live-page"; })' });
+    await ui.getByTestId('browser-test-close').click();
+    await ui.getByTestId('desktop-browser-pane').waitFor({ state: 'detached' });
+    await alice.tool('browser_snapshot', {});
+    assert.equal(await ui.getByTestId('desktop-browser-pane').count(), 0);
     await alice.close();
+    await ui.waitForFunction(async () => (await window.jiuwenDesktop.browser.listPanels('session-one'))
+      .some(panel => panel.memberId === 'alice' && !panel.busy));
+    const reopened = mcp({ ...env, PLAYWRIGHT_MCP_MEMBER_ID: 'alice', PLAYWRIGHT_MCP_PANEL_LABEL: 'Alice' });
+    await reopened.init();
+    await ui.getByTestId('desktop-browser-pane').waitFor();
+    await ui.waitForFunction(base => document.querySelector('[data-testid="desktop-browser-address"]').value.startsWith(base), base);
+    assert.equal(await electron.evaluate(() => global.browserTest.browserViews.has('session-one')), false);
+    assert.equal(await electron.evaluate((_electron, id) => global.browserTest.browserViews.get(id).targetId, alicePanel), retainedTarget);
+    assert.match(JSON.stringify(await reopened.tool('browser_run_code', {
+      code: 'async page => page.evaluate(() => ({marker: window.reopenMarker, cookie: document.cookie, storage: localStorage.getItem("test-login")}))',
+    })), /same-live-page/);
+    assert.match(JSON.stringify(await reopened.tool('browser_run_code', {
+      code: 'async page => page.evaluate(() => document.cookie)',
+    })), /test-login=synthetic-account/);
+    await ui.screenshot({ path: path.join(scratch, 'reopened-panel.png') });
+    await reopened.close();
+    await ui.getByTestId('browser-test-close').click();
+    await ui.evaluate(() => window.browserTestDisplay({ headless: true }));
+    const hidden = mcp({ ...env, PLAYWRIGHT_MCP_MEMBER_ID: 'alice' });
+    await hidden.init();
+    await hidden.tool('browser_snapshot', {});
+    assert.equal(await ui.getByTestId('desktop-browser-pane').count(), 0);
+    await ui.evaluate(() => window.browserTestDisplay({ headless: false }));
+    await ui.getByTestId('desktop-browser-pane').waitFor();
+    assert.equal(await electron.evaluate((_electron, id) => global.browserTest.browserViews.get(id).targetId, alicePanel), retainedTarget);
+    await hidden.close();
+    console.log('PASS: closed panel reopens on the next headed task; target, page memory and login persist; headless stays hidden.');
     await bob.tool('browser_snapshot', {});
     await bob.close();
     await next.close();

@@ -126,6 +126,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "personal_context.context.edges",
         "personal_context.context.end",
         "chat.ask_user_question",
+        "chat.client_tool_request",
         "chat.subtask_update",
         "chat.subagent_activity",
         "chat.symphony_status",
@@ -1137,8 +1138,8 @@ class WebChannel(BaseWsChannel):
                 # 为空 → 赞/踩按钮不出现（ProactiveRecommendationCard 按 proactiveRecId
                 # 条件渲染按钮）。
                 "proactive_rec_id",
-                # Keep the public-stream marker through payload reduction;
-                # see .agents/agent-docs/specs/gateway/cron/S_01_web-cron-session.md.
+                # Keep the public-stream marker through payload reduction so the
+                # UI can distinguish scheduler output from a cron push message.
                 "cron_session_stream",
             ):
                 _val = msg.payload.get(_key)

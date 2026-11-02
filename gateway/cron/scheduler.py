@@ -90,10 +90,12 @@ def _execution_app_id(job: CronJob) -> str:
 # 明确 cron 运行"另一端没有操作者"），这类事件一旦出现就没有人能回答，本轮不可能
 # 再产出结果，必须立刻以失败收场，而不是让 job 挂到超时。取值与 CLI/前端判定
 # "需要用户输入"的事件集合对齐（``channels/cli/events.py:needs_user_input``，
-# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点）。
+# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点；以及客户端工具调用：
+# cron 会话没有连接的客户端去执行它）。
 CRON_INTERRUPT_EVENT_TYPES = frozenset(
     {
         "chat.ask_user_question",
+        "chat.client_tool_request",
         "plan.approval_required",
         "harness.activate_interaction",
     }
@@ -1453,6 +1455,17 @@ class CronSchedulerService:
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
+        # Reject before allocating a session: the wake handler drops disabled
+        # jobs, so accepting here would leave an empty execution session behind.
+        # The Web panel already disables these buttons; the API/TUI callers need
+        # the same contract.  proactive.tick stays manually runnable in both
+        # checks: its enable switch is owned by settings, and an expired
+        # schedule (no next fire time) stops the ticks, not a manual probe —
+        # the wake branch likewise gates it on enabled alone.
+        if job.expired and normalize_cron_job_mode(job.mode) != "proactive.tick":
+            raise ValueError("任务已过期，无法执行")
+        if not job.enabled and normalize_cron_job_mode(job.mode) != "proactive.tick":
+            raise ValueError("任务已暂停，无法执行")
         if not is_scheduled_task_supported(job.targets):
             raise ValueError(
                 f"scheduled tasks are not supported for target: {job.targets}"
@@ -1604,7 +1617,12 @@ class CronSchedulerService:
             "status": state.status,
             "phase": phase,
             "notify": notify,
-            "error": state.error if state.status == "failed" else None,
+            # Interrupt failures (ask_user / approval pause) carry their reason
+            # in result_text, not state.error; surface it so the task list can
+            # show why the last run failed instead of an empty tooltip.
+            "error": (
+                state.error or state.result_text
+            ) if state.status == "failed" else None,
             "mode": state.exec_mode or job.mode,
             "project_id": job.project_id,
             "user_id": str(job.user_id or "").strip(),

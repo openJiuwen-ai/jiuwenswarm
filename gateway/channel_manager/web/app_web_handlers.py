@@ -5157,8 +5157,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ):
                 try:
                     from gateway.common.external_providers import provider
+                    from openjiuwen_protocol.provider_domains import (
+                        PROVIDER_DOMAIN_SESSION_METADATA,
+                    )
 
-                    meta = await provider("session_metadata").get_session_metadata_async(
+                    meta = await provider(
+                        PROVIDER_DOMAIN_SESSION_METADATA
+                    ).get_session_metadata_async(
                         session_id, cache_bust=True, user_id=user_id,
                     )
                     if isinstance(meta, dict):
@@ -5382,6 +5387,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=True, payload=payload)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
+        except ValueError as e:
+            # Disabled/expired jobs and other caller-fixable states: the client
+            # should not retry them as a server fault.
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 

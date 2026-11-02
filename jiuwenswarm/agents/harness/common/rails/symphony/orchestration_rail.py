@@ -14,7 +14,9 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.ability_manager import AbilityExecutionError
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, pending_interrupts
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     ModelCallInputs,
@@ -160,11 +162,12 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         route_token = self._bind_outer_route(ctx)
         if route_token is None:
             return
-        resumed = self._claim_paused_state(scope, query, id(ctx), route_token)
+        answers_by_call = self._resume_answers(ctx, query)
+        resumed = self._claim_paused_state(scope, answers_by_call, id(ctx), route_token)
         if resumed is not None:
             resumed.awaiting_input = False
             resumed.pending_recompose = True
-            self._remember_resume_answers(resumed, query)
+            self._remember_resume_answers(resumed, answers_by_call)
             return
 
         # A normal new turn, an invalid response, or an ambiguous response
@@ -439,13 +442,13 @@ class SymphonyOrchestrationRail(DeepAgentRail):
     def _claim_paused_state(
         self,
         scope: _InvokeScope,
-        query: Any,
+        answers_by_call: Mapping[str, Any] | None,
         outer_context_id: int,
         route_token: str,
     ) -> _SymphonyInvokeState | None:
-        if not self._is_valid_interactive_answer(query):
+        if not self._is_valid_interactive_answer(answers_by_call):
             return None
-        component_ids = self._interactive_component_ids(query)
+        component_ids = self._interactive_component_ids(answers_by_call)
         with self._paused_states_lock:
             matches: list[tuple[_PausedInvokeKey, _SymphonyInvokeState]] = []
             for key, state in self._paused_states.items():
@@ -606,21 +609,31 @@ class SymphonyOrchestrationRail(DeepAgentRail):
                 self._active_states.pop(scope, None)
                 self._active_route_states.pop(state.route_token, None)
 
-    @classmethod
-    def _is_valid_interactive_answer(cls, value: Any) -> bool:
-        try:
-            from openjiuwen.core.session.interaction.interactive_input import (
-                InteractiveInput,
-            )
+    @staticmethod
+    def _resume_answers(ctx: AgentCallbackContext, query: Any) -> dict[str, Any] | None:
+        """The answers a resume input gives, keyed by the paused call each one answers.
 
-            if not isinstance(value, InteractiveInput) or value.raw_inputs is not None:
-                return False
-        except Exception:
+        A host answers a paused call by its tool call id (``update``) or by the
+        interrupt's id (``answer``); an answer by interrupt id wins, and an id
+        that names no pending interrupt keeps its own key. None when ``query``
+        is not an addressed ``InteractiveInput``.
+        """
+        if not isinstance(query, InteractiveInput) or query.raw_inputs is not None:
+            return None
+        answers_by_call = dict(query.user_inputs)
+        if query.interrupt_answers:
+            session = getattr(ctx, "session", None)
+            state = session.get_state(INTERRUPTION_KEY) if session is not None else None
+            call_ids = {pending.interrupt_id: pending.tool_call_id for pending in pending_interrupts(state)}
+            for interrupt_id, value in query.interrupt_answers.items():
+                answers_by_call[call_ids.get(interrupt_id, interrupt_id)] = value
+        return answers_by_call
+
+    @classmethod
+    def _is_valid_interactive_answer(cls, answers_by_call: Mapping[str, Any] | None) -> bool:
+        if answers_by_call is None or len(answers_by_call) != 1:
             return False
-        user_inputs = getattr(value, "user_inputs", None)
-        if not isinstance(user_inputs, Mapping) or len(user_inputs) != 1:
-            return False
-        payload = next(iter(user_inputs.values()))
+        payload = next(iter(answers_by_call.values()))
         answers = payload.get("answers") if isinstance(payload, Mapping) else None
         return (
             isinstance(answers, Mapping)
@@ -634,12 +647,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         )
 
     @staticmethod
-    def _interactive_component_ids(value: Any) -> tuple[str, ...]:
-        user_inputs = getattr(value, "user_inputs", None)
-        if not isinstance(user_inputs, Mapping):
-            return ()
+    def _interactive_component_ids(answers_by_call: Mapping[str, Any]) -> tuple[str, ...]:
         component_ids = tuple(
-            str(component_id or "").strip() for component_id in user_inputs
+            str(component_id or "").strip() for component_id in answers_by_call
         )
         if not component_ids or any(not component_id for component_id in component_ids):
             return ()
@@ -680,11 +690,10 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             return True, None
         return True, ids
 
-    def _remember_resume_answers(self, state: _SymphonyInvokeState, query: Any) -> None:
-        user_inputs = getattr(query, "user_inputs", None)
-        if not isinstance(user_inputs, Mapping) or len(user_inputs) != 1:
+    def _remember_resume_answers(self, state: _SymphonyInvokeState, answers_by_call: Mapping[str, Any]) -> None:
+        if len(answers_by_call) != 1:
             return
-        payload = next(iter(user_inputs.values()))
+        payload = next(iter(answers_by_call.values()))
         if not isinstance(payload, Mapping):
             return
         answers = payload.get("answers")

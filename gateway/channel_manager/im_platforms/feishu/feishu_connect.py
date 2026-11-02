@@ -2696,6 +2696,7 @@ class FeishuChannel(BaseChannel):
             _out_meta = msg.metadata if isinstance(msg.metadata, dict) else {}
             self._user_question_context[request_id] = {
                 "session_id": str(msg.session_id or ""),
+                "interrupt_id": str(payload.get("interrupt_id") or ""),
                 "chat_id": str(
                     _out_meta.get("feishu_chat_id")
                     or msg.chat_id
@@ -3073,6 +3074,7 @@ class FeishuChannel(BaseChannel):
             # 取回提问时的会话上下文，确保答案路由回原会话而不是新建会话
             ctx = self._user_question_context.pop(request_id, None) or {}
             ctx_session_id = str(ctx.get("session_id") or "").strip()
+            interrupt_id = str(ctx.get("interrupt_id") or "")
             ctx_chat_id = str(ctx.get("chat_id") or "").strip()
             ctx_meta = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
             if not ctx_session_id:
@@ -3108,6 +3110,7 @@ class FeishuChannel(BaseChannel):
                     "content": "",
                     "query": "",
                     "request_id": request_id,
+                    **({"interrupt_id": interrupt_id} if interrupt_id else {}),
                     "answers": answers,
                     "source": "ask_user_interrupt",
                     "supports_user_interaction": True,

@@ -106,9 +106,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_response_for_wire,
     encode_json_parse_error_wire,
 )
-from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_config import load_hooks_config
-from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
@@ -135,6 +133,7 @@ from jiuwenswarm.runtime.host_services import (
 )
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.runtime.session.model import AnswerInFlightError, NoControlTargetError
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 from jiuwenswarm.runtime.request import (
     PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
 )
@@ -160,6 +159,10 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
 )
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.server.middleware.chat import (
+    should_trigger_before_chat_request,
+    trigger_before_chat_request,
+)
 from jiuwenswarm.server.personal_context import PersonalContextHostAPI
 from jiuwenswarm.server.personal_context.ws_handler import (
     PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
@@ -615,7 +618,7 @@ async def _stop_stream_keepalive(
     _consume_keepalive_task_result(keepalive_task, request_id)
 
 
-_UNDELIVERED_ANSWER_ERRORS: tuple[type[Exception], ...] = (NoControlTargetError,)
+_UNDELIVERED_ANSWER_ERRORS: tuple[type[Exception], ...] = (NoControlTargetError, ClientToolAnswerMismatch)
 
 
 @dataclass(slots=True)
@@ -2738,7 +2741,7 @@ class AgentWebSocketServer:
         registry = getattr(self, "_preparation_registry", None)
         priority_token = None
         if (registry is not None and not getattr(self, "_execution_minimum_observed", False)
-                and self._should_trigger_before_chat_request_hook(request)):
+                and should_trigger_before_chat_request(request)):
             priority_token = registry.pause_background()
             tokens = getattr(self, "_startup_preparation_tokens", None)
             if tokens is None:
@@ -3347,6 +3350,15 @@ class AgentWebSocketServer:
                     describe_ws_exception(e),
                 ),
             )
+        except ClientToolAnswerMismatch as e:
+            logger.info(
+                "[AgentWebSocketServer] client tool results refused: request_id=%s: %s",
+                request.request_id,
+                e,
+            )
+            wire = AgentWebSocketServer._send_error_response(ws, request, send_lock, str(e), e.code)
+            async with send_lock:
+                await send_wire_payload(ws, wire)
         except Exception as e:
             logger.exception(
                 "[AgentWebSocketServer] 处理请求失败: request_id=%s: %s",
@@ -3412,14 +3424,6 @@ class AgentWebSocketServer:
                 runtime, session_id, request_id = pending_chat_request
                 runtime.end_chat_request(session_id, request_id)
             _tenant_cm.__exit__(None, None, None)
-
-    @staticmethod
-    def _should_trigger_before_chat_request_hook(request: AgentRequest) -> bool:
-        return request.req_method in (
-            ReqMethod.CHAT_SEND,
-            ReqMethod.CHAT_RESUME,
-            ReqMethod.CHAT_ANSWER,
-        )
 
     async def _try_record_implicit_feedback(self, request: AgentRequest) -> None:
         """Best-effort 采集隐式反馈：用户在收到推荐后的文本回复。
@@ -3523,23 +3527,7 @@ class AgentWebSocketServer:
     cleanup_client_disconnect_session_runtime = _cleanup_client_disconnect_session_runtime
 
     async def _trigger_before_chat_request_hook(self, request: AgentRequest) -> None:
-        if not self._should_trigger_before_chat_request_hook(request):
-            return
-        from gateway.extensions.registry import ExtensionRegistry
-
-        params = request.params if isinstance(request.params, dict) else {}
-        if not isinstance(request.params, dict):
-            request.params = params
-
-        ctx = AgentServerChatHookContext(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            session_id=request.session_id,
-            req_method=request.req_method.value if request.req_method is not None else None,
-            params=params,
-        )
-
-        await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.BEFORE_CHAT_REQUEST, ctx)
+        await trigger_before_chat_request(request)
 
     async def _handle_cancel(
         self,
@@ -4859,7 +4847,9 @@ class AgentWebSocketServer:
         that delivery. An answer whose pause is gone, as after a restart,
         settles the item it opened as ``unknown``.
         """
-        if resume_state is None or isinstance(exc, AnswerInFlightError):
+        # A refused client tool resume raises ClientToolAnswerMismatch from the coordinator's error.
+        in_flight = isinstance(exc, AnswerInFlightError) or isinstance(exc.__cause__, AnswerInFlightError)
+        if resume_state is None or in_flight:
             return None
         service = getattr(self, "_session_message_service", None)
         if service is None:

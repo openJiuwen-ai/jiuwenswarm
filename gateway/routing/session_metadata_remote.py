@@ -156,7 +156,9 @@ class SessionMetadataRemoteProvider:
 
 def install() -> None:
     """把 WS 远端实现注册进 ``common.external_providers`` 的 session_metadata 域。"""
-    register("session_metadata", SessionMetadataRemoteProvider())
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+
+    register(PROVIDER_DOMAIN_SESSION_METADATA, SessionMetadataRemoteProvider())
     logger.info(
         "[session-metadata-remote] registered session_metadata provider (WS)"
     )

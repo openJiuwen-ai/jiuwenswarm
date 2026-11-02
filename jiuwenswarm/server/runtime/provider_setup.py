@@ -44,24 +44,38 @@ class _LazyProvider:
 
 def install_front() -> None:
     """Register control-plane providers without loading execution dependencies."""
+    from openjiuwen_protocol.provider_domains import (
+        PROVIDER_DOMAIN_A2UI,
+        PROVIDER_DOMAIN_CRON_STORE_FACTORY,
+        PROVIDER_DOMAIN_MCP_CREDENTIAL,
+        PROVIDER_DOMAIN_MCP_REGISTRY,
+        PROVIDER_DOMAIN_MCP_STATE,
+        PROVIDER_DOMAIN_SESSION_METADATA,
+        PROVIDER_DOMAIN_TEAM_BINDING_STORE,
+        PROVIDER_DOMAIN_TEAM_ENTITY_STORE,
+    )
+
     from jiuwenswarm.common.external_providers import register, registered_domains
 
     modules = {
-        "mcp_state": "mcp.state_store",
-        "mcp_registry": "mcp.registry",
-        "mcp_credential": "mcp.credential",
-        "a2ui": "a2ui.integration",
-        "team_binding_store": "team_binding_store",
-        "team_entity_store": "team_entity_store",
-        "session_metadata": "session.session_metadata",
+        PROVIDER_DOMAIN_MCP_STATE: "mcp.state_store",
+        PROVIDER_DOMAIN_MCP_REGISTRY: "mcp.registry",
+        PROVIDER_DOMAIN_MCP_CREDENTIAL: "mcp.credential",
+        PROVIDER_DOMAIN_A2UI: "a2ui.integration",
+        PROVIDER_DOMAIN_TEAM_BINDING_STORE: "team_binding_store",
+        PROVIDER_DOMAIN_TEAM_ENTITY_STORE: "team_entity_store",
+        PROVIDER_DOMAIN_SESSION_METADATA: "session.session_metadata",
     }
     installed = set(registered_domains())
     for domain, module_name in modules.items():
         if domain not in installed:
             register(domain, _LazyProvider(f"jiuwenswarm.server.runtime.{module_name}"))
-    if "cron_store_factory" not in installed:
+    if PROVIDER_DOMAIN_CRON_STORE_FACTORY not in installed:
         # 不在 server.runtime 前缀下，单独注册（懒加载同款）
-        register("cron_store_factory", _LazyProvider("jiuwenswarm.runtime.cron.factory"))
+        register(
+            PROVIDER_DOMAIN_CRON_STORE_FACTORY,
+            _LazyProvider("jiuwenswarm.runtime.cron.factory"),
+        )
 
 
 def install() -> None:
@@ -77,10 +91,12 @@ def install() -> None:
     import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401
     import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401
 
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_CRON_STORE_FACTORY
+
     from jiuwenswarm.common.external_providers import register
     from jiuwenswarm.runtime.cron import factory as cron_factory
 
-    register("cron_store_factory", cron_factory)
+    register(PROVIDER_DOMAIN_CRON_STORE_FACTORY, cron_factory)
 
     _INSTALLED = True
     logger.debug("[server-provider-setup] common external providers installed")

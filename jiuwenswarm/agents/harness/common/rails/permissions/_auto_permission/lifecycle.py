@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -42,8 +43,10 @@ class AutoPermissionLifecycleMixin:
         trusted_search_urls: SessionTrustedSearchUrls | None = None,
         persistent_audit_writer: Any | None = None,
         browser_runtime_security_profile: Any | None = None,
+        written_permissions: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.base_rail = base_rail
+        self._written_permissions = written_permissions
         self._owner_agent = None
         self.priority = int(getattr(base_rail, "priority", 90))
         self.permission_config = deepcopy(permission_config)

@@ -801,6 +801,8 @@ function toPersistedMediaRecord(item: MediaItem): Record<string, unknown> {
     mime_type: getMediaMimeType(item),
     path: item.path,
     size_bytes: item.size_bytes ?? item.sizeBytes,
+    ...(item.displayName ? { displayName: item.displayName } : {}),
+    ...(item.clientId ? { clientId: item.clientId } : {}),
   };
 }
 
@@ -811,6 +813,8 @@ function slimPersistedMediaRecords(items: Record<string, unknown>[]): Record<str
     mime_type: item.mime_type ?? item.mimeType,
     path: item.path,
     size_bytes: item.size_bytes ?? item.sizeBytes,
+    ...(item.displayName ? { displayName: item.displayName } : {}),
+    ...(item.clientId ? { clientId: item.clientId } : {}),
   }));
 }
 
@@ -2194,7 +2198,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             if (persisted.media_items?.length !== 1 || typeof stored?.path !== 'string' || !stored.path.trim()) {
               throw new Error(`${item.filename}: ${t('chat.inputAttachment.uploadFailed')}`);
             }
-            mergedItems.push(stored);
+            // The persist RPC only echoes back server-known fields -- a rename typed
+            // on the composer before this file ever had a path (e.g. the welcome
+            // page's first message) lives only on the client's displayName, and the
+            // draft's own id (clientId, session.assets.register's idempotency key,
+            // see session_assets.py) is client-only too -- both must be re-attached
+            // here or they are lost the moment this response lands.
+            const clientFields: Record<string, unknown> = {};
+            if (item.displayName) clientFields.displayName = item.displayName;
+            if (item.clientId) clientFields.clientId = item.clientId;
+            mergedItems.push(Object.keys(clientFields).length ? { ...stored, ...clientFields } : stored);
           }
           const documentHints = toUploadDocumentHints(mergedItems);
           if (documentHints.length) {
@@ -2204,10 +2217,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           outgoingFiles = buildPersistedMediaFiles(mergedItems);
         }
         // @名称 -> 文件路径的引用笔记在这里统一加（不在 InputArea 提交时加）：候选既包括这个
-        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——用
-        // pendingNames 里用户自己起的名字，没改过就用文件名去掉扩展名（和后端默认命名规则一致）。
-        // 这样欢迎页发的第一条消息（这时候 session 刚建，素材注册还没来得及跑）也能正确 @ 到
-        // 这条消息自己带的附件。
+        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——名字
+        // 优先用卡片上带来的 displayName（即使这条附件发送前还没有落盘路径、没法走
+        // pendingNames 那套按 path 键的机制，改过的名字也不会丢，见 InputArea.tsx 的
+        // attachmentToMediaItem），其次是 pendingNames 里按 path 记的待用名字，都没有就用
+        // 文件名去掉扩展名（和后端默认命名规则一致）。这样欢迎页发的第一条消息（这时候 session
+        // 刚建，素材注册还没来得及跑）也能正确 @ 到这条消息自己带的附件。
         {
           const pendingNames = useSessionAssetsStore.getState().pendingNames;
           const freshAssets: NamedAsset[] = (outgoingMediaItems ?? []).flatMap((item) => {
@@ -2215,7 +2230,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             const filename = typeof item.filename === 'string' ? item.filename : '';
             if (!path) return [];
             const mimeType = typeof item.mime_type === 'string' ? item.mime_type : '';
-            return [{ name: pendingNames[filename] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
+            const displayName = typeof item.displayName === 'string' ? item.displayName.trim() : '';
+            return [{ name: displayName || pendingNames[normalizePath(path)] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
           });
           const knownAssets = useSessionAssetsStore.getState().bySession[sessionId] ?? [];
           const byName = new Map<string, NamedAsset>();
@@ -2254,7 +2270,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         }
-        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里；后端按路径去重）。
+        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里——那时候还没有
+        // session_id，InputArea 的实时注册 effect 还没来得及跑）。已经存在的会话里，
+        // registerUploads 自己会跳过 InputArea 实时注册已经处理过的路径（见
+        // sessionAssets.ts 的 dispatchedUploadPaths），不会重复登记。
         if (outgoingMediaItems?.length) {
           void useSessionAssetsStore
             .getState()
@@ -2731,6 +2750,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             : {};
         const approvalSchemaPayload = approvalSchema ? { approval_schema: approvalSchema } : {};
         const sourcePayload = effectiveSource ? { source: effectiveSource } : {};
+        const interruptPayload =
+          pendingMatches && pendingQuestion?.interruptId
+            ? { interrupt_id: pendingQuestion.interruptId }
+            : {};
 
         // ── SwarmFlow human 回复 → chat.swarmflow_reply ──
         if (effectiveSource === 'swarmflow_human') {
@@ -2853,6 +2876,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               ...agentSelectionPayload,
               ...agentGroupSelectionPayload,
               ...sourcePayload,
+              ...interruptPayload,
               ...structuredPlanPayload,
               ...approvalSchemaPayload,
               ...evolutionMetaPayload,
@@ -2898,6 +2922,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             request_id: requestId,
             answers,
             ...sourcePayload,
+            ...interruptPayload,
             ...approvalSchemaPayload,
             ...evolutionMetaPayload,
           });
@@ -5360,6 +5385,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           questions,
           ...(typeof questionPayload.duplex_job_id === 'string'
             ? { duplexJobId: questionPayload.duplex_job_id } : {}),
+          ...(typeof questionPayload.interrupt_id === 'string' && questionPayload.interrupt_id
+            ? { interruptId: questionPayload.interrupt_id } : {}),
           ...(approvalSchema ? { approvalSchema } : {}),
           ...(evolutionMeta ? { evolutionMeta } : {}),
           ...(planApprovalKind ? { planApprovalKind } : {}),

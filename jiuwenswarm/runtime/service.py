@@ -14,7 +14,8 @@ import inspect
 import logging
 import time
 import uuid
-from contextlib import aclosing
+from collections.abc import Iterator
+from contextlib import aclosing, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -24,9 +25,11 @@ from gateway.common.mode_matrix import (
     is_single_agent_mode,
     is_team_mode,
 )
+from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
 from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime.interaction import asked_interaction_ids, interaction_ids
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
+from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
 from jiuwenswarm.runtime.session import (
     RuntimeSessionCoordinator,
     RuntimeSessionState,
@@ -39,6 +42,7 @@ from jiuwenswarm.runtime.session.model import (
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
     ExecutionCancelCause,
     ExecutionLifecycleContext,
+    NoControlTargetError,
     SessionExecutionSnapshot,
     SessionExecutionState,
     SessionLifecycleContext,
@@ -84,6 +88,7 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
+from jiuwenswarm.server.middleware.chat import trigger_before_chat_request
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 if TYPE_CHECKING:
@@ -328,6 +333,16 @@ async def _release_process_runtime_extensions() -> None:
                 ExtensionRegistry.reset_instance()
 
 
+@contextmanager
+def _client_tool_answer_mismatch(request: AgentRequest) -> Iterator[None]:
+    try:
+        yield
+    except NoControlTargetError as exc:
+        if not is_client_tool_resume(request.params):
+            raise
+        raise ClientToolAnswerMismatch("no paused execution waits on these client tool results") from exc
+
+
 class AgentRuntime:
     """Own the existing ``AgentManager`` and its in-memory resources.
 
@@ -530,7 +545,7 @@ class AgentRuntime:
         return False
 
     async def _mark_pending_interaction(self, event: RuntimeEvent) -> None:
-        if event.event_type != "chat.ask_user_question":
+        if event.event_type not in USER_INTERACTION_EVENTS:
             return
         payload = event.payload if isinstance(event.payload, dict) else {}
         await self._mark_pending_interaction_id(
@@ -560,8 +575,8 @@ class AgentRuntime:
             await clearer(session_id, request_id)
 
     def _pending_interaction_ids(self, session_id: str) -> frozenset[str]:
-        reader = getattr(self._admission_controller, "pending_interactions", None)
-        return frozenset(reader(session_id)) if callable(reader) else frozenset()
+        reader = getattr(self._admission_controller, "pending_interaction_ids", None)
+        return reader(session_id) if callable(reader) else frozenset()
 
     def _answered_interaction_ids(self, request: AgentRequest) -> set[str]:
         params = request.params if isinstance(request.params, dict) else {}
@@ -1808,11 +1823,7 @@ class AgentRuntime:
                 )
                 admission_started = True
             if interaction_answer:
-                params = request.params if isinstance(request.params, dict) else {}
-                await self._clear_pending_interaction(
-                    request.session_id or "default",
-                    str(params.get("request_id") or params.get("interaction_id") or ""),
-                )
+                await self._clear_answered_interactions(request)
             else:
                 await self._drop_superseded_interactions(request)
             if stateless:
@@ -2238,6 +2249,7 @@ class AgentRuntime:
                         "ask_user_interrupt",
                         "confirm_interrupt",
                         "permission_interrupt",
+                        CLIENT_TOOL_INTERRUPT_SOURCE,
                     }
                     and all(
                         self._session_coordinator.control_target_work_kind(
@@ -2518,11 +2530,7 @@ class AgentRuntime:
                 )
                 admission_started = True
             if interaction_answer:
-                params = request.params if isinstance(request.params, dict) else {}
-                await self._clear_pending_interaction(
-                    request.session_id or "default",
-                    str(params.get("request_id") or params.get("interaction_id") or ""),
-                )
+                await self._clear_answered_interactions(request)
             else:
                 await self._drop_superseded_interactions(request)
             if stateless:
@@ -2767,7 +2775,7 @@ class AgentRuntime:
         *,
         on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
-        """Stream ask_user / confirm / permission answers under control admission.
+        """Stream ask_user / confirm / permission / client tool answers under control admission.
 
         The unary control API deliberately collects a complete turn. WebSocket
         chat.send / chat.user_answer resumes must instead expose each event
@@ -2794,14 +2802,15 @@ class AgentRuntime:
                 interaction_ids=interaction_ids,
                 on_execution=remember_execution,
             ))
-            async with aclosing(stream):
-                async for event in stream:
-                    if execution_id is not None and isinstance(event.payload, dict):
-                        event.payload["execution_id"] = execution_id
-                    if on_control_event is not None and self._is_permission_control_ack(request, event):
-                        await on_control_event(event)
-                    else:
-                        yield event
+            with _client_tool_answer_mismatch(request):
+                async with aclosing(stream):
+                    async for event in stream:
+                        if execution_id is not None and isinstance(event.payload, dict):
+                            event.payload["execution_id"] = execution_id
+                        if on_control_event is not None and self._is_permission_control_ack(request, event):
+                            await on_control_event(event)
+                        else:
+                            yield event
         finally:
             if admitted:
                 await end_control(session_id)
@@ -2841,18 +2850,19 @@ class AgentRuntime:
             execution_id = execution.execution_id
 
         try:
-            events = await self._session_coordinator.deliver_control(
-                session_id,
-                control_ids,
-                lambda: self._deliver_control_started(
-                    request, on_control_event=on_control_event, cleared=cleared,
-                ),
-                interaction_ids=asked_interaction_ids,
-                on_execution=remember_execution,
-            )
-            for event in events:
-                if execution_id is not None and isinstance(event.payload, dict):
-                    event.payload["execution_id"] = execution_id
+            with _client_tool_answer_mismatch(request):
+                events = await self._session_coordinator.deliver_control(
+                    session_id,
+                    control_ids,
+                    lambda: self._deliver_control_started(
+                        request, on_control_event=on_control_event, cleared=cleared,
+                    ),
+                    interaction_ids=asked_interaction_ids,
+                    on_execution=remember_execution,
+                )
+                for event in events:
+                    if execution_id is not None and isinstance(event.payload, dict):
+                        event.payload["execution_id"] = execution_id
             if not heartbeat_control:
                 for event in events:
                     if self._has_control_target(session_id, tuple(interaction_ids(event))):
@@ -2926,14 +2936,25 @@ class AgentRuntime:
             and event.payload.get("session_id", event.session_id) == request.session_id
         )
 
+    def _borrow_paused_agent(
+        self, session_id: str, control_ids: tuple[str, ...], managers: Iterable[AgentManager]
+    ) -> Any:
+        agent = self._session_coordinator.control_target_agent(session_id, control_ids)
+        if agent is None:
+            return None
+        for manager in managers:
+            borrowed = manager.borrow_agent_nowait(agent)
+            if borrowed is not None:
+                return borrowed
+        return None
+
     def _control_agent(self, request: AgentRequest, manager: AgentManager) -> Any:
         """Borrow the agent the paused execution ran on, though its Session was evicted from it since."""
         session_id = request.session_id or "default"
-        agent = self._session_coordinator.control_target_agent(session_id, self._control_ids(request))
-        borrowed = manager.borrow_agent_nowait(agent) if agent is not None else None
-        if borrowed is None:
+        agent = self._borrow_paused_agent(session_id, self._control_ids(request), (manager,))
+        if agent is None:
             raise RuntimeError(f"session has no active agent: {session_id}")
-        return borrowed
+        return agent
 
     async def _released_after(
         self, request: AgentRequest, stream: AsyncIterator[RuntimeEvent]
@@ -4029,6 +4050,8 @@ class AgentRuntime:
     @staticmethod
     def _control_ids(request: AgentRequest) -> tuple[str, ...]:
         params = request.params if isinstance(request.params, dict) else {}
+        if is_client_tool_resume(params):
+            return tuple(answer.request_id for answer in client_tool_answers(params.get("answers") or ()))
         return (str(params.get("request_id") or request.request_id or ""),)
 
     def _has_control_target(self, session_id: str, control_ids: tuple[str, ...]) -> bool:
@@ -4036,6 +4059,21 @@ class AgentRuntime:
             self._session_coordinator.has_control_target(session_id, control_id)
             for control_id in control_ids
         )
+
+    async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
+        """What a paused execution of the Session still waits on, as the events that asked it.
+
+        Read from the paused agent, so a client that binds the conversation
+        again is sent each request and question once more. An interaction
+        whose answer is being delivered is left out.
+        """
+        unanswered = self._session_coordinator.unanswered_interactions(session_id)
+        agent = self._borrow_paused_agent(
+            session_id, tuple(unanswered), self._tenant.iter_managers_for_host_event()
+        ) if unanswered else None
+        if agent is None:
+            return []
+        return [event for event in await agent.pending_interactions(session_id) if event["request_id"] in unanswered]
 
     def resumed_interactions(self, request: AgentRequest) -> frozenset[str]:
         """The interactions of the pause an answer resumes, the ones it answers included."""
@@ -4366,28 +4404,7 @@ class AgentRuntime:
 
     @staticmethod
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
-        if request.req_method not in AgentRuntime._chat_turn_methods():
-            return
-        from gateway.extensions.registry import ExtensionRegistry
-        from jiuwenswarm.common.hook_event import AgentServerHookEvents
-        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
-
-        params = request.params if isinstance(request.params, dict) else {}
-        if not isinstance(request.params, dict):
-            request.params = params
-        context = AgentServerChatHookContext(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            session_id=request.session_id,
-            req_method=(
-                request.req_method.value if request.req_method is not None else None
-            ),
-            params=params,
-        )
-        await ExtensionRegistry.get_instance().trigger(
-            AgentServerHookEvents.BEFORE_CHAT_REQUEST,
-            context,
-        )
+        await trigger_before_chat_request(request)
 
 
 __all__ = ["AgentRuntime", "RuntimeStateError"]
