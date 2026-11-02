@@ -890,6 +890,14 @@ function normalizeHistoryMediaItem(value: unknown): MediaItem | null {
     return null;
   }
 
+  // The composer draft's own id (session.assets.register's idempotency key),
+  // persisted by the backend (_history_media_record, interface.py) specifically so
+  // resolveAssetDisplayNames can match a restored message's attachment back to the
+  // ONE asset it actually created -- a path can now legitimately back more than
+  // one asset (a deliberate re-attach), so matching by path alone after a reload
+  // would resolve to whichever asset happens to be newest.
+  const clientId = pickFirstString(value, ['client_id', 'clientId']);
+
   return {
     type,
     filename,
@@ -897,6 +905,7 @@ function normalizeHistoryMediaItem(value: unknown): MediaItem | null {
     mime_type: mimeType,
     mimeType,
     ...(typeof size === 'number' ? { size_bytes: size, sizeBytes: size } : {}),
+    ...(clientId ? { clientId } : {}),
   };
 }
 

@@ -22,6 +22,10 @@ export interface MediaItem {
   /** 展示用的名字（比如任务素材被改过名）；不影响 filename 承担的扩展名识别/下载文件名。
    *  没有的话渲染时回退到 filename。 */
   displayName?: string;
+  /** 这张附件卡片（composer 草稿）自己的 id，发送时随 session.assets.register 的
+   *  client_id 一并带上，让后端识别"这是同一次附加的重试/重放，不是故意再附一次"
+   *  （见 session_assets.py）。不参与渲染。 */
+  clientId?: string;
   base64Data?: string;
   base64_data?: string;
   url?: string;

@@ -14,7 +14,20 @@ stateless RPC methods:
   path -- the same path attached again deliberately gets its own asset, the way
   re-attaching an image always does); the default name is the file name without
   extension, made unique. Callers are responsible for not re-registering a file
-  they already registered themselves (see InputArea.tsx's per-draft tracking).
+  they already registered themselves (see InputArea.tsx's per-draft tracking),
+  but that is a best-effort optimization, not the source of correctness: this
+  RPC is a generic WS method any caller can invoke, and the same logical
+  request CAN legitimately execute twice server-side (a response lost to a
+  disconnect before the client sees it, a reconnect-triggered retry, a second
+  browser tab). For ``upload`` items, pass a caller-chosen ``client_id`` that
+  stays the SAME across retries of the one draft but is NEW for every
+  deliberate re-attach (InputArea.tsx uses the draft's own id, which is exactly
+  that) -- a second call reusing a ``client_id`` already on an asset in this
+  session returns that asset instead of creating another one. ``generated``
+  items have no such per-attempt identity (there is no "intentional repeat" for
+  an agent-produced file the way there is for a user re-attaching one), so
+  those are deduped by path instead, same as before this per-draft-id scheme
+  existed for uploads.
 - ``session.assets.rename``: change an asset's name.
 - ``session.assets.remove``: drop one asset by id (idempotent; does not touch the
   underlying file, only the registry entry).
@@ -139,6 +152,14 @@ class SessionAssetManager:
         for asset in assets:
             taken.update(str(old).casefold() for old in asset.get("name_history") or ())
         added = False
+        # Idempotency indexes, built from what's already on disk. An item that
+        # matches one of these is a repeat of a request already fulfilled (lost
+        # response + retry, reconnect replay, a second tab) -- it returns the
+        # existing asset instead of appending a new one. Both indexes are also
+        # updated as this call creates assets, so two items in the SAME batch
+        # that share a client_id or (for generated) a path also collapse to one.
+        by_client_id = {str(a["client_id"]): a for a in assets if a.get("client_id")}
+        by_generated_path = {a["path"]: a for a in assets if a.get("source") == "generated"}
         # Parallel to ``items``: the asset each input item became, or None when
         # skipped (missing path/file). One element per input, in order, so a
         # caller that registers several items in one call (InputArea.tsx) can
@@ -158,10 +179,20 @@ class SessionAssetManager:
             # must still get its own new, distinctly-named asset each time it
             # is deliberately attached again, the same as an image would. The
             # caller (InputArea.tsx) is what guarantees a single draft is
-            # never registered twice; every item that reaches here is a
-            # deliberate, distinct attach action.
+            # never registered twice; every item that reaches here is meant to
+            # be a deliberate, distinct attach action -- client_id (below) is
+            # what protects against it reaching here more than once by accident.
             if not path or not Path(path).is_file():
                 created.append(None)
+                continue
+            source = str(item.get("source") or "upload")
+            source = source if source in ("upload", "generated") else "upload"
+            client_id = str(item.get("client_id") or "").strip()[:_NAME_MAX] or None
+            if source == "upload" and client_id and client_id in by_client_id:
+                created.append(by_client_id[client_id])
+                continue
+            if source == "generated" and path in by_generated_path:
+                created.append(by_generated_path[path])
                 continue
             wanted = str(item.get("name") or "").strip() or Path(path).stem
             try:
@@ -171,18 +202,22 @@ class SessionAssetManager:
                 base = validate_asset_name(cleaned_stem[:_NAME_MAX] or "asset")
             name = self._unique_name(base, taken)
             taken.add(name.casefold())
-            source = str(item.get("source") or "upload")
             asset = {
                 "asset_id": f"asset_{secrets.token_hex(4)}",
                 "name": name,
                 "kind": _kind_of(path),
                 "path": path,
-                "source": source if source in ("upload", "generated") else "upload",
+                "source": source,
                 "created_at": time.time(),
+                **({"client_id": client_id} if client_id else {}),
             }
             assets.append(asset)
             created.append(asset)
             added = True
+            if client_id:
+                by_client_id[client_id] = asset
+            if source == "generated":
+                by_generated_path[path] = asset
         if added:
             self._save(session_id, assets)
         return {"assets": assets, "created": created}

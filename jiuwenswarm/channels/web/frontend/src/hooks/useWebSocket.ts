@@ -801,6 +801,8 @@ function toPersistedMediaRecord(item: MediaItem): Record<string, unknown> {
     mime_type: getMediaMimeType(item),
     path: item.path,
     size_bytes: item.size_bytes ?? item.sizeBytes,
+    ...(item.displayName ? { displayName: item.displayName } : {}),
+    ...(item.clientId ? { clientId: item.clientId } : {}),
   };
 }
 
@@ -811,6 +813,8 @@ function slimPersistedMediaRecords(items: Record<string, unknown>[]): Record<str
     mime_type: item.mime_type ?? item.mimeType,
     path: item.path,
     size_bytes: item.size_bytes ?? item.sizeBytes,
+    ...(item.displayName ? { displayName: item.displayName } : {}),
+    ...(item.clientId ? { clientId: item.clientId } : {}),
   }));
 }
 
@@ -2184,7 +2188,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             if (persisted.media_items?.length !== 1 || typeof stored?.path !== 'string' || !stored.path.trim()) {
               throw new Error(`${item.filename}: ${t('chat.inputAttachment.uploadFailed')}`);
             }
-            mergedItems.push(stored);
+            // The persist RPC only echoes back server-known fields -- a rename typed
+            // on the composer before this file ever had a path (e.g. the welcome
+            // page's first message) lives only on the client's displayName, and the
+            // draft's own id (clientId, session.assets.register's idempotency key,
+            // see session_assets.py) is client-only too -- both must be re-attached
+            // here or they are lost the moment this response lands.
+            const clientFields: Record<string, unknown> = {};
+            if (item.displayName) clientFields.displayName = item.displayName;
+            if (item.clientId) clientFields.clientId = item.clientId;
+            mergedItems.push(Object.keys(clientFields).length ? { ...stored, ...clientFields } : stored);
           }
           const documentHints = toUploadDocumentHints(mergedItems);
           if (documentHints.length) {
@@ -2194,8 +2207,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           outgoingFiles = buildPersistedMediaFiles(mergedItems);
         }
         // @名称 -> 文件路径的引用笔记在这里统一加（不在 InputArea 提交时加）：候选既包括这个
-        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——用
-        // pendingNames 里用户自己起的名字（按 path 键，不同文件即使同名也不会串），没改过就用
+        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——名字
+        // 优先用卡片上带来的 displayName（即使这条附件发送前还没有落盘路径、没法走
+        // pendingNames 那套按 path 键的机制，改过的名字也不会丢，见 InputArea.tsx 的
+        // attachmentToMediaItem），其次是 pendingNames 里按 path 记的待用名字，都没有就用
         // 文件名去掉扩展名（和后端默认命名规则一致）。这样欢迎页发的第一条消息（这时候 session
         // 刚建，素材注册还没来得及跑）也能正确 @ 到这条消息自己带的附件。
         {
@@ -2205,7 +2220,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             const filename = typeof item.filename === 'string' ? item.filename : '';
             if (!path) return [];
             const mimeType = typeof item.mime_type === 'string' ? item.mime_type : '';
-            return [{ name: pendingNames[normalizePath(path)] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
+            const displayName = typeof item.displayName === 'string' ? item.displayName.trim() : '';
+            return [{ name: displayName || pendingNames[normalizePath(path)] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
           });
           const knownAssets = useSessionAssetsStore.getState().bySession[sessionId] ?? [];
           const byName = new Map<string, NamedAsset>();

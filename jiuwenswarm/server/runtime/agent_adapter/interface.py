@@ -597,6 +597,13 @@ def _history_media_record(value: Any, *, default_type: str = "image") -> dict[st
     )
     mime_type = _history_media_string(value, "mime_type", "mimeType")
     size = _history_media_size(value)
+    # The composer draft's own id (session.assets.register's idempotency key, see
+    # session_assets.py): without it surviving a history reload, a historical
+    # message's attachment can only be matched back to the session asset it
+    # created by path alone -- ambiguous once the same path legitimately backs
+    # more than one asset (a deliberate re-attach), see
+    # resolveAssetDisplayNames (assetReferences.ts).
+    client_id = _history_media_string(value, "clientId", "client_id")
 
     record: dict[str, Any] = {
         "type": media_type,
@@ -610,6 +617,8 @@ def _history_media_record(value: Any, *, default_type: str = "image") -> dict[st
         record["url"] = url
     if size is not None:
         record["size_bytes"] = size
+    if client_id:
+        record["client_id"] = client_id
     return record
 
 
