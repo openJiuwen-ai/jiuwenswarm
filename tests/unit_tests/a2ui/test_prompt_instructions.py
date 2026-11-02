@@ -28,6 +28,18 @@ def test_a2ui_prompt_discourages_nested_templates():
     assert "indexed valueMap" in instruction
 
 
+def test_a2ui_prompt_titles_input_components_with_text_h5():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert 'usageHint "h5"' in en
+    assert '{"literalString": ""}' in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert 'usageHint="h5"' in zh
+    assert '{"literalString": ""}' in zh
+
+
 def test_a2ui_prompt_defines_hotel_booking_actions():
     instruction = build_a2ui_browser_workflow_instruction()
 
