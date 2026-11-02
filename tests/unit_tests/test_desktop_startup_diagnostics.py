@@ -481,6 +481,7 @@ def test_failure_after_early_navigation_shows_diagnostics(
         raising=False,
     )
     monkeypatch.setattr(runtime, "_clear_wkwebview_system_cache", lambda: None)
+    monkeypatch.setattr(runtime, "_start_tray", lambda: None)
     monkeypatch.setattr(
         runtime, "_should_run_startup_doctor", lambda _exc, _cf: False
     )
@@ -579,6 +580,7 @@ def test_service_failure_transitions_loading_state_without_worker_window_calls(
 
     monkeypatch.setattr(desktop_app.webview, "start", start_webview, raising=False)
     monkeypatch.setattr(runtime, "_clear_wkwebview_system_cache", lambda: None)
+    monkeypatch.setattr(runtime, "_start_tray", lambda: None)
     monkeypatch.setattr(runtime, "start_services", fail_services)
     doctor_calls = []
     monkeypatch.setattr(
