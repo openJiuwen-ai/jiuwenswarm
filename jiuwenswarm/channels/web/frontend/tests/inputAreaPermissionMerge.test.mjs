@@ -484,15 +484,78 @@ async function typeSlash(value) {
   await flushMicrotasks();
 }
 
-const pressKey = async (key) =>
+const pressKey = async (key, options = {}) =>
   act(async () => {
-    byId('chat-panel-input').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
+    byId('chat-panel-input').dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+      key, bubbles: true, cancelable: true, ...options,
+    }));
   });
 const suggestionIds = () =>
   Array.from(
     document.querySelectorAll('[data-testid="chat-panel-composer-suggestion-item"]'),
     (item) => item.dataset.variant,
   );
+
+for (const edition of ['enterprise', 'personal']) {
+  for (const sessionId of ['new', `path-enter-${edition}`]) {
+    test(`${edition}: Enter sends prose ending in an unmatched path in ${sessionId}`, async () => {
+      window.__JIUWENSWARM_EDITION__ = edition;
+      try {
+        await mount({ sessionId }, async ({ props, render }) => {
+          const sent = [];
+          props.onSubmit = (text) => sent.push(text);
+          await render();
+          for (const path of ['/tmp3', '/tmp']) {
+            const text = `调用bash工具，执行命令ls ${path}`;
+            await typeSlash(text);
+            assert.deepEqual(suggestionIds(), []);
+            assert.ok(byId('chat-panel-composer-suggestion-empty'));
+            await pressKey('Enter');
+            assert.equal(sent.at(-1), text);
+            assert.equal(byId('chat-panel-input').textContent, '');
+            assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          }
+          assert.equal(sent.length, 2);
+        });
+      } finally {
+        delete window.__JIUWENSWARM_EDITION__;
+      }
+    });
+  }
+
+  test(`${edition}: unmatched paths preserve IME, newline, Tab and valid slash completion`, async () => {
+    window.__JIUWENSWARM_EDITION__ = edition;
+    try {
+      await mount({}, async ({ props, render }) => {
+        const sent = [];
+        props.onSubmit = (text) => sent.push(text);
+        await render();
+        const text = '调用bash工具，执行命令ls /tmp3';
+        await typeSlash(text);
+        for (const [key, options] of [
+          ['Enter', { isComposing: true }], ['Enter', { shiftKey: true }], ['Tab', {}],
+        ]) {
+          await pressKey(key, options);
+          assert.deepEqual(sent, []);
+          assert.equal(byId('chat-panel-input').textContent, text);
+        }
+        await typeSlash('/unknown-command');
+        await pressKey('Enter');
+        assert.deepEqual(sent, []);
+        assert.equal(byId('chat-panel-input').textContent, '/unknown-command');
+        for (const key of ['Enter', 'Tab']) {
+          await typeSlash('请使用 /test-skill');
+          assert.deepEqual(suggestionIds(), ['test-skill']);
+          await pressKey(key);
+          assert.deepEqual(sent, []);
+          assert.ok(byId('chat-panel-input').querySelector('[data-skill="test-skill"]'));
+        }
+      });
+    } finally {
+      delete window.__JIUWENSWARM_EDITION__;
+    }
+  });
+}
 
 test('welcome command menu updates on session and mode changes without hiding skills', async () => {
   await mount({ sessionId: 'new' }, async () => {
