@@ -20,8 +20,15 @@ async def session_receive_core(
         raise ValueError("invalid session.receive input")
     async with state.lock:
         state.require_active()
+        if state.failure is not None:
+            raise state.failure
         if state.receipt is None:
             text = event.event_input.text.strip()
-            state.receipt = copy.deepcopy(await state.commit(text))
+            state.attempted = True
+            try:
+                state.receipt = copy.deepcopy(await state.commit(text))
+            except BaseException as failure:
+                state.failure = failure
+                raise
             state.result = SessionReceiveResult(text=text)
         return copy.deepcopy(state.result)

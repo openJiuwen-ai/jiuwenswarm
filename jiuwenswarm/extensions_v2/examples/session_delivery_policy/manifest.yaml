@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.session-delivery-policy
+  version: 1.0.0
+  displayName: Session Delivery Policy
+extensions:
+  - id: delivery-policy
+    runtime: backend
+    module: extension.py

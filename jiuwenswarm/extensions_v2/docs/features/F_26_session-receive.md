@@ -9,7 +9,7 @@
 
 ## 1. 范围、状态与依据
 
-本特性让目标会话在持久消息入队前观察、改写或消费本次跨会话投递。真实入口为原 SessionMessageService.send_message，平台完成归属校验和源 session.send 后，使用**目标会话** SessionContext 触发接收链。无新增前端、Ops、模型轮次或第二份消息队列，不依赖 PR !99 的生命周期代码。实现验证记录见第 6 节。
+本特性让目标会话在持久消息入队前观察、改写或消费本次跨会话投递。真实入口为原 SessionMessageService.send_message，平台完成归属校验和源 session.send 后，使用**目标会话** SessionContext 触发接收链。无新增前端、Ops、模型轮次或第二份消息队列，交付基于已合入 !99 的 Server `e847fb045981`；验证使用 已合入 Core PR !110 的实现提交 `4aceb5cda1dc`，本次不新增 Core API。实现已完成，验证记录见第 6 节。
 
 参考固定 Claude Code Mods 2.1.277、提交 `80c6959d28c4c30ecd14fc1cdf172f19d9adad81` 的 SessionReceiveInput / Origin / Event / Result，优先对齐 origin、text、event 和 consumed。Python 字段用 snake_case，不能直接复制 TypeScript 对象当成事件输入。
 
@@ -39,7 +39,7 @@
   → await next_handler(Event("session.receive", rewritten))
   → 其余 Handler → session_receive_core
   → CORE 复验目标上下文、origin/event 和正文，执行原队列 continuation
-  → 原锁内复查目标 → SQLite enqueue / 幂等去重 → 原通知及后台消费者
+  → 原锁内复查源与目标归属/模式 → SQLite enqueue / 幂等去重 → 原通知及后台消费者
   → CORE 返回实际入队 text；私有状态保留真实队列回执
   → 真实回执沿源 send 链返回工具；目标后台再异步执行
 ```
@@ -77,7 +77,7 @@
 | SessionReceiveResult.text | CORE 已实际入队或命中既有幂等行 | 实际消息行的正文；USER 通常直接返回 await next_handler，不应自行伪造成功 |
 | SessionReceiveConsumed.consumed | USER 在 next 前决定接管输入 | 填写去首尾空白后 1～512 字符原因，如 `重复的构建通知，已处理`；不再调用 next |
 
-两种输出互斥；普通 dict、None、空消费原因或假的 text 回执均不是合法放行。CORE 后再返回 consumed 无法撤销已经保存的行；平台仍使用真实回执。原业务调用者收到 accepted=False、code=SESSION_RECEIVE_CONSUMED 和 consumed/error，而不是虚假的队列成功。上游 send 拒绝时本事件完全不触发。
+next 可能继续到下游 USER 的 consumed 分支；调用者若要读取 result.text，应先用 isinstance(result, SessionReceiveResult) 确认放行类型。两种输出互斥；普通 dict、None、空消费原因或假的 text 回执均不是合法放行。仅在本事件 CORE 尚未开始时允许 consumed，调用 next 后不能假定仍有消费机会。CORE 后再返回 consumed 无法撤销已经保存的行；平台仍使用真实回执。原业务调用者收到 accepted=False、code=SESSION_RECEIVE_CONSUMED 和 consumed/error，而不是虚假的队列成功。上游 send 拒绝时本事件完全不触发。
 
 ### 3.4 注册、筛选、改写示例
 
@@ -110,7 +110,7 @@ matcher 为等值条件合取，嵌套字段用 origin.kind。Handler 匹配在�
 
 本次不增加 ops.session.receive()。接收由原跨会话服务自动触发；只安装上述用户包即可参与，不要求用户改业务方法。目标 USER 可以调用已有七项只读 Ops；这些查询另起同名查询事件，不产生新的接收投递。
 
-平台内部 dispatch 接收可信 bus/context、SessionReceiveInput 和真实 enqueue continuation。只有 continuation 被 CORE 调用才入队；只有原 SQLite 服务可以产生真实 accepted 回执。裸 bus.trigger 不能创建该私有调用，不能绕过源/目标授权。
+平台内部 _dispatch_receive(bus, context, text, commit) 使用可信目标 context、发送链放行的 text 构造 SessionReceiveInput，并绑定真实 enqueue continuation。只有 continuation 被 CORE 调用才入队；只有原 SQLite 服务可以产生真实 accepted 回执。裸 bus.trigger 不能创建该私有调用，不能绕过源/目标授权。
 
 ### 4.2 兼容与迁移
 
@@ -120,18 +120,34 @@ matcher 为等值条件合取，嵌套字段用 origin.kind。Handler 匹配在�
 
 event_types/session_receive.py 只维护类型、校验和注册；平台触发位于 server/runtime/session/session_message_events.py；CORE 位于 event_handlers/session_receive.py。真实保存、通知及后续模型输入仍复用 SessionMessageService / SessionMessageStore。
 
-发送方和接收方上下文分别构造，正文及 event 均使用独立副本；不持目标锁执行 USER。队列锁内重新核对目标状态和归属，避免 Hook 等待期间目标删除后继续投递。每次调用仅提交一次，子任务在调用退出后不能使用过期状态提交；卸载仅撤销用户 Hook，不删除已提交队列。
+发送方和接收方上下文分别构造，正文及 event 均使用独立副本；不持目标锁执行 USER。队列锁内重新核对源与目标的归属及支持模式，避免 Hook 等待期间会话删除或换归属后继续投递。每次调用仅提交一次。CORE 开始前标记 attempted；底层失败/取消被本次私有状态保存，重复 next 继续抛出原失败，不重新执行入队，USER 不能捕获后用 consumed 掩盖失败。新业务调用仍按原幂等规则重试。子任务在调用退出后不能使用过期状态提交；卸载仅撤销用户 Hook，不删除已提交队列。
 
 选择在原队列前执行接收链，才能让 consumed 阻止本次入队、通知及目标执行。只在模型开始前加通知会造成被消费输入已经出现在队列中，因此未采用。同步完成整轮目标模型会阻塞发送方，也未采用。
 
 ## 6. 验收与未决问题
 
-开发前方案：待验证实际业务入口、真实 Bus/Registry、不同源/目标上下文、text 改写、消费、来源保护、伪造输出、异常隔离、重复 next、幂等、取消、卸载及实际持久化。执行后在此补充结果与命令。
+2026-11-02 已完成以下验证，执行环境为 Windows、Python 3.11、Server `e847fb045981` 加本次实现、Core `4aceb5cda1dc`（与已合入目标 `3cac40a97fd4` 的源码树一致）：
+
+| 验证层次 | 已通过结果 | 证据与边界 |
+| --- | --- | --- |
+| 新增投递测试 | 42 项通过 | [test_session_delivery_events.py](../../../../tests/unit_tests/extensions_v2/test_session_delivery_events.py)：实际 Registry/Bus/Ops 和 SQLite，涵盖正文改写、拒绝/消费、保护字段、伪造结果、并发/重复 next、幂等、归属变化、重入、卸载及取消。会话元数据为测试夹具 |
+| 相关回归 | 1514 项通过、2 项跳过 | extensions_v2、runtime、原 session_messaging、session_switch、history_append_record；两项跳过为本机不支持 symlink / named pipe，不列为通过 |
+| 独立进程安装验收 | 通过 | 实际安装 [session_delivery_policy](../../examples/session_delivery_policy/README.md) 和观察包 ZIP；从磁盘会话元数据生成 A/B 上下文，查询 cwd/root；独立 SQLite SELECT 核对脱敏后内容、拒绝/消费无行、卸载后恢复。后台执行回调收到实际保存正文，退出后装配及后台任务释放 |
+| 取消/失败边界 | 通过 | 先复现入库后 USER 吞取消并伪装拒绝/消费、捕获存储错误后重复 next 的 3 项失败；修复后纳入上述 42 项，通过且不重做本次底层操作 |
+
+```powershell
+# 将当前 Server 源码与上述 Core 源码放入 PYTHONPATH 后，在 Server 根目录执行
+python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov -o log_cli=false tests/unit_tests/extensions_v2/test_session_delivery_events.py
+python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov -o log_cli=false tests/unit_tests/extensions_v2 tests/unit_tests/runtime tests/unit_tests/agentserver/test_session_messaging.py tests/unit_tests/agentserver/test_session_switch_characterization.py tests/unit_tests/agentserver/test_history_append_record.py
+```
+
+独立验收使用受控目标执行回调，未向模型服务发送请求，也未运行完整 Front/Supervisor/Worker 或浏览器链路；不将这些范围列为通过。示例 README 提供可安装包与三组触发输入。
 
 限制：本轮生产入口仅覆盖原持久跨会话服务；普通 Web chat.send、cron、Webhook/Remote Control 和独立 AgentRuntime.send_session_message 未接入本事件。保留 Claude 其它 origin 枚举及 event 类型不代表这些渠道已实现。未验证项不列为通过。
 
 ## 7. 参考资料
 
 - [S_14 主责规约](../specs/S_14_session-receive.md)、[发送特性](F_25_session-send.md)。
+- [可安装用户包与触发案例](../../examples/session_delivery_policy/README.md)、[平台上下文与触发](../../../server/runtime/session/session_message_events.py)、[接收 CORE](../../event_handlers/session_receive.py)。
 - [原平台消息服务](../../../server/runtime/session/session_message_service.py)、[原消息存储](../../../server/runtime/session/session_message_store.py)。
 - [Claude 固定类型定义](https://github.com/anthropics/claude-code/blob/80c6959d28c4c30ecd14fc1cdf172f19d9adad81/mods/types/claude-code.d.ts)：SessionReceiveInput / Origin / Event / Result。
