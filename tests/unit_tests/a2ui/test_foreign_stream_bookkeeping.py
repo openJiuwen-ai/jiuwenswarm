@@ -23,6 +23,7 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
 
 # 与被测模块 _A2UI_PENDING_RENDER_DELTA 保持一致：suppress 触发时发出的占位帧内容
 _PENDING_RENDER_DELTA = "<a2ui-json>\n"
@@ -50,7 +51,8 @@ def _build_swarm(monkeypatch: pytest.MonkeyPatch, frames: list[dict[str, str]]):
     swarm = interface_module.JiuWenSwarm()
     swarm._adapter = _ScriptedStreamAdapter(frames)
     swarm._sdk_name = "harness"
-    monkeypatch.setattr(swarm, "_build_inputs", lambda request: ({}, "local", "生成表单"))
+    turn = UserTurn(text="生成表单", channel="web", language="zh", files={})
+    monkeypatch.setattr(swarm, "_build_inputs", lambda request: ({}, "local", turn))
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "is_auto_memory_enabled", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(interface_module, "is_memory_enabled", lambda *_args, **_kwargs: False)
