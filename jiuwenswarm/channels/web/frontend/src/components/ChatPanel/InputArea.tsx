@@ -3388,7 +3388,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           e.preventDefault();
           if (e.key === 'Enter' && composerSuggestion.kind === 'slash') {
             // 完整受限命令优先走提交守卫，避免过滤后误选名称/描述匹配的技能。
-            const { name, args } = parseSlashLine(extractRichContent());
+            const content = extractRichContent();
+            const { name, args } = parseSlashLine(content);
             const command = findSlashCommand(name);
             const slashSid = useChatStore.getState().activeSessionId;
             const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? mode;
@@ -3397,6 +3398,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               shouldExecuteRegisteredSlashCommand(name, args, slashMode) &&
               (!item || !canUseSlashCommand(command, Boolean(slashSid && slashSid !== NEW_CONVERSATION_ID)))
             ) {
+              handleSubmit();
+              return;
+            }
+            if (!item && !content.trimStart().startsWith('/')) {
               handleSubmit();
               return;
             }
