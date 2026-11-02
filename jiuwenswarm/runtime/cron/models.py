@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from openjiuwen_protocol.cron_models import (
+    CronJob as _ProtocolCronJob,
+    CronRunState as _ProtocolCronRunState,
+    CronTarget as _ProtocolCronTarget,
+    CronTargetChannel,
+)
 from gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
@@ -19,18 +25,9 @@ from jiuwenswarm.runtime.cron.cron_expr import validate_cron_expression
 
 logger = logging.getLogger(__name__)
 
-
-class CronTargetChannel(str, Enum):
-    """推送频道枚举。"""
-
-    WEB = "web"
-    TUI = "tui"
-    FEISHU = "feishu"
-    WHATSAPP = "whatsapp"
-    WECOM = "wecom"
-    XIAOYI = "xiaoyi"
-    WECHAT = "wechat"
-    DINGTALK = "dingtalk"
+# CronTargetChannel / CronTarget / CronJob / CronRunState 的字段定义以
+# ``openjiuwen_protocol.cron_models`` 为唯一 source of truth；本模块只保留
+# 序列化/归一化等行为（to_dict / from_dict / normalize_*）。
 
 
 def _feishu_enterprise_app_id(s: str) -> str:
@@ -370,12 +367,8 @@ def normalize_tenant_id(raw: Any) -> str:
     return ""
 
 
-@dataclass(frozen=True)
-class CronTarget:
-    """Where to push cron results."""
-
-    channel_id: str
-    session_id: str | None = None
+class CronTarget(_ProtocolCronTarget):
+    """Where to push cron results.（字段定义见 ``openjiuwen_protocol.cron_models``）"""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -395,67 +388,8 @@ class CronTarget:
         return CronTarget(channel_id=channel_id, session_id=session_id or None)
 
 
-@dataclass
-class CronJob:
-    """Cron job persisted in cron_jobs.json."""
-
-    id: str
-    name: str
-    enabled: bool
-    cron_expr: str
-    timezone: str
-    wake_offset_seconds: int = 0
-    description: str = ""
-    # For one-shot schedules where croniter has no "next" after the run.
-    expired: bool = False
-    # Target channel ID to push results to (e.g. "web").
-    # JSON 字段名仍然叫 targets，用字符串保存频道 ID，兼容旧数据。
-    targets: str = ""
-    # SessionMap 形态（如 feishu::chat_id::bot_id::...），仅 feishu_enterprise 投递用；由 AgentServer 上下文写入。
-    session_id: str | None = None
-    created_at: float | None = None
-    updated_at: float | None = None
-    # 记录定时任务是在群聊("group")还是私聊("p2p")中创建的，用于推送时决定是否走 IMOutboundPipeline
-    chat_type: str | None = None
-    # 定时任务执行时使用的 Agent 模式；未指定时默认 agent（plan/fast 已合并）
-    mode: str = CRON_JOB_DEFAULT_MODE
-    # 执行一次后自动删除（用于提醒类任务）
-    delete_after_run: bool = False
-    # 单次执行超时（秒）；未配置时普通模式与 team 模式默认均为 1 小时
-    timeout_seconds: int | None = None
-    # 归属项目 ID；由创建时 project_dir 匹配获得，匹配不到可见项目为空串（默认项目）
-    project_id: str = ""
-    # 最近一次执行产生的会话 ID；调度器在创建执行会话后回写，未执行过为 None
-    last_session_id: str | None = None
-    # 执行时使用的模型；None 表示使用 AgentServer 默认模型
-    model_name: str | None = None
-    model_selection: dict[str, str] | None = None
-    # 执行时会话级启用的 MCP 名称列表（来自创建时 chat-session 的快照，
-    # 或显式传入）；None 表示不注入（沿用既有全局默认集行为）。
-    mcp: list[str] | None = None
-    # 飞书多应用场景：创建该定时任务的 app_id，用于推送时定位到正确的 app 配置
-    app_id: str = ""
-    # 租户里的群、机器人。和 user_id 凑成「这条任务是谁的」。
-    # 没填时保持空串（个人版旧数据没有这两格，与原来一致）。
-    group_id: str = ""
-    bot_id: str = ""
-    # 创建者标识（web 端 user_id）。执行时透传给 faas 的 X-Session-Context，
-    # 否则 CreateSandbox 拉不起导致 60s 超时（见 plan-cron-user-id）。
-    # 语义=创建者，创建后不可变。没填或空字符串在读写时保持空串。
-    user_id: str = ""
-    # 登录免费模型的凭据句柄绑定：创建/改选登录模型时，由创建连接上的华为账号
-    # 登录会话派生（credential_ref_for_user）。路由 user_id 与华为账号是两套
-    # 独立用户体系，互不可推导，绑定只能来自服务端登录会话。空串=未绑定
-    # （自配模型/未选模型）；执行侧凭据注入只认该绑定——它同时就是"所选模型
-    # 是登录模型"的标记，自配模型即使与登录模型同名也不会被误注入登录凭据。
-    credential_ref: str = ""
-    # 工作模式派生快照：由 project_id 归属推导（"code" / "work"）。
-    # 不作为独立隔离维度，任务归属仍以 project_id 为准。
-    # from_dict 仅做 normalize + 兜底 "work"，不做跨层 Project 反查；
-    # 精确值由创建/更新路径从 Project 记录注入，或由展示层二次查询覆盖。
-    work_mode: str = DEFAULT_WEB_WORK_MODE
-    # 企业库表调度用的下一趟触发时刻（秒）。空值不写进个人版文件。
-    next_run_at: float | None = None
+class CronJob(_ProtocolCronJob):
+    """Cron job persisted in cron_jobs.json.（字段定义见 ``openjiuwen_protocol.cron_models``）"""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -683,54 +617,5 @@ class CronJob:
         )
 
 
-@dataclass
-class CronRunState:
-    """In-memory state for a single scheduled run (not persisted)."""
-
-    run_id: str
-    job_id: str
-    wake_at_iso: str
-    push_at_iso: str
-    status: str = "pending"  # pending|running|succeeded|failed|awaiting_approval|skipped
-    placeholder_sent: bool = False
-    pushed_final: bool = False
-    started_at: float | None = None
-    finished_at: float | None = None
-    result_text: str | None = None
-    error: str | None = None
-    job_name: str | None = None
-    targets: str | None = None
-    session_id: str | None = None
-    chat_type: str | None = None
-    timezone: str | None = None
-    # Canonical mode captured before execution. It remains available after a
-    # job is removed from the store, so ghost/timeout cancellation reaches the
-    # same Runtime agent that owns the in-flight request.
-    exec_mode: str | None = None
-    exec_channel_id: str | None = None
-    exec_session_id: str | None = None
-    # Tenant route captured with the executing request.  A removed persisted
-    # job must not make ghost/timeout cancellation fall back to the default user.
-    exec_user_id: str | None = None
-    exec_app_id: str | None = None
-    exec_group_id: str | None = None
-    exec_bot_id: str | None = None
-    # Remaining AgentManager cache identity captured by the executing request.
-    # These values survive removal of the persisted job so ghost/timeout
-    # cancellation can still target the exact Runtime agent.
-    exec_work_mode: str | None = None
-    exec_project_id: str | None = None
-    exec_project_dir: str | None = None
-    # ``run_now`` allocates the single-agent session before the wake event so
-    # Web can open the real session immediately; wake must reuse it.
-    execution_session_allocated: bool = False
-    # Manual proactive checks report their outcome through a UI notification.
-    manually_triggered: bool = False
-    # 执行流已经把终稿放进会话直播。后面的推送不再往同一条直播放第二遍。
-    live_final_forwarded: bool = False
-    # 直播帧序号。浏览器若短暂连了两次，用它丢掉来晚的旧帧。
-    live_seq: int = 0
-    exec_request_id: str | None = None
-    exec_execution_id: str | None = None
-    notification_revision: int = 0
-    stream_error_seen: bool = False
+class CronRunState(_ProtocolCronRunState):
+    """In-memory state for a single scheduled run (not persisted).（字段定义见协议包）"""

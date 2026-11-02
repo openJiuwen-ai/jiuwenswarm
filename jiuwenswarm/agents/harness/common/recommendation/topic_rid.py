@@ -457,7 +457,6 @@ def build_ark_specific_interest_matcher(
         "receipt_sink": partial(persist_provider_invocation, store),
         "response_schema_for_stage": _response_schema,
         "require_response_metadata": True,
-        "reasoning_effort_for_stage": lambda _stage: "low",
         "invocation_lineage_for_stage": _invocation_lineage,
     }
     if client_factory is not None:

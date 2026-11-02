@@ -96,11 +96,7 @@ ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
     "gateway.auth",
 )
 
-KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {
-    "jiuwenswarm.server.runtime.package_allowlist": {
-        "gateway.config.enterprise.expressions",
-    },
-}
+KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
 # Enterprise / manager-config 合入临时白名单（gateway → server/agents/runtime/channels）。
 # 燃尽方向：经 adapter / 回调替代直 import 后再缩减。
@@ -126,17 +122,11 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
     "gateway.enterprise.config.manager_config.core.application_config.memory_config": {
         "jiuwenswarm.agents.harness.common.memory.config",
     },
-    "gateway.enterprise.config.manager_config.core.application_config.package_allowlist": {
-        "jiuwenswarm.server.runtime.package_allowlist",
-    },
     "gateway.enterprise.config.manager_config.core.application_config.task_memory_config": {
         "jiuwenswarm.agents.harness.common.memory.config",
     },
     "gateway.enterprise.config.manager_config.routers.application_config_routers": {
         "jiuwenswarm.server.runtime.equipment_hub_catalog",
-    },
-    "gateway.routing.agent_client": {
-        "jiuwenswarm.server.runtime.package_allowlist",
     },
     "gateway.storage_assembly.setup": {
         "jiuwenswarm.agents.harness.common.memory.config",
@@ -217,8 +207,11 @@ class ImportGraph:
         self.fileset = set(self.files)
         self.modules = {path_to_module(f): f for f in self.files}
         # hard = 模块级 import；lazy = 函数内延迟 import
+        # typing = ``if TYPE_CHECKING:`` 块内 import——运行时永不执行，
+        # 不计入 hard/lazy（R3 与依赖计数均不含），仅收集供人工核对。
         self.hard: dict[str, set[str]] = defaultdict(set)
         self.lazy: dict[str, set[str]] = defaultdict(set)
+        self.typing: dict[str, set[str]] = defaultdict(set)
         self._build()
 
     def _resolve(self, mod: str, name: str) -> str | None:
@@ -261,8 +254,17 @@ class ImportGraph:
             logger.warning("[warn] 语法错误，跳过 %s: %s", rel, exc)
             return
 
-        def walk(node: ast.AST, in_func: bool) -> None:
+        def _is_type_checking_guard(node: ast.AST) -> bool:
+            test = getattr(node, "test", None)
+            if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+                return True
+            return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+        def walk(node: ast.AST, in_func: bool, in_typing: bool = False) -> None:
             for ch in ast.iter_child_nodes(node):
+                if isinstance(ch, ast.If) and _is_type_checking_guard(ch):
+                    walk(ch, in_func, in_typing=True)
+                    continue
                 targets: list[str | None] = []
                 if isinstance(ch, ast.Import):
                     targets = [self._resolve(mod, a.name) for a in ch.names]
@@ -293,9 +295,10 @@ class ImportGraph:
                     walk(
                         ch,
                         in_func or isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)),
+                        in_typing,
                     )
                     continue
-                bucket = self.lazy if in_func else self.hard
+                bucket = self.typing if in_typing else (self.lazy if in_func else self.hard)
                 for t in targets:
                     if t and t != mod:
                         bucket[mod].add(t)

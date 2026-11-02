@@ -530,6 +530,8 @@ interface BeginHistoryRestoreOptions {
   onSessionTokenUsage?: (payload: SessionTokenUsageSnapshot) => void;
   /** 恢复问题澄清对话框（chat.ask_user_question），重新入 pendingQuestion 队列弹交互框 */
   onPendingQuestionReplay?: (items: HistoryPendingQuestionReplayItem[]) => void;
+  /** 恢复已答的问题澄清（chat.ask_user_answer），用于丢弃快照重新派发的过期问题 */
+  onAnsweredQuestionReplay?: (items: HistoryAnsweredQuestionReplayItem[]) => void;
   /** Called only when the exhausted snapshot has no restorable content. */
   onEmpty?: (cursor: HistoryCursorMeta) => void;
   onFailure?: (failure: HistoryRestoreFailure) => void;
@@ -2560,6 +2562,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       }
       if (pendingQuestionReplay.length > 0) {
         options.onPendingQuestionReplay?.(pendingQuestionReplay);
+      }
+      if (answeredQuestionReplay.length > 0) {
+        options.onAnsweredQuestionReplay?.(answeredQuestionReplay);
       }
       const compactionCount = entries.reduce((n, e) => (e.kind === 'compaction' ? n + 1 : n), 0);
       if (compactionCount > 0) {
