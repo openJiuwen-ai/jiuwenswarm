@@ -395,6 +395,107 @@ async def test_dead_owner_is_interrupted_and_member_can_take_new_work(service, m
 
 
 @pytest.mark.asyncio
+async def test_organization_card_stays_running_when_its_writer_looks_dead(service, monkeypatch):
+    group = await make_group(service)
+    store = ge.GroupExecutions(group["group_id"])
+    card = await store.upsert_organization_card(
+        "organization-card",
+        title="开业筹备",
+        task="开业筹备",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"child-finance": "in_progress"},
+        task_details={"child-finance": {"title": "财务管理专家团", "status": "in_progress"}},
+        status="running",
+        phase="executing",
+    )
+    member = (await store.create(["advisor"], "Review", "one"))[0]
+    await store.update(member["execution_id"], status="running")
+    monkeypatch.setattr(gs.lifecycle, "runtime_owner_alive", lambda owner: False)
+    await store.reconcile()
+    kept = store.get(card["execution_id"])
+    assert kept["status"] == "running"
+    assert kept["tasks"]["child-finance"] == "in_progress"
+    assert "error_code" not in kept
+    assert store.get(member["execution_id"])["status"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_organization_progress_replaces_an_owner_lost_card(service):
+    group = await make_group(service)
+    store = ge.GroupExecutions(group["group_id"])
+    execution_id = "organization-card"
+    details = {"child-finance": {"title": "财务管理专家团", "status": "in_progress", "member_id": "财务管理专家团"}}
+    await store.upsert_organization_card(
+        execution_id,
+        title="开业筹备",
+        task="开业筹备",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"child-finance": "in_progress"},
+        task_details=details,
+        status="running",
+        phase="executing",
+    )
+    await store.update(
+        execution_id,
+        status="interrupted",
+        phase="owner_lost",
+        error_code="EXECUTION_OWNER_LOST",
+    )
+    done = await store.upsert_organization_card(
+        execution_id,
+        title="开业筹备",
+        task="开业筹备",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"child-finance": "completed"},
+        task_details={**details, "child-finance": {**details["child-finance"], "status": "completed"}},
+        status="running",
+        phase="executing",
+    )
+    assert done["status"] == "running"
+    assert done["phase"] == "executing"
+    assert done["tasks"]["child-finance"] == "completed"
+    assert done["progress"] == {"completed": 1, "total": 1}
+    assert "error_code" not in done
+    stalled = await store.upsert_organization_card(
+        execution_id,
+        title="开业筹备",
+        task="开业筹备",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"child-finance": "completed"},
+        task_details=details,
+        status="failed",
+        phase="failed",
+    )
+    assert stalled["status"] == "failed"
+    reopened = await store.upsert_organization_card(
+        execution_id,
+        title="开业筹备",
+        task="开业筹备",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"child-finance": "in_progress"},
+        task_details=details,
+        status="running",
+        phase="executing",
+    )
+    assert reopened["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_recovery_preserves_live_or_unverifiable_owners(service, monkeypatch):
     group = await make_group(service)
     store = ge.GroupExecutions(group["group_id"])

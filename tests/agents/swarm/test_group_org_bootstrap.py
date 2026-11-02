@@ -1831,6 +1831,27 @@ async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_completed_expert_child_without_a_verdict_is_in_review():
+    task = SimpleNamespace(task_id="child-ppt", status="COMPLETED", task_type=None)
+
+    class _Pool:
+        def __init__(self, review):
+            self._review = review
+
+        async def get_task_review(self, _task_id):
+            return self._review
+
+    assert await bootstrap._expert_row_status(_Pool(SimpleNamespace(review_status="PENDING")), task) == "in_review"
+    assert await bootstrap._expert_row_status(_Pool(None), task) == "in_review"
+    assert (
+        await bootstrap._expert_row_status(_Pool(SimpleNamespace(review_status="ACCEPTED")), task) == "completed"
+    )
+    assert await bootstrap._expert_row_status(_Pool(SimpleNamespace(review_status="REJECTED")), task) == "failed"
+    claimed = SimpleNamespace(task_id="child-ppt", status="CLAIMED", task_type=None)
+    assert await bootstrap._expert_row_status(_Pool(None), claimed) == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_card_rows_keep_names_after_another_round_replaces_the_roster(monkeypatch):
     plan = _stale_plan()
     root_id = bootstrap._root_task_id(plan["plan_id"])
@@ -3059,6 +3080,111 @@ async def test_result_wait_continues_until_the_round_finishes(monkeypatch):
     await waiter
     assert result == "report"
     assert files == []
+
+
+@pytest.mark.asyncio
+async def test_result_wait_retries_when_the_status_pool_is_busy(monkeypatch):
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+    monkeypatch.setattr(bootstrap, "POLL_SECONDS", 0.01)
+    calls = {"n": 0}
+
+    async def _round_state(_pool, _plan_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PoolTimeout(
+                "QueuePool limit of size 8 overflow 0 reached, connection timed out, timeout 10.00"
+            )
+        return "completed", []
+
+    monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+    future = asyncio.get_running_loop().create_future()
+    future.set_result("report")
+    result, files = await asyncio.wait_for(
+        bootstrap._await_completed_result(
+            future, object(), "plan-1", session_id=SESSION
+        ),
+        timeout=1.0,
+    )
+    assert result == "report"
+    assert files == []
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_result_wait_still_fails_on_a_real_status_error(monkeypatch):
+    monkeypatch.setattr(bootstrap, "POLL_SECONDS", 0.01)
+
+    async def _round_state(_pool, _plan_id):
+        raise RuntimeError("organization root task failed")
+
+    monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+    future = asyncio.get_running_loop().create_future()
+    with pytest.raises(RuntimeError, match="organization root task failed"):
+        await bootstrap._await_completed_result(future, object(), "plan-1")
+
+
+def test_root_output_inlines_utf8_and_skips_a_binary_file(tmp_path):
+    note = tmp_path / "note.md"
+    note.write_text("正文", encoding="utf-8")
+    deck = tmp_path / "1024-game-architecture-sharing.pptx"
+    deck.write_bytes(b"PK\x03\x04\x14\x00\x00\x00\x00\x00\x00\x86" + b"\x00" * 16)
+    text = bootstrap._root_output([
+        SimpleNamespace(
+            output_abstract="摘要",
+            output_context=SimpleNamespace(result_uri=str(note)),
+        ),
+        SimpleNamespace(
+            output_abstract="",
+            output_context=SimpleNamespace(result_uri=str(deck)),
+        ),
+    ])
+    assert text == "摘要\n\n正文"
+
+
+@pytest.mark.asyncio
+async def test_grace_fallback_posts_a_binary_result_file(monkeypatch, tmp_path):
+    """A finished PPTX is attached after the grace window, not decoded as text."""
+    from openjiuwen.agent_teams.paths import (
+        organization_workspace_dir,
+        reset_task_openjiuwen_home,
+        set_task_openjiuwen_home,
+    )
+
+    monkeypatch.setattr(bootstrap, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(bootstrap, "RESULT_GRACE_SECONDS", 0.05)
+    token = set_task_openjiuwen_home(tmp_path)
+    try:
+        summary = organization_workspace_dir(ORG, SESSION) / "summary"
+        summary.mkdir(parents=True)
+        deck = summary / "1024-game-architecture-sharing.pptx"
+        deck.write_bytes(b"PK\x03\x04\x14\x00\x00\x00\x00\x00\x00\x86" + b"\x00" * 16)
+
+        async def _round_state(_pool, _plan_id):
+            return "completed", [
+                SimpleNamespace(
+                    output_abstract="已交付 PPT",
+                    output_context=SimpleNamespace(result_uri=str(deck)),
+                )
+            ]
+
+        monkeypatch.setattr(bootstrap, "_round_state", _round_state)
+        future = asyncio.get_running_loop().create_future()
+        result, files = await asyncio.wait_for(
+            bootstrap._await_completed_result(
+                future,
+                object(),
+                "plan-1",
+                session_id=SESSION,
+                organization_id=ORG,
+            ),
+            timeout=1.0,
+        )
+    finally:
+        reset_task_openjiuwen_home(token)
+
+    assert result == "已交付 PPT"
+    assert files == [{"name": deck.name, "path": str(deck.resolve())}]
 
 
 @pytest.mark.asyncio
