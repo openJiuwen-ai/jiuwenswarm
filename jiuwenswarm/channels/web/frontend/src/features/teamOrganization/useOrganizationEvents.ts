@@ -8,6 +8,11 @@ import { expertTeamId, ownerTeamId } from './conversation';
 import { useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
 import { MemberToolEventProjector } from './memberToolEvents';
+import { useSessionStore } from '../../stores/sessionStore';
+import { toTaskTimelineEntry } from '../../components/teamArea/groupChatTimeline';
+import { normalizeTaskEvent } from '../../stores/teamTaskNormalize';
+import { toOwnerTeamMessage } from '../../components/ChatPanel/teamEventUtils';
+import type { Message } from '../../types';
 import { clearOrganizationRequests, setOrganizationOwnerStopped } from './processing';
 import { expertProcessingSnapshot, finishExpertRequest, organizationProcessingRevision, reconcileOrganizationRequests, replaceExpertRequests, startExpertRequest, type OrganizationRequest } from './processing';
 
@@ -107,6 +112,7 @@ export function useOrganizationEvents(): void {
       'chat.tool_result',
       'team.task',
       'team.member',
+      'team.message',
     ];
     const unsubs = events.map((event) =>
       webClient.on(event, ({ payload }) => {
@@ -154,7 +160,38 @@ export function useOrganizationEvents(): void {
         if (!teamId) return;
         const chat = useChatStore.getState();
         chat.ensureTeamRuntime(sessionId, teamId);
+        if (event === 'team.message') {
+          const inner = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
+          if (!inner || typeof inner !== 'object') return;
+          const id = typeof inner.message_id === 'string' && inner.message_id
+            ? `team-message-${teamId}-${inner.message_id}` : `team-message-${generateUuidV4()}`;
+          const message: Message = {
+            id, role: 'system', content: `team.event:${JSON.stringify(payload)}`,
+            timestamp: new Date().toISOString(), teamId,
+          };
+          if (!chat.getRuntime(key)?.messages.some((item) => item.id === id)) chat.addMessage(key, message);
+          const ownerMessage = toOwnerTeamMessage(message);
+          if (ownerMessage) {
+            chat.ensureRuntime(sessionId);
+            if (!chat.getRuntime(sessionId)?.messages.some((item) => item.id === ownerMessage.id)) {
+              chat.addMessage(sessionId, ownerMessage);
+            }
+          }
+          return;
+        }
         if (event === 'team.task' || event === 'team.member') {
+          if (event === 'team.task') {
+            const inner = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
+            if (inner && typeof inner === 'object') {
+              const store = useSessionStore.getState();
+              store.ensureRuntime(key);
+              const timestamp = typeof inner.timestamp === 'number' ? inner.timestamp : Date.now();
+              const entry = toTaskTimelineEntry(inner, timestamp);
+              if (entry) store.appendTeamTaskTimeline(key, [entry]);
+              const task = normalizeTaskEvent(inner);
+              if (task) store.upsertTeamTask(key, task);
+            }
+          }
           if (useTeamSelectorStore.getState().runtimes[sessionId]?.selectedTeamId === teamId) {
             void useTeamSelectorStore.getState().selectTeam(sessionId, teamId);
           }
