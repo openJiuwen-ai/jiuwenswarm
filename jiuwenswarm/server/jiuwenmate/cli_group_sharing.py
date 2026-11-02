@@ -34,7 +34,8 @@ def _source_facts(items):
 
 
 def preview_directory(cli, snapshot) -> Path:
-    request = hashlib.sha256(_part(snapshot.request_id).encode()).hexdigest()[:16]
+    request_id = getattr(snapshot, 'preview_request_id', None) or snapshot.request_id
+    request = hashlib.sha256(_part(request_id).encode()).hexdigest()[:16]
     return (cli_preview_root(cli.root, snapshot.namespace_id, snapshot.agent_id)
             / request / snapshot.command_digest[:24])
 

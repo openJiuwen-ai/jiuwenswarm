@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timedelta
+import hashlib
 import json
 import re
 import secrets
@@ -77,6 +78,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS group_share_grants_active
     ON group_share_grants(grant_key) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS group_share_grants_owner
     ON group_share_grants(namespace_id, config_id, created_at);
+CREATE TABLE IF NOT EXISTS group_share_request_windows (
+    namespace_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    PRIMARY KEY(namespace_id, request_id)
+);
 """
 
 
@@ -149,10 +158,117 @@ def _result_content_types(result: dict) -> list[str]:
     return types
 
 
+def _window_generation_digest(cutoff: str | None, once: str) -> str:
+    boundary = (cutoff or '') + '|' + once
+    return hashlib.sha256(boundary.encode()).hexdigest()[:24] if cutoff or once else ''
+
+
 class GroupShareRepository(SQLiteStore):
     """Durable host state in the caller-supplied agents.sqlite3; opens no default DB."""
 
     _schema = _SCHEMA
+
+    def approvals_for_session(self, namespace_id: str, agent_id: str, session_id: str) -> list[dict]:
+        """Trusted receipts also describe legacy imports; model-supplied paths are not provenance."""
+        with self._transaction(write=False) as conn:
+            rows = conn.execute(
+                "SELECT * FROM group_share_approvals WHERE namespace_id=? AND agent_id=? "
+                "AND status IN ('approved_once','approved_permanent') "
+                "AND json_extract(result_json, '$.session_id')=? ORDER BY created_at",
+                (namespace_id, agent_id, session_id),
+            ).fetchall()
+        return [self._record(row, private=True) for row in rows]
+
+    def window_generation(self, namespace_id: str, agent_id: str, session_id: str,
+                          *, request_id: str | None = None) -> str:
+        """Retire private context after a destination grant is revoked, including old receipts."""
+        cutoff = self.window_revoked_at(namespace_id, agent_id, session_id)
+        once = self._once_boundaries(namespace_id, agent_id, session_id, request_id)
+        return _window_generation_digest(cutoff, max(once))
+
+    def _once_boundaries(self, namespace_id: str, agent_id: str, session_id: str,
+                         request_id: str | None) -> list[str]:
+        """Immutable receipt boundaries, including the initial window without any once approval."""
+        receipts = self.approvals_for_session(namespace_id, agent_id, session_id)
+        return ['', *(row['decided_at'] + ':' + row['request_id'] for row in receipts
+                      if row['status'] == 'approved_once' and row['request_id'] != request_id)]
+
+    def window_revoked_at(self, namespace_id: str, agent_id: str, session_id: str) -> str | None:
+        """Find the latest revocation affecting any private context in this Session."""
+        receipts = self.approvals_for_session(namespace_id, agent_id, session_id)
+        cutoffs = []
+        with self._transaction(write=False) as conn:
+            for receipt in receipts:
+                if receipt['status'] != 'approved_permanent':
+                    continue
+                for source in receipt['source_groups']:
+                    row = conn.execute(
+                        "SELECT MAX(revoked_at) AS cutoff FROM group_share_grants "
+                        "WHERE grant_key=? AND status='revoked' AND revoked_at>=?",
+                        (_grant_key(receipt['scope'], source['group_id']), receipt['decided_at']),
+                    ).fetchone()
+                    if row['cutoff'] is not None:
+                        cutoffs.append(row['cutoff'])
+        return max(cutoffs, default=None)
+
+    def bind_request_window(self, namespace_id: str, agent_id: str, session_id: str, request_id: str) -> str:
+        """Pin one request's context generation; a restart cannot silently renew stale authority."""
+        generation = self.window_generation(namespace_id, agent_id, session_id, request_id=request_id)
+        if not self.request_window_is_current(namespace_id, request_id):
+            raise PersistentAgentError('Cross-group authorization changed; submit a new request.', code='FORBIDDEN')
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO group_share_request_windows VALUES (?,?,?,?,?)",
+                (namespace_id, request_id, agent_id, session_id, generation),
+            )
+            row = conn.execute(
+                "SELECT * FROM group_share_request_windows WHERE namespace_id=? AND request_id=?",
+                (namespace_id, request_id),
+            ).fetchone()
+        if (row['agent_id'], row['session_id']) != (agent_id, session_id):
+            raise PersistentAgentError('Cross-group authorization changed; submit a new request.', code='FORBIDDEN')
+        return row['generation']
+
+    def request_window_is_current(self, namespace_id: str, request_id: str) -> bool:
+        with self._transaction(write=False) as conn:
+            row = conn.execute(
+                "SELECT * FROM group_share_request_windows WHERE namespace_id=? AND request_id=?",
+                (namespace_id, request_id),
+            ).fetchone()
+            legacy = None
+            if row is None and conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='requests'",
+            ).fetchone():
+                legacy = conn.execute(
+                    "SELECT agent_id, session_id, record_json FROM requests WHERE namespace_id=? AND request_id=?",
+                    (namespace_id, request_id),
+                ).fetchone()
+        if row is not None:
+            cutoff = self.window_revoked_at(namespace_id, row['agent_id'], row['session_id'])
+            # A request keeps its bound once boundary while later requests advance
+            # theirs. Only a real revocation may invalidate an already bound window.
+            # Enumerating immutable historical boundaries also supports pre-upgrade rows.
+            return any(
+                row['generation'] == _window_generation_digest(cutoff, once)
+                for once in self._once_boundaries(namespace_id, row['agent_id'], row['session_id'], request_id)
+            )
+        if legacy is not None:
+            cutoff = self.window_revoked_at(namespace_id, legacy['agent_id'], legacy['session_id'])
+            if cutoff:
+                received = json.loads(legacy['record_json']).get('received_at')
+                if received is None:
+                    return False
+                return datetime.fromisoformat(received.replace('Z', '+00:00')) > datetime.fromisoformat(cutoff)
+        return True
+
+    def saved_request_window(self, namespace_id: str, request_id: str) -> str:
+        """Cleanup must settle the original confirmation, even after its generation was retired."""
+        with self._transaction(write=False) as conn:
+            row = conn.execute(
+                'SELECT generation FROM group_share_request_windows WHERE namespace_id=? AND request_id=?',
+                (namespace_id, request_id),
+            ).fetchone()
+        return row['generation'] if row is not None else ''
 
     def __init__(self, db_path: Path) -> None:
         super().__init__(db_path)
