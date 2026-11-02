@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 | --- | --- |
-| 编号 | F_23 / session-messages |
+| 编号 | F_18 / session-messages |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变；同日补充查询结果的资料来源、读取函数、复用与新增边界及缺失处理，契约不变 |
+| 后续修订 | 2026-10-31，拆分独立查询特性、按事件命名；本次以 session.append 的七章结构补齐字段、接入实例与函数链，契约不变；2026-11-02，按原 session.append 对象示例、字段表及业务 Handler 写法统一说明，契约不变；同日补充查询结果的资料来源、读取函数、复用与新增边界及缺失处理，契约不变；同日统一目录编号、验收标识和引用，契约不变 |
 | 关联计划 | [EXTV2-22 / 七项只读查询事件化](../designs/extensions-v2-development-plan.md#extv2-22-七项只读查询事件化) |
 | 主责规约 | [S_16 查询公共协议](../specs/S_16_session-query-events.md)、[S_06](../specs/S_06_session-history-ops.md) |
 
@@ -294,11 +294,11 @@ SessionContext.session_id
 
 | 场景 ID | 输入与前置 | 操作 | 预期结果 |
 | --- | --- | --- | --- |
-| F_23-V-01 | JSONL 含用户、助手、可配对工具记录和 UI 行 | 调用 messages() | 返回 role/text/toolUses/toolResults 投影，排除 UI 行 |
-| F_23-V-02 | 历史超过 4096 条，或尚无可读历史 | 调用 messages() | 返回最新 4096 项并按旧到新排列；无历史为 [] |
-| F_23-V-03 | 安装仅拦截 session.messages 的用户包 | 分别 next、短路 value、显式 deny | 默认值 / 合法替代值 / SessionQueryDenied 分别可观测 |
-| F_23-V-04 | 不同会话绑定不同上下文；或在 Hook 中同名递归 | 分别调用本方法 | 会话隔离；活跃同名或间接循环报 QUERY_REENTRANT，不能无限递归 |
-| F_23-V-05 | 读取失败、Hook 异常或查询取消 | 分别构造这些分支 | 按第 3.3 / 4.2 节区分隔离、明确拒绝、平台错误与取消，不把失败当成功空值 |
+| F_18-V-01 | JSONL 含用户、助手、可配对工具记录和 UI 行 | 调用 messages() | 返回 role/text/toolUses/toolResults 投影，排除 UI 行 |
+| F_18-V-02 | 历史超过 4096 条，或尚无可读历史 | 调用 messages() | 返回最新 4096 项并按旧到新排列；无历史为 [] |
+| F_18-V-03 | 安装仅拦截 session.messages 的用户包 | 分别 next、短路 value、显式 deny | 默认值 / 合法替代值 / SessionQueryDenied 分别可观测 |
+| F_18-V-04 | 不同会话绑定不同上下文；或在 Hook 中同名递归 | 分别调用本方法 | 会话隔离；活跃同名或间接循环报 QUERY_REENTRANT，不能无限递归 |
+| F_18-V-05 | 读取失败、Hook 异常或查询取消 | 分别构造这些分支 | 按第 3.3 / 4.2 节区分隔离、明确拒绝、平台错误与取消，不把失败当成功空值 |
 
 对应事件化用例位于 [test_session_query_events.py](../../../../tests/unit_tests/extensions_v2/test_session_query_events.py)：包含七项默认调用、各项短路 / 拒绝、非法参数、查询顺序、隔离、循环 / 取消及实际用户包装载卸载。每个场景只验证本方法承诺，不把其他六项也作为调用前置。
 
