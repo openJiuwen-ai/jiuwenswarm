@@ -182,6 +182,12 @@ class ExecutionDriver:
         record = state.record
         context = None
         try:
+            window_generation = ''
+            if self._group_sharing is not None:
+                window_generation = await asyncio.to_thread(
+                    self._group_sharing.repository.bind_request_window,
+                    record.namespace_id, record.agent_id, record.session_id, record.request_id,
+                )
             session_workspace = self._workspaces.ensure_session(
                 record.namespace_id, record.agent_id, record.session_id
             )
@@ -221,7 +227,9 @@ class ExecutionDriver:
             ports = core.PersistentPorts(
                 commit=dingtalk_commit_guard,
                 budget=self._budget_port,
-                window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                window_backend=self._windows.bind(
+                    record.namespace_id, record.agent_id, record.session_id, generation=window_generation,
+                ),
                 workspace_access=workspace,
                 workspace_write_access=workspace,
                 group_chat=group_chat_port,
@@ -375,8 +383,15 @@ class ExecutionDriver:
                     self._permission_approvals.resume_reply, record.namespace_id, record.request_id,
                 )
                 if approval is not None:
+                    window_generation = ''
+                    if self._group_sharing is not None:
+                        window_generation = await asyncio.to_thread(
+                            self._group_sharing.repository.saved_request_window,
+                            record.namespace_id, record.request_id,
+                        )
                     await core.discard_persistent_confirmation(
-                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id,
+                                           generation=window_generation),
                         agent_id=record.agent_id, session_id=record.session_id,
                         request_id=record.request_id, spec_fingerprint=record.config_fingerprint,
                     )
