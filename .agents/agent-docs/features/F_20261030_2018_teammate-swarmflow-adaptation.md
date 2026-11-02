@@ -1,5 +1,5 @@
 ---
-title: teammate 自主编排 swarmflow（jiuwenswarm 侧适配）
+title: 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配）
 author: '@xiajing'
 id: F_20261030_2018_teammate-swarmflow-adaptation
 type: F
@@ -25,7 +25,7 @@ design_note: 设计依据在 agent-core 仓 SDD-0031（跨仓共享设计，归�
 author_email: xiajing22@huawei.com
 ---
 
-# teammate 自主编排 swarmflow（jiuwenswarm 侧适配）
+# 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配）
 
 ## 元信息
 
@@ -46,6 +46,7 @@ author_email: xiajing22@huawei.com
 | 弹窗往返硬化 | `seen_human_waiting` handler 级状态去重（对齐既有四张同构表：seen_phase/seen_agent/spawned_members/seen_activity——delta 流对同一状态重复广播时 popup 检测不重发 ask_user）；skip reply 显式哨兵；P2 三层修复=chat.cancel 清场（`retire_session_interactions`）+ dispatcher 重放过滤（record 缺失 fail-close）+ 前端 ask_user_question request_id 级 dedup 守卫 |
 | wire keep-keys | executor 进列表摘要 keep-keys（冷重开列表行可渲染徽章） |
 | 前端归因展示 | 任务面板 list 视图（按 run 分组）、成员面板组头、聊天活动组头共用 `RunGroupHeader` 的单个 executor 徽章；工作流树/图视图、工具面板组头同样只画 executor 徽章；任务板（board）视图按状态分列、没有 run 组头，不显示徽章。run 分组折叠携带 executor，i18n 中英 |
+| run 平铺不分成员 | leader 的 run 与 teammate 的 run **并排平铺在同一列表**（`groupByWorkflowRun` 的分组维度是 run，不是成员；TaskPlanningPanel 对全部 groups 单列表渲染）——不按成员隔离分栏、不做"我的/他的"折叠；归因差异只由组头 executor 徽章表达，这是产品决策：编排视图以 run 为一等公民 |
 | 与灯（小飞机）的边界 | run 独立于对话轮存活，灯不由 run 决定；灯由任务在飞（框架层 BUSY）与 run-lamp（claw 层 run 活跃）两道 hold 撑住，teammate 的 run 通常包在任务里，灯亮满 run 全程。本特性不改灯，用户已裁决灯语义=任务全部完成+对话输出完成 |
 | 镜像 worker | 组织 UI 快照对账合并不替换；带 workflow_run_id 的条目（镜像 worker）豁免清理——只存在于客户端，不构成移除证据 |
 
