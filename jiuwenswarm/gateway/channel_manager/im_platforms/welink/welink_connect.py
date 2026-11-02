@@ -228,12 +228,19 @@ class WelinkChannel(BaseChannel):
                 return {"outcome": "pending", "error_code": "WELINK_ACCOUNT_NOT_CONNECTED"}
             if time.monotonic() < self._preflight_retry_at:
                 return {"outcome": "pending", "error_code": "WELINK_SEND_PREFLIGHT_BACKOFF"}
+            assistants: set[str] = set()
+            history: list = []
             try:
                 assistants = await asyncio.to_thread(self._send_candidates, chat_id, refresh_unknown=True)
-                if not assistants:
-                    raise ValueError("assistant membership unavailable")
+            except Exception:
+                assistants = set()
+            try:
                 history = await asyncio.to_thread(self._history, chat_id)
             except Exception:
+                history = []
+            # A reply to a real message can still go out when the member list has not
+            # classified this assistant yet. Proactive sends keep waiting for a member id.
+            if not assistants and not source_message_id.strip():
                 self._preflight_retry_at = time.monotonic() + 30
                 return {"outcome": "pending", "error_code": "WELINK_SEND_PREFLIGHT_UNAVAILABLE"}
             numeric = [int(item.message_id) for item in history if item.message_id.isdigit()]

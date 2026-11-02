@@ -85,11 +85,11 @@ class DeliveryJournal:
                 assistants = set(json.loads(row['assistants']))
                 baseline = row['baseline_id']
                 matches = [message for message in messages
-                           if row['wire_id'] and message.group_id == row['group_id'] and message.sender_id in assistants
-                           and message.text == row['text']
+                           if row['wire_id'] and message.group_id == row['group_id'] and message.text == row['text']
+                           and (not assistants or message.sender_id in assistants)
                            and (message.message_id == row['wire_id'] or (
-                               len(assistants) == 1 and baseline.isdigit() and message.message_id.isdigit()
-                               and int(message.message_id) > int(baseline)))]
+                               assistants and len(assistants) == 1 and baseline.isdigit()
+                               and message.message_id.isdigit() and int(message.message_id) > int(baseline)))]
                 ids = {message.message_id for message in matches}
                 senders = {message.sender_id for message in matches}
                 # With several possible senders, only the exact outgoing message id

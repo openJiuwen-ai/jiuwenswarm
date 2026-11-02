@@ -1,4 +1,4 @@
-import { ChevronDown, Plus, Send, ShieldUser, Square } from 'lucide-react';
+import { ChevronDown, Send, ShieldUser, Square } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type JiuwenMateModelCatalog } from '../jiuwenmateApi';
@@ -57,9 +57,6 @@ export function ConversationComposer({
       />
       <div className="jiuwenmate-composer__toolbar">
         <div className="jiuwenmate-composer__left">
-          <button type="button" aria-label={t('jiuwenmate.workspace.attach')}>
-            <Plus aria-hidden />
-          </button>
           <div
             className="jiuwenmate-composer__permission"
             onKeyDown={(event) => {

@@ -304,11 +304,22 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
         from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ
         from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
+        expected = ("welink", welink_connection_key(binding.account, binding.config_id))
         connection = await asyncio.to_thread(fanout._service.connection_of, binding.namespace_id, binding.agent_id)
-        if connection is None or (connection.channel, connection.connection_key) != (
-            "welink", welink_connection_key(binding.account, binding.config_id),
-        ):
+        # A later save can stamp the office colleague onto persistent_agent_id. The
+        # dedicated WeLink agent is still the connection row for that config.
+        if connection is None and hasattr(fanout._service, "connections"):
+            config_id = binding.config_id or binding.agent_id
+            records = await asyncio.to_thread(fanout._service.connections, binding.namespace_id, config_id)
+            matches = [item for item in records if (item.channel, item.connection_key) == expected]
+            connection = matches[0] if len(matches) == 1 else None
+        if connection is None or (connection.channel, connection.connection_key) != expected:
             return InboundDisposition.REJECTED
+        runtime_id = str(getattr(connection, "agent_id", "") or binding.agent_id)
+        if runtime_id != binding.agent_id:
+            from dataclasses import replace
+
+            binding = replace(binding, agent_id=runtime_id)
         view = await asyncio.to_thread(fanout._service.get_colleague, binding.namespace_id, binding.agent_id)
         if getattr(view, "enabled", True) is False:
             return InboundDisposition.HANDLED

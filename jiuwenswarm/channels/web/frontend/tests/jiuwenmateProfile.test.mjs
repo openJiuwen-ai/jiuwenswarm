@@ -801,9 +801,9 @@ test('the overview shows quick IM setup when no channel is configured', () => {
 test('WeLink keeps its own setup card with a hint and an authorize action in the quick IM block', () => {
   const overview = renderProfile({ colleague: { ...colleague, imConfigured: false } });
   const rows = overview.match(/<div class="jiuwenmate-profile__im-row">[\s\S]*?<\/div>/g) ?? [];
-  const welinkRow = rows.find((row) => row.includes('jiuwenmate-welink-logo'));
+  const welinkRow = rows.find((row) => row.includes('<strong>WeLink</strong>'));
   assert.ok(welinkRow, 'the quick IM block should show a WeLink card');
-  assert.match(welinkRow, /完整流程需要配置两次/);
+  assert.match(welinkRow, /连接 WeLink 后，可在群里 @ 这位员工分派任务/);
   assert.match(welinkRow, /jiuwenmate-link-button--blue/);
   assert.match(welinkRow, />授权</);
 });
