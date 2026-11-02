@@ -9,8 +9,8 @@
 | 关联计划 | EXTV2-08 前端槽位渲染与复杂面板 |
 | 所属模块 | `jiuwenswarm/channels/web/frontend/src/features/webui/` |
 | 设计依据 | [F_06 渲染服务](F_06_render-service.md)、[F_07 界面项与上行交互](F_07_ui-contributions.md) |
-| 最近一次修订日期 | 2026-10-31 |
-| 方案状态 | 新链路已接入生产页面并承接全部 14 个已登记槽位，同时支持会话与全局槽位范围；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
+| 最近一次修订日期 | 2026-11-02 |
+| 方案状态 | 新链路已接入生产页面并承接全部 15 个已登记槽位，同时支持会话与全局槽位范围；旧链路与旧 action 组件已删除；真实插件联调与浏览器验收待整批验证 |
 
 ## 1. 问题与目标
 
@@ -143,8 +143,8 @@ React 宿主接口：
 4. 应用卸载时 `dispose()`，释放运行时与消费者；旧链路已删除，运行时是唯一订阅方。
 
 当前状态：`main.tsx` 用 `WebUIAppRoot` 创建唯一运行时，并由 `WebUIEntryHost` 承接 `application.entry`；
-14 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
-ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单）、ConversationSidebar（任务功能区）、
+15 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
+ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单与底部用户入口）、ConversationSidebar（任务功能区）、
 `WebUIPageHost`（菜单主页面与任务页面）。
 
 ### 3.5 渲染代次、显示确认与失败反馈
@@ -203,10 +203,10 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 范围及目标字段见 [F_06 第 3.2 节](F_06_render-service.md#32-数据模型)，上行参数见
 [F_07 第 4.3 节](F_07_ui-contributions.md#43-请求与回执)。
 
-当前应用范围只有 `application.entry`，由 `WebUIEntryHost` 在首次访问时挂载并发送
-`{"reason": "first_visit"}`。ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。
-`readyOnce` 避免同一挂载消费者重复就绪。其余 13 个槽位仍需要真实会话，`application.menu`、
-`task.function` 和 `application.settings` 在新建空对话中不挂载。
+当前应用范围有 `application.entry` 与 `application.sidebar.footer`。前者由 `WebUIEntryHost` 在首次访问时挂载并发送
+`{"reason": "first_visit"}`，ready 被接受后保存浏览器访问标记，后续刷新跳过；clear 或失败关闭入口。
+后者由 `WebUIHost` 在左侧图标栏底部挂载，ready 使用空 payload。`readyOnce` 避免同一挂载消费者重复就绪。
+其余 13 个槽位仍需要真实会话，`application.menu`、`task.function` 和 `application.settings` 在新建空对话中不挂载。
 
 | 行为 | 会话槽位 | 全局槽位 |
 | --- | --- | --- |
@@ -218,6 +218,27 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 
 前端不发送 `connection_id` 或 `ws_id`；Gateway 从实际连接取得信息，AgentServer 按连接隔离实例。
 两种宿主的事件和渲染树协议一致，都使用 `webui.dispatch` 及现有三类下行帧。
+
+### 4.6 Iframe 权限与点击交互
+
+Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地址格式，不证明页面可信。
+不可信文档若同时获得脚本与同源权限，且最终地址与宿主同源，就能访问父页面 DOM 和同源存储，
+并可移除 sandbox 后重新加载以解除剩余限制。因此宿主固定设置
+`sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`，不允许插件传入或扩展权限。
+该限制同样适用于绝对地址指向宿主、重定向或后续导航回宿主的文档。
+
+脚本、表单、弹窗、模态框和下载能力保持可用；弹窗继承 sandbox，不开放
+`allow-popups-to-escape-sandbox` 或顶层导航权限。普通点击、输入和 iframe 内导航不需要 `allow-same-origin`。
+`referrerPolicy="no-referrer"` 只限制 Referer，不承担同源隔离或禁用凭据的职责。
+
+加载提示改为角标并设置 `pointer-events: none`，不再用全屏提示层拦截已渲染文档的点击。
+错误与非激活提示仍占满容器，且不保留 iframe。浏览器的 `load` 事件只用于结束加载提示，不保证远端页面业务可用。
+
+2026-11-02 修订取消本地曾加入的 `allow-same-origin`：没有证据表明普通点击需要该权限。
+保留它并仅禁止相对路径不能隔离绝对同源地址；仅增加风险说明也不能恢复隔离。
+代价是 iframe 文档使用不透明 origin，依赖 localStorage、IndexedDB 或同源请求的页面可能无法正常工作；
+这类需求应另行设计独立 origin、请求授权和导航边界，不能直接放开宿主同源访问。
+该隔离限制脚本访问父页面，不承诺阻止所有携带 cookie 的网络请求。
 
 ## 5. 组件与样式映射
 
@@ -265,6 +286,7 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 | F-08-V-05 | 请求未完成时连续提交相同或不同输入 | 事件测试 | 每次合法回调都发出请求，旧代次回执返回 stale |
 | F-08-V-06 | 实例级消费者与范围消费者混合释放 | 运行时测试 | 只删除不再被剩余消费者覆盖的实例 |
 | F-08-V-07 | 内容 `clear` 后重连 | 运行时测试 | 按消费者原实例键重发 `ui.ready`，不变成空实例键 |
+| F-08-V-08 | Iframe 加载、非激活、错误及同源 URL | 组件 JSDOM 回归；浏览器另验证实际交互 | 加载提示不拦截鼠标；错误与非激活时卸载 iframe；相对与绝对同源地址均不开放同源权限 |
 
 ### 8.2 验证入口
 
@@ -274,7 +296,7 @@ ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar
 
 ## 9. 风险与遗留
 
-- **真实联调未完成**：14 个槽位已由新宿主承接，但尚未完成真实插件发帧 → 页面操作 → Handler → 回执的跨进程验证；
+- **真实联调未完成**：15 个槽位已由新宿主承接，但尚未完成真实插件发帧 → 页面操作 → Handler → 回执的跨进程验证；
   旧链路已删除，后续问题只能在单链路上定位。
 - **双端规则维护**：前端组件目录与后端规则分别实现，共用组件属性样本；变更规则时需要同时验证两端。
 - **显示确认仅本地（未联调）**：`displayedRevision` 只保存在前端运行时，未接入后端显示回执事件；跨端显示语义需要另行确认。
@@ -292,3 +314,11 @@ transport、renderer、i18n-locales）通过，Vite 生产打包通过。
 
 本次遵守本地约束，未运行格式化、lint 或类型检查。Vite 打包与 JSDOM 不能代替浏览器验收；
 全页 Iframe 高度、深浅主题及真实插件的跨进程链路仍待浏览器验证。
+
+### 2026-11-02 Iframe 点击与权限修复验证
+
+- `npm run test:webui-components`：52 项通过。JSDOM 加载真实 Iframe 样式，覆盖加载提示不拦截鼠标、错误与暂停状态、断连重连，以及相对和绝对宿主 URL 的固定权限。
+- 在内置浏览器用本机临时页面挂载真实 `Iframe` 组件，子文档使用同源 URL。按钮点击、文本输入、表单提交、普通链接导航和弹窗均通过；子文档访问父页面 DOM 和自身 localStorage 均被浏览器拒绝。
+- 人为保持子文档图片请求未完成时，加载提示仍在，但点击和输入正常；实际提示区域为 117 × 36 px，容器为 1230 × 420 px，计算样式的 `pointer-events` 为 `none`。释放请求后提示消失，停用与重新激活会卸载并重建文档。浅色和深色下均检查了提示外观。
+- 右侧网页预览示例改为百度；工作台和任务主页面保留原地址。内置浏览器中百度首页能显示、搜索框能输入，但点击搜索未导航；控制台出现 cookie/localStorage 的 sandbox `SecurityError`。这是页面脚本对不透明 origin 的兼容限制，不能写成百度搜索已通过验证。
+- 上述浏览器试验只验证组件，不代表已完成真实插件安装、跨进程发帧和生产页面验收。未运行格式化、lint 或类型检查。

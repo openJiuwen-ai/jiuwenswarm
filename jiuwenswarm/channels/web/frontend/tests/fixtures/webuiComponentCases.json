@@ -450,6 +450,53 @@
         "url": "/logo.svg",
         "size": 0
       }
+    ],
+    [
+      "Dropdown",
+      {}
+    ],
+    [
+      "Dropdown",
+      {
+        "items": []
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "a",
+            "label": "A"
+          },
+          {
+            "key": "a",
+            "label": "B"
+          }
+        ]
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "a"
+          }
+        ]
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "a",
+            "label": "A"
+          }
+        ],
+        "trigger": "contextmenu"
+      }
     ]
   ],
   "valid": [
@@ -593,6 +640,24 @@
         "url": "https://example.com/avatar.png",
         "size": "small",
         "shape": "square"
+      }
+    ],
+    [
+      "Dropdown",
+      {
+        "items": [
+          {
+            "key": "profile",
+            "label": "Profile"
+          },
+          {
+            "key": "logout",
+            "label": "Sign out",
+            "danger": true
+          }
+        ],
+        "placement": "topLeft",
+        "ariaLabel": "User menu"
       }
     ]
   ]

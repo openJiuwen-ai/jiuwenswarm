@@ -33,3 +33,12 @@
   font-size: 12px;
   line-height: 20px;
 }
+
+/* A slow subresource must not block interaction with an already rendered document. */
+.webui-iframe__notice[data-variant='loading'] {
+  inset: 12px 12px auto auto;
+  max-width: calc(100% - 24px);
+  padding: 8px 12px;
+  border-radius: 6px;
+  pointer-events: none;
+}

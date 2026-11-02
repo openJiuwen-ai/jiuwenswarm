@@ -160,6 +160,20 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     },
     "Panel": {"props": {"title": {"kind": "string", "maxBytes": 200}}, "required": ("title",), "children": True},
     "Iframe": {"props": {"src": TEXT, "title": {"kind": "string", "maxBytes": 200}}, "required": ("src", "title")},
+    "Dropdown": {
+        "props": {
+            "items": array(obj({
+                "key": TEXT, "label": TEXT, "disabled": BOOL, "danger": BOOL,
+            }, "key", "label")),
+            "trigger": token("click", "hover"),
+            "placement": token("bottomLeft", "bottomRight", "topLeft", "topRight"),
+            "disabled": BOOL,
+            "ariaLabel": TEXT,
+        },
+        "required": ("items",),
+        "children": True,
+        "events": {"ui.select": obj({"key": TEXT}, "key")},
+    },
 }
 
 
@@ -398,6 +412,11 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         return "invalid Empty image"
     if component == "Divider" and props.get("orientation") == "vertical" and props.get("children"):
         return "vertical Divider cannot have a title"
+    if component == "Dropdown":
+        items = props["items"]
+        keys = [item["key"] for item in items]
+        if not items or not all(keys) or not _unique(keys) or any(not item["label"].strip() for item in items):
+            return "invalid dropdown items"
     return None
 
 
@@ -457,4 +476,7 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
             if (data["key"] in expanded) != data["expanded"]:
                 return False
         return True
+    if component == "Dropdown":
+        item = next((entry for entry in props["items"] if entry["key"] == data["key"]), None)
+        return item is not None and not item.get("disabled")
     return True
