@@ -28,4 +28,4 @@ RUN rm -f /etc/apt/sources.list && \
         yq \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --progress-bar off "uv>=0.9,<1.0" ${PIP_EXTRA_ARGS}
+RUN pip install --progress-bar off "uv>=0.12.1,<1.0" ${PIP_EXTRA_ARGS}
