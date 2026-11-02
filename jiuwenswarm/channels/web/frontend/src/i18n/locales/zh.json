@@ -6652,6 +6652,16 @@
     "viewResult": "查看任务成果",
     "sendFailed": "消息处理失败，请重试。",
     "sending": "发送中…",
+    "processing": "正在处理…",
+    "mentionPhase": {
+      "dispatching": "已收到，正在处理中…",
+      "planning": "正在规划任务…",
+      "generating": "正在生成任务计划…",
+      "executing": "正在执行任务…",
+      "executingProgress": "正在执行子任务（{{completed}}/{{total}}）…",
+      "reviewing": "正在审查结果…",
+      "processing": "正在处理…"
+    },
     "open": "聊天",
     "create": "发起群聊",
     "defaultName": "新群聊",
