@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+
 def _read_git_head(head_file: str) -> str:
     """Read the HEAD pointer directly, without spawning git.
 

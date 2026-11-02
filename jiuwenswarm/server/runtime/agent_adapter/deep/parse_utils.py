@@ -24,6 +24,7 @@ def _clean_heartbeat_content(content: str) -> str:
             cleaned_lines.append(stripped_line)
     return "\n".join(cleaned_lines)
 
+
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
     """Parse YAML bool / env-var-backed boolean strings.
 

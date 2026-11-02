@@ -115,6 +115,7 @@ async def _get_persistent_checkpointer_lock() -> asyncio.Lock:
             _PERSISTENT_CHECKPOINTER_LOCK_LOOP = current
     return _PERSISTENT_CHECKPOINTER_LOCK
 
+
 def _patch_compiler_for_on_conflict():
     """使 MySQL 和 PostgreSQL SQLAlchemy 编译器支持 SQLite 的 ON CONFLICT DO UPDATE.
 
@@ -150,7 +151,10 @@ def _patch_compiler_for_on_conflict():
                 set_pairs.append("value = EXCLUDED.value")
             return f" ON CONFLICT (key) DO UPDATE SET {', '.join(set_pairs)}"
     except Exception:
-        pass
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] ON CONFLICT compiler patch skipped",
+            exc_info=True,
+        )
 
 
 _patch_compiler_for_on_conflict()
@@ -444,7 +448,11 @@ async def ensure_persistent_checkpointer() -> Any:
                     try:
                         setattr(checkpointer, _cp_name, _perf_wrap_cp(_cp_name, _cp_attr))
                     except Exception:  # noqa: BLE001
-                        pass
+                        logger.debug(
+                            "[JiuWenSwarmDeepAdapter] skip PERF wrap on checkpointer.%s",
+                            _cp_name,
+                            exc_info=True,
+                        )
             _shared_checkpoint_checkpointer = checkpointer
             CheckpointerFactory.set_default_checkpointer(checkpointer)
             _PERSISTENT_CHECKPOINTER_READY = True
