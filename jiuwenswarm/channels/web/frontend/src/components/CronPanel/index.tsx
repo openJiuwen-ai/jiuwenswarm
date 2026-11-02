@@ -11,6 +11,7 @@ import type { Session } from '../../types';
 import type { CronJobDTO, CronTaskUI, CronTemplateUI } from '../../types/cron';
 import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './constants';
 import { isTeamCronModeValue } from './cronMode';
+import { cronModelPayloadFields } from './cronModelSelection';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
@@ -287,6 +288,7 @@ function cronJobToUI(job: CronJobDTO, projects: ProjectInfo[]): CronTaskUI {
     projectName,
     description: job.description,
     modelName: job.model_name ?? null,
+    modelSelection: job.model_selection ?? null,
     // 统一识别后端规范模式和历史别名，表单只展示 agent / team 两态。
     mode: isTeamCronModeValue(job.mode) ? 'team' : 'agent',
     cronExpr: job.cron_expr,
@@ -768,7 +770,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 需由前端（project.list 已含 work_mode）随 project_id 下发，保证归属/展示正确。
         // 未选项目时也要带上当前模式，后端据此把空项目归到 default/default_code（#5713）。
         ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
-        ...(value.modelName ? { model_name: value.modelName } : {}),
+        ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
+        // 模型字段：稳定选择存在时随 model_name 一并下发——执行会话按 model_id
+        // 定位模型，仅靠 model_name 反查在目录出现重名模型（多条目同 model_name）
+        // 时会报 "ambiguous legacy model name"，任务创建成功但到点秒败且无输出
+        ...cronModelPayloadFields(value),
         mode: value.mode,
         session_id: sessionId,
       });
@@ -809,7 +815,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             targets: value.targets.trim() || 'web',
             enabled: value.enabled,
             wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
-            ...(value.modelName ? { model_name: value.modelName } : {}),
+            // 同 handleCreateSubmit：稳定选择随名称一并下发，避免重名模型执行期反查失败
+            ...cronModelPayloadFields(value),
             mode: value.mode,
           };
       await webRequest<{ job: CronJobDTO }>('cron.job.update', {

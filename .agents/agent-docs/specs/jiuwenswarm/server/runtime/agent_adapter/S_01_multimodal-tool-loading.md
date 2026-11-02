@@ -1,3 +1,13 @@
+---
+title: Work / Code 多模态工具加载契约
+author: null
+author_note: 历史作者待确认；缺少原 owner 和可靠创建署名
+id: S_01_multimodal-tool-loading
+type: S
+modules: []
+files: []
+---
+
 # Work / Code 多模态工具加载契约
 
 | 项 | 值 |
