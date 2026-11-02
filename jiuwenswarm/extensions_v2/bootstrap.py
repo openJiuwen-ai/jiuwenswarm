@@ -13,6 +13,8 @@ from jiuwenswarm.extensions_v2.event_types.session_detach import register_sessio
 from jiuwenswarm.extensions_v2.event_types.session_end import register_session_end_event
 from jiuwenswarm.extensions_v2.event_types.session_history import register_session_history_events
 from jiuwenswarm.extensions_v2.event_types.session_queries import register_session_query_events
+from jiuwenswarm.extensions_v2.event_types.session_receive import register_session_receive_event
+from jiuwenswarm.extensions_v2.event_types.session_send import register_session_send_event
 from jiuwenswarm.extensions_v2.event_handlers.session_queries import register_session_query_handlers
 from jiuwenswarm.extensions_v2.event_types.session_start import register_session_start_event
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import SessionFileService, register_session_ops
@@ -32,6 +34,8 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
     register_context_usage_events(bus)
     register_session_history_events(bus)
     register_session_query_events(bus)
+    register_session_send_event(bus)
+    register_session_receive_event(bus)
     _register_team_event_types(bus)
     register_session_start_event(bus)
     register_session_end_event(bus)
