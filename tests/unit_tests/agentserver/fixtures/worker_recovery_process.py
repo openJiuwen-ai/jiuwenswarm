@@ -39,7 +39,7 @@ class RecoveryRuntime:
                                             work_kind=SessionWorkKind.CHAT_STREAM,
                                             state=(SessionExecutionState.WAITING_FOR_CONTROL if session == "b"
                                                    else SessionExecutionState.RUNNING),
-                                            waiting_control_id="b-control" if session == "b" else None)
+                                            waiting_control_ids=frozenset({"b-control"} if session == "b" else ()))
             for session in ("a", "b")
         }
 

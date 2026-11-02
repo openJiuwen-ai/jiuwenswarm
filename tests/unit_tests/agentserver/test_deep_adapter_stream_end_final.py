@@ -16,6 +16,8 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
+pytestmark = pytest.mark.asyncio
+
 
 def _adapter_ready(monkeypatch: pytest.MonkeyPatch) -> JiuWenSwarmDeepAdapter:
     adapter = JiuWenSwarmDeepAdapter()
@@ -287,7 +289,7 @@ async def test_real_terminal_final_not_duplicated(monkeypatch):
     assert finals[0]["content"] == "正常回答"
 
 
-def test_background_subagent_status_includes_latest_session_usage(monkeypatch, tmp_path):
+async def test_background_subagent_status_includes_latest_session_usage(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
 

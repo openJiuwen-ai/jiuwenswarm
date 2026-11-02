@@ -229,6 +229,10 @@ def _ensure_pip() -> None:
         [sys.executable, "-m", "pip", "--version"],
         capture_output=True,
         text=True,
+        # Only the exit code is used, but an implicit codec could still raise in
+        # the reader thread; pin it like the _run() helper below does.
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if check.returncode == 0:

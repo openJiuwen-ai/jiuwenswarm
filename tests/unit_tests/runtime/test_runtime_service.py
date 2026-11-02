@@ -362,6 +362,9 @@ class FakeAgentManager:
     def get_agent_nowait(self, *args: object, **kwargs: object) -> None:
         return None
 
+    def borrow_agent_nowait(self, agent: object) -> object:
+        return agent
+
     async def cleanup_session_runtime(
         self,
         *,
@@ -460,11 +463,7 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
                 payload={"event_type": "chat.final", "content": "continued"}, is_complete=True,
             )
 
-    class WaitingManager(FakeAgentManager):
-        def get_agent_for_session_nowait(self, channel_id, session_id):
-            return self.agent
-
-    manager = WaitingManager()
+    manager = FakeAgentManager()
     manager.agent = WaitingAgent()
     runtime = AgentRuntime(
         agent_manager=manager, initializer=AsyncMock(), plan_controller=FakePlanController(),
@@ -515,7 +514,9 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
             release.set()
             events = await asyncio.wait_for(task, timeout=1)
             assert [event.event_type for event in events] == (
-                ["chat.final"] if case == "smart" else ["runtime.accepted", "chat.final"]
+                ["chat.final"]
+                if case == "smart"
+                else ["runtime.accepted", "chat.final"]
             )
             if received:
                 assert received[0].request_id == "answer-transport"
@@ -952,7 +953,7 @@ async def test_session_message_waits_until_target_control_is_resolved() -> None:
         "question",
         SessionWorkKind.CHAT_UNARY,
         lambda: asyncio.sleep(0, result="ask"),
-        suspension_key=lambda _value: "control-1",
+        interaction_ids=lambda _value: frozenset({"control-1"}),
     )
     delivered = asyncio.Event()
 
@@ -971,7 +972,7 @@ async def test_session_message_waits_until_target_control_is_resolved() -> None:
 
     await runtime._session_coordinator.deliver_control(
         "target",
-        "control-1",
+        ("control-1",),
         lambda: asyncio.sleep(0, result="answered"),
     )
     await asyncio.wait_for(delivered.wait(), timeout=1)
@@ -1896,13 +1897,7 @@ async def test_answer_interaction_forwards_runtime_execution_options() -> None:
 async def test_pending_interaction_blocks_heartbeat_until_matching_answer() -> None:
     admission = SessionRunAdmission()
 
-    class InteractionManager(FakeAgentManager):
-        def get_agent_for_session_nowait(
-            self, channel_id: str, session_id: str
-        ) -> object:
-            return self.agent
-
-    manager = InteractionManager()
+    manager = FakeAgentManager()
     manager.agent = AskUserAgent()
     runtime = AgentRuntime(
         agent_manager=manager,
@@ -2385,13 +2380,7 @@ async def test_interrupt_answer_resumes_session_execution_after_stream_ends(
                 is_complete=True,
             )
 
-    class InteractionManager(FakeAgentManager):
-        def get_agent_for_session_nowait(
-            self, channel_id: str, session_id: str
-        ) -> object:
-            return self.agent
-
-    manager = InteractionManager()
+    manager = FakeAgentManager()
     manager.agent = InteractionAgent()
     runtime = AgentRuntime(
         agent_manager=manager,
@@ -4654,3 +4643,61 @@ async def test_stop_session_for_archive_cancels_requests_without_waiting_for_cac
             *[task for task in (request_task, other_task) if task is not None],
             return_exceptions=True,
         )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_fails", [False, True])
+async def test_close_stops_owned_team_via_session_lifecycle(stop_fails) -> None:
+    """The unified Team lifecycle replaces the removed global stream API."""
+    from jiuwenswarm.runtime.session_lifecycle import (
+        SessionDescriptor as LifecycleDescriptor,
+        SessionKind,
+        SessionLifecycleTarget,
+    )
+
+    manager = FakeAgentManager()
+    initializer = AsyncMock()
+    lifecycle = SimpleNamespace(stop_session=AsyncMock(
+        side_effect=RuntimeError("team stop failed") if stop_fails else None,
+    ))
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=initializer,
+        session_runtime_lifecycle=lifecycle,
+    )
+    snapshot = await runtime._session_coordinator.register_session("owned-team", "web")
+    await runtime._session_coordinator.register_session("ordinary-agent", "web")
+    runtime._participant_registry.remember_target(SessionLifecycleTarget(
+        descriptor=LifecycleDescriptor(
+            session_id="owned-team", channel_id="web", mode="team", work_mode="work",
+        ),
+        kind=SessionKind.TEAM,
+    ))
+    if stop_fails:
+        with pytest.raises(RuntimeError, match="team stop failed"):
+            await runtime.close()
+    else:
+        await runtime.close()
+    lifecycle.stop_session.assert_awaited_once()
+    context = lifecycle.stop_session.await_args.args[0]
+    assert context.session_id == "owned-team"
+    assert context.generation == snapshot.generation
+    assert lifecycle.stop_session.await_args.kwargs == {"reason": "runtime_closed"}
+    assert manager.cleanup_calls == 1
+    assert runtime.closed is True
+    initializer.assert_not_awaited()
+    await runtime.close()
+    assert lifecycle.stop_session.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_does_not_clear_another_runtime_managers() -> None:
+    first_manager, second_manager = FakeAgentManager(), FakeAgentManager()
+    first = AgentRuntime(agent_manager=first_manager, initializer=AsyncMock())
+    second = AgentRuntime(agent_manager=second_manager, initializer=AsyncMock())
+    await first.close()
+    assert first_manager.cleanup_calls == 1
+    assert second_manager.cleanup_calls == 0
+    assert second.agent_manager is second_manager
+    await second.start()
+    await second.close()
+    assert second_manager.cleanup_calls == 1

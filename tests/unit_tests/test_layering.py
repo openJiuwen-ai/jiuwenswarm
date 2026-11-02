@@ -33,6 +33,8 @@ def test_no_new_layering_violations() -> None:
         [sys.executable, str(CHECK_SCRIPT)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=REPO_ROOT,
         timeout=300,
     )

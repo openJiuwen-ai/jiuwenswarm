@@ -1336,6 +1336,7 @@ class AgentManager:
             agent_definition: dict[str, Any] | None = None,
             agent_definition_fingerprint: str | None = None,
             run_permissions_enabled: bool = False,
+            request: Any | None = None,
     ) -> "JiuWenSwarm | None":
         """获取 Agent 实例（自动创建）.
 
@@ -1397,6 +1398,12 @@ class AgentManager:
                     **config,
                     **_build_acp_agent_config()
                 }
+            # 企业版：创建时带上本次请求，create_instance 才能按 bot 读模型模板。
+            if request is not None:
+                from jiuwenswarm.enterprise import is_enterprise
+
+                if is_enterprise():
+                    config = {**config, "request": request}
             create_kwargs: dict[str, Any] = {"cache_key": cache_key}
             if agent_definition is not None:
                 create_kwargs["agent_definition"] = agent_definition
@@ -1455,6 +1462,12 @@ class AgentManager:
                     sid,
                     cache_key,
                 )
+        return None
+
+    def borrow_agent_nowait(self, agent: "JiuWenSwarm") -> "JiuWenSwarm | None":
+        """Borrow ``agent`` while it is still cached; None once it was retired or recreated."""
+        if any(agent is cached for channel_agents in self.agents.values() for cached in channel_agents.values()):
+            return self._borrow_agent(agent)
         return None
 
     def get_auto_permission_agent_for_session_nowait(
@@ -2177,6 +2190,7 @@ class AgentManager:
                         )
                     agent = await self.get_agent(
                         **get_kwargs,
+                        request=request,
                     )
                     prepare = getattr(agent, "prepare_session", None)
                     if not callable(prepare):
@@ -2204,7 +2218,7 @@ class AgentManager:
             get_kwargs["agent_definition_fingerprint"] = (
                 agent_definition_fingerprint
             )
-        return await self.get_agent(**get_kwargs)
+        return await self.get_agent(**get_kwargs, request=request)
 
     async def process_message(self, request: Any) -> Any:
         """处理非流式请求.

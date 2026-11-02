@@ -7,8 +7,11 @@
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
-import { readOutputOrder } from '../features/sessionOutput';
+import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
+import { isEnterprise } from '../edition';
+import { persistEnterpriseAttachments } from '../services/obsUpload';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   assetKindFromMime,
   findReferencedAssets,
@@ -18,6 +21,7 @@ import {
   type NamedAsset,
 } from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { toast } from '../components/ui/Toast/toastStore';
 import { useTranslation } from 'react-i18next';
 import {
   ConnectionAckPayload,
@@ -80,6 +84,7 @@ import {
 import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
+import { getWebTransport } from '../utils/env';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -151,6 +156,7 @@ import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 import { isDepartedTeamMemberStatus, reconcileSnapshotRoster } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
+import { getMcpAppContexts } from '../features/mcpApps/mcpAppContext';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -707,6 +713,7 @@ function applyTeamTaskToolCall(_sessionId: string, _toolCall: ToolCall) {
 
 interface UseWebSocketOptions {
   activeSessionId?: string;
+  isActiveSessionVisible?: boolean;
   provider?: string;
   apiKey?: string;
   apiBase?: string;
@@ -1002,6 +1009,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const { t } = useTranslation();
   const {
     activeSessionId,
+    isActiveSessionVisible = true,
     provider,
     apiKey,
     apiBase,
@@ -1083,6 +1091,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const previousActiveSessionIdRef = useRef(activeSessionId);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const activeSessionVisibleRef = useRef(isActiveSessionVisible);
+  activeSessionVisibleRef.current = isActiveSessionVisible;
   const lastTeamConnectionSessionRef = useRef(activeSessionId);
   const lastTeamConnectionModeRef = useRef(activeSessionMode);
   const teamMemberSnapshotRequestRef = useRef(
@@ -1758,6 +1768,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const persistMedia = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
+      if (isEnterprise()) {
+        return persistEnterpriseAttachments(request, content, sessionId, mediaItems, 'image');
+      }
       return request<PersistMediaResponse>(
         'media.persist',
         {
@@ -1784,6 +1797,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const persistDocuments = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
+      if (isEnterprise()) {
+        return persistEnterpriseAttachments(request, content, sessionId, mediaItems, 'document');
+      }
       return request<PersistMediaResponse>(
         'document.persist',
         {
@@ -2010,13 +2026,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (taskId) {
         const store = useChatStore.getState();
         const queuedTask = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
-        if (queuedTask && ['queued', 'failed'].includes(queuedTask.status) && queuedTask.mediaItems?.length) {
+        if (queuedTask && !areSteerImagesReady(queuedTask.mediaItems)) {
           store.setInterruptResult(sessionId, {
-            intent: 'supplement',
-            success: false,
-            message: t('network.supplementAttachmentsUnsupported'),
+            intent: 'supplement', success: false, message: t('chat.steerImagesOnly'),
           });
           return false;
+        }
+        if (queuedTask?.mediaItems?.length && ['queued', 'failed'].includes(queuedTask.status)) {
+          store.setInterruptResult(sessionId, null);
         }
         // The button supplies input intent; Runtime decides whether it can steer the target.
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
@@ -2027,6 +2044,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const task = runtime?.taskQueue.find((item) => item.id === taskId);
+        const receipt = runtime?.taskInputReceipts[taskId];
+        if (receipt?.mediaItems?.length && ['failed', 'unknown'].includes(receipt.status)) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement', success: false, message: receipt.error || t('network.supplementFailed'),
+          });
+        }
         if (task?.status === 'queued') {
           store.setInterruptResult(sessionId, {
             intent: 'supplement', success: false,
@@ -2131,6 +2154,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 不再预先创建助手消息，而是在收到第一个 content_chunk 时创建
       // 这样工具调用会先显示，然后才是助手的回复
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
       // 标记本地发起的发送，用于 processing_status 处理器区分"旧任务被打断"
@@ -2239,6 +2266,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const inputMode = activeGoal?.status === 'active' ? 'steer' : undefined;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
         const sessionMetadata = useSessionStore.getState().getRuntime(sessionId)?.metadata;
+        const mcpAppContexts = getMcpAppContexts(sessionId);
+        const requestMetadata = sessionMetadata || mcpAppContexts.length > 0
+          ? {
+              ...(sessionMetadata ?? {}),
+              ...(mcpAppContexts.length > 0 ? { mcp_app_contexts: mcpAppContexts } : {}),
+            }
+          : undefined;
         const sessionRt = useSessionStore.getState().getRuntime(sessionId);
         await request('chat.send', {
           session_id: sessionId,
@@ -2260,7 +2294,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
-          ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
+          ...(requestMetadata ? { metadata: requestMetadata } : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
@@ -2351,6 +2385,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       userInputVersionRef.current += 1;
       stopAllTts();
 
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
 
@@ -2864,6 +2902,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...evolutionMetaPayload,
           });
         }
+        if (effectiveSource === 'ask_user_interrupt') {
+          // 后端快照可能仍带着这道题，恢复执行时会重新派发；登记后不再入队。
+          useChatStore.getState().markQuestionsAnswered(sessionId, [requestId]);
+        }
         if (pendingMatches && pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
         }
@@ -3165,6 +3207,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     };
 
     const unsubs = [
+      webClient.on('cron.run.updated', ({ payload }) => {
+        const store = useCronStore.getState();
+        const update = store.applyRunUpdate(payload);
+        if (!update) return;
+        void store.loadCronSessions(update.project_id || 'default', update.job_id);
+        if (update.phase !== 'started' || !store.jobs.some((job) => job.id === update.job_id)) void store.reload();
+        if (update.notify) {
+          if (update.status === 'failed' && !update.session_id) {
+            toast.open({
+              id: `cron-start-failed-${update.run_id}`, variant: 'error',
+              testId: 'cron-start-failed-toast',
+              content: t('cron.execution.startFailed', {
+                name: update.job_name || update.job_id,
+                reason: update.error || t('network.unknownError'),
+              }),
+            });
+          }
+          if (activeSessionVisibleRef.current && update.session_id === activeSessionIdRef.current && document.visibilityState === 'visible') {
+            store.clearCronJobUnread(update.job_id);
+          } else {
+            store.markCronJobUnread(update.job_id);
+          }
+        }
+      }),
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
       }),
@@ -3205,6 +3271,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }),
       ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
+        const targetSessionId = getPayloadSessionId(payload);
+        const messages = targetSessionId ? useChatStore.getState().getRuntime(targetSessionId)?.messages : undefined;
+        if (isRestoredOutputReplay(messages ?? [], payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
@@ -3462,7 +3531,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // makes each final safe to replay, while the latest one replaces the text.
         if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
 
-        const cronMeta = payload.cron as Record<string, unknown> | undefined;
+        const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
 
         // 达上限通知不绑定具体会话（后端 _send_notification_cb 不带 session_id），
         // 必须在下方 session 守卫（if (!sessionId) return）之前拦截，否则会被该守卫
@@ -3903,7 +3972,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         if (assistantStreamSplit && content) {
-          const cronMetaEarly = payload.cron as Record<string, unknown> | undefined;
+          const cronMetaEarly = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunIdEarly =
             typeof cronMetaEarly?.run_id === 'string' ? cronMetaEarly.run_id.trim() : '';
           if (!cronRunIdEarly && !cronMetaEarly && !isProactiveRecommendation) {
@@ -4003,13 +4072,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useChatStore.getState().stopStreaming(sessionId);
         }
         if (content) {
-          const cronMeta = payload.cron as Record<string, unknown> | undefined;
+          const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunId =
             typeof cronMeta?.run_id === 'string' ? cronMeta.run_id.trim() : '';
           const isCronPlaceholderContent =
             cronMeta?.is_placeholder === true ||
             /正在执行中，结果稍后补发/.test(content) ||
             /^\[cron\].*正在执行中/.test(content);
+
+          const messageTimestampIso = completedAtIso;
 
           if (!isCronPlaceholderContent) {
             let placeholderId: string | null = null;
@@ -4141,23 +4212,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             return;
           }
 
-          const rewriteId = findAssistantSegmentIdForFinal(
-            messages,
-            content,
-            preferredSegmentId || streamId
-          );
-          if (rewriteId) {
-            useChatStore.getState().updateMessage(sessionId, rewriteId, {
+          // 定时任务推送的终稿不要并进历史里较早的助手气泡：执行中途拉过半截
+          // 历史时，findAssistantSegmentIdForFinal 可能改到上面某条，页面底部仍
+          // 像「没出结果」，一刷新才按完整历史排对。
+          if (!cronMeta) {
+            const rewriteId = findAssistantSegmentIdForFinal(
+              messages,
               content,
-              isStreaming: false,
-              completedAt: completedAtIso,
-              ...agentIdentityPatch,
-              ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
-            });
-            if (!content.includes('MEDIA:')) {
-              handleTtsPlayback(sessionId, rewriteId, content);
+              preferredSegmentId || streamId
+            );
+            if (rewriteId) {
+              useChatStore.getState().updateMessage(sessionId, rewriteId, {
+                content,
+                isStreaming: false,
+                completedAt: completedAtIso,
+                ...agentIdentityPatch,
+                ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
+              });
+              if (!content.includes('MEDIA:')) {
+                handleTtsPlayback(sessionId, rewriteId, content);
+              }
+              return;
             }
-            return;
           }
           const last = messages[messages.length - 1];
           if (last?.role === 'assistant' && last.content === content) {
@@ -4173,7 +4249,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             id: messageId,
             role: 'assistant',
             content,
-            timestamp: completedAtIso,
+            timestamp: messageTimestampIso,
             completedAt: completedAtIso,
             ...agentIdentityPatch,
             isProactiveRecommendation,
@@ -4504,6 +4580,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             skillTree: toolResult.skillTree,
             beamSearch: toolResult.beamSearch,
             ...(toolResult.mermaid ? { mermaid: toolResult.mermaid } : {}),
+            ...(toolResult.mcpApp ? { mcpApp: toolResult.mcpApp } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
             reviewer: toolResult.reviewer,
           },
@@ -4897,6 +4974,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setGlobalTaskRunning(Boolean(payload?.running));
       }),
       webClient.on('chat.error', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.error', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -5898,6 +5976,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const connected = state === 'ready';
       setIsConnected(connected);
       setConnected(connected);
+      if (!connected) useCronStore.getState().clearUnconfirmedRuns();
       if (connected && teamConnectionGraceTimerRef.current) {
         const pending = teamConnectionGraceTimerRef.current;
         if (pending.timerId !== null) window.clearTimeout(pending.timerId);

@@ -130,9 +130,20 @@ async def test_group_request_routes_without_prompt_and_finishes_public_ack(monke
     monkeypatch.setattr(team_helpers, "update_session_metadata", Mock())
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", Mock())
     monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
-    request = _runtime_followup_request(
-        "session-group", "req-group",
-        params={"type": "group_chat", "mentions": mentions},
+    # AgentRequest (not SimpleNamespace): stream path uses dataclasses.replace().
+    # Active follow-ups need TeamExecutionContext + waiter_kind=NONE so the
+    # interact path does not attach an undrainable persistent waiter.
+    group_params = {"type": "group_chat", "mentions": mentions}
+    request = (
+        _runtime_followup_request("session-group", "req-group", group_params)
+        if active
+        else AgentRequest(
+            request_id="req-group",
+            channel_id="web",
+            session_id="session-group",
+            metadata={},
+            params={"mode": "team", **group_params},
+        )
     )
     chunks = [chunk async for chunk in team_helpers.process_team_message_stream(
         request, {"query": "讨论"}, object(),
@@ -852,6 +863,24 @@ class _CronFakeManager(_InactiveTeamRuntimeManagerMixin):
     @classmethod
     def get_cron_completion(cls, session_id: str) -> dict | None:
         return cls._completion.get(session_id)
+
+    @classmethod
+    def cron_completion_owner(cls, session_id: str, request_id: str) -> dict:
+        return {"request_id": request_id, "stream_task": cls._stream_tasks.get(session_id)}
+
+    @classmethod
+    async def finish_cron_stream(cls, session_id: str, completion: dict, round_id) -> None:
+        task = cls.pop_stream_task(session_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await team_helpers._broadcast_event("tui", session_id, {
+            "event_type": "chat.processing_status", "is_processing": False, "rid": round_id,
+        })
+        cls.pop_cron_completion(session_id)
 
     @classmethod
     def pop_stream_task(cls, session_id: str, *, generation: int | None = None) -> asyncio.Task | None:

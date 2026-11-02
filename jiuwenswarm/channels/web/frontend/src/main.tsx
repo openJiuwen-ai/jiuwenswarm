@@ -4,8 +4,11 @@ import { A2UIProvider } from '@a2ui/react';
 import type { A2UIClientEventMessage } from '@a2ui/react';
 import { injectStyles } from '@a2ui/react/styles';
 import App from './App.tsx'
+import { EnterpriseEntry } from './EnterpriseEntry.tsx'
 import { ShareImageExportRunner } from './features/shareImageExport'
 import { openSourceSettingsPageDefinition } from './features/settings/registry/openSourceDefinition'
+import { enterpriseSettingsPageDefinition } from './features/settings/registry/enterpriseDefinition';
+import { isEnterprise } from './edition';
 import type { SettingsRequest } from './features/settings/services/settingsContract'
 import { dispatchA2UIAction } from './features/a2ui/actionBridge';
 import { installDesktopLocalFilesBridge } from './features/workspace/localFilePicker';
@@ -64,10 +67,12 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         client={browserRunner}
       />
     ) : (
-      <App
-        settingsPageDefinition={openSourceSettingsPageDefinition}
-        resolveSettingsRequest={resolveOpenSourceSettingsRequest}
-      />
+      <EnterpriseEntry>
+        <App
+          settingsPageDefinition={isEnterprise() ? enterpriseSettingsPageDefinition : openSourceSettingsPageDefinition}
+          resolveSettingsRequest={resolveOpenSourceSettingsRequest}
+        />
+      </EnterpriseEntry>
     )}
   </A2UIProvider>,
 )

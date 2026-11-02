@@ -11,6 +11,7 @@ import argparse
 import errno
 import hmac
 import http.client
+import io
 import json
 import logging
 import mimetypes
@@ -54,9 +55,6 @@ if TYPE_CHECKING:
         ShareImageRenderAuth,
     )
 
-_share_image_export_manager: ShareImageExportManager | None = None
-_share_image_export_manager_lock = threading.Lock()
-
 
 class _BadRequestError(ValueError):
     """Client-supplied input the web handler cannot process.
@@ -68,17 +66,12 @@ class _BadRequestError(ValueError):
 
 
 def _get_share_image_export_manager() -> ShareImageExportManager:
-    """Create the share-image job registry on first use to keep startup lazy."""
-    global _share_image_export_manager
-    if _share_image_export_manager is None:
-        with _share_image_export_manager_lock:
-            if _share_image_export_manager is None:
-                from jiuwenswarm.channels.web.share_image_export import (
-                    ShareImageExportManager,
-                )
+    """Forward to the gateway-owned singleton (shared job registry)."""
+    from gateway.channel_manager.web.share_image_export import (
+        get_share_image_export_manager,
+    )
 
-                _share_image_export_manager = ShareImageExportManager()
-    return _share_image_export_manager
+    return get_share_image_export_manager()
 
 
 def _get_user_workspace_dir() -> Path:
@@ -287,6 +280,32 @@ def _uses_agentos_routing() -> bool:
         return str(client.get("type") or "").strip().lower() == "agentos_router"
     except Exception:  # noqa: BLE001
         return False
+
+
+def _runtime_web_transport() -> str:
+    """WEB_TRANSPORT 优先；没写时企业版 http，个人版 websocket。"""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    value = (os.getenv("WEB_TRANSPORT") or "").strip().lower()
+    if value in {"http", "a2"}:
+        return "http"
+    if value in {"websocket", "ws"}:
+        return "websocket"
+    return "http" if is_enterprise() else "websocket"
+
+
+def _inject_user_web_runtime_config(document: str) -> str:
+    from jiuwenswarm.enterprise import is_enterprise
+
+    edition = "enterprise" if is_enterprise() else "personal"
+    login_auth_simulate = (os.getenv("LOGIN_AUTH_SIMULATE") or "").strip().lower() or "true"
+    if login_auth_simulate not in {"true", "false"}:
+        raise ValueError("LOGIN_AUTH_SIMULATE must be true or false")
+    return (
+        document.replace("__JIUWENSWARM_EDITION_VALUE__", edition)
+        .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
+        .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
+    )
 
 
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
@@ -2363,6 +2382,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _IMMUTABLE_ASSET_RE = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$")
     _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
     _REVALIDATE_CACHE_CONTROL = "no-cache"
+    _STATIC_EXTENSIONS = frozenset({
+        ".js", ".mjs", ".css", ".map", ".svg", ".png", ".jpg", ".jpeg",
+        ".ico", ".webp", ".gif", ".woff", ".woff2", ".ttf", ".eot",
+        ".json", ".webmanifest",
+    })
 
     @classmethod
     def _cache_control_for_static(cls, rel_path: str) -> str:
@@ -2400,9 +2424,33 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             base_dir = Path(self.directory or os.getcwd()).resolve()
             target = (base_dir / rel_path).resolve()
             in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+
+            # Relative Vite URLs on nested SPA routes resolve to /chat/assets/...
+            # (or deeper prefixes). Match the nginx deployment's assets alias.
+            asset_request = "/assets/" in req_path
+            if in_base and not target.exists() and asset_request:
+                asset_rel_path = "assets/" + req_path.split("/assets/", 1)[1]
+                asset_root = (base_dir / "assets").resolve()
+                asset_target = (base_dir / asset_rel_path).resolve()
+                in_assets = os.path.commonpath([str(asset_root), str(asset_target)]) == str(asset_root)
+                asset_in_base = os.path.commonpath([str(base_dir), str(asset_target)]) == str(base_dir)
+                if in_assets and asset_in_base and asset_target.is_file():
+                    rel_path = asset_rel_path
+                    target = asset_target
+                    self.path = quote("/" + rel_path, safe="/")
+                    if parsed.query:
+                        self.path += "?" + parsed.query
         except (OSError, ValueError):
             self._static_cache_control = None
             self._write_json(400, {"error": "invalid_path"})
+            return None
+
+        # Missing assets must never receive an HTML document with status 200.
+        if (asset_request or Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS) and not (
+            in_base and target.is_file()
+        ):
+            self._static_cache_control = None
+            self.send_error(404, "File not found")
             return None
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
@@ -2415,12 +2463,28 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return None
 
         if in_base and target.exists():
+            index_file = target / "index.html" if target.is_dir() else target
+            if index_file.is_file() and index_file.resolve() == spa_index:
+                return self._injected_index(index_file)
             self._static_cache_control = self._cache_control_for_static(rel_path)
             return super().send_head()
 
         self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
         self.path = "/index.html"
+        if spa_index.is_file():
+            return self._injected_index(spa_index)
         return super().send_head()
+
+    def _injected_index(self, file_path: Path):
+        body = _inject_user_web_runtime_config(
+            file_path.read_text(encoding="utf-8")
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
+        self.end_headers()
+        return io.BytesIO(body)
 
 
 def _normalize_api_target(value: str) -> str:

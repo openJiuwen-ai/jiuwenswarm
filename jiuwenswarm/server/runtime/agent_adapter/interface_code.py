@@ -68,6 +68,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_context_engine_config_for_model,
     _deep_agent_kv_cache_affinity_config,
     parse_int,
+    resolve_cron_execution_flag,
 )
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
@@ -509,6 +510,7 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "subagent_close",
     "subagent_resume",
     "read_file",
+    "pcs_search",
     "grep",
     "list_files",
     "glob",
@@ -1008,7 +1010,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             or ""
         ).strip() or getattr(self, "_channel_id", "")
 
-        self._is_cron_execution = self._channel_id == "__cron__"
+        self._is_cron_execution = resolve_cron_execution_flag(
+            channel_id=self._channel_id,
+            is_session_scoped=self._is_session_scoped_adapter,
+            config=config,
+        )
 
         await self.set_checkpoint()
 

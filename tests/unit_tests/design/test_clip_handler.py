@@ -508,6 +508,9 @@ async def test_compose_handler_merges_clips_in_shot_order(
         "jiuwenswarm.server.runtime.designer.handlers.compose._clip_video_usable",
         lambda path, ffmpeg=None: Path(path).is_file() and Path(path).stat().st_size >= 512,
     )
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose._find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose._media_duration_seconds", lambda *args: 10.0)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose.mix_compose_soundtrack", lambda video, *args, **kwargs: video)
     result = await ComposeNodeHandler().execute(
         graph["nodes"][-1],
         NodeExecutionContext(

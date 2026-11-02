@@ -5,7 +5,10 @@ import {
   bindPendingPermissionCard,
   clearPermissionQuestions,
   consumePendingQuestion,
+  dropAnsweredAskUserQuestions,
   enqueuePendingQuestions,
+  isAnsweredAskUserQuestion,
+  markQuestionsAnswered,
   pendingQuestionIdentity,
   shouldClearPermissionQuestionsForLifecycleEvent,
 } from '../node_modules/.cache/pending-question-queue/pendingQuestionQueue.mjs';
@@ -147,4 +150,41 @@ test('mixed cards, missing questions, and invalid legacy request identities fail
   for (const request_id of ['', ' ', null, 12, 'x'.repeat(513)]) {
     assert.deepEqual(enqueuePendingQuestions([], { ...legacy(), request_id }), []);
   }
+});
+
+function askUser(requestId) {
+  return {
+    request_id: requestId,
+    source: 'ask_user_interrupt',
+    questions: [{ header: '调研对象', question: '指什么？', options: [{ label: 'A' }] }],
+  };
+}
+
+test('answered ask_user questions are recognised per session and dropped from the queue', () => {
+  const answered = askUser('call-answered');
+  const pending = askUser('call-pending');
+  markQuestionsAnswered('session-a', ['call-answered']);
+
+  assert.equal(isAnsweredAskUserQuestion('session-a', answered), true);
+  assert.equal(isAnsweredAskUserQuestion('session-a', pending), false);
+  assert.equal(isAnsweredAskUserQuestion('session-b', answered), false);
+  assert.deepEqual(dropAnsweredAskUserQuestions('session-a', [answered, pending]), [pending]);
+});
+
+test('answered request ids only filter ask_user questions', () => {
+  markQuestionsAnswered('session-a', ['resume-request']);
+  const card = permission('card-a');
+
+  assert.equal(isAnsweredAskUserQuestion('session-a', card), false);
+  assert.deepEqual(dropAnsweredAskUserQuestions('session-a', [card]), [card]);
+});
+
+test('answered request ids ignore blank values and stay bounded', () => {
+  markQuestionsAnswered('session-a', ['', ' ']);
+  assert.equal(isAnsweredAskUserQuestion('session-a', askUser('')), false);
+
+  markQuestionsAnswered('session-bounded', ['call-oldest']);
+  markQuestionsAnswered('session-bounded', Array.from({ length: 600 }, (_, i) => `call-${i}`));
+  assert.equal(isAnsweredAskUserQuestion('session-bounded', askUser('call-oldest')), false);
+  assert.equal(isAnsweredAskUserQuestion('session-bounded', askUser('call-599')), true);
 });

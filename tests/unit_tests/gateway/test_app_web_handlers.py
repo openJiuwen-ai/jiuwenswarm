@@ -9,9 +9,12 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from tests.unit_tests.gateway.config_routing_harness import (
     make_config_routing_client,
@@ -21,7 +24,7 @@ from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from gateway.common.config_panel import config_set_handlers as _gw_config_set_handlers
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
 from gateway.extensions.registry import ExtensionRegistry
-from gateway.channel_manager.web import app_web_handlers
+from gateway.channel_manager.web import app_web_handlers, web_http_routes
 from jiuwenswarm.common.config_panel.config_set_handlers import (
     flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
     flatten_modes_team_for_config_panel as _flatten_modes_team_for_config_panel,
@@ -593,10 +596,10 @@ class _OwnedCronController:
         self.job = SimpleNamespace(id="cron-owner", user_id="user-owner")
         self.update_calls = 0
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **_kwargs):
         return self.job if job_id == self.job.id else None
 
-    async def update_job(self, job_id, patch):
+    async def update_job(self, job_id, patch, **_kwargs):
         self.update_calls += 1
         return {"id": job_id, **patch}
 
@@ -876,43 +879,111 @@ async def test_session_list_forwards_via_e2a_proxy(
 
 
 @pytest.mark.asyncio
-async def test_session_list_keeps_single_user_shared_directory_fallback(monkeypatch):  # noqa: C901
-    """A2g: legacy fallback deleted; kept as placeholder."""
-    pytest.skip("A2g deleted legacy local session.list fallback")
-
-async def _orig_test_session_list_keeps(monkeypatch) -> None:
-    """A2g：legacy 本地列表已删除——保留测试体但改为验证不存在 embedded 引用。"""
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("client_kind", ["legacy", "remote", "missing"])
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        ("session.list", {"limit": 5}),
+        ("session.rename", {"session_id": "current", "title": "New title"}),
+        ("session.pin", {"session_id": "current", "pinned": True}),
+    ],
+)
+async def test_session_management_unavailable_without_server(
+    monkeypatch, enterprise, client_kind, method, params,
+) -> None:
+    """Offline session operations must never access Gateway's local session data."""
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: enterprise)
+    clients = {
+        "legacy": WebSocketAgentServerClient(),
+        "remote": _OfflineRemoteAgentClient(),
+        "missing": None,
+    }
     channel = FakeWebChannel()
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, agent_client=WebSocketAgentServerClient())
-    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=clients[client_kind]))
+
+    def reject_local_access(*args, **kwargs):
+        raise AssertionError("must not access Gateway session data")
+
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda *, limit, offset: ([{"session_id": "legacy", "mode": "agent"}], 1),
-    )
-
-    await channel.methods["session.list"](object(), "req-offline", {"limit": 5}, "current")
-
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["sessions"][0]["session_id"] == "legacy"
-
-
-@pytest.mark.asyncio
-async def test_session_list_does_not_fallback_for_offline_remote_client(monkeypatch) -> None:
-    """Only the local shared-directory client may use Gateway's data directory."""
-    channel = FakeWebChannel()
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, agent_client=_OfflineRemoteAgentClient())
+        reject_local_access,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not read Gateway state")),
+        "jiuwenswarm.server.runtime.session.session_metadata.set_session_pinned",
+        reject_local_access,
     )
-
-    await channel.methods["session.list"](object(), "req-offline-remote", {}, "current")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_rename.apply_session_rename",
+        reject_local_access,
+    )
+    await channel.methods[method](object(), "req-offline", params, "current", "user-42")
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize(
+    "method, params, payload",
+    [
+        ("session.list", {"limit": 5, "offset": 2}, {"sessions": [], "total": 0}),
+        ("session.rename", {"session_id": "target", "title": "New title"}, {"title": "New title"}),
+        ("session.pin", {"session_id": "target", "pinned": True}, {"pinned": True, "pin_order": 1}),
+    ],
+)
+async def test_session_management_forwards_to_server(monkeypatch, enterprise, method, params, payload):
+    """Both editions preserve the E2A identity, request and Server response."""
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: enterprise)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+
+    await channel.methods[method](object(), "req-session", params, "current", "user-42")
+
+    send_request.assert_awaited_once()
+    envelope = send_request.call_args.args[0]
+    assert envelope.method == method
+    assert envelope.channel == "web"
+    assert envelope.user_id == "user-42"
+    assert envelope.params == params
+    assert envelope.session_id == "current"
+    assert envelope.is_stream is False
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["session.list", "session.rename", "session.pin"])
+@pytest.mark.parametrize("failure", ["server-error", "disconnect"])
+async def test_enterprise_session_management_preserves_e2a_failures(monkeypatch, method, failure):
+    """Server errors and disconnects must not trigger local session handling."""
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    send_request = AsyncMock(
+        return_value=SimpleNamespace(ok=False, payload={"error": "session not found", "code": "NOT_FOUND"}),
+    )
+    if failure == "disconnect":
+        send_request.side_effect = ConnectionError("disconnected")
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+
+    await channel.methods[method](
+        object(), "req-failure", {"session_id": "target", "title": "New title", "pinned": True},
+        "current", "user-42",
+    )
+
+    send_request.assert_awaited_once()
+    response = channel.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == ("NOT_FOUND" if failure == "server-error" else "SERVICE_UNAVAILABLE")
+    assert response["error"] == ("session not found" if failure == "server-error" else "disconnected")
 
 
 @pytest.mark.asyncio
@@ -936,8 +1007,10 @@ class _DictOwnedCronController:
     def __init__(self) -> None:
         self.job = {"id": "cron-dict-owner", "user_id": "user-owner"}
         self.run_now_calls = 0
+        self.get_kwargs: dict = {}
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **kwargs):
+        self.get_kwargs = kwargs
         return self.job if job_id == self.job["id"] else None
 
     async def run_now_info(self, job_id):
@@ -957,6 +1030,7 @@ async def test_cron_job_run_now_accepts_matching_owner_with_dict_job() -> None:
     )
 
     assert cron.run_now_calls == 1
+    assert cron.get_kwargs["project_id"] is None
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["run_id"] == "run-1"
 
@@ -977,7 +1051,8 @@ async def test_cron_job_run_now_rejects_dict_job_with_different_owner() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkeypatch) -> None:
+@pytest.mark.parametrize("targets", ["web", "feishu:im-app"])
+async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkeypatch, targets) -> None:
     """AgentOS project binding must stay in the routed user AgentServer directory."""
     channel = FakeWebChannel()
     cron = _CapturingCronController()
@@ -995,10 +1070,57 @@ async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkey
     )
 
     await channel.methods["cron.job.create"](
-        object(), "req-cron", {"name": "job", "cron_expr": "* * * * *"}, "user-session", "user-1"
+        SimpleNamespace(_jiuwen_app_id="browser-app"), "req-cron",
+        {"name": "job", "cron_expr": "* * * * *", "targets": targets}, "user-session", "user-1"
     )
 
     assert channel.responses[-1]["ok"] is True
+    # 没选项目不问 Agent，也不标记「已经在 Agent 上核对过」。
+    assert "_agentos_project_binding_verified" not in cron.params
+    assert "project_dir" not in cron.params
+    assert cron.params.get("app_id") == ("browser-app" if targets == "web" else None)
+
+
+@pytest.mark.asyncio
+async def test_cron_create_with_project_asks_the_agent(monkeypatch) -> None:
+    """选了具体项目时，不论是不是 AgentOS，都让 Agent 核对，网关不翻本地名单。"""
+    channel = FakeWebChannel()
+    cron = _CapturingCronController()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=object(), cron_controller=cron)
+    )
+    seen: dict = {}
+
+    async def _fake_resolve_agent_cron_project_binding(**kwargs):
+        seen.update(kwargs)
+        return True, {"project_id": "proj_2e7a6278", "work_mode": "work"}
+
+    monkeypatch.setattr(
+        "gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        _fake_resolve_agent_cron_project_binding,
+    )
+    ws = SimpleNamespace(_web_routing={"user_id": "zxy", "group_id": "group-1", "bot_id": "bot-1"})
+
+    await channel.methods["cron.job.create"](
+        ws,
+        "req-cron-project",
+        {
+            "name": "job",
+            "cron_expr": "0 0 8 * * ? *",
+            "project_id": "proj_2e7a6278",
+            "project_dir": "/work/zxy",
+            "work_mode": "work",
+        },
+        "user-session",
+        "zxy",
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert seen["params"]["project_id"] == "proj_2e7a6278"
+    assert seen["metadata"]["routing"]["group_id"] == "group-1"
+    assert seen["metadata"]["routing"]["bot_id"] == "bot-1"
+    assert cron.params["project_id"] == "proj_2e7a6278"
+    assert cron.params["work_mode"] == "work"
     assert cron.params["_agentos_project_binding_verified"] is True
     assert "project_dir" not in cron.params
 
@@ -1025,10 +1147,10 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
             }
             self.update_calls: list[tuple[str, dict]] = []
 
-        async def get_job(self, job_id):
+        async def get_job(self, job_id, **_kwargs):
             return dict(self.job) if job_id == self.job["id"] else None
 
-        async def update_job(self, job_id, patch):
+        async def update_job(self, job_id, patch, **_kwargs):
             self.update_calls.append((job_id, dict(patch)))
             return {"id": job_id, **patch}
 
@@ -1374,6 +1496,123 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     assert model["vendor_key"] == "alibaba"
     assert model["plan"] == "token_plan"
     assert model["context_window_tokens"] == DEFAULT_CONTEXT_WINDOW_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_enterprise_no_runtime_models_list_uses_gateway_manager(
+    monkeypatch,
+) -> None:
+    """企业版无 runtime（legacy WebSocket）走 Gateway 企业库，不代理 AS yaml。"""
+    from gateway.enterprise.config.effective.schemas import TemplateRefSlot
+
+    async def _fake_load(_request, _slots):
+        return SimpleNamespace(
+            models={
+                TemplateRefSlot.DEFAULT_MODEL.value: [
+                    {
+                        "model_id": "GLM-5.3",
+                        "template_name": "企业默认",
+                        "api_base": "https://manager.example/v1",
+                        "model_provider": "OpenAI",
+                        "timeout": 60,
+                        "parameters": {"temperature": 0.7, "reasoning_level": "off"},
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        "gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "gateway.enterprise.config.effective.loader.load_effective_enterprise_config",
+        _fake_load,
+    )
+    # 若误走 A4g E2A / 个人 yaml，会落到这些占位值
+    monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(
+        models_handlers,
+        "get_default_models",
+        lambda _config: [{
+            "model_client_config": {
+                "model_name": "mdl_default_primary",
+                "api_base": "https://example.com/v1",
+                "api_key": "secret",
+                "client_provider": "OpenAI",
+            },
+            "model_config_obj": {},
+            "alias": "your-model-name",
+            "is_default": True,
+        }],
+    )
+
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_legacy_config_routing_client(),
+        )
+    )
+
+    await channel.methods["models.list"](object(), "req-ent-models", {}, "session-1")
+
+    resp = channel.responses[-1]
+    assert resp["ok"] is True
+    assert resp["payload"]["model_source"] == "enterprise"
+    assert resp["payload"]["active_model"] == "GLM-5.3"
+    assert resp["payload"]["models"][0]["model_name"] == "GLM-5.3"
+    assert resp["payload"]["models"][0]["alias"] == "企业默认"
+    assert resp["payload"]["models"][0]["api_key"] == ""
+
+
+@pytest.mark.asyncio
+async def test_personal_legacy_models_list_still_proxies_to_agent_server(
+    monkeypatch,
+) -> None:
+    """个人版 legacy WebSocket 仍走 A4g E2A，不走企业 Gateway handler。"""
+    from jiuwenswarm.server.runtime import opencode_zen
+
+    monkeypatch.setattr(
+        "gateway.enterprise.is_enterprise",
+        lambda: False,
+    )
+    monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(
+        models_handlers,
+        "get_default_models",
+        lambda _config: [{
+            "model_client_config": {
+                "model_name": "personal-from-yaml",
+                "api_base": "https://example.com/v1",
+                "api_key": "secret",
+                "client_provider": "OpenAI",
+            },
+            "model_config_obj": {"temperature": 0.95},
+            "alias": "personal-from-yaml",
+            "is_default": True,
+        }],
+    )
+    monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.opencode_zen.append_zen_free_models",
+        lambda models: None,
+    )
+
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_legacy_config_routing_client(),
+        )
+    )
+
+    await channel.methods["models.list"](object(), "req-personal", {}, "session-1")
+
+    resp = channel.responses[-1]
+    assert resp["ok"] is True
+    assert resp["payload"].get("model_source") != "enterprise"
+    assert resp["payload"]["models"][0]["model_name"] == "personal-from-yaml"
 
 
 @pytest.mark.asyncio
@@ -4391,6 +4630,19 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("method", [
+    "group.create", "group.delete", "group.get", "group.history.get", "group.list",
+    "group.member.add", "group.update", "session.assets.list", "session.assets.register",
+    "session.assets.rename",
+])
+def test_web_retains_mainline_group_and_session_asset_forwarding(method):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    assert method not in channel.methods
+    assert method in app_web_handlers._FORWARD_REQ_METHODS
+    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+
+
 def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
     skill_graph_methods = {
         "skills.graph.build",
@@ -5103,6 +5355,28 @@ async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
 
 
 @pytest.mark.asyncio
+async def test_document_upload_uses_e2a_for_remote_enterprise_client(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    client = object()
+    upload = AsyncMock(return_value=(True, {"path": "/tenant/uploads/report.txt"}))
+    monkeypatch.setattr(
+        "gateway.routing.agent_http_bridge.upload_file_bytes_via_e2a", upload
+    )
+    result = await app_web_handlers._upload_document_item_via_http(
+        {"filename": "report.txt", "mimeType": "text/plain"}, b"report",
+        session_id="session-a", index=0, agent_client=client, user_id="user-a",
+    )
+    assert result["path"] == "/tenant/uploads/report.txt"
+    assert result["_persisted"] is True
+    upload.assert_awaited_once_with(
+        b"report", "agent/sessions/session-a/uploads/report.txt",
+        agent_client=client, user_id="user-a", channel_id="web", session_id="session-a",
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("upload_succeeds", [True, False])
 async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
     monkeypatch, upload_succeeds,
@@ -5493,3 +5767,135 @@ async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling
     assert calls == [("config", [{"cli_agent": "claude"}]), ("remove", "acme")]
     assert missing["ok"] is False
     assert missing["code"] == "BAD_REQUEST"
+
+@pytest.mark.asyncio
+async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> None:
+    """Gateway 本地 ModelCatalog 路径仅企业版（无 AS / RuntimeRouted）启用。"""
+    class FakeCatalog:
+        def get_public_model_detail(self, model_id):
+            assert model_id == "mdl_a"
+            return {
+                "model_id": model_id,
+                "model_client_config": {"model_name": "a"},
+                "write_only_fields": ["model_client_config.api_key"],
+            }
+
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.setattr(app_web_handlers, "ModelCatalog", FakeCatalog)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["models.get"](object(), "req-model", {"model_id": "mdl_a"}, "sid")
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert "api_key" not in response["payload"]["model"]["model_client_config"]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_busy, gateway_busy", [(True, False), (False, True)])
+async def test_session_metadata_retains_agent_runtime_authority(monkeypatch, runtime_busy, gateway_busy):
+    channel = FakeWebChannel()
+    channel.is_session_busy = lambda _: gateway_busy
+    captured = []
+
+    class AgentClient:
+        server_ready = True
+
+        async def send_request(self, envelope):
+            captured.append(envelope)
+            return SimpleNamespace(ok=True, payload={"session_id": "s1", "is_processing": runtime_busy})
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=AgentClient()))
+    ws = SimpleNamespace(_web_routing={"user_id": "u1", "group_id": "g1", "bot_id": "b1"})
+    await channel.methods["session.get_metadata"](ws, "metadata-1", {"session_id": "s1"}, "s1", "u1")
+    assert channel.responses[-1]["payload"]["is_processing"] is runtime_busy
+    assert captured[-1].channel_context["routing"] == {"group_id": "g1", "bot_id": "b1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("metadata", "status", "expected"),
+    [({"cron_id": "job"}, 200, 200), ({}, 200, 404), ({}, 403, 403)],
+)
+async def test_cron_live_uses_routed_metadata_for_normal_web_session_ids(monkeypatch, metadata, status, expected):
+    lookup = AsyncMock(return_value=JSONResponse({"ok": status == 200, "data": metadata}, status_code=status))
+    monkeypatch.setattr(web_http_routes, "_unary", lookup)
+    app = FastAPI()
+    channel = object()
+    web_http_routes.register_web_http_api_routes(app, channel, enterprise=True)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/sessions/{session_id}/live")
+    request = SimpleNamespace(is_disconnected=AsyncMock(return_value=True))
+    response = await endpoint("web_allocated_session", request)
+    assert response.status_code == expected
+    lookup.assert_awaited_once_with(request, channel, "session.get_metadata", {"session_id": "web_allocated_session"})
+    if expected == 200:
+        assert isinstance(response, StreamingResponse)
+        assert [frame async for frame in response.body_iterator] == []
+
+
+@pytest.mark.asyncio
+async def test_run_notification_subscription_works_without_session_and_isolates_tenants(monkeypatch):
+    from gateway.common.cron_events import cron_notification_scope
+    from gateway.cron import live_bus
+
+    monkeypatch.setattr(live_bus, "_redis_client", lambda: None)
+    bus = live_bus.CronLiveBus()
+    monkeypatch.setattr(live_bus, "cron_live_bus", bus)
+    monkeypatch.setattr(web_http_routes, "_unary", AsyncMock(return_value=JSONResponse({"ok": True})))
+    app = FastAPI()
+    web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
+    request = SimpleNamespace(
+        headers={"x-user-id": "owner", "x-group-id": "group", "x-bot-id": "bot", "x-app-id": "app"},
+        client=SimpleNamespace(host="127.0.0.1"), is_disconnected=AsyncMock(return_value=False),
+    )
+    response = await endpoint(request)
+    stream = response.body_iterator
+    assert await anext(stream) == ": connected\n\n"
+    try:
+        for field in ("user_id", "group_id", "bot_id", "app_id"):
+            identity = dict(user_id="owner", group_id="group", bot_id="bot", app_id="app")
+            identity[field] = "other"
+            bus.publish(cron_notification_scope(**identity), {
+                "event": "cron.run.updated", "payload": {"event_id": f"wrong-{field}"},
+            })
+        scope = cron_notification_scope(user_id="owner", group_id="group", bot_id="bot", app_id="app")
+        for revision, phase in [(1, "finished"), (2, "reminder")]:
+            bus.publish(scope, {"event": "cron.run.updated", "payload": {
+                "event_id": f"run:{revision}", "request_id": "cron-run", "status": "failed",
+                "phase": phase, "session_id": None,
+            }})
+        assert '"phase": "finished"' in await anext(stream)
+        assert '"phase": "reminder"' in await anext(stream)
+    finally:
+        await stream.aclose()
+    assert not bus._subscribers.get(scope)
+
+
+@pytest.mark.asyncio
+async def test_run_notification_subscription_applies_access_checks(monkeypatch):
+    denied = JSONResponse({"ok": False}, status_code=403)
+    monkeypatch.setattr(web_http_routes, "_unary", AsyncMock(return_value=denied))
+    app = FastAPI()
+    web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
+    assert await endpoint(SimpleNamespace()) is denied
+
+
+@pytest.mark.asyncio
+async def test_cron_session_selection_rpc_rejects_group_before_resolving(monkeypatch):
+    from jiuwenswarm.common.config_panel.model_resource_handlers import session_selection_handler
+    from jiuwenswarm.common.external_providers import _providers
+
+    monkeypatch.setitem(
+        _providers, "session_metadata",
+        SimpleNamespace(get_session_metadata=lambda session_id: {"cron_id": "job"}),
+    )
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await session_selection_handler(
+        channel, None, "select", {"model_selection": {"type": "model_group", "id": "group"}}, "cron-session",
+    )
+    response = channel.send_response.call_args.kwargs
+    assert response["ok"] is False
+    assert response["code"] == "BAD_REQUEST"
+    assert "only support a single model" in response["error"]

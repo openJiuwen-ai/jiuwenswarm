@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+from jiuwenswarm.server.context import build_ws_request_context
+from jiuwenswarm.server.handlers.session import handle_history_get_stream
 
 
 class _FakeWs:
@@ -39,19 +40,16 @@ async def test_history_get_stream_emits_todo_updated_on_page_one(tmp_path, monke
         lambda: tmp_path / "todo",
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server._todo_snapshot_session_fields",
+        "jiuwenswarm.server.handlers.session._todo_snapshot_session_fields",
         lambda _session_id: {},
     )
     monkeypatch.setattr(
-        AgentWebSocketServer,
-        "get_conversation_history",
-        staticmethod(
+        "jiuwenswarm.server.handlers.session.get_conversation_history",
             lambda session_id, page_idx, **_kwargs: {
                 "messages": [{"role": "user", "content": "hi"}],
                 "total_pages": 1,
                 "page_idx": page_idx,
-            }
-        ),
+            },
     )
 
     sent_wires: list[dict] = []
@@ -61,11 +59,11 @@ async def test_history_get_stream_emits_todo_updated_on_page_one(tmp_path, monke
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.send_wire_payload",
+        "jiuwenswarm.server.transports.ws_sink.send_wire_payload",
         _capture_send,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.encode_agent_chunk_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_chunk_for_wire",
         lambda chunk, response_id, sequence: {
             "response_id": response_id,
             "sequence": sequence,
@@ -81,12 +79,8 @@ async def test_history_get_stream_emits_todo_updated_on_page_one(tmp_path, monke
         params={"session_id": session_id, "page_idx": 1},
         is_stream=True,
     )
-    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
-    await AgentWebSocketServer._handle_history_get_stream(
-        server,
-        _FakeWs(),
-        request,
-        AsyncMock(),
+    await handle_history_get_stream(
+        build_ws_request_context(SimpleNamespace(), _FakeWs(), request, asyncio.Lock())
     )
 
     event_types = [
@@ -121,15 +115,12 @@ async def test_history_get_stream_emits_todo_updated_on_page_one(tmp_path, monke
 @pytest.mark.asyncio
 async def test_history_get_stream_skips_todo_on_later_pages(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        AgentWebSocketServer,
-        "get_conversation_history",
-        staticmethod(
+        "jiuwenswarm.server.handlers.session.get_conversation_history",
             lambda session_id, page_idx, **_kwargs: {
                 "messages": [],
                 "total_pages": 2,
                 "page_idx": page_idx,
-            }
-        ),
+            },
     )
     sent_wires: list[dict] = []
 
@@ -138,11 +129,11 @@ async def test_history_get_stream_skips_todo_on_later_pages(tmp_path, monkeypatc
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.send_wire_payload",
+        "jiuwenswarm.server.transports.ws_sink.send_wire_payload",
         _capture_send,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.encode_agent_chunk_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_chunk_for_wire",
         lambda chunk, response_id, sequence: {
             "response_id": response_id,
             "sequence": sequence,
@@ -157,7 +148,7 @@ async def test_history_get_stream_skips_todo_on_later_pages(tmp_path, monkeypatc
         return [{"id": "x"}]
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.load_todo_snapshot_for_frontend",
+        "jiuwenswarm.server.handlers.session.load_todo_snapshot_for_frontend",
         _should_not_load,
     )
 
@@ -168,12 +159,8 @@ async def test_history_get_stream_skips_todo_on_later_pages(tmp_path, monkeypatc
         params={"session_id": "sess-page-2", "page_idx": 2},
         is_stream=True,
     )
-    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
-    await AgentWebSocketServer._handle_history_get_stream(
-        server,
-        _FakeWs(),
-        request,
-        AsyncMock(),
+    await handle_history_get_stream(
+        build_ws_request_context(SimpleNamespace(), _FakeWs(), request, asyncio.Lock())
     )
 
     assert load_mock.called is False
@@ -208,7 +195,7 @@ async def test_history_get_stream_reads_code_project_todo(tmp_path, monkeypatch)
         lambda: tmp_path / "unused-default-todo",
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server._todo_snapshot_session_fields",
+        "jiuwenswarm.server.handlers.session._todo_snapshot_session_fields",
         lambda _session_id: {
             "project_dir": str(project),
             "work_mode": "code",
@@ -216,15 +203,12 @@ async def test_history_get_stream_reads_code_project_todo(tmp_path, monkeypatch)
         },
     )
     monkeypatch.setattr(
-        AgentWebSocketServer,
-        "get_conversation_history",
-        staticmethod(
+        "jiuwenswarm.server.handlers.session.get_conversation_history",
             lambda session_id, page_idx, **_kwargs: {
                 "messages": [],
                 "total_pages": 1,
                 "page_idx": page_idx,
-            }
-        ),
+            },
     )
 
     sent_wires: list[dict] = []
@@ -234,11 +218,11 @@ async def test_history_get_stream_reads_code_project_todo(tmp_path, monkeypatch)
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.send_wire_payload",
+        "jiuwenswarm.server.transports.ws_sink.send_wire_payload",
         _capture_send,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.encode_agent_chunk_for_wire",
+        "jiuwenswarm.server.transports.ws_sink.encode_agent_chunk_for_wire",
         lambda chunk, response_id, sequence: {
             "response_id": response_id,
             "sequence": sequence,
@@ -254,12 +238,8 @@ async def test_history_get_stream_reads_code_project_todo(tmp_path, monkeypatch)
         params={"session_id": session_id, "page_idx": 1},
         is_stream=True,
     )
-    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
-    await AgentWebSocketServer._handle_history_get_stream(
-        server,
-        _FakeWs(),
-        request,
-        AsyncMock(),
+    await handle_history_get_stream(
+        build_ws_request_context(SimpleNamespace(), _FakeWs(), request, asyncio.Lock())
     )
 
     todo_wire = next(w for w in sent_wires if w["payload"].get("event_type") == "todo.updated")

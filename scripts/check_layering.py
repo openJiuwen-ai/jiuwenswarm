@@ -5,9 +5,9 @@
 
 规则（白名单内为已知存量，即燃尽清单；白名单外为新增违规）：
 
-  R1  common  禁止 import server / agents / channels / gateway / extensions / symphony
+  R1  common  禁止 import server / agents / channels / gateway / extensions / runtime
   R2  server  禁止 import gateway
-  R3  gateway 禁止 import server / agents / channels
+  R3  gateway 禁止 import server / agents / channels / runtime
 
 例外：``gateway.common`` 是无状态纯函数/常量的唯一真源（M1 策略调整），
 common / server / runtime 允许反向引用；扩展治理层
@@ -63,7 +63,22 @@ _ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
 # R1 存量（含 a6b9ea2e0 于 2026-10-13 引入的 3 对）已由 B1'
 # （common 注入化 + 纯模块下沉）全部消除；!8016 合入的临时白名单
 # （14 对）随本 MR 缩减为空。
-KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
+# Enterprise 合入临时白名单：common 侧租户/路径/兼容 shim 仍引用 enterprise。
+# 燃尽方向：注入化或下沉到 enterprise 包，消除后再缩减本表。
+KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {
+    "jiuwenswarm.common.e2a.agent_compat": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.file_download_token": {
+        "jiuwenswarm.enterprise",
+        "jiuwenswarm.enterprise.tenant.tenant_context",
+    },
+    "jiuwenswarm.common.local_env_config": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.projectless_workspace": {"jiuwenswarm.enterprise"},
+    "jiuwenswarm.common.utils": {
+        "jiuwenswarm.enterprise",
+        "jiuwenswarm.enterprise.tenant.tenant_context",
+        "jiuwenswarm.enterprise.tenant.tenant_paths",
+    },
+}
 
 # 允许的跨层目标：无状态纯组件以 gateway 为唯一真源，母仓反向引用不视为违规。
 # extensions 治理层（registry/manager/loader）同样以 gateway 为唯一实现：
@@ -83,9 +98,39 @@ ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
 
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
-# gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）已消除。
-# browser_config 已下沉 jiuwenswarm.common.browser_config，不再占用本白名单。
+# Enterprise / manager-config 合入临时白名单（gateway → server/agents/runtime/channels）。
+# 燃尽方向：经 adapter / 回调替代直 import 后再缩减。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
+    "gateway.channel_manager.web.app_web_handlers": {
+        "jiuwenswarm.server.control.responses",
+        "jiuwenswarm.server.runtime.session.session_info",
+        "jiuwenswarm.server.runtime.session.session_metadata",
+        "jiuwenswarm.server.runtime.session.session_rename",
+    },
+    "gateway.channel_manager.web.enterprise_files": {
+        "jiuwenswarm.server.runtime.attachments.upload_storage",
+    },
+    "gateway.channel_manager.web.http_routes.share_jobs": {
+        "jiuwenswarm.channels.web.app_web",
+    },
+    "gateway.cron.db_schedule": {
+        "jiuwenswarm.runtime.cron.cron_expr",
+    },
+    "gateway.cron.db_store": {
+        "jiuwenswarm.runtime.cron.cron_job_mutations",
+    },
+    "gateway.enterprise.config.manager_config.core.application_config.memory_config": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
+    "gateway.enterprise.config.manager_config.core.application_config.task_memory_config": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
+    "gateway.enterprise.config.manager_config.routers.application_config_routers": {
+        "jiuwenswarm.server.runtime.equipment_hub_catalog",
+    },
+    "gateway.storage_assembly.setup": {
+        "jiuwenswarm.agents.harness.common.memory.config",
+    },
 }
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
 BASELINE = {
@@ -138,7 +183,7 @@ def _git(*args: str) -> str:
     git_path = shutil.which("git") or "git"
     return subprocess.run(
         [git_path, "-C", str(REPO_ROOT), *args],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     ).stdout
 
 
@@ -162,8 +207,11 @@ class ImportGraph:
         self.fileset = set(self.files)
         self.modules = {path_to_module(f): f for f in self.files}
         # hard = 模块级 import；lazy = 函数内延迟 import
+        # typing = ``if TYPE_CHECKING:`` 块内 import——运行时永不执行，
+        # 不计入 hard/lazy（R3 与依赖计数均不含），仅收集供人工核对。
         self.hard: dict[str, set[str]] = defaultdict(set)
         self.lazy: dict[str, set[str]] = defaultdict(set)
+        self.typing: dict[str, set[str]] = defaultdict(set)
         self._build()
 
     def _resolve(self, mod: str, name: str) -> str | None:
@@ -206,8 +254,17 @@ class ImportGraph:
             logger.warning("[warn] 语法错误，跳过 %s: %s", rel, exc)
             return
 
-        def walk(node: ast.AST, in_func: bool) -> None:
+        def _is_type_checking_guard(node: ast.AST) -> bool:
+            test = getattr(node, "test", None)
+            if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+                return True
+            return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+        def walk(node: ast.AST, in_func: bool, in_typing: bool = False) -> None:
             for ch in ast.iter_child_nodes(node):
+                if isinstance(ch, ast.If) and _is_type_checking_guard(ch):
+                    walk(ch, in_func, in_typing=True)
+                    continue
                 targets: list[str | None] = []
                 if isinstance(ch, ast.Import):
                     targets = [self._resolve(mod, a.name) for a in ch.names]
@@ -238,9 +295,10 @@ class ImportGraph:
                     walk(
                         ch,
                         in_func or isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)),
+                        in_typing,
                     )
                     continue
-                bucket = self.lazy if in_func else self.hard
+                bucket = self.typing if in_typing else (self.lazy if in_func else self.hard)
                 for t in targets:
                     if t and t != mod:
                         bucket[mod].add(t)
@@ -340,8 +398,8 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
-        ("gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime",
+        ("gateway.",), ("server", "agents", "channels", "runtime"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
     return exit_code
@@ -388,7 +446,7 @@ def run_baseline(graph: ImportGraph) -> None:
     backref_modules, backref_imports = 0, 0
     foreign_prefixes = tuple(
         f"{PKG}.{p}."
-        for p in ("server", "agents", "channels", "gateway", "extensions", "symphony")
+        for p in ("server", "agents", "channels", "gateway", "extensions", "runtime")
     )
     for mod, known in KNOWN_R1_COMMON_BACKREFS.items():
         targets: set[str] = set()

@@ -28,12 +28,10 @@ from typing import Any, AsyncIterator, Callable, Tuple
 from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
+    is_team_mode as is_team_runtime_mode,
     is_team_plan_mode,
     is_web_composable_mode,
     read_request_work_mode,
-)
-from gateway.common.mode_matrix import (
-    is_team_mode as is_team_runtime_mode,
 )
 from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
@@ -1280,6 +1278,16 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_MARKETPLACE_TOGGLE: "handle_skills_marketplace_toggle",
     ReqMethod.SKILLS_ONLINE_SEARCH: "handle_skills_online_search",
     ReqMethod.SKILLS_ONLINE_SEARCH_INSTALL: "handle_skills_online_search_install",
+    ReqMethod.SKILLS_SOURCE_PROVIDERS: "handle_skills_source_providers",
+    ReqMethod.SKILLS_SOURCE_SEARCH: "handle_skills_source_search",
+    ReqMethod.SKILLS_SOURCE_INSTALL: "handle_skills_source_install",
+    ReqMethod.SKILLS_UPDATES_CHECK: "handle_skills_updates_check",
+    ReqMethod.SKILLS_UPDATE: "handle_skills_update",
+    ReqMethod.SKILLS_ENTERPRISE_LIST: "handle_skills_enterprise_list",
+    ReqMethod.SKILLS_ENTERPRISE_INSTALL: "handle_skills_web_install",
+    ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: "handle_skills_web_uninstall",
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: "handle_skills_source_providers",
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: "handle_skills_source_search",
     ReqMethod.SKILLS_SKILLNET_SEARCH: "handle_skills_skillnet_search",
     ReqMethod.SKILLS_SKILLNET_INSTALL: "handle_skills_skillnet_install",
     ReqMethod.SKILLS_SKILLNET_INSTALL_STATUS: "handle_skills_skillnet_install_status",
@@ -3321,11 +3329,17 @@ class JiuWenSwarm:
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
-        return await self._process_message(request, schedule_session=True)
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
-        return await self._process_message(request, schedule_session=False)
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=False)
 
     async def _process_message(
         self,
@@ -3788,6 +3802,25 @@ class JiuWenSwarm:
         """Inject an interaction answer into this Session's active execution."""
         if not is_interrupt_resume_payload(request.params):
             raise ValueError("control input must answer an active interaction")
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+
+        # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
+        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        stream = self._stream_control_input(request)
+        try:
+            while True:
+                with bind_request_subject(request.metadata):
+                    try:
+                        chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        return
+                yield chunk
+        finally:
+            await stream.aclose()
+
+    async def _stream_control_input(
+        self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         session_id = self._session_manager.get_session_id(request.session_id)
         params = request.params if isinstance(request.params, dict) else {}
@@ -4076,6 +4109,25 @@ class JiuWenSwarm:
 
     async def process_message_stream(
         self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """处理流式请求，并带上本次请求的用户身份。"""
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+
+        # 不把 ContextVar token 留过 yield。关流可能发生在另一个 Task，跨上下文 reset 会抛 ValueError。
+        stream = self._process_message_stream(request)
+        try:
+            while True:
+                with bind_request_subject(request.metadata):
+                    try:
+                        chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        return
+                yield chunk
+        finally:
+            await stream.aclose()
+
+    async def _process_message_stream(
+            self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求.
 
@@ -4600,6 +4652,7 @@ class JiuWenSwarm:
                 content=payload["content"],
                 timestamp=payload["timestamp"] / 1000,
                 extra={
+                    **(_history_user_extra({"media_items": payload.get("media_items")}) or {}),
                     "output_order": payload.get("output_order"),
                     "is_supplemental_input": True,
                     **{
@@ -5826,9 +5879,12 @@ class JiuWenSwarm:
     ) -> dict[str, Any] | None:
         """Resolve one chat's runtime before any session-child side effects."""
         if request.req_method is not ReqMethod.CHAT_SEND:
+            # Stamp absence so deep-adapter paths can getattr safely.
+            request.trusted_runtime_binding = None
             return None
         resolver = getattr(adapter, "resolve_runtime_binding", None)
         if not callable(resolver):
+            request.trusted_runtime_binding = None
             return None
         params = request.params if isinstance(request.params, dict) else {}
         runtime_binding = resolver(session_id, params)

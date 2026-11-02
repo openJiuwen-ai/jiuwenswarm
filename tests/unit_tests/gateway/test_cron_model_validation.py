@@ -380,9 +380,144 @@ def test_cron_job_mcp_round_trip() -> None:
     assert restored.mcp == ["feishu-doc", "github"]
 
 
+def test_cron_job_tenant_ids_round_trip() -> None:
+    """三个身份没填时读写都是空串（个人版与旧数据一致）。旧文件没有这三个字段也能读。"""
+    job = _mcp_round_trip_job()
+    job.group_id = "g1"
+    job.bot_id = ""
+    job.user_id = ""
+    saved = job.to_dict()
+    assert saved["group_id"] == "g1"
+    assert saved["bot_id"] == ""
+    assert saved["user_id"] == ""
+    assert "service_id" not in saved
+    assert "agent_id" not in saved
+
+    restored = CronJob.from_dict(saved)
+    assert restored.group_id == "g1"
+    assert restored.bot_id == ""
+    assert restored.user_id == ""
+
+    legacy = {k: v for k, v in saved.items() if k not in {"group_id", "bot_id", "user_id"}}
+    old = CronJob.from_dict(legacy)
+    assert old.group_id == ""
+    assert old.bot_id == ""
+    assert old.user_id == ""
+
+
 def test_cron_job_without_mcp_round_trip_keeps_none() -> None:
     """旧数据无 mcp 字段 → from_dict 兜底 None，行为与改造前一致。"""
     job = _mcp_round_trip_job()
     legacy = {k: v for k, v in job.to_dict().items() if k != "mcp"}
     assert "mcp" not in legacy
     assert CronJob.from_dict(legacy).mcp is None
+
+
+@pytest.mark.asyncio
+async def test_enterprise_cron_model_accepts_library_model_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版核对走企业库 default_model，不认本机 your-model-name。"""
+    from types import SimpleNamespace
+
+    from gateway.cron.enterprise_model import resolve_enterprise_cron_model
+    from gateway.enterprise.config.effective.schemas import TemplateRefSlot
+
+    async def _fake_load(request, slots):
+        assert TemplateRefSlot.DEFAULT_MODEL in slots
+        return SimpleNamespace(
+            models={
+                TemplateRefSlot.DEFAULT_MODEL.value: [
+                    {
+                        "model_id": "GLM-5.2",
+                        "template_name": "我自己用的",
+                        "api_base": "https://example.invalid",
+                        "api_key": "secret",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        "gateway.enterprise.config.effective.loader.load_effective_enterprise_config",
+        _fake_load,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_names",
+        lambda: ["your-model-name"],
+    )
+    assert (
+        await resolve_enterprise_cron_model(
+            "GLM-5.2",
+            group_id="g1",
+            bot_id="b1",
+            user_id="u1",
+        )
+        == "GLM-5.2"
+    )
+    assert (
+        await resolve_enterprise_cron_model(
+            "我自己用的",
+            group_id="g1",
+            bot_id="b1",
+            user_id="u1",
+        )
+        == "GLM-5.2"
+    )
+    assert (
+        await resolve_enterprise_cron_model(
+            None,
+            group_id="g1",
+            bot_id="b1",
+            user_id="u1",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_enterprise_cron_model_rejects_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from gateway.cron.enterprise_model import resolve_enterprise_cron_model
+    from gateway.enterprise.config.effective.schemas import TemplateRefSlot
+
+    async def _fake_load(request, slots):
+        return SimpleNamespace(
+            models={
+                TemplateRefSlot.DEFAULT_MODEL.value: [
+                    {"model_id": "GLM-5.2", "template_name": "我自己用的"}
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        "gateway.enterprise.config.effective.loader.load_effective_enterprise_config",
+        _fake_load,
+    )
+    with pytest.raises(ValueError, match="Unknown model 'no-such-model'"):
+        await resolve_enterprise_cron_model(
+            "no-such-model",
+            group_id="g1",
+            bot_id="b1",
+            user_id="u1",
+        )
+
+
+def test_agent_cron_model_enterprise_passes_session_model_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版工具侧不读本机名单，把会话模型原样交给 Gateway 核对。"""
+    from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
+        resolve_agent_cron_model,
+    )
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_names",
+        lambda: ["your-model-name"],
+    )
+    assert resolve_agent_cron_model("GLM-5.2") == "GLM-5.2"
+    assert resolve_agent_cron_model("  ") is None

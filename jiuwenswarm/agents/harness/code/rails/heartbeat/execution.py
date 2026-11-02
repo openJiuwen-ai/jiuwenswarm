@@ -119,6 +119,10 @@ class SessionRunAdmission:
         state = self._states.get(session_id)
         return bool(state and state.pending_interrupt_ids)
 
+    def pending_interactions(self, session_id: str) -> frozenset[str]:
+        state = self._states.get(session_id)
+        return frozenset(state.pending_interrupt_ids) if state else frozenset()
+
     def set_session_message_blocker(
         self, blocker: Callable[[str], bool] | None
     ) -> None:

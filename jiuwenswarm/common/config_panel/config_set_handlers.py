@@ -125,7 +125,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.utils import get_env_file
 from jiuwenswarm.common.version import get_runtime_version
-from jiuwenswarm.common.external_providers import provider
+from jiuwenswarm.common.external_providers import ExternalProviderUnregistered, provider
 from jiuwenswarm.common.symphony_config import (
     DEFAULT_EVOLUTION_ENABLED,
     DEFAULT_SYMPHONY_ENABLED,
@@ -1325,6 +1325,33 @@ def parse_config_bool(value: Any) -> bool:
     return parse_kvc_bool(value)
 
 
+def _fallback_a2ui_config_payload(raw: dict[str, Any] | None = None) -> dict[str, str]:
+    """Gateway 等未注册 a2ui provider 时，直接从 yaml/env 解析开关。"""
+    enabled = False
+    if isinstance(raw, dict):
+        section = raw.get("a2ui")
+        if isinstance(section, dict):
+            enabled = parse_config_switch_bool(section.get("enabled", False))
+    env_enabled = os.getenv("JIUWENSWARM_A2UI_ENABLED")
+    if env_enabled is not None:
+        enabled = parse_config_switch_bool(env_enabled)
+    return {"a2ui_enabled": "true" if enabled else "false"}
+
+
+def _a2ui_config_payload(raw: dict[str, Any]) -> dict[str, str]:
+    try:
+        return provider("a2ui").get_a2ui_config_payload(raw)
+    except Exception:  # noqa: BLE001 — ExternalProviderUnregistered 或装配失败
+        return _fallback_a2ui_config_payload(raw)
+
+
+def _default_a2ui_config_payload() -> dict[str, str]:
+    try:
+        return dict(provider("a2ui").get_default_a2ui_config_payload())
+    except Exception:  # noqa: BLE001
+        return _fallback_a2ui_config_payload(None)
+
+
 def _get_crypto_provider() -> Any:
     """经 common 钩子取 crypto provider（未注册/未就绪返回 None）。
 
@@ -1600,8 +1627,15 @@ def apply_config_payload(
             elif param_key == "ttse_enabled":
                 update_ttse_enabled_in_config(parsed)
             elif param_key.startswith("a2ui_"):
-                a2ui = provider("a2ui")
-                ok, update, error = a2ui.validate_a2ui_config_update(param_key, val)
+                try:
+                    a2ui = provider("a2ui")
+                    ok, update, error = a2ui.validate_a2ui_config_update(param_key, val)
+                except ExternalProviderUnregistered:
+                    # Gateway 拆仓后本进程不注册 a2ui；开关仍可写 yaml。
+                    if param_key == "a2ui_enabled":
+                        ok, update, error = True, {"enabled": parse_config_bool(val)}, ""
+                    else:
+                        ok, update, error = False, {}, f"Unknown A2UI config key: {param_key}"
                 if not ok:
                     raise ConfigPanelBadRequest(error or "invalid A2UI config")
                 update_a2ui_in_config(update)
@@ -1822,7 +1856,7 @@ async def config_get_handler(
         payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
         memory_desc = memory_cfg.get("description") or {}
         payload["memory_forbidden_description"] = memory_desc
-        payload.update(provider("a2ui").get_a2ui_config_payload(raw))
+        payload.update(_a2ui_config_payload(raw))
         trajectory_cfg = raw.get("trajectory_ui") or {}
         payload["trajectory_ui_enabled"] = (
             "true" if trajectory_cfg.get("enabled", False) else "false"
@@ -1891,7 +1925,7 @@ async def config_get_handler(
             "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
         )
         payload.setdefault("team_member_subtasks_enabled", "false")
-        for key, value in provider("a2ui").get_default_a2ui_config_payload().items():
+        for key, value in _default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")

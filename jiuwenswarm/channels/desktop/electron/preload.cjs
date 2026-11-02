@@ -20,6 +20,7 @@ const desktopApi = Object.freeze({
   getCloseAction: () => invoke('desktop:get-close-action'),
   setCloseAction: action => invoke('desktop:set-close-action', action),
   openExternalUrl: url => invoke('desktop:open-external-url', url),
+  openAppLink: url => invoke('desktop:open-app-link', url),
   captureOAuthToken: options => invoke('desktop:capture-oauth-token', options),
   exportShareImage: (sessionId, locale) => invoke('desktop:export-share-image', sessionId, locale),
   onShareImageExportProgress: callback => {
@@ -110,6 +111,7 @@ contextBridge.exposeInMainWorld('pywebview', {
     get_close_action: desktopApi.getCloseAction,
     set_close_action: desktopApi.setCloseAction,
     open_external_url: desktopApi.openExternalUrl,
+    open_app_link: desktopApi.openAppLink,
     capture_oauth_token: desktopApi.captureOAuthToken,
     download_file: desktopApi.downloadFile,
     install_update: desktopApi.installUpdate,

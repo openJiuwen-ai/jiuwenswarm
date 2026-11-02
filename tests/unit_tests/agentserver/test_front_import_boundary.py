@@ -21,6 +21,7 @@ import json
 import os
 import sys
 class Observer(importlib.abc.MetaPathFinder):
+    baseline = set()
     def find_spec(self, name, path=None, target=None):
         if name != "jiuwenswarm.server.front.router":
             return None
@@ -38,10 +39,13 @@ class Observer(importlib.abc.MetaPathFinder):
                         "jiuwenswarm.server.runtime.agent_adapter",
                         "jiuwenswarm.server.runtime.skill.skill_manager", "jiuwenswarm.runtime.project_lsp",
                         "jiuwenswarm.server.runtime.session.kv_cache")
-                    hits = [name for name in sys.modules if any(name == p or name.startswith(p + ".") for p in prefixes)]
+                    hits = {name for name in sys.modules if any(name == p or name.startswith(p + ".") for p in prefixes)}
+                    if not Observer.baseline:
+                        Observer.baseline.update(hits)
+                    delta = sorted(hits - Observer.baseline)
                     with open(os.environ["ISSUE4689_MODULE_OBSERVER"], "a", encoding="utf-8") as file:
                         file.write(json.dumps({"pid": os.getpid(), "method": request.req_method.value,
-                            "forbidden": hits, "loaded_modules": sorted(sys.modules)}) + "\\n")
+                            "forbidden": delta, "loaded_modules": sorted(sys.modules)}) + "\\n")
                 module.MethodRouter._dispatch_control = observed
         spec.loader = Loader()
         return spec

@@ -5,7 +5,7 @@
  * → 回到应用后 `claim()` 取回会话。后端接口见 `gateway/channel_manager/web/web_http_auth.py`。
  */
 
-import { getApiBase } from '../utils/env';
+import { getGatewayHttpBase } from '../utils/env';
 
 /**
  * 没有 cookie 的环境回落到请求头带会话 id。
@@ -100,10 +100,7 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 }
 
 function authUrl(path: string): string {
-  // 登录路由挂在 WebChannel 自己的 FastAPI app 上（见 web_channel_app.
-  // register_http_routes），和 WS 同源同端口。getApiBase() 默认空串 = 同源，
-  // 与 trajectoryClient 用的是同一套约定。
-  return `${getApiBase()}/api/v1/auth${path}`;
+  return `${getGatewayHttpBase().replace(/\/+$/, '')}/auth${path}`;
 }
 
 async function readError(response: Response, fallback: string): Promise<AuthApiError> {

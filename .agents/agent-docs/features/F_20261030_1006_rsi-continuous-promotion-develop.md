@@ -57,3 +57,18 @@ Swarm 本地完整回归经安装前端依赖、改用短临时目录及普通 w
 失败的 Worker 退出时序用例在原始 PR d080ac46a + 原始 core e08919883 中同样以约 30 秒退出超过 5 秒断言失败，
 属于既有本机基线问题，本修复不改动或跳过该用例；teardown error 来自 Zen tokenizer 网络预热等待，单独离线复验通过（包含在上述 329 项中）。
 未执行真实模型端到端测试、静态检查或格式化；不将本地基线失败或待重跑的 CI 宣称为完整通过。
+
+
+## 2026-11-02 合并 develop 的冲突处理
+
+PR9297 源分支为 `fix/rsi-continuous-promotion-develop`，合并前为 `6892c0ce9`；
+本次合并目标为 upstream/develop `8827ad7b5`，不操作 `0.2.8-6` 分支。
+冲突仅涉及 pyproject.toml、uv.lock 和两份生成索引。保留目标分支新增的依赖、协议版本和文档，
+保留本 PR 的连续晋级配置及测试，锁文件在目标分支锁定结果上重新解析，索引从合并后的文档生成。
+
+目标分支将 core 升级到 c8c621b2，新增的 Symphony 接口不能被旧配套 core 覆盖。
+因此先在既有 core 配套分支合并 c8c621b2，发布 `8a2dfe6e9a93b09a026cb07887675e8483f12455`，
+再将 Swarm 三处 core source 一致固定到该远程提交；该提交同时包含 c8c621b2 的接口和连续晋级能力。
+core 定向测试为 3129 passed、3 skipped，客户端工具及中断交互测试另有 119 passed。
+Swarm 合并后的 RSI、Symphony、依赖来源及 adapter 定向验证共 524 passed，uv lock --check 和 uv sync --check 均通过。
+本轮不重复执行完整 UT，不将此前完整回归结果当成本候选通过证据。
