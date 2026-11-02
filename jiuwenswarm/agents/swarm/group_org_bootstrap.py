@@ -2561,7 +2561,8 @@ async def _expert_row_status(task_pool: Any, task: Any) -> str:
             return "completed"
         if review_text in {"REJECTED", "NEEDS_REVISION"}:
             return "failed"
-        return "in_progress"
+        # Finished work with no accept or reject is waiting for review.
+        return "in_review"
     if text in {"CLAIMED", "IN_PROGRESS", "DELEGATED", "WAITING_SOURCES"}:
         return "in_progress"
     return "pending"
@@ -2633,7 +2634,8 @@ async def _await_completed_result(
 
     The wait has no time limit. It ends when the root fails, or when the
     round is complete and the Owner has submitted (or the grace fallback
-    applies). Returns the report and the Owner's final files.
+    applies). A team-database pool timeout while reading that status waits
+    and tries again. Returns the report and the Owner's final files.
     """
     loop = asyncio.get_running_loop()
     completed_at: float | None = None
@@ -2644,7 +2646,23 @@ async def _await_completed_result(
             await on_tick()
         if future.done() and not future.cancelled():
             submitted, submitted_files = _split_submission(future.result())
-        state, roots = await _round_state(task_pool, plan_id)
+        try:
+            state, roots = await _round_state(task_pool, plan_id)
+        except Exception as exc:
+            from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+            # Checkout gave up after pool_timeout. The organization is still
+            # running; this read holds no connection, so the next poll can proceed.
+            if not isinstance(exc, PoolTimeout):
+                raise
+            logger.warning(
+                "organization status read waited out the team db pool; retrying "
+                "session=%s plan=%s",
+                session_id,
+                plan_id,
+            )
+            await asyncio.sleep(POLL_SECONDS)
+            continue
         if state == "failed":
             raise RuntimeError("organization root task failed")
         if state == "completed":
@@ -2657,17 +2675,20 @@ async def _await_completed_result(
                     organization_id=organization_id,
                 )
             if loop.time() - completed_at >= RESULT_GRACE_SECONDS:
+                files = _owner_final_files(
+                    [],
+                    roots,
+                    session_id=session_id,
+                    organization_id=organization_id,
+                )
                 fallback = _root_output(roots)
+                if not fallback and files:
+                    fallback = "\n".join(item["name"] for item in files)
                 if fallback:
                     logger.warning(
                         "owner did not submit the final report; using root output"
                     )
-                    return fallback, _owner_final_files(
-                        [],
-                        roots,
-                        session_id=session_id,
-                        organization_id=organization_id,
-                    )
+                    return fallback, files
                 raise RuntimeError("organization completed without a final report")
         await asyncio.sleep(POLL_SECONDS)
 

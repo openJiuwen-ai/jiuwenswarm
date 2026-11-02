@@ -19,6 +19,22 @@ logger = logging.getLogger(__name__)
 TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted", "timed_out"})
 
 
+def _organization_owner_lost(record: dict) -> bool:
+    """An organization card interrupted only because its writer process did not match.
+
+    That check does not mean the organization failed. A later progress write
+    replaces it. A completed or failed card stays terminal.
+    """
+    return (
+        record.get("execution_kind") == "organization"
+        and record.get("status") == "interrupted"
+        and (
+            record.get("phase") == "owner_lost"
+            or record.get("error_code") == "EXECUTION_OWNER_LOST"
+        )
+    )
+
+
 class GroupExecutions:
     def __init__(self, group_id: str):
         self.group_id = group_id
@@ -105,7 +121,11 @@ class GroupExecutions:
         async with group_lock(self.group_id):
             records = self.read()
             current = records.get(execution_id)
-            if current is not None and current["status"] in TERMINAL:
+            if (
+                current is not None
+                and current["status"] in TERMINAL
+                and not _organization_owner_lost(current)
+            ):
                 return copy.deepcopy(current)
             now = time.time()
             created = current is None
@@ -172,6 +192,10 @@ class GroupExecutions:
         async with group_lock(self.group_id):
             records = self.read()
             for record in records.values():
+                # Organization progress is written by the run itself. A mismatched
+                # writer process must not freeze the card while that run continues.
+                if record.get("execution_kind") == "organization":
+                    continue
                 if record["status"] in TERMINAL:
                     continue
                 owner = record.get("owner")
