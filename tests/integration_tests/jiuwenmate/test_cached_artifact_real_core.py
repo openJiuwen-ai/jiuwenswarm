@@ -95,6 +95,15 @@ async def test_published_copy_and_cross_group_reads_under_both_profiles(
                          (WEB_NAMESPACE, agent, sid, group.group_chat_id, f"artifact-{index}", f"output-{index}",
                           "report.txt", "report.txt", relative, digest, len(secret.encode()),
                           NOW.isoformat()))
+            # These fixtures represent files already delivered publicly, not merely indexed candidates.
+            conn.execute(
+                "INSERT INTO result_deliveries (namespace_id,delivery_id,request_id,execution_id,output_id,"
+                "channel,target_id,status,idempotency_key,external_message_id,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,'delivered',?,?,?,?)",
+                (WEB_NAMESPACE, f'fixture-delivery-{index}', f'fixture-request-{index}',
+                 f'fixture-execution-{index}', f'output-{index}', group.platform, group.platform_chat_id,
+                 f'fixture-key-{index}', f'fixture-message-{index}', NOW.isoformat(), NOW.isoformat()),
+            )
     trigger = core.GroupMessage(message_id="cached-request", sender_id="requester", sender_name="Requester",
         sender_kind="human", received_at=NOW, text="把来源群的 report.txt 发给我", mention_ids=(agent,))
     manager.group_archive.append(WEB_NAMESPACE, groups[1].group_chat_id, trigger, source_ref="cached-question")

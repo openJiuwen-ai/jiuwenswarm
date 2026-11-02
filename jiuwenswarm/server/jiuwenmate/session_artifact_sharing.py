@@ -44,6 +44,13 @@ class SessionArtifactSharing:
         if loader is None:
             return None
         rows = await asyncio.to_thread(loader, execution.namespace_id, execution.agent_id)
+        from jiuwenswarm.server.jiuwenmate.cached_group_content import CachedGroupContent
+
+        handled, output = await CachedGroupContent(self.sharing, self.port).prepare(
+            execution, text, rows, requested, command,
+        )
+        if handled and output is not None:
+            return output
         current_prefix = f"sessions/{execution.session_id}/".casefold()
         selected = []
         for row in rows:
@@ -54,16 +61,27 @@ class SessionArtifactSharing:
             elif (filename and filename in text and path.startswith(current_prefix)
                   and not re.search(r"sessions/(?!" + re.escape(execution.session_id.casefold()) + r"/)", text)):
                 selected.append(row)
-        foreign_path = re.search(r"sessions/([^/\s\"']+)", text)
+        foreign_sessions = {sid for sid in re.findall(r"sessions/([^/\s\"']+)", text)
+                            if sid != execution.session_id.casefold()}
+        if foreign_sessions - {row['session_id'].casefold() for row in selected}:
+            return _blocked("其他 Session 的草稿或未登记文件不能直接读取；请检索已登记的跨群最终产物。")
+        if handled and not foreign_sessions:
+            return None
         if not selected:
-            if foreign_path and foreign_path[1] != execution.session_id.casefold():
-                return _blocked("其他 Session 的草稿或未登记文件不能直接读取；请检索已登记的跨群最终产物。")
             return None
         # A final artifact already registered in this group is readable here.
         # Identical files in other groups do not change its current-group visibility.
         origins = {candidate["artifact_id"]: candidate for candidate in selected}
         scope_query = core.GroupMessageQuery(query="file provenance", content_types=("files",))
         _, current = await asyncio.to_thread(self.sharing.scope, execution, scope_query)
+        private_copies = [row for row in selected if row['source_group_id'] == current
+                          and not row.get('published', True)]
+        for candidate in rows:
+            if candidate['source_group_id'] == current:
+                continue
+            if any((candidate['file_ref'], candidate['file_size']) == (row['file_ref'], row['file_size'])
+                   for row in private_copies):
+                origins[candidate['artifact_id']] = candidate
         foreign = [row for row in origins.values() if row["source_group_id"] != current]
         if not foreign:
             return None

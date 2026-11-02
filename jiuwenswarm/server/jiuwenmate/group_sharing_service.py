@@ -459,6 +459,10 @@ class GroupSharingService:
     async def can_deliver(self, job: dict[str, Any]) -> bool:
         """A revoked permanent grant also stops a result already waiting in the outbox."""
         namespace_id = str(job.get("namespace_id") or "local")
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, namespace_id, str(job.get('request_id', '')),
+        ):
+            return False
         rows = await asyncio.to_thread(
             self.repository.approved_for_request, namespace_id, str(job.get("request_id", "")),
         )

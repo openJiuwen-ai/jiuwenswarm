@@ -70,10 +70,12 @@ class WindowBackendStore(SQLiteStore):
         super().__init__(db_path)
         self._clock = clock
 
-    def bind(self, namespace_id: str, agent_id: str, session_id: str) -> SessionWindowBackend:
+    def bind(self, namespace_id: str, agent_id: str, session_id: str, *, generation: str = '') -> SessionWindowBackend:
         for name, value in (("namespace_id", namespace_id), ("agent_id", agent_id), ("session_id", session_id)):
             require_identifier(name, value)
-        return SessionWindowBackend(self, (namespace_id, agent_id, session_id))
+        if generation:
+            require_identifier('window generation', generation)
+        return SessionWindowBackend(self, (namespace_id, agent_id, session_id), generation=generation)
 
     def purge_agent(self, namespace_id: str, agent_id: str) -> int:
         """Delete every Session's window data of one colleague."""
@@ -177,10 +179,11 @@ class WindowBackendStore(SQLiteStore):
 class SessionWindowBackend(BaseKVStore):
     """The ``BaseKVStore`` one Execution sees: only its own Session's keys exist."""
 
-    def __init__(self, store: WindowBackendStore, scope: Scope) -> None:
+    def __init__(self, store: WindowBackendStore, scope: Scope, *, generation: str = '') -> None:
         self._store = store
         self._scope = scope
         self._key_prefix = f"pa:{scope[1]}:{scope[2]}:"
+        self._storage_prefix = self._key_prefix + (f'grant_epoch:{generation}:' if generation else '')
 
     @property
     def scope(self) -> Scope:
@@ -190,7 +193,14 @@ class SessionWindowBackend(BaseKVStore):
     def _key(self, key: Any) -> str:
         if not isinstance(key, str) or not key.startswith(self._key_prefix):
             raise PersistentContractError("window key is outside this Session")
-        return key
+        return self._storage_prefix + key[len(self._key_prefix):]
+
+    def _prefix(self, prefix: str) -> str:
+        if not isinstance(prefix, str):
+            raise PersistentContractError('window key prefix must be str')
+        if self._key_prefix.startswith(prefix):
+            return self._storage_prefix
+        return self._key(prefix)
 
     async def set(self, key: str, value: str | bytes) -> None:
         await asyncio.to_thread(self._store._set, self._scope, self._key(key), value)
@@ -210,12 +220,14 @@ class SessionWindowBackend(BaseKVStore):
     async def get_by_prefix(self, prefix: str) -> dict[str, str | bytes]:
         if not isinstance(prefix, str):
             raise PersistentContractError("window key prefix must be str")
-        return await asyncio.to_thread(self._store._get_by_prefix, self._scope, prefix)
+        rows = await asyncio.to_thread(self._store._get_by_prefix, self._scope, self._prefix(prefix))
+        return {self._key_prefix + key[len(self._storage_prefix):]: value for key, value in rows.items()
+                if not key[len(self._storage_prefix):].startswith('grant_epoch:')}
 
     async def delete_by_prefix(self, prefix: str, batch_size: int | None = None) -> None:
         if not isinstance(prefix, str):
             raise PersistentContractError("window key prefix must be str")
-        await asyncio.to_thread(self._store._delete_by_prefix, self._scope, prefix)
+        await asyncio.to_thread(self._store._delete_by_prefix, self._scope, self._prefix(prefix))
 
     async def mget(self, keys: list[str]) -> list[str | bytes | None]:
         return await asyncio.to_thread(self._store._get, self._scope, [self._key(key) for key in keys])
