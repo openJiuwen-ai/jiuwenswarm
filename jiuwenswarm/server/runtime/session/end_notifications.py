@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import logging
 import math
 from pathlib import Path
@@ -38,12 +39,16 @@ class ExtensionSessionEndParticipant:
     its history, and cleanup cannot veto the original shutdown.
     """
 
-    def __init__(self, *, timeout_seconds: float = SESSION_END_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self, *, timeout_seconds: float = SESSION_END_TIMEOUT_SECONDS,
+        release_attachments: Callable[[SessionRunEndEvent], Awaitable[None]] | None = None,
+    ) -> None:
         if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("session.end timeout must be finite and positive")
         self._timeout = timeout_seconds
         self._attempted: dict[str, int] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._release_attachments = release_attachments
 
     @property
     def name(self) -> str:
@@ -67,16 +72,18 @@ class ExtensionSessionEndParticipant:
             return
         bus, manager = get_extension_bus(), get_extension_manager()
         if bus is None or manager is None or not manager.initialized:
+            if self._release_attachments is not None:
+                await self._release_attachments(event)
             return
         value = SessionEndInput(
-            reason=reason.value, session_id=session_id, resume=SessionResume(session_id),
+            reason=reason.value, sessionId=session_id, resume=SessionResume(session_id),
         )
         root = descriptor.project_dir
         project_root = root if root and Path(root).is_absolute() else None
         context = SessionContext(session_id, metadata={"project_root": project_root})
         state = EndInvocation(value)
         self._attempted[session_id] = event.generation
-        task = asyncio.create_task(self._dispatch(bus, manager, state, context), name="extension-session-end")
+        task = asyncio.create_task(self._dispatch(bus, manager, state, context, event), name="extension-session-end")
         self._tasks.add(task)
         task.add_done_callback(self._task_done)
         try:
@@ -97,18 +104,21 @@ class ExtensionSessionEndParticipant:
         except Exception:
             logger.warning("[ExtensionsV2] session.end failed; Runtime release continues: session_id=%s", session_id, exc_info=True)
 
-    @staticmethod
     async def _dispatch(
+        self,
         bus: ExtensionEventBus,
         manager: ExtensionManager,
         state: EndInvocation,
         context: SessionContext,
+        event: SessionRunEndEvent,
     ) -> None:
         runtime = manager.registry.runtime
         packages = tuple(record.package_id for record in runtime.active_packages())
         runtime.begin_calls(packages)
         try:
             with bind_end_invocation(state):
+                if self._release_attachments is not None:
+                    await self._release_attachments(event)
                 result = await bus.trigger(Event(SESSION_END_EVENT, state.original), context)
                 if state.receipt is None or result != state.receipt:
                     raise RuntimeError("session.end did not return the actual CORE receipt")

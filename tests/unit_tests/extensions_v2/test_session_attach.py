@@ -38,7 +38,7 @@ class Extension:
         action = os.environ.get("SESSION_ATTACH_TEST_ACTION", "normal")
         sid = ops.session_context.session_id
         output = Path(os.environ["SESSION_ATTACH_TEST_OUTPUT"])
-        row = {"input":asdict(event.event_input),"sid":sid,"package":ops.package_metadata.package_id,
+        row = {"input":asdict(event.event_input),"association":dict(ops.session_context.metadata["session_attachment"]),"sid":sid,"package":ops.package_metadata.package_id,
                "cwd":await ops.session.cwd(),"root":await ops.session.root(),"model":await ops.session.model()}
         with output.open("a",encoding="utf-8") as out:
             out.write(json.dumps({"phase":"before",**row}) + "\\n")
@@ -58,7 +58,7 @@ class Extension:
                 child.unlink()
             path.rmdir()
         if action == "short":
-            return SessionAttachOutput(True,sid,event.event_input.surface_id,event.event_input.attachment_id)
+            return SessionAttachOutput(event.event_input.clientId)
         if action.startswith("input-"):
             event = Event(event.event_type,replace(event.event_input,**{action.removeprefix("input-"):"forged"}))
         receipt = await next_handler(event)
@@ -67,9 +67,9 @@ class Extension:
         with output.open("a",encoding="utf-8") as out:
             out.write(json.dumps({"phase":"after","receipt":asdict(receipt),**row}) + "\\n")
         if action == "output":
-            return replace(receipt,accepted=False)
+            return replace(receipt,clientId="forged")
         if action == "int-output":
-            return replace(receipt,accepted=1)
+            return replace(receipt,clientId=1)
         return receipt
 def create_extension():
     return Extension()
@@ -135,12 +135,12 @@ def rows(host):
 async def test_real_user_reads_ops_and_current_association_before_usage(attach_host):
     await attach_host.participant.foreground_changed(attach_host.event)
     before, after = rows(attach_host)
-    assert before["sid"] == before["input"]["session_id"] == "attach-a"
+    assert before["sid"] == "attach-a"
     assert before["package"] == "attach.reader" and before["cwd"] is None
     assert before["root"] == attach_host.root and before["model"]["model_name"] == "demo-model"
-    assert before["model"]["source"] == "session" and before["input"]["previous_session_id"] is None
-    assert after["receipt"] == {"accepted":True,"session_id":"attach-a","surface_id":"view-one","attachment_id":before["input"]["attachment_id"]}
-    assert attach_host.participant.associations.get("web","view-one") is attach_host.invocations[0].original
+    assert before["model"]["source"] == "session" and before["association"]["previous_session_id"] is None
+    assert after["receipt"] == {"clientId":"web:view-one"}
+    assert attach_host.participant.associations.get("web","view-one") .event_input() == attach_host.invocations[0].original
 
 
 @pytest.mark.asyncio
@@ -155,18 +155,18 @@ async def test_replay_two_views_switch_back_and_visibility(attach_host):
     await p.foreground_changed(other)
     await p.foreground_changed(event)
     before = [r for r in rows(attach_host) if r["phase"] == "before"]
-    assert len(before) == 4 and len({r["input"]["attachment_id"] for r in before}) == 4
-    assert [r["input"]["previous_session_id"] for r in before] == [None,None,"attach-a","attach-b"]
+    assert len(before) == 4 and len({r["association"]["attachment_id"] for r in before}) == 4
+    assert [r["association"]["previous_session_id"] for r in before] == [None,None,"attach-a","attach-b"]
     assert p.associations.get("web","view-two").session_id == "attach-a"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action",["raise","short","output","int-output","double","input-session_id","input-surface_id","input-attachment_id","input-channel_id","input-mode","input-previous_session_id"])
+@pytest.mark.parametrize("action",["raise","short","output","int-output","double","input-clientId","input-surface","input-viewport"])
 async def test_invalid_user_input_or_result_cannot_replace_core(attach_host,monkeypatch,action):
     monkeypatch.setenv("SESSION_ATTACH_TEST_ACTION",action)
     await attach_host.participant.foreground_changed(attach_host.event)
     state = attach_host.invocations[0]
-    assert state.receipt.accepted is True and state.receipt.session_id == "attach-a"
+    assert state.receipt.clientId == "web:view-one"
     assert not attach_host.host.manager.registry.runtime._inflight
 
 
@@ -211,7 +211,7 @@ async def test_replaced_association_cannot_receive_a_late_ack(attach_host,monkey
         task.cancel()
     await first
     assert attach_host.invocations[0].receipt is None
-    assert attach_host.invocations[1].receipt.session_id == "attach-b"
+    assert attach_host.invocations[1].receipt.clientId == "web:view-one"
     assert attach_host.participant.associations.get("web","view-one").session_id == "attach-b"
 
 
@@ -257,7 +257,7 @@ async def test_cancelled_original_call_propagates_and_preserves_fact(attach_host
 
 @pytest.mark.asyncio
 async def test_users_cannot_invent_host_attach_invocation(attach_host):
-    value = SessionAttachInput("attach-a","view-one","fake","web","agent",None)
+    value = SessionAttachInput("desktop","web:view-one")
     with pytest.raises(Exception):
         await attach_host.host.bus.trigger(Event(SESSION_ATTACH_EVENT,value),SessionContext("attach-a"))
     assert not rows(attach_host)

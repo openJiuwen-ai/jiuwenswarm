@@ -24,8 +24,8 @@ class SessionStartExample:
             "cwd": await ops.session.cwd(), "root": await ops.session.root(),
             "model": await ops.session.model(),
         }
-        logger.info("session start example: package=%s generation=%s count=%s session=%s workspace=%s",
-                    ops.package_metadata.package_id, event.event_input.generation,
+        logger.info("session start example: package=%s surface=%s count=%s session=%s workspace=%s",
+                    ops.package_metadata.package_id, event.event_input.surface,
                     self.start_count, ops.session_context.session_id, self.workspace)
         return await next_handler(event)
 

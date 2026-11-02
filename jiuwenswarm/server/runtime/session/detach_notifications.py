@@ -40,7 +40,7 @@ async def notify_session_detach(
     bus, manager = get_extension_bus(), get_extension_manager()
     if bus is None or manager is None or not manager.initialized:
         return
-    state = DetachInvocation(value, is_released)
+    state = DetachInvocation(value, is_released, context.session_id)
     task = asyncio.create_task(_dispatch(bus, manager, state, context), name="extension-session-detach")
     tasks.add(task)
     task.add_done_callback(task_done)
@@ -53,14 +53,14 @@ async def notify_session_detach(
     if not done:
         state.active = False
         task.cancel()
-        logger.warning("[ExtensionsV2] session.detach timed out; release remains: attachment_id=%s", value.attachment_id)
+        logger.warning("[ExtensionsV2] session.detach timed out; release remains: client=%s", value.clientId)
         return
     try:
         task.result()
     except asyncio.CancelledError:
-        logger.warning("[ExtensionsV2] session.detach cancelled; release remains: attachment_id=%s", value.attachment_id)
+        logger.warning("[ExtensionsV2] session.detach cancelled; release remains: client=%s", value.clientId)
     except Exception:
-        logger.warning("[ExtensionsV2] session.detach notification failed: attachment_id=%s", value.attachment_id, exc_info=True)
+        logger.warning("[ExtensionsV2] session.detach notification failed: client=%s", value.clientId, exc_info=True)
 
 
 async def _dispatch(

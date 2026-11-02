@@ -5,131 +5,127 @@
 | 编号 | F_26 / session-detach |
 | 建档日期 | 2026-10-29 |
 | 归档日期 | 2026-10-29 |
-| 后续修订 | 2026-10-31，以 session.append 为标准补齐逐字段说明、业务案例和源码调用链；运行契约不变；2026-11-02，按原 session.append 的对象示例、输入／输出字段表及具体 Handler 案例统一说明，契约不变 |
+| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录 |
 | 计划与进度 | [EXTV2-21 / Server PR11](../designs/extensions-v2-development-plan.md#extv2-21-界面与主会话关联解除通知) |
 | 主责规约 | [S_15](../specs/S_15_session-detach.md) |
 
 ## 1. 范围、状态与依据
 
-PR11 依赖 PR08 的平台关联表，首次共同交付在 PR !95 中，当前合并至 PR !99；两项特性文档分别为 F_25 和 F_26。目标分支 rsi_native_agent_os 基线为 7795851916dd5ce1d34b70f5a20d6d30eafc25e3，Core 基线为 ead700d7d18a247968d64de54918cf5d201a207a。实现、回归和真实服务验证已完成，命令、证据与范围见第 6 节。
+本项在平台移除一个具体客户端与旧会话的关联后，通知插件清理该关联资源。本次公开输入对齐 surface/clientId/reason，输出对齐 clientId；reason 使用 detach/end。切换细分来源及下一会话留在只读上下文；实际运行结束会清除仍在关联的客户端并发送 end 原因，然后进入 session.end。
+
+对照 [Claude 官方类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497，文件头 2.1.277。2026-11-02 重新下载官方 main 与固定文件，内容一致；这是此次字段核对的依据，不混用传统大写 SessionStart/SessionEnd Hooks。本地事件仍是 Python frozen dataclass，None 表示对应可选值缺失，并非直接接收任意 TypeScript/JSON 对象。
 
 ## 2. 能力说明与 Claude 对照
 
-session.detach 在平台已经移除一个具体视图的旧主会话关联后通知用户。用户用 attachment_id 清理自己为这次关联创建的资源；该通知不结束会话、不删除会话历史、不停止 Agent，也不改变其他视图的关联。新的主会话提交替换旧关联时自动通知；主动离开时调用 Server 的 session.detach 请求，平台核对关联身份后移除并通知。
+`session.detach` 告知插件“这个客户端已经离开旧会话”。USER 按旧关联身份取消自己的刷新、订阅或缓存，再 next；CORE 只确认旧关联确实已解除并回显 clientId。它本身不停止 Agent、不删除会话历史、不移除同一会话的其他客户端，也不负责执行第二次解除。
 
-Claude 固定声明 bf2323b3021c9d3db7a31e1e7d61068c3f704497 / 2.1.277 的 session.detach 使用 surface、clientId 和 detach/end 原因，CORE 回显 clientId。本地复用 PR08 的 channel + view_id / attachment_id，reason 区分 switch/detach。PR10 的会话删除不在本次接入范围，暂不声称支持 Claude 的 end 原因；传输断开和页面隐藏不会推断为真实解除。
-
-| 项 | 本次实现 | 与固定 Claude 定义的关系 |
+| 项 | Claude Mods 2.1.277 | 本次实现与使用影响 |
 | --- | --- | --- |
-| 事件职责 | 具体视图的旧主会话关联已解除后的通知 | 保留通知扩展用途；具体粒度以本地真实入口为准 |
-| 输入 | session_id, surface_id, attachment_id, channel_id, mode, reason, next_session_id | 使用本地平台事实和 frozen dataclass；字段逐项见第 3.2 节，不直接互换类型 |
-| 输出与改写 | 默认 CORE 的真实通知回执；全部输入只读 | 不补造目录变更、拒绝或取消已提交业务的能力 |
-| 方法能力 | 不新增用户同名 Ops；另有显式 Server session.detach 请求 | 内部触发入口、用户调用与结果消费见第 4 节 |
+| 输入 | surface / clientId / reason | 名称与含义对齐；旧本地身份放在只读 SessionContext |
+| 原因 | detach / end | 显式解除或切换离开为 detach；运行结束仍关联的客户端为 end |
+| 输出 | clientId | 不再使用 accepted/session_id/surface_id/attachment_id 包装 |
+| 原业务请求 | Claude 有自己的客户端协议 | 本地保留 session.detach 请求的既有 session_id/view_id/attachment_id 及错误码；它不是公开事件输入的照传 |
 
 ## 3. 事件契约
 
 ### 3.1 触发前后与粒度
 
-触发来源有两个：已确认的新目标提交替换旧关联；或客户端向 Server 发送显式 `session.detach` 请求并通过旧关联身份核验。平台先移除/替换表项，再用旧会话资料发通知；事件名与请求方法名相同，但事件订阅和业务请求路由分别注册。
-
 ```text
-切换提交替换旧表项                         显式 session.detach 请求
-  → 保留旧 input/context                   → Worker 核验 channel/view/session/attachment
-  → 提交新关联                             → 移除精确匹配的旧关联
-                 ↘                      ↙
-                 构造旧关联的 SessionDetachInput
-                   → bind_detach_invocation
-                   → await bus.trigger(Event("session.detach", input), 旧 context)
-                   → USER 按旧 attachment_id 清理 → 原样 next
-                   → session_detach_core 确认旧关联已解除 → 真实回执
-  切换：再给仍有效的新关联发 attach          显式请求：返回实际 detached 结果
+来源一：新 session.create/session.switch 提交替换旧关联
+来源二：Server session.detach 请求精确匹配旧 session/view/attachment
+来源三：真实运行结束，平台收集该会话仍关联的所有客户端
+  → 平台先移除/替换旧关联；保留旧会话 SessionContext 和旧关联版本
+  → 构造 SessionDetachInput(surface, clientId, reason="detach" 或 "end")
+  → 只读 context.session_attachment 保留 attachment_id、cause 和 next_session_id
+  → await bus.trigger(Event("session.detach", input), 旧会话 context)
+  → Core 为 USER 创建 Ops，绑定旧会话和旧关联资料
+  → USER 按旧 attachment_id 清理自己的关联资源
+  → await next_handler(event) → 剩余 Handler → session_detach_core
+  → CORE 核对可信原输入、旧绑定和已经解除的关联，返回 clientId
+  → USER 原样返回 → 平台通知函数
+  → 切换：再通知仍有效的新 attach；显式解除：返回实际 detached
+  → 运行结束：所有旧关联通知后继续 session.end 及原 Runtime 释放
 ```
 
-粒度是一条旧关联的一次解除；重复显式解除没有新表项可移除时 detached=False，不再发事件。传输断开、页面隐藏、归档、session.end 不自动发本事件；不结束旧会话，也不触发第二次移除。
+每条旧关联的一次解除；重复显式解除在已无关联时返回 detached=False，不重发事件。切换先旧 detach、再新 attach；运行结束时先从表中移除该会话全部关联，再并发通知每个旧客户端，避免超时留下部分旧事实。稳定重连、页面隐藏、普通回答完成和空闲不推断为解除。
 
 ### 3.2 输入：每个字段表达什么、由谁填写
 
-实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_detach`，Handler 接收 frozen dataclass `SessionDetachInput`，不是任意 JSON 字典。以下是平台生成后可观察到的形状示意；用户只读，不复制这个构造器直接触发事件。
+实际导入位置是 `jiuwenswarm.extensions_v2.event_types.session_detach`。以下构造器说明平台生成后的可观察形状；USER 无需自行构造或 trigger 此生命周期事件。输入字段全部只读，没有可改写字段。
 
 ```python
 from jiuwenswarm.extensions_v2.event_types.session_detach import SessionDetachInput
 
-SessionDetachInput(
-    session_id='demo-session-a',
-    surface_id='view-main',
-    attachment_id='0123456789abcdef0123456789abcdef',
-    channel_id='web',
-    mode='agent.plan',
-    reason='switch',
-    next_session_id='demo-session-b',
-)
+SessionDetachInput(surface="desktop", clientId="web:view-main", reason="detach")
 ```
-
-全部构造字段均必填、没有可省略默认；表中的 None/空串是平台明确提供的值。下表解释怎样读、代表什么、怎样使用；主责契约仍为 [S_15](../specs/S_15_session-detach.md)。
 
 | 字段 | 类型 / 是否总有 | 准确含义 | 应该填写什么、示例 | Handler 权限 |
 | --- | --- | --- | --- | --- |
-| session_id | str，必填，无构造默认 | 已解除关联的旧主会话。用途：清理该旧关联资源；ops.session_context 也仍绑定此旧会话 | 平台从旧关联填写，如 demo-session-a | 只读，不是切换后新目标 |
-| surface_id | str，必填，无构造默认 | 离开旧会话的具体视图。用途：用于日志核对；单独使用它清理可能误伤该视图的新关联资源 | 旧关联建立时的 view_id，如 view-main | 只读，不是会话 ID、UI 卡片或连接 ID |
-| attachment_id | str，必填，无构造默认 | 已经解除的那一次旧关联身份。用途：用户按此键 pop/关闭旧资源，避免迟到清理删掉新资源 | 旧 attach 提供的原始 32 位十六进制 UUID | 只读，新关联不复用该 ID |
-| channel_id | str，必填，无构造默认 | 本次被解除关联所属渠道。用途：结合 surface_id 理解来源，不能指定另一个渠道 | 旧关联记录中的渠道，如 web | 只读，不是断开的 WebSocket ID |
-| mode | str，必填，无构造默认 | 离开旧会话时原有模式。用途：用于用户清理日志或筛选，与新目标模式分开 | 旧关联建立时确认的模式，如 agent.work.normal | 只读，不表示新目标将以该模式运行 |
-| reason | str，必填，无构造默认 | switch：已提交新目标替换旧关联；detach：显式请求移除匹配旧关联。用途：按原因选择自己的清理/记录方式 | 平台填写 switch 或 detach | 只读，无 end 值；传输断开、隐藏不自行产生此原因 |
-| next_session_id | str 或 None，必填，无构造默认 | 若可知，表示这个视图随后进入哪个主会话。用途：只作切换关联说明；要查新会话资料应等新 attach 的可信上下文 | switch 到已跟踪主会话时为新 ID；主动解除或转入未跟踪范围为 None | 只读，不能传给当前 Ops 以改变其绑定目标 |
+| surface | RenderSurface，必填 | 该客户端离开前使用的渲染面类型，供插件选择自己的清理策略 | 从原 attach 的宿主事实回填 desktop 等枚举；不是旧窗口 ID 或下一会话的渲染面 | 只读 |
+| clientId | str，必填，无省略默认 | 此次离开旧会话的客户端身份，用于日志或识别客户端 | 从原 attach 回填同一个值，如 web:view-main；一个客户端之后仍可加入 B，故迟到清理要结合旧 attachment_id | 只读；不换成新关联版本 |
+| reason | str，必填，仅 detach/end | 为什么离开：detach 是明确离开，包括切换到其他会话；end 是其所在会话运行结束 | 平台按真实来源填写 detach 或 end。原 switch 不再是公开取值；需要细分切换时读取只读关联资料的 cause="switch" | 只读；不把断网/隐藏伪装为离开 |
 
 #### 本次 Handler 的会话上下文与包身份
 
-Event 输入是可观察的通知内容，SessionContext 是平台另行提供的可信会话资料；两者不是用户填写后再相互组装的关系。平台通知函数构造 context，Bus 为每个实际 Handler 创建绑定该资料的 Ops。
+Event 输入与 `SessionContext` 是平台分别传入 `bus.trigger` 的两份资料。Core 给实际进入的 USER Handler 创建 Ops，绑定可信会话和包身份。`ops.session_context` 是已有只读属性，不采集资料、不组装上下文；`next_handler(event)` 继续当前事件链，不创建另一个事件。
 
-| 字段 | 类型 / 是否必有 | 含义与应该填写什么 |
+| 入口 | 准确含义、来源与使用方式 |
+| --- | --- |
+| `ops.session_context.session_id` | 平台确定的本次查询会话身份。attach 绑定新会话，detach 绑定旧会话，end 绑定结束的会话；不能通过改 Event 切换查询目标 |
+| `ops.session_context.cwd` | 仅有真实执行目录时才提供。start 来自原生 Adapter 已绑定目录；attach/detach/end 未确认时为 None，不使用 Worker 进程目录兜底 |
+| `ops.session_context.metadata["project_root"]` | 平台已确认的项目根观察值；缺失时按相应查询返回 None。不是自动推导的 Git 根，也不为通知创建项目 |
+| `ops.package_metadata.package_id` | Core 绑定的实际 USER 包身份，用于区分本包资源；不是当前会话身份，用户不自行填写 |
+
+已有 cwd/root/model 等查询使用此可信入口。没有目录或模型资料时按各查询契约返回缺失值；不要求先发生用量事件，也不为展示初始化新模型。
+
+
+平台另在 `ops.session_context.metadata["session_attachment"]` 提供只读的本地关联资料。它不属于 Claude 的公开 Event 字段，主要用于稳定识别本平台的某次关联：
+
+| 字段 | 类型 / 何时提供 | 准确含义、取值和作用 |
 | --- | --- | --- |
-| ops.session_context | Core 只读属性，不用 await | 本次调用使用哪份会话资料。平台先构造，随 trigger 的独立 context 参数传入；Core 绑定给本次 Handler。用途：用户读取已有资料；它不负责采集或组装上下文。边界：不能通过改 Event 字段替换，不是用户补填对象 |
-| session_context.session_id | 有效非空 str | 可信查询目标是已经解除的旧关联会话。平台提供已经解除的旧关联会话 ID；与事件输入 session_id 一致。用途：既有会话 Ops 根据它读取对应平台服务。边界：只读；不得拿 next_session_id/previous_session_id 代替当前绑定 |
-| session_context.cwd | str 或 None | 可得的真实执行目录观察值。start 使用已绑定运行目录；其他三种通知未确认 cwd，保持 None。用途：已有 cwd 查询可以使用；None 表示该入口未收集到。边界：不以进程默认目录或项目根伪造 cwd |
-| session_context.metadata.project_root | str 或 None | 已确认的用户项目根资料。start 使用已绑定项目根；其余通知只接受目标保存的绝对 project_dir。用途：已有 root 查询读取这个字段；不是自动推断的 Git 根。边界：不可信/缺失时为 None；不为通知创建项目或模型 |
-| ops.package_metadata | Core 绑定的当前 Handler 包身份 | 当前正在执行的 USER 属于哪个扩展包。来自已注册 Handler 的真实包元信息；CORE 没有用户包身份。用途：管理自己包的资源和日志；与被观察会话是两个维度。边界：用户不从 payload 指定或冒充其他包 |
+| `attachment_id` | str，attach/detach 均有 | 平台生成的 32 位小写十六进制 UUID，例如 `0123456789abcdef0123456789abcdef`。离开再进入会换新值，插件按它创建和清理资源，避免迟到清理误删新资源 |
+| `view_id` | str，均有 | 原 Web 稳定窗口标识，如 `view-main`。它是原业务路由的窗口身份；不是 `surface` 类型、卡片 ID 或 WebSocket ID |
+| `channel_id` | str，均有 | 原渠道，如 `web`。与 view_id 共同组成平台关联槽位；不能用它推断物理设备类型 |
+| `mode` | str，均有 | 关联建立时确认的会话模式，如 `agent.work.normal`。仅观察，不作为模式切换命令 |
+| `previous_session_id` | str 或 None，均有 | 该关联建立之前同一窗口的旧目标；首次进入为 None，不表示旧会话已经结束 |
+| `cause` | str，仅 detach 有 | 本地解除来源：`switch` 切换替换、`detach` 显式解除、`end` 运行结束。对外 reason 中前两者统一为 detach，插件确需区分来源时读这里 |
+| `next_session_id` | str 或 None，仅 detach 有 | 切到另一个已跟踪主会话时为新目标 ID；主动离开、运行结束或进入未跟踪范围时为 None。当前 Ops 仍绑定旧会话，读取新目标应等待下一条 attach |
 
-本入口不主动采集运行模型；model 查询沿用已有保存信息读取规则，不为展示创建或激活模型。 本 PR 沿用已合入的只读 Ops；七项查询事件化由独立 PR !100 提供，不是本生命周期特性的依赖。
+USER 不修改这些资料。Server 显式解除请求仍使用原有 `session_id / view_id / attachment_id`，与 Event 的 `surface / clientId / reason` 分工不同。
 
-### 3.3 输出：真实通知回执、继续与失败
+### 3.3 输出：真实回执与结果消费
 
-默认 CORE 返回 `SessionDetachOutput`。正常用户 Handler 必须返回 `await next_handler(event)` 得到的真实回执内容；本通知不使用查询事件的 value/deny 封装，不返回 `{"accepted": True}` 字典，也没有用户拒绝/改写平台事实的协议。
-
-下面仅展示回执形状，**不让用户自行构造并返回假成功**；字段由 CORE 填写：
+下面是默认 CORE 生成的输出形状，不是让 USER 自行返回假成功。合法 Handler 原样返回 `await next_handler(event)` 的真实结果；没有 deny 或 accepted 包装，也不能通过改回执改变平台事实。
 
 ```python
 from jiuwenswarm.extensions_v2.event_types.session_detach import SessionDetachOutput
 
-SessionDetachOutput(
-    accepted=True,
-    session_id='demo-session-a',
-    surface_id='view-main',
-    attachment_id='0123456789abcdef0123456789abcdef',
-)
+SessionDetachOutput(clientId="web:view-main")
 ```
 
 | 字段 | 类型 / 返回时机 | 含义与调用方怎样使用 |
 | --- | --- | --- |
-| accepted | bool，CORE 实际填严格 True | 旧 attachment 已不再是平台当前关联。CORE 在有效解除通知作用域中生成。用途：确认平台解除事实；不代表所有 USER 外部清理完成。边界：原样返回，不是恢复旧关联或结束会话的命令 |
-| session_id | str，必有 | 被解除关联原来指向的主会话。CORE 回显旧关联的 session_id。用途：核对旧资源归属。边界：只读，不是新会话 ID |
-| surface_id | str，必有 | 发生解除的具体视图。CORE 回显旧关联的视图。用途：用于日志，不单凭它删除所有同视图资源。边界：只读，不改变新目标的关联 |
-| attachment_id | str，必有 | 本次应清理的旧关联身份。CORE 回显已解除的旧 UUID。用途：与用户资源键核对，精确清理一次旧关联。边界：只读，新 attachment 仍由独立 attach 管理 |
-
-所有输入只读、没有可改写字段。空 matcher 匹配本次候选中的该事件；可用第 3.2 节字段等值筛选，字段不匹配不会替用户延后重放。 正常 next 继续当前通知链；提前短路伪造成功、修改输入、后置改写回执均不构成合法平台操作，按既有 Core USER 故障隔离处理。
-
-CORE 在当前可信调用作用域内核对原始输入和绑定会话，再记录真实回执；同次调用重复 next 复用该回执，不重复业务操作。用户抛普通异常可能被 Core 隔离后继续默认处理；不能把抛错当作取消平台业务的机制。
-
-通知失败或超时不会恢复已经提交的关联事实；原调用取消仍传播，不把已发生的变更伪装成未发生。 单次通知等待预算默认 2 秒，从通知任务启动计；超时使作用域失效并请求取消，忽略取消的任务可能晚退出，但不能再产生迟到有效 CORE 回执。包在途计数直到任务退出才释放。 accepted 只说明默认通知被确认，用户自有资源操作是否成功应由自己的代码记录；外部副作用不自动补偿。 本事件不是跨重启的 exactly-once。
+| clientId | str，必填，无省略默认 | CORE 原样回显已离开的客户端。USER 返回真实 next 回执；宿主核对后继续原业务。它不证明全部外部清理成功，不恢复旧关联，也不替代 session.end 或删除结果 |
 
 ### 3.4 注册、筛选、处理示例
 
-本例要做的事情是：**给每次界面关联分配独立资源键，解除旧关联时只删除旧键；同一视图的新关联资源不受迟到清理影响。** 下列代码可放入扩展包的 `extension.py`；包格式参照[现有示例包的 manifest](../../examples/session_detach/manifest.yaml)，由现有管理入口安装。所有事件字段保持只读，用户处理自己拥有的资源并原样返回 next 的真实回执。
+例如窗口 V 从 A 切到 B：旧 detach 绑定 A、clientId 仍为 web:V，插件按旧 attachment_id 取消 A 的刷新任务；随后新 attach 绑定 B，同一个 clientId 对应新的 attachment_id。迟到的 A 清理只能删旧键，不会误删 B 的资源。若只是关停 A 的运行，则对仍看 A 的窗口发送 reason=end，B 的窗口继续保留。
+
+下列代码来自 [现有示例包](../../examples/session_detach/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
 
 ```python
-class Extension:
+"""Own resources by association identity, allowing independent view cleanup."""
+
+import logging
+
+logger = logging.getLogger("jiuwenswarm.server.extensions.example.session_detach")
+
+
+class SessionDetachExample:
+    """Keep only this package's per-association presentation resources."""
+
     def __init__(self):
-        self.resources = {}
-        self.released = {}
+        self._resources = {}
 
     def register(self, registrar):
         registrar.register_event_handler("session.attach", self.on_attach, {}, "user")
@@ -137,96 +133,83 @@ class Extension:
 
     async def on_attach(self, event, ops, next_handler):
         receipt = await next_handler(event)
-        self.resources[receipt.attachment_id] = {
-            "session_id": receipt.session_id,
-            "surface_id": receipt.surface_id,
-        }
+        identity = ops.session_context.metadata["session_attachment"]["attachment_id"]
+        self._resources[identity] = {"session_id": ops.session_context.session_id, "client": receipt.clientId}
         return receipt
 
     async def on_detach(self, event, ops, next_handler):
         value = event.event_input
-        # A late cleanup can only remove its old association's resource key.
-        self.resources.pop(value.attachment_id, None)
+        identity = ops.session_context.metadata["session_attachment"]["attachment_id"]
+        self._resources.pop(identity, None)
         receipt = await next_handler(event)
-        self.released[value.attachment_id] = {
-            "session_id": value.session_id,
-            "reason": value.reason,
-        }
+        logger.info("session detach example: session=%s surface=%s client=%s reason=%s",
+                    ops.session_context.session_id, value.surface, receipt.clientId, value.reason)
         return receipt
 
 
 def create_extension():
-    return Extension()
+    return SessionDetachExample()
 ```
-
-假设同一视图先关联 a（attachment_id=old），又已关联 b（attachment_id=new）。两次 on_attach 分别在 resources 中建立各自的键。平台提交切换并解除 old 后，用旧会话 a 的上下文发 session.detach；on_detach 只 pop(old)，new 保留，再 next 取得 CORE 的真实解除确认。
-
-released[old] 记录旧会话和 switch 原因；next_session_id 只说明可知的新去向，不能用它把当前 Ops 换绑到 b。显式解除则 reason=detach。即使旧清理较晚到达，按旧 attachment_id 操作也不会删除新关联的资源；清理本身不结束或删除旧会话。
-
-Matcher 为等值条件合取，空字典匹配候选中的全部合法通知；按 channel_id、reason 等实际存在字段筛选时，不匹配的通知不会替用户延后重放。多个 USER 按既有顺序通过 next 继续；本生命周期事件未新增业务 BUILTIN。初始化共享 Ops 的 ops.build BUILTIN 属于启动装配，不在这条业务通知链中重新登记方法。
 
 ## 4. 方法契约
 
-### 4.1 Server 业务请求与用户调用场合
+### 4.1 用户方法与平台入口
 
-不新增 Ops。新增 Server 业务请求 session.detach，详细请求字段及回执见 S_15 第 2 节。这是跨进程业务入口，进入 Worker 后才触发同名事件，两者不是同一个注册过程。客户端需要使用对应 attach 通知的 session_id、surface_id 和 attachment_id；平台从关联表取得旧上下文。现有 Web 的创建/切换已自动触发替换通知；主动关闭接入者应显式发送请求，本次不修改前端页面自动关闭行为。用户需要把关联身份送到自己的界面时，可在 on_attach 中使用自己的渲染链携带这些业务参数；这不需要改平台业务方法。
+没有 `ops.session.detach()`。Server 现有业务请求仍为：
 
-例如接入者发送以下原协议请求。示例 ID 必须替换为这次 attach 的真实值；request_id 每次生成不同 UUID。请求返回 detached=True 表示实际移除，重复请求为 False，和事件回执 accepted 的含义分别见 S_15。
-
-```json
-{
-  "request_id": "client-generated-unique-uuid",
-  "channel_id": "web",
-  "req_method": "session.detach",
-  "params": {
-    "session_id": "demo-session-a",
-    "view_id": "view-main",
-    "attachment_id": "0123456789abcdef0123456789abcdef"
-  }
-}
+```python
+params = {"session_id": "demo-session-a", "view_id": "view-main",
+          "attachment_id": "0123456789abcdef0123456789abcdef"}
 ```
 
-这不是 `ops.session.detach()`，本次没有提供这个 Ops。平台自己的通知函数也不作为用户 API 发布。
+三个参数均必填、无省略默认：session_id 是当前旧会话；view_id 是原窗口标识；attachment_id 是仍有效的旧关联 UUID。channel_id 来自已路由请求，不允许 params 覆盖。关联身份从平台已有资料取得；USER Handler 可以从 ops.session_context.metadata["session_attachment"] 读取自己的旧关联事实。
 
-### 4.2 请求与响应字段：填什么、如何定位旧关联
+成功 payload 沿用 session_id、surface_id（原 view_id）、attachment_id、detached。detached=True 表示实际移除了匹配项；False 表示无现存关联，不重复通知。过期版本为 STALE_ATTACHMENT，格式错误为 BAD_REQUEST，服务未就绪为 NOT_READY；这些业务响应字段不属于 SessionDetachOutput。
 
-接入者先从自己的 attach Handler 取得关联身份，再通过原 Server 协议发请求。信封字段和 params 分开；不是向 `ops.session_context` 填资料。
+### 4.2 旧 Handler / 回执迁移
 
-| 字段 | 类型 / 是否总有 | 准确含义 | 应该填写什么、示例 | Handler 权限 |
-| --- | --- | --- | --- | --- |
-| request_id | str，请求信封必填 | 本条业务请求的身份，不是 attachment_id。用途：供既有请求响应关联与并发去重 | 客户端每次请求使用不同 UUID | 重试生成新请求 ID；目标关联身份保持原值 |
-| channel_id | str，请求信封字段 | 这次请求所属渠道。用途：与 view_id 一起定位平台关联 | 沿用当前已路由渠道，如 web；不在 params 中另加 channel_id | 不能由 params 覆盖另一个渠道 |
-| req_method | 固定 str | 选择 Server 的业务方法。用途：经原路由到 Worker 后才触发通知事件 | 填写 session.detach | 不是用户直接调用 EventBus 的能力 |
-| params.session_id | str，必填，无默认 | 要离开的旧主会话。用途：与关联表当前身份核对 | 填写旧 attach 输入中的 session_id | 缺失/格式错报 BAD_REQUEST，目标不匹配报 STALE_ATTACHMENT |
-| params.view_id | str，必填，无默认 | 要解除哪个具体视图的关联。用途：1～128 个 ASCII 字母/数字或 ._:-；不会移除同会话其他视图 | 填写旧 attach 输入的 surface_id，如 view-main | 不填写 UI 卡片 ID 或连接 ID |
-| params.attachment_id | str，必填，无默认 | 精确选定这次旧关联。用途：防止旧请求删除同视图已经建立的新关联 | 原样填写旧 attach 的 32 位小写十六进制 UUID | 不能生成新 UUID 代替；不匹配保留新关联并报 STALE_ATTACHMENT |
+这些生命周期特性尚在 Server !99 中修订；旧示例应按下表迁移。平台内部的 snake_case 身份、稳定视图和校验状态继续保留，不因公开字段简化而削弱隔离。
 
-| 字段 | 类型 / 返回时机 | 含义与调用方怎样使用 |
-| --- | --- | --- |
-| payload.session_id | str，成功响应必有 | 本次请求指定的旧会话。平台回显请求目标。用途：只作核对，不改变 Ops 上下文。边界：不是事件已执行的单独证明 |
-| payload.surface_id | str，成功响应必有 | 被请求解除的具体视图。平台回显请求 view_id。用途：注意请求名 view_id 与输出名 surface_id 的对应。边界：不是整个会话被删除 |
-| payload.attachment_id | str，成功响应必有 | 请求核验的旧关联身份。平台回显旧关联 ID。用途：与用户保存的旧资源键对应。边界：不用于确认另一个新关联 |
-| payload.detached | bool，成功响应必有 | 该请求有没有移除一项平台关联。实际移除填 True；当前没有关联填 False。用途：True 触发一次通知；False 不重复通知。边界：不代表全部 USER 外部清理成功；与事件 accepted 区分 |
-
-Worker 关联服务未就绪返回 NOT_READY；格式非法 BAD_REQUEST；视图已被其他关联占用返回 STALE_ATTACHMENT。失败不移除新关联。一个成功的 detached=True 响应与事件 accepted 的含义不同：前者是实际移除事实，后者是通知默认 CORE 的确认；无匹配关联也可以成功返回 detached=False。
+| 旧用法 | 当前写法与影响 |
+| --- | --- |
+| input.surface_id | input.clientId 是客户端身份；原 view_id 从只读 session_attachment.view_id 读取 |
+| input.session_id / attachment_id / channel_id / mode | 分别从 ops.session_context.session_id 和 metadata["session_attachment"] 读取 |
+| input.reason == "switch" | input.reason == "detach"；确需细分来源时看 session_attachment.cause == "switch" |
+| input.next_session_id | metadata["session_attachment"]["next_session_id"]，仍然不能改变当前 Ops 的旧会话绑定 |
+| result.accepted / session_id / surface_id / attachment_id | 移除；原样返回 next 的 clientId 回执 |
+| 运行结束不解除关联 | 当前同一宿主结束流程先 detach(reason="end")，再 session.end；不直接由 end CORE 删除关联 |
 
 ## 5. 接入与兼容方案
 
-Worker 启动时登记 session.detach 的类型、Matcher、Validator 和唯一默认 CORE；既有 ops.build 的 CORE 创建 Builder、BUILTIN 登记共享能力，Bus 保存方法目录，用户包 register 发布 USER 订阅。通知发生时，Core 为每个实际 Handler 绑定本次 SessionContext 和可信包身份，Builder 不在启动时查询某个会话的数据。
+Worker 启动时注册事件类型、Matcher、Validator 和唯一默认 CORE；已有 `ops.build` 的 CORE 创建 Builder、BUILTIN 登记共享 Ops 方法，Registry 保存能力目录。业务发生时使用该目录创建绑定本次 SessionContext 的 Ops，不重跑 ops.build。这四条业务通知没有新增专门的 BUILTIN Handler。
 
-平台资料从哪里来：平台在替换／移除关联前保留旧 input/context，提交事实后用它们通知。Ops 的 session_id 仍是旧会话；next_session_id 只是来源说明，不作为新的查询目标。 平台将通知输入和 SessionContext 作为 trigger 的两部分传入；ops.session_context 只提供只读入口，已有会话 Ops 根据它读取。用户不采集平台资料，也不需要先触发用量通知。
+USER 处理本包资源，通过 `return await next_handler(event)` 继续本条链。默认 CORE 只确认真实平台通知，不再次执行创建、切换、删除或关闭。输入均只读；提前短路伪造回执、修改输入、在 next 之后换身份无效，沿既有 Core USER 故障隔离处理。真实宿主操作的所有权和最终成功判断仍在原平台业务。
 
-默认 CORE 的逻辑：**session_detach_core 检查当前平台调用和 is_released、原始输入、Ops 仍绑定旧会话，生成或复用 SessionDetachOutput。它确认旧关联已解除，不第二次移除，也不恢复旧关联、停止或删除会话。** USER 负责本包自己的初始化、摘要或清理，按 next 进入 CORE 并原样返回回执；没有新增业务 BUILTIN 或同名用户 Ops。第 3.1 节是实际触发链，第 3.4 节给出可以消费这些事实的用户业务案例。
+[attach_notifications.py](../../../server/runtime/session/attach_notifications.py) 保留平台关联表、精确移除和 release_for_end；[detach_notifications.py](../../../server/runtime/session/detach_notifications.py) 在可信作用域实际 trigger；[默认 CORE](../../event_handlers/session_detach.py) 核对旧会话和解除事实后只回显客户端。公开 reason 不携带本地 switch 扩展值，内部 cause 保留真实来源。
 
-关键决策：以平台实际关联表为准，不采用请求自报的 previous_session_id；先提交事实再通知，避免用户异常回滚已生效的切换。单纯 foreground visible=False 也可能表示隐藏，不足以解除；转入未跟踪范围时只清理旧主会话关联，不对该范围新增扩展。
+普通解除通知等待预算默认 2 秒；运行结束产生的 detach 与 session.end 共用宿主 1.5 秒结束预算。某个 USER 消耗预算时，后续通知可能没有执行机会；平台事实已解除，原 Runtime 继续释放，不伪造 CORE 回执。原调用取消传播，忽略取消的代码不能取得迟到有效回执；外部副作用不自动回滚。
 
-替代方案：不把 Gateway WebSocket 断开当作视图关闭，因为同连接可能承载多个视图，稳定 view_id 重连也不应反复 attach/detach。不让默认 CORE 再次移除关联，避免重复执行和用户拦截改变已提交事实。通知失败不自动重试；内存表不跨 Worker 重启持久保存。
-
-本次文档整理沿用当前分支既有共享只读 Ops；PR !100 的查询事件化及返回格式迁移单独交付。session.start 的 handler_ids 仍以 Core !110 为硬前置，合并顺序保持 Core 在先、Server 在后。其他三项单项不要求 handler_ids，组合 PR 的依赖仍成立。
-
-源码位置：[事件定义／校验／注册](../../event_types/session_detach.py)、[默认 CORE](../../event_handlers/session_detach.py)、[关联管理](../../../server/runtime/session/attach_notifications.py)、[解除通知分派](../../../server/runtime/session/detach_notifications.py)。平台实现按职责和源码链接查阅；用户只注册文中示例 Handler，平台仍拥有原业务操作的提交和后续响应。
+字段范围以 [S_15](../specs/S_15_session-detach.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
+
+### 2026-11-02 Claude Mods 字段修订
+
+四项生命周期及字段定向用例共 **94 项通过**，包含在同一次最终回归的 **1365 项通过** 内，不重复累计。最终范围包括全部 extensions_v2、全部 Runtime、Worker 关闭、原生会话删除/归档和切换接线。5 项平台条件跳过：符号链接、命名管道及 3 项 Unix socket 用例。两个未修改的 LoopBeat 50ms 计时断言在本机存在约 47ms 读数；本分支与未修改基线分别保留复现，最终显式排除两项，不改阈值、不计为通过。
+
+真实 Front → Supervisor → 子 Worker 验证：两个独立 Worker、3 轮真实模型对话，所有生命周期 USER Handler 在真实子进程中执行；没有 mock EventBus、Ops、模型或 Adapter，也没有介入 ui.render。5 次 detach（2 次 detach、3 次 end）均返回真实 clientId；显式解除、重复 detached=False、旧版本 STALE_ATTACHMENT、切换来源和结束前清理均通过；用户关联资源实际创建并删除。 两个 Worker PID 均已退出、端口关闭。
+
+现成 HTML 的 A/B 教学案例也重新验证：A 在当前真实 start/usage CORE 下共享同一实例规则；B 的 SQLite HTTP 查询通过，但其模型发现/工具调用仍为教学宿主模拟，不把它当作上述真实模型工具使用证据。
+
+证据目录：`D:/work_space/.codex-temp/align-session-mods-fields-20261102`，包括 final.log/xml/json、contracts.xml、focused-first.xml、baseline-liveness.xml、examples-verified.json。真实进程记录在 `D:/work_space/.codex-temp/align-session-mods-fields-20261102/real-150258`：result.json、USER JSONL、原生请求/响应、explicit-detach.json、两个 cleanup.json 和源码摘要。Core 使用 !110 的 0b5dd43f179be0a41ef2bd4bf0d43950bec9a92f；本次不新增 Core API。尚未执行远端 CI 或原生非 Windows 验收。
+
+文档按 F_16 session.append 的七段结构维护；输入/输出对象、逐字段含义/填写/用途、USER 示例、平台入口、迁移与调用链分别展开。字段修订前的旧结果保留在以下历史区，不作为本次新契约的通过证据。
+
+文档与本地 HTML 核对通过：四份特性保持 session.append 的同一七段结构，8 个输入/输出对象实际构造、28 段 Python 示例语法、120 个本地链接通过（跨仓链接按配套 Core 核对）。HTML 的生命周期调用链、字段表和实际函数已更新，A/B 完整案例逐字保留；桌面/手机视口无页面横向溢出，复制按钮及页面脚本通过。这是独立静态文档渲染检查，不计作产品浏览器 UI 验收。
+
+本次重点覆盖：公开字段/回执及 matcher 大小写、可信 SessionContext 保持、同实例初始化去重、多窗口与切换、过期关联/输入改写/假回执拒绝、真实运行结束的 detach/end 顺序、超时/取消和进程清理。旧日期的验证不自动算成本次重新执行。
+
+<details><summary>此前版本的验证记录：字段或触发范围以相应日期为准</summary>
 
 本次 2026-10-31 仅按 F_16 的写法补齐输入/输出字段、注册示例、真实触发条件、Handler 职责和完整业务案例；运行代码与契约不变。文档核对包括 dataclass 字段与示例值、源码节选、Python/YAML/JSON 示例及相对链接。下列回归和真实服务结果均保留原运行日期与范围，不宣称本次重新执行业务或模型验收。
 
@@ -261,9 +244,12 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2 tests/unit_tests/
 
 2026-11-02 文档整理：以原 session.append 为参照，统一对象示例、五列通知输入表、三列输出表、会话资料说明及具体用户 Handler 案例；保留所有字段来源、默认／缺失、权限、超时和历史验证记录。只改文档，当前契约及 Core !110 前置不变。本轮核对结构、字段、示例与真实默认 CORE 回执、链接及差异，不重跑真实业务、模型或浏览器验收。
 
+</details>
+
 ## 7. 参考资料
 
-- [F_25 / attach](F_25_session-attach.md)、[S_14](../specs/S_14_session-attach.md)、[S_15](../specs/S_15_session-detach.md)。
-- [Claude 固定声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)。
-
-- [事件定义](../../event_types/session_detach.py)、[默认 CORE](../../event_handlers/session_detach.py)、[平台通知](../../../server/runtime/session/detach_notifications.py)、[关联表与实际移除](../../../server/runtime/session/attach_notifications.py)、[用户示例](../../examples/session_detach/README.md)。
+- [Claude Code Mods 固定类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，SessionDetachInput/Result；参照小写 Mods 事件。
+- [主责规约 S_15](../specs/S_15_session-detach.md)。
+- [事件定义与校验](../../event_types/session_detach.py)、[默认 CORE](../../event_handlers/session_detach.py)。
+- [示例包说明](../../examples/session_detach/README.md)。
+- [session.append 文档格式基准](F_16_session-history-ops.md)。

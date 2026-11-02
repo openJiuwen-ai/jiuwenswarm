@@ -16,9 +16,9 @@ class SessionAttachExample:
     async def on_attach(self, event, ops, next_handler):
         root = await ops.session.root()
         receipt = await next_handler(event)
-        logger.info("session attach example: session=%s surface=%s attachment=%s root=%s accepted=%s",
-                    ops.session_context.session_id, event.event_input.surface_id,
-                    event.event_input.attachment_id, root, receipt.accepted)
+        logger.info("session attach example: session=%s surface=%s client=%s root=%s",
+                    ops.session_context.session_id, event.event_input.surface,
+                    receipt.clientId, root)
         return receipt
 
 

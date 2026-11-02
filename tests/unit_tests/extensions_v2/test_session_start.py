@@ -55,7 +55,8 @@ async def host(tmp_path, monkeypatch):
     controls = {"on_record": None}
 
     async def record(ops, value):
-        records.append({"caller": ops.package_metadata.package_id, **value})
+        record = instance.manager.registry.runtime.get_active(ops.package_metadata.package_id)
+        records.append({"caller": ops.package_metadata.package_id, "activation_generation": record.generation, **value})
         if controls["on_record"] is not None:
             await controls["on_record"](value)
 
@@ -98,7 +99,7 @@ async def _install(host, name="start.a", source=USER_CODE):
 
 async def _start(host, sid="s1", request="r1"):
     return await host.manager.ensure_session_started(_context(sid), request_id=request,
-                                                      channel_id="web", is_interactive=True)
+                                                      channel_id="web", is_interactive=True, surface="desktop")
 
 
 def _entered(host):
@@ -110,13 +111,13 @@ async def test_real_packages_start_once_and_read_bound_ops_with_history_and_usag
     await _install(host, "start.a")
     await _install(host, "start.b")
     receipts = await _start(host)
-    assert [value.package_id for value in receipts] == ["start.a", "start.b"]
-    assert all(value.accepted and value.generation == 1 for value in receipts)
+    assert len(receipts) == 2 and all(value.cwd == "D:/project/src" for value in receipts)
     assert await _start(host, "s2", "reconnect") == ()
     assert [row["caller"] for row in _entered(host)] == ["start.a", "start.b"]
     for row in _entered(host):
-        assert row["package"] == row["input"]["package_id"] == row["caller"]
-        assert row["session"] == row["input"]["session_id"] == "s1"
+        assert row["package"] == row["caller"]
+        assert row["session"] == "s1"
+        assert row["input"] == {"cwd": "D:/project/src", "surface": "desktop", "isInteractive": True}
         assert row["cwd"] == "D:/project/src" and row["root"] == "D:/project"
         assert row["model"]["model_name"] == "active-model" and row["model"]["source"] == "runtime"
         assert row["history_ops"] and row["statistics_ops"]
@@ -127,11 +128,12 @@ async def test_new_package_does_not_repeat_old_empty_matchers_and_reinstall_is_n
     first = await _install(host)
     await _start(host)
     await _install(host, "start.b")
-    assert [r.package_id for r in await _start(host, "s2")] == ["start.b"]
+    assert len(await _start(host, "s2")) == 1
+    assert _entered(host)[-1]["caller"] == "start.b"
     assert (await host.manager.uninstall("start.a")).status == "SUCCESS"
     assert (await host.manager.install([first]))[0].status == "SUCCESS"
     receipts = await _start(host)
-    assert len(receipts) == 1 and receipts[0].package_id == "start.a" and receipts[0].generation == 1
+    assert len(receipts) == 1 and _entered(host)[-1]["activation_generation"] == 1
     assert [row["caller"] for row in _entered(host)] == ["start.a", "start.b", "start.a"]
 
 
@@ -140,12 +142,13 @@ async def test_successful_reload_starts_new_generation_and_failed_reload_keeps_o
     await _install(host)
     await _start(host)
     assert (await host.manager.reload("start.a")).status == "SUCCESS"
-    assert [value.generation for value in await _start(host)] == [2]
+    assert len(await _start(host)) == 1
+    assert _entered(host)[-1]["activation_generation"] == 2
     root = host.manager.active_packages()[0].root
     (root / "extension.py").write_text("def invalid(:", encoding="utf-8")
     assert (await host.manager.reload("start.a")).status == "FAILED"
     assert await _start(host) == ()
-    assert [row["input"]["generation"] for row in _entered(host)] == [1, 2]
+    assert [row["activation_generation"] for row in _entered(host)] == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -201,22 +204,22 @@ async def test_reload_during_start_initializes_new_instance_before_gate_returns(
 
     host.controls["on_record"] = reload_once
     receipts = await asyncio.wait_for(_start(host), timeout=5)
-    assert [value.generation for value in receipts] == [1, 2]
-    assert [row["input"]["generation"] for row in _entered(host)] == [1, 2]
+    assert len(receipts) == 2 and [r["activation_generation"] for r in _entered(host)] == [1, 2]
+    assert [row["activation_generation"] for row in _entered(host)] == [1, 2]
     assert await _start(host) == ()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replacement", [
     'raise RuntimeError("user init failed")',
-    'return SessionStartOutput(True, "forged", 999, "other", "other")',
+    'return SessionStartOutput("forged")',
     'return await next_handler(Event(event.event_type, replace(event.event_input, cwd="forged")))',
 ])
 async def test_user_failures_and_forgery_are_isolated_without_changing_host_facts(host, replacement):
     source = USER_CODE.replace('output = await next_handler(event)', replacement)
     await _install(host, source=source)
     result = await _start(host)
-    assert result == (SessionStartOutput(True, "start.a", 1, "s1", "r1"),)
+    assert result == (SessionStartOutput("D:/project/src"),)
     assert await _start(host) == () and len(_entered(host)) == 1
 
 
@@ -224,10 +227,10 @@ async def test_user_failures_and_forgery_are_isolated_without_changing_host_fact
 async def test_post_core_receipt_change_and_multiple_next_keep_actual_receipt(host):
     source = USER_CODE.replace('output = await next_handler(event)',
         'output = await next_handler(event)\n        assert await next_handler(event) == output')
-    source = source.replace('return output', 'return replace(output, accepted=False)')
+    source = source.replace('return output', 'return replace(output, cwd="forged")')
     await _install(host, source=source)
     result = await _start(host)
-    assert result[0].accepted and len(_entered(host)) == 1
+    assert result[0].cwd == "D:/project/src" and len(_entered(host)) == 1
 
 
 @pytest.mark.asyncio
@@ -309,8 +312,8 @@ async def test_empty_package_and_invalid_host_facts_have_explicit_results(host):
         await host.manager.ensure_session_started(SessionContext("../other"), request_id="r",
                                                    channel_id="web", is_interactive=True)
     result = await _start(host)
-    assert len(result) == 1 and result[0].accepted and not host.records
+    assert len(result) == 1 and result[0].cwd == "D:/project/src" and not host.records
     assert (await host.manager.uninstall("start.a")).status == "SUCCESS"
     assert (await host.manager.install([package]))[0].status == "SUCCESS"
     result = await _start(host)
-    assert len(result) == 1 and result[0].generation == 1
+    assert len(result) == 1 and host.manager.active_packages()[0].generation == 1

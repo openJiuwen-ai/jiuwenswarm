@@ -22,8 +22,8 @@ async def session_end_core(
     if not valid_end_input(event.event_input):
         raise ValueError("session.end input cannot be changed")
     context = ops.session_context if ops is not None else None
-    if context is None or context.session_id != state.original.session_id:
+    if context is None or context.session_id != state.original.sessionId:
         raise RuntimeError("session.end requires its bound SessionContext")
     if state.receipt is None:
-        state.receipt = SessionEndOutput(state.original.session_id)
+        state.receipt = SessionEndOutput(state.original.sessionId)
     return state.receipt

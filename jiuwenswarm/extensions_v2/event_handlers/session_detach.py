@@ -22,9 +22,8 @@ async def session_detach_core(
     if not valid_detach_input(event.event_input):
         raise ValueError("session.detach input cannot be changed")
     context = ops.session_context if ops is not None else None
-    if context is None or context.session_id != state.original.session_id:
+    if context is None or context.session_id != state.session_id:
         raise RuntimeError("session.detach requires the old bound SessionContext")
     if state.receipt is None:
-        value = state.original
-        state.receipt = SessionDetachOutput(True, value.session_id, value.surface_id, value.attachment_id)
+        state.receipt = SessionDetachOutput(state.original.clientId)
     return state.receipt
