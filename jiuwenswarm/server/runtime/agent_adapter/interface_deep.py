@@ -327,6 +327,35 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.progressive_tools import (
     build_progressive_tool_rail_from_config,
     is_subagent_tool_lazy_load_enabled,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deep.stream_source import (
+    STREAM_SOURCE_ID_FIELD,
+    _SKILL_TURBO_TOOL_ID_SUFFIX,
+    _ask_user_questions_key,
+    _is_foreign_stream_source,
+    _is_outer_react_tool_result,
+    _tool_result_lookup,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.observability_helpers import (
+    _extract_iteration_from_chunk,
+    _extract_iteration_from_obj,
+    _resolve_observability_mode,
+)
+from jiuwenswarm.server.runtime.agent_adapter.deep.agent_config_helpers import (
+    _SESSION_ADAPTER_IDLE_TTL_ENV,
+    _SKILL_SESSION_LAZY_REFRESH_ENV,
+    _agent_ras_kwargs_from_config,
+    _deep_agent_context_engine_config,
+    _deep_agent_kv_cache_affinity_config,
+    _model_provider,
+    _model_routing_enabled,
+    _optional_enable_subagent_runtime,
+    _resolve_instance_config_base,
+    _session_adapter_idle_ttl_default,
+    _set_skill_evolution_triggers,
+    _skill_session_lazy_refresh_enabled,
+    _try_add_cache_control,
+    init_permission_engine,
+)
 from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import (
     _build_avatar_rail,
     _build_extension_config_debug_rail,
@@ -356,14 +385,9 @@ _ERROR_EVENT = getattr(InteractionEventType, "EXECUTION_ERROR", None)
 if _ERROR_EVENT is None:
     _ERROR_EVENT = getattr(InteractionEventType, "RUNTIME_ERROR")
 ERROR_EVENT_TYPE = _ERROR_EVENT.value
-# 与 skill_turbo/executor.STREAM_SOURCE_ID_FIELD 一致：并发节点用它标识 source，
-# 前端据其路由到 subagent 行。adapter 转发 llm_reasoning / llm_output 时须原样透传。
-STREAM_SOURCE_ID_FIELD = "stream_source_id"
 _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT = 20
 _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS = 0.05
 
-# SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
-_SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
 
 # 协议化恢复信号（agent-core RESUME_SIGNAL，react_agent invoke resume 分支发出）：
 # 显式标记"runner 已进入恢复执行"，消费端据此精确清除 HITL suppress，取代
@@ -376,58 +400,6 @@ _RESUME_SIGNAL_CHUNK_TYPE = "__resume_signal__"
 # session_memory_compressor_config.enabled=true 时创建）"——两者日志
 # 级别不同，getattr 默认值无法表达该区分（CR-5）。
 _MISSING_SESSION_MEMORY_MGR = object()
-
-
-def _is_foreign_stream_source(payload: Any) -> bool:
-    """True when the frame was mirrored from a nested stream (subagent / skill node).
-
-    The gateway fills a missing source with the ``"main"`` sentinel, so only a
-    non-empty, non-``main`` id marks a frame that must not touch parent-turn
-    bookkeeping.
-    """
-    if not isinstance(payload, dict):
-        return False
-    source_id = payload.get(STREAM_SOURCE_ID_FIELD)
-    return isinstance(source_id, str) and bool(source_id) and source_id != "main"
-
-
-def _tool_result_lookup(payload: Any, *keys: str) -> Any:
-    """Read a field from a tool_result payload or its nested ``tool_result`` dict."""
-    if not isinstance(payload, dict):
-        return None
-    nested = payload.get("tool_result")
-    sources = (payload, nested) if isinstance(nested, dict) else (payload,)
-    for source in sources:
-        for key in keys:
-            value = source.get(key)
-            if value is not None and value != "":
-                return value
-    return None
-
-
-def _is_outer_react_tool_result(payload: Any) -> bool:
-    """True when this tool_result belongs to the outer ReAct agent, not SkillTurbo internals.
-
-    Inner PPT/bash/read_file results carry ``stream_source_id`` or a tool id ending
-    in ``_skill_turbo``. Resetting ``has_streamed_content`` on those would leak
-    nested non-streamed answers as ``chat.final``.
-    """
-    source_id = _tool_result_lookup(payload, STREAM_SOURCE_ID_FIELD)
-    if isinstance(source_id, str) and source_id.strip():
-        return False
-    tool_id = _tool_result_lookup(payload, "tool_call_id", "tool_id", "toolCallId")
-    if isinstance(tool_id, str) and tool_id.strip().endswith(_SKILL_TURBO_TOOL_ID_SUFFIX):
-        return False
-    return True
-
-
-def _ask_user_questions_key(payload: dict) -> str:
-    """ask_user 卡片的 questions 规范化键，用于判定同一中断的重复通道。"""
-    try:
-        questions = payload.get("questions") or []
-        return json.dumps(questions, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        return repr(payload.get("questions"))
 
 
 _DEEPRESEARCH_REWRITE_REPLAY_STATE_KEY = "deepresearch_rewrite_fast_path_replays"
@@ -1020,18 +992,6 @@ def get_runtime_tool_a2a_policy_id() -> str:
 logger = logging.getLogger(__name__)
 
 
-def _resolve_observability_mode(params: dict[str, Any]) -> str:
-    """Return the canonical mode written into trajectory span attributes."""
-    raw_mode = params.get("mode", "agent")
-    normalized_mode = canonicalize_mode_text(raw_mode)
-    work_mode = normalize_work_mode(params.get("work_mode"))
-    if work_mode is not None:
-        composed_mode = compose_web_mode(normalized_mode, work_mode)
-        if composed_mode is not None:
-            return str(deprecate_mode(composed_mode[2]))
-    return str(deprecate_mode(raw_mode))
-
-
 # Persistence identity of the single-agent card. It is the entity segment of
 # every checkpointer key ("{session_id}:agent:{card_id}:..."), so it must stay
 # constant across restarts; tool ownership is scoped separately, see
@@ -1053,44 +1013,6 @@ _AGENT_CARD_ID = "jiuwenswarm"
 # registrar that could share an id with an adapter must take a reference here too.
 _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
-
-
-def _extract_iteration_from_obj(value: Any) -> int | None:
-    """Best-effort parse iteration from chunk/payload/dict."""
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        for key in ("iteration", "iter", "step", "round"):
-            if key in value:
-                parsed = _extract_iteration_from_obj(value.get(key))
-                if parsed is not None:
-                    return parsed
-        for key in ("metadata", "meta", "extra", "context"):
-            nested = value.get(key)
-            if isinstance(nested, dict):
-                parsed = _extract_iteration_from_obj(nested)
-                if parsed is not None:
-                    return parsed
-        return None
-    if isinstance(value, (int, float)):
-        return int(value)
-    if isinstance(value, str):
-        raw = value.strip()
-        if raw.isdigit():
-            return int(raw)
-        return None
-    return None
-
-
-def _extract_iteration_from_chunk(chunk: Any) -> int | None:
-    """Extract iteration from stream chunk object."""
-    for attr in ("iteration", "iter", "step"):
-        if hasattr(chunk, attr):
-            parsed = _extract_iteration_from_obj(getattr(chunk, attr, None))
-            if parsed is not None:
-                return parsed
-    payload = getattr(chunk, "payload", None)
-    return _extract_iteration_from_obj(payload)
 
 
 def _apply_llm_io_trace_patch() -> None:
@@ -1338,119 +1260,6 @@ _CRON_TOOL_NAMES = frozenset(
 )
 
 
-def _set_skill_evolution_triggers(
-    rail: Any,
-    *,
-    review_trigger: bool,
-    signal_trigger: bool = True,
-) -> None:
-    rail.review_trigger = review_trigger
-    rail.signal_trigger = signal_trigger
-
-
-def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
-    """Legacy shim for tests/older call sites.
-
-    The project now relies on openjiuwen's PermissionInterruptRail and does not
-    require a standalone permission engine initialization step.
-    """
-    return None
-
-
-def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
-    """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
-
-    relay 侧可经 spawn env 注入 ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（进程级开关，
-    仿 JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED）；env 显式设置时优先于 config.yaml。
-
-    判定委托给 rail 侧 ``model_routing_enabled``：swarm 成员 provider（``swarm.model_routing``）
-    读的是同一个函数，两处不能各读一遍开关。
-    """
-    from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
-        model_routing_enabled,
-    )
-
-    return model_routing_enabled(config)
-
-
-def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[str, Any]:
-    if config_base is None:
-        return copy.deepcopy(get_config())
-    if not isinstance(config_base, dict):
-        raise TypeError("config_base must be a dict when provided")
-    # 外部传入的 config_base（如企业同步的稀疏 override）与 shipped 模板做补缺型
-    # 合并：模板补全缺失键（如 react.ttse / react.subagents），外部显式键与独有
-    # 键全部保留。create_instance 与 reload 共用，避免热更丢掉模板默认值。
-    template = load_yaml_dict(resolve_shipped_template_config_path())
-    return resolve_config_env_vars(fill_template_defaults(config_base, template))
-
-
-def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> ContextEngineConfig:
-    """供 ``create_deep_agent(..., context_engine_config=...)`` 使用（与 agent-core 集成测试方法二一致）。
-
-    仅承接 ContextEngine 自身配置；KV cache affinity 由独立
-    ``react.kv_cache_affinity_config`` 管理。
-    """
-    react_cfg = react_cfg or {}
-    cec = react_cfg.get("context_engine_config")
-    cec = cec if isinstance(cec, dict) else {}
-    recall = cec.get("compression_recall_config")
-    recall = recall if isinstance(recall, dict) else {}
-    return ReActAgentConfig().context_engine_config.model_copy(
-        update={
-            "enable_reload": bool(cec.get("enable_reload", False)),
-            "enable_openrouter_model_context_window_tokens": bool(
-                cec.get("enable_openrouter_model_context_window_tokens", False)
-            ),
-            # 显式设置的上下文窗口上限；非法值回退 None（由 agent-core 按模型解析）
-            "context_window_tokens": parse_int(cec.get("context_window_tokens"), None),
-            # 上下文压缩 debug 落盘开关；目录缺省时由 agent-core 按
-            # OPENJIUWEN_CONTEXT_DEBUG_DIR / workspace 默认路径解析
-            "enable_context_debug": bool(cec.get("enable_context_debug", False)),
-            "context_debug_dir": cec.get("context_debug_dir") or None,
-            # 压缩召回：压缩时归档原始消息，供模型按需召回
-            "compression_recall_config": CompressionRecallConfig(
-                enabled=bool(recall.get("enabled", False)),
-                chunk_size_tokens=parse_int(recall.get("chunk_size_tokens"), 3000),
-                chunk_overlap_tokens=parse_int(recall.get("chunk_overlap_tokens"), 300),
-            ),
-        }
-    )
-
-
-def _model_provider(model: Any) -> str:
-    for owner in (model, getattr(model, "_client", None)):
-        model_client_config = getattr(owner, "model_client_config", None)
-        provider = getattr(model_client_config, "client_provider", None)
-        if provider is not None:
-            return str(getattr(provider, "value", provider) or "").strip()
-    return ""
-
-
-def _deep_agent_kv_cache_affinity_config(
-        react_cfg: dict[str, Any] | None,
-        model: Model | None = None,
-) -> KVCacheAffinityConfig:
-    """Build the ReActAgent KV cache affinity config from jiuwenswarm config."""
-    react_cfg = react_cfg or {}
-    kv_cfg = react_cfg.get("kv_cache_affinity_config")
-    kv_cfg = kv_cfg if isinstance(kv_cfg, dict) else {}
-    affinity_enabled = bool(kv_cfg.get("enable_kv_cache_affinity", False))
-    if affinity_enabled and model is not None:
-        provider = _model_provider(model)
-        if provider != "AscendAffinity":
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] KV cache affinity failed closed: "
-                "model provider=%s requires=AscendAffinity",
-                provider or "<empty>",
-            )
-            affinity_enabled = False
-    return KVCacheAffinityConfig(
-        enable_kv_cache_release=bool(kv_cfg.get("enable_kv_cache_release", False)),
-        enable_kv_cache_affinity=affinity_enabled,
-    )
-
-
 def _build_context_assemble_rail(
     disabled_tools: list[str] | None = None,
     tool_name_allowlist: list[str] | None = None,
@@ -1640,29 +1449,6 @@ _MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
 }
 
 
-def _try_add_cache_control(msg: Any) -> None:
-    """Add cache_control to the last content block of a message.
-
-    Only modifies dict-based content blocks (safe for openjiuwen message types
-    where content is ``Union[str, List[Union[str, dict]]]``). If the last block
-    is a dict, we add ``cache_control: {"type": "ephemeral"}`` to it.
-
-    Mark the last pre-prompt message for prompt caching, 
-    while the btw/recap prompt itself carries no marker
-    (skipCacheWrite — the side response doesn't create a new cache entry).
-
-    String content is left untouched — converting it to a list would change
-    the wire format and break the byte-identical prefix needed for cache hits.
-    """
-    content = getattr(msg, "content", None)
-    if content is None:
-        return
-    if isinstance(content, list) and len(content) > 0:
-        last_block = content[-1]
-        if isinstance(last_block, dict):
-            last_block["cache_control"] = {"type": "ephemeral"}
-
-
 class _RuntimeCronToolContext:
     """Stable cron tool context proxy backed by per-task contextvars."""
 
@@ -1711,43 +1497,6 @@ class _RuntimeCronToolContext:
         return self._tool_scope
 
 
-def _optional_enable_subagent_runtime(enabled: bool) -> dict[str, bool]:
-    """Pass ``enable_subagent_runtime`` only when ``DeepAgentConfig`` accepts it.
-
-    Official ``dev-stable`` openjiuwen 0.1.16 is a dataclass without this
-    field; constructing it with the keyword raises TypeError. Do not filter
-    against ``create_deep_agent``: that factory still has ``**config_kwargs``,
-    so signature filtering would keep the keyword and only warn, or the
-    hot-reload path would still TypeError because it builds ``DeepAgentConfig``
-    directly. Fork overlay and a future official 3A merge keep the field.
-    """
-    return filter_unsupported_kwargs(
-        DeepAgentConfig.__init__,
-        {"enable_subagent_runtime": enabled},
-    )
-
-
-def _agent_ras_kwargs_from_config(config_base: dict[str, Any] | None) -> dict[str, Any]:
-    """Thin YAML gate for create_deep_agent ``agent_ras``.
-
-    Schema validation stays in agent-core. Missing / non-dict section → do
-    not pass (core defaults to Agent RAS enabled). Explicit ``enabled: false``
-    passes ``False`` to disable. Otherwise pass a deep-copied raw dict.
-    """
-    raw = (config_base or {}).get("agent_ras")
-    if not isinstance(raw, dict):
-        if raw is not None:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] ignoring invalid agent_ras section: "
-                "expected dict, got %s",
-                type(raw).__name__,
-            )
-        return {}
-    if raw.get("enabled", True) is not True:
-        return {"agent_ras": False}
-    return {"agent_ras": copy.deepcopy(raw)}
-
-
 class OfficeClawMcpBuiltinNameConflict(RuntimeError):
     """A request-scoped connector tool's short name collides with a *built-in*
     agent tool (not a foreign request-scoped tool).
@@ -1778,50 +1527,6 @@ class _RequestMcpToolBuffers:
     research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
     research_tool_names: dict[str, list[str]] = field(default_factory=dict)
     unavailable_connectors: dict[str, str] = field(default_factory=dict)
-
-
-_SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
-# Kill switch for lazy per-session SkillUseRail whitelist refresh after install.
-# Default on; set to 0/false/off/no to restore pre-fix behavior.
-_SKILL_SESSION_LAZY_REFRESH_ENV = "JIUWEN_SKILL_SESSION_LAZY_REFRESH"
-
-
-def _skill_session_lazy_refresh_enabled() -> bool:
-    """Whether install/uninstall should lazily refresh session SkillUseRail allow-lists."""
-    raw = os.environ.get(_SKILL_SESSION_LAZY_REFRESH_ENV)
-    if raw is None or not str(raw).strip():
-        return True
-    return str(raw).strip().lower() not in {"0", "false", "off", "no"}
-
-
-def _session_adapter_idle_ttl_default() -> int:
-    """Session-scoped adapter idle TTL in seconds (default 2h).
-
-    Override via ``JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC`` at process
-    start; non-numeric or non-positive values warn and fall back to the
-    default so a bad deploy cannot disable eviction entirely.
-    """
-    default = 2 * 60 * 60
-    raw = os.environ.get(_SESSION_ADAPTER_IDLE_TTL_ENV)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = int(raw.strip())
-    except ValueError:
-        logger.warning(
-            "[JiuWenSwarmDeepAdapter] ignoring non-numeric %s=%s",
-            _SESSION_ADAPTER_IDLE_TTL_ENV,
-            raw,
-        )
-        return default
-    if value <= 0:
-        logger.warning(
-            "[JiuWenSwarmDeepAdapter] ignoring non-positive %s=%s",
-            _SESSION_ADAPTER_IDLE_TTL_ENV,
-            raw,
-        )
-        return default
-    return value
 
 
 class JiuWenSwarmDeepAdapter:
