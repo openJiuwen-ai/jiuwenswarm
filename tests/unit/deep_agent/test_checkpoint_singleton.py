@@ -17,6 +17,7 @@ warnings.filterwarnings(
 )
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as iface
+from jiuwenswarm.server.runtime.agent_adapter.deep import checkpoint_db as checkpoint_db
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -135,7 +136,7 @@ async def test_build_mysql_engine_reuses_process_singleton(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     mock_engine = MagicMock(name="mysql_engine")
-    iface._shared_mysql_checkpoint_engine = mock_engine
+    checkpoint_db._shared_mysql_checkpoint_engine = mock_engine
 
     with patch(
         "sqlalchemy.ext.asyncio.create_async_engine",
@@ -152,7 +153,7 @@ async def test_build_postgresql_engine_reuses_process_singleton(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     mock_engine = MagicMock(name="pg_engine")
-    iface._shared_postgresql_checkpoint_engine = mock_engine
+    checkpoint_db._shared_postgresql_checkpoint_engine = mock_engine
 
     with patch(
         "sqlalchemy.ext.asyncio.create_async_engine",
