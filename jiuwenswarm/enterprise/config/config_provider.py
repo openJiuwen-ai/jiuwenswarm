@@ -189,7 +189,13 @@ class DefaultConfigProvider:
         # Execution owns memory caches. Read persisted values here so a fresh
         # worker (or one without Runtime refresh notifications) does not depend
         # on Gateway startup or a shared Python process to populate them.
-        await self._refresh_memory_configs()
+        try:
+            await self._refresh_memory_configs()
+        except Exception:
+            logger.warning(
+                "memory configuration refresh failed; keeping last applied values",
+                exc_info=True,
+            )
         loaded = (
             await load_effective_enterprise_config(
                 ctx.request, DEFAULT_AGENT_LOAD_SLOTS

@@ -152,11 +152,16 @@ async def test_yaml_and_community_do_not_read_enterprise_memory(memory_environme
     monkeypatch.setenv("JIUWENSWARM_CONFIG_SOURCE", source)
     monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
 
-    async def forbidden(*args, **kwargs):
-        raise AssertionError("YAML path must not read enterprise DB")
+    read_calls = []
 
-    monkeypatch.setattr(db_queries, "list_records", forbidden)
-    assert await DefaultConfigProvider().load_agent_config(AgentConfigContext(), base={}) is None
+    async def record_read(*args, **kwargs):
+        read_calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(db_queries, "list_records", record_read)
+    result = await DefaultConfigProvider().load_agent_config(AgentConfigContext(), base={})
+    assert read_calls == []
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -192,3 +197,31 @@ async def test_failed_write_does_not_notify_runtime(memory_environment, monkeypa
         payload = {"body": {}} if kind == "memory" else {"enabled": True}
         await put(SyncContext(business=payload, method="PUT"))
     notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [ValueError, TypeError])
+async def test_unexpected_memory_refresh_failure_does_not_abort_default_config(
+    memory_environment, monkeypatch, error_type,
+):
+    from jiuwenswarm.enterprise.config import config_provider
+
+    memory.apply_memory_config_payload({"body": {"mode": "cloud"}})
+    memory.apply_task_memory_config_payload({"body": {"enabled": True}})
+    provider = DefaultConfigProvider()
+    warning = Mock()
+    monkeypatch.setattr(config_provider.logger, "warning", warning)
+    monkeypatch.setattr(config_provider, "_provider", None)
+    monkeypatch.setattr(config_provider, "_DEFAULT_PROVIDER", provider)
+
+    async def failed_refresh():
+        raise error_type("test unexpected refresh failure")
+
+    monkeypatch.setattr(provider, "_refresh_memory_configs", failed_refresh)
+    base = {"memory": {"mode": "local", "enabled": False}}
+    result = await config_provider.resolve_agent_config(base)
+    assert result.config["memory"] == {"mode": "cloud", "enabled": False}
+    assert memory.get_task_memory_config()["enabled"] is True
+    assert base["memory"]["mode"] == "local"
+    warning.assert_called_once()
+    assert "memory configuration refresh failed" in warning.call_args.args[0]
