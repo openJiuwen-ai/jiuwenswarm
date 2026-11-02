@@ -921,8 +921,12 @@ class AgentManager:
                     # The request may have failed after its decision was saved
                     # but before consume, including across a process restart.
                     record = state.record
+                    generation = await asyncio.to_thread(
+                        self.group_sharing.repository.saved_request_window, record.namespace_id, record.request_id,
+                    )
                     await core.discard_persistent_confirmation(
-                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id,
+                                           generation=generation),
                         agent_id=record.agent_id, session_id=record.session_id,
                         request_id=record.request_id, spec_fingerprint=record.config_fingerprint,
                     )

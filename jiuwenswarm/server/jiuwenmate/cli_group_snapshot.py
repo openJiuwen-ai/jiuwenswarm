@@ -34,6 +34,8 @@ class CliAttachment(ProtocolModel):
 
 class CliReadSnapshot(core.InvocationRef):
     kind: Literal["cli_group_read"] = "cli_group_read"
+    # A reapproval may reuse the immutable private blob, never a new CLI execution.
+    preview_request_id: Identifier | None = None
     command_digest: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
     plan: dict[str, Any]
     source_authorizations: dict[str, dict[str, str]] = Field(default_factory=dict)

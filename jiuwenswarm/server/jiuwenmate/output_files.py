@@ -28,6 +28,12 @@ _TEXT_SUFFIXES = frozenset({
 _TEXT_SEARCH_MAX_BYTES = 2 << 20
 
 
+def approved_import_path(session_id: str, artifact_id: str, file_name: str) -> str:
+    """Use the same deterministic locator for new imports and pre-provenance receipts."""
+    safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', file_name).strip(' .')[:120] or 'artifact'
+    return f'sessions/{session_id}/imports/{artifact_id}_{safe_name}'
+
+
 def shared_output_file_name(file_path: object, file_ref: object, file_size: object) -> str:
     """Validate the Session-scoped output contract and return its basename."""
     parts = file_path.split("/") if isinstance(file_path, str) else []
@@ -106,6 +112,33 @@ class WorkspaceOutputFiles:
 
     def __init__(self, workspaces: WorkspaceStore) -> None:
         self._workspaces = workspaces
+
+    def current_file_fact(self, execution: ExecutionContext, requested: str) -> dict | None:
+        """Host-only digest of a local copy, including an as-yet unregistered renamed output."""
+        if not isinstance(requested, str):
+            return None
+        prefix = f'sessions/{execution.session_id}/'
+        requested = requested.replace('\\', '/')
+        if requested.startswith(('output/', 'imports/')):
+            requested = prefix + requested
+        if not requested.startswith(prefix):
+            return None
+        try:
+            access = HostWorkspaceAccess(self._workspaces, execution.namespace_id, execution.agent_id,
+                                         enforce_session_boundary=True)
+            scope = validate_read_scope(access.read_scope(execution), execution)
+            path = resolve_read_path(scope, requested).path
+            fd = _open_regular(path)
+            digest = hashlib.sha256()
+            size = 0
+            with os.fdopen(fd, 'rb') as stream:
+                for chunk in iter(lambda: stream.read(_CHUNK), b''):
+                    size += len(chunk)
+                    digest.update(chunk)
+            return dict(session_id=execution.session_id, file_path=requested,
+                        file_ref='sha256:' + digest.hexdigest(), file_size=size, published=False)
+        except (OSError, ValueError, PersistentAgentError):
+            return None
 
     def verify(self, execution: ExecutionContext, output: OutputPayload) -> None:
         """Verify the request-authorized shared output without creating a retained copy."""
@@ -238,8 +271,8 @@ class WorkspaceOutputFiles:
         if source is None:
             raise PersistentAgentError("approved artifact no longer matches its record", code="OUTPUT_FILE_MISMATCH")
         original_name = shared_output_file_name(source_file_path, file_ref, file_size)
-        safe_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", original_name).strip(" .")[:120] or "artifact"
-        destination_name = f"{artifact_id}_{safe_name}"
+        relative = approved_import_path(target_session_id, artifact_id, original_name)
+        destination_name = relative.rsplit('/', 1)[-1]
         imports = self._workspaces.ensure_session_imports(namespace_id, agent_id, target_session_id)
         destination = imports / destination_name
         try:
