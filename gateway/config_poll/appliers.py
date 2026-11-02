@@ -33,17 +33,10 @@ def _enabled_log_masking_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 async def apply_logging_config_table(ctx: TableApplyContext) -> None:
-    try:
-        from jiuwenswarm.common.utils import (
-            _logging_config_row_to_dict,
-            apply_logging_config_payload,
-        )
-    except ImportError:
-        logger.warning(
-            "[ConfigPoll] logging_config apply skipped "
-            "(jiuwenswarm.common.utils logging helpers not present)"
-        )
-        return
+    from gateway.common.logging_setup import (
+        apply_logging_config_payload,
+        logging_config_row_to_dict,
+    )
 
     row = ctx.rows[0] if ctx.rows else None
     if len(ctx.rows) > 1:
@@ -52,7 +45,7 @@ async def apply_logging_config_table(ctx: TableApplyContext) -> None:
             len(ctx.rows),
         )
     apply_logging_config_payload(
-        _logging_config_row_to_dict(row) if row is not None else None,
+        logging_config_row_to_dict(row) if row is not None else None,
     )
     logger.info("[ConfigPoll] logging_config applied rows=%d", len(ctx.rows))
 
