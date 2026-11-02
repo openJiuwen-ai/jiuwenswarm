@@ -12,7 +12,11 @@ const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="roo
   pretendToBeVisual: true,
 });
 const slashRequests = [];
+const assetRegisterRequests = [];
 let completeCompact;
+// Single-shot: when set, the next session.assets.register call fails (rejects)
+// instead of succeeding, to exercise the registration-failure rollback path.
+let forceNextRegisterFailure = false;
 class MockWebSocket {
   static OPEN = 1;
   static CLOSED = 3;
@@ -30,7 +34,7 @@ class MockWebSocket {
     const request = JSON.parse(rawMessage);
     if (![
       'agent_groups.list', 'commands.list', 'skills.list', 'command.compact',
-      'session.assets.list', 'session.assets.register',
+      'session.assets.list', 'session.assets.register', 'session.assets.rename', 'session.assets.remove',
     ].includes(request.method)) {
       throw new Error(`Unexpected WebSocket request: ${request.method}`);
     }
@@ -71,7 +75,31 @@ class MockWebSocket {
     } else if (request.method === 'command.compact') {
       slashRequests.push(request);
       payload = { result: 'noop' };
-    } else if (request.method === 'session.assets.list' || request.method === 'session.assets.register') {
+    } else if (request.method === 'session.assets.register') {
+      assetRegisterRequests.push({ sessionId: request.params.session_id, items: request.params.items });
+      if (forceNextRegisterFailure) {
+        forceNextRegisterFailure = false;
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: JSON.stringify({ type: 'res', id: request.id, ok: false, error: 'simulated register failure' }),
+          });
+        });
+        return;
+      }
+      const created = request.params.items.map((item, index) => ({
+        asset_id: `asset-${assetRegisterRequests.length}-${index}`,
+        name: item.name || item.path.split(/[\\/]/).pop(),
+        kind: 'document',
+        path: item.path,
+        source: item.source,
+        created_at: Date.now() / 1000,
+      }));
+      payload = { assets: created, created };
+    } else if (request.method === 'session.assets.rename') {
+      payload = { assets: [] };
+    } else if (request.method === 'session.assets.remove') {
+      payload = { assets: [] };
+    } else if (request.method === 'session.assets.list') {
       payload = { items: [] };
     }
     const respond = () => {
@@ -135,6 +163,8 @@ const { setTeamOrganizationUiEnabled } = await import('../node_modules/.cache/in
 const { isMultiModelCollaborationEnabled, setMultiModelCollaborationEnabled } =
   await import('../node_modules/.cache/input-area-permission-merge/features/multiModelCollaboration/featureConfig.js');
 const { webClient } = await import('../node_modules/.cache/input-area-permission-merge/services/webClient.js');
+const { useSessionAssetsStore } =
+  await import('../node_modules/.cache/input-area-permission-merge/features/sessionAssets/sessionAssets.js');
 
 function byId(id, variant) {
   const selector = `[data-testid="${id}"]${variant === undefined ? '' : `[data-variant="${variant}"]`}`;
@@ -406,6 +436,227 @@ test('pasted image in a historical session restores after InputArea unmounts on 
 
     useChatStore.getState().removeRuntime(newConversationId);
     useSessionStore.getState().removeRuntime(newConversationId);
+  });
+});
+
+test('an already-registered attachment draft is not re-registered when InputArea unmounts and remounts on the same session', async () => {
+  // ChatPanel/index.tsx mounts InputArea at two separate JSX sites (the welcome
+  // composer and the normal composer), so this component genuinely unmounts and
+  // remounts while staying on the same session -- unmountInputArea()/render() here
+  // simulate exactly that. The attachment draft (attachmentDraftsBySession) and the
+  // session-asset registration bookkeeping must both be module-scoped so a restored
+  // draft is not registered a second time on every remount (the backend is
+  // deliberately not idempotent per path, see session_assets.py).
+  await mount({}, async ({ props, inputAreaRef, sessionId, render, unmountInputArea }) => {
+    // Unlike the welcome page (no server-side session yet), a real session always
+    // round-trips a local-path document through onPersistDocuments before it reaches
+    // 'ready' (InputArea.tsx's uploadAttachment) -- echo the local path back so the
+    // draft actually becomes registrable, matching the real desktop bridge.
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        { kind: 'document', filename: '1.json', mime_type: 'application/json', size: 16, path: 'C:\\Users\\Administrator\\Desktop\\1.json' },
+      ]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const registeredForSession = () => assetRegisterRequests.filter((r) => r.sessionId === sessionId);
+    assert.equal(registeredForSession().length, 1, 'attaching should register the material exactly once');
+
+    await unmountInputArea();
+    await render();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+
+    assert.notEqual(
+      document.querySelector('[data-testid="chat-panel-input-attachment-card"]'),
+      null,
+      'the restored draft should still show its attachment chip',
+    );
+    assert.equal(
+      registeredForSession().length,
+      1,
+      'remounting must not register the still-attached draft a second time',
+    );
+  });
+});
+
+test('a failed session-asset registration rolls back its dispatched mark so the send-time fallback is not skipped', async () => {
+  // The live registration effect marks a draft's path "dispatched" (sessionAssets.ts)
+  // synchronously, before the register() request resolves -- if the request then
+  // fails (network blip, RPC error) and that mark is never rolled back, the draft
+  // looks "already handled" forever: useWebSocket.ts's send-time registerUploads
+  // fallback (which exists specifically to catch a live-effect miss) sees the path
+  // already marked and silently skips it too, so no material is ever created for it.
+  // This is the exact failure chain from the review: reproduce it WITHOUT unmounting
+  // InputArea, so it cannot be confused with the separate remount/module-scope fix.
+  await mount({}, async ({ props, inputAreaRef, sessionId, render }) => {
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    const path = 'C:\\Users\\Administrator\\Desktop\\1.json';
+    forceNextRegisterFailure = true;
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        { kind: 'document', filename: '1.json', mime_type: 'application/json', size: 16, path },
+      ]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const registeredForSession = () => assetRegisterRequests.filter((r) => r.sessionId === sessionId);
+    assert.equal(registeredForSession().length, 1, 'the failed attempt still counts as one request sent');
+
+    // Simulate the message actually being sent: useWebSocket.ts calls registerUploads
+    // with the outgoing media item for this exact path right after send.
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [{ path }]);
+    });
+
+    assert.equal(
+      registeredForSession().length,
+      2,
+      'the send-time fallback must retry a path whose live registration failed, not skip it as already dispatched',
+    );
+  });
+});
+
+test('canceling a registered draft clears its dispatched-path mark, but not while another live draft still shares the path', async () => {
+  // sessionAssets.ts's dispatchedUploadPaths is what keeps useWebSocket.ts's
+  // send-time registerUploads fallback from re-registering a draft the live effect
+  // already handled. If that mark outlives the draft (canceled + its asset removed),
+  // a fresh re-attach of the same path sent before the live effect gets to it would
+  // be silently skipped by registerUploads too -- the file would just never become a
+  // session asset. But the mark must NOT be cleared while another still-attached,
+  // already-registered draft relies on it (same path, deliberate re-attach), or that
+  // one would get registered a second time instead.
+  await mount({}, async ({ props, inputAreaRef, sessionId, render }) => {
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    const path = 'C:\\Users\\Administrator\\Desktop\\shared.json';
+    const pick = { kind: 'document', filename: 'shared.json', mime_type: 'application/json', size: 16, path };
+
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([pick]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const registeredForSession = () => assetRegisterRequests.filter((r) => r.sessionId === sessionId);
+    assert.equal(registeredForSession().length, 1, 'first attach registers once');
+
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([pick]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    assert.equal(registeredForSession().length, 2, 'a deliberate second attach of the same path gets its own asset');
+
+    // Cancel only the FIRST draft. The second (same path) is still attached and
+    // already registered, so the dispatched mark for this path must survive.
+    await act(async () => {
+      document.querySelector('[data-testid="chat-panel-input-attachment-remove"]').click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [{ path }]);
+    });
+    assert.equal(
+      registeredForSession().length,
+      2,
+      'the still-attached second draft must keep the path marked dispatched -- registerUploads must not register it again',
+    );
+
+    // Cancel the remaining draft too. Now nothing shares this path anymore, so the
+    // mark must finally be cleared, letting a fresh attach's send-time fallback work.
+    await act(async () => {
+      document.querySelector('[data-testid="chat-panel-input-attachment-remove"]').click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [{ path }]);
+    });
+    assert.equal(
+      registeredForSession().length,
+      3,
+      'once no draft shares the path anymore, registerUploads must be able to register it again',
+    );
+  });
+});
+
+test('registerUploads names the asset from the attachment\'s displayName even when no pendingNames entry exists for its path', async () => {
+  // commitAttachmentRename (InputArea.tsx) only calls setPendingName when the
+  // attachment already has a persisted path -- on the welcome page (no session yet)
+  // or for a browser-mode image/document still mid-upload, a rename typed before
+  // that path exists is never written into pendingNames at all. The rename itself is
+  // never lost though: attachmentToMediaItem always sets displayName on the
+  // MediaItem regardless of path, and useWebSocket.ts now carries that displayName
+  // through persistence into the item it hands to registerUploads. registerUploads
+  // must prefer that per-item displayName over any (here: absent) pendingNames
+  // lookup, or the user's chosen name is silently replaced by the filename stem.
+  await mount({}, async ({ sessionId }) => {
+    const path = 'C:\\Users\\Administrator\\Desktop\\welcome-page-attach.json';
+    assert.equal(
+      useSessionAssetsStore.getState().pendingNames[path],
+      undefined,
+      'sanity: no pendingNames entry exists for this path',
+    );
+
+    await act(async () => {
+      await useSessionAssetsStore.getState().registerUploads(sessionId, [
+        { path, filename: 'welcome-page-attach.json', displayName: 'My Renamed Material' },
+      ]);
+    });
+
+    const registered = assetRegisterRequests.filter((r) => r.sessionId === sessionId).at(-1);
+    assert.ok(registered, 'registerUploads should have sent a registration request');
+    assert.equal(registered.items.length, 1);
+    assert.equal(
+      registered.items[0].name,
+      'My Renamed Material',
+      'the user-chosen name must survive even without a pendingNames entry for the path',
+    );
+  });
+});
+
+test('the live registration effect sends the draft\'s own id as client_id', async () => {
+  // session.assets.register treats client_id as an idempotency key (see
+  // session_assets.py): the SAME logical request can legitimately execute twice
+  // server-side (a response lost before the client saw it, a reconnect retry, a
+  // second tab), and a repeat with the same client_id must return the existing
+  // asset instead of creating another one. That only works if the client actually
+  // sends a stable, per-draft id -- confirm the live effect does.
+  await mount({}, async ({ props, inputAreaRef, sessionId, render }) => {
+    props.onPersistDocuments = async (_content, mediaItems) => ({ media_items: mediaItems });
+    await render();
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        { kind: 'document', filename: '1.json', mime_type: 'application/json', size: 16, path: 'C:\\Users\\Administrator\\Desktop\\1.json' },
+      ]);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    const card = document.querySelector('[data-testid="chat-panel-input-attachment-card"]');
+    assert.notEqual(card, null);
+    const draftId = card.getAttribute('data-variant');
+    assert.ok(draftId);
+
+    const registered = assetRegisterRequests.filter((r) => r.sessionId === sessionId).at(-1);
+    assert.ok(registered, 'the live effect should have registered the draft');
+    assert.equal(registered.items.length, 1);
+    assert.equal(
+      registered.items[0].client_id,
+      draftId,
+      'the registration request must carry the draft\'s own id as client_id',
+    );
   });
 });
 

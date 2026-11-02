@@ -61,6 +61,57 @@ async def test_reattaching_the_same_path_creates_a_new_asset(manager, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_repeating_the_same_client_id_returns_the_existing_asset(manager, tmp_path):
+    # client_id is the caller's per-attempt idempotency key (InputArea.tsx uses the
+    # composer draft's own id): this RPC is a generic WS method any caller can
+    # invoke, and the SAME logical request can legitimately execute twice server
+    # side (a response lost before the client saw it, a reconnect retry, a second
+    # tab) -- a repeat must return the asset already created, not add another one.
+    photo = _file(tmp_path, "1.json")
+    first = await manager.handle_session_assets_register(
+        {"session_id": "s1", "items": [{"path": photo, "client_id": "draft-A"}]}
+    )
+    again = await manager.handle_session_assets_register(
+        {"session_id": "s1", "items": [{"path": photo, "client_id": "draft-A"}]}
+    )
+    assert [a["name"] for a in again["assets"]] == ["1"]  # no "1-1" -- nothing new was created
+    assert again["created"] == [first["assets"][0]]
+    assert (await manager.handle_session_assets_list({"session_id": "s1"}))["assets"] == first["assets"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_client_id_still_creates_a_distinct_asset_for_the_same_path(manager, tmp_path):
+    # client_id must not regress the deliberate-re-attach contract: a genuinely new
+    # draft (new client_id) re-attaching the same path still gets its own asset,
+    # exactly like test_reattaching_the_same_path_creates_a_new_asset.
+    photo = _file(tmp_path, "1.json")
+    first = await manager.handle_session_assets_register(
+        {"session_id": "s1", "items": [{"path": photo, "client_id": "draft-A"}]}
+    )
+    second = await manager.handle_session_assets_register(
+        {"session_id": "s1", "items": [{"path": photo, "client_id": "draft-B"}]}
+    )
+    assert [a["name"] for a in second["assets"]] == ["1", "1-1"]
+    assert second["created"][0]["asset_id"] != first["assets"][0]["asset_id"]
+
+
+@pytest.mark.asyncio
+async def test_generated_items_are_deduped_by_path_with_no_client_id_needed(manager, tmp_path):
+    # Agent-produced files have no per-attempt identity the way a user re-attaching
+    # a draft does -- there is no "intentional repeat" concept for those, so they
+    # are deduped by path alone, the same way uploads used to be before client_id.
+    clip = _file(tmp_path, "clip.mp4")
+    first = await manager.handle_session_assets_register(
+        {"session_id": "s1", "items": [{"path": clip, "source": "generated"}]}
+    )
+    again = await manager.handle_session_assets_register(
+        {"session_id": "s1", "items": [{"path": clip, "source": "generated"}]}
+    )
+    assert [a["name"] for a in again["assets"]] == ["clip"]
+    assert again["created"] == [first["assets"][0]]
+
+
+@pytest.mark.asyncio
 async def test_default_names_are_made_unique(manager, tmp_path):
     first, second = _file(tmp_path, "a/fox.png"), _file(tmp_path, "b/fox.png")
     result = await manager.handle_session_assets_register(

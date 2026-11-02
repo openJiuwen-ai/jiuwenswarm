@@ -14,12 +14,23 @@ export interface SessionAsset {
   path: string;
   source: 'upload' | 'generated';
   created_at: number;
+  /** The draft id this asset was registered with (session_assets.py's idempotency
+   *  key for 'upload' items), when the registering caller sent one. Lets a message
+   *  attachment be matched back to the ONE asset it actually created, instead of
+   *  falling back to a same-path guess -- the same path can now legitimately back
+   *  more than one asset (a deliberate re-attach). */
+  client_id?: string;
 }
 
 export interface SessionAssetInput {
   path: string;
   source?: 'upload' | 'generated';
   name?: string;
+  /** Idempotency key for an 'upload' item -- the composer draft's own id (stable
+   *  across a retry/reconnect/remount of the SAME attach, but a new value for every
+   *  deliberate re-attach). session.assets.register returns the existing asset for a
+   *  repeated client_id instead of creating another one; see session_assets.py. */
+  client_id?: string;
 }
 
 export type AssetsResponse = { assets?: SessionAsset[]; created?: Array<SessionAsset | null> };
@@ -46,6 +57,17 @@ export function markUploadDispatched(sessionId: string, path: string): void {
     dispatchedUploadPaths.set(sessionId, dispatched);
   }
   dispatched.add(key);
+}
+
+/** Undo markUploadDispatched: the register call it guarded against a duplicate for
+ *  either failed outright (no asset was created, so nothing stands in the way of a
+ *  real retry) or the draft that owned it was since canceled and removed. Callers
+ *  must confirm no OTHER still-registered draft shares this exact path first -- two
+ *  drafts can legitimately share a path (a deliberate re-attach), and clearing the
+ *  mark out from under the other one would make registerUploads (the send-time
+ *  fallback) register it a second time. */
+export function unmarkUploadDispatched(sessionId: string, path: string): void {
+  dispatchedUploadPaths.get(sessionId)?.delete(normalizePath(path));
 }
 
 interface SessionAssetsState {
@@ -88,8 +110,18 @@ export const useSessionAssetsStore = create<SessionAssetsState>((set) => {
         if (!path) continue;
         const key = normalizePath(path);
         if (dispatched?.has(key)) continue;
-        const pendingName = names[key];
-        inputs.push({ path, source: 'upload', ...(pendingName ? { name: pendingName } : {}) });
+        // displayName 优先：卡片重命名时 path 可能还没落盘（典型是欢迎页第一条消息），那时候
+        // 按 path 键的 pendingNames 记不下这个名字（见 InputArea.tsx 的 commitAttachmentRename），
+        // 只有带着这条附件走到这里的 item.displayName（attachmentToMediaItem 塞进去的）还留着。
+        const displayName = typeof item.displayName === 'string' ? item.displayName.trim() : '';
+        const pendingName = displayName || names[key];
+        const clientId = typeof item.clientId === 'string' ? item.clientId.trim() : '';
+        inputs.push({
+          path,
+          source: 'upload',
+          ...(pendingName ? { name: pendingName } : {}),
+          ...(clientId ? { client_id: clientId } : {}),
+        });
       }
       if (inputs.length === 0) return;
       await useSessionAssetsStore.getState().register(sessionId, inputs);
