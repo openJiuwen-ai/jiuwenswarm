@@ -62,8 +62,10 @@ def test_update_levels_targets_each_component_file(tmp_path):
     assert agent_log.level == logging.CRITICAL
     assert full_log.level == logging.WARNING
     assert console.level == logging.DEBUG
-    # 根 logger 取组件最低级别，保证所有组件日志都能到达各自 handler。
-    assert root.level == min(logging.WARNING, logging.ERROR, logging.CRITICAL, logging.WARNING)
+    # 根 logger 取含 console 在内的最低级别，保证组件与控制台日志都能到达各自 handler。
+    assert root.level == min(
+        logging.WARNING, logging.ERROR, logging.CRITICAL, logging.WARNING, logging.DEBUG
+    )
 
 
 def test_update_levels_shared_install_targets_mother_tree(tmp_path):
@@ -118,6 +120,26 @@ def test_apply_payload_builds_kwargs():
     apply_logging_config_payload({"console_level": "WARNING", "full": "ERROR"})
 
     assert handler.level == logging.WARNING
+
+
+def test_console_only_downgrade_reaches_console_handler(tmp_path):
+    """console 单独下调必须在根闸放行（回归：原 min 不含 console 时被 isEnabledFor 拦截）。"""
+    import io
+
+    root = logging.getLogger("gateway")
+    stream = logging.StreamHandler(io.StringIO())
+    stream.setLevel(logging.INFO)
+    # 文件 handler 必须带真实文件名（gateway.log），才会走文件名映射而非 console 分支。
+    gateway_log = _file_handler(tmp_path, "gateway.log")
+    root.addHandler(stream)
+    root.addHandler(gateway_log)
+
+    update_gateway_log_levels(console_level="DEBUG")
+
+    assert root.level == logging.DEBUG
+    assert stream.level == logging.DEBUG
+    # 文件/组件阈值不受 console 下调影响，仍按自身级别过滤。
+    assert gateway_log.level == logging.INFO
 
 
 def test_row_to_dict_supports_dict_and_object_rows():

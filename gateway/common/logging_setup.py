@@ -5,7 +5,9 @@
 输出目录与母仓一致：``~/.jiuwenswarm/agent/.logs/``；``gateway.log`` 可通过
 ``AGENTOS_GATEWAY_LOG_DIR`` 独立存放。级别取自共享 ``config.yaml`` 的
 ``logging`` 段。handler / 级别 / 过滤器的定义与母仓逐行一致，仅根 logger
-从 ``jiuwenswarm`` 换成 ``gateway``。
+从 ``jiuwenswarm`` 换成 ``gateway``。已知偏差：根级别聚合把 ``console``
+一并纳入（母仓不含）——否则 ``console_level`` 单独下调时记录会在根
+logger 的 ``isEnabledFor`` 阶段被拦，控制台阈值字段对用户失效。
 """
 
 from __future__ import annotations
@@ -258,7 +260,10 @@ def _resolve_logging_levels(
         console = gateway = channel = agent_server = full = v
         logger_level = v
     else:
-        logger_level = min(gateway, channel, agent_server, full)
+        # console 纳入根闸：console_level 单独下调必须可见（用户可见字段语义），
+        # 各文件 handler 仍按自身级别过滤，文件日志不会因此变详细。
+        # 与母仓实现的偏差点，见模块头注释。
+        logger_level = min(gateway, channel, agent_server, full, console)
 
     return LoggingLevels(logger_level, console, gateway, channel, agent_server, full)
 
@@ -430,9 +435,17 @@ def update_gateway_log_levels(
     for attr, value in overrides.items():
         if value is not None:
             levels = replace(levels, **{attr: _parse_log_level(value, getattr(levels, attr))})
+    # console 一并纳入根闸：console_level 单独下调必须可见，各文件 handler
+    # 仍按自身级别过滤（与 _resolve_logging_levels 内聚合口径一致）。
     levels = replace(
         levels,
-        logger=min(levels.gateway, levels.channel, levels.agent_server, levels.full),
+        logger=min(
+            levels.gateway,
+            levels.channel,
+            levels.agent_server,
+            levels.full,
+            levels.console,
+        ),
     )
 
     root = logging.getLogger("gateway")
