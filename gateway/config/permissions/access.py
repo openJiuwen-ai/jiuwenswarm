@@ -39,7 +39,7 @@ def schedule_permissions_config(awaitable: Any) -> None:
 async def update_permissions_enabled_in_config(value: bool) -> None:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_permissions_enabled_in_config as _legacy,
         )
 
@@ -54,7 +54,7 @@ async def update_permissions_owner_scopes_in_config(
 ) -> None:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_permissions_owner_scopes_in_config as _legacy,
         )
 
@@ -68,7 +68,7 @@ async def update_permissions_owner_scopes_in_config(
 async def update_permissions_deny_guidance_in_config(msg: str) -> None:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_permissions_deny_guidance_in_config as _legacy,
         )
 
@@ -80,7 +80,7 @@ async def update_permissions_deny_guidance_in_config(msg: str) -> None:
 async def replace_permissions_tools_in_config(tools: Any) -> None:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             replace_permissions_tools_in_config as _legacy,
         )
 
@@ -94,7 +94,7 @@ async def update_permissions_tool_in_config(
 ) -> dict[str, Any]:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_permissions_tool_in_config as _legacy,
         )
 
@@ -105,7 +105,7 @@ async def update_permissions_tool_in_config(
 async def delete_permissions_tool_in_config(tool_name: str) -> bool:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             delete_permissions_tool_in_config as _legacy,
         )
 
@@ -116,7 +116,7 @@ async def delete_permissions_tool_in_config(tool_name: str) -> bool:
 async def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             create_permissions_rule_in_config as _legacy,
         )
 
@@ -129,7 +129,7 @@ async def update_permissions_rule_in_config(
 ) -> dict[str, Any]:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_permissions_rule_in_config as _legacy,
         )
 
@@ -140,7 +140,7 @@ async def update_permissions_rule_in_config(
 async def delete_permissions_rule_in_config(rule_id: str) -> bool:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             delete_permissions_rule_in_config as _legacy,
         )
 
@@ -151,7 +151,7 @@ async def delete_permissions_rule_in_config(rule_id: str) -> bool:
 async def delete_permissions_approval_override_in_config(override_id: str) -> bool:
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             delete_permissions_approval_override_in_config as _legacy,
         )
 
@@ -163,7 +163,7 @@ async def get_permissions_body_in_config() -> dict[str, Any]:
     """读取全局 ``permissions`` body。"""
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         raw = (get_config() or {}).get("permissions")
         return dict(raw) if isinstance(raw, dict) else {}
@@ -177,7 +177,7 @@ async def replace_permissions_in_config(body: dict[str, Any]) -> None:
         raise ValueError("permissions body must be an object")
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         def _mutate(data: dict[str, Any]) -> dict[str, Any]:
             data["permissions"] = dict(body)
@@ -193,7 +193,7 @@ async def delete_permissions_in_config() -> bool:
     """删除 ``permissions`` 段 / 企业行（EE Manager delete 语义）。"""
     repo = get_permissions_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         found = {"value": False}
 

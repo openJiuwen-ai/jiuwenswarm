@@ -882,7 +882,8 @@ export const MessageItem = memo(function MessageItem({
     ? hasDisplayText || isStreaming
     : Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
   const showFork = Boolean(
-    onForkFromMessage &&
+    !isEnterprise() &&
+      onForkFromMessage &&
       !isStreaming &&
       (role === 'user' || role === 'assistant') &&
       hasBubbleContent

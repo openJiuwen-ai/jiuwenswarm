@@ -1634,9 +1634,11 @@ __all__ = [
 def _register_common_provider() -> None:
     import sys
 
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_MCP_REGISTRY
+
     from jiuwenswarm.common.external_providers import register
 
-    register("mcp_registry", sys.modules[__name__])
+    register(PROVIDER_DOMAIN_MCP_REGISTRY, sys.modules[__name__])
 
 
 _register_common_provider()

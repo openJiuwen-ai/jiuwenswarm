@@ -32,6 +32,8 @@ export type SkillItem = {
   is_builtin_source?: boolean;
   /** 企业版来源类型：builtin / prebuilt / user 等 */
   source_type?: 'prebuilt' | 'builtin' | 'user' | string;
+  /** 企业版安装账本 / 技能源版本 ID（无本地 .archive 时可作为当前版本展示） */
+  version_id?: string;
   /** 企业版：是否允许卸载/启停（false=管理员托管） */
   removable?: boolean;
   /** 是否自研（内置技能且在后端 _proprietary_skills.json 名单内；缺省视为三方） */

@@ -818,8 +818,11 @@ async def _load_session_metadata(
     user_id: str | None = None,
 ) -> Mapping[str, Any]:
     from gateway.common.external_providers import provider
+    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
 
-    return await provider("session_metadata").get_session_metadata_async(
+    return await provider(
+        PROVIDER_DOMAIN_SESSION_METADATA
+    ).get_session_metadata_async(
         session_id,
         cache_bust=True,
         enable_writeback=False,

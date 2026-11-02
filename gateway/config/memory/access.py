@@ -42,7 +42,7 @@ def schedule_memory_config(awaitable: Any) -> None:
 async def get_memory_body_in_config() -> dict[str, Any]:
     repo = get_memory_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         raw = (get_config() or {}).get("memory")
         return dict(raw) if isinstance(raw, dict) else {}
@@ -55,7 +55,7 @@ async def replace_memory_in_config(body: dict[str, Any]) -> None:
         raise ValueError("memory body must be an object")
     repo = get_memory_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         def _mutate(data: dict[str, Any]) -> dict[str, Any]:
             data["memory"] = dict(body)
@@ -72,7 +72,7 @@ async def merge_memory_in_config(updates: dict[str, Any]) -> None:
         raise ValueError("memory updates must be an object")
     repo = get_memory_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         def _mutate(data: dict[str, Any]) -> dict[str, Any]:
             section = data.get("memory")
@@ -91,7 +91,7 @@ async def delete_memory_in_config() -> bool:
     """删除 ``memory`` 段 / 企业行（EE Manager delete 语义）。"""
     repo = get_memory_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         found = {"value": False}
 
@@ -109,7 +109,7 @@ async def delete_memory_in_config() -> bool:
 async def update_memory_forbidden_enabled_in_config(value: bool) -> None:
     repo = get_memory_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_memory_forbidden_enabled_in_config as _legacy,
         )
 
@@ -123,7 +123,7 @@ async def update_memory_forbidden_description_in_config(
 ) -> None:
     repo = get_memory_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_memory_forbidden_description_in_config as _legacy,
         )
 
@@ -135,7 +135,7 @@ async def update_memory_forbidden_description_in_config(
 async def update_memory_forbidden_in_config(updates: dict[str, Any]) -> None:
     repo = get_memory_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import (
+        from gateway.common.config import (
             update_memory_forbidden_in_config as _legacy,
         )
 

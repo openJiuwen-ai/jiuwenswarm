@@ -955,7 +955,9 @@ class RuntimePromptRail(DeepAgentRail):
         cron = self._request_metadata.get("cron")
         cron = cron if isinstance(cron, dict) else {}
         job_id = str(cron.get("job_id") or cron.get("jobId") or "").strip()
-        if self._channel not in {"cron", "__cron__"} or not job_id:
+        # Ordinary Web cron runs on the Web channel; the trusted scheduler
+        # metadata is the identity signal, not the transport channel.
+        if not job_id:
             await self._clear_prompt_attachment(ctx, section=section)
             return
         try:

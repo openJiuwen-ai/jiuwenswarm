@@ -55,6 +55,8 @@ def register_share_job_routes(app: FastAPI) -> None:
 
 
 def _manager():
-    from jiuwenswarm.channels.web.app_web import _get_share_image_export_manager
+    from gateway.channel_manager.web.share_image_export import (
+        get_share_image_export_manager,
+    )
 
-    return _get_share_image_export_manager()
+    return get_share_image_export_manager()

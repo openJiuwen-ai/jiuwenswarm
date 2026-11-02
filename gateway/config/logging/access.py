@@ -6,6 +6,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from openjiuwen_protocol.logging_config import (
+    LOG_CONFIG_OP_DELETE,
+    LOG_CONFIG_OP_FIELD,
+)
+
 from gateway.config.logging.repository import (
     LOGGING_LEVEL_FIELDS,
     LoggingConfigRepository,
@@ -38,13 +43,13 @@ def schedule_logging_config(awaitable: Any) -> None:
 
 
 def _apply_runtime_levels(payload: dict[str, Any] | None) -> None:
-    from jiuwenswarm.common.utils import apply_logging_config_payload
+    from gateway.common.logging_setup import apply_logging_config_payload
 
     apply_logging_config_payload(payload)
 
 
 def _legacy_persist_logging_levels(updates: dict[str, Any]) -> None:
-    from jiuwenswarm.common.config import update_config
+    from gateway.common.config import update_config
 
     cleaned = {
         key: value
@@ -69,7 +74,9 @@ def _runtime_kwargs_from_updates(updates: dict[str, Any]) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     if updates.get("level") is not None:
         kwargs["log_level"] = str(updates["level"])
-    for key in ("console_level", "gateway", "channel", "agent_server", "full"):
+    for key in LOGGING_LEVEL_FIELDS:
+        if key == "level":
+            continue
         if updates.get(key) is not None:
             kwargs[key] = str(updates[key])
     return kwargs
@@ -78,7 +85,7 @@ def _runtime_kwargs_from_updates(updates: dict[str, Any]) -> dict[str, Any]:
 async def get_logging_body_in_config() -> dict[str, Any]:
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         raw = (get_config() or {}).get("logging")
         return dict(raw) if isinstance(raw, dict) else {}
@@ -97,12 +104,12 @@ async def merge_logging_levels_in_config(updates: dict[str, Any]) -> None:
         raise ValueError("logging updates must be an object")
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.utils import update_log_levels
+        from gateway.common.logging_setup import update_gateway_log_levels
 
         _legacy_persist_logging_levels(updates)
         kwargs = _runtime_kwargs_from_updates(updates)
         if kwargs:
-            update_log_levels(**kwargs)
+            update_gateway_log_levels(**kwargs)
         return
 
     document = await repo.merge_levels(updates)
@@ -125,7 +132,7 @@ async def replace_logging_in_config(body: dict[str, Any]) -> None:
 
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         def _mutate(data: dict[str, Any]) -> dict[str, Any]:
             data["logging"] = dict(cleaned)
@@ -143,7 +150,7 @@ async def delete_logging_in_config() -> bool:
     """删除 ``logging`` 段 / 企业行，并恢复代码默认级别。"""
     repo = get_logging_config_repository()
     if repo is None:
-        from jiuwenswarm.common.config import update_config
+        from gateway.common.config import update_config
 
         found = {"value": False}
 
@@ -154,11 +161,11 @@ async def delete_logging_in_config() -> bool:
             return data
 
         update_config(_mutate)
-        _apply_runtime_levels({"op": "delete"})
+        _apply_runtime_levels({LOG_CONFIG_OP_FIELD: LOG_CONFIG_OP_DELETE})
         return bool(found["value"])
 
     deleted = await repo.delete()
-    _apply_runtime_levels({"op": "delete"})
+    _apply_runtime_levels({LOG_CONFIG_OP_FIELD: LOG_CONFIG_OP_DELETE})
     return deleted
 
 

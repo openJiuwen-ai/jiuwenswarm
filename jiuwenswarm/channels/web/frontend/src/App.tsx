@@ -34,8 +34,8 @@ import {
 } from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
-import { watchCronExecutionSession } from './features/cron/cronSessionLive';
-import { ensureCronUserSeedFirst } from './features/cron/cronSeedMessage';
+import { watchCronExecutionSession, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
@@ -88,11 +88,10 @@ import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
-import { useBrowserAgentActivity } from './features/browserAgentActivity';
+import { useDesktopBrowserAutoOpen } from './features/desktopBrowserFile';
 import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,
-  useDesktopBrowserHeadless,
 } from './features/desktopBrowserDisplay';
 import {
   AgentMode,
@@ -173,6 +172,7 @@ import {
   buildA2UIClientEventContent,
   setA2UIActionHandler,
 } from './features/a2ui/actionBridge';
+import { setMcpAppMessageHandler } from './features/mcpApps/mcpAppContext';
 import { executeDesktopSave } from './utils/desktopSave';
 import { restoreSessionEquipment } from './utils/enabledExtensions';
 import { generateUuidV4 } from './utils/uuid';
@@ -688,6 +688,21 @@ function AppContent({
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
+  const pendingSessionEventReleasesRef = useRef(new Map<string, () => void>());
+  const pendingCronUserSeedsRef = useRef(new Map<string, string>());
+  const releasePendingSessionEvents = useCallback((sid: string) => {
+    const release = pendingSessionEventReleasesRef.current.get(sid);
+    pendingSessionEventReleasesRef.current.delete(sid);
+    release?.();
+  }, []);
+  useEffect(() => () => {
+    for (const release of pendingSessionEventReleasesRef.current.values()) release();
+    pendingSessionEventReleasesRef.current.clear();
+  }, []);
+  useEffect(() => webClient.onStateChange((state) => {
+    if (state === 'ready') return;
+    for (const sid of pendingSessionEventReleasesRef.current.keys()) releasePendingSessionEvents(sid);
+  }), [releasePendingSessionEvents]);
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreRevisionRef = useRef(new Map<string, string>());
   const subagentToolReplayBySessionRef = useRef(new Map<string, HistoryToolReplayItem[]>());
@@ -832,7 +847,12 @@ function AppContent({
   }, [sessionId]);
 
   // 企业版「立即执行」打开的是执行会话。结果不走长连接，改由这条监听写进页面。
-  useEffect(() => watchCronExecutionSession(sessionId), [sessionId]);
+  const activeCronId = useSessionStore((state) =>
+    state.currentSession?.session_id === sessionId
+      ? state.currentSession.cron_id
+      : state.sessions.find((session) => session.session_id === sessionId)?.cron_id,
+  );
+  useEffect(() => watchCronExecutionSession(sessionId, Boolean(activeCronId)), [sessionId, activeCronId]);
 
   const {
     setCurrentSession,
@@ -941,8 +961,6 @@ function AppContent({
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
-  const browserAgentActive = useBrowserAgentActivity(sessionId);
-  const browserHeadless = useDesktopBrowserHeadless();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -988,31 +1006,25 @@ function AppContent({
     setSingleAgentPanelExpanded(expanded);
   }, [effectiveMode, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, setToolPanelHidden, teamAreaActiveTab]);
 
-  const browserAutoExpandedSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (browserHeadless) {
-      browserAutoExpandedSessionRef.current = null;
-      return;
-    }
-    if (!window.jiuwenDesktop?.isElectron || !browserAgentActive) return;
-    // Electron 内置浏览器页签只在浏览器 Agent 真正被调用后出现；每个会话只自动
-    // 展开一次，之后尊重用户手动收起的选择。team 模式不抢 tab，等回到单 agent
-    // 模式再展开。
-    if (mode === 'team') return;
-    if (browserAutoExpandedSessionRef.current === sessionId) return;
-    browserAutoExpandedSessionRef.current = sessionId;
+  const handleBrowserTaskOpen = useCallback(() => {
+    setHeartbeatPanelOpen(false);
     setToolPanelHidden(false);
-    setSingleAgentPanelActiveTab('browser');
-    setSingleAgentPanelExpanded(true);
+    if (mode === 'team') {
+      setTeamAreaActiveTab('browser');
+      setTeamAreaExpanded(true);
+    } else {
+      setSingleAgentPanelActiveTab('browser');
+      setSingleAgentPanelExpanded(true);
+    }
   }, [
-    browserAgentActive,
-    browserHeadless,
     mode,
-    sessionId,
     setSingleAgentPanelActiveTab,
     setSingleAgentPanelExpanded,
+    setTeamAreaActiveTab,
+    setTeamAreaExpanded,
     setToolPanelHidden,
   ]);
+  useDesktopBrowserAutoOpen(sessionId, handleBrowserTaskOpen);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
     setHeartbeatPanelOpen(false);
@@ -1292,14 +1304,19 @@ function AppContent({
     drainTaskQueueIfIdle,
   } = useWebSocket({
     activeSessionId: sessionId,
+    isActiveSessionVisible: activeNav === 'chat',
     onConnect: () => {
       console.log('Connected');
       resetTeamAttachments();
-      // 连接建立/断线重连后重拉侧边栏定时任务列表（useCronStore）：web 先行
-      // 导航时首屏挂载早于 gateway 就绪，挂载期的 cron.job.list 会失败并被
-      // store 静默清空，且无其它重试入口，导致 project 页签定时任务空白直到
-      // 侧边栏重新挂载。这里在每次连接可用后补齐拉取。
-      void useCronStore.getState().loadJobs();
+      // 连接建立/断线重连后重拉侧边栏定时任务：首屏常早于 Gateway/Agent Pod 就绪。
+      // 失败时 store 不再清空已有列表；这里再按间隔重试，避免「会话已出、定时任务仍空」。
+      void (async () => {
+        if (await useCronStore.getState().loadJobs()) return;
+        for (const delayMs of [2000, 5000, 10000, 15000, 30000]) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (await useCronStore.getState().loadJobs()) return;
+        }
+      })();
     },
     onDisconnect: () => {
       console.log('Disconnected');
@@ -1341,6 +1358,10 @@ function AppContent({
   }, [isConnected, mode, sessionId]);
 
   const applicationPluginState = useApplicationPlugins(isConnected);
+  useEffect(() => {
+    if (!isConnected) return;
+    return watchCronRunUpdates(() => useCronStore.getState().clearUnconfirmedRuns());
+  }, [isConnected]);
   const applicationPlugins = applicationPluginState.plugins;
   const visibleApplicationPlugins = enabledApplicationPlugins(applicationPlugins);
   const settingsRequest = useMemo(() => resolveSettingsRequest(request), [request, resolveSettingsRequest]);
@@ -1686,6 +1707,7 @@ function AppContent({
             summary: n.summary,
             skillTree: n.skillTree,
             ...(n.mermaid ? { mermaid: n.mermaid } : {}),
+            ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
             ...(n.timedOut ? { timedOut: true } : {}),
             ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
             reviewer: n.reviewer,
@@ -2502,9 +2524,21 @@ function AppContent({
     }
     let cancelled = false;
     const retryDelaysMs = [2000, 5000, 10000, 15000, 30000];
+    const reloadCronJobs = async () => {
+      // 项目列表重试成功 ≈ 路由/Agent 侧已可用；顺带补拉定时任务，
+      // 覆盖「WS 已连上但 Agent Pod 更晚就绪」时 onConnect 那一次失败的情况。
+      if (cancelled) return;
+      if (await useCronStore.getState().loadJobs()) return;
+      for (const delayMs of retryDelaysMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        if (await useCronStore.getState().loadJobs()) return;
+      }
+    };
     const run = async () => {
       if (await loadProjects()) {
         if (!cancelled) initialProjectsLoadedRef.current = true;
+        await reloadCronJobs();
         return;
       }
       for (const delayMs of retryDelaysMs) {
@@ -2512,6 +2546,7 @@ function AppContent({
         if (cancelled) return;
         if (await loadProjects()) {
           if (!cancelled) initialProjectsLoadedRef.current = true;
+          await reloadCronJobs();
           return;
         }
       }
@@ -2599,6 +2634,7 @@ function AppContent({
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
     if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+      releasePendingSessionEvents(sessionId);
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -2608,6 +2644,7 @@ function AppContent({
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().runtimes[sessionId]?.isNewSession ?? false;
     if (isNew && !forceRefresh) {
+      releasePendingSessionEvents(sessionId);
       useChatStore.getState().setNewSession(sessionId, false);
       setHistoryPagerMeta(sessionId, null);  // 新会话无历史，不显示分页栏
       setLoadingHistory(sessionId, false);
@@ -2625,6 +2662,7 @@ function AppContent({
       } else {
         setLoadingHistory(sessionId, false);
         startBackgroundHistoryPrefetch(sessionId);
+        releasePendingSessionEvents(sessionId);
         return;
       }
     }
@@ -2694,6 +2732,8 @@ function AppContent({
         limit: 50,
       }),
       onReady: (messages, cursorMeta) => {
+        const seed = pendingCronUserSeedsRef.current.get(sessionId);
+        pendingCronUserSeedsRef.current.delete(sessionId);
         historyRestoreFromPanelHintRef.current = false;
         // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
         // messages 里不会有它——按时间戳把本地持久化的记录补回去，见
@@ -2706,7 +2746,7 @@ function AppContent({
             sessionId,
             mergePersistedGoalCompletionMessages(
               sessionId,
-              messages.map((message) => ({ ...message, historyBatchSeq: 1 })),
+              mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
             ),
           )
         );
@@ -2735,7 +2775,11 @@ function AppContent({
         useSessionStore.getState().receiveSessionTokenUsage(payload);
       },
       onEmpty: (cursorMeta) => {
-        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, []));
+        const seed = pendingCronUserSeedsRef.current.get(sessionId);
+        pendingCronUserSeedsRef.current.delete(sessionId);
+        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(
+          sessionId, mergeCronRunUserSeed([], sessionId, seed),
+        ));
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
           hasMore: cursorMeta.hasMore,
@@ -2801,6 +2845,7 @@ function AppContent({
                 summary: n.summary,
                 skillTree: n.skillTree,
                 ...(n.mermaid ? { mermaid: n.mermaid } : {}),
+                ...(n.mcpApp ? { mcpApp: n.mcpApp } : {}),
                 ...(n.timedOut ? { timedOut: true } : {}),
                 ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
                 reviewer: n.reviewer,
@@ -2887,6 +2932,12 @@ function AppContent({
           chatStore.enqueuePendingQuestion(sessionId, item.payload);
         }
       },
+      onAnsweredQuestionReplay: (items) => {
+        // 运行中的会话可能先从 runtime 快照收到已答问题，历史到达后再清理。
+        const chatStore = useChatStore.getState();
+        chatStore.ensureRuntime(sessionId);
+        chatStore.markQuestionsAnswered(sessionId, items.map((item) => item.payload.request_id));
+      },
       onError: (message) => {
         console.warn('[history.restore]', message);
       },
@@ -2910,6 +2961,8 @@ function AppContent({
       },
     });
     historyRestoreHandlesRef.current.set(sessionId, restoreHandle);
+    // beginHistoryRestore now owns the gate until history has been merged.
+    releasePendingSessionEvents(sessionId);
 
     // 调用历史会话接口
     void (async () => {
@@ -2955,6 +3008,7 @@ function AppContent({
     settleHistoricalToolExecutions,
     clearMessages,
     disposeInFlightHistoryHandles,
+    releasePendingSessionEvents,
     setLoadingHistory,
     setHistoryPagerMeta,
     replaceHistoryMessages,
@@ -3157,6 +3211,7 @@ function AppContent({
         prefixText?: string;
         suffixText?: string;
         secondSkillName?: string;
+        preserveDraft?: boolean;
         metadata?: Record<string, unknown>;
         mode?: AgentMode;
       };
@@ -3174,7 +3229,13 @@ function AppContent({
       // 延迟派发，确保 ChatPanel/InputArea 已挂载并注册了事件监听器
       setTimeout(() => {
         window.dispatchEvent(new CustomEvent('chat-input-insert-skill', {
-          detail: { skillName: detail.skillName, prefixText: detail.prefixText, suffixText: detail.suffixText, secondSkillName: detail.secondSkillName }
+          detail: {
+            skillName: detail.skillName,
+            prefixText: detail.prefixText,
+            suffixText: detail.suffixText,
+            secondSkillName: detail.secondSkillName,
+            preserveDraft: detail.preserveDraft,
+          }
         }));
       }, 0);
     };
@@ -3412,12 +3473,7 @@ function AppContent({
             mediaItems,
           });
           const store = useWorkspaceStore.getState();
-          if (!store.expandedProjectIds[created.projectId]) {
-            store.toggleProjectExpanded(created.projectId);
-          }
-          await store.loadProjects();
-          await store.loadProjectSessions(created.projectId);
-          const project = useWorkspaceStore.getState().projects.find(
+          const project = store.projects.find(
             (item) => item.project_id === created.projectId,
           );
           if (project && !project.is_default) store.setSelectedProject(project);
@@ -3426,6 +3482,11 @@ function AppContent({
             projectId: created.projectId,
             sessionId: created.sessionId,
           });
+          if (!store.expandedProjectIds[created.projectId]) {
+            store.toggleProjectExpanded(created.projectId);
+          }
+          await store.loadProjects();
+          await store.loadProjectSessions(created.projectId);
         } catch (error) {
           const code = error instanceof Error ? error.message : '';
           const referenceError = code === 'image_limit'
@@ -3662,6 +3723,13 @@ function AppContent({
     });
   }, [sendStructuredChatContent]);
 
+  useEffect(() => setMcpAppMessageHandler(async (targetSessionId, content) => {
+    if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return false;
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (runtime?.isProcessing || runtime?.queuePaused) return false;
+    return sendMessage(content, targetSessionId);
+  }), [sendMessage]);
+
   const handleInterrupt = useCallback((newInput?: string) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
@@ -3779,7 +3847,26 @@ function AppContent({
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean; seedUserMessage?: string }) => {
+    async (targetSessionId: string, targetMode?: string, targetSession?: Session, seedUserMessage?: string) => {
+      for (const sid of pendingSessionEventReleasesRef.current.keys()) {
+        if (sid !== targetSessionId) releasePendingSessionEvents(sid);
+      }
+      const release = webClient.suspendSessionEvents(targetSessionId);
+      releasePendingSessionEvents(targetSessionId);
+      pendingSessionEventReleasesRef.current.set(targetSessionId, release);
+      if (!targetSession) {
+        try {
+          targetSession = await loadSessionMetadata(targetSessionId) ?? undefined;
+        } catch (error) {
+          releasePendingSessionEvents(targetSessionId);
+          throw error;
+        }
+        if (!targetSession) {
+          releasePendingSessionEvents(targetSessionId);
+          throw new Error(t('sessions.errors.restoreFailed', { sessionId: targetSessionId }));
+        }
+        targetMode = targetSession.mode;
+      }
       setChatWelcomeVariant(null);
       const previousSessionId = sessionIdRef.current;
       const previousMode =
@@ -3800,6 +3887,7 @@ function AppContent({
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
+            releasePendingSessionEvents(targetSessionId);
             console.error('Failed to switch team session:', error);
             window.alert(t('sessions.errors.switchSession'));
             return;
@@ -3808,6 +3896,10 @@ function AppContent({
         }
       }
 
+      if (seedUserMessage?.trim()) {
+        pendingCronUserSeedsRef.current.set(targetSessionId, seedUserMessage);
+        forcedHistoryRefreshRef.current.add(targetSessionId);
+      }
       setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
       if (!existingRuntime) {
@@ -3819,19 +3911,7 @@ function AppContent({
         clearMessages(targetSessionId);
         clearTodos(targetSessionId);
         resetHarnessStore(targetSessionId);
-        historyRestoreFromPanelHintRef.current = true;
-      }
-      if (options?.skipHistoryLoad) {
-        // The session returned by cron.run_now can precede its first persisted
-        // message. The sessionId effect must skip its initial history request too.
-        // 先把任务原话放进会话，否则一条消息都没有，页面会落到首页欢迎语上。
-        useChatStore.getState().setNewSession(targetSessionId, true);
-        historyRestoreFromPanelHintRef.current = false;
-        const seed = String(options.seedUserMessage || '').trim();
-        if (seed) {
-          // 占位若已先到，必须把原话挪到最前，不能只在「还没有用户消息」时 append。
-          ensureCronUserSeedFirst(targetSessionId, seed);
-        }
+        historyRestoreFromPanelHintRef.current = !targetSession?.cron_id;
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
@@ -3862,9 +3942,7 @@ function AppContent({
       }
       setActiveNav('chat');
       navigate({ kind: 'chat-session', sessionId: targetSessionId });
-      if (!options?.skipHistoryLoad) {
-        setHistoryBootstrapKey((k) => k + 1);
-      }
+      setHistoryBootstrapKey((k) => k + 1);
       requestComposerFocus();
       // 始终拉一次 metadata——targetSession 从会话列表来（summary，无 swarmflow config），
       // 需要完整 metadata 才能恢复 session_swarmflow_config。
@@ -3878,6 +3956,7 @@ function AppContent({
       mode,
       navigate,
       loadSessionMetadata,
+      releasePendingSessionEvents,
       request,
       requestComposerFocus,
       resetHarnessStore,
@@ -3899,7 +3978,7 @@ function AppContent({
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean; seedUserMessage?: string },
+      seedUserMessage?: string,
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -3910,7 +3989,7 @@ function AppContent({
           targetSessionId,
           targetMode,
           targetSession,
-          options,
+          seedUserMessage,
         ));
       sessionRestoreQueueRef.current = queuedRestore.catch(() => undefined);
       return queuedRestore;
@@ -4829,35 +4908,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               <CronPanel
                   sessionId={sessionId}
                   onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
-                  onSelectSession={(session, selectOptions) => {
+                  onSelectSession={(session, seedUserMessage) => {
                   if (typeof session === 'string') {
-                    // 立即执行返回的 session_id 可能还未在后端创建（agent 刚开始执行），
-                    // 构造最小 Session 占位对象，让 upsertSessionMetadata 直接加入会话列表，
-                    // 避免 loadSessionMetadata 立即失败导致"对话不存在或已删除"。
-                    // 后续 cron 广播到达时会刷新会话列表补全完整元数据。
-                    // 全新执行先不拉历史：空的历史结果会把后面直播来的内容盖掉。
-                    // 任务原话先放进会话，页面才是普通聊天，而不是首页欢迎语。
-                    // 上一轮还在等点选时，打开原来的会话并拉取已有记录。
-                    const reusePending = Boolean(selectOptions?.reusePendingApproval);
-                    const cronJob = useCronStore.getState().jobs.find((item) => {
-                      const lastSid = useCronStore.getState().lastRunSessionId[item.id];
-                      return lastSid === session;
-                    });
-                    void handleRestoreSession(session, undefined, {
-                      session_id: session,
-                      title: selectOptions?.title || '',
-                      project_id: cronJob?.project_id || '',
-                      project_dir: '',
-                      mode: 'agent',
-                      status: 'active',
-                      message_count: 0,
-                      created_at: new Date().toISOString(),
-                      updated_at: new Date().toISOString(),
-                    }, {
-                      skipHistoryLoad: !reusePending,
-                      seedUserMessage: reusePending ? undefined : selectOptions?.seedUserMessage,
-                    });
-                    return;
+                    return handleRestoreSession(session, undefined, undefined, seedUserMessage);
                   }
                   requestSessionNavigation(session);
                   }}

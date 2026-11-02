@@ -46,6 +46,7 @@ export interface PendingQuestion {
   planPath?: string;
   planSlug?: string;
   evolutionMeta?: Record<string, unknown>;
+  interruptId?: string;
   questions: PendingQuestionItem[];
 }
 
@@ -1359,6 +1360,10 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
             ? (payload._evolution_meta as Record<string, unknown>)
             : undefined;
       const source = typeof payload.source === "string" ? payload.source : undefined;
+      const interruptId =
+        typeof payload.interrupt_id === "string" && payload.interrupt_id
+          ? payload.interrupt_id
+          : undefined;
       const planApprovalKind =
         typeof payload.plan_approval_kind === "string" ? payload.plan_approval_kind : undefined;
       const planContent =
@@ -1385,6 +1390,7 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
         planPath,
         planSlug,
         evolutionMeta,
+        interruptId,
         questions,
       });
       delegate.setStreamingState(StreamingState.WaitingForConfirmation);

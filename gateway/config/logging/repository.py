@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from openjiuwen_protocol.logging_config import LOGGING_LEVEL_FIELDS
+
 from gateway.config.section import (
     DbFlatSectionCodec,
     SectionDocument,
@@ -14,15 +16,6 @@ from gateway.config.section import (
 from gateway.storage.protocols.persistent import PersistentStore
 
 LOGGING_CONFIG_STORE_NAME = "logging_config"
-
-LOGGING_LEVEL_FIELDS = (
-    "level",
-    "console_level",
-    "gateway",
-    "channel",
-    "agent_server",
-    "full",
-)
 
 
 class LoggingConfigRepository:

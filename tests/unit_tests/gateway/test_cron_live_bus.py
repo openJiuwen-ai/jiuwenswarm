@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
+from starlette.responses import JSONResponse
 
 from gateway.cron.live_bus import CronLiveBus
 
@@ -32,15 +34,20 @@ def test_http_stream_marks_replay_but_not_new_frames(monkeypatch) -> None:
 
     async def _run() -> None:
         bus = CronLiveBus()
+        monkeypatch.setattr("gateway.cron.live_bus._redis_client", lambda: None)
         monkeypatch.setattr("gateway.cron.live_bus.cron_live_bus", bus)
+        lookup = AsyncMock(return_value=JSONResponse({"ok": True, "data": {"cron_id": "job"}}))
+        monkeypatch.setattr("gateway.channel_manager.web.web_http_routes._unary", lookup)
         app = FastAPI()
-        register_web_http_api_routes(app, object(), enterprise=True)
+        channel = object()
+        register_web_http_api_routes(app, channel, enterprise=True)
         endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/sessions/{session_id}/live")
         sid = "cron_http_replay_marker"
         bus.publish(sid, {"event": "chat.delta", "payload": {"content": "old", "live_seq": 1}})
-        request = AsyncMock()
-        request.is_disconnected.return_value = False
+        request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
         response = await endpoint(sid, request)
+        assert response.status_code == 200
+        lookup.assert_awaited_once_with(request, channel, "session.get_metadata", {"session_id": sid})
         try:
             replay = await anext(response.body_iterator)
             assert '"live_replay": true' in replay

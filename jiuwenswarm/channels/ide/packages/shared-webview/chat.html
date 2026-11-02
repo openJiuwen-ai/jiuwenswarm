@@ -3236,6 +3236,7 @@ function renderAskUserQuestion(rid, payload) {
     (payload.source === 'confirm_interrupt' ? 'Exit Plan and Execute' : 'Question');
   const question = payload.question || q.question || q.message || '';
   const source = payload.source || q.source || 'confirm_interrupt';
+  const interruptId = typeof payload.interrupt_id === 'string' ? payload.interrupt_id : '';
 
   // Waiting for the user — stop the typing animation
   if (pt.typingEl) {
@@ -3266,7 +3267,7 @@ function renderAskUserQuestion(rid, payload) {
     btn.addEventListener('click', function() {
       card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
       card.classList.add('answered');
-      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value));
+      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value), interruptId);
     });
   });
 
@@ -3288,7 +3289,7 @@ function mapInterruptAnswerValue(pt, value) {
   return value;
 }
 
-function sendAnswerForInterrupt(pt, rid, source, optionValue) {
+function sendAnswerForInterrupt(pt, rid, source, optionValue, interruptId) {
   pt.questionAnswered = true;
   // The user chose to continue this turn, so a previous stop click no longer
   // applies; let the resumed stream finish as completed.
@@ -3301,6 +3302,7 @@ function sendAnswerForInterrupt(pt, rid, source, optionValue) {
     mode: state.mode,
     requestId: rid,
     source: source,
+    interruptId: interruptId,
     answers: [{ selected_options: [optionValue], custom_input: '' }],
   });
 }

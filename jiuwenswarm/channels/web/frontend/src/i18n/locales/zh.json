@@ -742,8 +742,7 @@
       "title": "个性化推荐",
       "description": "根据你的对话推荐话题和下一步提示词。",
       "model": "话题推荐模型",
-      "modelDescription": "切换后会重新准备推荐。",
-      "followMainModel": "跟随主对话模型",
+      "modelDescription": "切换后会重新准备推荐。只使用这里选中的模型，不跟随输入框里的对话模型。",
       "modelIncompatible": "接口不兼容",
       "modelLoginRequired": "需要登录",
       "modelFree": "免费模型",
@@ -1677,6 +1676,7 @@
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
+    "modelNameAmbiguousHint": "模型目录中存在多条同名配置，无法确定要使用哪一条。聊天会话：在模型选择器中重新选择具体模型即可恢复；定时任务：请编辑该任务并重新选择模型，或删除后重新创建（在执行会话里换模型不会更新任务配置）。",
     "sessionArchived": "该会话已归档，无法继续对话。请恢复会话或新建会话。",
     "sessionDeleted": "该会话已被删除，无法继续对话。",
     "sessionOperationInProgress": "该会话正在执行归档或删除操作，请稍后再试。",
@@ -1712,12 +1712,7 @@
     },
     "topicStarter": {
       "heading": "今天想干点什么？",
-      "recommendations": "先从这些聊聊",
       "notInterested": "先跳过",
-      "cardRemoved": "这条先不看了",
-      "pauseInterest": "这类先藏一周",
-      "interestPaused": "好，这类先少出现",
-      "undoDismissal": "撤销",
       "dateAndVersion": "看看这一天",
       "openDateAndVersion": "打开这一天的背景",
       "weiboHotList": "微博热搜",
@@ -1957,6 +1952,9 @@
     },
     "uploading": "上传中...",
     "uploadFailed": "上传失败",
+    "steerImagesOnly": "立即输入仅支持已上传的图片。请等待图片上传完成，其他文件请保留在队列中发送。",
+    "steerImageUnavailable": "当前 Agent 没有可用的读图能力，请启用主模型图片输入或配置图片理解工具后重试。",
+    "steerDeliveryFailed": "补充后的结果整理失败，未能完整回答原问题和补充内容。请重试。",
     "retry": "重试",
     "deleteLongPress": "删除，长按显示更多操作",
     "deleteAttachment": "删除附件",
@@ -2455,6 +2453,14 @@
     }
   },
   "cron": {
+    "execution": {
+      "pending": "等待执行",
+      "running": "正在执行",
+      "awaiting_approval": "等待审批",
+      "succeeded": "最近执行已完成",
+      "failed": "最近执行失败",
+      "startFailed": "定时任务“{{name}}”启动失败：{{reason}}"
+    },
     "title": "定时任务管理",
     "subtitle": "使用 cron 表达式管理定时任务，支持添加、启用和删除操作",
     "createJob": "创建任务",
@@ -2558,6 +2564,7 @@
       "placeholderProject": "-",
       "placeholderEffectiveDate": "请选择生效日期",
       "missingFieldsHint": "还需要填写：{{fields}}",
+      "modelUnavailable": "所选模型“{{model}}”已不可用，请检查模型配置。",
       "scheduleAlreadyExpiredHint": "所选的执行时间已经过去，请重新选择",
       "charCount": "{{count}}/{{max}}",
       "maxLengthReachedHint": "已达到最大长度限制（{{max}} 字）"
@@ -2723,6 +2730,7 @@
       "toggleFailed": "更新任务状态失败",
       "previewFailed": "预览触发时间失败",
       "runNowFailed": "立即执行失败",
+      "sessionOpenFailed": "任务已触发，但会话暂时无法打开，请从该任务的触发会话列表进入。",
       "expiredCannotRunNow": "任务过期，无法执行",
       "disabledCannotRunNow": "任务已停止，无法执行",
       "expiredCannotEnable": "任务过期，无法启动",
@@ -3370,6 +3378,7 @@
     "detailError": "加载详情失败",
     "detail": {
       "basicInfo": "基本信息",
+      "version": "版本",
       "versionManage": "版本管理",
       "versionsLoadFailed": "版本加载失败",
       "noVersions": "暂无版本记录",
@@ -5528,5 +5537,17 @@
     "reject": "拒绝",
     "approve": "授权",
     "waiting": "处理中..."
+  },
+  "mcpApp": {
+    "loading": "正在加载应用…",
+    "loadFailed": "无法加载应用",
+    "approvalPrompt": "应用请求运行",
+    "messagePrompt": "{{app}} 请求向 Agent 发送以下消息",
+    "sendMessage": "发送",
+    "cancelMessage": "取消",
+    "allow": "允许",
+    "deny": "拒绝",
+    "allowAlways": "在此应用中始终允许",
+    "readOnlyHint": "服务器将此工具标记为只读（未经验证）。"
   }
 }

@@ -2474,6 +2474,9 @@ export class CliPiAppState {
       this.emitChange();
       return;
     }
+    const interruptIdParam = this.pendingQuestion.interruptId
+      ? { interrupt_id: this.pendingQuestion.interruptId }
+      : {};
     if (isPlanApprovalRejectWithoutFeedback(this.pendingQuestion, answers)) {
       const resumeMode = this.pendingQuestion.resumeMode ?? this.mode;
       this.sendEventOnly("chat.send", {
@@ -2485,6 +2488,7 @@ export class CliPiAppState {
         plan_approval_kind: this.pendingQuestion.planApprovalKind,
         plan_content: this.pendingQuestion.planContent ?? "",
         plan_language: this.pendingQuestion.planLanguage ?? "cn",
+        ...interruptIdParam,
       });
       this.pendingQuestion = null;
       this.setStreamingStateInternal(StreamingState.Idle);
@@ -2528,6 +2532,7 @@ export class CliPiAppState {
           source,
           mode: resumeMode,
           ...structuredPlanPayload,
+          ...interruptIdParam,
         },
         true,
       );
@@ -2537,6 +2542,7 @@ export class CliPiAppState {
         request_id: this.pendingQuestion.requestId,
         answers,
         mode: this.mode,
+        ...interruptIdParam,
       };
       if (this.pendingQuestion.evolutionMeta) {
         params.evolution_meta = this.pendingQuestion.evolutionMeta;

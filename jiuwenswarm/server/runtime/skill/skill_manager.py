@@ -1205,6 +1205,13 @@ class SkillManager:
                 response_version = get_current_version(skill_dir)
             except SkillArchiveError as exc:
                 raise SkillRpcError(exc.code, exc.message) from exc
+            # 企业版：无本地产品版本档案时，回落到安装账本 version / version_id。
+            # 单机版保持原行为，不读账本补 version。
+            if is_enterprise() and response_version is None:
+                installation = self._find_skill_installation(name=name)
+                ledger_ver = self._enterprise_ledger_version(installation)
+                if ledger_ver:
+                    response_version = ledger_ver
 
         md = self._try_find_skill_file(read_root)
         if md is None:
@@ -1222,7 +1229,8 @@ class SkillManager:
                 container_meta["name"] = name
                 container_meta["content"] = read_container_pack_body(skill_dir)
                 container_meta["file_path"] = ""
-                container_meta["version"] = None
+                # 单机版容器详情仍固定 version=None；企业版可带当前/账本版本
+                container_meta["version"] = response_version if is_enterprise() else None
                 self._copy_skill_installation_identity(container_meta, base_meta)
                 session_id = str(
                     params.get("_session_id") or params.get("session_id") or ""
@@ -1882,7 +1890,7 @@ class SkillManager:
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             skill_retrieval_artifact_root,
         )
-        from jiuwenswarm.symphony.skill_retrieval import SkillTaxonomyRuntime
+        from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
         return SkillTaxonomyRuntime(
             records_provider=records_provider or self._skill_retrieval_records,
@@ -2225,7 +2233,7 @@ class SkillManager:
 
     async def handle_skills_graph_build(self, params: dict) -> dict:
         """Start a background Skill Graph build."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         value = (params or {}).get("force", False)
         force = (
@@ -2237,36 +2245,36 @@ class SkillManager:
 
     async def handle_skills_graph_status(self, params: dict) -> dict:
         """Return Skill Graph build and freshness status."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().graph_status()
 
     async def handle_skills_graph_get(self, params: dict) -> dict:
         """Return the current published Skill Graph."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().graph()
 
     async def handle_skills_graph_cancel(self, params: dict) -> dict:
         """Cancel the active Skill Graph build while retaining checkpoints."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().cancel_build()
 
     async def handle_skills_experience_list(self, params: dict) -> dict:
         """List retained Symphony experience candidates."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return get_swarm_symphony_service().list_experience_candidates()
 
     async def handle_skills_experience_request(self, params: dict) -> dict:
         """Re-open one retained candidate through the normal approval prompt."""
-        from jiuwenswarm.symphony.experience import _parse_recipe_reference
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.experience import _parse_recipe_reference
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         allowed = {
             "recipe_id",
@@ -6778,6 +6786,12 @@ class SkillManager:
         )
         meta["has_evolutions"] = _has_effective_evolutions(child)
         self.apply_archive_version_and_type(meta, child)
+        # 企业版：无 .archive 时保留安装账本 version / version_id（不回退 YAML）。
+        # 单机版不补账本 version，避免列表/详情字段语义变化。
+        if is_enterprise() and not meta.get("version") and matched_plugin is not None:
+            ledger_ver = self._enterprise_ledger_version(matched_plugin)
+            if ledger_ver:
+                meta["version"] = ledger_ver
         if meta["skill_type"] == SKILL_TYPE_SKILLPACK:
             try:
                 self._apply_skillpack_projection(
@@ -7025,6 +7039,14 @@ class SkillManager:
             "is_builtin_source": bool(listed_meta.get("is_builtin_source", False)),
             "proprietary": bool(listed_meta.get("proprietary", False)),
         }
+        # 列表扫描经 _apply_skill_installation_meta 写入的账本身份字段
+        # （source_type/origin/version_id 等）须进入 get 的 base，否则
+        # handle_skills_get 里 _copy_skill_installation_identity 为空操作。
+        self._copy_skill_installation_identity(base, listed_meta)
+        if "installed" in listed_meta:
+            base["installed"] = bool(listed_meta.get("installed"))
+        if "marketplace" in listed_meta:
+            base["marketplace"] = listed_meta.get("marketplace")
         return child, base
 
     @staticmethod
@@ -10472,6 +10494,9 @@ class SkillManager:
         options = raw.get("options") or {}
         if not isinstance(options, dict):
             raise SourceRegistryError("source_misconfigured", "options must be an object")
+        verify_ssl = raw.get("verify_ssl", True)
+        if not isinstance(verify_ssl, bool):
+            raise SourceRegistryError("source_misconfigured", "verify_ssl must be a boolean")
         try:
             priority = int(raw.get("priority", 0))
         except (TypeError, ValueError) as exc:
@@ -10510,6 +10535,7 @@ class SkillManager:
             capabilities=frozenset(str(item) for item in capabilities),
             download_policy=download_policy,
             options=dict(options),
+            verify_ssl=verify_ssl,
         )
 
     async def apply_skill_source_configs(
@@ -11854,6 +11880,20 @@ class SkillManager:
         if source_type == "prebuilt":
             dto["sync_status"] = "synced" if ready else "failed"
         return dto
+
+    @staticmethod
+    def _enterprise_ledger_version(record: dict[str, Any] | None) -> str | None:
+        """企业版无 .archive 时，从安装账本取展示用 version。
+
+        优先 ``version``（产品展示号），空则回退 ``version_id``（技能源版本键）。
+        """
+        if not isinstance(record, dict):
+            return None
+        for key in ("version", "version_id"):
+            value = str(record.get(key) or "").strip()
+            if value:
+                return value
+        return None
 
     @staticmethod
     def _copy_skill_installation_identity(

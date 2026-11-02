@@ -7,10 +7,11 @@
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
-import { readOutputOrder } from '../features/sessionOutput';
+import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
 import { isEnterprise } from '../edition';
 import { persistEnterpriseAttachments } from '../services/obsUpload';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   assetKindFromMime,
   findReferencedAssets,
@@ -20,6 +21,7 @@ import {
   type NamedAsset,
 } from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { toast } from '../components/ui/Toast/toastStore';
 import { useTranslation } from 'react-i18next';
 import {
   ConnectionAckPayload,
@@ -84,10 +86,6 @@ import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { getWebTransport } from '../utils/env';
-import {
-  ensureCronUserSeedFirst,
-  resolveCronPlaceholderTimestampIso,
-} from '../features/cron/cronSeedMessage';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -159,6 +157,7 @@ import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 import { isDepartedTeamMemberStatus, reconcileSnapshotRoster } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
+import { getMcpAppContexts } from '../features/mcpApps/mcpAppContext';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -715,6 +714,7 @@ function applyTeamTaskToolCall(_sessionId: string, _toolCall: ToolCall) {
 
 interface UseWebSocketOptions {
   activeSessionId?: string;
+  isActiveSessionVisible?: boolean;
   provider?: string;
   apiKey?: string;
   apiBase?: string;
@@ -802,6 +802,8 @@ function toPersistedMediaRecord(item: MediaItem): Record<string, unknown> {
     mime_type: getMediaMimeType(item),
     path: item.path,
     size_bytes: item.size_bytes ?? item.sizeBytes,
+    ...(item.displayName ? { displayName: item.displayName } : {}),
+    ...(item.clientId ? { clientId: item.clientId } : {}),
   };
 }
 
@@ -812,6 +814,8 @@ function slimPersistedMediaRecords(items: Record<string, unknown>[]): Record<str
     mime_type: item.mime_type ?? item.mimeType,
     path: item.path,
     size_bytes: item.size_bytes ?? item.sizeBytes,
+    ...(item.displayName ? { displayName: item.displayName } : {}),
+    ...(item.clientId ? { clientId: item.clientId } : {}),
   }));
 }
 
@@ -1020,6 +1024,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const { t } = useTranslation();
   const {
     activeSessionId,
+    isActiveSessionVisible = true,
     provider,
     apiKey,
     apiBase,
@@ -1101,6 +1106,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const previousActiveSessionIdRef = useRef(activeSessionId);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const activeSessionVisibleRef = useRef(isActiveSessionVisible);
+  activeSessionVisibleRef.current = isActiveSessionVisible;
   const lastTeamConnectionSessionRef = useRef(activeSessionId);
   const lastTeamConnectionModeRef = useRef(activeSessionMode);
   const teamMemberSnapshotRequestRef = useRef(
@@ -2034,13 +2041,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (taskId) {
         const store = useChatStore.getState();
         const queuedTask = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
-        if (queuedTask && ['queued', 'failed'].includes(queuedTask.status) && queuedTask.mediaItems?.length) {
+        if (queuedTask && !areSteerImagesReady(queuedTask.mediaItems)) {
           store.setInterruptResult(sessionId, {
-            intent: 'supplement',
-            success: false,
-            message: t('network.supplementAttachmentsUnsupported'),
+            intent: 'supplement', success: false, message: t('chat.steerImagesOnly'),
           });
           return false;
+        }
+        if (queuedTask?.mediaItems?.length && ['queued', 'failed'].includes(queuedTask.status)) {
+          store.setInterruptResult(sessionId, null);
         }
         // The button supplies input intent; Runtime decides whether it can steer the target.
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
@@ -2051,6 +2059,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const task = runtime?.taskQueue.find((item) => item.id === taskId);
+        const receipt = runtime?.taskInputReceipts[taskId];
+        if (receipt?.mediaItems?.length && ['failed', 'unknown'].includes(receipt.status)) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement', success: false, message: receipt.error || t('network.supplementFailed'),
+          });
+        }
         if (task?.status === 'queued') {
           store.setInterruptResult(sessionId, {
             intent: 'supplement', success: false,
@@ -2195,7 +2209,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             if (persisted.media_items?.length !== 1 || typeof stored?.path !== 'string' || !stored.path.trim()) {
               throw new Error(`${item.filename}: ${t('chat.inputAttachment.uploadFailed')}`);
             }
-            mergedItems.push(stored);
+            // The persist RPC only echoes back server-known fields -- a rename typed
+            // on the composer before this file ever had a path (e.g. the welcome
+            // page's first message) lives only on the client's displayName, and the
+            // draft's own id (clientId, session.assets.register's idempotency key,
+            // see session_assets.py) is client-only too -- both must be re-attached
+            // here or they are lost the moment this response lands.
+            const clientFields: Record<string, unknown> = {};
+            if (item.displayName) clientFields.displayName = item.displayName;
+            if (item.clientId) clientFields.clientId = item.clientId;
+            mergedItems.push(Object.keys(clientFields).length ? { ...stored, ...clientFields } : stored);
           }
           const documentHints = toUploadDocumentHints(mergedItems);
           if (documentHints.length) {
@@ -2205,10 +2228,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           outgoingFiles = buildPersistedMediaFiles(mergedItems);
         }
         // @名称 -> 文件路径的引用笔记在这里统一加（不在 InputArea 提交时加）：候选既包括这个
-        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——用
-        // pendingNames 里用户自己起的名字，没改过就用文件名去掉扩展名（和后端默认命名规则一致）。
-        // 这样欢迎页发的第一条消息（这时候 session 刚建，素材注册还没来得及跑）也能正确 @ 到
-        // 这条消息自己带的附件。
+        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——名字
+        // 优先用卡片上带来的 displayName（即使这条附件发送前还没有落盘路径、没法走
+        // pendingNames 那套按 path 键的机制，改过的名字也不会丢，见 InputArea.tsx 的
+        // attachmentToMediaItem），其次是 pendingNames 里按 path 记的待用名字，都没有就用
+        // 文件名去掉扩展名（和后端默认命名规则一致）。这样欢迎页发的第一条消息（这时候 session
+        // 刚建，素材注册还没来得及跑）也能正确 @ 到这条消息自己带的附件。
         {
           const pendingNames = useSessionAssetsStore.getState().pendingNames;
           const freshAssets: NamedAsset[] = (outgoingMediaItems ?? []).flatMap((item) => {
@@ -2216,7 +2241,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             const filename = typeof item.filename === 'string' ? item.filename : '';
             if (!path) return [];
             const mimeType = typeof item.mime_type === 'string' ? item.mime_type : '';
-            return [{ name: pendingNames[filename] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
+            const displayName = typeof item.displayName === 'string' ? item.displayName.trim() : '';
+            return [{ name: displayName || pendingNames[normalizePath(path)] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
           });
           const knownAssets = useSessionAssetsStore.getState().bySession[sessionId] ?? [];
           const byName = new Map<string, NamedAsset>();
@@ -2255,7 +2281,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         }
-        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里；后端按路径去重）。
+        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里——那时候还没有
+        // session_id，InputArea 的实时注册 effect 还没来得及跑）。已经存在的会话里，
+        // registerUploads 自己会跳过 InputArea 实时注册已经处理过的路径（见
+        // sessionAssets.ts 的 dispatchedUploadPaths），不会重复登记。
         if (outgoingMediaItems?.length) {
           void useSessionAssetsStore
             .getState()
@@ -2267,6 +2296,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const inputMode = activeGoal?.status === 'active' ? 'steer' : undefined;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
         const sessionMetadata = useSessionStore.getState().getRuntime(sessionId)?.metadata;
+        const mcpAppContexts = getMcpAppContexts(sessionId);
+        const requestMetadata = sessionMetadata || mcpAppContexts.length > 0
+          ? {
+              ...(sessionMetadata ?? {}),
+              ...(mcpAppContexts.length > 0 ? { mcp_app_contexts: mcpAppContexts } : {}),
+            }
+          : undefined;
         const sessionRt = useSessionStore.getState().getRuntime(sessionId);
         await request('chat.send', {
           session_id: sessionId,
@@ -2288,7 +2324,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
-          ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
+          ...(requestMetadata ? { metadata: requestMetadata } : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
@@ -2725,6 +2761,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             : {};
         const approvalSchemaPayload = approvalSchema ? { approval_schema: approvalSchema } : {};
         const sourcePayload = effectiveSource ? { source: effectiveSource } : {};
+        const interruptPayload =
+          pendingMatches && pendingQuestion?.interruptId
+            ? { interrupt_id: pendingQuestion.interruptId }
+            : {};
 
         // ── SwarmFlow human 回复 → chat.swarmflow_reply ──
         if (effectiveSource === 'swarmflow_human') {
@@ -2847,6 +2887,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               ...agentSelectionPayload,
               ...agentGroupSelectionPayload,
               ...sourcePayload,
+              ...interruptPayload,
               ...structuredPlanPayload,
               ...approvalSchemaPayload,
               ...evolutionMetaPayload,
@@ -2892,9 +2933,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             request_id: requestId,
             answers,
             ...sourcePayload,
+            ...interruptPayload,
             ...approvalSchemaPayload,
             ...evolutionMetaPayload,
           });
+        }
+        if (effectiveSource === 'ask_user_interrupt') {
+          // 后端快照可能仍带着这道题，恢复执行时会重新派发；登记后不再入队。
+          useChatStore.getState().markQuestionsAnswered(sessionId, [requestId]);
         }
         if (pendingMatches && pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
@@ -3197,6 +3243,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     };
 
     const unsubs = [
+      webClient.on('cron.run.updated', ({ payload }) => {
+        const store = useCronStore.getState();
+        const update = store.applyRunUpdate(payload);
+        if (!update) return;
+        void store.loadCronSessions(update.project_id || 'default', update.job_id);
+        if (update.phase !== 'started' || !store.jobs.some((job) => job.id === update.job_id)) void store.reload();
+        if (update.notify) {
+          if (update.status === 'failed' && !update.session_id) {
+            toast.open({
+              id: `cron-start-failed-${update.run_id}`, variant: 'error',
+              testId: 'cron-start-failed-toast',
+              content: t('cron.execution.startFailed', {
+                name: update.job_name || update.job_id,
+                reason: update.error || t('network.unknownError'),
+              }),
+            });
+          }
+          if (activeSessionVisibleRef.current && update.session_id === activeSessionIdRef.current && document.visibilityState === 'visible') {
+            store.clearCronJobUnread(update.job_id);
+          } else {
+            store.markCronJobUnread(update.job_id);
+          }
+        }
+      }),
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
       }),
@@ -3237,6 +3307,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }),
       ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
+        const targetSessionId = getPayloadSessionId(payload);
+        const messages = targetSessionId ? useChatStore.getState().getRuntime(targetSessionId)?.messages : undefined;
+        if (isRestoredOutputReplay(messages ?? [], payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
@@ -3494,7 +3567,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // makes each final safe to replay, while the latest one replaces the text.
         if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
 
-        const cronMeta = payload.cron as Record<string, unknown> | undefined;
+        const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
 
         // 达上限通知不绑定具体会话（后端 _send_notification_cb 不带 session_id），
         // 必须在下方 session 守卫（if (!sessionId) return）之前拦截，否则会被该守卫
@@ -3935,7 +4008,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         if (assistantStreamSplit && content) {
-          const cronMetaEarly = payload.cron as Record<string, unknown> | undefined;
+          const cronMetaEarly = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunIdEarly =
             typeof cronMetaEarly?.run_id === 'string' ? cronMetaEarly.run_id.trim() : '';
           if (!cronRunIdEarly && !cronMetaEarly && !isProactiveRecommendation) {
@@ -4035,7 +4108,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useChatStore.getState().stopStreaming(sessionId);
         }
         if (content) {
-          const cronMeta = payload.cron as Record<string, unknown> | undefined;
+          const cronMeta = (payload.cron_session_stream ? undefined : payload.cron) as Record<string, unknown> | undefined;
           const cronRunId =
             typeof cronMeta?.run_id === 'string' ? cronMeta.run_id.trim() : '';
           const isCronPlaceholderContent =
@@ -4043,21 +4116,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             /正在执行中，结果稍后补发/.test(content) ||
             /^\[cron\].*正在执行中/.test(content);
 
-          // 占位比任务原话先到时，用「立即执行」时记下的原文把用户气泡排到最上。
-          if (isCronPlaceholderContent) {
-            const cronJobIdForSeed =
-              typeof cronMeta?.job_id === 'string' ? cronMeta.job_id.trim() : '';
-            const pendingSeed = cronJobIdForSeed
-              ? useCronStore.getState().pendingRunSeedByJobId[cronJobIdForSeed] || ''
-              : '';
-            if (pendingSeed) {
-              ensureCronUserSeedFirst(sessionId, pendingSeed);
-            }
-          }
-          // 聊天区按时间戳排序：占位时间必须晚于任务原话，否则原话会被排到下面。
-          const messageTimestampIso = isCronPlaceholderContent
-            ? resolveCronPlaceholderTimestampIso(sessionId, completedAtIso)
-            : completedAtIso;
+          const messageTimestampIso = completedAtIso;
 
           if (!isCronPlaceholderContent) {
             let placeholderId: string | null = null;
@@ -4557,6 +4616,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             skillTree: toolResult.skillTree,
             beamSearch: toolResult.beamSearch,
             ...(toolResult.mermaid ? { mermaid: toolResult.mermaid } : {}),
+            ...(toolResult.mcpApp ? { mcpApp: toolResult.mcpApp } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
             reviewer: toolResult.reviewer,
           },
@@ -4972,6 +5032,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setGlobalTaskRunning(Boolean(payload?.running));
       }),
       webClient.on('chat.error', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.error', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -5357,6 +5418,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           questions,
           ...(typeof questionPayload.duplex_job_id === 'string'
             ? { duplexJobId: questionPayload.duplex_job_id } : {}),
+          ...(typeof questionPayload.interrupt_id === 'string' && questionPayload.interrupt_id
+            ? { interruptId: questionPayload.interrupt_id } : {}),
           ...(approvalSchema ? { approvalSchema } : {}),
           ...(evolutionMeta ? { evolutionMeta } : {}),
           ...(planApprovalKind ? { planApprovalKind } : {}),
@@ -5973,6 +6036,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const connected = state === 'ready';
       setIsConnected(connected);
       setConnected(connected);
+      if (!connected) useCronStore.getState().clearUnconfirmedRuns();
       if (connected && teamConnectionGraceTimerRef.current) {
         const pending = teamConnectionGraceTimerRef.current;
         if (pending.timerId !== null) window.clearTimeout(pending.timerId);

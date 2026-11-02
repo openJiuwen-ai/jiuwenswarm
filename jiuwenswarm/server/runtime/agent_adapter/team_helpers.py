@@ -860,7 +860,13 @@ async def _prepare_first_team_request(
                 },
                 is_complete=False,
             ),
-            _team_processing_done_chunk(request_id, channel_id, session_id),
+            _team_processing_done_chunk(
+                request_id,
+                channel_id,
+                session_id,
+                original_event="chat.error",
+                reason="no_active_team_runtime",
+            ),
             AgentResponseChunk(
                 request_id=request_id,
                 channel_id=channel_id,
@@ -1863,12 +1869,13 @@ async def _finish_cron_team_stream_after_delegation_grace(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Wait briefly after a solo harness final before ending the cron team stream."""
     await asyncio.sleep(_CRON_DELEGATION_GRACE_SECONDS)
     resolved_channel_id = _resolve_channel_id(channel_id)
     completion = get_team_manager(channel_id).get_cron_completion(session_id)
-    if completion is None:
+    if completion is None or (expected_completion is not None and completion is not expected_completion):
         return
     if completion.get("tasks_ever_created"):
         completion["finish_scheduled"] = False
@@ -1876,40 +1883,29 @@ async def _finish_cron_team_stream_after_delegation_grace(
     if not cron_team_round_should_end(completion):
         completion["finish_scheduled"] = False
         return
-    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id)
+    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id, completion)
 
 
 async def _finish_cron_team_stream_after_round(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Cancel the background team stream once cron SwarmFlow + leader report are done."""
     resolved_channel_id = _resolve_channel_id(channel_id)
     team_manager = get_team_manager(channel_id)
     try:
-        stream_task = team_manager.pop_stream_task(session_id)
-        if stream_task is not None and not stream_task.done():
-            stream_task.cancel()
-            try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-        await _broadcast_event(
-            channel_id,
-            session_id,
-            {
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "rid": round_id,
-                "is_processing": False,
-                "is_complete": True,
-            },
-        )
+        completion = expected_completion or team_manager.get_cron_completion(session_id)
+        if completion is None:
+            return
+        await team_manager.finish_cron_stream(session_id, completion, round_id)
         logger.info(
-            "[TeamHelpers] cron team stream finished early: channel_id=%s session_id=%s",
+            "[TeamHelpers] cron team stream finished early: source=cron_round_finished "
+            "is_processing=False channel_id=%s session_id=%s round_id=%s",
             resolved_channel_id,
             session_id,
+            round_id,
         )
     except Exception as exc:
         logger.warning(
@@ -1918,7 +1914,15 @@ async def _finish_cron_team_stream_after_round(
             session_id,
             exc,
         )
-    finally:
+
+
+def _release_cron_waiter_completion(team_manager: Any, session_id: str, request_id: str) -> None:
+    """Leave a scheduled finisher's ownership fence intact after its waiter exits."""
+    completion = team_manager.get_cron_completion(session_id)
+    if (
+        completion is not None and completion.get("request_id") == request_id
+        and not completion.get("finish_scheduled")
+    ):
         team_manager.pop_cron_completion(session_id)
 
 
@@ -1930,13 +1934,16 @@ def _try_finish_cron_team_stream(
     """End persistent team streams for cron once workflow completes and leader reports."""
     team_manager = get_team_manager(channel_id)
     waiters = team_manager.get_waiters(session_id)
-    if not any(_is_cron_request_id(request_id) for request_id, _ in waiters):
+    cron_request_id = next((rid for rid, _ in waiters if _is_cron_request_id(rid)), None)
+    if cron_request_id is None:
         return
 
     completion = team_manager.setdefault_cron_completion(
         session_id,
         {
             **new_cron_team_round_state(),
+            **team_manager.cron_completion_owner(session_id, cron_request_id),
+            "channel_id": _resolve_channel_id(channel_id),
             "round_id": None,
             "finish_scheduled": False,
         },
@@ -1954,6 +1961,7 @@ def _try_finish_cron_team_stream(
                     channel_id,
                     session_id,
                     round_id,
+                    completion,
                 ),
                 name=f"cron-team-grace-{session_id}",
             )
@@ -1963,6 +1971,7 @@ def _try_finish_cron_team_stream(
                 channel_id,
                 session_id,
                 round_id,
+                completion,
             ),
             name=f"cron-team-finish-{session_id}",
         )
@@ -2371,7 +2380,19 @@ def _team_processing_done_chunk(
     request_id: str,
     channel_id: str | None,
     session_id: str,
+    *,
+    original_event: str = "team.processing_done",
+    reason: str = "",
 ) -> AgentResponseChunk:
+    logger.info(
+        "[TeamProcessingStatus] generated: source=processing_done_chunk channel_id=%s "
+        "session_id=%s request_id=%s original_event=%s reason=%s is_processing=False is_complete=True",
+        channel_id,
+        session_id,
+        request_id,
+        original_event,
+        reason,
+    )
     return AgentResponseChunk(
         request_id=request_id,
         channel_id=channel_id,
@@ -2856,6 +2877,22 @@ async def process_team_message_stream(
             async for chunk in stream:
                 if design_bindings is not None:
                     _push_design_tool_activity(request, chunk)
+                if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.processing_status":
+                    is_terminal_status = (
+                        chunk.payload.get("is_processing") is False
+                        and chunk.payload.get("is_complete") is True
+                    )
+                    logger.log(
+                        logging.INFO if is_terminal_status else logging.DEBUG,
+                        "[TeamProcessingStatus] handoff_to_adapter: session_id=%s request_id=%s "
+                        "channel_id=%s round_id=%s is_processing=%s is_complete=%s",
+                        request.session_id,
+                        chunk.request_id,
+                        chunk.channel_id,
+                        chunk.payload.get("rid"),
+                        chunk.payload.get("is_processing"),
+                        chunk.payload.get("is_complete"),
+                    )
                 yield chunk
     finally:
         if design_bindings is not None:
@@ -2947,6 +2984,11 @@ async def _process_team_message_stream_locked(
     sanitized_metadata = dict(request_metadata)
     sanitized_metadata.pop(TEAM_EXECUTION_CONTEXT_METADATA_KEY, None)
     request = replace(request, metadata=sanitized_metadata)
+    wait_for_stop = getattr(team_manager, "wait_for_request_stop", None)
+    if callable(wait_for_stop):
+        # Wait before marking this input in-flight: the old producer's cleanup
+        # must finish before the new turn chooses or activates a runtime.
+        await wait_for_stop(session_id)
     # 归档闸门：Team 回合从进入适配器起即算「运行中」，直到本轮 round 终止
     # （round 之前的 spec 组装 / 运行时激活等准备阶段也要覆盖）。
     begin_request = getattr(team_manager, "begin_request", None)
@@ -3572,7 +3614,14 @@ async def _process_team_message_stream(
                 session_id, preflight_exc,
             )
     except Exception as exc:
-        logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
+        logger.exception(
+            "[TeamHelpers] TeamAgent create failed: source=team_create_failed is_processing=False "
+            "channel_id=%s session_id=%s request_id=%s error=%s",
+            channel_id,
+            session_id,
+            rid,
+            exc,
+        )
         # Resolver/compiler failures can originate in provider configuration;
         # never put credentials or authorization headers into a user-visible
         # Team error payload.
@@ -3652,7 +3701,13 @@ async def _process_team_message_stream(
                     payload=chunk,
                     is_complete=False,
                 )
-            yield _team_processing_done_chunk(rid, channel_id, session_id)
+            yield _team_processing_done_chunk(
+                rid,
+                channel_id,
+                session_id,
+                original_event="chat.ask_user_question",
+                reason="slash_command_approval",
+            )
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=channel_id,
@@ -3688,7 +3743,13 @@ async def _process_team_message_stream(
                 payload=payload,
                 is_complete=False,
             )
-            yield _team_processing_done_chunk(rid, channel_id, session_id)
+            yield _team_processing_done_chunk(
+                rid,
+                channel_id,
+                session_id,
+                original_event=payload["event_type"],
+                reason="slash_command_result",
+            )
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=channel_id,
@@ -3899,7 +3960,12 @@ async def _process_team_message_stream(
                             rid,
                             generation=generation,
                         )
-                        yield _team_processing_done_chunk(rid, channel_id, session_id)
+                        yield _team_processing_done_chunk(
+                            rid,
+                            channel_id,
+                            session_id,
+                            original_event="team.group_message.accepted",
+                        )
                         yield AgentResponseChunk(
                             request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
                         )
@@ -4123,7 +4189,12 @@ async def _process_team_message_stream(
                                     "client_message_id",
                                 )
                                 if identity == group_input["client_message_id"]:
-                                    yield _team_processing_done_chunk(rid, channel_id, session_id)
+                                    yield _team_processing_done_chunk(
+                                        rid,
+                                        channel_id,
+                                        session_id,
+                                        original_event="team.group_message.accepted",
+                                    )
                                     yield AgentResponseChunk(
                                         request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
                                     )
@@ -4223,7 +4294,7 @@ async def _process_team_message_stream(
                 generation=generation,
             )
             if _is_cron_request_id(rid):
-                team_manager.pop_cron_completion(session_id)
+                _release_cron_waiter_completion(team_manager, session_id, rid)
             if not team_manager.has_waiters(session_id):
                 logger.info(
                     "[TeamHelpers] cleared waiter set: session_id=%s",
@@ -4438,7 +4509,8 @@ async def _consume_stream_with_query(
 
     try:
         logger.info(
-            "[TeamHelpers] stream started: channel_id=%s session_id=%s round_id=%s",
+            "[TeamHelpers] stream started: source=stream_started is_processing=True "
+            "channel_id=%s session_id=%s round_id=%s",
             _resolve_channel_id(channel_id),
             session_id,
             round_id,
@@ -4493,7 +4565,7 @@ async def _consume_stream_with_query(
             """Report a failed interrupt-resume wait to the frontend."""
             nonlocal terminal_broadcasted
             logger.warning(
-                "[TeamHelpers] interrupt resume wait failed: "
+                "[TeamHelpers] interrupt resume wait failed: source=resume_wait_failed is_processing=False "
                 "channel_id=%s session_id=%s error=%s",
                 _resolve_channel_id(channel_id),
                 session_id,
@@ -4601,6 +4673,7 @@ async def _consume_stream_with_query(
                     reason = str(getattr(result, "reason", None) or "interrupt_resume_rejected")
                     logger.warning(
                         "[TeamHelpers] interrupt resume interact rejected: "
+                        "original_event=team.recovered is_processing=False "
                         "channel_id=%s session_id=%s reason=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
@@ -4778,6 +4851,7 @@ async def _consume_stream_with_query(
                     )
                     logger.warning(
                         "[TeamHelpers] initial team interact failed: "
+                        "original_event=team.interact.failed is_processing=False "
                         "channel_id=%s session_id=%s reason=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
@@ -4807,10 +4881,13 @@ async def _consume_stream_with_query(
                     # Team completed this round — broadcast a single
                     # round-complete signal that also carries team stats.
                     logger.info(
-                        "[TeamHelpers] team is completed: channel_id=%s session_id=%s member_count=%s",
+                        "[TeamHelpers] team is completed: original_event=team.completed is_processing=False "
+                        "channel_id=%s session_id=%s member_count=%s request_id=%s round_id=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
                         parsed.get("member_count"),
+                        round_request_id,
+                        round_id,
                     )
                     await _deliver(
                         {
@@ -4860,10 +4937,13 @@ async def _consume_stream_with_query(
                     # the difference (stream still open) is invisible to them,
                     # and later output re-opens the running state on its own.
                     logger.info(
-                        "[TeamHelpers] team went idle: channel_id=%s session_id=%s member_count=%s",
+                        "[TeamHelpers] team went idle: original_event=team.idle is_processing=False "
+                        "channel_id=%s session_id=%s member_count=%s request_id=%s round_id=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
                         parsed.get("member_count"),
+                        round_request_id,
+                        round_id,
                     )
                     await _deliver(
                         {
@@ -4907,6 +4987,16 @@ async def _consume_stream_with_query(
                                 "rid": round_id,
                             },
                         )
+                        logger.info(
+                            "[TeamProcessingStatus] generated: original_event=chat.error channel_id=%s "
+                            "session_id=%s request_id=%s team_id=%s round_id=%s "
+                            "is_processing=False is_complete=True",
+                            _resolve_channel_id(channel_id),
+                            session_id,
+                            round_request_id,
+                            roster_team_name,
+                            round_id,
+                        )
                         await _deliver(
                             {
                                 "event_type": "chat.processing_status",
@@ -4928,6 +5018,19 @@ async def _consume_stream_with_query(
                     # next round's waiter and ownership.
                     await _deliver(parsed)
                     continue
+                if parsed.get("event_type") == "chat.processing_status":
+                    is_terminal_status = parsed.get("is_processing") is False and parsed.get("is_complete") is True
+                    logger.log(
+                        logging.INFO if is_terminal_status else logging.DEBUG,
+                        "[TeamProcessingStatus] runner_frame: original_event=%s session_id=%s "
+                        "request_id=%s round_id=%s is_processing=%s is_complete=%s",
+                        getattr(chunk, "type", None),
+                        session_id,
+                        round_request_id,
+                        round_id,
+                        parsed.get("is_processing"),
+                        parsed.get("is_complete"),
+                    )
                 await _deliver(parsed)
 
         # If stream ended without any chunks, broadcast an error event
@@ -5008,7 +5111,8 @@ async def _consume_stream_with_query(
                         },
                     )
                     logger.info(
-                        "[TeamHelpers] team finally completed: channel_id=%s session_id=%s round_id=%s",
+                        "[TeamHelpers] team finally completed: source=stream_finally is_processing=False "
+                        "channel_id=%s session_id=%s round_id=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
                         round_id,
@@ -5546,8 +5650,11 @@ async def _consume_workflow_events(
                 if held is not None:
                     logger.info(
                         "[TeamHelpers] releasing held team.idle (no active run): "
-                        "channel_id=%s session_id=%s",
+                        "original_event=workflow.updated is_processing=False workflow_status=%s "
+                        "channel_id=%s session_id=%s round_id=%s",
+                        wf_status,
                         _resolve_channel_id(channel_id), session_id,
+                        held.get("rid"),
                     )
                     await _broadcast_event(
                         channel_id,
