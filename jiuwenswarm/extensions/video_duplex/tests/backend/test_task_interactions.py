@@ -301,6 +301,23 @@ def test_native_approval_accepts_authorization_prompt_answers():
         )
 
 
+@pytest.mark.parametrize("size", [128, 129, 512])
+def test_native_approval_preserves_long_call_alias(size):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import (
+        validate_native_approval_answers,
+    )
+
+    call_id = "c" * size
+    interaction = native_approval_question({
+        "request_id": call_id, "source": "permission_interrupt",
+        "questions": [{"question": "Continue?", "card_id": call_id}],
+    })
+    answers = validate_native_approval_answers(
+        interaction, [{"selected_options": ["allow_once"], "card_id": f" {call_id} "}],
+    )
+    assert answers[0]["card_id"] == call_id
+
+
 def test_answer_input_preserves_permission_card_id():
     request = AgentTaskExecutor.answer_input({
         "request_id": "video-core-1",
@@ -388,7 +405,10 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
         await service.close()
 
 
-async def test_native_permission_accepts_option_only_authorization_answers(tmp_path):
+@pytest.mark.parametrize("invalid_card_id", [None, "", " \t", 123, "c" * 513])
+async def test_native_permission_rejects_invalid_alias_without_accepting_interaction(
+    tmp_path, invalid_card_id,
+):
     store = TaskStore(tmp_path / "auth-prompt.sqlite")
 
     class ApprovalExecutor:
@@ -413,6 +433,14 @@ async def test_native_permission_accepts_option_only_authorization_answers(tmp_p
         task = submit(service, "auth-prompt")
         await until(lambda: store.read(task["id"])["status"] == "waiting_user"
                     and store.read(task["id"])["output_closed"])
+        pending = store.read(task["id"])
+        with pytest.raises(ValueError, match="Invalid approval card ID"):
+            await service.answer(
+                "user", "voice", task["id"], "invalid-answer", token(service, task),
+                answers=[{"selected_options": ["allow_once"], "card_id": invalid_card_id}],
+                native_ui=True,
+            )
+        assert store.read(task["id"]) == pending
         await service.answer(
             "user",
             "voice",

@@ -85,11 +85,14 @@ def validate_native_approval_answers(interaction, answers):
         item = dict(
             question=question["question"], answer=text, selected_options=options
         )
-        card_id = answer.get("card_id")
-        if isinstance(card_id, str):
+        if "card_id" in answer:
+            card_id = answer["card_id"]
+            if not isinstance(card_id, str):
+                raise ValueError("Invalid approval card ID")
             card_id = card_id.strip()
-            if card_id and len(card_id) <= 128:
-                item["card_id"] = card_id
+            if not card_id or len(card_id) > 512:
+                raise ValueError("Invalid approval card ID")
+            item["card_id"] = card_id
         result.append(item)
     return result
 

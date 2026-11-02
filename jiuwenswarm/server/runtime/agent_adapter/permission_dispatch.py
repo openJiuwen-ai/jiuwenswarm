@@ -87,7 +87,7 @@ class RootPermissionDispatch:
     def _reserve_card_answer(self, root_session_id: str, query: InteractiveInput) -> RootPermissionAnswer | None:
         """Reserve the head card ``query`` answers; None when it names no card or the queue is empty.
 
-        A card is answered by its card id in ``user_inputs``. An input that
+        A card is answered by its tool call id in ``user_inputs``. An input that
         answers only by interrupt id answers an ordinary SDK interrupt.
         """
         if not query.user_inputs:

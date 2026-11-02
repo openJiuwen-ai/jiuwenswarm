@@ -204,8 +204,8 @@ class RootPermissionQueue:
         submitted = getattr(incoming, "user_inputs", None)
         if not isinstance(submitted, Mapping) or len(submitted) != 1:
             raise RootPermissionQueueError("permission_queue_one_answer_required")
-        raw_card_id, raw_payload = next(iter(submitted.items()))
-        card_id = _text("card_id", raw_card_id, maximum=128)
+        raw_request_id, raw_payload = next(iter(submitted.items()))
+        request_id = _text("card_id", raw_request_id)
         if not isinstance(raw_payload, Mapping):
             raise RootPermissionQueueError("permission_queue_payload_invalid")
 
@@ -217,7 +217,7 @@ class RootPermissionQueue:
             card = self._cards.get(order[0])
             if card is None or card.state != "pending":
                 raise RootPermissionQueueError("permission_queue_head_invalid")
-            if card_id != card.key.invocation_id:
+            if request_id != card.key.tool_call_id:
                 raise RootPermissionQueueError("permission_queue_non_head_answer")
             payload = _normalize_answer(raw_payload)
             reserved = replace(card, state="resuming")
