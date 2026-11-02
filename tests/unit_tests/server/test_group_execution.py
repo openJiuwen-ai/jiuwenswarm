@@ -602,6 +602,72 @@ async def test_group_message_rejects_a_teammate_during_multi_mention(service, mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["group_send_message", "send_file_to_user"])
+async def test_public_group_leader_muted_tools_are_temporarily_muted(service, monkeypatch, tool_name):
+    from openjiuwen.core.foundation.llm import ToolCall
+
+    from jiuwenswarm.agents.swarm import group_execution as policies
+
+    group = await make_group(service)
+    backend = SimpleNamespace(
+        member_name="team_leader",
+        team_name=group["team_name"],
+        is_leader=True,
+    )
+    monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
+    rail = policies.GroupTaskPolicyRail(
+        SimpleNamespace(session_id=group["group_id"], member_name="team_leader")
+    )
+    ctx = SimpleNamespace(
+        extra={},
+        inputs=SimpleNamespace(
+            tool_name=tool_name,
+            tool_call=ToolCall(
+                id="mute", type="function", name=tool_name, arguments="{}"
+            ),
+        ),
+    )
+
+    await rail.before_tool_call(ctx)
+
+    assert ctx.extra["_skip_tool"] is True
+    assert "temporarily muted" in ctx.inputs.tool_result["error"]
+    assert "temporarily muted" in ctx.inputs.tool_msg.content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["public_member", "expert_team_leader"])
+async def test_muted_tools_stay_available_outside_public_group_leader(service, monkeypatch, kind):
+    from openjiuwen.core.foundation.llm import ToolCall
+
+    from jiuwenswarm.agents.swarm import group_execution as policies
+
+    group = await make_group(service)
+    backend = SimpleNamespace(
+        member_name="advisor" if kind == "public_member" else "private-leader",
+        team_name="outer-team" if kind == "expert_team_leader" else group["team_name"],
+        is_leader=kind == "expert_team_leader",
+    )
+    monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
+    rail = policies.GroupTaskPolicyRail(
+        SimpleNamespace(session_id=group["group_id"], member_name=backend.member_name)
+    )
+    ctx = SimpleNamespace(
+        extra={},
+        inputs=SimpleNamespace(
+            tool_name="send_file_to_user",
+            tool_call=ToolCall(
+                id="file", type="function", name="send_file_to_user", arguments="{}"
+            ),
+        ),
+    )
+
+    await rail.before_tool_call(ctx)
+
+    assert ctx.extra == {}
+
+
+@pytest.mark.asyncio
 async def test_group_message_plain_chat_uses_core_path_without_finishing_task(service):
     from jiuwenswarm.agents.swarm.group_execution import GroupMessageTool
 
