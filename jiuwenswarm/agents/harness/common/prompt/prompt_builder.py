@@ -223,7 +223,8 @@ def _output_prompt(
 ## 输出语言
 
 - 优先使用用户明确指定的回复语言。
-- 用户未指定时，默认使用简体中文。
+- 用户未明确指定时，遵循当前消息的 `preferred_response_language`（`en` 为英文，`zh` 为简体中文）。
+- 当前消息未提供该字段时，默认使用简体中文。
 - 技术术语、代码标识符、路径和工具名称保持原本的语言。
 
 ## 模型名称回答
@@ -307,7 +308,8 @@ def _output_prompt(
 ## Output Language
 
 - Prefer the response language explicitly requested by the user.
-- If the user does not specify one, default to Simplified Chinese.
+- Otherwise, follow `preferred_response_language` in the current message (`en` for English, `zh` for Simplified Chinese).
+- If the current message omits this field, default to English.
 - Keep technical terms, code identifiers, paths, and tool names in their original language.
 
 ## Model Name Answers
