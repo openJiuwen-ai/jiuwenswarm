@@ -16072,7 +16072,7 @@ class JiuWenSwarmDeepAdapter:
                         self._config_cache,
                         resolved_model,
                     )
-                    image_tool_fallback_notice = self._build_image_tool_fallback_notice(
+                    image_tool_fallback_notice = _build_image_tool_fallback_notice(
                         request,
                         enable_read_image_multimodal=enable_read_image_multimodal,
                         model=resolved_model,
