@@ -196,8 +196,7 @@ def test_expert_group_catalog_and_launch_follow_allowlist(
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     _bind_workspace(monkeypatch, tmp_path)
-    _mkdir(tmp_path / ".agent_teams" / "agent_groups" / "local" / "mine")
-    granted = [{"kind": "agent_group", "id": "keep"}]
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     from jiuwenswarm.agents.harness.team.expert_org import catalog as catalog_mod
     from jiuwenswarm.agents.harness.team.expert_org.catalog import (
@@ -222,22 +221,27 @@ def test_expert_group_catalog_and_launch_follow_allowlist(
         raise RuntimeError("allowlist passed")
 
     monkeypatch.setattr(JiuwenExpertTeamLauncher, "ensure_turn_runner_installed", _passed)
-    with _bind_allowlist(granted):
-        names = [item.agent_group_name for item in JiuwenExpertGroupCatalog.list()]
-        assert names == ["keep", "mine"]
-        with pytest.raises(ValueError, match="not allowed"):
-            asyncio.run(
-                launcher.launch(
-                    organization_id="org",
-                    agent_group_name="drop",
-                    session_id="web_session",
+    granted = [{"kind": "agent_group", "id": "keep"}]
+    with TenantContext.scoped("allowlist-user"):
+        tenant_root = TenantContext.current_tenant_root()
+        assert tenant_root is not None
+        _mkdir(tenant_root / ".agent_teams" / "agent_groups" / "local" / "mine")
+        with _bind_allowlist(granted):
+            names = [item.agent_group_name for item in JiuwenExpertGroupCatalog.list()]
+            assert names == ["keep", "mine"]
+            with pytest.raises(ValueError, match="not allowed"):
+                asyncio.run(
+                    launcher.launch(
+                        organization_id="org",
+                        agent_group_name="drop",
+                        session_id="web_session",
+                    )
                 )
-            )
-        with pytest.raises(RuntimeError, match="allowlist passed"):
-            asyncio.run(
-                launcher.launch(
-                    organization_id="org",
-                    agent_group_name="keep",
-                    session_id="web_session",
+            with pytest.raises(RuntimeError, match="allowlist passed"):
+                asyncio.run(
+                    launcher.launch(
+                        organization_id="org",
+                        agent_group_name="keep",
+                        session_id="web_session",
+                    )
                 )
-            )
