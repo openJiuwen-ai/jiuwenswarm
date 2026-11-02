@@ -1,13 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
 
-"""Memory 配置：写入 Gateway 本地库并热更新 AgentServer 缓存。"""
+"""Memory 配置：持久化配置；路由通知 Runtime，由执行侧读取并应用。"""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from gateway.enterprise import is_enterprise
 from ...infrastructure.repository_access import require_memory_repository
 
 logger = logging.getLogger(__name__)
@@ -19,23 +18,6 @@ def _document_to_dict(document) -> dict[str, Any]:
         "source": document.source,
         "revision": document.revision,
     }
-
-
-def _apply_memory(body: dict[str, Any] | None, *, op: str) -> None:
-    from jiuwenswarm.agents.harness.common.memory.config import (
-        apply_memory_config_payload,
-    )
-
-    if not is_enterprise():
-        logger.debug(
-            "[ManagerConfigReceiver] skip memory_config hot-reload: not enterprise runtime"
-        )
-        return
-
-    if op == "delete":
-        apply_memory_config_payload({"op": "delete"})
-        return
-    apply_memory_config_payload({"body": body} if isinstance(body, dict) else None)
 
 
 class MemoryConfigService:
@@ -62,9 +44,8 @@ class MemoryConfigService:
             source=str(source or "manager"),
         )
         result = _document_to_dict(saved)
-        _apply_memory(body, op="upsert")
         logger.info(
-            "[ManagerConfigReceiver] memory_config hot-reload upsert revision=%s",
+            "[ManagerConfigReceiver] memory_config saved revision=%s",
             result.get("revision"),
         )
         return result
@@ -72,5 +53,4 @@ class MemoryConfigService:
     async def delete(self) -> None:
         repo = require_memory_repository()
         await repo.delete()
-        _apply_memory(None, op="delete")
         logger.info("[ManagerConfigReceiver] memory_config deleted")

@@ -186,6 +186,10 @@ class DefaultConfigProvider:
             load_effective_enterprise_config,
         )
 
+        # Execution owns memory caches. Read persisted values here so a fresh
+        # worker (or one without Runtime refresh notifications) does not depend
+        # on Gateway startup or a shared Python process to populate them.
+        await self._refresh_memory_configs()
         loaded = (
             await load_effective_enterprise_config(
                 ctx.request, DEFAULT_AGENT_LOAD_SLOTS
@@ -203,15 +207,18 @@ class DefaultConfigProvider:
             from jiuwenswarm.enterprise.config.effective import (
                 invalidate_enterprise_config_caches,
             )
-            from jiuwenswarm.agents.harness.common.memory.config import (
-                reload_memory_config_from_gateway_db,
-                reload_task_memory_config_from_gateway_db,
-            )
-
             invalidate_enterprise_config_caches()
-            await reload_memory_config_from_gateway_db()
-            await reload_task_memory_config_from_gateway_db()
-            return
+            await self._refresh_memory_configs()
+
+    @staticmethod
+    async def _refresh_memory_configs() -> None:
+        from jiuwenswarm.agents.harness.common.memory.config import (
+            reload_memory_config_from_gateway_db,
+            reload_task_memory_config_from_gateway_db,
+        )
+
+        await reload_memory_config_from_gateway_db()
+        await reload_task_memory_config_from_gateway_db()
 
 
 _DEFAULT_PROVIDER = DefaultConfigProvider()

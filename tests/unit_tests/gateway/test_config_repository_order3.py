@@ -265,3 +265,31 @@ def test_enterprise_schema_catalogue_covers_audit_and_tenant_cron() -> None:
     assert "audit_log_config" in ENTERPRISE_RECORD_STORE_NAMES
     cron_columns = {column.name for column in definitions["cron_job"].columns}
     assert {"job_id", "user_id", "group_id", "bot_id"}.issubset(cron_columns)
+
+
+@pytest.mark.asyncio
+async def test_gateway_startup_does_not_load_execution_memory(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.common.memory import config as memory
+    from gateway.storage_assembly.setup import wire_enterprise_persistent_repositories_async
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.delenv("GATEWAY_STORAGE_REPOSITORIES", raising=False)
+    monkeypatch.delenv("GATEWAY_SESSION_MAP_REPOSITORY", raising=False)
+    reload_memory = AsyncMock()
+    reload_task_memory = AsyncMock()
+    monkeypatch.setattr(memory, "reload_memory_config_from_gateway_db", reload_memory)
+    monkeypatch.setattr(memory, "reload_task_memory_config_from_gateway_db", reload_task_memory)
+    ctx = _test_ctx()
+    monkeypatch.setattr(
+        "gateway.storage_assembly.setup.create_gateway_storage_context",
+        lambda cfg=None: ctx,
+    )
+    wired = await setup_gateway_storage_repositories({})
+    try:
+        await wire_enterprise_persistent_repositories_async(ctx, {})
+        reload_memory.assert_not_awaited()
+        reload_task_memory.assert_not_awaited()
+    finally:
+        await teardown_gateway_storage_repositories(wired)
