@@ -293,7 +293,7 @@
 
 - **目标与独立验收：** 新增共享只读 `ops.session.turns()` 和 `ops.session.usage()`；两项派发同名查询事件，前者统计已提交原生用户输入，后者返回 context/rateLimits/可选 cost，未知数字不伪造。验证多会话、重复记录、工具/模型活动、空值与零值、历史恢复、宿主快照、用户包调用与卸载。
 - **必要前置：** 既有 `ops.build`、可信 SessionContext、平台历史和原生用量事实；不依赖追加调用作为查询前置，不新增 session.measure。
-- **代码与契约：** [F_17 usage](../features/F_17_session-usage.md)、[F_20 turns](../features/F_20_session-turns.md)、[S_11](../specs/S_11_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
+- **代码与契约：** [F_17 usage](../features/F_17_session-usage.md)、[F_20 turns](../features/F_20_session-turns.md)、[S_07](../specs/S_07_session-usage-ops.md)；平台统计放 server/runtime/session，Ops 放 handler_ops/session_ops.py，用户示例放 examples/session_usage_info。
 
 ### EXTV2-18 激活实例首次输入前初始化
 
@@ -344,11 +344,52 @@
 
 ### EXTV2-22 七项只读查询事件化
 
-- **逐项特性文档：** [cwd](../features/F_13_session-cwd.md)；[root](../features/F_19_session-root.md)；[model](../features/F_14_session-model.md)；[repo](../features/F_15_session-repo.md)；[messages](../features/F_18_session-messages.md)；[turns](../features/F_20_session-turns.md)；[usage](../features/F_17_session-usage.md)。每篇只维护一个 Ops 与同名 Event，共享机制和既有实施证据移到 designs/session-query-events.md。
-- **编号登记：** 2026-11-02 查询文档基线为 F_01～F_20；F_17 为 usage、F_18 为 messages、F_19 为 root、F_20 为 turns，F_01～F_16 保留。PR !99 生命周期文档接续为 F_21（start）、F_22（end）、F_23（attach）、F_24（detach）；两项更新合入后目录连续至 F_24。维护者刘瑜；查询旧编号对应关系见[查询特性编号调整](session-query-events.md#特性文档编号调整2026-11-02)，生命周期迁移由 PR !99 记录。F_27 公共说明已迁入设计目录，历史编号继续保留记录。
+- **逐项特性文档：** [cwd](../features/F_13_session-cwd.md)；[root](../features/F_19_session-root.md)；[model](../features/F_14_session-model.md)；[repo](../features/F_15_session-repo.md)；[messages](../features/F_18_session-messages.md)；[turns](../features/F_20_session-turns.md)；[usage](../features/F_17_session-usage.md)。每篇只维护一个 Ops 与同名 Event，共享协议由 S_08 维护，历史实施证据归入本计划的 EXTV2-22 历史验证记录。
+- **编号登记：** 查询特性基线为 F_01～F_20，PR !99 生命周期特性接续为 F_21～F_24；查询规约基线为 S_01～S_08，PR !99 生命周期规约接续为 S_09（start）、S_10（end）、S_11（attach）、S_12（detach）。维护者刘瑜；新旧编号见[文档编号映射](#extv2-22-文档编号映射)。原 F_27 公共说明文件撤出 designs，共享协议由 S_08 维护，历史编号继续保留追溯。
 - **范围：** cwd/root/model/repo/messages/turns/usage 七个同名查询事件、代理与默认 CORE；字段以 Claude 为主，同步既有用户示例和详细字段文档。
 - **依赖：** 已合入的 Core Bus/Builder 和平台读取服务；不依赖未合入生命周期 PR，不增加 Front/Supervisor EventBus。
-- **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见 [查询公共机制与特性索引](session-query-events.md)，协议见 [S_16](../specs/S_16_session-query-events.md)。
+- **验收：** Token Weather 所订阅的用量事件→用户 Handler→Ops→查询事件→返回参数；不进入 ui.render。统一证据见[共享历史验证记录](#extv2-22-七项查询事件化历史验证记录)，协议见 [S_08](../specs/S_08_session-query-events.md)。
+
+
+### EXTV2-22 文档编号映射
+
+查询特性基线 F_01～F_20 连续，PR !99 的四份生命周期特性接续为 F_21～F_24。原查询特性编号仅在下表用于历史追溯；文件、正文和有效引用使用当前编号。
+
+| 历史编号 | 当前编号与文件 | 特性 |
+| --- | --- | --- |
+| `F_21` | [F_17_session-usage.md](../features/F_17_session-usage.md) | session.usage / ops.session.usage |
+| `F_23` | [F_18_session-messages.md](../features/F_18_session-messages.md) | session.messages / ops.session.messages |
+| `F_28` | [F_19_session-root.md](../features/F_19_session-root.md) | session.root / ops.session.root |
+| `F_29` | [F_20_session-turns.md](../features/F_20_session-turns.md) | session.turns / ops.session.turns |
+
+查询规约基线归整为 S_01～S_08，S_01～S_06 保留，以下两个文件替代旧文件：
+
+| 历史规约文件 | 当前规约文件 | 主题 |
+| --- | --- | --- |
+| `S_11_session-usage-ops.md` | [S_07_session-usage-ops.md](../specs/S_07_session-usage-ops.md) | turns / usage |
+| `S_16_session-query-events.md` | [S_08_session-query-events.md](../specs/S_08_session-query-events.md) | 七项查询公共协议 |
+
+PR !99 的四份生命周期规约统一登记为 S_09（start）、S_10（end）、S_11（attach）、S_12（detach）；两项更新合入后规约目录连续为 S_01～S_12。历史 F_27 保留追溯身份，其原公共说明不再单独占用设计文件；共享契约归 S_08，具体使用归各 feature，历史验证归下节。
+
+### EXTV2-22 七项查询事件化历史验证记录
+
+以下保留原事件化实现阶段（2026-10-31）的结果、命令和限制，验证源码为 f313f513ee9b、Server 基线 c6a07f909 / Core bdde48a8。此次归整规约和删除冗余文档没有重跑这些业务验证，不把历史结果记为本轮新执行。
+
+| 本次实际验证 | 结果 | 范围 |
+| --- | --- | --- |
+| 扩展模块回归 | 632 项通过 | 生产装配、七项查询、包加载/卸载、原历史与既有扩展行为；源码使用已合入 Core bdde48a8 |
+| 相关平台回归 | 140 项通过 | 原生用量入口、历史路径/写入/游标、模型选择迁移及运行配置 |
+| 独立进程参数验收 | 通过，7 项返回值逐字段一致 | 真实 ZIP 包→平台 notify→context.usage.updated→七个 Ops/同名查询 Event→返回参数→卸载/释放 |
+| 不进入渲染链 | ui.render 调用 0 次 | 验收中 render 一旦被调用即失败；原 Token Weather 渲染文件保持原样 |
+
+验证命令（Python 环境中把本仓与已合入 Core 放入 PYTHONPATH；-o addopts= 时显式保留 asyncio auto）：
+
+```text
+python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/extensions_v2
+python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/agentserver/test_context_usage.py tests/unit_tests/agentserver/test_session_history_path_safety.py tests/unit_tests/test_session_history_atomic_write.py tests/unit_tests/test_session_history_cursor.py tests/unit_tests/test_session_history_empty_filter.py tests/unit_tests/test_session_history_jsonl_read.py tests/unit_tests/test_session_history_paths.py tests/unit_tests/test_model_selection_migration.py tests/unit_tests/common/test_runtime_model_config.py
+```
+
+独立进程验收使用真实 ZIP 安装、真实 JSONL/Git、平台 notify 和实际 Registry/Bus/Builder；模型为受控的已绑定运行快照，没有新增模型 API 请求。返回参数逐字段核对后卸载包、关闭装配。ui.render 被设置为一旦进入就失败，最终调用 0 次。未执行的浏览器、Claude 宿主和 Front/Supervisor 跨进程验收不列为通过。
 
 ## 3. 特性依赖关系与并行开发
 
@@ -464,12 +505,12 @@ flowchart LR
 | EXTV2-14 会话主模型查询 | 完成 | 刘瑜 | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) | 扩展与用量 140 项、模型兼容 116 项测试通过；独立进程 ZIP 安装、用户 Handler 调用及卸载验证通过，见 F_14 / S_04 | 2026-10-26 |
 | EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | [!81](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/81) | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05 | 2026-10-27 |
 | EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16（追加）/ F_18（查询）/ S_06；2026-10-29 仅拆分特性文档，历史验收未重跑；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径；2026-10-30 合并目标分支冲突后，513 项定向回归及 1 项同 Handler 历史/统计 Ops 共存用例通过，1 项符号链接环境跳过，未重跑真实模型，见 F_16 第 6 节 | 2026-10-30 |
-| EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_17 第 6.2 节 / S_11；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
+| EXTV2-17 会话轮次与用量查询 | 完成 | 刘瑜 | [!90](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/90) | 统计/Ops 44 项及定向回归 319 项通过，含独立分量容错、cache 空值与零值、主会话过滤；真实 Front/Supervisor/Worker 两包三回合读数、历史交叉核对、卸载和进程端口清理通过，见 F_17 第 6.2 节 / S_07；2026-10-29 仅补齐逐字段含义、填写示例、单位和缺失语义，未重跑业务验证 | 2026-10-29 |
 | EXTV2-18 激活实例首次输入前初始化 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !91](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/91)） / [Core !110](https://gitcode.com/huenrui_/agent-core/merge_requests/110) | 不依赖 PR04/05；Server 253 项、Core 568 项通过（1 项权限跳过）；补验真实 Worker 7 个模型回合、初始化/用量 USER Handler、只读 Ops 及清理全部通过，见 F_22 / S_12 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-19 主会话结束通知与用户资源清理 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !93](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/93)） | 2026-11-02 运行结束修订：1362 项回归通过，含 29 项定向；真实两个 Worker / 3 轮模型对话、用户资源收尾、历史保留、同 ID 恢复后再次结束、start 粒度保持和进程清理通过；见 F_24 / S_13 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-20 界面与主会话关联建立通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 378 项回归、27 项定向复验通过（不重复累计）；真实 Front/Supervisor/Worker、首次用量前关联、6 次通知、多视图/切换/重连、失效目标、卸载和进程端口清理通过，另有 1 轮显式真实模型验证，见 F_25 / S_14 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
 | EXTV2-21 界面与主会话关联解除通知 | 完成 | 刘瑜 | [Server !99](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/99)（[原 !95](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/95)） | 与 PR08 合并交付；446 项回归、真实 6 次 attach / 5 次 detach、视图隔离/身份/并发/重连/归档清理、1 轮显式真实模型、卸载与进程端口清理通过，见 F_26 / S_15 ；2026-11-02 字段对齐：1365 项回归通过（含 94 项生命周期定向），两个真实 Worker / 3 轮模型、关联清理与历史恢复通过；公开字段及迁移见对应 F 文档 | 2026-11-02 |
-| EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见 F_27 / S_16 | 2026-10-31 |
+| EXTV2-22 七项只读查询事件化 | 完成 | 刘瑜 | [!100](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/100) | 七项 Ops 与同名查询事件、默认 CORE 和用户示例已实现；扩展 632 项、相关平台 140 项通过，独立 ZIP/notify/七项参数返回/卸载验证通过，ui.render 0 次；见本计划 EXTV2-22 历史验证记录 / S_08 | 2026-10-31 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
