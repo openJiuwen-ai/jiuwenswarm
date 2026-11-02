@@ -88,6 +88,9 @@ from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
     InvalidHistoryCursor,
+    _HISTORY_CURSOR_DEFAULT_MAX_BYTES,
+    _HISTORY_CURSOR_MAX_MAX_BYTES,
+    _HISTORY_CURSOR_MIN_MAX_BYTES,
     append_compact_history_records,
     history_exists,
     is_valid_session_id,
@@ -588,6 +591,8 @@ async def _build_sandbox_env() -> dict[str, str] | None:
 
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
+    _HISTORY_CURSOR_DEFAULT_LIMIT,
+    _HISTORY_CURSOR_MAX_LIMIT,
     _HISTORY_WIRE_STRING_LIMIT,
     _HISTORY_WIRE_METADATA_STRING_LIMIT,
     _HISTORY_WIRE_LIST_LIMIT,
@@ -5926,6 +5931,7 @@ class AgentWebSocketServer:
         cursor_protocol: bool = False,
         cursor: str | None = None,
         limit: int = _HISTORY_PAGE_SIZE,
+        max_bytes: int = _HISTORY_CURSOR_DEFAULT_MAX_BYTES,
     ) -> dict[str, Any] | None:
         """Keep full-history parsing off the loop, with one read per session."""
         locks = getattr(self, "_history_read_locks", None)
@@ -5947,6 +5953,7 @@ class AgentWebSocketServer:
                     session_id=session_id,
                     cursor=cursor,
                     limit=limit,
+                    max_bytes=max_bytes,
                 ))
             else:
                 task = asyncio.create_task(asyncio.to_thread(
@@ -5983,7 +5990,11 @@ class AgentWebSocketServer:
                 page_idx=page_idx,
                 cursor_protocol=cursor_protocol,
                 cursor=request_cursor,
-                limit=params.get("limit", _HISTORY_PAGE_SIZE),
+                limit=params.get(
+                    "limit",
+                    _HISTORY_CURSOR_DEFAULT_LIMIT if cursor_protocol else _HISTORY_PAGE_SIZE,
+                ),
+                max_bytes=params.get("max_bytes", _HISTORY_CURSOR_DEFAULT_MAX_BYTES),
             )
         except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
             error_code = (
@@ -6552,7 +6563,11 @@ class AgentWebSocketServer:
                 page_idx=page_idx,
                 cursor_protocol=cursor_protocol,
                 cursor=request_cursor,
-                limit=params.get("limit", _HISTORY_PAGE_SIZE),
+                limit=params.get(
+                    "limit",
+                    _HISTORY_CURSOR_DEFAULT_LIMIT if cursor_protocol else _HISTORY_PAGE_SIZE,
+                ),
+                max_bytes=params.get("max_bytes", _HISTORY_CURSOR_DEFAULT_MAX_BYTES),
             )
         except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
             error_code = (
@@ -9611,7 +9626,8 @@ class AgentWebSocketServer:
     def get_conversation_history_cursor(
         session_id: str,
         cursor: str | None,
-        limit: int = _HISTORY_PAGE_SIZE,
+        limit: int = _HISTORY_CURSOR_DEFAULT_LIMIT,
+        max_bytes: int = _HISTORY_CURSOR_DEFAULT_MAX_BYTES,
     ) -> dict[str, Any]:
         """Return one newest-to-oldest history batch for the cursor protocol."""
         if not isinstance(session_id, str) or not session_id.strip():
@@ -9621,10 +9637,19 @@ class AgentWebSocketServer:
         if (
             not isinstance(limit, int)
             or isinstance(limit, bool)
-            or not 1 <= limit <= _HISTORY_PAGE_SIZE
+            or not 1 <= limit <= _HISTORY_CURSOR_MAX_LIMIT
         ):
             raise InvalidHistoryCursor(
-                f"history limit must be between 1 and {_HISTORY_PAGE_SIZE}"
+                f"history limit must be between 1 and {_HISTORY_CURSOR_MAX_LIMIT}"
+            )
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or not _HISTORY_CURSOR_MIN_MAX_BYTES <= max_bytes <= _HISTORY_CURSOR_MAX_MAX_BYTES
+        ):
+            raise InvalidHistoryCursor(
+                "history max_bytes must be between "
+                f"{_HISTORY_CURSOR_MIN_MAX_BYTES} and {_HISTORY_CURSOR_MAX_MAX_BYTES}"
             )
 
         normalized_session_id = session_id.strip()
@@ -9632,6 +9657,7 @@ class AgentWebSocketServer:
             normalized_session_id,
             cursor=cursor,
             limit=limit,
+            max_bytes=max_bytes,
             is_restorable=_is_restorable_history_record,
         )
         messages = data.get("messages")

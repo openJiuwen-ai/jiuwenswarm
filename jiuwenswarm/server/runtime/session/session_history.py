@@ -35,6 +35,9 @@ _HISTORY_FLUSH_FUTURE: concurrent.futures.Future[None] | None = None
 _HISTORY_FLUSH_FUTURE_LOCK = threading.Lock()
 _HISTORY_CURSOR_VERSION = 1
 _HISTORY_CURSOR_READ_BLOCK_BYTES = 64 * 1024
+_HISTORY_CURSOR_DEFAULT_MAX_BYTES = 2 * 1024 * 1024
+_HISTORY_CURSOR_MIN_MAX_BYTES = 2048
+_HISTORY_CURSOR_MAX_MAX_BYTES = 4 * 1024 * 1024
 _HISTORY_CURSOR_MAX_TOKEN_CHARS = 6 * 1024 * 1024
 _HISTORY_CURSOR_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
 _HISTORY_CURSOR_MAX_DEDUP_KEYS = 256
@@ -857,6 +860,7 @@ def read_history_cursor_page(
     cursor: str | None,
     limit: int,
     is_restorable: Callable[[dict[str, Any]], bool],
+    max_bytes: int = _HISTORY_CURSOR_DEFAULT_MAX_BYTES,
     read_block_bytes: int = _HISTORY_CURSOR_READ_BLOCK_BYTES,
 ) -> dict[str, Any]:
     """Read a newest-to-oldest JSONL batch from one fixed file snapshot.
@@ -864,6 +868,9 @@ def read_history_cursor_page(
     The initial call waits for queued writes before fixing ``snapshot_end``.
     Later calls validate the same file identity and ignore bytes appended after
     the snapshot, making retries with the same cursor idempotent.
+    ``max_bytes`` bounds a page by source JSONL bytes. The first record is always
+    returned so a single oversized record cannot stall cursor progress; the wire
+    sanitizer subsequently collapses that record to its bounded representation.
     """
     normalized_session_id = (session_id or "").strip()
     if not normalized_session_id or not is_valid_session_id(normalized_session_id):
@@ -874,6 +881,15 @@ def read_history_cursor_page(
         or limit <= 0
     ):
         raise InvalidHistoryCursor("history limit must be a positive integer")
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)
+        or not _HISTORY_CURSOR_MIN_MAX_BYTES <= max_bytes <= _HISTORY_CURSOR_MAX_MAX_BYTES
+    ):
+        raise InvalidHistoryCursor(
+            "history max_bytes must be between "
+            f"{_HISTORY_CURSOR_MIN_MAX_BYTES} and {_HISTORY_CURSOR_MAX_MAX_BYTES}"
+        )
     if read_block_bytes <= 0:
         raise InvalidHistoryCursor("history read block size must be positive")
 
@@ -899,6 +915,7 @@ def read_history_cursor_page(
                 "snapshot_id": None,
                 "snapshot_end": 0,
                 "scanned_bytes": 0,
+                "wire_bytes": 0,
             }
 
         stat = path.stat()
@@ -936,6 +953,7 @@ def read_history_cursor_page(
         boundary_request_id = ""
         lookahead_request_id = ""
         bytes_read = [0]
+        wire_bytes = 0
         with path.open("rb") as fh:
             for raw_line, line_start, line_end in _iter_reverse_jsonl_lines(
                 fh,
@@ -965,6 +983,14 @@ def read_history_cursor_page(
                         item.get("request_id") or ""
                     ).strip()
                     break
+                record_bytes = len(line) + 1
+                if records and wire_bytes + record_bytes > max_bytes:
+                    has_more = True
+                    next_position = line_end
+                    lookahead_request_id = str(
+                        item.get("request_id") or ""
+                    ).strip()
+                    break
                 record, request_id = _apply_cursor_dedup(
                     item,
                     dedup_state,
@@ -974,6 +1000,7 @@ def read_history_cursor_page(
                     boundary_request_id = request_id
                 if record is not None:
                     records.append(record)
+                wire_bytes += record_bytes
 
         if has_more:
             next_dedup_state = _cursor_state_for_boundary(
@@ -1006,6 +1033,7 @@ def read_history_cursor_page(
             "snapshot_id": snapshot_id,
             "snapshot_end": snapshot_end,
             "scanned_bytes": bytes_read[0],
+            "wire_bytes": wire_bytes,
         }
 
 

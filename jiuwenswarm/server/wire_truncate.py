@@ -29,6 +29,8 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _HISTORY_PAGE_SIZE = 50
+_HISTORY_CURSOR_DEFAULT_LIMIT = 500
+_HISTORY_CURSOR_MAX_LIMIT = 1000
 _HISTORY_WIRE_STRING_LIMIT = 16 * 1024
 _HISTORY_WIRE_METADATA_STRING_LIMIT = 256
 _HISTORY_WIRE_LIST_LIMIT = 100
@@ -849,6 +851,8 @@ def _build_workflow_snapshot_payload(
 
 __all__ = [
     "_HISTORY_PAGE_SIZE",
+    "_HISTORY_CURSOR_DEFAULT_LIMIT",
+    "_HISTORY_CURSOR_MAX_LIMIT",
     "_HISTORY_WIRE_STRING_LIMIT",
     "_HISTORY_WIRE_METADATA_STRING_LIMIT",
     "_HISTORY_WIRE_LIST_LIMIT",
