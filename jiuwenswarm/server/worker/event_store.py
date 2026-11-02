@@ -266,7 +266,7 @@ class WorkerEventStore:
         """
         scope = request_scope(request)
         for record in self.records.values():
-            if record.scope[:4] != scope[:4]:
+            if record.scope != scope:
                 continue
             if record.is_passive_subscription:
                 continue
@@ -276,7 +276,8 @@ class WorkerEventStore:
     def replay(self, request: AgentRequest, *, after: int) -> list[dict[str, Any]]:
         scope = request_scope(request)
         return [copy.deepcopy(frame) for owner, frame, _ in self._frames
-                if owner == scope and frame["sequence"] > after]
+                if owner == scope and frame["sequence"] > after
+                and self.frame_interaction_pending(frame)]
 
     def record_for_frame(self, frame: dict[str, Any]) -> DispatchRecord | None:
         """The dispatch record that owns a replayed frame, if any."""
@@ -296,7 +297,7 @@ class WorkerEventStore:
         if not any(kind in event for kind in ("ask_user", "permission", "approval", "interrupted")):
             return ""
         return str(body.get("interaction_id") or body.get("control_id")
-                   or (body.get("request_id") if "ask_user" in event else ""))
+                   or (body.get("request_id") if "ask_user" in event else "") or "")
 
     def frame_interaction_pending(self, frame: dict[str, Any]) -> bool:
         """Whether the interaction a replayed frame represents is still answerable.
