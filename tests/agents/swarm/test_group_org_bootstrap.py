@@ -168,9 +168,13 @@ def test_owner_prompt_lets_the_model_choose_an_unnamed_aggregation_mode():
     assert "leave each child OPEN" in prompt
     assert "do not call org_delegate_task unless" in prompt
     assert "group-member:{that proxy's member_name}" in prompt
+    assert "claim_capability" in prompt
+    assert "do not substitute agent_group_name" in prompt
     assert "choose one from the task" in reminder
     assert "Leave them claimable" in reminder
     assert "group-member:{member_name}" in reminder
+    assert "claim_capability" in reminder
+    assert "Do not substitute agent_group_name" in reminder
     assert "org_create_and_invite_expert_team" in prompt
     assert "Write only the requested deliverable" in prompt
     assert "org_create_and_invite_expert_team" in reminder
