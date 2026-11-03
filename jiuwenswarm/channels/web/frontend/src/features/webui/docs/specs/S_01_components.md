@@ -1,6 +1,6 @@
 # WebUI 组件规则规约
 
-最近修订：2026-11-02。关联设计：[F_01](../features/F_01_antd-components.md)。
+最近修订：2026-11-03。关联设计：[F_01](../features/F_01_antd-components.md)。
 
 ## 范围与适用条件
 
@@ -49,6 +49,8 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   Box/Button 的 unstyled 外观使用原生元素，Button 仍保留禁用、可访问标签与事件派发语义。
 - C-17：WebUI 主题配置仅作用于 Provider 子树，使用宿主语义 token 和语言设置；
   Button 逐字显示插件标签，不自动在两个中文字之间添加空格。
+  Button 接受受控的 `icon="ellipsis"`，`iconOnly=true` 时隐藏可见文字，并要求非空 label
+  作为可访问名称及悬停提示；`variant="ghost"` 使用无边框的 text 按钮。
 - C-18：Iframe 仅在内容激活且连接有效时持有浏览上下文；隐藏或断连时卸载 iframe，
   重新激活或 src 改变后重新加载，不保留旧文档。
   相对路径与 HTTP(S) 来源均使用不含 `allow-same-origin` 的固定 sandbox；加载提示不覆盖整页、不拦截鼠标。
@@ -76,6 +78,19 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   默认保留已挂载的隐藏页内容状态，destroyOnHidden 时切回后重新初始化。
 - C-26：Dropdown 的触发区由子节点提供，点击或键盘展开不派发事件；菜单项选中时只为已绑定的 `ui.select` 发送 `{key}`，
   key 必须存在于 `items` 且菜单项未禁用；初始化与合法 replace 不派发事件。`items` 为空、key 重复或 label 为空时规则拒绝。
+  可选 `icon="ellipsis"` 改用组件内置的纯图标 text 按钮，此时必须提供非空 ariaLabel，
+  children 不参与触发区渲染。展开时保留背景；选择可用项后关闭，禁用或断连时关闭且不可展开。
+- C-27：FilePreview 的 file 可为 null；非空时 name/path 必填，content 与 downloadUrl 至少提供一个。
+  downloadUrl 接受相对路径或 HTTP(S) URL，文本正文优先使用 content。文本 URL 的读取上限为 1 MiB，
+  读取失败或内容不受支持时显示原有状态提示；切换文件时中止旧文本请求。
+  图片和 PDF 分别由组件内部的原生 img/iframe 加载，不属于插件子节点。
+  PDF 只接受带 token 的同源 `/file-api/download` 地址；先以 `Range: bytes=0-4` 检查响应类型为 application/pdf、
+  正文以 `%PDF-` 开头，并拒绝重定向，通过后以 inline=1 创建不带 sandbox 的 PDF iframe。
+  检查读取有界且切换文件时中止；该分支不改变通用 Iframe 的固定沙箱规则。
+  HTML 仍按文本显示，不执行。内嵌 content 继续受通用单字段 16 KiB 预算约束。
+- C-28：FileTree 在同一挂载实例中按节点保存展开、选中、滚动位置及本地宽度，合法 replace 后恢复。
+  右侧分界线支持拖拽和左右方向键，调整宽度不派发插件事件；宿主外观参数仍优先。
+  节点移除或类型改变时丢弃状态；clear、断连或消费者更换时沿用实例状态端口的重置规则。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。

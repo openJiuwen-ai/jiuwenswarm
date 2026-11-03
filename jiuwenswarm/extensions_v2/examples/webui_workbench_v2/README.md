@@ -32,11 +32,16 @@
 | `conversation.input.below` | 紧凑操作次数提示 |
 | `conversation.panel.right` | “工作区文件”（`Panel` 根，实例 `workbench`）与“网页预览”（`Iframe` 根，实例 `iframe-preview`）两个页签，与原生内容互斥 |
 | `conversation.session.content.after` | 已结束助手轮次的状态快照 |
-| `conversation.turn.footer.actions` | “刷新本轮 / Refresh round”和“本轮详情 / Round details” |
+| `conversation.turn.footer.actions` | `👍` 单符号按钮与 `…` 下拉入口并排，菜单包含“刷新本轮 / Refresh round”和“本轮详情 / Round details” |
 | `conversation.header.title.after` | 工作台状态 Tag |
 | `conversation.header.actions` | 刷新当前会话工作台的按钮 |
 
 轮次位置的 `instance_key` 来自实际 `requestId`。首次挂载保存该轮快照；后续 ready 恢复快照。其他轮次和其他会话的修改不会覆盖它；点击“刷新本轮”才把当前筛选摘要写入该轮。
+
+轮次菜单使用 `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")`，展开期间保留浅灰背景。
+其左侧通过插件渲染树添加 `Button(label="👍", variant="ghost")`，仅展示符号，不绑定点赞业务动作；两者使用横向 Box 排列。
+打开菜单不发送业务事件；选中菜单项发送 `ui.select`，动作 `workbench.turn.select`，data.key 为 `refresh` 或 `details`。
+独立 Button 也支持 `icon="ellipsis", iconOnly=true, variant="ghost"`，label 保留为可访问名称及悬停提示。
 
 输入框上方固定展示 `Token 天气： ☀️ 晴 9% · 91k/1.0M · 5h 1% · $1.06` 和灰色的“上下文充裕”，这些是演示数据，不代表实时用量。该视图属于本工作台插件，无需安装独立的 `token_weather` 插件。点击右侧“隐藏”后保留“Token 天气”和“显示”按钮；显隐状态按会话隔离，后续 ready 恢复当前状态，重新激活插件后重置。插件只使用 `Box`、`Text`、`Button`，不包裹 `Card`；背景、圆角和内边距由宿主 slot 提供。
 
@@ -52,11 +57,12 @@
 
 单 Agent 聊天和代码会话均可浏览文件。有项目时显示会话已绑定项目根，无项目时显示已绑定的运行工作区；自动任务工作区包含 `work/` 和 `outputs/`，Code 配置的默认会话工作区沿用其实际目录布局。团队模式显示不支持提示；未取得有效绑定时显示工作区不可用。
 
-文件实例收到 `ui.ready` 时调用 `ops.session.files` 读取根目录并清空预览；展开目录时组件通过 `ui.change` 提供 `expandedKeys`，插件将 key 映射为路径后再次调用 `ops.session.files`。每层最多 100 项、总共 512 项、最多 8 层、96 KiB 预算。选择文件时，插件调用 `ops.session.read_file` 读取单文件 UTF-8 文本（上限 16 KiB），并交给 `FilePreview` 展示；二进制、图片或超大文件返回对应状态提示。
+文件实例收到 `ui.ready` 时调用 `ops.session.files` 读取根目录并清空预览；展开目录时组件通过 `ui.change` 提供 `expandedKeys`，插件将 key 映射为路径后再次调用 `ops.session.files`。每层最多 100 项、总共 512 项、最多 8 层、96 KiB 预算。选择文件时，插件调用 `ops.session.read_file` 并将结果交给 `FilePreview`。16 KiB 以内的 UTF-8 文本仍通过 content 展示；更大文本（最多 1 MiB）、图片和 PDF 通过 downloadUrl 加载，由 FilePreview 内部处理。URL 指向有效期为 10 分钟的文件快照，过期后重新选择文件即可刷新。PDF 在同源下载响应类型及文件头检查通过后使用原生 iframe，实际显示依赖浏览器内建 PDF 查看器；其他二进制或超限文本返回对应状态提示。
+
+文件树右侧分界线支持拖拽，也可聚焦后用左右方向键调整宽度。目录展开或预览更新后保留滚动位置和宽度；清空实例或断连后重置，不写入持久存储。
 
 网页实例使用 `Iframe` 根，只能作为允许该根组件的槽位（`conversation.panel.right`、`application.menu.main`、`task.function.main`）的渲染树根，不能嵌套在 `Panel`、`Box` 或其他组件内，也不接受 children、events 或 srcdoc。宿主固定设置 `sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"`。
-右侧“网页预览”加载 `https://www.baidu.com/`，用于手工检查网页加载、输入和链接点击；可用性还取决于百度自身的嵌入与请求策略。
-2026-11-02 内置浏览器验证中，首页显示和输入可用，搜索按钮未导航；百度脚本读取 cookie/localStorage 时被 sandbox 拒绝，不能将该示例视为完整搜索功能已兼容。
+右侧“网页预览”加载 `https://httpbin.org/forms/post`，用于手工检查网页加载、输入、选项和表单提交。该页面响应未声明 `X-Frame-Options` 或限制性的 `frame-ancestors`，适合作为 iframe 联调页；网络可用性仍取决于目标站点。
 普通点击、输入和 iframe 内导航不需要同源权限；加载提示不拦截鼠标。相对路径页面也使用不透明 origin，依赖存储或同源请求的页面可能不兼容，不能通过添加 `allow-same-origin` 解决。安全取舍见 [F_08](../../docs/features/F_08_frontend-render.md#46-iframe-权限与点击交互)。
 
 ## 重置、修改与卸载

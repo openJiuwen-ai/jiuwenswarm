@@ -86,6 +86,19 @@ test('FilePreview renders plugin supplied text and rejects escaping paths', () =
   assert.equal(bad.ok, false);
 });
 
+test('FilePreview accepts URL resources and rejects missing content and unsafe URLs', () => {
+  for (const [file, valid] of [
+    [{ name: 'x.pdf', path: 'x.pdf', downloadUrl: '/file-api/download?token=test' }, true],
+    [{ name: 'x.txt', path: 'x.txt', content: '' }, true],
+    [{ name: 'x.pdf', path: 'x.pdf' }, false],
+    [{ name: 'x.pdf', path: 'x.pdf', downloadUrl: 'javascript:alert(1)' }, false],
+    [{ name: 'x.pdf', path: '../x.pdf', downloadUrl: '/file-api/download?token=test' }, false],
+    [{ name: 'x.pdf', path: 'x.pdf', downloadUrl: '' }, false],
+  ]) {
+    assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'FilePreview', props: { file } })).ok, valid);
+  }
+});
+
 test('display adapters render normalized props and preserve nested content', () => {
   const frame = processTree({
     component: 'Box', children: [
