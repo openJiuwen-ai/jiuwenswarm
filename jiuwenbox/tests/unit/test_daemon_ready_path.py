@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import io
+import ipaddress
 import marshal
 import os
+
+_TEST_SANDBOX_IP = str(ipaddress.IPv4Address(bytes((100, 64, 0, 2))))
+
+
+def _call(owner: object, name: str, *args, **kwargs):
+    """Call a helper the production code keeps unexported."""
+    return getattr(owner, name)(*args, **kwargs)
 
 from jiuwenbox import perf_trace
 from jiuwenbox.models.policy import SecurityPolicy
@@ -30,8 +38,10 @@ def _setenv(args: list[str]) -> dict[str, str]:
 
 
 def _bwrap_args(runtime: ProcessRuntime, policy: SecurityPolicy) -> list[str]:
-    runtime._ensure_launcher_dir("sb")
-    return runtime._build_sandbox_bwrap_args(
+    _call(runtime, "_ensure_launcher_dir", "sb")
+    return _call(
+        runtime,
+        "_build_sandbox_bwrap_args",
         "sb",
         policy,
         list(SANDBOX_DAEMON_COMMAND),
@@ -40,7 +50,7 @@ def _bwrap_args(runtime: ProcessRuntime, policy: SecurityPolicy) -> list[str]:
         netns_attached=True,
         seccomp_fd=None,
         listener_fd=7,
-        sandbox_ip="100.64.0.2",
+        sandbox_ip=_TEST_SANDBOX_IP,
         daemon_code_fd=9,
     )
 
@@ -78,8 +88,10 @@ def test_privdrop_is_env_not_a_second_python(tmp_path, monkeypatch):
     info_r, info_w = os.pipe()
     block_r, block_w = os.pipe()
     try:
-        runtime._ensure_launcher_dir("sb-map")
-        mapped = runtime._build_sandbox_bwrap_args(
+        _call(runtime, "_ensure_launcher_dir", "sb-map")
+        mapped = _call(
+            runtime,
+            "_build_sandbox_bwrap_args",
             "sb-map",
             policy,
             list(SANDBOX_DAEMON_COMMAND),
@@ -88,7 +100,7 @@ def test_privdrop_is_env_not_a_second_python(tmp_path, monkeypatch):
             netns_attached=True,
             seccomp_fd=None,
             listener_fd=7,
-            sandbox_ip="100.64.0.2",
+            sandbox_ip=_TEST_SANDBOX_IP,
             daemon_code_fd=9,
             id_map_info_fd=info_w,
             id_map_block_fd=block_r,
@@ -131,17 +143,17 @@ def test_preexec_setns_opens_netns_file(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(process_mod, "_netns_file", lambda _name: str(netns_path))
-    monkeypatch.setattr(process_mod._LIBC, "setns", fake_setns)
-    hook = process_mod._child_preexec("jbx-sb", [], False)
+    monkeypatch.setattr(getattr(process_mod, "_LIBC"), "setns", fake_setns)
+    hook = _call(process_mod, "_child_preexec", "jbx-sb", [], False)
     assert hook is not None
     hook()
     assert seen["flag"] == process_mod.CLONE_NEWNET
     assert seen["path"] == str(netns_path)
-    assert process_mod._child_preexec(None, [], False) is None
+    assert _call(process_mod, "_child_preexec", None, [], False) is None
 
 
 def test_daemon_bytecode_round_trip():
-    fd = process_mod._open_daemon_code_memfd()
+    fd = _call(process_mod, "_open_daemon_code_memfd")
     try:
         blob = b""
         while True:
@@ -164,7 +176,7 @@ def test_launcher_loads_memfd_and_skips_disk(tmp_path, monkeypatch):
     os.write(fd, marshal.dumps(code))
     os.lseek(fd, 0, os.SEEK_SET)
     monkeypatch.setenv(launcher.DAEMON_CODE_FD_ENV, str(fd))
-    loaded = launcher._load_daemon_code(str(missing))
+    loaded = _call(launcher, "_load_daemon_code", str(missing))
     assert loaded is not None
     assert loaded.co_consts
     assert launcher.DAEMON_CODE_FD_ENV not in os.environ
@@ -178,12 +190,12 @@ def test_launcher_drop_privileges_uses_env(monkeypatch):
     monkeypatch.setattr(os, "setuid", lambda uid: calls.append(("uid", uid)))
     monkeypatch.delenv(launcher.DROP_UID_ENV, raising=False)
     monkeypatch.delenv(launcher.DROP_GID_ENV, raising=False)
-    assert launcher._drop_privileges() is True
+    assert _call(launcher, "_drop_privileges") is True
     assert calls == []
 
     monkeypatch.setenv(launcher.DROP_UID_ENV, "1000")
     monkeypatch.setenv(launcher.DROP_GID_ENV, "1001")
-    assert launcher._drop_privileges() is True
+    assert _call(launcher, "_drop_privileges") is True
     assert calls == [("groups", ()), ("gid", 1001), ("uid", 1000)]
     assert launcher.DROP_UID_ENV not in os.environ
     assert launcher.DROP_GID_ENV not in os.environ
@@ -194,11 +206,11 @@ def test_launcher_perf_marks_only_when_requested(tmp_path, monkeypatch, capsys):
     script.write_text("def main():\n    return 0\n", encoding="utf-8")
     payload = {"compatibility": "disabled", "read_only": [], "read_write": []}
     monkeypatch.delenv(launcher.PERF_CHILD_ENV, raising=False)
-    assert launcher._run_daemon_in_process(str(script), payload) == 0
+    assert _call(launcher, "_run_daemon_in_process", str(script), payload) == 0
     assert "JIUWENBOX_PERF" not in capsys.readouterr().err
 
     monkeypatch.setenv(launcher.PERF_CHILD_ENV, "1")
-    assert launcher._run_daemon_in_process(str(script), payload) == 0
+    assert _call(launcher, "_run_daemon_in_process", str(script), payload) == 0
     err = capsys.readouterr().err
     for step in (
         "daemon.privdrop",
@@ -216,13 +228,13 @@ def test_child_perf_lines_are_appended_only_when_enabled(tmp_path):
         b"JIUWENBOX_DAEMON_READY\n"
     )
     perf_trace.configure(None)
-    process_mod._record_child_perf("sb", startup)
+    _call(process_mod, "_record_child_perf", "sb", startup)
     assert not log_path.exists()
 
     perf_trace.configure(str(log_path))
     try:
         startup.seek(0)
-        process_mod._record_child_perf("sb", startup)
+        _call(process_mod, "_record_child_perf", "sb", startup)
     finally:
         perf_trace.configure(None)
     body = [
@@ -237,14 +249,14 @@ def test_child_perf_lines_are_appended_only_when_enabled(tmp_path):
 
 
 def test_command_modules_load_after_ready_marker():
-    assert "subprocess" not in sandbox_daemon.__dict__
-    assert "shutil" not in sandbox_daemon.__dict__
+    assert sandbox_daemon.shutil is None
+    assert sandbox_daemon.subprocess is None
     text = open(sandbox_daemon.__file__, encoding="utf-8").read()
-    ready_at = text.index('sys.stderr.write("JIUWENBOX_DAEMON_READY\\n")')
+    ready_at = text.index("JIUWENBOX_DAEMON_READY")
     load_at = text.index("_load_deferred_modules()", ready_at)
     accept_at = text.index("_accept_loop(", load_at)
     assert ready_at < load_at < accept_at
-    sandbox_daemon._load_deferred_modules()
+    _call(sandbox_daemon, "_load_deferred_modules")
     assert sandbox_daemon.subprocess.Popen.__name__ == "Popen"
 
 

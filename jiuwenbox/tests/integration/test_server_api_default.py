@@ -6208,7 +6208,7 @@ class TestDefaultPolicyAPI:
                 f"policy={marker in blocked} iptables={marker_ip in rules}"
             )
             client.delete(f"/api/v1/sandboxes/{sandbox_id}")
-        pytest.fail(
+        raise AssertionError(
             "warm pool did not serve a sandbox parked from the updated template "
             "(is JIUWENBOX_WARM_POOL disabled?):\n" + "\n".join(attempts[-8:])
         )

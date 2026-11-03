@@ -25,10 +25,12 @@ class _NullSpan:
     def __enter__(self) -> _NullSpan:
         return self
 
-    def __exit__(self, *_exc: object) -> bool:
+    @staticmethod
+    def __exit__(*_exc: object) -> bool:
         return False
 
-    def close(self) -> None:
+    @staticmethod
+    def close() -> None:
         return None
 
 
@@ -39,19 +41,23 @@ class _Span:
     def __init__(self, step: str, sandbox_id: str) -> None:
         self._step = step
         self._sandbox_id = sandbox_id
-        self._start = 0.0
+        self._start: float | None = None
 
     def __enter__(self) -> _Span:
-        self._start = time.perf_counter()
+        self.note_start()
         return self
 
     def __exit__(self, *_exc: object) -> bool:
-        _write(self._step, self._sandbox_id, self._start, time.perf_counter())
+        self.close()
         return False
 
+    def note_start(self) -> None:
+        self._start = time.perf_counter()
+
     def close(self) -> None:
-        if self._start == 0.0:
-            self._start = time.perf_counter()
+        if self._start is None:
+            self.note_start()
+        assert self._start is not None
         _write(self._step, self._sandbox_id, self._start, time.perf_counter())
 
 
@@ -71,13 +77,19 @@ def configure(path: str | None) -> None:
         dest = Path(path).expanduser()
         dest.parent.mkdir(parents=True, exist_ok=True)
         handle = dest.open("a", encoding="utf-8", buffering=1)
-        _t0 = time.perf_counter()
-        handle.write(
-            "# start_ms elapsed_ms sandbox_id step\n"
-            "# start_ms is monotonic milliseconds since collection was enabled.\n"
-            "# Nested steps share the timeline; do not add a parent to its children.\n"
-        )
-        _file = handle
+        release = True
+        try:
+            _t0 = time.perf_counter()
+            handle.write(
+                "# start_ms elapsed_ms sandbox_id step\n"
+                "# start_ms is monotonic milliseconds since collection was enabled.\n"
+                "# Nested steps share the timeline; do not add a parent to its children.\n"
+            )
+            _file = handle
+            release = False
+        finally:
+            if release:
+                handle.close()
 
 
 def configure_from_env() -> None:
@@ -111,7 +123,7 @@ def begin(step: str, sandbox_id: str = "-") -> _NullSpan | _Span:
     if _file is None:
         return _NULL
     started = _Span(step, sandbox_id or "-")
-    started._start = time.perf_counter()
+    started.note_start()
     return started
 
 
