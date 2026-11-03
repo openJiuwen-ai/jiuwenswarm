@@ -15,6 +15,31 @@ import {
 
 const pipeline = createProtocolPipeline(componentCatalog);
 
+test('Dropdown requires exactly one trigger source, including inside Tabs', () => {
+  const props = { items: [{ key: 'action', label: 'Action' }] };
+  const child = { component: 'Text', props: { value: 'Open menu' } };
+  for (const [extra, valid] of [
+    [{}, false], [{ children: [] }, false], [{ children: [child] }, true],
+    [{ props: { ...props, icon: 'ellipsis', ariaLabel: 'Actions' } }, true],
+    [{ props: { ...props, icon: 'ellipsis', ariaLabel: 'Actions' }, children: [child] }, false],
+  ]) {
+    const dropdown = { component: 'Dropdown', props, ...extra };
+    for (const root of [dropdown, { component: 'Tabs', props: {
+      items: [{ key: 'menu', label: 'Menu', children: [dropdown] }],
+    } }]) assert.equal(pipeline.processRenderFrame(renderFrame(root)).ok, valid);
+  }
+});
+
+test('menu main accepts native component trees while keeping root-only restrictions', () => {
+  const target = { session_id: 'sess-1', slot_id: 'application.menu.main', package_id: 'pkg.demo', instance_key: 'main' };
+  assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Box', children: [
+    { component: 'Text', props: { value: 'Native page' } },
+  ] }, { target })).ok, true);
+  assert.equal(pipeline.processRenderFrame(renderFrame({ component: 'Panel', props: { title: 'Panel' },
+    children: [{ component: 'Text' }],
+  }, { target })).ok, false);
+});
+
 function renderFrame(root, options = {}) {
   return {
     target: {

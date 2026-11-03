@@ -1,4 +1,4 @@
-﻿/* Input/welcome vertical alignment tuning */
+/* Input/welcome vertical alignment tuning */
 :root {
   --chat-input-textarea-min-height: 96px;
 }
@@ -141,7 +141,7 @@
 }
 
 .chat-header-icon-btn:hover:not(:disabled) {
-  background: var(--color-tool-tab-active-bg);
+  background: var(--color-action-secondary);
   border-radius: 10.67px;
 }
 

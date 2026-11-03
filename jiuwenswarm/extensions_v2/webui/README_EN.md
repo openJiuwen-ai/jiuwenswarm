@@ -85,8 +85,17 @@ RenderNode(
 ```
 
 These actions send `{value}`, `{searchValue}` and `{}` respectively. Each binding is optional.
-In multiple mode, select still sends the single option just selected. Selection updates locally without a change event.
+In multiple mode, select still sends the single option just selected. Bind `"ui.change": {"id": "city.change"}`
+to receive the entire selection as `{value}`, including deselection and clearing. Single selection uses a string or number,
+or null after clearing; multiple/tags mode uses an array.
 value takes precedence over defaultValue; a valid replace reinitializes selection. Disabled or disconnected selects cannot be used.
+
+Prefer small/medium/large component sizes; sm/md/lg remain aliases. Switch/Card support small/medium only,
+and Avatar also accepts default and numeric pixel sizes. Text.max_lines must be a positive integer;
+omit it for unlimited lines (remove legacy 0 values). Explicit Text.tone overrides variant; primary/danger/ghost
+use theme primary/error/tertiary text colors, and Button.secondary uses a filled appearance.
+Dropdown requires exactly one trigger source: icon or nonempty children; icon triggers also require a nonempty ariaLabel.
+application.menu.main accepts native Box/Card trees without an Iframe. Panel/Iframe root-only restrictions still apply.
 
 A tree select can bind node selection, the whole selection value and clearing separately:
 

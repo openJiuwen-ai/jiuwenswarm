@@ -1355,6 +1355,8 @@
     "maximize": "Maximize",
     "restore": "Exit Full Screen",
     "toolTabs": "Tool panel tabs",
+    "builtinTools": "Tools",
+    "closeToolTab": "Close {{title}} tab",
     "taskOverview": "Task Overview",
     "elapsedTime": "Elapsed time: {{value}}",
     "duration": "Duration",

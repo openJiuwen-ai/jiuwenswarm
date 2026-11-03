@@ -14,6 +14,19 @@ RenderNode(
 插件端校验支持 20 种目录组件（含 `Avatar`、`FileTree`、`FilePreview` 与 `Dropdown`）。
 组件列表和字段规则见 [组件规约](../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
 
+无边框的文字按钮使用 `variant="ghost"`，浏览器映射为 Ant Design `type="text"`，
+hover 背景由宿主主题统一提供。Button 与 Dropdown 共用约 100 个 Lucide 图标及兼容别名 `refresh`，
+完整名称见前端唯一维护入口：[icons/whitelist.json](../../channels/web/frontend/src/features/webui/icons/whitelist.json)；
+需要纯图标入口时设置 `iconOnly=True`，并保留非空 label 作为可访问名称与悬停提示。
+例如 `{"label": "刷新", "variant": "ghost", "icon": "refresh", "iconOnly": True}`。
+聊天头部按插件声明渲染按钮，其他动作不会自动显示为刷新。
+
+维护图标时只编辑仓库路径 `jiuwenswarm/channels/web/frontend/src/features/webui/icons/whitelist.json`。
+`icons` 将插件使用的 kebab-case 名称映射到 Lucide React 导出名，`aliases` 将旧名称映射到 `icons` 中的名称。
+在前端目录运行 `npm run generate:webui-icons`，会自动生成静态导入表及后端 `icon_whitelist_generated.py`；
+前端 dev/build 也会自动执行。生成文件一并提交，不手工修改；后端部署不需要 Node 或前端源码。
+具体维护与检查步骤见[前端文档](../../channels/web/frontend/README.md#插件-webui-图标白名单)。
+
 浏览器统一调用 `webui.dispatch`。宿主从已显示的实例和节点补齐请求，插件不应自己生成 node_key 或 revision：
 
 ```json
@@ -85,8 +98,15 @@ RenderNode(
 ```
 
 三项分别发送 `{value}`、`{searchValue}` 和 `{}`，可以按需省略绑定。
-多选时 select 仍发送本次选中的单个选项值，选择值在组件内更新，不发送 change。
+多选时 select 仍发送本次选中的单个选项值。可选绑定 `"ui.change": {"id": "city.change"}`
+接收完整选择值 `{value}`，包含取消选项和清空；单选为字符串或数值，清空为 null，多选/tags 为数组。
 value 优先于 defaultValue；合法 replace 重新初始化选择。禁用或断连时不可操作。
+
+组件 size 统一推荐 small/medium/large，兼容 sm/md/lg；Switch/Card 只有 small/medium，
+Avatar 额外兼容 default 和像素数值。Text.max_lines 只接受正整数，不限行时省略该属性（不再传 0）。
+Text 的 primary/danger/ghost 分别使用主题主色、错误色和弱化文本色，显式 tone 优先；Button.secondary 使用填充外观。
+Dropdown 必须选择 icon 或非空 children 作为触发区，不能同时提供；图标入口仍要求非空 ariaLabel。
+application.menu.main 接受普通 Box/Card 组件树，页面无需 Iframe；Panel/Iframe 的专用根限制保持原样。
 
 树选择可以分别绑定选中、整体值变化和清空：
 

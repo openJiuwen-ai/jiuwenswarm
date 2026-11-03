@@ -280,6 +280,28 @@ PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，
 本次恢复来源受限的原生 PDF iframe，实际浏览器显示仍待手工验证。
 完整 WebClient 跨进程及 AgentOS 部署联调尚未完成。
 
+### 4.5 Workbench 本轮用量展示（2026-11-03）
+
+工作台原来的固定用量按钮用于占位。本次在 `conversation.session.content.after` 保留
+`Button(variant="ghost", size="md", icon="database")` 的外观，不绑定点击动作，仅展示用量，
+按实际 requestId 显示 provider 的本轮 total_tokens；普通状态仅显示一行，轮次菜单操作后另显示操作结果。
+“本轮详情”保留 requestId 和该轮筛选摘要；“刷新本轮”重新查询可用用量，同时保留既有摘要刷新行为。
+
+数据沿用 [S_11](../specs/S_11_session-usage-ops.md) 的 `ops.session.usage()`，不扩展平台接口。
+插件监听 `context.usage.updated` 后读取宿主绑定快照，按会话与 requestId 保存，用量通知继续交给后续 Handler。
+重复通知覆盖该轮数值，不累加。ready 在本轮尚无数值时查询；只接收 session_id 和 turn.request_id 均匹配的结果，
+不把最新回合数据借给旧回合，不以输入和输出重算总量。真实零值显示 0，缺失显示“未上报”。
+
+通知和 UI 事件沿用同一个会话锁；只更新已挂载的对应轮次内容槽位，通知先于 ready 时仅缓存。
+状态随插件激活存续。重新激活后，公共查询只能恢复最近可用回合，其他历史轮次显示未上报；不另读内部历史文件。
+最初改成 Text 后，用户要求保留原按钮样式和图标，因此恢复原 Button 配置，只替换真实用量文案，
+不声明 `ui.click`；本次不扩展组件协议。
+
+验证覆盖 ready 与通知先后、重复通知、零值/缺失、会话及轮次隔离、重载后的查询边界、菜单反馈。
+2026-11-03：`test_workbench_turn_actions.py` 与 `test_application_slots.py` 定向测试合计 35 项通过。
+其中安装/重载用例经过真实管理器、事件总线、Session Ops 和 WebUI 渲染服务，数据使用绑定宿主快照，
+不代表已完成真实模型及跨进程联调。产品页面由用户手工验收。
+
 ## 5. 异常与边界
 
 - 事件名必须在 `UPSTREAM_EVENTS` 内；节点只能绑定自身组件声明的事件。

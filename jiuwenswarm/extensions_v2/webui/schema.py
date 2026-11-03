@@ -217,6 +217,8 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
         return _fail(f"{node.component} is only allowed at the tree root")
     if node.component == "Panel" and not node.children:
         return _fail("Panel requires body children")
+    if node.component == "Dropdown" and bool(node.props.get("icon")) == bool(node.children):
+        return _fail("Dropdown requires exactly one trigger source: icon or non-empty children")
     if node.component == "Tabs":
         for item in node.props["items"]:
             for child in item.get("children", ()):

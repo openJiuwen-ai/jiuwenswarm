@@ -104,10 +104,14 @@ export function WebUIHost({
     return target && (instanceKey === undefined || target.instanceKey === instanceKey)
       && (packageId === undefined || target.packageId === packageId);
   });
-  if (runtime.getCatalog().getSlot(slotId)?.display === 'single') {
+  const slotRule = runtime.getCatalog().getSlot(slotId);
+  if (slotRule?.display === 'single') {
     instanceKeys = [...instanceKeys].sort((left, right) =>
       (runtime.getInstance(right)?.localFrameId ?? 0) - (runtime.getInstance(left)?.localFrameId ?? 0),
     ).slice(0, 1);
+  } else if (slotRule?.maxVisible !== undefined && instanceKeys.length > slotRule.maxVisible) {
+    // list 槽位超出 maxVisible 时保留先挂载的实例，后到的贡献不挤占输入区。
+    instanceKeys = instanceKeys.slice(0, slotRule.maxVisible);
   }
 
   if (instanceKeys.length === 0) {
