@@ -2,6 +2,7 @@
 
 """Exercise personal share HTTP adapters without browsers or deployment tools."""
 
+import asyncio
 import io
 import json
 import struct
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
@@ -39,9 +41,11 @@ def client(monkeypatch):
     def unrelated():
         raise HTTPException(418, 'unchanged')
 
-    api.register_personal_share_routes(app, object())
+    channel = SimpleNamespace(authenticate_handshake=AsyncMock(return_value=None))
+    api.register_personal_share_routes(app, channel)
     with TestClient(app) as client:
         client.manager = manager
+        client.channel = channel
         yield client
 
 
@@ -98,6 +102,131 @@ def test_personal_refused_session_does_not_create_job(client, monkeypatch):
     monkeypatch.setattr(api, 'get_share_session_metadata', AsyncMock(side_effect=HTTPException(403, 'denied')))
     assert client.post('/share-api/jobs', json={'session_id': 'secret', 'allow_browser_render': True}).status_code == 403
     api.build_share_snapshot.assert_not_awaited()
+
+
+def test_personal_job_reads_and_resume_require_owner_cookie(client):
+    created = _create(client)
+    job, token = created['job_id'], created['client_token']
+    cookie = client.cookies.get(api._ACCESS_COOKIE)
+    assert 'HttpOnly' in client.post(
+        '/share-api/jobs', json={'session_id': 'other', 'allow_browser_render': True},
+    ).headers['set-cookie']
+    client.cookies.clear()
+    paths = [
+        '/share-api/jobs?session_id=session', f'/share-api/jobs/{job}',
+        f'/share-api/jobs/{job}/snapshot', f'/share-api/jobs/{job}/download',
+    ]
+    for path in paths:
+        assert client.get(path).status_code == 403
+    assert client.head(f'/share-api/jobs/{job}/download').status_code == 403
+    assert client.post('/share-api/jobs', json={
+        'session_id': 'session', 'job_id': job,
+    }).status_code == 403
+    assert client.post('/share-api/jobs', json={
+        'session_id': 'session', 'allow_browser_render': True,
+    }).status_code == 403
+    assert client.post(f'/share-api/jobs/{job}/browser', json={
+        'client_token': token, 'claim_download': True,
+    }).status_code == 403
+    assert client.post(
+        f'/share-api/jobs/{job}/browser-result?filename=share.png', content=_png(),
+        headers={'X-Share-Export-Token': token},
+    ).status_code == 403
+    client.cookies.set(api._ACCESS_COOKIE, '0' * 64)
+    assert client.get(f'/share-api/jobs/{job}/snapshot').status_code == 403
+    client.cookies.clear()
+    client.cookies.set(api._ACCESS_COOKIE, cookie)
+    assert client.get(f'/share-api/jobs/{job}').status_code == 200
+    assert client.get(f'/share-api/jobs/{job}/snapshot').status_code == 200
+
+
+def test_personal_read_checks_routed_session_access(client, monkeypatch):
+    created = _create(client)
+    monkeypatch.setattr(api, 'get_share_session_metadata', AsyncMock(side_effect=HTTPException(403, 'denied')))
+    job = created['job_id']
+    for path in [
+        '/share-api/jobs?session_id=session', f'/share-api/jobs/{job}',
+        f'/share-api/jobs/{job}/snapshot', f'/share-api/jobs/{job}/download',
+    ]:
+        assert client.get(path).status_code == 403
+    assert api.get_share_session_metadata.await_count == 4
+
+
+def test_personal_reuses_web_auth_and_binds_the_authenticated_principal(client):
+    auth = client.channel.authenticate_handshake
+    auth.return_value = SimpleNamespace(success=True, user_id='alice')
+    created = _create(client)
+    job = created['job_id']
+    assert client.get(f'/share-api/jobs/{job}/snapshot').status_code == 200
+    auth.return_value = SimpleNamespace(success=True, user_id='bob')
+    assert client.get(f'/share-api/jobs/{job}/snapshot').status_code == 403
+    auth.return_value = SimpleNamespace(success=False, user_id='')
+    assert client.get(f'/share-api/jobs/{job}').status_code == 401
+    assert client.post('/share-api/jobs', json={'session_id': 'session'}).status_code == 401
+    assert auth.call_args.kwargs['channel'] == 'web'
+
+
+@pytest.mark.asyncio
+async def test_personal_json_disconnect_is_a_controlled_error():
+    async def receive():
+        return {'type': 'http.disconnect'}
+
+    request = Request({'type': 'http', 'headers': []}, receive=receive)
+    with pytest.raises(HTTPException) as caught:
+        await api._json_body(request)
+    assert caught.value.status_code == 400
+    assert caught.value.detail == 'client_disconnected'
+
+
+@pytest.mark.asyncio
+async def test_personal_upload_has_a_total_deadline(monkeypatch):
+    monkeypatch.setattr(api, '_UPLOAD_TIMEOUT_SECONDS', 0.02)
+    monkeypatch.setattr(api, '_UPLOAD_IDLE_SECONDS', 1)
+
+    async def receive():
+        await asyncio.sleep(0.005)
+        return {'type': 'http.request', 'body': b'x', 'more_body': True}
+
+    request = Request({'type': 'http', 'headers': []}, receive=receive)
+    with pytest.raises(TimeoutError):
+        await api._read_upload(request, io.BytesIO(), 1024 * 1024)
+
+
+@pytest.mark.asyncio
+async def test_personal_rejects_uploads_before_buffering_and_releases_capacity(client, monkeypatch):
+    monkeypatch.setattr(api, '_MAX_UPLOADS', 1)
+    first = _create(client)
+    second = client.post('/share-api/jobs', json={
+        'session_id': 'second', 'allow_browser_render': True,
+    }).json()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def read_upload(request, stream, size):
+        started.set()
+        await release.wait()
+        stream.write(_png())
+
+    reader = AsyncMock(side_effect=read_upload)
+    monkeypatch.setattr(api, '_read_upload', reader)
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(transport=transport, base_url='http://testserver', cookies=client.cookies) as web:
+        async def upload(job):
+            return await web.post(
+                f"/share-api/jobs/{job['job_id']}/browser-result?filename=share.png",
+                content=_png(), headers={'X-Share-Export-Token': job['client_token']},
+            )
+
+        pending = asyncio.create_task(upload(first))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            assert (await upload(first)).status_code == 409
+            assert (await upload(second)).status_code == 429
+            assert reader.await_count == 1
+        finally:
+            release.set()
+            result = await pending
+        assert result.status_code == 200
+        assert (await upload(second)).status_code == 200
 
 
 @pytest.mark.parametrize('body', [[], None, 'text'])
@@ -196,6 +325,40 @@ async def test_snapshot_incomplete_stream_is_not_published(monkeypatch):
     request = Request({'type': 'http', 'headers': []})
     with pytest.raises(HTTPException, match='share_export_history_incomplete'):
         await share_snapshot.build_share_snapshot(request, channel, 'session', metadata={})
+    assert channel.unregister_request_outbound.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('texts,expected', [
+    (['  \n ', 'Useful question'], 'Useful question'),
+    (['  ', '\n'], 'session'),
+])
+async def test_snapshot_title_skips_blank_user_messages(monkeypatch, texts, expected):
+    records = [{'role': 'user', 'content': text} for text in reversed(texts)]
+    monkeypatch.setattr(share_snapshot, '_history_page', AsyncMock(return_value=(records, {'has_more': False})))
+    snapshot, _ = await share_snapshot.build_share_snapshot(
+        Request({'type': 'http', 'headers': []}), object(), 'session', metadata={},
+    )
+    assert snapshot['metadata']['title'] == expected
+
+
+@pytest.mark.asyncio
+async def test_snapshot_rejects_inconsistent_part_totals(monkeypatch):
+    channel = SimpleNamespace(unregister_request_outbound=AsyncMock())
+
+    async def iterate(*args, **kwargs):
+        for index, total in [(10, 11), (0, 2)]:
+            yield _event({'message': {
+                'content': 'fragment',
+                '_part': {'record_id': 'final', 'part_idx': index, 'total_parts': total},
+            }})
+
+    monkeypatch.setattr(share_snapshot, 'dispatch_http_request', AsyncMock(return_value=(
+        SimpleNamespace(iter_sse_frames=iterate), 'rid', 'session')))
+    with pytest.raises(HTTPException, match='share_export_history_part_invalid'):
+        await share_snapshot.build_share_snapshot(
+            Request({'type': 'http', 'headers': []}), channel, 'session', metadata={},
+        )
     assert channel.unregister_request_outbound.await_count == 1
 
 

@@ -61,8 +61,14 @@ async def build_share_snapshot(
     records.reverse()
     title = metadata.get("title") if isinstance(metadata, dict) else None
     if not isinstance(title, str) or not title.strip():
-        title = next((str(item.get("content") or "").strip().replace("\n", " ")[:80]
-                      for item in records if item.get("role") == "user" and item.get("content")), session_id)
+        title = session_id
+        for item in records:
+            if item.get("role") != "user":
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                title = content.strip().replace("\n", " ")[:80]
+                break
     filename = f"jiuwenswarm-share-{time.strftime('%Y%m%d-%H%M%S')}.png"
     return {
         "session_id": session_id,
