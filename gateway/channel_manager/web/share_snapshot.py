@@ -99,7 +99,11 @@ async def _history_page(request: Request, channel: Any, session_id: str, cursor:
                 records.append(record)
                 continue
             key, index, total = part.get("record_id"), part.get("part_idx"), part.get("total_parts")
-            if not isinstance(key, str) or not key or type(index) is not int or type(total) is not int or not 0 <= index < total:
+            if not isinstance(key, str) or not key:
+                raise HTTPException(502, "share_export_history_part_invalid")
+            if type(index) is not int or type(total) is not int:
+                raise HTTPException(502, "share_export_history_part_invalid")
+            if not 0 <= index < total:
                 raise HTTPException(502, "share_export_history_part_invalid")
             bucket = parts.setdefault(key, {})
             bucket[index] = record

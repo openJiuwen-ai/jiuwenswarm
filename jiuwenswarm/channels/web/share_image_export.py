@@ -7,6 +7,6 @@ import sys
 import gateway.channel_manager.web.share_image_export as _real
 
 if __name__ == "__main__":
-    raise SystemExit(_real._run_cli())
+    raise SystemExit(_real.main())
 
 sys.modules[__name__] = _real

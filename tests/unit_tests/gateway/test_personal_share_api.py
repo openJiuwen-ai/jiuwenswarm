@@ -105,6 +105,33 @@ def test_personal_rejects_non_object_json(client, body):
     assert client.post('/share-api/jobs', content=json.dumps(body)).status_code == 400
 
 
+@pytest.mark.parametrize('body', [b'{', b'\xff'])
+def test_personal_rejects_malformed_json_and_invalid_encoding(client, body):
+    response = client.post('/share-api/jobs', content=body)
+    assert response.status_code == 400
+    assert response.json() == {'error': 'invalid_json'}
+    api.build_share_snapshot.assert_not_awaited()
+
+
+@pytest.mark.parametrize('error', [OSError('storage unavailable'), TimeoutError('storage timed out')])
+def test_personal_upload_io_failures_return_controlled_errors(client, monkeypatch, error):
+    created = _create(client)
+    job, token = created['job_id'], created['client_token']
+
+    def unavailable_file():
+        raise error
+
+    monkeypatch.setattr(api.tempfile, 'TemporaryFile', unavailable_file)
+    response = client.post(
+        f'/share-api/jobs/{job}/browser-result?filename=share.png',
+        content=_png(),
+        headers={'X-Share-Export-Token': token},
+    )
+    assert response.status_code == 400
+    assert response.json() == {'error': str(error)}
+    assert token not in response.text
+
+
 def test_personal_invalid_upload_releases_job_and_keeps_tokens_private(client):
     created = _create(client)
     job, token = created['job_id'], created['client_token']
@@ -169,4 +196,27 @@ async def test_snapshot_incomplete_stream_is_not_published(monkeypatch):
     request = Request({'type': 'http', 'headers': []})
     with pytest.raises(HTTPException, match='share_export_history_incomplete'):
         await share_snapshot.build_share_snapshot(request, channel, 'session', metadata={})
+    assert channel.unregister_request_outbound.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key,index,total', [
+    ('', 0, 1), (None, 0, 1), ('final', '0', 1), ('final', 0, '1'),
+    ('final', True, 1), ('final', 0, False), ('final', -1, 2), ('final', 1, 1),
+])
+async def test_snapshot_rejects_invalid_part_metadata(monkeypatch, key, index, total):
+    channel = SimpleNamespace(unregister_request_outbound=AsyncMock())
+
+    async def iterate(*args, **kwargs):
+        yield _event({'message': {
+            'role': 'assistant', 'content': 'invalid fragment',
+            '_part': {'record_id': key, 'part_idx': index, 'total_parts': total},
+        }})
+
+    monkeypatch.setattr(share_snapshot, 'dispatch_http_request', AsyncMock(return_value=(
+        SimpleNamespace(iter_sse_frames=iterate), 'rid', 'session')))
+    request = Request({'type': 'http', 'headers': []})
+    with pytest.raises(HTTPException, match='share_export_history_part_invalid') as caught:
+        await share_snapshot.build_share_snapshot(request, channel, 'session', metadata={})
+    assert caught.value.status_code == 502
     assert channel.unregister_request_outbound.await_count == 1

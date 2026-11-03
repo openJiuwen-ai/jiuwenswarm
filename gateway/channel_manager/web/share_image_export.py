@@ -856,6 +856,11 @@ def _run_cli() -> int:
     return 0
 
 
+def main() -> int:
+    """Run the public command-line entry point for share-image export."""
+    return _run_cli()
+
+
 _share_image_export_manager: "ShareImageExportManager | None" = None
 _share_image_export_manager_lock = threading.Lock()
 
@@ -875,4 +880,4 @@ def get_share_image_export_manager() -> "ShareImageExportManager":
 
 
 if __name__ == "__main__":
-    raise SystemExit(_run_cli())
+    raise SystemExit(main())

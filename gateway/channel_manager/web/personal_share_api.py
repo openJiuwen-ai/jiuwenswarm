@@ -40,7 +40,7 @@ async def _json_body(request: Request) -> dict[str, Any]:
             raise HTTPException(413, "request_too_large")
     try:
         payload = json.loads(body)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         raise HTTPException(400, "invalid_json") from exc
     if not isinstance(payload, dict):
         raise HTTPException(400, "invalid_json")
@@ -58,21 +58,27 @@ class _ShareDownload(FileResponse):
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         # A claimed attempt is one complete transfer, not a partial byte range.
-        scope = {**scope, "headers": [(key, value) for key, value in scope.get("headers", [])
-                                      if key.lower() not in {b"range", b"if-range"}]}
-        if scope["method"] == "HEAD":
+        scope = {
+            **scope,
+            "headers": [
+                (key, value) for key, value in scope.get("headers", [])
+                if key.lower() not in {b"range", b"if-range"}
+            ],
+        }
+        if scope.get("method") == "HEAD":
             await super().__call__(scope, receive, send)
             return
         if not self.manager.mark_browser_download_started(self.job_id, self.attempt):
-            await JSONResponse({"error": "share_export_download_attempt_invalid"}, status_code=409)(scope, receive, send)
+            response = JSONResponse({"error": "share_export_download_attempt_invalid"}, status_code=409)
+            await response(scope, receive, send)
             return
         succeeded = False
 
         async def observe(message):
             nonlocal succeeded
             await send(message)
-            if message["type"] == "http.response.pathsend" or (
-                message["type"] == "http.response.body" and not message.get("more_body", False)
+            if message.get("type") == "http.response.pathsend" or (
+                message.get("type") == "http.response.body" and not message.get("more_body", False)
             ):
                 succeeded = True
 
@@ -121,7 +127,7 @@ def register_personal_share_routes(app: FastAPI, channel: Any) -> None:
         job_id = body.get("job_id")
         if job_id is not None:
             status = _manager().get_status(str(job_id), include_client_token=True)
-            if status is None or status["session_id"] != sid:
+            if status is None or status.get("session_id") != sid:
                 raise HTTPException(404, "job_not_found")
             return JSONResponse({**status, "reused": True})
         status = _manager().get_active_status(sid, include_client_token=True)
@@ -167,7 +173,12 @@ def register_personal_share_routes(app: FastAPI, channel: Any) -> None:
         status = _manager().get_status(job_id, include_client_token=True)
         if status is None:
             raise HTTPException(404, "job_not_found")
-        if status.get("renderer") != "browser" or not token or not secrets.compare_digest(token.encode(), str(status.get("client_token") or "").encode()):
+        expected_token = str(status.get("client_token") or "").encode()
+        if (
+            status.get("renderer") != "browser"
+            or not token
+            or not secrets.compare_digest(token.encode(), expected_token)
+        ):
             raise HTTPException(403, "share_export_client_not_authorized")
         try:
             size = int(request.headers.get("content-length") or "0")
@@ -201,7 +212,7 @@ def register_personal_share_routes(app: FastAPI, channel: Any) -> None:
                 result = await asyncio.to_thread(_manager().store_browser_result, job_id, token,
                     str(request.query_params.get("filename") or ""), stream, size)
             return JSONResponse(result)
-        except (OSError, ValueError, RuntimeError, TimeoutError, ClientDisconnect) as exc:
+        except (OSError, ValueError, RuntimeError, ClientDisconnect) as exc:
             return _error(exc)
 
     @router.api_route("/share-api/jobs/{job_id}/download", methods=["GET", "HEAD"])
@@ -209,7 +220,10 @@ def register_personal_share_routes(app: FastAPI, channel: Any) -> None:
         result = _manager().get_result(job_id)
         if result is None:
             status = _manager().get_status(job_id)
-            return JSONResponse({"error": "job_not_completed" if status else "job_not_found"}, status_code=409 if status else 404)
+            return JSONResponse(
+                {"error": "job_not_completed" if status else "job_not_found"},
+                status_code=409 if status else 404,
+            )
         path, filename = result
         return _ShareDownload(path, filename, job_id, request.query_params.get("download_attempt_id"))
 
