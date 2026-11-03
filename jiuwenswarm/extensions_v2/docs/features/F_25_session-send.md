@@ -4,6 +4,7 @@
 | --- | --- |
 | 编号 | F_25 / session-send |
 | 归档日期 | 2026-11-02 |
+| 后续修订 | 2026-11-03，按 session.append 的写法补齐输入对象示例，字段与运行行为不变 |
 | 关联计划 | [EXTV2-23 / 跨会话发送前扩展](../designs/extensions-v2-development-plan.md#extv2-23-跨会话发送前扩展) |
 | 主责规约 | [S_13](../specs/S_13_session-send.md) |
 
@@ -50,6 +51,16 @@
 ### 3.2 输入：每个字段表达什么、由谁填写
 
 公开类型为 `jiuwenswarm.extensions_v2.event_types.session_send.SessionSendInput`。
+
+下面示意平台交给 Handler 的输入对象。用户通过 `event.event_input` 读取；`target_session_id` 和 `input_mode` 已由平台确认，改写时只替换 `text`，其余字段保留。
+
+```python
+SessionSendInput(
+    target_session_id="target-1",
+    text="请检查订单模块，联系电话 13800138000",
+    input_mode="steer",
+)
+```
 
 | 字段 | 类型 / 是否必有 | 准确含义 | 应填写什么、例子与用途 | Handler 权限 |
 | --- | --- | --- | --- | --- |
@@ -139,6 +150,8 @@ Hook 在原队列锁之外运行，避免规则等待时阻塞整个目标。COR
 不直接在 EventBus 中信任裸 trigger 构造的 send 输入；没有真实平台私有调用状态不能获得发送回执。嵌套 Hook 重新发送受重入保护，正常 next 不触发重入。
 
 ## 6. 验收与未决问题
+
+2026-11-03 仅修订文档：核对 feature/spec 连续编号、文件名、双向引用及 session.append 七节结构，并补齐第 3.2 节的输入对象示例。本次不改运行代码、不重跑业务测试；以下保留 2026-11-02 的实现验证范围与结果。
 
 2026-11-02 已完成以下验证，执行环境为 Windows、Python 3.11、Server `e847fb045981` 加本次实现、Core `4aceb5cda1dc`（与已合入目标 `3cac40a97fd4` 的源码树一致）：
 

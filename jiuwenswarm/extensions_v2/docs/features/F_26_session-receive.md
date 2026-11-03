@@ -4,6 +4,7 @@
 | --- | --- |
 | 编号 | F_26 / session-receive |
 | 归档日期 | 2026-11-02 |
+| 后续修订 | 2026-11-03，按 session.append 的写法补齐输入对象示例及 origin 对象说明，字段与运行行为不变 |
 | 关联计划 | [EXTV2-24 / 跨会话接收入队前扩展](../designs/extensions-v2-development-plan.md#extv2-24-跨会话接收入队前扩展) |
 | 主责规约 | [S_14](../specs/S_14_session-receive.md) |
 
@@ -49,6 +50,18 @@
 ### 3.2 输入：每个字段表达什么、由谁填写
 
 导入 `jiuwenswarm.extensions_v2.event_types.session_receive` 中的公开 dataclass。
+
+下面示意平台在目标会话上提供的输入对象。用户通过 `event.event_input` 读取；来源由平台确定，改写时只替换 `text`。
+
+```python
+SessionReceiveInput(
+    origin=SessionReceiveOrigin(kind="peer-send-message"),
+    text="请检查订单模块，联系电话 [phone]",
+    event=None,
+)
+```
+
+`origin` 是完整来源对象，`origin.kind` 是其中的来源类型字段；两行说明的是对象及其成员，不需要填写两份来源信息。
 
 | 字段 | 类型 / 是否必有 | 准确含义 | 应填写什么、例子和用途 | Handler 权限 |
 | --- | --- | --- | --- | --- |
@@ -125,6 +138,8 @@ event_types/session_receive.py 只维护类型、校验和注册；平台触发�
 选择在原队列前执行接收链，才能让 consumed 阻止本次入队、通知及目标执行。只在模型开始前加通知会造成被消费输入已经出现在队列中，因此未采用。同步完成整轮目标模型会阻塞发送方，也未采用。
 
 ## 6. 验收与未决问题
+
+2026-11-03 仅修订文档：核对 feature/spec 连续编号、文件名、双向引用及 session.append 七节结构，并补齐第 3.2 节的输入对象示例和对象成员说明。本次不改运行代码、不重跑业务测试；以下保留 2026-11-02 的实现验证范围与结果。
 
 2026-11-02 已完成以下验证，执行环境为 Windows、Python 3.11、Server `e847fb045981` 加本次实现、Core `4aceb5cda1dc`（与已合入目标 `3cac40a97fd4` 的源码树一致）：
 
