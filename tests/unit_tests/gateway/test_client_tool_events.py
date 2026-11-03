@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Gateway delivery of client tool requests."""
+"""Gateway delivery of client tool requests and of changes to the client attachments."""
 
 from __future__ import annotations
 
@@ -76,3 +76,16 @@ def test_web_channel_preserves_the_whole_client_tool_request() -> None:
     assert payload["interrupt_id"] == "intr_1"
     assert payload["source"] == "client_tool_interrupt"
     assert payload["client_tool"] == REQUEST["client_tool"]
+
+
+def test_web_channel_preserves_the_attachments_change_notice() -> None:
+    msg = Message(
+        id="client-directory-1", type="event", channel_id="web", session_id="session-1", params={},
+        timestamp=0.0, ok=True,
+        payload={"event_type": "client.attachments_changed", "request_id": "client_attachments_changed_1"},
+        event_type=EventType.CLIENT_ATTACHMENTS_CHANGED,
+    )
+
+    payload = WebChannel._build_event_payload(msg, "client.attachments_changed")
+
+    assert payload["request_id"] == "client_attachments_changed_1"
