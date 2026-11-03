@@ -48,7 +48,7 @@ const webResult = {
 };
 
 /** Renders the real page with a recording chat API and timers the test drives itself. */
-async function renderWorkspace({ withChannels = false, ...colleagueOverrides } = {}) {
+async function renderWorkspace({ withChannels = false, ...colleagueOverrides } = {}, initialWebConversations = []) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   const previous = {
     window: globalThis.window,
@@ -67,7 +67,7 @@ async function renderWorkspace({ withChannels = false, ...colleagueOverrides } =
   };
   dom.window.clearInterval = (id) => ticks.delete(id);
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  const state = { webConversations: [], channels: [], channelCalls: [], channelFailure: false };
+  const state = { webConversations: initialWebConversations, channels: [], channelCalls: [], channelFailure: false };
   let currentColleague = { ...colleague, ...colleagueOverrides };
   Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => state.hidden ? 'hidden' : 'visible' });
   const channelApi = {
@@ -535,4 +535,23 @@ test('reconnect discovers Web results created offline while preserving the selec
     assert.equal(page.select().value, 'runtime-feishu');
     assert.ok(page.container.querySelector('[data-testid="jiuwenmate-workspace-web-result"]'));
   } finally { await page.close(); }
+});
+
+
+test('a newly created employee has a visible conversation before sending any message', async () => {
+  const initial = { ...webResult, id: 'initial-empty', title: '新对话', lastMessage: '' };
+  const page = await renderWorkspace({}, [initial]);
+  try {
+    const records = page.container.querySelectorAll('[data-testid="jiuwenmate-conversation-record"]');
+    assert.equal(records.length, 1);
+    assert.match(records[0].textContent, /测试同事/);
+    assert.ok(page.calls.some(([kind, agentId, conversationId]) =>
+      kind === 'history' && agentId === 'config-web' && conversationId === initial.id));
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
+    await page.reconnect();
+    assert.ok(page.calls.some(([kind, , conversationId]) => kind === 'history' && conversationId === initial.id));
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
+  } finally {
+    await page.close();
+  }
 });
