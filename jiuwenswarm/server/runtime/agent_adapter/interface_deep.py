@@ -6176,6 +6176,9 @@ class JiuWenSwarmDeepAdapter:
         by the refresh_skill_rails on change. Because reconcile can be the
         first session-child creation point, it also forwards the current
         request's disk-history boundary into context warmup.
+
+        In enterprise mode, the routed Agent's enabled MCP templates replace
+        the per-message selection when an execution request is available.
         """
         if (
             runtime_binding is not None
@@ -6200,6 +6203,24 @@ class JiuWenSwarmDeepAdapter:
             **({"moa_can_access": moa_can_access} if moa_can_access is not None else {}),
             **({"retain_moa_snapshot": True} if retain_moa_snapshot else {}),
         )
+        # Enterprise Web has no per-message MCP picker. Resolve the current
+        # routed Agent's enabled templates before name lookup/registration.
+        # Never write these entries into the shared YAML or marketplace state.
+        from jiuwenswarm.enterprise.config.config_provider import (
+            ConfigSource, resolve_config_source,
+        )
+        if execution_request is not None and resolve_config_source() == ConfigSource.ENTERPRISE:
+            resolved = await child._load_enterprise_config(
+                execution_request, base=dict(child._config_base_cache or {}),
+            )
+            child._config_base_cache = resolved.config.copy()
+            mcp_section = resolved.config.get("mcp") or {}
+            needed_set = {
+                str(entry.get("name") or "").strip()
+                for entry in mcp_section.get("servers", [])
+                if isinstance(entry, dict) and entry.get("enabled", True)
+                and str(entry.get("name") or "").strip()
+            }
         if child._instance is None:
             pending_holder = getattr(
                 child,
