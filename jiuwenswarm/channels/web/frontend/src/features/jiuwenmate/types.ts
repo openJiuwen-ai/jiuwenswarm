@@ -102,6 +102,7 @@ export interface JiuwenMateBoundItem {
 export interface JiuwenMateTemplate extends JiuwenMateColleagueDraft {
   id: string;
   persona: string;
+  coreAbilities?: readonly JiuwenMateBoundItem[];
   skills: readonly JiuwenMateBoundItem[];
   tools: readonly JiuwenMateBoundItem[];
   rails: readonly JiuwenMateBoundItem[];
