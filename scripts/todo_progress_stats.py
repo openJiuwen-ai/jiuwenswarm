@@ -19,6 +19,10 @@
   had_todos 也无法确认。
 - 写入失败率 = writes_failed / (writes_ok + writes_failed)。
 - 无变化写入率 = noops / (changes + noops)；change_unknown 单独报告。
+- 提醒后变化率 = followed_changed / (followed_changed + followed_noop + no_write)；
+  followed_unknown 不进分子分母，单独报告。区间结果由 rail 汇总在 run_end 的 intervals
+  字段（区间结果 -> 区间数）。
+  只说明提醒之后列表变了没有，证明不了是提醒起的作用，只作诊断。
 """
 
 from __future__ import annotations
@@ -51,9 +55,16 @@ class Stats:
     change_unknown: int = 0
     rail_errors: int = 0
     iterations: list[int] = field(default_factory=list)
+    reminders: int = 0
+    intervals: dict[str, int] = field(default_factory=dict)  # 区间结果 -> 区间数
 
     def add(self, rec: dict[str, Any]) -> None:
         self.runs += 1
+        self.reminders += int(rec.get("reminders", 0))
+        intervals = rec.get("intervals")
+        if isinstance(intervals, dict):
+            for key, count in intervals.items():
+                self.intervals[key] = self.intervals.get(key, 0) + int(count)
         self.writes_ok += int(rec.get("writes_ok", 0))
         self.writes_failed += int(rec.get("writes_failed", 0))
         self.changes += int(rec.get("changes", 0))
@@ -123,6 +134,15 @@ def aggregate(records: Iterable[dict[str, Any]]) -> dict[str, Stats]:
     return dict(groups)
 
 
+def after_reminder_rate(s: Stats) -> tuple[int, int, int]:
+    """返回 (followed_changed, 分母, followed_unknown)。"""
+    def count(outcome: str) -> int:
+        return s.intervals.get(outcome, 0)
+
+    changed = count("followed_changed")
+    return changed, changed + count("followed_noop") + count("no_write"), count("followed_unknown")
+
+
 def ratio(num: int, den: int) -> str:
     return "不可计算" if den == 0 else f"{num}/{den} = {num / den:.1%}"
 
@@ -141,6 +161,9 @@ def render(groups: dict[str, Stats]) -> str:
         out.append(f"   写入失败率      {ratio(s.writes_failed, s.writes_ok + s.writes_failed)}")
         out.append(f"   无变化写入率    {ratio(s.noops, s.changes + s.noops)}  change_unknown={s.change_unknown}")
         out.append(f"   answer 轮中位数 iteration={median(s.iterations)}")
+        num, den, unknown = after_reminder_rate(s)
+        out.append(f"   提醒次数        {s.reminders}")
+        out.append(f"   提醒后变化率    {ratio(num, den)}  followed_unknown={unknown}")
     return "\n".join(out)
 
 
@@ -204,6 +227,18 @@ def self_test() -> None:
     assert (len(d.records), d.duplicates, d.without_run_id) == (3, 2, 1)
     s3 = aggregate(d.records)["K"]
     assert (s3.runs, s3.writes_ok, s3.residual_num, s3.residual_den) == (3, 6, 2, 3)
+    # 样例四：提醒区间结果汇总；followed_unknown 不进分母
+    sample4 = [
+        _line(model="R", run_id="a", result_type="answer", had_todos=True, final=done, reminders=3,
+              intervals={"followed_changed": 1, "followed_noop": 1, "followed_unknown": 1}, **base),
+        _line(model="R", run_id="b", result_type="answer", had_todos=True, final=left, reminders=1,
+              intervals={"no_write": 1}, **base),
+        _line(model="R", run_id="c", result_type="answer", had_todos=False, final=done, **base),  # 加字段前的记录
+    ]
+    s4 = aggregate(parse_lines(sample4))["R"]
+    assert s4.reminders == 4
+    assert after_reminder_rate(s4) == (1, 3, 1)
+    assert ratio(*after_reminder_rate(aggregate(parse_lines(sample4[2:]))["R"])[:2]) == "不可计算"
     print("self-test ok")
 
 

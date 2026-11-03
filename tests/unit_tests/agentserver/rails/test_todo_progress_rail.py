@@ -45,6 +45,17 @@ def caplog(caplog):
     root.setLevel(old_level)
 
 
+class _Context:
+    """模型上下文替身：只收集 rail 追加的消息。"""
+
+    def __init__(self):
+        self.messages = []
+
+    async def add_messages(self, message):
+        self.messages.append(message)
+        return [message]
+
+
 @pytest.fixture
 def env(tmp_path):
     operation = SysOperation(
@@ -64,7 +75,7 @@ def env(tmp_path):
     session = SimpleNamespace(get_session_id=lambda: SID)
     return SimpleNamespace(
         rail=rail, create=create, list_tool=list_tool, modify=modify, manager=manager,
-        session=session, todo_file=tmp_path / SID / "todo.json",
+        session=session, todo_file=tmp_path / SID / "todo.json", context=_Context(),
     )
 
 
@@ -75,29 +86,38 @@ def _tasks(*statuses: str, body: str = "task") -> list[dict]:
     ]
 
 
-async def _begin(env) -> AgentCallbackContext:
+async def _begin(env, **extra) -> AgentCallbackContext:
     ctx = AgentCallbackContext(agent=object())
     ctx.inputs = InvokeInputs(query="q", conversation_id=SID)
     ctx.session = env.session
     await env.rail.before_invoke(ctx)
-    await env.rail.before_model_call(_inner_ctx(env, SimpleNamespace()))
+    await _model_call(env, **extra)
     return ctx
 
 
-async def _iteration(env) -> None:
-    await env.rail.after_react_iteration(_inner_ctx(env, SimpleNamespace()))
+async def _model_call(env, **extra) -> None:
+    mctx = _inner_ctx(env, SimpleNamespace())
+    mctx.extra.update(extra)
+    await env.rail.before_model_call(mctx)
+
+
+async def _iteration(env, times: int = 1) -> None:
+    for _ in range(times):
+        await env.rail.after_react_iteration(_inner_ctx(env, SimpleNamespace()))
 
 
 def _inner_ctx(env, inputs) -> AgentCallbackContext:
     """与生产一致：内层 ReAct 循环的回调上下文是新建的，extra 不与外层 invoke 共享。"""
-    return AgentCallbackContext(agent=object(), inputs=inputs, session=env.session)
+    return AgentCallbackContext(agent=object(), inputs=inputs, session=env.session, context=env.context)
 
 
-async def _tool(env, ictx, tool, name: str, args: dict, call_id: str = "c1", *, started: bool = True):
+async def _tool(env, ictx, tool, name: str, args: dict, call_id: str = "c1", *, started: bool = True,
+                skip_before: bool = False):
     tctx = _inner_ctx(
         env, ToolCallInputs(tool_call=SimpleNamespace(id=call_id), tool_name=name, tool_args=args)
     )
-    await env.rail.before_tool_call(tctx)
+    if not skip_before:  # 跳过写入前读取 = 写入前快照不可用，变化判定为 unknown
+        await env.rail.before_tool_call(tctx)
     if started:
         tctx.inputs.execution_started = True
         try:
@@ -701,3 +721,411 @@ def test_receipt_language_and_truncation(language, lang, header):
     text = receipt_suffix("todo_modify", todos, noop=False, language=language)
     assert len(text) <= 600 and "id00" in text and "id19" not in text
     assert text.endswith(_HINTS[lang]["advance"])
+
+
+# -- 执行中提醒 -------------------------------------------------------------
+
+NOOP_ARGS = {"action": "delete", "ids": ["nope"]}  # 工具成功、列表不变
+
+
+def _injected(env) -> list[str]:
+    return [m.content for m in env.context.messages]
+
+
+async def _leave_unfinished(env, body: str = "task") -> None:
+    """上一轮留下 t1 completed、t2 in_progress。"""
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending", "pending", body=body)}, "c1")
+    await _tool(env, ictx, env.modify, "todo_modify",
+                {"action": "update", "todos": [{"id": "t1", "status": "completed"},
+                                               {"id": "t2", "status": "in_progress"}]}, "c2")
+    await _end(env, ictx)
+
+
+async def _finish_t2(env, ictx, call_id: str, **kw):
+    return await _tool(env, ictx, env.modify, "todo_modify",
+                       {"action": "update", "todos": [{"id": "t2", "status": "completed"}]}, call_id, **kw)
+
+
+async def _remind_once(env, ictx) -> None:
+    """建两项待办后空转到满间隔，注入一次提醒（迭代 11）。"""
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending", "pending")}, "c0")
+    await _iteration(env, 11)
+    await _model_call(env)
+    assert len(_injected(env)) == 1
+
+
+@pytest.mark.asyncio
+async def test_periodic_reminder_interval_boundaries(env, caplog):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending", "pending")}, "c1")
+    await _iteration(env)            # 迭代 1：列表变化
+    await _iteration(env, 9)         # 迭代 10：距变化 9 次
+    await _model_call(env)
+    assert _injected(env) == []
+    await _iteration(env)            # 迭代 11：距变化 10 次
+    await _model_call(env)
+    await _model_call(env)           # 同一迭代内再次调用模型不重复提醒
+    assert len(_injected(env)) == 1 and _injected(env)[0].startswith("<system-reminder>")
+    # 距上次提醒也要满 10 次
+    await _iteration(env, 9)
+    await _model_call(env)
+    assert len(_injected(env)) == 1
+    await _iteration(env)
+    await _model_call(env)
+    assert len(_injected(env)) == 2
+    # 实际变化后重新计数：距变化不满 10 次不提醒，即使距上次提醒已满
+    await _tool(env, ictx, env.modify, "todo_modify",
+                {"action": "update", "todos": [{"id": "t1", "status": "completed"},
+                                               {"id": "t2", "status": "in_progress"}]}, "c2")
+    await _iteration(env, 10)
+    await _model_call(env)
+    assert len(_injected(env)) == 2
+    await _iteration(env)
+    await _model_call(env)
+    assert len(_injected(env)) == 3
+    await _end(env, ictx)
+    [end] = _events(caplog, "run_end")
+    assert (end["reminders"], end["rail_errors"]) == (3, 0)
+    assert "restores" not in end
+    injects = _events(caplog, "inject")
+    assert [e["reminder_seq"] for e in injects] == [1, 2, 3]
+    assert injects[0]["iters_since_change"] == 10 and injects[0]["unfinished"] == 2
+    assert end["intervals"] == {"followed_changed": 1, "no_write": 2}
+
+
+@pytest.mark.asyncio
+async def test_noop_write_does_not_reset_reminder_count(env):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    await _iteration(env, 5)
+    await _tool(env, ictx, env.modify, "todo_modify", NOOP_ARGS, "c2")
+    await _iteration(env, 5)         # 迭代 10：距变化 9 次
+    await _model_call(env)
+    assert _injected(env) == []
+    await _iteration(env)
+    await _model_call(env)
+    assert len(_injected(env)) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_reminder_without_unfinished_items(env, caplog):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    await _tool(env, ictx, env.modify, "todo_modify",
+                {"action": "update", "todos": [{"id": "t1", "status": "completed"}]}, "c2")
+    await _iteration(env, 15)
+    await _model_call(env)
+    await _end(env, ictx)
+    assert _injected(env) == [] and _events(caplog, "inject") == []
+
+
+@pytest.mark.asyncio
+async def test_new_turn_does_not_inject_leftover_list(env, caplog):
+    await _leave_unfinished(env)
+    ictx = await _begin(env)
+    for _ in range(3):
+        await _model_call(env)
+    await _iteration(env, 9)         # 短任务：不满间隔，旧列表不出现
+    await _model_call(env)
+    await _end(env, ictx)
+    assert _injected(env) == []
+    end = _events(caplog, "run_end")[-1]
+    assert (end["reminders"], end["had_todos"], end["writes_ok"]) == (0, True, 0)
+
+
+@pytest.mark.asyncio
+async def test_leftover_list_reminded_after_interval_in_long_task(env, caplog):
+    """新一轮跑满间隔仍没动旧列表时照常提醒，由模型判断沿用、重写还是删除。"""
+    await _leave_unfinished(env)
+    ictx = await _begin(env)
+    await _iteration(env, 10)
+    await _model_call(env)
+    [note] = _injected(env)
+    assert "- t2 [in_progress] task2" in note and "todo_create" in note
+    await _tool(env, ictx, env.modify, "todo_modify", {"action": "delete", "ids": ["t1", "t2"]}, "c3")
+    await _end(env, ictx)
+    end = _events(caplog, "run_end")[-1]
+    assert end["intervals"] == {"followed_changed": 1}
+    assert end["final"]["pending"] == end["final"]["in_progress"] == 0
+
+
+async def _pause_after(env, idle: int) -> None:
+    """建列表后空转 idle 次迭代，以问卷/审批暂停结束本次执行。"""
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending", "pending")}, "c1")
+    await _iteration(env)            # 迭代 1：列表变化
+    await _iteration(env, idle)
+    await _end(env, ictx, "interrupt")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["_resume_continuation", "_resumed_from_hitl"])
+async def test_resume_continues_counts_from_pause(env, caplog, marker):
+    await _pause_after(env, 7)       # 暂停时距变化 7 次
+    ictx = await _begin(env, **{marker: True})
+    await _iteration(env, 2)
+    await _model_call(env)
+    assert _injected(env) == []      # 累计 9 次
+    await _iteration(env)
+    await _model_call(env)
+    assert len(_injected(env)) == 1  # 累计 10 次
+    assert _events(caplog, "inject")[0]["iters_since_change"] == 10
+    await _end(env, ictx)
+    assert env.rail._carry == {}
+
+
+@pytest.mark.asyncio
+async def test_counts_not_carried_into_a_new_turn(env):
+    await _pause_after(env, 7)
+    ictx = await _begin(env)         # 没有续跑标记：用户发了新消息
+    await _iteration(env, 3)
+    await _model_call(env)
+    assert _injected(env) == []
+    await _end(env, ictx)
+    assert env.rail._carry == {}     # 暂停时的计数已丢弃，不会留给之后的续跑
+
+
+@pytest.mark.asyncio
+async def test_pause_again_before_model_call_keeps_carried_counts(env, caplog):
+    """续跑只执行了已批准的工具、没调模型就又暂停时，计数原样留到下次续跑。"""
+    await _pause_after(env, 7)       # 暂停时距变化 7 次、距检查 8 次
+    ictx = await _begin(env, _resumed_from_hitl=True)
+    await _end(env, ictx, "interrupt")  # 还有工具等审批
+    assert env.rail._carry[SID] == (7, 8)
+    ictx = await _begin(env, _resumed_from_hitl=True)
+    await _iteration(env, 3)
+    await _model_call(env)
+    assert _events(caplog, "inject")[0]["iters_since_change"] == 10
+    await _end(env, ictx)
+
+
+@pytest.mark.asyncio
+async def test_change_in_unfinished_iteration_resets_carried_count(env):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    await _iteration(env, 12)
+    await _tool(env, ictx, env.modify, "todo_modify",
+                {"action": "update", "todos": [{"id": "t1", "status": "completed"}]}, "c2")
+    await _end(env, ictx, "interrupt")  # 改完列表、迭代还没收尾就暂停
+    assert env.rail._carry[SID][0] == 0
+
+
+def test_carried_counts_are_capped(env):
+    from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import _CARRY_MAX, _RunState
+
+    for i in range(_CARRY_MAX + 5):
+        env.rail._keep_counts_for_resume(_RunState(session_id=f"s{i}"))
+    assert len(env.rail._carry) == _CARRY_MAX and "s0" not in env.rail._carry
+
+
+@pytest.mark.asyncio
+async def test_reminder_check_reads_once_per_interval(env, monkeypatch):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    await _tool(env, ictx, env.modify, "todo_modify",
+                {"action": "update", "todos": [{"id": "t1", "status": "completed"}]}, "c2")
+    await _iteration(env)
+    reads = []
+    real_read = snapshot_mod._read_text
+    monkeypatch.setattr(snapshot_mod, "_read_text", lambda path: reads.append(path) or real_read(path))
+    await _iteration(env, 10)
+    for _ in range(3):               # 满间隔但没有未完成项：只读一次
+        await _model_call(env)
+    assert len(reads) == 1
+    await _iteration(env, 9)
+    await _model_call(env)
+    assert len(reads) == 1
+    await _iteration(env)
+    await _model_call(env)
+    assert len(reads) == 2 and _injected(env) == []
+
+
+@pytest.mark.asyncio
+async def test_reminder_read_failure_logged_once_per_interval(env, caplog, monkeypatch):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    await _iteration(env, 11)
+
+    def _fail(_path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(snapshot_mod, "_read_text", _fail)
+    for _ in range(3):
+        await _model_call(env)
+    assert _state(env).rail_errors == 1
+    assert [e["hook"] for e in _events(caplog, "rail_error")] == ["before_model_call"]
+    assert _injected(env) == []
+
+
+@pytest.mark.asyncio
+async def test_write_log_failure_is_rail_error(env, monkeypatch):
+    ictx = await _begin(env)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(TodoProgressRail, "_log_write", staticmethod(_boom))
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    st = _state(env)
+    assert (st.writes_ok, st.changes, st.rail_errors) == (1, 1, 1)
+    assert st.pre_write == {}
+
+
+# -- 提醒区间与 write 日志 -------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writes, expected", [
+    (["noop", "changed"], "followed_changed"),
+    (["unknown"], "followed_unknown"),
+    (["unknown", "changed"], "followed_changed"),
+    (["changed", "unknown"], "followed_changed"),
+    (["noop"], "followed_noop"),
+    ([], "no_write"),
+])
+async def test_interval_outcome_takes_strongest_write(env, caplog, writes, expected):
+    ictx = await _begin(env)
+    await _remind_once(env, ictx)
+    for i, kind in enumerate(writes):
+        if kind == "changed":
+            await _finish_t2(env, ictx, f"w{i}")
+        else:  # unknown：跳过写入前读取，变化无法判定
+            await _tool(env, ictx, env.modify, "todo_modify", NOOP_ARGS, f"w{i}", skip_before=kind == "unknown")
+    await _end(env, ictx)
+    end = _events(caplog, "run_end")[-1]
+    assert end["intervals"] == {expected: 1}
+    assert [w["change"] for w in _events(caplog, "write")[1:]] == writes
+
+
+@pytest.mark.asyncio
+async def test_write_log_fields_and_after_reminder(env, caplog):
+    ictx = await _begin(env)
+    await _remind_once(env, ictx)
+    [created] = _events(caplog, "write")
+    assert (created["reminder_seq"], created["after_reminder"], created["iters_since_inject"]) == (0, False, None)
+    await _tool(env, ictx, env.modify, "todo_modify", NOOP_ARGS, "w1")
+    await _iteration(env)
+    await _finish_t2(env, ictx, "w2")
+    await _end(env, ictx)
+    first, second = _events(caplog, "write")[1:]
+    assert set(first) == {"run_id", "tool", "reminder_seq", "iteration", "result", "change",
+                          "after_reminder", "iters_since_inject", "receipt_chars"}
+    assert (first["after_reminder"], second["after_reminder"]) == (True, False)
+    assert (first["iters_since_inject"], second["iters_since_inject"]) == (0, 1)
+    assert first["reminder_seq"] == second["reminder_seq"] == 1
+    assert first["run_id"] == _events(caplog, "run_end")[-1]["run_id"]
+    assert first["result"] == "ok" and first["receipt_chars"] > 0
+
+
+@pytest.mark.asyncio
+async def test_failed_and_blocked_writes_in_write_log(env, caplog):
+    ictx = await _begin(env)
+    await _tool(env, ictx, env.create, "todo_create", {"tasks": _tasks("pending")}, "c1")
+    await _tool(env, ictx, env.modify, "todo_modify",
+                {"action": "update", "todos": [{"id": "nope", "status": "completed"}]}, "c2")
+    await _tool(env, ictx, env.modify, "todo_modify", NOOP_ARGS, "c3", started=False)  # 执行前被拦下
+    await _end(env, ictx)
+    assert [(w["result"], w["receipt_chars"] > 0) for w in _events(caplog, "write")] == \
+        [("ok", True), ("failed", False)]
+
+
+@pytest.mark.asyncio
+async def test_injected_text_reaches_model_but_not_logs(env, caplog):
+    await _leave_unfinished(env, body=SENTINEL)
+    ictx = await _begin(env)
+    await _iteration(env, 10)
+    await _model_call(env)
+    await _finish_t2(env, ictx, "w1")
+    await _end(env, ictx)
+    assert len(_injected(env)) == 1 and SENTINEL in _injected(env)[0]
+    assert _events(caplog, "inject") and _events(caplog, "write")
+    assert not any(SENTINEL in line for line in _rail_lines(caplog))
+
+
+@pytest.mark.parametrize("language", ["cn", "en_US"])
+def test_reminder_is_capped_and_marked_internal(language):
+    from openjiuwen.harness.schema.task import TodoItem
+
+    from jiuwenswarm.agents.harness.common.rails.todo_progress_reminder import NOTE_MAX, build_reminder
+
+    todos = [
+        TodoItem(id=f"id{i:02d}", content="长" * 200, activeForm="x", description="x",
+                 status="completed" if i < 5 else "pending")
+        for i in range(40)
+    ]
+    reminder = build_reminder(todos, 12, language)
+    assert len(reminder) <= NOTE_MAX
+    assert reminder.startswith("<system-reminder>") and reminder.endswith("</system-reminder>")
+    assert "id05" in reminder        # 列表放不下时先省略已关闭项
+    assert "12" in reminder and "todo_create" in reminder
+
+
+# -- 与上下文压缩的衔接 -----------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_compression_reinjection_reads_same_todo_file(tmp_path):
+    """按 DeepAgent 的真实构造取内层 ReAct 的上下文：压缩回注与 rail 读的是同一个文件。"""
+    from openjiuwen.core.context_engine.processor.forked.compressor.support.util import (
+        build_compressor_reinjected_state_message,
+    )
+    from openjiuwen.core.single_agent import AgentCard
+    from openjiuwen.harness.deep_agent import DeepAgent
+    from openjiuwen.harness.schema.config import DeepAgentConfig
+    from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
+
+    operation = SysOperation(
+        SysOperationCard(id="todo-reinject-fs", work_config=LocalWorkConfig(sandbox_root=[str(tmp_path)]))
+    )
+    agent = DeepAgent(AgentCard(name="main"))
+    agent.configure(DeepAgentConfig(workspace=Workspace(root_path=str(tmp_path)), sys_operation=operation,
+                                    language="cn"))
+    rail = TodoProgressRail()
+    rail.init(agent)
+    session = SimpleNamespace(get_session_id=lambda: SID, get_state=lambda *_a, **_k: None)
+    context = await agent._create_react_agent().context_engine.create_context(session=session)
+
+    # 回注按 <workspace_dir>/todo/<session_id>/todo.json 读，与 rail 的读取路径逐项一致
+    assert context.session_id() == SID
+    reinject_path = Path(context.workspace_dir()) / "todo" / SID / "todo.json"
+    assert reinject_path.resolve() == Path(rail._tool._get_file_path(SID)).resolve()
+
+    create, _, _, modify = create_todos_tool(
+        operation, str(agent.deep_config.workspace.get_node_path(WorkspaceNode.TODO)), "cn", agent.card.id)
+    await create.invoke({"tasks": _tasks("pending", "pending", "pending")}, session=session)
+    await modify.invoke({"action": "update", "todos": [{"id": "t1", "status": "completed"},
+                                                       {"id": "t2", "status": "in_progress"}]}, session=session)
+    message = build_compressor_reinjected_state_message(
+        source_messages=[], messages_to_keep=[], context=context, config=SimpleNamespace(),
+        builder_names=["todo"], session_state={},
+    )
+    assert message is not None
+    snapshot = await read_todo_snapshot(rail._tool, SID)
+    assert [t.status.value for t in snapshot] == ["completed", "in_progress", "pending"]
+    for item in snapshot:
+        line = f"- [{item.status.value}] {item.id}: {item.content}"
+        assert (line in message.content) == (item.status.value != "completed"), line
+
+
+def test_dialogue_compression_keeps_current_round_notes():
+    """本轮用户消息之后的写入回执与执行中提醒都在 Dialogue 压缩的保留范围内。"""
+    from openjiuwen.core.context_engine.processor.forked.compressor.dialogue_compressor import (
+        DialogueCompressor,
+        DialogueCompressorConfig,
+    )
+    from openjiuwen.core.foundation.llm import AssistantMessage, UserMessage
+    from openjiuwen.harness.schema.task import TodoItem
+
+    from jiuwenswarm.agents.harness.common.rails.todo_progress_reminder import build_reminder
+
+    todos = [TodoItem(id="t1", content="a", activeForm="a", description="a", status="in_progress")]
+    earlier = [UserMessage(content="上一轮的问题"), AssistantMessage(content="上一轮的回答")]
+    current = [
+        UserMessage(content="本轮的问题"),
+        AssistantMessage(content="", tool_calls=[{"id": "c1", "type": "function",
+                                                  "function": {"name": "todo_modify", "arguments": "{}"}}]),
+        ToolMessage(content="Successfully updated 1 task(s)", tool_call_id="c1"),
+        UserMessage(content=build_reminder(todos, 10, "cn")),
+    ]
+    span = DialogueCompressor(DialogueCompressorConfig())._build_span(earlier + current)
+    assert span.protected_tail == current
+    assert span.messages_to_compress == earlier
