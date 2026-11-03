@@ -44,12 +44,12 @@ _RUNTIME_TOOL_A2A_POLICY_ID: ContextVar[str] = ContextVar(
 )
 
 
-@dataclass
+@dataclass(slots=True)
 class _DeepResearchRouteContextToken:
     token: Token[dict[str, object] | None] | None
 
 
-@dataclass
+@dataclass(slots=True)
 class _RuntimeCronContextTokens:
     channel: Token[str] | None
     session: Token[str | None] | None
