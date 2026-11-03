@@ -185,6 +185,7 @@ def test_explicit_auto_builder_wires_isolated_reviewer_from_llm(tmp_path) -> Non
                 "auto": {
                     "reviewer_timeout_ms": 4321,
                     "reviewer_min_confidence": 0.0,
+                    "reviewer_output_format": "prompt",
                 },
             }
         },
@@ -202,7 +203,8 @@ def test_explicit_auto_builder_wires_isolated_reviewer_from_llm(tmp_path) -> Non
     )
     assert rail.auto_reviewer.client._model.model_config == model.model_config
     assert rail.auto_reviewer.timeout_seconds == pytest.approx(4.321)
-    assert rail.auto_reviewer.min_confidence == 0.0
+    assert not hasattr(rail.auto_reviewer, "min_confidence")
+    assert rail.auto_reviewer.client.output_format == "prompt"
 
 
 def test_explicit_auto_builder_with_unrebuildable_model_fails_closed(

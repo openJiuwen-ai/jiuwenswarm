@@ -403,6 +403,11 @@ async def _start_worker_runtime(
     from openjiuwen.harness.observability import install_subagent_observability_hook
 
     install_subagent_observability_hook()
+    from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
+        install_session_token_usage_subagent_hook,
+    )
+
+    install_session_token_usage_subagent_hook()
     log_startup_stage("observability_installed")
 
     schedule_warmup = getattr(server, "schedule_image_modality_warmup", None)

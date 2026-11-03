@@ -49,6 +49,47 @@ async def test_only_summary_errors_notify_organization_runtime(monkeypatch, sour
 
 
 @pytest.mark.asyncio
+async def test_relay_subagent_usage_snapshot_read_is_offloaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep, team_helpers
+    from jiuwenswarm.server.runtime.session import session_token_usage
+
+    loop_thread = threading.get_ident()
+    read_threads: list[int] = []
+
+    def _read_usage(session_id: str) -> dict[str, Any]:
+        read_threads.append(threading.get_ident())
+        return {"revision": 1, "session_id": session_id}
+
+    monkeypatch.setattr(team_helpers, "_is_leader_output", lambda _chunk: True)
+    monkeypatch.setattr(team_helpers, "_is_teammate_output", lambda _chunk: False)
+    monkeypatch.setattr(session_token_usage, "get_session_token_usage", _read_usage)
+    monkeypatch.setattr(interface_deep, "append_history_record", lambda **_kwargs: None)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+
+    await launcher._relay_expert_chunk(
+        SimpleNamespace(
+            type="subagent_updated",
+            role="leader",
+            payload={
+                "subagent_updated": {
+                    "parent_session_id": "parent-session",
+                    "subagent_id": "child-session",
+                    "status": "running",
+                }
+            },
+        ),
+        team_id="team-1",
+        session_id="parent-session",
+        channel_id="web",
+        round_id="round-1",
+    )
+
+    assert read_threads and all(thread_id != loop_thread for thread_id in read_threads)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("source", [
     "org_expert_background", "org_summary_background", "org_root_background", "org_root_delivery",
 ])
@@ -96,7 +137,7 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
         ("org_expert_direct", False, "chat.final", True),
         ("org_expert_background", True, "chat.final", True),
         ("org_root_background", True, "chat.tool_call", True),
-        ("org_expert_background", False, "chat.final", False),
+        ("org_expert_background", False, "chat.final", True),
         ("org_summary_background", True, "chat.delta", False),
     ],
 )
@@ -109,7 +150,7 @@ async def test_group_background_replies_are_written_to_session_history(
         history.append(kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers.append_history_record",
         append_history_record,
     )
     monkeypatch.setattr(
@@ -142,7 +183,7 @@ async def test_group_background_replies_are_written_to_session_history(
 async def test_group_reply_is_stored_when_no_browser_is_attached(monkeypatch):
     history = []
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers.append_history_record",
         lambda **kwargs: history.append(kwargs),
     )
     monkeypatch.setattr(

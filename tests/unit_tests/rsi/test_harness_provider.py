@@ -341,7 +341,6 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
         AutoCoordinatingHarnessConfig,
         SingleHarnessIterativeOptimizationOrchestrator,
     )
-    from openjiuwen.rsi.harness_rsi.config import DataLoaderConfig, EvaluatorConfig
 
     from jiuwenswarm.agents.harness.common.rsi.artifact_service import (
         RsiArtifactService,
@@ -394,9 +393,14 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
             eval_ref.write_text(yaml.safe_dump({"harness_refs_path": str(refs_path), "cases": cases}), encoding="utf-8")
             return str(eval_ref)
 
+    # Historical epoch tasks retain their original policy after an SDK upgrade.
     orchestrator = SingleHarnessIterativeOptimizationOrchestrator(
-        AutoCoordinatingHarnessConfig(max_epochs=3, evaluator=EvaluatorConfig(backend="single_harness"),
-                                      data_loader=DataLoaderConfig(batch_size=1)),
+        AutoCoordinatingHarnessConfig.from_dict({
+            "max_epochs": 3,
+            "evaluator": {"backend": "single_harness"},
+            "data_loader": {"batch_size": 1},
+            "scheduling": {"promotion_policy": "epoch_full_evaluation"},
+        }),
         evaluator=Evaluator(), analyzer=object(), member_optimizer=object(),
     )
     provider = HarnessProvider(tmp_path, orchestrator=orchestrator)

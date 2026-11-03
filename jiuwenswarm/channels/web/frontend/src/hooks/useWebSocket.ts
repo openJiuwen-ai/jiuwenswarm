@@ -131,6 +131,7 @@ import { useSubagentStore } from '../stores/subagentStore';
 import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
+import { isOrganizationOwnerStopped, setOrganizationOwnerStopped } from '../features/teamOrganization/processing';
 import {
   normalizeSubagentActivityEvent,
   normalizeSubagentToolStatusUpdates,
@@ -1162,10 +1163,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   } = useSessionStore.getState();
 
   const resolveEventSessionId = useCallback(
-    (payload: Record<string, unknown>): string | null => {
+    (payload: Record<string, unknown>, eventType?: string): string | null => {
       const payloadSessionId = getPayloadSessionId(payload);
-        if (!payloadSessionId) return null;
-        if (expertTeamId(payload, payloadSessionId)) return null;
+      if (!payloadSessionId) return null;
+      const stoppedOwnerOutput = isOrganizationOwnerStopped(payloadSessionId);
+      const incrementalOutput = ['chat.delta', 'chat.reasoning', 'chat.tool_call', 'chat.tool_result']
+        .includes(eventType ?? '');
+      if (stoppedOwnerOutput && incrementalOutput) return null;
+      if (expertTeamId(payload, payloadSessionId)) return null;
       ensureSessionRuntimes(payloadSessionId);
       if (typeof payload.execution_id === 'string' && payload.execution_id) {
         useChatStore.getState().setActiveExecutionId(payloadSessionId, payload.execution_id);
@@ -2258,6 +2263,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           },
         });
         clearConnectionPresentationForUserAction(sessionId);
+        setOrganizationOwnerStopped(sessionId, false);
         if (sessionMetadata) {
           useSessionStore.getState().setSessionMetadata(sessionId, null);
         }
@@ -2464,6 +2470,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           timestamp: new Date().toISOString(),
         });
       }
+      let restoreOwnerProcessing: (() => void) | undefined;
       try {
         const params: Record<string, unknown> = {
           session_id: sessionId,
@@ -2476,7 +2483,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (ownerStopTarget) {
           params.intent = 'cancel';
           params.target_team_id = ownerStopTarget;
-          params.organization_stop = true;
+          params.organization_owner_stop = true;
+          const foregroundWasProcessing = Boolean(
+            useChatStore.getState().getRuntime(sessionId)?.foregroundIsProcessing,
+          );
+          const ownerWasStopped = isOrganizationOwnerStopped(sessionId);
+          restoreOwnerProcessing = () => {
+            setOrganizationOwnerStopped(sessionId, ownerWasStopped);
+            useChatStore.getState().setProcessing(sessionId, foregroundWasProcessing);
+          };
+          // Stop the Owner composer immediately while children finish independently.
+          setOrganizationOwnerStopped(sessionId, true, true);
+          closeActiveTeamLeaderMessages(sessionId);
         }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
@@ -2498,8 +2516,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (intent === 'supplement' || intent === 'resume') {
           Object.assign(params, useSessionStore.getState().getOutgoingModelParams(sessionId));
         }
-        await request('chat.interrupt', params);
+        const result = await request<{ success?: boolean }>('chat.interrupt', params);
+        if (result?.success === false) {
+          restoreOwnerProcessing?.();
+          return false;
+        }
+        if (ownerStopTarget) setOrganizationOwnerStopped(sessionId, true);
         if (intent === 'supplement' || intent === 'resume') {
+          setOrganizationOwnerStopped(sessionId, false);
           clearConnectionPresentationForUserAction(sessionId);
         }
         if (intent === 'supplement') {
@@ -2508,6 +2532,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         return true;
       } catch (error) {
+        restoreOwnerProcessing?.();
         const webError = error as WebError;
         onErrorRef.current?.(webError.message || t('network.interruptFailed'));
         return false;
@@ -2538,8 +2563,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const cancel = useCallback(
     async (sessionId: string) => {
       try {
+        const ownerOnly = Boolean(organizationOwnerStopTarget(sessionId));
         const succeeded = await interrupt(sessionId, 'cancel');
-        if (succeeded) {
+        if (succeeded && !ownerOnly) {
           useSubagentStore.getState().markRunningSubagentsCancelled(sessionId);
         }
       } catch (error) {
@@ -3164,7 +3190,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.delta', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.delta', payload)) return;
-          const sessionId = resolveEventSessionId(payload);
+          const sessionId = resolveEventSessionId(payload, 'chat.delta');
           if (!sessionId) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
@@ -3369,7 +3395,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.reasoning', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.reasoning', payload)) return;
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.reasoning');
         if (!sessionId) return;
         // 主动推荐来源的 reasoning 不进 session 全局 reasoningSegments——否则会并入
         // 上一轮 turn（segment 无 messageId 绑定，按 startedAt 排序），把上一条
@@ -3397,6 +3423,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.final', ({ payload }) => {
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
+        }
         if (shouldIgnoreSessionOutput(payload)) return;
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
@@ -4242,7 +4271,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_call', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.tool_call', payload)) return;
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.tool_call');
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
@@ -4340,7 +4369,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         applyToolUpdatePayload(sessionId, payload);
       }),
       webClient.on('chat.tool_result', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.tool_result');
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -4600,6 +4629,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
+        }
         // Organization background rounds own their lifecycle in useOrganizationEvents.
         // They must not close a concurrent foreground Owner request.
         if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
@@ -4617,6 +4649,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 加载历史消息时忽略处理状态更新
         if (useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) return;
         const isProcessingNow = Boolean(payload.is_processing);
+        // Delayed foreground status must not relight an explicitly stopped Owner.
+        if (isProcessingNow && isOrganizationOwnerStopped(sessionId)) return;
 
         // 服务器在跨会话执行前先推送带原始问题的 processing=true。把它显式
         // 追加为一个新 user turn，并关闭可能残留的旧 stream 游标；历史消息本身
@@ -5068,6 +5102,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         } else if (resultPayload.intent === 'resume') {
           if (resultPayload.success) {
+            setOrganizationOwnerStopped(sessionId, false);
             // 直接设置所有状态值
             if (hasActiveTask) {
               useChatStore.getState().setPaused(sessionId, false);
@@ -5114,6 +5149,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.subtask_update', ({ payload }) => {
+        useSessionStore.getState().receiveSessionTokenUsage((payload as { session_usage?: unknown }).session_usage);
         const event = normalizeSubagentStatusEvent(payload);
         if (!event) return;
         let pendingAssignment = pendingSubagentAssignmentRef.current.get(event.subagent.subagent_id);
@@ -5540,6 +5576,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) {
           console.log('[usage_summary] filtered by session check');
           return;
+        }
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
         }
         const usage = payload.usage as UsageSummary | undefined;
         if (!usage) {

@@ -14,6 +14,7 @@ import {
   isTeamLeaderContextUsageSnapshot,
   parseContextUsageSnapshot,
 } from '../features/contextUsage/contextUsageModel';
+import { parseSessionTokenUsageSnapshot } from '../types/sessionTokenUsage';
 import {
   Session,
   AgentMode,
@@ -24,6 +25,7 @@ import {
   ContextCompressionRuntime,
   ContextCompressionSummary,
   ContextUsageSnapshot,
+  SessionTokenUsageSnapshot,
   TeamMemberContextCompressionState,
 } from '../types';
 import {
@@ -62,6 +64,7 @@ import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
 const MODEL_SELECTION_STORAGE_KEY = 'jiuwenclaw_last_model_selection';
+const LEGACY_MODEL_STORAGE_KEY = 'jiuwenclaw_last_legacy_model';
 const AGENT_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_selection';
 const AGENT_GROUP_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_group_selection';
 const TRANSIENT_NEW_CONVERSATION_ID = 'new';
@@ -92,9 +95,25 @@ function loadLastModelSelection(): ModelSelection | null {
   }
 }
 
+function loadLastLegacyModelName(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  try { return localStorage.getItem(LEGACY_MODEL_STORAGE_KEY)?.trim() || null; } catch { return null; }
+}
+
+function cacheLastLegacyModelName(name: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(LEGACY_MODEL_STORAGE_KEY, name);
+    localStorage.removeItem(MODEL_SELECTION_STORAGE_KEY);
+  } catch { /* noop */ }
+}
+
 export function cacheLastModelSelection(selection: ModelSelection): void {
   if (typeof localStorage === 'undefined') return;
-  try { localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection)); } catch { /* noop */ }
+  try {
+    localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection));
+    localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY);
+  } catch { /* noop */ }
 }
 
 /** New chats restore the last stable selection, then fall back default-group -> custom -> free -> empty. */
@@ -187,6 +206,15 @@ function restoreNewConversationSelection(
   // Catalog refresh can briefly omit groups; keep the draft group until the user
   // changes it. Historical sessions heal via ChatModelSelector / session restore.
   if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
+  const legacyName = loadLastLegacyModelName();
+  const legacyModel = models.find((model) => model.model_name === legacyName);
+  if (legacyName && (legacyModel || models.length === 0)) {
+    return {
+      ...runtime,
+      selectedModelName: legacyName,
+      selectedModelSelection: legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null,
+    };
+  }
   const cached = loadLastModelSelection();
   const selection = isModelSelectionAvailable(cached, models, groups)
     ? cached
@@ -647,6 +675,7 @@ export interface SessionRuntime {
   /** 新会话草稿值；真实 Session 创建后由后端 metadata 的权威值覆盖。 */
   persistSession: boolean;
   contextUsageSnapshot: ContextUsageSnapshot | null;
+  tokenUsageSnapshot: SessionTokenUsageSnapshot | null;
   teamTaskEvents: TeamTaskEvent[];
   teamTasks: TeamTask[];
   teamTaskProgressBaseline: TaskProgressBaseline;
@@ -700,6 +729,9 @@ function createEmptyRuntime(
   availableModels: ModelEntry[] = [],
   availableModelGroups: ModelGroup[] = [],
 ): SessionRuntime {
+  const legacyName = sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadLastLegacyModelName() : null;
+  const legacyModel = availableModels.find((model) => model.model_name === legacyName);
+  const restoreLegacyName = Boolean(legacyName && (legacyModel || availableModels.length === 0));
   const restoredSelection = sessionId === TRANSIENT_NEW_CONVERSATION_ID
     ? resolveNewConversationModelSelection(availableModels, availableModelGroups, loadLastModelSelection())
     : null;
@@ -708,11 +740,14 @@ function createEmptyRuntime(
     : null;
   return {
     mode: loadModeFromStorage(),
-    selectedModelName: restoredModel?.model_name ?? null,
-    selectedModelSelection: restoredSelection,
+    selectedModelName: restoreLegacyName ? legacyName : restoredModel?.model_name ?? null,
+    selectedModelSelection: restoreLegacyName
+      ? legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null
+      : restoredSelection,
     projectDirectory: null,
     persistSession: false,
     contextUsageSnapshot: null,
+    tokenUsageSnapshot: null,
     teamTaskEvents: [],
     teamTasks: [],
     teamTaskProgressBaseline: createTaskProgressBaseline(),
@@ -775,6 +810,7 @@ interface SessionState {
   setConnected: (connected: boolean) => void;
   setAvailableTools: (tools: string[]) => void;
   receiveContextUsage: (payload: unknown) => void;
+  receiveSessionTokenUsage: (payload: unknown) => void;
   setMemoryUsage: (memoryUsage: Partial<MemoryUsage> | null) => void;
   setAvailableModels: (models: ModelEntry[], activeModel?: string) => void;
   setAvailableModelGroups: (groups: ModelGroup[]) => void;
@@ -1164,6 +1200,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, contextUsageSnapshot: snapshot },
+        },
+      };
+    });
+  },
+
+  receiveSessionTokenUsage: (payload) => {
+    const snapshot = parseSessionTokenUsageSnapshot(payload);
+    if (!snapshot) return;
+    set((state) => {
+      const runtime = state.runtimes[snapshot.session_id];
+      if (!runtime) return state;
+      if (
+        runtime.tokenUsageSnapshot
+        && runtime.tokenUsageSnapshot.revision >= snapshot.revision
+      ) {
+        return state;
+      }
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [snapshot.session_id]: { ...runtime, tokenUsageSnapshot: snapshot },
         },
       };
     });
@@ -2254,6 +2311,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         model?.model_id && model.model_id.trim()
           ? { type: 'model', id: model.model_id.trim() }
           : null;
+      if (model && name) {
+        if (!selectionFromName) cacheLastLegacyModelName(name);
+        else if (loadLastLegacyModelName()) cacheLastModelSelection(selectionFromName);
+      }
       return {
         runtimes: {
           ...state.runtimes,

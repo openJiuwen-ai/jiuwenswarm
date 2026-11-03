@@ -2013,6 +2013,32 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     assert "当前语言：cn" in rendered
 
 
+@pytest.mark.parametrize("language", ["cn", "en"])
+def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(language: str) -> None:
+    from openjiuwen.core.context_engine.base import ContextWindow
+    from openjiuwen.core.context_engine.token.string_length_counter import StringLengthCounter
+    from openjiuwen.core.context_engine.usage.analyzer import ContextUsageAnalyzer
+    from openjiuwen.core.foundation.llm import SystemMessage
+    from openjiuwen.core.single_agent.agents.react_agent import ReActAgent
+
+    builder = SystemPromptBuilder(language=language)
+    builder.add_section(PromptSection(name="identity", content={language: "Core rules."}, priority=10))
+    rail = SkillRetrievalPromptRail(config_base={"symphony": {"skill_retrieval": {"enabled": True}}})
+    rail.system_prompt_builder = builder
+    rail._add_prompt_builder_section(language, "Use demo Skill.")
+    sections = ReActAgent._context_usage_prompt_sections(SimpleNamespace(prompt_builder=builder))
+    snapshot = ContextUsageAnalyzer(StringLengthCounter(), context_window_limit=1000).analyze(
+        ContextWindow(system_messages=[SystemMessage(content=builder.build())]),
+        request_id="skill-classification",
+        session_id="skill-classification",
+        system_prompt_sections=sections,
+    )
+
+    assert snapshot.parts["skills"].tokens == 5
+    assert snapshot.parts["system_prompt"].tokens == 3
+    assert snapshot.context_window.input_tokens == 8
+
+
 @pytest.mark.asyncio
 async def test_skill_retrieval_prompt_renders_directory_guidance(
     monkeypatch,

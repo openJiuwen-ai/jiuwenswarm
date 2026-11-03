@@ -24,6 +24,7 @@ import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked'
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
+import { useComfyuiWorkflowEnabled } from '../comfyuiFeatureConfig';
 import { useComfyuiImport } from '../useComfyuiImport';
 
 /** Dock exposes image + video generation; audio stays for asset drops only. */
@@ -40,6 +41,7 @@ export function DesignerCanvasDock() {
   const toggleAssetsSidebar = useDesignerUiStore((state) => state.toggleAssetsSidebar);
   const closeDock = useDesignerUiStore((state) => state.closeDock);
   const editingLocked = useDesignerGraphEditingLocked();
+  const comfyuiEnabled = useComfyuiWorkflowEnabled();
   const importComfyui = useComfyuiImport();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -132,29 +134,33 @@ export function DesignerCanvasDock() {
             <DesignerAddNodeTypeIcon type={item.type} />
           </button>
         ))}
-        <button
-          type="button"
-          className={`designer-canvas-dock__btn${editingLocked ? ' designer-edit-control' : ''}`}
-          disabled={editingLocked}
-          aria-label={t('designer.dock.node.comfyui')}
-          title={t('designer.dock.comfyuiHint')}
-          data-testid="designer-canvas-dock-add-comfyui"
-          onClick={() => {
-            if (editingLocked) return;
-            fileInputRef.current?.click();
-          }}
-        >
-          <ComfyuiGenerationIcon aria-hidden />
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".json,application/json"
-          multiple
-          hidden
-          data-testid="designer-canvas-dock-comfyui-input"
-          onChange={onComfyuiChange}
-        />
+        {comfyuiEnabled ? (
+          <>
+            <button
+              type="button"
+              className={`designer-canvas-dock__btn${editingLocked ? ' designer-edit-control' : ''}`}
+              disabled={editingLocked}
+              aria-label={t('designer.dock.node.comfyui')}
+              title={t('designer.dock.comfyuiHint')}
+              data-testid="designer-canvas-dock-add-comfyui"
+              onClick={() => {
+                if (editingLocked) return;
+                fileInputRef.current?.click();
+              }}
+            >
+              <ComfyuiGenerationIcon aria-hidden />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              multiple
+              hidden
+              data-testid="designer-canvas-dock-comfyui-input"
+              onChange={onComfyuiChange}
+            />
+          </>
+        ) : null}
         <span className="designer-canvas-dock__split" aria-hidden />
         <button
           type="button"

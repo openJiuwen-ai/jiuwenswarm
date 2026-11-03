@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import asyncio
-import time
 import uuid
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
@@ -17,6 +16,7 @@ from jiuwenswarm.server.runtime.team_organization_identity_store import save_org
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.interaction import DeliverResult
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _UnattendedTeamRoundHistoryWriter
 
 logger = logging.getLogger(__name__)
 _recovery_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -37,32 +37,6 @@ class LaunchedExpertTeam:
         return data
 
 
-_DIRECT_HISTORY_EVENTS = frozenset({"chat.final", "chat.error"})
-_GROUP_HISTORY_EVENTS = frozenset({
-    "chat.final",
-    "chat.error",
-    "chat.tool_call",
-    "chat.tool_result",
-})
-
-
-def _is_swarm_group_session(session_id: str) -> bool:
-    """True when this session is a swarm group chat, not an ordinary team chat."""
-    if not str(session_id or "").strip():
-        return False
-    try:
-        from jiuwenswarm.server.runtime.group_service import read_group
-
-        return read_group(session_id) is not None
-    except Exception:
-        logger.debug(
-            "[ExpertTeamLauncher] group session lookup failed session=%s",
-            session_id,
-            exc_info=True,
-        )
-        return False
-
-
 def _is_group_organization_owner(session_id: str, team_id: str) -> bool:
     if not str(team_id or "").strip():
         return False
@@ -80,22 +54,6 @@ def _is_group_organization_owner(session_id: str, team_id: str) -> bool:
             exc_info=True,
         )
         return False
-
-
-def _should_record_expert_history(source: str, event_type: str, session_id: str) -> bool:
-    """Keep swarm group replies in session history.
-
-    Direct expert replies were already stored. Background organization turns
-    (the group owner, invited experts, and the summary team) only pushed live
-    frames, so reopening the group showed the prompt and an empty chat.
-    Ordinary team chats keep the previous rule.
-    """
-    if source == "org_expert_direct":
-        return event_type in _DIRECT_HISTORY_EVENTS
-    return (
-        event_type in _GROUP_HISTORY_EVENTS
-        and _is_swarm_group_session(session_id)
-    )
 
 
 def _leader_id_from_agent(agent: Any, team_id: str) -> str:
@@ -225,6 +183,10 @@ class JiuwenExpertTeamLauncher:
         self._organization_runtime = organization_runtime
         self._team_channels: dict[tuple[str, str], str] = {}
 
+        self._history_writers: dict[
+            tuple[str, str, str, str, str], _UnattendedTeamRoundHistoryWriter
+        ] = {}
+
     def _get_runtime(self) -> Any:
         if self._runtime_manager is not None:
             return self._runtime_manager
@@ -301,12 +263,9 @@ class JiuwenExpertTeamLauncher:
     ) -> bool:
         """Run an org background turn and relay expert output to its Web session."""
         from jiuwenswarm.server.runtime.organization_execution import (
-            OrganizationTurn, is_stopping, register_turn, unregister_turn,
+            OrganizationTurn, is_stopping, owner_is_stopped, register_turn, unregister_turn,
         )
 
-        if is_stopping(session_id, team_id):
-            return False
-        runtime = self._get_runtime()
         relay_source = str(inputs.get("_org_relay_source") or "") if isinstance(inputs, dict) else ""
         is_root_relay = relay_source in {"org_root_background", "org_root_delivery"}
         turn_inputs = dict(inputs) if isinstance(inputs, dict) else inputs
@@ -314,6 +273,27 @@ class JiuwenExpertTeamLauncher:
             turn_inputs.pop("_org_relay_source", None)
         if is_root_relay:
             source = relay_source
+        if source in {"org_root_background", "org_root_delivery"}:
+            from jiuwenswarm.server.runtime.organization_owner_results import queue_owner_notification
+
+            if is_stopping(session_id, team_id) and not owner_is_stopped(session_id, team_id):
+                return False
+            receipt = await queue_owner_notification(session_id, team_id, source, inputs)
+            if owner_is_stopped(session_id, team_id):
+                return True
+            if receipt is not None:
+                if receipt["acknowledged_at"] is not None:
+                    return True
+                if not isinstance(turn_inputs, dict):
+                    turn_inputs = {}
+                turn_inputs["query"] = (
+                    "Continue the current user's organization task using the ordered Owner result inbox. "
+                    "Process each received result and explicitly acknowledge it after handling. "
+                    "Do not repeat already completed task actions."
+                )
+        if is_stopping(session_id, team_id):
+            return False
+        runtime = self._get_runtime()
         entry = await runtime.pool.get(team_id)
         if entry is None or entry.current_session_id != session_id:
             logger.warning(
@@ -430,6 +410,7 @@ class JiuwenExpertTeamLauncher:
             else None
         )
         leader_text_parts: list[str] = []
+        leader_final_parts: list[str] = []
         saw_leader_final = False
         registered = False
         try:
@@ -462,6 +443,11 @@ class JiuwenExpertTeamLauncher:
                 )
                 return False
             ran_turn = True
+            if source in {"org_root_background", "org_root_delivery"} and owner_is_stopped(session_id, team_id):
+                from jiuwenswarm.server.runtime.organization_owner_results import queue_owner_notification
+
+                await queue_owner_notification(session_id, team_id, source, inputs)
+                return True
             if team_package_availability(team_id, group_name).get("available") is False:
                 await runtime.stop_team(team_name=team_id, session_id=session_id)
                 return False
@@ -511,6 +497,8 @@ class JiuwenExpertTeamLauncher:
                                 leader_text_parts.append(content)
                             elif event_type == "chat.final":
                                 saw_leader_final = True
+                                if isinstance(content, str):
+                                    leader_final_parts.append(content)
             finally:
                 close = getattr(stream, "aclose", None)
                 if callable(close):
@@ -532,8 +520,19 @@ class JiuwenExpertTeamLauncher:
                     source=source,
                 )
                 frame_sequence += 1
-            # A Leader can emit a final segment before its last tool call.
-            # End the Team turn explicitly without ending the shared Session.
+            # Commit results before acknowledging this turn to the scheduler.
+            from jiuwenswarm.server.runtime.organization_owner_results import capture_child_completion
+
+            try:
+                await capture_child_completion(
+                    session_id, team_id, getattr(agent, "team_backend", None),
+                    "\n".join(leader_final_parts) if leader_final_parts else "".join(leader_text_parts),
+                    round_id,
+                )
+            except Exception:
+                logger.warning("[ExpertTeamLauncher] result capture failed team=%s session=%s",
+                               team_id, session_id, exc_info=True)
+            # A final segment can precede a last tool call; end the Team turn explicitly.
             await self.push_expert_payload(
                 {"event_type": "org.turn_completed", "team_id": team_id},
                 team_id=team_id,
@@ -572,22 +571,34 @@ class JiuwenExpertTeamLauncher:
             return False
         finally:
             try:
-                if ran_turn and activation is not None:
-                    if not finalized:
-                        logger.info(
-                            "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
-                            "source=%s trigger=finally",
-                            team_id,
-                            session_id,
-                            source,
-                        )
-                        await runtime.finalize(team_name=team_id, session_id=session_id)
-                    current = await runtime.pool.get(team_id)
-                    interact_gate = getattr(current, "interact_gate", None)
-                    close_and_drain = getattr(interact_gate, "close_and_drain", None)
-                    if callable(close_and_drain):
-                        await close_and_drain()
-                    await activation.session.post_run()
+                try:
+                    if source in {"org_root_background", "org_root_delivery"} and registered:
+                        if owner_is_stopped(session_id, team_id):
+                            from jiuwenswarm.server.runtime.organization_owner_results import queue_owner_notification
+
+                            try:
+                                await queue_owner_notification(session_id, team_id, source, inputs)
+                            except Exception:
+                                logger.warning("[ExpertTeamLauncher] cleanup notification failed team=%s session=%s",
+                                               team_id, session_id, exc_info=True)
+                    await self._flush_expert_history(session_id, team_id, round_id)
+                finally:
+                    if ran_turn and activation is not None:
+                        if not finalized:
+                            logger.info(
+                                "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
+                                "source=%s trigger=finally",
+                                team_id,
+                                session_id,
+                                source,
+                            )
+                            await runtime.finalize(team_name=team_id, session_id=session_id)
+                        current = await runtime.pool.get(team_id)
+                        interact_gate = getattr(current, "interact_gate", None)
+                        close_and_drain = getattr(interact_gate, "close_and_drain", None)
+                        if callable(close_and_drain):
+                            await close_and_drain()
+                        await activation.session.post_run()
             finally:
                 try:
                     if registered:
@@ -627,13 +638,14 @@ class JiuwenExpertTeamLauncher:
             _is_teammate_output,
             _truncate_team_tool_result_event,
         )
+        from jiuwenswarm.server.runtime.session.history_io import run_stream_parser
         from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 
         is_leader = _is_leader_output(chunk)
         is_teammate = _is_teammate_output(chunk)
         if not is_leader and not is_teammate:
             return None
-        parsed = parse_stream_chunk(chunk)
+        parsed = await run_stream_parser(parse_stream_chunk, chunk)
         if parsed is None or parsed.get("event_type") not in _TEAM_ATTRIBUTED_EVENT_TYPES:
             return None
 
@@ -701,7 +713,13 @@ class JiuwenExpertTeamLauncher:
             # can already see this team marked as the owner. Tag the frame so
             # the group owner's reply stays on the conversation being viewed.
             parsed["swarm_group_owner"] = True
-        event_type = str(parsed.get("event_type") or "")
+        await self._persist_expert_history(
+            parsed,
+            team_id=team_id,
+            session_id=session_id,
+            channel_id=channel_id,
+            round_id=round_id,
+        )
 
         try:
             delivered = await self._get_push_transport().send_push(
@@ -732,23 +750,72 @@ class JiuwenExpertTeamLauncher:
             if source == "org_expert_direct":
                 raise RuntimeError("failed to deliver direct expert output")
 
-        if _should_record_expert_history(source, event_type, session_id):
-            from jiuwenswarm.server.runtime.session.session_history import (
-                append_history_record,
+        return delivered
+
+    async def _persist_expert_history(
+        self,
+        payload: dict[str, Any],
+        *,
+        team_id: str,
+        session_id: str,
+        channel_id: str,
+        round_id: str,
+    ) -> None:
+        """Persist organization output independently of Web delivery."""
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            _TEAM_ATTRIBUTED_EVENT_TYPES,
+            _UnattendedTeamRoundHistoryWriter,
+        )
+
+        event_type = str(payload.get("event_type") or "")
+        if event_type == "org.turn_completed":
+            await self._flush_expert_history(session_id, team_id, round_id)
+            return
+        if event_type not in _TEAM_ATTRIBUTED_EVENT_TYPES:
+            return
+        role = str(payload.get("role") or "leader")
+        member_name = str(payload.get("member_name") or "team_leader")
+        key = (session_id, team_id, round_id, role, member_name)
+        writer = self._history_writers.get(key)
+        if writer is None:
+            writer = _UnattendedTeamRoundHistoryWriter(
+                channel_id=channel_id,
+                session_id=session_id,
+                request_id=f"{round_id}:{team_id}:{role}:{member_name}",
+                cross_session_marker=None,
+                event_metadata={
+                    **({"swarm_group_owner": True} if payload.get("swarm_group_owner") else {}),
+                    "team_id": team_id,
+                    "team_name": team_id,
+                    "source": payload.get("source"),
+                    "role": role,
+                    "member_name": member_name,
+                    "request_id": round_id,
+                    "rid": round_id,
+                },
+            )
+            self._history_writers[key] = writer
+        try:
+            await writer.observe(payload)
+        except Exception:
+            logger.warning(
+                "[ExpertTeamLauncher] history persist failed team=%s session=%s round=%s",
+                team_id, session_id, round_id, exc_info=True,
             )
 
-            append_history_record(
-                session_id=session_id,
-                request_id=f"{round_id}:{frame_sequence}",
-                channel_id=channel_id,
-                role="assistant",
-                event_type=event_type,
-                content=parsed.get("content") or parsed.get("error") or "",
-                timestamp=time.time(),
-                extra=parsed,
-                mode="team",
-            )
-        return delivered
+    async def _flush_expert_history(self, session_id: str, team_id: str, round_id: str) -> None:
+        """Close each member's history buffer when a turn finishes or fails."""
+        keys = [key for key in self._history_writers if key[:3] == (session_id, team_id, round_id)]
+        for key in keys:
+            writer = self._history_writers.pop(key)
+            try:
+                await writer.flush_pending_final()
+                await writer.flush_pending_reasoning()
+            except Exception:
+                logger.warning(
+                    "[ExpertTeamLauncher] history flush failed team=%s session=%s round=%s",
+                    team_id, session_id, round_id, exc_info=True,
+                )
 
     async def _resolve_donor_backend(
         self,

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isDesignerGraphEditingLocked } from '../node_modules/.cache/designer-graph-lock/designerGraphLock.js';
+import {
+  isDesignerGraphEditingLocked,
+  isDesignerLeaderBusy,
+} from '../node_modules/.cache/designer-graph-lock/designerGraphLock.js';
 
 const promptGraph = {
   graph_id: 'g1',
@@ -48,6 +51,49 @@ test('building and an active run lock the graph', () => {
     }),
     true,
   );
+});
+
+test('the graph stays locked while the leader answers the first prompt', () => {
+  const emptyPromptGraph = { graph_id: 'g3', source: 'prompt', nodes: [] };
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      leaderBusy: true,
+      graph: emptyPromptGraph,
+      nodeStates: {},
+      runStatus: null,
+    }),
+    true,
+  );
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      leaderBusy: true,
+      graph: { graph_id: 'g2', source: 'manual', nodes: [{ id: 'n1' }] },
+      nodeStates: {},
+      runStatus: null,
+    }),
+    true,
+  );
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      leaderBusy: false,
+      graph: emptyPromptGraph,
+      nodeStates: {},
+      runStatus: null,
+    }),
+    false,
+  );
+});
+
+test('the leader stays busy while it waits for an answer or is paused', () => {
+  const idle = { isProcessing: false, isPaused: false, pendingQuestions: [] };
+  assert.equal(isDesignerLeaderBusy(undefined), false);
+  assert.equal(isDesignerLeaderBusy(idle), false);
+  assert.equal(isDesignerLeaderBusy({ ...idle, isProcessing: true }), true);
+  assert.equal(isDesignerLeaderBusy({ ...idle, pendingQuestions: [{ request_id: 'q1' }] }), true);
+  assert.equal(isDesignerLeaderBusy({ ...idle, isPaused: true }), true);
 });
 
 test('a failed built graph unlocks so it can be edited', () => {

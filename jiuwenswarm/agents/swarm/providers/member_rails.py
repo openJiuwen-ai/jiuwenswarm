@@ -78,6 +78,26 @@ TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 TEAM_SKILL_LIBRARY_RELOAD = "swarm.team_skill_library_reload"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 ORGANIZATION_AVAILABILITY = "swarm.organization_availability"
+ORGANIZATION_MODEL = "swarm.organization_model"
+ORGANIZATION_OWNER_INBOX = "swarm.organization_owner_inbox"
+
+
+@harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_OWNER_INBOX,
+                 description="Inject ordered durable results on the Owner's next model call.")
+def _build_organization_owner_inbox_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    from jiuwenswarm.agents.harness.team.rails.organization_owner_inbox_rail import OrganizationOwnerInboxRail
+
+    if str(context.role) != "leader":
+        return None
+    return OrganizationOwnerInboxRail(context.team_id, context.session_id)
+
+
+@harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_MODEL,
+                 description="Apply the persistent model selection of an organization expert Team.")
+def _build_organization_model_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    from jiuwenswarm.agents.harness.team.rails.organization_model_rail import OrganizationModelRail
+
+    return OrganizationModelRail(context.team_id, context.session_id, str(context.role))
 
 
 @harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_AVAILABILITY,

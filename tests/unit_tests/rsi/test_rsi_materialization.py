@@ -212,8 +212,10 @@ def test_gdpval_validation_suite_is_normalized(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize("evaluation_method", ["script-based", "exact_match", "llm_as_judge"])
 def test_materializer_copies_dataset_wraps_single_harness_and_writes_validation_profile(
     tmp_path: Path,
+    evaluation_method: str,
 ) -> None:
     source_dataset = tmp_path / "source" / "validation.json"
     source_dataset.parent.mkdir()
@@ -239,6 +241,7 @@ def test_materializer_copies_dataset_wraps_single_harness_and_writes_validation_
         task_id,
         model_paths,
         max_iterations=4,
+        options={"evaluation_method": evaluation_method},
     )
 
     dataset_path = Path(dataset["path"])
@@ -275,6 +278,13 @@ def test_materializer_copies_dataset_wraps_single_harness_and_writes_validation_
         == 5
     )
     assert profile["sha256"] == hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    from openjiuwen.rsi.harness_rsi.config import load_auto_coordinating_harness_config
+
+    config = load_auto_coordinating_harness_config(str(profile_path))
+    assert config.promotion.continuous
+    assert config.promotion.min_improvement == 0.05
+    assert config.promotion.non_target_max_regression == 0.05
+    assert config.evaluator.score_mode == "continuous"
 
 
 @pytest.mark.parametrize(
@@ -553,6 +563,8 @@ def test_task_service_materializes_private_validation_inputs_and_keeps_manifest_
     request = HarnessEngineAdapter(provider).build_request(task.to_taskview())
     orchestrator = provider._resolve_orchestrator(request)
     assert orchestrator.config.max_epochs == 5
+    assert orchestrator.config.promotion.continuous
+    assert orchestrator.config.evaluator.score_mode == "continuous"
     assert orchestrator.config.member_optimizer.sibling_candidate_count == 1
     assert not orchestrator.config.member_optimizer.improver_policy_ref
     evaluated = []

@@ -244,6 +244,8 @@ def _apply_metadata_defaults_with_inference(
     if not isinstance(metadata, dict) or not metadata:
         return metadata
     original = metadata.copy() if background_writeback else None
+    if not metadata.get("session_id"):
+        metadata["session_id"] = session_id
 
     # 标题清理(原三处入口都有,统一到此处)
     if metadata.get("title"):
@@ -1091,6 +1093,7 @@ def update_session_metadata(
     session_harness_checkpoint: dict[str, Any] | None = None,
     group_members: list[dict[str, Any]] | None = None,
     conversation_type: str | None = None,
+    organization_owner_stopped: bool | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1295,6 +1298,8 @@ def update_session_metadata(
     if group_members is not None:
         metadata["group_members"] = copy.deepcopy(group_members)
         metadata["type"] = "group_chat"
+    if organization_owner_stopped is not None:
+        metadata["organization_owner_stopped"] = organization_owner_stopped
 
     _enqueue_write(
         session_id,
@@ -1606,7 +1611,10 @@ def get_session_metadata(
     """
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     if lc.state("session", session_id).get("write_blocked") or lc.session_paths(session_id)[1].exists():
-        return lc.raw_metadata(session_id)
+        metadata = lc.raw_metadata(session_id)
+        if isinstance(metadata, dict) and metadata and not metadata.get("session_id"):
+            metadata = {**metadata, "session_id": session_id}
+        return metadata
     metadata = _read_metadata(session_id, cache_bust)
     if isinstance(metadata, dict) and metadata:
         metadata = _apply_metadata_defaults_with_inference(

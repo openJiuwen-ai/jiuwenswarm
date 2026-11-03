@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+from importlib import import_module
 import threading
 import time
 from pathlib import Path
@@ -38,6 +39,43 @@ def sessions_dir(tmp_path, monkeypatch):
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("backend", ["server.runtime", "gateway.embedded.runtime"])
+@pytest.mark.parametrize("identity", [{}, {"session_id": None}, {"session_id": ""}])
+@pytest.mark.parametrize("reader", ["single", "paged", "aggregate"])
+def test_partial_metadata_readers_restore_identity_without_writing(tmp_path, monkeypatch, backend, identity, reader):
+    metadata = import_module(f"jiuwenswarm.{backend}.session.session_metadata")
+    lifecycle = import_module(f"jiuwenswarm.{backend}.session.lifecycle")
+    monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(metadata, "_build_project_lookup", lambda: ({}, {}))
+    session_dir = tmp_path / "partial-session"
+    session_dir.mkdir()
+    original = json.dumps({
+        **identity,
+        "title": "Partial session",
+        "project_id": "default",
+        "work_mode": "work",
+        "last_user_message_at": 1,
+    })
+    path = session_dir / "metadata.json"
+    path.write_text(original, encoding="utf-8")
+
+    if reader == "single":
+        loaded = metadata.get_session_metadata("partial-session", cache_bust=True, enable_writeback=False)
+    elif reader == "paged":
+        sessions, total = metadata.get_all_sessions_metadata()
+        assert total == 1
+        loaded = sessions[0]
+    else:
+        sessions = metadata._collect_all_sessions_metadata()
+        assert len(sessions) == 1
+        loaded = sessions[0]
+
+    assert loaded["session_id"] == "partial-session"
+    assert loaded["title"] == "Partial session"
+    assert path.read_text(encoding="utf-8") == original
 
 
 # ===========================================================================
@@ -3360,3 +3398,23 @@ def test_session_info_does_not_confuse_team_mode_with_group_type():
     assert to_session_info({"mode": "team.work.normal"})["type"] == "chat"
     assert to_session_info({"mode": "agent.work.normal"})["type"] == "chat"
     assert to_session_info({"group_members": []})["type"] == "group_chat"
+
+
+def test_owner_stop_persists_without_changing_session_activity_or_other_metadata(sessions_dir):
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+    from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+    sm.update_session_metadata(
+        session_id="owner-stop", mode="team", team_name="owner", title="original", sync_write=True,
+    )
+    original = sm.get_session_metadata("owner-stop")
+    set_owner_stopped("owner-stop", True)
+    assert sm.get_session_metadata("owner-stop", cache_bust=True)["organization_owner_stopped"] is True
+    assert owner_is_stopped("owner-stop", "owner")
+    assert not owner_is_stopped("owner-stop", "child")
+    stored = sm.get_session_metadata("owner-stop")
+    assert stored["last_message_at"] == original["last_message_at"]
+    assert stored["title"] == "original"
+    set_owner_stopped("owner-stop", False)
+    assert not owner_is_stopped("owner-stop", "owner")
+

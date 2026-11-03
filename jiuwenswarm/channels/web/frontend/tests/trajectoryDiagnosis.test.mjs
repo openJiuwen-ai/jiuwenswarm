@@ -219,6 +219,23 @@ test('resolveStepIds separates steps that are no longer available', () => {
   assert.equal(missing.length, 1);
 });
 
+test('a reward event fills the evaluation while the run is still going', () => {
+  const reward = {
+    schema_version: 'attribution.reward.v1',
+    overall: { comment: 'ok', total_score: 80 },
+    categories: [],
+    dimensions: [],
+  };
+  const outcome = applyProgressEvent(
+    record({ seq: 1 }),
+    progress(2, 'reward', { stage_id: 'diagnose', reward }),
+  );
+  assert.equal(outcome.refetch, false);
+  assert.equal(outcome.record.status, 'running');
+  assert.deepEqual(outcome.record.reward, reward);
+  assert.deepEqual(outcome.record.stages, []);
+});
+
 test('whole-table events replace the failure causes and evolution items', () => {
   const cause = id => ({ id, dimension: 'd', summary: id, evidence: [ref('1')], suggestion: [] });
   const judge = id => ({ id, category: 'skill', summary: id, evidence: [ref('2')], suggestion: ['x'], score: 0.5, target: 's' });
@@ -255,6 +272,21 @@ test('highlightKeysOf covers failure causes, evolution items and legacy root cau
     [ref('1'), ref('2'), ref('3')].map(stepRefKey).sort(),
   );
   assert.deepEqual([...highlightKeysOf(current, ['evo-1'])], [stepRefKey(ref('2'))]);
+});
+
+test('highlightKeysOf covers every cause of the focused problem', () => {
+  const signal = { id: 'sig-1', source: 'reward', text: '要求\n终稿被拆开。' };
+  const current = record({
+    reward_failure_causes: [
+      { id: 'rfc-1', dimension: '篇幅', summary: '派发放宽', evidence: [ref('1')], suggestion: [], signal },
+      { id: 'rfc-2', dimension: '篇幅', summary: '提纲铺开', evidence: [ref('2', 'member')], suggestion: [], signal },
+      { id: 'rfc-3', dimension: '其他', summary: '另一问题', evidence: [ref('3')], suggestion: [] },
+    ],
+  });
+  assert.deepEqual(
+    [...highlightKeysOf(current, ['rfc-1'])].sort(),
+    [stepRefKey(ref('1')), stepRefKey(ref('2', 'member'))].sort(),
+  );
 });
 
 test('summaryOf carries the trajectory summary', () => {

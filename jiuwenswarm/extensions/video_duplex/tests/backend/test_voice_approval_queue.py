@@ -49,6 +49,59 @@ class CoreSession:
         return {"answer": "done " + task["instruction"]}
 
 
+@pytest.mark.parametrize("spoken", ["允许", "拒绝"])
+async def test_delayed_settlement_does_not_expire_approval(tmp_path, monkeypatch, spoken):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+
+    real_timeout = asyncio.timeout
+    monkeypatch.setattr(asyncio, "timeout", lambda delay: real_timeout(0.02 if delay == 20 else delay))
+    monkeypatch.setattr(task_adapter, "task_agent_query", AsyncMock(return_value={"files": []}))
+    store = TaskStore(tmp_path / "delayed-card.sqlite")
+
+    class DelayedApproval(task_adapter.AgentTaskExecutor):
+        def __init__(self):
+            super().__init__(None, store, None)
+            self.calls = []
+
+        async def _run(self, task, progress, context):
+            self.calls.append(bool(task.get("resume_answer")))
+            store.update(task["id"], lambda t: t.update(execution_bound=True))
+            if not task.get("resume_answer"):
+                await progress(dict(stage="interaction", interaction=native_approval_question({
+                    "request_id": "delayed-card", "source": "permission_interrupt",
+                    "questions": [{"question": "允许执行？", "options": OPTIONS, "card_id": "card-1"}],
+                })))
+                raise InteractionPending()
+            store.update(task["id"], lambda t: t.update(execution_settled=True))
+            return {"answer": "done"}
+
+    executor = DelayedApproval()
+    service = TaskService(store, executor)
+    try:
+        task = service.submit("alice", SCOPE, "create", "执行操作", {
+            "execution_target": {"mode": "agent", "work_mode": "work"},
+        })
+        await until(lambda: store.read(task["id"])["status"] == "waiting_user")
+        # Exceed the shortened ordinary settlement deadline before answering.
+        await asyncio.sleep(0.1)
+        current = store.read(task["id"])
+        assert current["status"] == "waiting_user"
+        assert current["interaction"]["state"] == "pending"
+        assert not current["execution_settled"]
+        await service.answer("alice", SCOPE, task["id"], "answer", current["interaction"]["id"],
+                             answers=[spoken])
+        await asyncio.sleep(0.05)
+        assert executor.calls == [False], "do not resume before the old invocation settles"
+        store.update(task["id"], lambda t: t.update(execution_settled=True))
+        await until(lambda: store.read(task["id"])["status"] == "completed")
+        assert executor.calls == [False, True]
+        assert store.read(task["id"])["interaction"]["answers"][0]["selected_options"] == [spoken]
+    finally:
+        await service.close()
+        await executor.close()
+
+
 def submit(service, key, text):
     return service.submit("alice", SCOPE, key, text, {"independent": True, "resources": []})
 
@@ -81,6 +134,25 @@ async def test_voice_answer_on_managed_card_then_queued_task_runs(system, spoken
     await until(lambda: store.read(second["id"])["status"] == "completed")
     assert store.read(first["id"])["result"]["answer"] == outcome
     assert core.runs == [("删除文件", False), ("删除文件", True), ("打开微信", False)]
+
+
+async def test_already_answered_card_returns_recorded_state_without_resubmission(system):
+    service, core, store = system
+    task = submit(service, "first", "删除文件")
+    await until(lambda: store.read(task["id"])["status"] == "waiting_user"
+                and store.read(task["id"])["output_closed"])
+    interaction_id = store.read(task["id"])["interaction"]["id"]
+    await service.answer("alice", SCOPE, task["id"], "click", interaction_id, answers=["允许"])
+    await until(lambda: store.read(task["id"])["status"] == "completed")
+    receipt = await service.answer("alice", SCOPE, task["id"], "voice-again", interaction_id, answers=["允许"])
+    assert receipt["state"] == "already_answered"
+    assert receipt["task_state"] == "completed"
+    assert receipt["applied"] is False
+    assert core.runs == [("删除文件", False), ("删除文件", True)]
+    with pytest.raises(ValueError, match="no longer pending"):
+        await service.answer("alice", SCOPE, task["id"], "changed", interaction_id, answers=["拒绝"])
+    with pytest.raises(ValueError, match="no longer pending"):
+        await service.answer("alice", SCOPE, task["id"], "wrong-card", "different", answers=["允许"])
 
 
 async def test_typed_card_holds_voice_task_until_turn_ends(system):
