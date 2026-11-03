@@ -112,6 +112,42 @@ async def _invoke_handler(
     return await channel.invoke_method_handler(invocation)
 
 
+async def skill_upload_denial(
+    *,
+    method: str,
+    params: dict[str, Any],
+    authorization: str | None,
+    jiuwenclaw_id: str | None,
+) -> tuple[str, str] | None:
+    """Run the enterprise upload check shared by WS and HTTP dispatchers.
+
+    Returns ``(message, code)`` when the request must be rejected, otherwise
+    ``None``. Keeping this in one place prevents a WS client from bypassing the
+    permission check that the HTTP dispatcher applies.
+    """
+
+    if not is_enterprise() or method != "skills.import_upload":
+        return None
+
+    from gateway.enterprise.capabilities.skill_upload.client import (
+        SkillUploadPermissionError,
+    )
+    from gateway.enterprise.capabilities.skill_upload.guard import (
+        assert_skill_upload_permission,
+    )
+
+    try:
+        await assert_skill_upload_permission(
+            authorization=authorization,
+            jiuwenclaw_id=jiuwenclaw_id,
+            method=method,
+            params=params,
+        )
+    except SkillUploadPermissionError as exc:
+        return exc.message, exc.code
+    return None
+
+
 async def dispatch_web_request(
     channel: Any,
     *,
@@ -144,32 +180,24 @@ async def dispatch_web_request(
         )
         return
 
-    if is_enterprise() and method == "skills.import_upload":
-        from gateway.enterprise.capabilities.skill_upload.client import (
-            SkillUploadPermissionError,
+    denial = await skill_upload_denial(
+        method=method,
+        params=params,
+        authorization=authorization,
+        jiuwenclaw_id=jiuwenclaw_id,
+    )
+    if denial is not None:
+        error, code = denial
+        logger.warning(
+            "[WebChannel] skill upload denied method=%s request_id=%s code=%s",
+            method,
+            request_id,
+            code,
         )
-        from gateway.enterprise.capabilities.skill_upload.guard import (
-            assert_skill_upload_permission,
+        await channel.send_response(
+            outbound, request_id, ok=False, error=error, code=code,
         )
-
-        try:
-            await assert_skill_upload_permission(
-                authorization=authorization,
-                jiuwenclaw_id=jiuwenclaw_id,
-                method=method,
-                params=params,
-            )
-        except SkillUploadPermissionError as exc:
-            logger.warning(
-                "[WebChannel] skill upload denied method=%s request_id=%s code=%s",
-                method,
-                request_id,
-                exc.code,
-            )
-            await channel.send_response(
-                outbound, request_id, ok=False, error=exc.message, code=exc.code,
-            )
-            return
+        return
 
     handler = _method_handlers(channel).get(method)
     # 路由身份已由 WS/HTTP 入口写入 metadata.routing；此处只读、不再二次归一化。

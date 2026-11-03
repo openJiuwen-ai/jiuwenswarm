@@ -100,6 +100,42 @@ def _resolve_ws_auth_session(
             return value
     return ""
 
+
+def _ws_header(ws: Any, name: str) -> str:
+    """Read a handshake header from the WS connection, if the server exposes it."""
+    value = get_header_value(getattr(ws, "request_headers", None), name)
+    return str(value).strip() if value else ""
+
+
+def _ws_cookie(ws: Any, name: str) -> str:
+    raw = _ws_header(ws, "cookie")
+    for part in raw.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name and value:
+            return value.strip().strip('"')
+    return ""
+
+
+# Manager 登录态会把 JWT 同步进这个 cookie，浏览器 new WebSocket 又无法设置
+# Authorization 头，所以 WS 握手只能靠它携带凭据。
+_WS_ACCESS_TOKEN_COOKIE = "openjiuwen_access_token"
+
+
+def _ws_authorization(ws: Any) -> str | None:
+    """Return the upload credential carried by the WS handshake.
+
+    Prefer a real ``Authorization`` header (native clients can set one). Browsers
+    cannot set headers on ``new WebSocket``, so fall back to the login cookie the
+    Manager session keeps in sync; otherwise an authorized browser would be
+    rejected as "permission check unavailable".
+    """
+    header = _ws_header(ws, "authorization")
+    if header:
+        return header
+    token = _ws_cookie(ws, _WS_ACCESS_TOKEN_COOKIE)
+    return f"Bearer {token}" if token else None
+
+
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
 _SWARMFLOW_CONTROL_METHODS = frozenset(
@@ -2053,6 +2089,26 @@ class WebChannel(BaseWsChannel):
                     error=f"params.{_key} must be a string",
                     code="BAD_REQUEST",
                 )
+                return
+
+        # 企业版上传资格只挂在 HTTP 分发路径会留下 WS 旁路，这里复用同一判定。
+        if method == "skills.import_upload":
+            from gateway.channel_manager.web.invoke import skill_upload_denial
+
+            denial = await skill_upload_denial(
+                method=method,
+                params=params,
+                authorization=_ws_authorization(ws),
+                jiuwenclaw_id=_ws_cookie(ws, "jiuwenclaw_id") or None,
+            )
+            if denial is not None:
+                error, code = denial
+                logger.warning(
+                    "[WebChannel] skill upload denied via ws request_id=%s code=%s",
+                    req_id,
+                    code,
+                )
+                await self.send_response(ws, req_id, ok=False, error=error, code=code)
                 return
 
         # ── V2: session_id 解析 ──

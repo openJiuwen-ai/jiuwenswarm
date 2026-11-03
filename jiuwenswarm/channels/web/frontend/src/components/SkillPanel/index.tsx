@@ -902,8 +902,13 @@ export function SkillPanel({
         }
         console.error(error);
       } finally {
-        await staged?.cleanup();
+        // 先复位按钮状态：清理失败不应把上传入口永久禁用。
         setActionTarget(null);
+        try {
+          await staged?.cleanup();
+        } catch (cleanupError) {
+          console.error(cleanupError);
+        }
       }
     },
     [
