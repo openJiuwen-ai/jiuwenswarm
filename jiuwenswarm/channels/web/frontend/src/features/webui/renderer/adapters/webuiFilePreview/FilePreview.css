@@ -41,3 +41,17 @@
   font-size: 12px;
   line-height: 20px;
 }
+
+.webui-file-preview__image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.webui-file-preview__pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

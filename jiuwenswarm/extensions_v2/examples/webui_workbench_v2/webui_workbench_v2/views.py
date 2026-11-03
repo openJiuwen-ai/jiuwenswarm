@@ -14,6 +14,7 @@ TASK_INSTANCE = "task-inspector"
 IFRAME_INSTANCE = "iframe-preview"
 USER_INSTANCE = "user-menu"
 USER_SELECT_ACTION = "workbench.user.select"
+TURN_SELECT_ACTION = "workbench.turn.select"
 USER_LOGIN_ACTION = "workbench.user.login"
 WEATHER_HIDE_ACTION = "workbench.weather.hide"
 WEATHER_SHOW_ACTION = "workbench.weather.show"
@@ -171,7 +172,7 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
         if instance_key == IFRAME_INSTANCE:
             return RenderNode("Iframe", {
                 "title": "网页预览 / Web preview",
-                "src": "https://www.baidu.com/",
+                "src": "https://httpbin.org/forms/post",
             })
         raise ValueError(f"undeclared right-panel instance: {instance_key}")
     if slot == "conversation.header.title.after":
@@ -182,6 +183,18 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
     if slot == "conversation.session.content.after":
         return column(text(turn.summary, secondary=True), text(turn.result, secondary=True))
     if slot == "conversation.turn.footer.actions":
-        return row(button("刷新本轮 / Refresh round", "workbench.turn.refresh"),
-                   button("本轮详情 / Round details", "workbench.turn.details"))
+        return RenderNode("Box", {
+            "direction": "row", "gap": "sm", "align": "center", "wrap": False,
+        }, children=(
+            RenderNode("Button", {"label": "👍", "variant": "ghost", "size": "md"}),
+            RenderNode("Dropdown", {
+                "icon": "ellipsis",
+                "ariaLabel": "本轮操作 / Round actions",
+                "placement": "topRight",
+                "items": [
+                    {"key": "refresh", "label": "刷新本轮 / Refresh round"},
+                    {"key": "details", "label": "本轮详情 / Round details"},
+                ],
+            }, events={"ui.select": {"id": TURN_SELECT_ACTION, "args": {}}}),
+        ))
     raise ValueError(f"undeclared workbench slot: {slot}")

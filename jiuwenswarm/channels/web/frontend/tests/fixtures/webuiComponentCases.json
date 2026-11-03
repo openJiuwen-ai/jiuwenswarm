@@ -1,5 +1,11 @@
 {
   "invalid": [
+    ["Button", {"icon": "unknown"}],
+    ["Button", {"iconOnly": true, "label": "More"}],
+    ["Button", {"iconOnly": true, "icon": "ellipsis", "label": "  "}],
+    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "ellipsis"}],
+    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "ellipsis", "ariaLabel": "  "}],
+    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "unknown", "ariaLabel": "More"}],
     [
       "Box",
       {
@@ -500,6 +506,9 @@
     ]
   ],
   "valid": [
+    ["Button", {"label": "More", "icon": "ellipsis", "iconOnly": true, "variant": "ghost"}],
+    ["Button", {"label": "More", "icon": "ellipsis", "iconOnly": false}],
+    ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "ellipsis", "ariaLabel": "More", "placement": "topRight"}],
     [
       "Text",
       {

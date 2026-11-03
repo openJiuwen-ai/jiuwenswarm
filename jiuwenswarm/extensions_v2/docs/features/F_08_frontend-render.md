@@ -320,5 +320,5 @@ transport、renderer、i18n-locales）通过，Vite 生产打包通过。
 - `npm run test:webui-components`：52 项通过。JSDOM 加载真实 Iframe 样式，覆盖加载提示不拦截鼠标、错误与暂停状态、断连重连，以及相对和绝对宿主 URL 的固定权限。
 - 在内置浏览器用本机临时页面挂载真实 `Iframe` 组件，子文档使用同源 URL。按钮点击、文本输入、表单提交、普通链接导航和弹窗均通过；子文档访问父页面 DOM 和自身 localStorage 均被浏览器拒绝。
 - 人为保持子文档图片请求未完成时，加载提示仍在，但点击和输入正常；实际提示区域为 117 × 36 px，容器为 1230 × 420 px，计算样式的 `pointer-events` 为 `none`。释放请求后提示消失，停用与重新激活会卸载并重建文档。浅色和深色下均检查了提示外观。
-- 右侧网页预览示例改为百度；工作台和任务主页面保留原地址。内置浏览器中百度首页能显示、搜索框能输入，但点击搜索未导航；控制台出现 cookie/localStorage 的 sandbox `SecurityError`。这是页面脚本对不透明 origin 的兼容限制，不能写成百度搜索已通过验证。
+- 右侧网页预览示例曾临时使用百度进行验证，但百度通过 `frame-ancestors` 限制了本地页面嵌入，且其脚本读取 cookie/localStorage 时触发 sandbox `SecurityError`；现改为 `https://httpbin.org/forms/post`。该页面响应未声明 `X-Frame-Options` 或限制性的 `frame-ancestors`，包含文本框、选项和提交按钮，适合作为 iframe 联调页。
 - 上述浏览器试验只验证组件，不代表已完成真实插件安装、跨进程发帧和生产页面验收。未运行格式化、lint 或类型检查。

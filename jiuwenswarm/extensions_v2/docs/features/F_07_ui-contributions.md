@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-07 界面项声明、挂载与上行交互 |
 | 所属模块 | `jiuwenswarm/extensions_v2/webui/{contributions,adapter}.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[F_06 渲染服务](F_06_render-service.md)、[详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-10-31 |
+| 最近一次修订日期 | 2026-11-03 |
 | 方案状态 | 已实现 |
 
 ## 1. 问题与目标
@@ -248,13 +248,37 @@ Gateway 通过现有断连钩子发送内部 E2A 方法 `webui.connection.closed
 
 ### 4.4 文件能力（目录与预览）
 
+2026-11-03 扩展 FilePreview 的文件输入，保持目录请求、插件动作和小文本返回不变。
+FilePreview 内部使用原生 img 展示图片、原生 iframe 展示 PDF，大文本获取后沿用文本视图，
+不生成额外 RenderNode，不调整全局消息预算或通用 Iframe 规则。
+文件 URL 复用已有的受管下载资源与下载端点，不增加格式转换或音视频功能。
+
 `ops.session.files(expanded_paths=[])` 与 `ops.session.read_file(path)` 由宿主只读文件服务提供。
-插件在 `ui.ready` 或 `ui.change` 后查询目录，用 `FileTree` 渲染；选中文件后调用 `read_file` 取小文本，
+插件在 `ui.ready` 或 `ui.change` 后查询目录，用 `FileTree` 渲染；选中文件后调用 `read_file` 取预览数据，
 再用 `FilePreview` 展示。会话与渠道取自当前 Ops 上下文，根目录来自已绑定的会话工作区，不接受浏览器自报路径。
 
 - `files` 返回 `status`、`treeData`、`truncated`、`readFailed`；目录最多 8 层、512 节点、每层 100 项、96 KiB 预算，最多同时展开 100 个目录。符号链接和非常规文件被跳过，不计为超限；读取失败由 readFailed 单独表示，truncated 仅表示达到浏览预算。
-- `read_file` 返回 `status` 与 `file`（name/path/mimeType/size/content）；正文最多 16 KiB，
-  二进制、图片与超大文件拒绝；目录边界、符号链接与文件类型在 Server 复核。
+- `read_file` 返回 `status` 与 `file`（name/path/mimeType/size，以及 content 或 downloadUrl）。
+  16 KiB 以内的 UTF-8 文本继续内嵌 content；更大文本（最多 1 MiB）、图片和 PDF 返回宿主签发的 downloadUrl。
+  PDF 必须以 `%PDF-` 开头；其他二进制、非 UTF-8 文本和超过 1 MiB 的文本仍返回原有失败状态。
+  目录边界、符号链接与文件类型在 Server 复核。
+- Server 从已校验的文件描述符复制受管快照，下载时不再读取可被替换的工作区路径。
+  快照及令牌有效期为 10 分钟，沿用受管资源的过期清理；签发失败时撤销快照。
+  `user_id` 从 Ops 的可信会话元数据取得，仅用于下载路由，不接受插件或浏览器自报身份。
+  URL 过期后需重新选择文件；原文件替换或删除不改变已签发快照。
+  Windows 下受管目录按稳定的用户目录标识定位，支持同用户跨进程校验，并在清理只读快照前恢复写权限。
+
+FileTree 在前端保留目录更新前的滚动位置和本地宽度；右侧分界线可拖拽或用方向键调整。
+这些状态使用现有实例状态端口，不新增插件字段或目录请求；节点移除、clear 或断连时按原有生命周期清理。
+
+PDF iframe 不设置 sandbox；前端只允许带 token 的同源下载端点，并先检查实际响应类型和前 5 字节，
+拒绝重定向，通过后使用 inline=1 加载。通用 Iframe 的沙箱不变，检查与切换取消规则见
+[组件规约 C-27](../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)。
+
+定向验证覆盖旧文本、大小边界、路径拒绝、URL 校验、可信用户路由、快照隔离与过期、失败清理及组件切换。
+此前图片和大文本已在独立浏览器测试页显示；PDF 曾因试验分支在内嵌浏览器中为空白而暂停。
+本次恢复来源受限的原生 PDF iframe，实际浏览器显示仍待手工验证。
+完整 WebClient 跨进程及 AgentOS 部署联调尚未完成。
 
 ## 5. 异常与边界
 

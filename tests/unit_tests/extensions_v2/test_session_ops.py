@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from openjiuwen.core.events import (
+    OPS_BUILD_EVENT_TYPE,
     Event,
     EventHandlerOpsBuilder,
     ExtensionEventBus,
@@ -16,7 +17,7 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.extensions_v2 import assembly
-from jiuwenswarm.extensions_v2.handler_ops.session_ops import session_cwd, session_root
+from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_ops, session_cwd, session_root
 from .management.support import write_package
 
 
@@ -183,3 +184,25 @@ async def test_workspace_queries_reject_invalid_bound_paths(reader, value, error
     ops = EventHandlerOpsBuilder().build(session_context=context)
     with pytest.raises(error):
         await reader(ops)
+
+
+@pytest.mark.asyncio
+async def test_file_preview_uses_trusted_user_and_channel_from_session_context():
+    from unittest.mock import AsyncMock
+
+    bus = ExtensionEventBus()
+    service = AsyncMock()
+    service.read_file.return_value = {"status": "ready", "file": None}
+    register_session_ops(bus, file_service=service)
+
+    async def core(event, ops, next_handler):
+        return await ops.session.read_file(path=event.event_input["path"])
+
+    bus.register_event_type("test.files", lambda value, pattern: True, core)
+    await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
+    context = SessionContext("s1", metadata={"user_id": "trusted-user", "channel_id": "web"})
+
+    result = await bus.trigger(Event("test.files", {"path": "pic.png", "user_id": "forged-user"}), context)
+
+    assert result == {"status": "ready", "file": None}
+    service.read_file.assert_awaited_once_with("s1", "pic.png", "web", user_id="trusted-user")
