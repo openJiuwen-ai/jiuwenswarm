@@ -11,6 +11,7 @@ import sys
 
 from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.server.runtime.warm_pool import (
+    WarmPool,
     warm_pool_compatible,
     warm_pool_size,
 )
@@ -53,6 +54,43 @@ def test_warm_pool_rejects_network_or_disabled_landlock():
     disabled = template.model_copy(deep=True)
     disabled.landlock.compatibility = "disabled"
     assert not warm_pool_compatible(template, disabled)
+
+
+class _PoolRuntime:
+    def __init__(self) -> None:
+        self.destroyed: list[str] = []
+
+    def destroy_warm_slot(self, slot_id: str) -> None:
+        self.destroyed.append(slot_id)
+
+
+def test_replace_template_keeps_slots_when_the_new_policy_still_matches():
+    runtime = _PoolRuntime()
+    template = SecurityPolicy()
+    pool = WarmPool(runtime, template, 1)
+    pool._slots.put("w-keep")
+    updated = template.model_copy(deep=True)
+    updated.filesystem_policy.read_write.append("/tmp")
+
+    pool.replace_template(updated)
+
+    assert runtime.destroyed == []
+    assert pool.acquire(updated) == (True, "w-keep")
+
+
+def test_replace_template_discards_slots_that_cannot_serve_the_new_policy():
+    runtime = _PoolRuntime()
+    template = SecurityPolicy()
+    pool = WarmPool(runtime, template, 1)
+    pool._slots.put("w-old")
+    updated = template.model_copy(deep=True)
+    updated.network.mode = "host"
+
+    pool.replace_template(updated)
+
+    assert runtime.destroyed == ["w-old"]
+    assert pool.acquire(template) == (False, None)
+    assert pool.acquire(updated) == (True, None)
 
 
 def test_warm_pool_size_defaults_to_four(monkeypatch):
