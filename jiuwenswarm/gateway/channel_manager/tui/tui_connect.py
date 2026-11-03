@@ -32,8 +32,6 @@ from jiuwenswarm.common.config import (
     update_context_engine_enabled_in_config,
     update_memory_forbidden_enabled_in_config,
     update_permissions_enabled_in_config,
-    update_permissions_mode_in_config,
-    get_permissions_mode_from_config,
     get_model_names,
     update_preferred_language_in_config,
     update_swarmflow_enabled_in_config,
@@ -506,7 +504,6 @@ _CLI_CONFIG_YAML_SETTERS: dict[str, Any] = {
     "auto_recap_enabled": update_auto_recap_enabled_in_config,
     "context_engine_enabled": update_context_engine_enabled_in_config,
     "permissions_enabled": update_permissions_enabled_in_config,
-    "permissions_mode": update_permissions_mode_in_config,
     "memory_forbidden_enabled": update_memory_forbidden_enabled_in_config,
     "preferred_language": update_preferred_language_in_config,
     "enable_swarmflow": update_swarmflow_enabled_in_config,
@@ -521,8 +518,6 @@ _CLI_CONFIG_YAML_KEYS = frozenset(_CLI_CONFIG_YAML_SETTERS.keys())
 
 
 _PREFERRED_LANGUAGE_OPTIONS = ("zh", "en")
-
-_PERMISSIONS_MODE_OPTIONS = ("auto", "full_access", "strict")
 
 
 def _build_config_schema() -> list[dict]:
@@ -609,11 +604,8 @@ def _build_config_schema() -> list[dict]:
         # Features
         {"key": "context_engine_enabled", "label": "上下文压缩", "group": "Features",
          "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "permissions_mode", "label": "权限模式", "group": "Features",
-         "type": "select", "options": list(_PERMISSIONS_MODE_OPTIONS),
-         "source": "yaml", "default": "auto"},
-        {"key": "permissions_enabled", "label": "权限管控(兼容)", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "true"},
+        {"key": "permissions_enabled", "label": "权限管控", "group": "Features",
+         "type": "toggle", "source": "yaml", "default": "false"},
         {"key": "memory_forbidden_enabled", "label": "敏感信息过滤", "group": "Features",
          "type": "toggle", "source": "yaml", "default": "false"},
         {"key": "preferred_language", "label": "显示语言", "group": "Features", "type": "select",
@@ -840,18 +832,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 "true" if ctx_cfg.get("enabled", False) else "false"
             )
             perm_cfg = raw.get("permissions") or {}
-            try:
-                perm_mode = get_permissions_mode_from_config()
-            except Exception:
-                if perm_cfg.get("enabled") is False:
-                    perm_mode = "full_access"
-                elif str(perm_cfg.get("permission_mode") or "").lower() == "strict":
-                    perm_mode = "strict"
-                else:
-                    perm_mode = "auto"
-            payload["permissions_mode"] = perm_mode
             payload["permissions_enabled"] = (
-                "false" if perm_mode == "full_access" else "true"
+                "true" if perm_cfg.get("enabled", False) else "false"
             )
             mem_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
             payload["memory_forbidden_enabled"] = (
@@ -925,8 +907,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         except Exception:
             payload.setdefault("auto_recap_enabled", "true")
             payload.setdefault("context_engine_enabled", "false")
-            payload.setdefault("permissions_enabled", "true")
-            payload.setdefault("permissions_mode", "auto")
+            payload.setdefault("permissions_enabled", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("preferred_language", "zh")
         
@@ -1001,23 +982,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         code="BAD_REQUEST",
                     )
                     return
-            elif param_key == "permissions_mode":
-                # 字符串参数不能布尔化：setter(False) 会被 normalize 成 auto，
-                # 用户选 strict/full_access 实际落盘 auto（静默降级）。
-                if raw_value not in _PERMISSIONS_MODE_OPTIONS:
-                    await channel.send_response(
-                        ws,
-                        req_id,
-                        ok=False,
-                        error=(
-                            f"permissions_mode must be one of "
-                            f"{list(_PERMISSIONS_MODE_OPTIONS)}"
-                        ),
-                        code="BAD_REQUEST",
-                    )
-                    return
             try:
-                if param_key in ("preferred_language", "permissions_mode"):
+                if param_key == "preferred_language":
                     setter(raw_value)
                 elif param_key.startswith("auto_harness_"):
                     # Auto-harness config items are strings, not toggles

@@ -65,8 +65,7 @@ import {
   shouldAcceptCronAskUserQuestion,
 } from './features/cron/cronLiveWatch';
 import { useTeamPanelState } from './features/teamPanelState';
-import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Message, type Permission, type Session, type UserAnswerStatus } from './types';
-import { PERMISSION_OPTIONS } from './config/chatConfig';
+import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Message, type Session, type UserAnswerStatus } from './types';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -2898,14 +2897,7 @@ function AppContent() {
                       onNavigateToSkills={() => handleNavigate('skills')}
                       onToggleTeamArea={handleToggleDetailPanel}
                       onOpenCodeReview={handleOpenCodeReview}
-                      permissionsMode={
-                        typeof serverConfig?.permissions_mode === 'string' &&
-                        PERMISSION_OPTIONS.some((opt) => opt.value === serverConfig.permissions_mode)
-                          ? (serverConfig.permissions_mode as Permission)
-                          : serverConfig?.permissions_enabled === 'false'
-                            ? 'full_access'
-                            : 'auto'
-                      }
+                      permissionsEnabled={serverConfig?.permissions_enabled !== 'false'}
                       heartbeatPanelOpen={heartbeatPanelOpen}
                       onToggleHeartbeatPanel={handleToggleHeartbeatPanel}
                       onSavePermission={savePermissionSilent}

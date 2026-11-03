@@ -586,7 +586,6 @@ permissions:
   owner_scopes: {}
   deny_guidance_message: ""
 
-  # defaults / workspace 由 mode preset 注入，下列 YAML 轴不生效。
   file_guard:
     enabled: true
     defaults:
@@ -597,9 +596,17 @@ permissions:
       read: allow
       write: allow
       exec: ask
-    # 敏感路径内置底线见 agent-core builtin_rules.yaml → sensitive_paths（ask|deny）。
-    # 此处仅放产品/组织增量 paths；勿重复内置名单。
-    paths: []
+    paths:
+      - path: "**/.ssh/**"
+        match: glob
+        read: ask
+        write: ask
+        exec: ask
+      - path: "**/.env*"
+        match: glob
+        read: ask
+        write: ask
+        exec: ask
 
   # Legacy external_directory（Native file_guard 启用后 "*" 不驱动路径层）
   external_directory:

@@ -21,7 +21,6 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
-from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
 
 VALID_A2UI_RESPONSE = """<a2ui-json>
 [
@@ -288,8 +287,7 @@ def _build_swarm(monkeypatch, root):
     swarm = interface_module.JiuWenSwarm()
     swarm._adapter = root
     swarm._sdk_name = "harness"
-    turn = UserTurn(text="生成表单", channel="web", language="zh", files={})
-    monkeypatch.setattr(swarm, "_build_inputs", lambda request: ({}, "local", turn))
+    monkeypatch.setattr(swarm, "_build_inputs", lambda request: ({}, "local", "生成表单"))
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "is_auto_memory_enabled", lambda *_a, **_k: False)
     monkeypatch.setattr(interface_module, "is_memory_enabled", lambda *_a, **_k: False)
