@@ -285,6 +285,8 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "template-rendered components in A2UI; flatten repeated item "
         "details into fields on the outer item, or use explicit child "
         "components bound to those fields."
+        "A2UI UI text MUST NOT contain emoji characters (no emoji in titles, "
+        "labels, buttons, or descriptions — plain text only). "
         + image_url_rule_en
         + unsupported_component_rule_en
     )
@@ -361,6 +363,7 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "不要在模板内使用集合绝对路径（如 /phones/name）。"
         "不要在模板渲染出的组件内部嵌套 template；"
         "请把重复 item 的明细拍平成外层 item 字段，或使用显式子组件绑定这些字段。"
+        "A2UI 界面文本禁止使用 emoji 表情符号（标题、标签、按钮、说明文字一律纯文字）。"
         + image_url_rule_zh
         + unsupported_component_rule_zh
     )
