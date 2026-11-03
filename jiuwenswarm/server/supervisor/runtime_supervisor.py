@@ -551,6 +551,7 @@ class RuntimeSupervisor:
                 self._reap_validated_worker, deadline=time.monotonic() + 5.0, terminate=True
             )
         await self._stop_spawned_process()
+        self._clear_attached_worker_identity()
 
     async def _connect_resident(self) -> str | None:
         launch_identity = None
@@ -605,6 +606,7 @@ class RuntimeSupervisor:
         """Spawn a fresh Worker without endpoint election or reattachment."""
         async with self._session_lock:
             await self._stop_spawned_process()
+            self._clear_attached_worker_identity()
             listener = FrontLoopbackListener(timeout=self._connect_timeout)
             process = WorkerProcess(
                 self._socket_path, host=self._host, port=self._port,
@@ -1290,29 +1292,56 @@ class RuntimeSupervisor:
         if self._worker_pid is not None and self._worker_create_time is not None:
             await asyncio.to_thread(self._reap_validated_worker, deadline=deadline)
         self._process = None
+        self._clear_attached_worker_identity()
+
+    def _clear_attached_worker_identity(self) -> None:
+        if self._ipc_mode == FRONT_LOOPBACK:
+            self._worker_pid = None
+            self._worker_create_time = None
+            self._worker_instance = None
+
+    def _ignore_reused_attached_pid(self) -> bool:
+        if self._ipc_mode != FRONT_LOOPBACK:
+            return False
+        logger.warning(
+            "[Supervisor] attached Worker PID was reused; skipping retired identity pid=%s", self._worker_pid,
+        )
+        self._clear_attached_worker_identity()
+        self._owns_process = False
+        return True
 
     def _reap_validated_worker(self, *, deadline: float, terminate: bool = False) -> None:
         """Final-exit authority is explicit; a reused PID must never be killed."""
         import psutil
+        worker_pid, worker_create_time = self._worker_pid, self._worker_create_time
+        if worker_pid is None or worker_create_time is None:
+            return
         try:
-            process = psutil.Process(self._worker_pid)
-            if process.create_time() != self._worker_create_time:
+            process = psutil.Process(worker_pid)
+            if process.create_time() != worker_create_time:
+                if self._ignore_reused_attached_pid():
+                    return
                 raise RuntimeError("Worker PID identity changed during final exit")
             if terminate:
                 process.terminate()
             try:
                 process.wait(timeout=max(0.0, deadline - time.monotonic()))
             except psutil.TimeoutExpired as exc:
-                if process.create_time() != self._worker_create_time:
+                if process.create_time() != worker_create_time:
+                    if self._ignore_reused_attached_pid():
+                        return
                     raise RuntimeError("Worker PID identity changed during final exit") from exc
                 logger.error("[Supervisor] Worker final exit timed out; forcing validated process termination")
                 process.kill()
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
-                except psutil.TimeoutExpired:
+                except psutil.TimeoutExpired as exit_error:
                     logger.error(
                         "[Supervisor] validated Worker exit could not be observed before the shutdown deadline"
                     )
+                    if self._ipc_mode == FRONT_LOOPBACK:
+                        detail = "attached Worker exit could not be observed before shutdown deadline"
+                        raise RuntimeError(detail) from exit_error
         except psutil.NoSuchProcess:
             pass
         self._owns_process = False

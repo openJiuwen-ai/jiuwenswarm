@@ -235,6 +235,54 @@ async def test_silent_candidate_does_not_delay_legitimate_worker():
         await listener.close()
 
 
+async def test_auth_connection_limit_logs_once_and_preserves_credentials(monkeypatch, caplog):
+    from jiuwenswarm.server.ipc import loopback
+
+    monkeypatch.setattr(loopback, "_MAX_AUTH_CONNECTIONS", 2)
+    monkeypatch.setattr(loopback.logger, "handlers", [caplog.handler])
+    monkeypatch.setattr(loopback.logger, "propagate", False)
+    caplog.set_level("WARNING", logger=loopback.logger.name)
+    listener = FrontLoopbackListener(timeout=5)
+    await listener.start(code_identity="a" * 64, data_scope="b" * 64)
+    parameters = _parameters(listener.launch_payload())
+    source = FrontConnectSessionSource(parameters)
+    writers = []
+    conn = worker_conn = None
+    try:
+        for _ in range(2):
+            _, writer = await asyncio.open_connection("127.0.0.1", parameters.port)
+            writers.append(writer)
+        await _wait_until(lambda: len(listener._tasks) == 2)
+        for _ in range(2):
+            reader, writer = await asyncio.open_connection("127.0.0.1", parameters.port)
+            writers.append(writer)
+            assert await asyncio.wait_for(reader.read(), 1) == b""
+        limit_logs = [record.getMessage() for record in caplog.records
+                      if "reason=connection_limit" in record.getMessage()]
+        assert len(limit_logs) == 1
+        assert "active=2 limit=2" in limit_logs[0]
+        assert parameters.token not in caplog.text
+        for writer in writers:
+            writer.close()
+            await writer.wait_closed()
+        await _wait_until(lambda: not listener._tasks)
+        await source.start()
+        conn = await listener.accept()
+        worker_conn = await source.accept()
+        await worker_conn.send({"kind": "heartbeat"})
+        assert await conn.recv() == {"kind": "heartbeat"}
+    finally:
+        for writer in writers:
+            writer.close()
+            await writer.wait_closed()
+        if worker_conn is not None:
+            await worker_conn.close()
+        if conn is not None:
+            await conn.close()
+        await source.close()
+        await listener.close()
+
+
 async def test_stopping_during_auth_reclaims_worker_and_listener(monkeypatch, harmony_runtime):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setattr(worker_process, "build_worker_command", lambda *args, **kwargs:
@@ -526,6 +574,9 @@ async def test_killing_real_front_exits_attached_worker(monkeypatch, tmp_path, h
     reaping = sys.platform.startswith("linux")
     script_name = "loopback_reaper.py" if reaping else "loopback_front.py"
     script = Path(__file__).with_name("fixtures") / script_name
+    assert script.is_file(), f"Missing Front process fixture: {script}"
+    front_script = script.with_name("loopback_front.py")
+    assert front_script.is_file(), f"Missing Front process fixture: {front_script}"
     output = tmp_path / "front.json"
     front = subprocess.Popen([sys.executable, str(script), str(output)], env=os.environ.copy(),
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -626,3 +677,169 @@ async def test_failed_startup_cleanup_reports_failure_without_hanging(monkeypatc
         assert supervisor._readiness.state.value == "FAILED"
     finally:
         await supervisor.stop()
+
+
+@pytest.mark.parametrize("already_gone", [False, True])
+async def test_attached_retirement_clears_worker_identity(monkeypatch, harmony_runtime, already_gone):
+    class ExitedProcess:
+        def create_time(self):
+            return 1.0
+
+        def terminate(self):
+            pass
+
+        def wait(self, *, timeout):
+            return 0
+
+    def process(pid):
+        assert pid == 123
+        if already_gone:
+            raise psutil.NoSuchProcess(pid)
+        return ExitedProcess()
+
+    monkeypatch.setattr(psutil, "Process", process)
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = 123
+    supervisor._worker_create_time = 1.0
+    supervisor._worker_instance = "retired-worker"
+    await supervisor._retire_unhealthy_worker()
+    assert supervisor.worker_pid is None
+    assert supervisor._worker_create_time is None
+    assert supervisor.worker_instance is None
+
+
+@pytest.mark.parametrize("reused_after_wait", [False, True])
+async def test_attached_stop_ignores_reused_pid(monkeypatch, harmony_runtime, reused_after_wait):
+    class ReusedProcess:
+        def __init__(self):
+            self.observations = 0
+
+        def create_time(self):
+            self.observations += 1
+            return 1.0 if reused_after_wait and self.observations == 1 else 2.0
+
+        def wait(self, *, timeout):
+            raise psutil.TimeoutExpired(timeout, pid=123)
+
+        def terminate(self):
+            pytest.fail("A reused PID must not receive terminate")
+
+        def kill(self):
+            pytest.fail("A reused PID must not receive kill")
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: ReusedProcess())
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = 123
+    supervisor._worker_create_time = 1.0
+    supervisor._worker_instance = "retired-worker"
+    await supervisor.stop()
+    assert supervisor.worker_pid is None
+    assert supervisor._worker_create_time is None
+    assert supervisor.worker_instance is None
+
+
+async def test_attached_retirement_preserves_identity_on_access_denied(monkeypatch, harmony_runtime):
+    def denied(pid):
+        raise psutil.AccessDenied(pid)
+
+    monkeypatch.setattr(psutil, "Process", denied)
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = 123
+    supervisor._worker_create_time = 1.0
+    supervisor._worker_instance = "unconfirmed-worker"
+    with pytest.raises(psutil.AccessDenied):
+        await supervisor._retire_unhealthy_worker()
+    assert supervisor.worker_pid == 123
+    assert supervisor._worker_create_time == 1.0
+    assert supervisor.worker_instance == "unconfirmed-worker"
+
+
+def test_attached_reap_with_cleared_identity_does_not_lookup_current_process(monkeypatch, harmony_runtime):
+    def forbidden(pid):
+        pytest.fail(f"Missing Worker identity must not resolve to a process: pid={pid}")
+
+    monkeypatch.setattr(psutil, "Process", forbidden)
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._reap_validated_worker(deadline=time.monotonic(), terminate=True)
+
+
+async def test_attached_retirement_requires_observed_exit(monkeypatch, harmony_runtime):
+    class StuckProcess:
+        def create_time(self):
+            return 1.0
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, *, timeout):
+            raise psutil.TimeoutExpired(timeout, pid=123)
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: StuckProcess())
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._worker_pid = 123
+    supervisor._worker_create_time = 1.0
+    supervisor._worker_instance = "unconfirmed-worker"
+    with pytest.raises(RuntimeError, match="exit could not be observed"):
+        await supervisor._retire_unhealthy_worker()
+    assert supervisor.worker_pid == 123
+    assert supervisor._worker_create_time == 1.0
+    assert supervisor.worker_instance == "unconfirmed-worker"
+
+
+async def test_attached_retry_survives_a_reused_previous_pid(monkeypatch, harmony_runtime):
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_IPC", raising=False)
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
+    decoy = subprocess.Popen(
+        [getattr(sys, "_base_executable", sys.executable), "-c",
+         "import time; print('ready', flush=True); time.sleep(60)"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    capture = Capture()
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness, forwarder=capture, stub=True, connect_timeout=8)
+    processes = []
+    original_spawn = worker_process.WorkerProcess.spawn
+
+    async def spawn(process):
+        processes.append(process)
+        if len(processes) == 2:
+            supervisor._worker_pid = decoy.pid
+            supervisor._worker_create_time = psutil.Process(decoy.pid).create_time() + 1
+            supervisor._worker_instance = "stale-worker"
+            raise OSError("injected next-generation startup failure")
+        await original_spawn(process)
+
+    monkeypatch.setattr(worker_process.WorkerProcess, "spawn", spawn)
+    try:
+        assert (await asyncio.wait_for(asyncio.to_thread(decoy.stdout.readline), 5)).strip() == b"ready"
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 15)
+        assert await readiness.wait_agent_ready(5)
+        first = psutil.Process(supervisor.worker_pid)
+        first.kill()
+        await _wait_until(lambda: len(processes) >= 3 or supervisor._fatal, timeout=15)
+        assert not supervisor._fatal, supervisor._fatal_reason
+        await _wait_until(lambda: supervisor.worker_pid not in {None, decoy.pid}
+                          and readiness.snapshot()["agent_ready"])
+        request = AgentRequest(request_id="after-failed-restart", channel_id="web", session_id="one",
+                               req_method=ReqMethod.CHAT_SEND, params={})
+        await asyncio.wait_for(supervisor.dispatch_parsed_request(object(), request, asyncio.Lock()), 3)
+        assert capture.frames[-1]["request_id"] == "after-failed-restart"
+        assert decoy.poll() is None
+        assert not first.is_running()
+    finally:
+        if supervisor.worker_pid == decoy.pid:
+            # The injected identity must never authorize cleanup of the decoy.
+            supervisor._worker_pid = None
+            supervisor._worker_create_time = None
+        try:
+            await supervisor.stop()
+        finally:
+            for process in processes:
+                await process.stop()
+            if decoy.poll() is None:
+                decoy.terminate()
+            await asyncio.to_thread(decoy.wait, 5)
+            decoy.stdout.close()

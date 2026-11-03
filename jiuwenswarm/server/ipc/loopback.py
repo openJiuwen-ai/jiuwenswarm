@@ -130,6 +130,7 @@ class FrontLoopbackListener:
         self._tasks: set[asyncio.Task[None]] = set()
         self._delivered = False
         self._closed = False
+        self._auth_limit_logged = False
 
     async def start(self, *, code_identity: str, data_scope: str) -> None:
         if self._closed or self._accepted is not None:
@@ -154,6 +155,12 @@ class FrontLoopbackListener:
     def _on_connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         if self._closed or len(self._tasks) >= _MAX_AUTH_CONNECTIONS:
             writer.close()
+            if not self._closed and not self._auth_limit_logged:
+                self._auth_limit_logged = True
+                logger.warning(
+                    "runtime_ipc=front_loopback stage=auth rejected reason=connection_limit active=%s limit=%s",
+                    len(self._tasks), _MAX_AUTH_CONNECTIONS,
+                )
             return
         task = asyncio.create_task(self._authenticate(reader, writer), name="runtime-ipc-auth")
         self._tasks.add(task)
