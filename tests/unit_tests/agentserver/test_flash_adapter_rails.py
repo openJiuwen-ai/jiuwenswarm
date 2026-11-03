@@ -118,6 +118,11 @@ def test_context_overflow_recovery_rail_is_in_flash_keep():
     assert "_context_overflow_recovery_rail" in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
 
 
+def test_llm_retry_rail_is_in_flash_keep():
+    """Without it the factory falls back to the stock rail, which never reports exhaustion."""
+    assert "_llm_retry_rail" in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+
+
 def test_model_routing_rail_is_in_flash_keep():
     """Flash must retain ModelRoutingRail for auto-gear routing.
 

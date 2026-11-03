@@ -124,7 +124,7 @@ def _assemble_flash(monkeypatch, *, enabled=True, disabled=None, lazy=True, sele
     monkeypatch.setattr(interface_deep, "_build_skill_protocol_prompt_rail", skill_protocol_builder)
     monkeypatch.setattr(interface_deep, "_build_heartbeat_rail", lambda: None)
     monkeypatch.setattr(interface_deep, "_build_avatar_rail", lambda: None)
-    monkeypatch.setattr(interface_deep, "_build_llm_retry_rail", lambda: None)
+    monkeypatch.setattr(interface_deep, "_build_llm_retry_rail", lambda **_: None)
     rails = adapter._build_agent_rails(config["react"], config, mode="flash")
     task_builder.assert_not_called()
     skill_protocol_builder.assert_not_called()

@@ -17,9 +17,9 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 不再由 ``flash.enabled`` 将普通 Agent 请求自动转换为 Flash；其它渠道和后台
 来源沿用各自的既有路由策略。具体准入与会话续接由 ``_shared`` 的模式解析负责。
 flash 白名单包含 ``_context_overflow_recovery_rail``（仅上下文溢出兜底，
-正常路径零开销），但不含 ``_llm_retry_rail`` 等重试类健壮性 rail，
-长文档 / 弱网任务的容错仍弱于 normal，部署时需评估所选 Flash profile
-的能力边界。
+正常路径零开销）与 ``_llm_retry_rail``（不保留时工厂回退 SDK 原版 rail，
+重试耗尽没有用户可见错误），其余健壮性 rail 不保留，长文档 / 弱网任务的容错
+仍弱于 normal，部署时需评估所选 Flash profile 的能力边界。
 
 flash 行为由类常量定义：
 - :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``
@@ -269,6 +269,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # 上下文溢出兜底：413/ModelArts.81001 input-token-limit 时
         # 由该 rail 设置 force_compact 并在重试前压缩上下文。正常请求不触发。
         "_context_overflow_recovery_rail",
+        # 重试耗尽要发 chat.error：SDK 原版 rail 不通知，长任务失败时用户只看到“完成”。
+        "_llm_retry_rail",
         # _filesystem_rail: SlimSysOperationRail（flash override），init() 注册
         #   Read/Write/Edit/Glob/Grep/Bash，不注册 powershell/list_files；
         #   丢掉=无文件/shell 能力。

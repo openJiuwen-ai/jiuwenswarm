@@ -19,6 +19,7 @@ from openjiuwen.harness.subagent_runtime.models import (  # type: ignore[import-
     ResumeResult,
     SubagentStatus,
     SubagentStatusKind,
+    WaitResult,
 )
 from openjiuwen.harness.subagent_runtime.status_events import (  # type: ignore[import-untyped]
     is_turn_finished,
@@ -44,6 +45,8 @@ _MIRROR_STRIP_KEYS = ("task_id", "parent_request_id")
 _REASONING_FLUSH_CHARS = 200
 _REASONING_FLUSH_INTERVAL_S = 0.3
 _REASONING_FRAME_CAP = 2000
+# An errored turn's message may be the child's whole streamed text; keep the reason readable.
+_ERROR_REASON_CHARS = 2000
 
 
 def _child_reasoning_text(payload: object) -> str:
@@ -89,6 +92,18 @@ class CompatibleSubagentControl(SubagentControl):
         idle = SubagentStatus.completed()
         await instance.status.set(idle)
         return replace(result, status=idle)
+
+    async def wait(self, subagent_ids: list[str], *args: Any, **kwargs: Any) -> WaitResult:
+        """Surface errored reasons; subagent_wait renders only ``results``, so the parent saw none."""
+        result = await super().wait(subagent_ids, *args, **kwargs)
+        errors = {
+            sid: f"error: {status.message[:_ERROR_REASON_CHARS]}"
+            for sid, status in result.statuses.items()
+            if status.kind is SubagentStatusKind.ERRORED and status.message
+        }
+        if not errors:
+            return result
+        return replace(result, results={**result.results, **errors})
 
     # Toggled by ``install_subagent_control_compat_patch`` from
     # ``react.subagent_runtime.mirror_child_stream``. Class-level because the

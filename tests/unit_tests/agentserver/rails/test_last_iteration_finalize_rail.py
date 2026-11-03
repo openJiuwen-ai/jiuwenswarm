@@ -62,6 +62,7 @@ async def test_last_iteration_with_model_call_inputs_returns_actionable_error() 
     ctx.request_force_finish.assert_called_once()
     payload = ctx.request_force_finish.call_args[0][0]
     assert payload["result_type"] == "error"
+    assert payload["finish_reason"] == "max_iterations"
     assert "最大思考轮数" in payload["output"]
     assert "建议" in payload["output"]
 

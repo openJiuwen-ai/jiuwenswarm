@@ -8,7 +8,7 @@
 | 编号 / slug | S_12 / subagent-runtime-and-lifecycle |
 | 关联模块（agent-core 仓，机制主体） | `openjiuwen/harness/subagent_runtime/`（`control.py` 1227 行 `SubagentControl`、`instance.py` `SubagentInstance`、`models.py` 状态机、`config.py` 常量、`session_manager.py`、`__init__.py` 事件常量 re-export）、`openjiuwen/harness/tools/subagent/_control_registry.py`（属性挂载协议）、`openjiuwen/harness/tools/subagent/subagent_tools.py`（runtime 六工具）、`openjiuwen/harness/deep_agent.py`（释放三入口 @3027 / @3097） |
 | 关联模块（jiuwenswarm 仓，compat 与投影） | `jiuwenswarm/agents/harness/common/tools/subagent_compat.py`（`CompatibleSubagentControl` + `install_subagent_control_compat_patch`）、`jiuwenswarm/server/runtime/agent_adapter/subagent_stream.py`（3A 事件投影 / 批槽 / 子行持久化）、`interface_deep.py`（`release_subagent_runtime_for_session` @3468、`_session_has_live_subagent_runtime` @3437、compat patch 装配 @9860） |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-03 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -21,7 +21,7 @@
 - 超时三级体系（turn 2400s / completion 1800s / wait clamp 1h）
 - 事件三常量（`subagent_updated` / `subagent_message` / `subagent_activity`）的唯一 re-export 入口
 - `_control_registry` 属性挂载协议与三释放入口
-- jiuwenswarm compat 层：`CompatibleSubagentControl`（resume idle 修复 + 子流镜像 + reasoning 合并）与 `install_subagent_control_compat_patch`
+- jiuwenswarm compat 层：`CompatibleSubagentControl`（resume idle 修复 + 子流镜像 + reasoning 合并 + errored 原因回传）与 `install_subagent_control_compat_patch`
 - jiuwenswarm 投影层：3A 事件 → Web `chat.subtask_update` / legacy 批槽 / 子 transcript 落父 session
 
 不管：
@@ -48,7 +48,7 @@
 - **N12（compat 类替换协议）**：`install_subagent_control_compat_patch`（jiuwenswarm subagent_compat.py @220）通过**类属性替换**生效——`_control_registry.SubagentControl = CompatibleSubagentControl`（registry 自行构造实例，无法逐实例注入）。`mirror_child_stream` 是**类级**开关（同理由）。该 patch 在 `_build_subagent_rail`（interface_deep @9860）装配；patch 失败 → `enable_runtime` 降级 False（runtime 整体关闭而非裸奔 stock 类）。
 - **N13（wait 卡片超时豁免）**：runtime 六工具的 wait 卡片 `_attach_call_timeout(wait_card, None)`（subagent_tools.py @469）——合法等待可跨多个父轮 turn，不适用通用工具超时。
 - **N14（镜像流白名单与合并）**：子 chunk 镜像到父 session 流仅三类 `_MIRROR_CHUNK_TYPES = {llm_reasoning, tool_call, tool_result}`；`answer`（→ chat.final）/ `content_chunk`（→ chat.delta）/ `error` / 子 `task.*` 留在子会话。镜像帧必剥 `_MIRROR_STRIP_KEYS = (task_id, parent_request_id)`（防父流幽灵任务段）并盖 `stream_source_id = subagent_id`。llm_reasoning 按 200 字符 / 300ms 合并（`_REASONING_FLUSH_CHARS` / `_REASONING_FLUSH_INTERVAL_S`）、单子代理帧上限 `_REASONING_FRAME_CAP = 2000`。镜像写失败只 warning——**镜像永不打断子代理 turn**。
-- **N15（镜像尾部与状态清理）**：turn 结束（`is_turn_finished`）必 `_release_mirror_tail`（合并中的短尾不滞留到下一 turn）；`_evict_from_memory` finally 必 `_drop_mirror_state`。`CompatibleSubagentControl.resume`：restored 且仍 PENDING_INIT → 置 idle（`SubagentStatus.completed()` 公开态）——OpenJiuWen 用终态 turn status 表示"活跃可输入"，COMPLETED 映射公开 idle。
+- **N15（镜像尾部与状态清理）**：turn 结束（`is_turn_finished`）必 `_release_mirror_tail`（合并中的短尾不滞留到下一 turn）；`_evict_from_memory` finally 必 `_drop_mirror_state`。`CompatibleSubagentControl.resume`：restored 且仍 PENDING_INIT → 置 idle（`SubagentStatus.completed()` 公开态）——OpenJiuWen 用终态 turn status 表示"活跃可输入"，COMPLETED 映射公开 idle。`CompatibleSubagentControl.wait`：ERRORED 且有 message 的子代理，把 `error: {message}`（截断至 `_ERROR_REASON_CHARS = 2000`）放进 `WaitResult.results`——stock `SubagentWaitTool` 只渲染 `results`，否则父代理只看到 `status: errored` + `(no result)`，不知道失败原因（如轮数耗尽）而盲目重做。
 - **N16（投影不覆写权威状态）**：`project_subagent_updated_for_web` 投影 `legacy_status`（closed→completed/error、idle→completed/error、其余 starting）仅供 Web SubtaskProgress 兼容，**不回写** runtime 权威 status。并行批槽（`resolve_subagent_parallel_fields`）按 parent_session_id 记 0-based index/total，完成即从槽中移除、槽空即清 dict——父会话批槽泄漏即清。
 - **N17（子行落父 session）**：`persist_subagent_transcript_message` / `persist_subagent_activity` / `persist_subagent_roster_history` 全部把子事件写为**父 session** 下的行（`session_id=parent_session_id` + `subagent_id` + `channel_id="subagent"` + `mode="subagent"`），request_id 以 `{subagent_id}:{seq}` / `{subagent_id}:activity:{task_id}:{seq}` / `subagent-roster-{subagent_id}:{revision}` 区分。三写全走 `_safe_persist`（吞异常只 warning）——持久化失败不得打断流转发。
 - **N18（释放三入口全吞异常）**：DeepAgent `_release_interaction_subagents`（@3027，parent_ended）、`aclose`（@3097，agent_closed，调 `release_all_subagent_controls`）、`SubagentRail.uninit`（rail_uninit）三处释放路径均吞异常（noqa BLE001）——释放失败不得掩盖主流程。`interface_deep.release_subagent_runtime_for_session`（@3316）额外先 `clear_subagent_progress_batch(sid)` 再释放，逐级向 child adapter 转发。
@@ -61,7 +61,7 @@
 | 方法 | 契约 |
 |---|---|
 | `spawn(...)` | N2 二段式；任务描述截断至 `_TASK_DESCRIPTION_MAX_LEN = 2000` |
-| `wait(...)` | N10 clamp + FIRST_COMPLETED |
+| `wait(...)` | N10 clamp + FIRST_COMPLETED；compat 层回传 ERRORED 原因（N15） |
 | `resume(subagent_id)` | N9 校验 → compat 层 idle 修复（N15） |
 | `close(...)` | N8 禁 RUNNING |
 | `cancel_all()` | 全量取消（释放路径内部调用） |

@@ -317,8 +317,8 @@ models:
         timeout: 360
         # 流式：等待首个分片的最大时间（秒）。放宽以兼容 reasoning/思考模型思考期的静默
         stream_first_chunk_timeout: 300
-        # 流式：分片之间的最大空闲等待时间（秒）
-        stream_idle_timeout: 60
+        # 流式：分片之间的最大空闲等待时间（秒）。部分模型的 tool 参数不增量下发，生成长参数时会静默较久
+        stream_idle_timeout: 180
         verify_ssl: true
         custom_headers: {}
       model_config_obj:
@@ -1003,7 +1003,7 @@ execution_guard:
   llm_retry_rail:
     # 总开关。关闭后不注册 LLMRetryRail，也不会额外拦截重复输出/流式帧超时
     enabled: true
-    # 单次 invoke 内同一类异常最多重试次数；超过后把异常继续抛给上层
+    # 同一类异常连续失败的最多重试次数，模型调用成功后清零；超过后把异常继续抛给上层
     max_retries: 2
     # 非流式 invoke 遇到 Connection error / Request timed out 等瞬时错误时是否自动重试
     retry_transient_invoke_errors: true
