@@ -4224,7 +4224,7 @@
 .chat-welcome__composer {
   position: relative;
   width: min(100%, 768px);
-  margin-bottom: 1.25rem;
+  margin-bottom: 24px;
 }
 
 .chat-welcome__banner {
@@ -4391,7 +4391,7 @@
 
 .chat-welcome__composer {
   width: min(100%, 768px);
-  margin-bottom: 1.25rem;
+  margin-bottom: 24px;
 }
 
 /* 4.9 专家团「通过聊天创建」欢迎态：只由专家团入口挂载，普通新会话保留原首页。 */
@@ -4493,7 +4493,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.5rem;
+  gap: 12px;
   width: min(100%, 768px);
   /* Below the composer, which already keeps its own bottom margin. */
   margin-top: 0;
@@ -4503,9 +4503,9 @@
 .chat-suggestions__title {
   margin: 0 0 0.25rem 0.875rem;
   color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
+  font-size: 14px;
   font-weight: 500;
-  line-height: 1.5;
+  line-height: 22px;
 }
 
 .chat-suggestion-card {
@@ -4549,9 +4549,9 @@
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: var(--font-size-sm);
+  font-size: 14px;
   font-weight: 400;
-  line-height: 1.4;
+  line-height: 22px;
 }
 
 .chat-suggestion-card__arrow {
