@@ -54,4 +54,19 @@ export function contextCompressionElapsedText(
     return t('chat.contextCompressionElapsed.minutesSeconds', { minutes, seconds: safeSeconds % 60 });
   }
   return t('chat.contextCompressionElapsed.seconds', { seconds: safeSeconds });
+ * cancelled/paused 终态的中性文案。SDK 把用户暂停/取消的压缩标记为
+ * `cancelled`/`paused`（reason=user_cancel/user_pause），不再是 failed；
+ * 界面按中断呈现而不是报错。非中断状态返回 null，调用方回退到后端 summary。
+ */
+export function contextCompressionInterruptedText(
+  t: (key: string) => string,
+  status: string | undefined,
+): string | null {
+  if (status === 'paused') {
+    return t('chat.contextCompressionPaused');
+  }
+  if (status === 'cancelled') {
+    return t('chat.contextCompressionCancelled');
+  }
+  return null;
 }

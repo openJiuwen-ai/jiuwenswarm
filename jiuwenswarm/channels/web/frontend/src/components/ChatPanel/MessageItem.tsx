@@ -20,6 +20,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
 import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
+import { contextCompressionInterruptedText, contextCompressionRunningText } from '../../utils/contextCompression';
 import {
   Message,
   FileDownloadItem,
@@ -282,6 +283,9 @@ export function ContextCompressionLines({
 
   const isRunning = runtime?.status === 'running';
   const isFailed = runtime?.status === 'failed';
+  // 用户暂停/取消的压缩：SDK 发 cancelled/paused（reason=user_cancel/user_pause），
+  // 按中断呈现中性文案，不进 failed 红色态。
+  const interruptedText = contextCompressionInterruptedText(t, runtime?.status);
   const summaryItems = (finalSummary?.summaries ?? []).filter(Boolean);
   const detailText = summaryItems
     .map((item, index) => `${index + 1}. ${item}`)
@@ -296,12 +300,12 @@ export function ContextCompressionLines({
             isFailed ? 'text-danger' : 'text-text-muted'
           )}
           data-testid="chat-panel-context-compression-runtime"
-          data-variant={isRunning ? 'running' : isFailed ? 'failed' : 'done'}
+          data-variant={isRunning ? 'running' : isFailed ? 'failed' : interruptedText ? 'cancelled' : 'done'}
         >
           <span className={clsx(isRunning && 'context-compression-running-text')}>
             {isRunning
               ? contextCompressionRunningText(t, runtime?.processor, runtime?.summary ?? '')
-              : runtime?.summary}
+              : interruptedText ?? runtime?.summary}
           </span>
           {isRunning && runningElapsedSeconds !== undefined && (
             <span

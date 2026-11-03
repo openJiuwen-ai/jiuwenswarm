@@ -882,11 +882,17 @@ function TeamMemberContextCompressionBar({
   const status = runtime?.status;
   const isRunning = status === 'running';
   const isFailed = status === 'failed';
+  // 用户暂停/取消：SDK 发 cancelled/paused，按中性终态呈现（可关闭、不红色、无转圈）。
+  const isInterrupted = status === 'cancelled' || status === 'paused';
   let statusTitle = t('team.contextCompression.completed', { count: summary?.count || 1 });
   if (isRunning) {
     statusTitle = t('team.contextCompression.running');
   } else if (isFailed) {
     statusTitle = t('team.contextCompression.failed');
+  } else if (isInterrupted) {
+    statusTitle = status === 'paused'
+      ? t('team.contextCompression.paused')
+      : t('team.contextCompression.cancelled');
   }
   const detailsTitle = showSummaryDetails
     ? summaryItems.map((item, index) => `${index + 1}. ${item}`).join('\n')

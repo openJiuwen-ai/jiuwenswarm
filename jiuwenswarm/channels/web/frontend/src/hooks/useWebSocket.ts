@@ -1635,6 +1635,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'started' || status === 'running') {
         clearPendingContextCompressionStart(sessionId);
+        // 新一轮压缩开始：清掉上一轮的完成计数，保证「本轮完成 N 次」徽标
+        // 只统计当前这轮（chat.final 收尾时展示）。否则上一轮的 completed
+        // 会在本轮被取消时冒出来，把取消轮误标成有完成。
+        contextCompressionSummaryRef.current.delete(sessionId);
         const pending: PendingContextCompressionStart = {
           // 记下这一轮压缩的起始时刻：界面在 300ms 后才显示提示，但计时要从
           // 真正开始压缩算起；每轮 started 都会覆盖，因此计时自动从头开始。
@@ -1666,6 +1670,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setContextCompressionStatus(sessionId, {
           ...runtimeState,
           status: 'unchanged',
+        });
+        return;
+      }
+
+      if (status === 'cancelled' || status === 'paused') {
+        clearPendingContextCompressionStart(sessionId);
+        useChatStore.getState().setContextCompressionStatus(sessionId, {
+          ...runtimeState,
+          status,
         });
         return;
       }
@@ -1716,6 +1729,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       if (status === 'started' || status === 'running') {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
+        // 同主会话：新一轮压缩开始时清上一轮完成计数，徽标只统计本轮。
+        setTeamMemberContextCompressionStatus(sessionId, memberId, undefined, undefined);
         const key = getTeamMemberContextCompressionKey(sessionId, memberId);
         const pending: PendingContextCompressionStart = {
           // 成员压缩与 leader 压缩各自独立计时，同样每轮 started 重新开始。
@@ -1747,6 +1762,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setTeamMemberContextCompressionStatus(sessionId, memberId, {
           ...runtimeState,
           status: 'unchanged',
+        });
+        return;
+      }
+
+      if (status === 'cancelled' || status === 'paused') {
+        clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
+        setTeamMemberContextCompressionStatus(sessionId, memberId, {
+          ...runtimeState,
+          status,
         });
         return;
       }
@@ -5279,6 +5303,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // has_active_task 为 false 表示没有活跃任务（任务已完成）
         const hasActiveTask = resultPayload.has_active_task !== false;
 
+        // 压缩提示兜底：后端已确认暂停/取消，若压缩行仍处于 running（SDK 的
+        // cancelled/paused 终态事件未到或丢失），先收掉运行行，避免界面停在
+        // "压缩中"；随后到达的终态事件会以中性文案重新呈现。
+        if (resultPayload.success && (resultPayload.intent === 'pause' || resultPayload.intent === 'cancel')) {
+          const compressionRuntime =
+            useChatStore.getState().getRuntime(sessionId)?.contextCompressionRuntime;
+          if (compressionRuntime?.status === 'running') {
+            clearPendingContextCompressionStart(sessionId);
+            useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
+          }
+        }
+
         if (resultPayload.intent === 'pause') {
           if (resultPayload.success) {
             useChatStore.getState().setPaused(
@@ -5982,6 +6018,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     drainTaskQueueIfIdle,
     isProactiveRecommendationPayload,
     clearPendingTeamConnectionMember,
+    clearPendingContextCompressionStart,
     clearPendingTeamMemberContextCompressionStart,
     clearTeamMemberContextCompressionStatus,
     markTeamConnectionStateChanged,

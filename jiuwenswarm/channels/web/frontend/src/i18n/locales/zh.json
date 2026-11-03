@@ -1518,6 +1518,8 @@
       "running": "正在压缩上下文",
       "completed": "上下文压缩完成 {{count}} 次",
       "failed": "上下文压缩失败",
+      "cancelled": "上下文压缩已取消",
+      "paused": "上下文压缩已暂停",
       "close": "关闭上下文压缩提示"
     },
     "elapsed": {
@@ -1993,6 +1995,8 @@
       "minutesSeconds": "已等待 {{minutes}} 分 {{seconds}} 秒",
       "hoursMinutes": "已等待 {{hours}} 小时 {{minutes}} 分"
     },
+    "contextCompressionCancelled": "上下文压缩已取消，将在下次请求时重新评估",
+    "contextCompressionPaused": "上下文压缩已暂停，恢复任务后将重新评估",
     "historyPager": {
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
       "loadingMore": "加载中…",
