@@ -30,6 +30,7 @@
     "predev": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "prebuild": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "dev": "vite",
+    "test:web-build-base": "node --test tests/webBuildBase.test.mjs",
     "build": "tsc && vite build",
     "test:session-assets": "esbuild src/features/sessionAssets/assetReferences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/session-assets/assetReferences.mjs && node --test tests/sessionAssetReferences.test.mjs",
     "test:task-asr": "node --test tests/taskAsr.test.mjs tests/taskAsrRecording.test.mjs",

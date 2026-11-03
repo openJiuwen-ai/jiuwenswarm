@@ -133,6 +133,7 @@ import {
   usePersonalContextStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+import { chatRoutePath } from './multi-session/routing/route';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
   NEW_CONVERSATION_ID,
@@ -823,7 +824,7 @@ function AppContent({
       setToolPanelHidden(true);
       return () => { cancelled = true; };
     } else if (route.kind === 'chat-new') {
-      if (window.location.pathname !== '/chat/new') {
+      if (window.location.pathname !== chatRoutePath({ kind: 'chat-new' })) {
         navigate({ kind: 'chat-new' }, { replace: true });
       }
       pendingNewConversationRef.current = true;
