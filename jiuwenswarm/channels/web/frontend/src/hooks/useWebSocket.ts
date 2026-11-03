@@ -1632,7 +1632,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (status === 'started' || status === 'running') {
         clearPendingContextCompressionStart(sessionId);
         const pending: PendingContextCompressionStart = {
-          runtimeState,
+          // 记下这一轮压缩的起始时刻：界面在 300ms 后才显示提示，但计时要从
+          // 真正开始压缩算起；每轮 started 都会覆盖，因此计时自动从头开始。
+          runtimeState: { ...runtimeState, startedAt: Date.now() },
           shown: false,
           timer: window.setTimeout(() => {
             const current = pendingContextCompressionStartRef.current.get(sessionId);
@@ -1712,7 +1714,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         clearPendingTeamMemberContextCompressionStart(sessionId, memberId);
         const key = getTeamMemberContextCompressionKey(sessionId, memberId);
         const pending: PendingContextCompressionStart = {
-          runtimeState,
+          // 成员压缩与 leader 压缩各自独立计时，同样每轮 started 重新开始。
+          runtimeState: { ...runtimeState, startedAt: Date.now() },
           shown: false,
           timer: window.setTimeout(() => {
             if (pendingTeamMemberContextCompressionStartRef.current.get(key) !== pending) return;

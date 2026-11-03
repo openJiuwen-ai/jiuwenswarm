@@ -83,6 +83,12 @@ export interface ContextCompressionRuntime {
   operationId: string;
   phase?: string;
   processor?: string;
+  /**
+   * Epoch ms when this compression round started. Set from the ``started``
+   * event so the elapsed-time display is accurate while the round is running;
+   * terminal states drop it and the timer stops.
+   */
+  startedAt?: number;
 }
 
 export interface ContextCompressionSummary {

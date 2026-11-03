@@ -1985,6 +1985,11 @@
       "currentRound": "压缩当前轮…",
       "roundLevel": "全量压缩…"
     },
+    "contextCompressionElapsed": {
+      "seconds": "已等待 {{seconds}} 秒",
+      "minutesSeconds": "已等待 {{minutes}} 分 {{seconds}} 秒",
+      "hoursMinutes": "已等待 {{hours}} 小时 {{minutes}} 分"
+    },
     "historyPager": {
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
       "loadingMore": "加载中…",
