@@ -97,6 +97,10 @@ class _MessageHandlerStreamTestApi(MessageHandler):
             metadata=metadata,
         )
 
+    @classmethod
+    def is_permission_resume(cls, env, session_id) -> bool:
+        return cls._is_permission_resume(env, session_id)
+
 
 class _TestableScheduler(CronSchedulerService):
     """Subclass that exposes protected members as public methods.
@@ -2854,7 +2858,7 @@ class TestSingleAgentCronStream:
 
     @pytest.mark.parametrize(
         "event_type",
-        ["chat.ask_user_question", "plan.approval_required"],
+        ["chat.ask_user_question", "plan.approval_required", "chat.client_tool_request"],
     )
     @pytest.mark.asyncio
     async def test_interrupt_event_fails_fast_with_interrupt_message(
@@ -4100,3 +4104,15 @@ def test_cron_store_rejects_groups_on_create_and_update(package):
     with pytest.raises(ValueError, match="only support a single model"):
         mutations.apply_cron_job_patch(job, {"model_selection": group})
     assert job.model_name == "configured-model"
+
+
+def test_an_answer_resumes_a_cron_pause_only_when_it_answers_something():
+    resume = SimpleNamespace(params={
+        "source": "permission_interrupt",
+        "request_id": "perm-1",
+        "answers": [{"selected_options": ["allow_once"]}],
+    })
+    assert _MessageHandlerStreamTestApi.is_permission_resume(resume, "cron_job-1")
+
+    resume.params["answers"] = []
+    assert not _MessageHandlerStreamTestApi.is_permission_resume(resume, "cron_job-1")

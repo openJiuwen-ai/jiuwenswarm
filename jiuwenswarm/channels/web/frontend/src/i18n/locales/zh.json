@@ -1137,7 +1137,53 @@
     },
     "team": {
       "memberLanes": "成员轨迹泳道",
-      "members": "成员"
+      "members": "成员",
+      "schedule": {
+        "title": "调度控制",
+        "collapse": "收起调度控制",
+        "expand": "展开调度控制",
+        "summary": "{{tasks}} 个任务 · {{completed}} 个完成 · {{reviews}} 次 Review · {{reworks}} 次返工",
+        "controlRecords": "{{count}} 条 main 调度记录",
+        "anomalies": "{{count}} 个调度异常",
+        "assignee": "承担者",
+        "unassigned": "未指派",
+        "unknownMember": "未知成员",
+        "closeTask": "关闭任务详情",
+        "noReviews": "暂无 Review 记录",
+        "reviewCount_one": "{{count}} 次评审",
+        "reviewCount_other": "{{count}} 次评审",
+        "phase": {
+          "pending": "待处理",
+          "running": "执行中",
+          "in_review": "验收中",
+          "rework": "返工中",
+          "completed": "已完成",
+          "escalated": "已升级",
+          "cancelled": "已取消",
+          "unknown": "未知"
+        },
+        "decision": {
+          "pass": "通过",
+          "fail": "未通过",
+          "score": "得分 {{value}}",
+          "pending": "待投票",
+          "pendingScore": "待评分"
+        },
+        "event": {
+          "created": "任务创建",
+          "updated": "任务更新",
+          "unblocked": "依赖解除",
+          "started": "任务开工",
+          "submitted": "提交验收",
+          "vote": "Review 投票",
+          "revision": "要求返工",
+          "verified": "验收通过",
+          "cancelled": "任务取消",
+          "escalated": "验收升级",
+          "anomaly": "调度异常",
+          "team_completed": "团队完成"
+        }
+      }
     },
     "analysis": {
       "back": "返回对话",
@@ -1161,6 +1207,7 @@
         "replay": "只读复现中无法诊断，请先退出复现"
       },
       "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span",
+      "teamSummary": "{{members}} 名正式成员 · {{completed}}/{{tasks}} 个任务完成 · {{reviews}} 次 Review · {{spans}} 个 Span",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -1543,25 +1590,64 @@
       }
     },
     "org": {
-      "tab": "组织信息",
-      "title": "Task Pool 与组织",
+      "tab": "组织",
+      "title": "组织",
+      "details": "详细信息",
+      "taskTree": "组织任务",
+      "treeProgress": "已完成 {{completed}} / {{total}}",
+      "descriptionExcerpt": "说明摘要",
+      "requiredCapabilities": "所需能力",
+      "capabilities": "团队能力",
+      "assignedBy": "分配团队",
+      "updatedAt": "最近更新",
+      "aggregationMode": "汇总方式",
+      "executionModel": "执行模型",
+      "failureReason": "失败原因",
+      "rootTask": "根任务",
+      "recreatedFrom": "重建来源",
+      "requiredChanges": "修改要求",
+      "aggregation": {
+        "HIERARCHICAL": "逐级汇总",
+        "SUMMARY_TEAM": "Summary Team 汇总"
+      },
+      "failure": {
+        "EXECUTION_FAILED": "执行失败",
+        "SOURCE_FAILED": "依赖任务失败",
+        "SUMMARY_PROVISION_FAILED": "汇总团队创建失败",
+        "CANCELLED": "已取消",
+        "EXPIRED": "已过期"
+      },
+      "ownerLabel": "主团",
+      "stateRunning": "运行中",
+      "stateIdle": "待命",
+      "status": {
+        "CANCELLED": "已取消",
+        "EXPIRED": "已过期",
+        "OPEN": "待认领",
+        "DELEGATED": "已委派",
+        "WAITING_SOURCES": "等待成果",
+        "CLAIMED": "已认领",
+        "IN_PROGRESS": "进行中",
+        "COMPLETED": "已完成",
+        "FAILED": "失败"
+      },
       "refresh": "刷新",
       "loading": "加载中…",
-      "empty": "当前 Team 未绑定 organization",
+      "empty": "暂未组建组织",
       "noOrganization": "未绑定组织",
       "noTeam": "当前会话暂无可查询的 Team",
-      "loadFailed": "组织信息加载失败",
-      "organizationId": "Organization ID",
+      "loadFailed": "组织加载失败",
+      "organizationId": "组织 ID",
       "displayName": "名称",
       "description": "描述",
-      "ownerTeam": "Owner Team",
-      "teams": "Team 列表",
+      "ownerTeam": "主团",
+      "teams": "团队",
       "leadTeam": "Team",
       "leadMember": "Leader",
       "metadata": "元数据",
-      "taskPool": "Task Pool",
+      "taskPool": "任务",
       "taskPoolEmpty": "任务池为空",
-      "taskId": "Task ID",
+      "taskId": "任务 ID",
       "taskTitle": "标题",
       "taskStatus": "状态",
       "taskAssignee": "执行者",
@@ -1898,6 +1984,11 @@
       "dialogue": "压缩过去轮消息中…",
       "currentRound": "压缩当前轮…",
       "roundLevel": "全量压缩…"
+    },
+    "contextCompressionElapsed": {
+      "seconds": "已等待 {{seconds}} 秒",
+      "minutesSeconds": "已等待 {{minutes}} 分 {{seconds}} 秒",
+      "hoursMinutes": "已等待 {{hours}} 小时 {{minutes}} 分"
     },
     "historyPager": {
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
@@ -3845,8 +3936,7 @@
       "Communication": "通讯协作",
       "Engineering": "产品研发",
       "Life": "生活方式",
-      "Custom": "自定义",
-      "Other": "其他"
+      "Custom": "自定义"
     },
     "actions": {
       "working": "处理中",
@@ -4151,6 +4241,8 @@
     "notPreviewable": "该文件无法预览，仅支持 Markdown/JSON（.md/.mdx/.json）文件"
   },
   "chatUi": {
+    "toggleOverview": "缩略栏",
+    "expandDetails": "详情面板",
     "copyMessage": "复制消息",
     "copied": "已复制",
     "usageInput": "输入",
@@ -4776,6 +4868,7 @@
   },
   "authPrompt": {
     "title": "操作授权",
+    "matchedRule": "匹配规则",
     "titleConfirm": "操作确认",
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",

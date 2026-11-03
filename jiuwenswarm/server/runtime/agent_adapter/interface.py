@@ -37,6 +37,7 @@ from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
+from gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from gateway.extensions.registry import ExtensionRegistry
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
@@ -76,6 +77,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context
 from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
     USER_INTERACTION_EVENTS,
 )
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.context_keys import (
@@ -103,6 +105,7 @@ from jiuwenswarm.common.utils import (
     migrate_team_skill_views,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.runtime.client_tools import client_tool_answers
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
@@ -597,6 +600,13 @@ def _history_media_record(value: Any, *, default_type: str = "image") -> dict[st
     )
     mime_type = _history_media_string(value, "mime_type", "mimeType")
     size = _history_media_size(value)
+    # The composer draft's own id (session.assets.register's idempotency key, see
+    # session_assets.py): without it surviving a history reload, a historical
+    # message's attachment can only be matched back to the session asset it
+    # created by path alone -- ambiguous once the same path legitimately backs
+    # more than one asset (a deliberate re-attach), see
+    # resolveAssetDisplayNames (assetReferences.ts).
+    client_id = _history_media_string(value, "clientId", "client_id")
 
     record: dict[str, Any] = {
         "type": media_type,
@@ -610,6 +620,8 @@ def _history_media_record(value: Any, *, default_type: str = "image") -> dict[st
         record["url"] = url
     if size is not None:
         record["size_bytes"] = size
+    if client_id:
+        record["client_id"] = client_id
     return record
 
 
@@ -2269,6 +2281,12 @@ class JiuWenSwarm:
             else:
                 interactive_input.update(request_id, value)
 
+        if source == CLIENT_TOOL_INTERRUPT_SOURCE:
+            # One result per paused client tool call, by its interrupt id; a call left unanswered stays paused.
+            for answer in client_tool_answers(answers):
+                interactive_input.answer(answer.interrupt_id, answer.result)
+            return interactive_input
+
         if source == "ask_user_interrupt":
             answers_dict = {}
             free_text_answer: str | None = None
@@ -2354,6 +2372,9 @@ class JiuWenSwarm:
                     "SkillEvolutionApproval", source, request_id, value, "rejected_as_unknown_option"
                 )
                 action = "reject"
+            elif action == "allow_always" and is_enterprise():
+                # 企业版不提供「总是允许」；旧前端或伪造请求仍回传时降级为本次允许。
+                action = "allow_once"
             payload = {"action": action}
             if custom_input:
                 payload["feedback"] = custom_input
@@ -2390,10 +2411,12 @@ class JiuWenSwarm:
                 "feedback": "",
             }
         elif action == ALWAYS_ALLOW:
+            # 企业版权限卡不提供「永久记住」；若旧前端或伪造请求仍回传该动作，
+            # 降级为会话内记住，避免写回本地 user overlay / approval_overrides。
             confirm_payload = {
                 "approved": True,
                 "auto_confirm": True,
-                "persist_allow": True,
+                "persist_allow": not is_enterprise(),
                 "feedback": "",
             }
         elif value in PLAN_EXECUTE_OPTION_VALUES:
@@ -6180,6 +6203,10 @@ class JiuWenSwarm:
         """Inspect existing Goal work without creating or attaching a session."""
         checker = getattr(self._adapter, "has_active_goal", None)
         return bool(callable(checker) and checker(session_id))
+
+    async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
+        """What this Session's paused turn still asks, as the events that asked it."""
+        return await self._adapter.pending_interactions(session_id) if self._adapter is not None else []
 
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter

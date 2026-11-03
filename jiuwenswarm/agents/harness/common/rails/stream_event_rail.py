@@ -40,6 +40,7 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_verified_permission_ask_user_question,
     convert_interactions_to_ask_user_question,
+    question_interactions,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
     consume_reviewer_tool_result_metadata,
@@ -863,8 +864,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         result = ctx.inputs.result
         if not isinstance(result, dict) or result.get("result_type") != "interrupt":
             return
+        state = result.get("state") or []
+        if state and not question_interactions(state):
+            return
         payload = convert_interactions_to_ask_user_question(
-            result.get("state") or [], root_permission_queue=self._root_permission_queue,
+            state, root_permission_queue=self._root_permission_queue,
         )
         interrupt_ids = result.get("interrupt_ids")
         if payload is None or not isinstance(interrupt_ids, list) or (

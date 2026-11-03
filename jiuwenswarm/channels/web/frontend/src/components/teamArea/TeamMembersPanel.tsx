@@ -13,7 +13,8 @@ import { MarkdownMessageBody } from '../ChatPanel/MessageItem';
 import { parseTeamEventMessage, type ParsedTeamEvent } from '../ChatPanel/teamEventUtils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
-import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import teamIcon from '../../assets/team.svg';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
@@ -86,6 +87,7 @@ function getGroupMemberIds(members: TeamMember[]): string[] {
 }
 
 function isGroupMessageItem(item: { message: Message; event: ParsedTeamEvent | null }): item is GroupMessageItem {
+  // P2P-to-user stays visible here. Plain Leader output is shown in this Team's chat instead.
   return item.event !== null && !item.event.isLeaderToUser;
 }
 
@@ -869,6 +871,7 @@ function TeamMemberContextCompressionBar({
   const { t } = useTranslation();
   const runtime = state?.runtime;
   const summary = state?.summary;
+  const runningElapsedSeconds = useContextCompressionElapsed(runtime);
   const summaryItems = (summary?.summaries ?? []).filter(Boolean);
   const showSummaryDetails = summaryItems.length > 0;
 
@@ -932,6 +935,14 @@ function TeamMemberContextCompressionBar({
         {runtime?.summary && !isComplete && (
           <span className={activityClassName} data-testid="team-area-context-compression-activity">
             {isRunning ? contextCompressionRunningText(t, runtime?.processor, runtime.summary) : runtime.summary}
+          </span>
+        )}
+        {isRunning && runningElapsedSeconds !== undefined && (
+          <span
+            className="team-event-group-summary__activity context-compression-elapsed"
+            data-testid="team-area-context-compression-elapsed"
+          >
+            {contextCompressionElapsedText(t, runningElapsedSeconds)}
           </span>
         )}
         {!isRunning && (

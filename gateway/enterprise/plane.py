@@ -42,6 +42,8 @@ class GatewayEnterprisePlane:
 
         个人版不调用本方法；企业版由调用方在平面就绪后安装。
         """
+        # Keep a live channel reference: the transport may be replaced after mounting.
+        app.state.manager_agent_channel = channel
         self.register_routes(app)
         from gateway.channel_manager.web.web_http_routes import (
             register_web_http_api_routes,

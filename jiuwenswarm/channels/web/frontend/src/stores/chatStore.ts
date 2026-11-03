@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand';
+import { mergeUniqueMessages, toOwnerTeamMessage } from '../components/ChatPanel/teamEventUtils';
 import { subscribeWithSelector } from 'zustand/middleware';
 import {
   Message,
@@ -599,7 +600,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
         useChatStore.getState().replaceHistoryMessages(conversationKey(sessionId, teamId), history);
       }
-      messages = messages.filter((message) => !message.teamId);
+      messages = messages.flatMap((message) => {
+        if (!message.teamId) return [message];
+        const ownerMessage = toOwnerTeamMessage(message);
+        return ownerMessage ? [ownerMessage] : [];
+      });
     }
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -1793,13 +1798,22 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
         useChatStore.getState().prependMessages(conversationKey(sessionId, teamId), history);
       }
-      olderFirst = olderFirst.filter((message) => !message.teamId);
+      olderFirst = olderFirst.flatMap((message) => {
+        if (!message.teamId) return [message];
+        const ownerMessage = toOwnerTeamMessage(message);
+        return ownerMessage ? [ownerMessage] : [];
+      });
     }
     if (!olderFirst.length) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      const assigned = assignMessageRenderKeys(runtime, olderFirst);
+      // History pages may overlap live Team events whose transport IDs differ.
+      const existing = new Set(runtime.messages);
+      const incoming = mergeUniqueMessages([...runtime.messages, ...olderFirst])
+        .filter((message) => !existing.has(message));
+      if (!incoming.length) return state;
+      const assigned = assignMessageRenderKeys(runtime, incoming);
       return {
         runtimes: {
           ...state.runtimes,

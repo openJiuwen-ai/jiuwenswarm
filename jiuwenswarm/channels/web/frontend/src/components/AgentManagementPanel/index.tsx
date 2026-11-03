@@ -46,6 +46,7 @@ import {
   agentManagementReducer,
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
+  collectCategories,
   initialAgentManagementState,
   isPreviewableFile,
   mergeAgentDetailWithCatalog,
@@ -388,15 +389,37 @@ export function AgentManagementPanel({
 
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
   const [groupInstallationFilter, setGroupInstallationFilter] = useState<InstallationFilter>('all');
+  // 分类页签从广场可见目录（builtin+hub）动态统计（对齐插件广场）：后端 category 是
+  // manifest/Hub 自由字符串，写死枚举会导致大部分条目归不进任何页签（#5902）。
+  // 统计集合必须与列表可见集合一致——state.catalog 还含"我的"（local）条目，
+  // 否则本地专家的自定义分类会生成一个点进去为空的页签（#5902 回归）。
+  // 市场有几个分类就出几个页签，不截断、不自建 "Other" 聚合类型。
+  const plazaCatalog = useMemo(
+    () => state.catalog.filter((item) => item.source === 'builtin' || item.source === 'hub'),
+    [state.catalog],
+  );
+  const categories = useMemo(
+    () => collectCategories(plazaCatalog.map((item) => item.category)),
+    [plazaCatalog],
+  );
+  // 组目录侧 groupCatalog 已是 builtin+hub（buildGroupCatalogViewModel 在 catalog 作用域过滤），
+  // 直接统计全部分类，保持与市场一致。
+  const groupCategories = useMemo(
+    () => collectCategories(groupCatalog.map((item) => item.category)),
+    [groupCatalog],
+  );
   const catalogView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
-        scope: 'catalog',
-        category,
-        // Marketplace results are already filtered by Hub. Reapplying a
-        // client-side substring filter would discard name/tag matches.
-        query: '',
-      }),
+      buildCatalogViewModel(
+        state.catalog.filter((item) => matchesInstallation(item.installed, installationFilter)),
+        {
+          scope: 'catalog',
+          category,
+          // Marketplace results are already filtered by Hub. Reapplying a
+          // client-side substring filter would discard name/tag matches.
+          query: '',
+        },
+      ),
     [state.catalog, category, installationFilter],
 
   );
@@ -410,12 +433,13 @@ export function AgentManagementPanel({
     [state.mineCatalog, mineQuery, installationFilter],
   );
   const groupCatalogView = useMemo(
-    () => buildGroupCatalogViewModel(groupCatalog, {
-      scope: 'catalog',
-      category: groupCategory,
-      query: '',
-      installation: groupInstallationFilter,
-    }),
+    () =>
+      buildGroupCatalogViewModel(groupCatalog, {
+        scope: 'catalog',
+        category: groupCategory,
+        query: '',
+        installation: groupInstallationFilter,
+      }),
     [groupCatalog, groupCategory, groupInstallationFilter],
   );
   const groupMineView = useMemo(
@@ -1477,15 +1501,18 @@ export function AgentManagementPanel({
               items={view === 'teams' ? groupCatalogView.items : groupMineView.items}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
+              categories={view === 'teams' ? groupCategories : []}
               installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
               busyIds={busyIds}
               onCategoryChange={setGroupCategory}
-              onRetry={() => void loadGroups(
-                view === 'teams' ? 'catalog' : 'mine',
-                view === 'teams' ? groupCatalogQuery.trim() : '',
-              )}
+              onRetry={() =>
+                void loadGroups(
+                  view === 'teams' ? 'catalog' : 'mine',
+                  view === 'teams' ? groupCatalogQuery.trim() : '',
+                )
+              }
               onOpen={openGroupDetail}
               onUse={handleUseGroup}
               onInstall={handleInstallGroup}
@@ -1498,9 +1525,12 @@ export function AgentManagementPanel({
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
               category={category}
+              categories={isMine ? [] : categories}
               installation={installationFilter}
               status={
-                !isMine && !state.catalogError && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
+                !isMine &&
+                !state.catalogError &&
+                catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
                   ? 'loading'
                   : state.catalogStatus
               }

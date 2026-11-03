@@ -3467,12 +3467,7 @@ function AppContent({
             mediaItems,
           });
           const store = useWorkspaceStore.getState();
-          if (!store.expandedProjectIds[created.projectId]) {
-            store.toggleProjectExpanded(created.projectId);
-          }
-          await store.loadProjects();
-          await store.loadProjectSessions(created.projectId);
-          const project = useWorkspaceStore.getState().projects.find(
+          const project = store.projects.find(
             (item) => item.project_id === created.projectId,
           );
           if (project && !project.is_default) store.setSelectedProject(project);
@@ -3481,6 +3476,11 @@ function AppContent({
             projectId: created.projectId,
             sessionId: created.sessionId,
           });
+          if (!store.expandedProjectIds[created.projectId]) {
+            store.toggleProjectExpanded(created.projectId);
+          }
+          await store.loadProjects();
+          await store.loadProjectSessions(created.projectId);
         } catch (error) {
           const code = error instanceof Error ? error.message : '';
           const referenceError = code === 'image_limit'

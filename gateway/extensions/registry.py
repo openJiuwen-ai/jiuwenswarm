@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from gateway.extensions.sdk.application_plugin import (
         ApplicationPluginExtension,
     )
+    from gateway.extensions.sdk.skill_source import SkillSourceExtension
     from gateway.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.extensions.sdk.skill_source import SkillSourceExtension
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.
@@ -29,8 +29,7 @@ else:
     ThirdAgentExtension = Any
     AgentServerClient = Any
     ThirdAgent = Any
-    # Skill Source SPI lives in jiuwenswarm; avoid a hard gateway→jiuwenswarm
-    # import at module load (Runtime-direct / type-hint discovery).
+    # Skill Source SPI 与上方扩展基类同属 gateway，运行期仍不导入扩展框架。
     SkillSourceExtension = Any
 
 

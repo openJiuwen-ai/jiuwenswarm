@@ -27,6 +27,7 @@ common 只面向 ``provider(domain)`` 取实现，注册责任在使用方进程
 - ``a2ui``             → ``server.runtime.a2ui.integration``
 - ``team_binding_store`` → ``server.runtime.team_binding_store``
 - ``team_entity_store``  → ``server.runtime.team_entity_store``
+- ``audit_emit``         → 企业版 telemetry 审计实现（gateway 侧零 import）
 """
 
 from __future__ import annotations
@@ -39,6 +40,10 @@ logger = logging.getLogger(__name__)
 
 class ExternalProviderUnregistered(RuntimeError):
     """请求的外部能力域尚未注册实现（进程未装配或功能不可用）。"""
+
+
+#: 审计打点域：企业版 telemetry 私有库经此注入带 ``audit_claw_log`` 的实现对象。
+AUDIT_EMIT_DOMAIN = "audit_emit"
 
 
 _providers: dict[str, Any] = {}
