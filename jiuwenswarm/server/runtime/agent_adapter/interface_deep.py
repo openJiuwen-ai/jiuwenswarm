@@ -1913,6 +1913,9 @@ class JiuWenSwarmDeepAdapter:
         self._model_client_config: ModelClientConfig | None = None
         self._model_request_config: ModelRequestConfig | None = None
         self._last_resolved_model: Model | None = None
+        self._last_requested_model_ref: str = ""
+        # Model group id -> display name, memoized for the per-request state write.
+        self._model_group_label_cache: dict[str, str] = {}
         self._active_request_model: Model | None = None
         self._context_model_binding: tuple[Any, Model, tuple[Any, ...]] | None = None
         self._selected_model_context_window_tokens: int | None = None
@@ -4976,6 +4979,53 @@ class JiuWenSwarmDeepAdapter:
             return self._model_request_config.model_name or "unknown"
         return "unknown"
 
+    def _resolve_runtime_state_model(self, language: str) -> str:
+        """Name the session's model for the runtime state file.
+
+        A model-group selection compiles to the group's first model as a
+        direct client (single-agent sessions use a manual pool; only the Team
+        build compiles the real router), so the applied client config never
+        carries the group. The requested selection reference does: a plain
+        ``model_group:<id>`` means the conversation runs on that group, and
+        naming a concrete model here would read as a claim about the model
+        actually answering -- misleading to anyone who opens this file, the
+        leader included (it can read_file it).
+        """
+        ref = str(getattr(self, "_last_requested_model_ref", "") or "")
+        parts = ref.split(":") if ref else []
+        if len(parts) == 2 and parts[0] == "model_group":
+            return self._model_group_label(parts[1], language)
+        router = getattr(self._model_client_config, "intelli_router", None)
+        group_id = str(getattr(router, "model_group_id", "") or "").strip()
+        if group_id:
+            return self._model_group_label(group_id, language)
+        return self._resolve_model_name()
+
+    def _model_group_label(self, group_id: str, language: str) -> str:
+        """Name a model group the way the runtime prompt does, memoized.
+
+        The catalog load is not free and the runtime state file is written
+        per request, so the resolved name is cached per group id and dropped
+        with the rest of the model cache when the config changes.
+        """
+        # Bare instances (tests build them via __new__) skip the memo and
+        # simply resolve; real ones carry the cache from __init__.
+        cache = getattr(self, "_model_group_label_cache", None)
+        if cache is None:
+            cache = {}
+        name = cache.get(group_id)
+        if name is None:
+            try:
+                from jiuwenswarm.common.model_catalog import ModelCatalog
+
+                name = ModelCatalog().group_display_name(group_id)
+            except Exception:  # noqa: BLE001 - naming must never fail the state write
+                name = group_id
+            cache[group_id] = name
+        if str(language).lower().startswith("en"):
+            return f"model group {name}"
+        return f"模型组 {name}"
+
     def _resolve_session_git_snapshot(
         self,
         project_dir: str,
@@ -5082,7 +5132,7 @@ class JiuWenSwarmDeepAdapter:
             mode_display = _MODE_DISPLAY_MAP.get(mode, {}).get(language, mode)
 
             state = {
-                "model": self._resolve_model_name(),
+                "model": self._resolve_runtime_state_model(language),
                 "moa_enabled": self._moa_enabled,
                 "available_models": get_model_names(),
                 "mode": mode_display,
@@ -8093,6 +8143,11 @@ class JiuWenSwarmDeepAdapter:
             return self._model
 
         self._model_cache.clear()
+        # Group display names come from the same config; drop the memo with
+        # the model cache so a rename shows up after a reload.
+        label_cache = getattr(self, "_model_group_label_cache", None)
+        if label_cache:
+            label_cache.clear()
         self._model_recipes = {}
         self._model_alias_to_key = {}
         self._model_name_to_keys.clear()
@@ -8580,8 +8635,17 @@ class JiuWenSwarmDeepAdapter:
                     self._instance_overrides.get("moa_model_selection"),
                     can_access=access["moa_can_access"],
                 )
+            # The aggregator is the session's model now; a remembered group
+            # selection is stale and would keep naming the group in the
+            # runtime state file instead of the model actually answering.
+            self._last_requested_model_ref = ""
             return self._moa_runtime.aggregator
         requested = self._requested_model_name(request)
+        # Remember the selection reference: the runtime state file names the
+        # group from it, because the applied client config of a group
+        # selection is only the group's first model as a direct client.
+        if requested:
+            self._last_requested_model_ref = requested
         # 登录模型：Gateway 随请求带下凭据时优先构建，不进共享缓存（避免串号）。
         scoped = self._request_scoped_login_model(request, requested)
         if scoped is not None:
