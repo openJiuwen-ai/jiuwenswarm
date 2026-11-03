@@ -264,12 +264,14 @@ async def test_summary_limits_and_failure_leave_original_tasks_intact(monkeypatc
     assert ready["planned_graph"]["graph"]["nodes"]["e1"]["task"] == "整理第2部分资料"
     assert "summary" not in json.dumps(ready, ensure_ascii=False)
     assert "甲" * 80 not in fixture.round.guidance()
-    _, task_context = await fixture.round.reserve(
-        expert_team._subagent_type("e0"), "整理第1部分资料", "task-e0",
-    )
+    from openjiuwen.harness.tools.subagent.task_manager import TaskRequest
+    tasks = await fixture.round.prepare_dispatch("task-e0", [
+        TaskRequest(expert_team._subagent_type("e0"), "整理第1部分资料"),
+    ], [])
+    task_context = tasks[0]["task_description"]
     assert "甲" * 80 not in task_context
     assert "整理第1部分资料" in task_context
-    await fixture.round.finish("task-e0", success=True)
+    fixture.round.rollback_dispatch("task-e0")
 
     missing = await build_pending_fixture(monkeypatch, selected_count=2, summaries={})
     assert missing.payload["questions"][0]["expert_plan"]["members"] == [

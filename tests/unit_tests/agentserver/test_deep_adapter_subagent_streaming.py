@@ -94,16 +94,43 @@ def parent(tmp_path, monkeypatch):
     )
 
 
+def _dispatch(subagent_type, description="Return the test result.", **options):
+    return {"action": "dispatch", "tasks": [{"subagent_type": subagent_type, "task_description": description}], **options}
+
+
+def _ready(result):
+    assert result.success is True
+    assert len(result.data["ready"]) == 1
+    return result.data["ready"][0]
+
+
 async def _delegate(parent, subagent_type):
     session = create_agent_session(session_id=parent.card.id, card=parent.card)
     await session.pre_run()
     tool = TaskTool(ToolCard(id="test-task", name="task_tool", description="test"), parent)
     try:
         return await tool.invoke(
-            {"subagent_type": subagent_type, "task_description": "Return the test result."},
+            _dispatch(subagent_type),
             session=session, tool_call_id="test-call",
         )
     finally:
+        await tool.close_task_groups(parent.card.id, reason="test_parent_finished")
+        await session.post_run()
+
+
+async def _cancel_after_started(parent, started):
+    session = create_agent_session(session_id=parent.card.id, card=parent.card)
+    await session.pre_run()
+    tool = TaskTool(ToolCard(id="cancel-task", name="task_tool", description="test"), parent)
+    try:
+        first = await tool.invoke(_dispatch("specialist", timeout_s=0), session=session, tool_call_id="dispatch")
+        assert first.success
+        await asyncio.wait_for(started.wait(), 5)
+        result = await tool.invoke({"action": "cancel", "task_ids": first.data["pending_ids"]},
+                                   session=session, tool_call_id="cancel")
+        assert result.success and result.data["tasks"][0]["status"] == "cancelled"
+    finally:
+        await tool.close_task_groups(parent.card.id, reason="test_parent_finished")
         await session.post_run()
 
 
@@ -158,8 +185,9 @@ async def test_task_tool_streams_and_returns_aggregated_text(parent, gateway, su
     result = await _delegate(parent, subagent_type)
     assert requests and all(request["stream"] is True for request in requests)
     assert result.success is True
-    assert result.data["output"] == "Hello world"
-    assert result.data["agent_id"]
+    assert _ready(result)["output"] == "Hello world"
+    assert _ready(result)["task_id"]
+    assert _ready(result)["status"] == "completed"
     assert messages[0].reasoning_content == "Think first."
     assert messages[0].usage_metadata.total_tokens == 12
 
@@ -194,7 +222,7 @@ async def test_task_tool_executes_fragmented_tool_call_then_streams_answer(paren
     assert any(message["role"] == "tool" and "tool result: hello" in message["content"]
                for message in requests[1]["messages"])
     assert result.success is True
-    assert result.data["output"] == "Done: hello"
+    assert _ready(result)["output"] == "Done: hello"
 
 
 @pytest.mark.asyncio
@@ -202,8 +230,9 @@ async def test_stream_error_is_not_reported_as_successful_empty_output(parent, g
     requests, responses = gateway
     # Native LLMRetryRail retries twice; all attempts must preserve the upstream error.
     responses.extend(['data: {"error":{"message":"gateway unavailable","type":"server_error"}}\n\n'] * 3)
-    with pytest.raises(Exception, match="gateway unavailable"):
-        await _delegate(parent, "specialist")
+    result = await _delegate(parent, "specialist")
+    assert _ready(result)["status"] == "failed"
+    assert "gateway unavailable" in str(_ready(result)["error"])
     assert requests and all(request["stream"] is True for request in requests)
 
 
@@ -228,13 +257,7 @@ async def test_task_cancellation_propagates_to_stream_request(parent, monkeypatc
     ) as sdk:
         monkeypatch.setattr(parent._deep_config.model._client, "_create_async_openai_client",
                             lambda timeout=None: sdk)
-        task = asyncio.create_task(_delegate(parent, "specialist"))
-        try:
-            await asyncio.wait_for(started.wait(), timeout=5)
-        finally:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+        await _cancel_after_started(parent, started)
         assert cancelled.is_set()
     events = _execution_events(caplog)
     assert events[-1]["event"] == "dispatch.end" and events[-1]["status"] == "cancelled"
@@ -289,7 +312,7 @@ async def test_normal_delegation_logs_actual_model_tools_and_raw_result(parent, 
     result = await _delegate(parent, "specialist")
     events = _execution_events(caplog)
     assert events, "normal TaskTool execution must emit correlated execution events"
-    assert result.data["output"] == "private final answer"
+    assert _ready(result)["output"] == "private final answer"
     assert len(requests) == 2
     assert len({event["dispatch_id"] for event in events}) == 1
     assert all(event["parent_session_id"] == parent.card.id for event in events)
@@ -307,7 +330,9 @@ async def test_normal_delegation_logs_actual_model_tools_and_raw_result(parent, 
     assert events[-1]["raw_result_type"] == "answer"
     assert events[-1]["model_calls"] == 2
     assert events[-1]["tool_calls"] == 1
-    assert events[-1]["post_invoke_ms"] >= 0
+    assert events[-1]["duration_ms"] >= 0
+    assert all(event["task_id"] == _ready(result)["task_id"] for event in events)
+    assert len({event["run_id"] for event in events}) == 1
     assert not any("private" in json.dumps(event) for event in events)
 
 
@@ -324,9 +349,11 @@ async def test_iteration_limit_is_logged_without_changing_task_tool_result(paren
                                            "function": {"name": "echo", "arguments": "{}"}}]},
                           finish_reason="tool_calls"))
     result = await _delegate(parent, "specialist")
-    # F01 is deliberately unchanged: observe the raw error before TaskTool wraps it.
+    # A successful group call still preserves the child's failed terminal state.
     assert result.success is True
-    assert "Max iterations" in result.data["output"]
+    assert _ready(result)["status"] == "failed"
+    assert "Max iterations" in str(_ready(result)["error"])
+    assert "Max iterations" in _ready(result)["output"]
     ends = [e for e in _execution_events(caplog) if e["event"] == "dispatch.end"]
     assert ends and ends[-1]["raw_result_type"] == "error"
 
@@ -336,8 +363,9 @@ async def test_failed_gateway_logs_retry_attempts_without_logging_error_body(par
     caplog.set_level("INFO")
     _, responses = gateway
     responses.extend(['data: {"error":{"message":"private upstream error","type":"server_error"}}\n\n'] * 3)
-    with pytest.raises(Exception, match="private upstream error"):
-        await _delegate(parent, "specialist")
+    result = await _delegate(parent, "specialist")
+    assert _ready(result)["status"] == "failed"
+    assert "private upstream error" in str(_ready(result)["error"])
     events = _execution_events(caplog)
     ends = [e for e in events if e["event"] == "model.end"]
     assert len(ends) == 3
@@ -385,7 +413,7 @@ async def test_approval_resume_keeps_child_identity_and_logs_interruption(parent
     session = create_agent_session(session_id=parent.card.id, card=parent.card)
     await session.pre_run()
     tool = TaskTool(ToolCard(id="approval-task", name="task_tool", description="test"), parent)
-    inputs = {"subagent_type": "specialist", "task_description": "test"}
+    inputs = _dispatch("specialist", "test")
     try:
         first = await tool.invoke(inputs, session=session, tool_call_id="same-outer-call")
         assert first["result_type"] == "interrupt" and not calls
@@ -395,7 +423,8 @@ async def test_approval_resume_keeps_child_identity_and_logs_interruption(parent
         approval = InteractiveInput()
         approval.update(first["interrupt_ids"][0], {"approved": True})
         result = await tool.invoke({**inputs, "query": approval}, session=session, tool_call_id="same-outer-call")
-        assert result.data["output"] == "approved result" and calls == ["executed"]
+        assert _ready(result)["output"] == "approved result" and calls == ["executed"]
+        assert _ready(result)["task_id"] == first["interrupt_ids"][0].split(":")[1]
         assert approval_rail.allowed is False  # the definition is not the running child's rail
         dispatches = [e for e in _execution_events(caplog) if e["event"] == "dispatch.end"]
         assert [e["status"] for e in dispatches] == ["interrupted", "completed"]
@@ -405,6 +434,7 @@ async def test_approval_resume_keeps_child_identity_and_logs_interruption(parent
         model_ends = [e for e in _execution_events(caplog) if e["event"] == "model.end"]
         assert [e["dispatch_id"] for e in model_ends] == [e["dispatch_id"] for e in dispatches]
     finally:
+        await tool.close_task_groups(parent.card.id, reason="test_parent_finished")
         await session.post_run()
 
 
@@ -434,13 +464,13 @@ async def test_parallel_dispatches_keep_model_events_in_their_own_task(parent, m
         tool = TaskTool(ToolCard(id="parallel-task", name="task_tool", description="test"), parent)
         try:
             results = await asyncio.gather(*(
-                tool.invoke({"subagent_type": "specialist", "task_description": name},
+                tool.invoke(_dispatch("specialist", name),
                             session=session, tool_call_id=name)
                 for name in ("outer-A", "outer-B")
             ))
         finally:
             await session.post_run()
-    assert [result.data["output"] for result in results] == ["answer outer-A", "answer outer-B"]
+    assert [_ready(result)["output"] for result in results] == ["answer outer-A", "answer outer-B"]
     events = _execution_events(caplog)
     ends = [e for e in events if e["event"] == "dispatch.end"]
     assert len(ends) == 2 and len({e["dispatch_id"] for e in ends}) == 2
@@ -466,14 +496,14 @@ async def test_logging_sink_failure_does_not_change_delegation(parent, gateway, 
 
     monkeypatch.setattr(subagent_logging, "logger", SimpleNamespace(info=broken_sink))
     result = await _delegate(parent, "specialist")
-    assert result.data["output"] == "original result"
+    assert _ready(result)["output"] == "original result"
 
 
 @pytest.mark.asyncio
 async def test_logging_preserves_sdk_invalid_session_error(parent):
     tool = TaskTool(ToolCard(id="invalid-task", name="task_tool", description="test"), parent)
     with pytest.raises(Exception, match="TaskTool requires a valid session"):
-        await tool.invoke({"subagent_type": "specialist", "task_description": "test"}, session=object())
+        await tool.invoke(_dispatch("specialist", "test"), session=object())
 
 
 @pytest.mark.asyncio
@@ -493,13 +523,7 @@ async def test_cancellation_closes_inflight_tool_log(parent, gateway, caplog):
     responses.append(_sse({"tool_calls": [{"index": 0, "id": "waiting-call", "type": "function",
                                            "function": {"name": "wait_tool", "arguments": "{}"}}]},
                           finish_reason="tool_calls"))
-    task = asyncio.create_task(_delegate(parent, "specialist"))
-    try:
-        await asyncio.wait_for(started.wait(), timeout=5)
-    finally:
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+    await _cancel_after_started(parent, started)
     ends = [e for e in _execution_events(caplog) if e["event"] == "tool.end"]
     assert len(ends) == 1 and ends[0]["status"] == "cancelled"
     assert ends[0]["tool_call_id"] == "waiting-call" and ends[0]["execution_started"] is True
@@ -542,7 +566,7 @@ async def test_normal_delegation_reaches_ordinary_file_sink(parent, gateway, tmp
     finally:
         log.removeHandler(sink)
         sink.close()
-    assert result.data["output"] == "file sink result"
+    assert _ready(result)["output"] == "file sink result"
     prefix = "[SubagentExecution] "
     events = [json.loads(line[len(prefix):]) for line in path.read_text(encoding="utf-8").splitlines()
               if line.startswith(prefix)]

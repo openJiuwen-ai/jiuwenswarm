@@ -27,6 +27,9 @@ class SubagentTrace:
     subagent_type: str
     dispatch_id: str = field(default_factory=lambda: uuid4().hex)
     child_session_id: str | None = None
+    task_id: str | None = None
+    run_id: str | None = None
+    dispatch_index: int | None = None
     started: float = field(default_factory=monotonic)
     sequence: int = 0
     model_calls: int = 0
@@ -45,6 +48,8 @@ class SubagentTrace:
                 "parent_tool_call_id": self.parent_tool_call_id,
                 "child_session_id": self.child_session_id,
                 "subagent_type": self.subagent_type,
+                "task_id": self.task_id, "run_id": self.run_id,
+                "dispatch_index": self.dispatch_index,
                 "elapsed_ms": round((monotonic() - self.started) * 1000, 3),
                 **fields,
             }, ensure_ascii=True))
@@ -146,6 +151,7 @@ def install_task_tool_logging() -> None:
     from openjiuwen.core.session.agent import Session
     from openjiuwen.core.session import InteractiveInput
 
+    _install_group_execution_logging(TaskTool)
     if getattr(TaskTool.invoke, "_jws_execution_logging", False):
         return
     original = TaskTool.invoke
@@ -153,7 +159,7 @@ def install_task_tool_logging() -> None:
     @wraps(original)
     async def invoke(self, inputs, **kwargs):
         session = kwargs.get("session")
-        if not isinstance(session, Session):
+        if not isinstance(session, Session) or isinstance(inputs, dict) and inputs.get("action"):
             return await original(self, inputs, **kwargs)
         trace = SubagentTrace(
             parent_session_id=session.get_session_id(),
@@ -203,3 +209,52 @@ def install_task_tool_logging() -> None:
 
     invoke._jws_execution_logging = True
     TaskTool.invoke = invoke
+
+
+def _install_group_execution_logging(task_tool_type):
+    """New Core: observe child execution segments, never the coordination wait."""
+    original = getattr(task_tool_type, "_execute_subagent_task", None)
+    if original is None or getattr(original, "_jws_execution_logging", False):
+        return
+
+    @wraps(original)
+    async def execute(self, execution, query=None):
+        if not execution.task_id:
+            return await original(self, execution, query)
+        trace = SubagentTrace(
+            parent_session_id=execution.scope.parent_session_id,
+            parent_tool_call_id=execution.dispatch_tool_call_id,
+            subagent_type=execution.request.subagent_type,
+            child_session_id=execution.child_session_id,
+            task_id=execution.task_id, run_id=execution.scope.run_id,
+            dispatch_index=execution.dispatch_index,
+        )
+        token = _TRACE.set(trace)
+        status, exception_type = "returned", None
+        trace.emit("dispatch.start", resume=query is not None)
+        try:
+            result = await original(self, execution, query)
+            trace.raw_result_type = result.get("result_type") if isinstance(result, dict) else None
+            status = {"answer": "completed", "error": "error", "interrupt": "interrupted"}.get(
+                trace.raw_result_type, "returned")
+            return result
+        except BaseException as exc:
+            status, exception_type = _exception_status(exc), type(exc).__name__
+            raise
+        finally:
+            for call_id, (started, number, tool_inputs) in trace.tools.items():
+                trace.emit("tool.end", tool_call_id=call_id, tool_call=number,
+                           tool_name=getattr(tool_inputs, "tool_name", ""),
+                           execution_started=getattr(tool_inputs, "execution_started", False),
+                           status=status if status in {"cancelled", "error", "interrupted"} else "unobserved_end",
+                           exception_type=exception_type,
+                           callback_duration_ms=round((monotonic() - started) * 1000, 3))
+            trace.tools.clear()
+            trace.emit("dispatch.end", status=status, exception_type=exception_type,
+                       raw_result_type=trace.raw_result_type,
+                       duration_ms=round((monotonic() - trace.started) * 1000, 3),
+                       model_calls=trace.model_calls, tool_calls=trace.tool_calls)
+            _TRACE.reset(token)
+
+    execute._jws_execution_logging = True
+    task_tool_type._execute_subagent_task = execute

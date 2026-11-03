@@ -540,7 +540,7 @@ debug_trace:
 react:
   agent_name: main_agent
   enable_task_loop: true
-  max_iterations: 100
+  max_iterations: 1000  # 未单独指定轮次的子代理继承此值；task_tool 仍有 1800 秒执行上限
   # 默认配置设为不限制单轮 task-loop 等待。null/0 = 不限制；键缺失时 adapter 仍回退 3600
   completion_timeout: null
   model_name: ${MODEL_NAME}

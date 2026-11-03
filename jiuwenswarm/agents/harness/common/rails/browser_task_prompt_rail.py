@@ -95,6 +95,8 @@ class BrowserTaskPromptRail(SubagentRail):
             properties = params.get("properties") if isinstance(params, dict) else None
             if isinstance(properties, dict):
                 properties.pop("browser_capabilities", None)
+                nested = properties.get("tasks", {}).get("items", {}).get("properties", {})
+                nested.pop("browser_capabilities", None)
 
     def _task_prompt_extension(
         self,

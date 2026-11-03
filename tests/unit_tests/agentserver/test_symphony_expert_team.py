@@ -13,7 +13,6 @@ from openjiuwen.core.single_agent.rail.base import ModelCallInputs, ToolCallInpu
 from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.harness.rails import SkillUseRail
-from openjiuwen.harness.tools.base_tool import ToolOutput
 
 from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.server.runtime.expert import expert_store
@@ -159,6 +158,8 @@ def _graph(edges=(), expert_ids=("a", "b")):
         "a": {"label": "专家a", "description": "职责a", "task": "整理资料"},
         "b": {"label": "专家b", "description": "职责b", "task": "审阅资料"},
     }
+    nodes.update({key: {"label": f"专家{key}", "description": f"职责{key}", "task": f"处理{key}"}
+                  for key in expert_ids if key not in nodes})
     return {
         "id": "plan-1", "type": "planned_graph", "directed": True,
         "metadata": {"status": "ready", "missing_inputs": [], "leader": {"id": "xiaoyiwork"}},
@@ -308,67 +309,69 @@ async def test_model_tool_menu_refreshes_only_plan_and_task_tool(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_independent_nodes_can_run_together_but_failure_blocks_successors(monkeypatch):
-    round_state, agent = await _ready_round(monkeypatch)
-    await _confirm_round(round_state)
-    rail = expert_team.DynamicExpertRail(lambda _sid: round_state)
-    rail.init(agent)
-    a = _tool_ctx(expert_team._subagent_type("a"), "call-a")
-    b = _tool_ctx(expert_team._subagent_type("b"), "call-b")
-    await asyncio.gather(rail.before_tool_call(a), rail.before_tool_call(b))
-    assert not a.extra.get("_skip_tool") and not b.extra.get("_skip_tool")
-    await rail.on_tool_exception(a)
-    b.inputs.tool_result = ToolOutput(success=True, data={"output": "完成"})
-    await rail.after_tool_call(b)
-    assert round_state._states == {"a": "failed", "b": "completed"}
-
-    dependent, _agent = await _ready_round(monkeypatch, [("a", "b")])
-    await _confirm_round(dependent)
-    gate = expert_team.DynamicExpertRail(lambda _sid: dependent)
-    gate.init(agent)
-    failed_a = _tool_ctx(expert_team._subagent_type("a"), "failed-a")
-    await gate.before_tool_call(failed_a)
-    await gate.on_tool_exception(failed_a)
-    blocked_b = _tool_ctx(expert_team._subagent_type("b"), "blocked-b")
-    await gate.before_tool_call(blocked_b)
-    assert "失败" in blocked_b.inputs.tool_msg.content
+    state, tool, rail, gates, started, _, call, execute = await _group_expert_runtime(monkeypatch)
+    original = tool.parent_agent.create_subagent
+    def create(kind, sid, **kwargs):
+        child = original(kind, sid, **kwargs)
+        if kind == state._bindings["a"]:
+            async def fail(inputs):
+                started["a"].set()
+                return {"result_type": "error", "output": "A failed"}
+            child.invoke = fail
+        return child
+    tool.parent_agent.create_subagent = create
+    try:
+        result = await execute(call("ab", "a", "b"))
+        gates["b"].set()
+        ready = await tool.task_manager.wait_any(state._task_scope, result.data["pending_ids"], 2)
+        assert any(r["status"] == "failed" for r in ready.ready)
+        # Outer success must never turn a failed expert into a completed one.
+        assert state._states["a"] == "failed" and "a" not in state._completed
+    finally:
+        await state.close()
+        await tool.close_task_groups("session-1")
 
 
 @pytest.mark.asyncio
 async def test_interrupted_expert_resumes_same_call_without_rewriting_interactive_input(monkeypatch):
-    round_state, agent = await _ready_round(monkeypatch, [("a", "b")])
-    await _confirm_round(round_state)
-    rail = expert_team.DynamicExpertRail(lambda _sid: round_state)
-    rail.init(agent)
-    call = _tool_ctx(expert_team._subagent_type("a"), "call-a")
-    await rail.before_tool_call(call)
-    original_args = json.loads(call.inputs.tool_args)
-    call.inputs.tool_result = {"result_type": "interrupt", "interrupt_ids": ["approval"]}
-    await rail.after_tool_call(call)
-    assert round_state._states["a"] == "interrupted"
-
-    early = _tool_ctx(expert_team._subagent_type("b"), "early-b")
-    await rail.before_tool_call(early)
-    assert "尚未完成" in early.inputs.tool_msg.content
-    answer = InteractiveInput()
-    answer.update("approval", {"confirmed": True})
-    wrong = _tool_ctx(expert_team._subagent_type("a"), "different-call")
-    wrong.inputs.tool_args = {**original_args, "query": answer}
-    await rail.before_tool_call(wrong)
-    assert wrong.extra["_skip_tool"] is True
-
-    resumed = _tool_ctx(expert_team._subagent_type("a"), "call-a")
-    resumed.inputs.tool_args = {**original_args, "query": answer}
-    await rail.before_tool_call(resumed)
-    assert not resumed.extra.get("_skip_tool")
-    assert resumed.inputs.tool_args["query"] is answer
-    assert resumed.inputs.tool_args["task_description"] == original_args["task_description"]
-    resumed.inputs.tool_result = ToolOutput(success=True, data={"output": "恢复后的专家结果"})
-    await rail.after_tool_call(resumed)
-    assert round_state._states["a"] == "completed" and round_state._interrupted == {}
-
-    successor = _tool_ctx(expert_team._subagent_type("b"), "call-b")
-    await rail.before_tool_call(successor)
-    assert "恢复后的专家结果" in json.loads(successor.inputs.tool_args)["query"]
+    state, tool, rail, gates, _, children, call, execute = await _group_expert_runtime(monkeypatch, [("a", "b")])
+    original = tool.parent_agent.create_subagent
+    def create(kind, sid, **kwargs):
+        child = original(kind, sid, **kwargs)
+        calls = 0
+        async def invoke(inputs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {"result_type": "interrupt", "interrupt_ids": ["approval"], "state": []}
+            assert isinstance(inputs["query"], InteractiveInput)
+            return {"result_type": "answer", "output": "恢复后的专家结果"}
+        child.invoke = invoke
+        return child
+    tool.parent_agent.create_subagent = create
+    try:
+        first = await execute(call("call-a", "a"))
+        interrupted = await tool.invoke({"action": "wait", "task_ids": first.data["pending_ids"]},
+                                      session=call("unused").session, tool_call_id="await-approval")
+        assert state._states["a"] == "interrupted"
+        answer = InteractiveInput()
+        answer.update(interrupted["interrupt_ids"][0], {"confirmed": True})
+        early = call("early", "b")
+        await rail.before_tool_call(early)
+        assert early.extra["_skip_tool"]
+        resumed = call("call-a", "a")
+        resumed.inputs.tool_args["query"] = answer
+        resumed.inputs.tool_args.pop("timeout_s")
+        result = await execute(resumed)
+        assert result.data["ready"][0]["output"] == "恢复后的专家结果"
+        assert resumed.inputs.tool_args["query"] is answer
+        assert len(children) == 1 and state._states["a"] == "completed"
+        successor = call("b", "b")
+        await rail.before_tool_call(successor)
+        assert "恢复后的专家结果" in successor.inputs.tool_args["tasks"][0]["task_description"]
+    finally:
+        await state.close()
+        await tool.close_task_groups("session-1")
 
 
 @pytest.mark.asyncio
@@ -454,29 +457,33 @@ async def test_binding_failure_does_not_leave_a_plan(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_round_close_drains_only_owned_interrupted_children_and_skill_rails(monkeypatch):
-    round_state, agent = await _ready_round(monkeypatch)
-    await _confirm_round(round_state)
-    owned = SimpleNamespace(card=SimpleNamespace(id="this-round"), cleanup_task_resources=AsyncMock())
-    other = SimpleNamespace(card=SimpleNamespace(id="other-round"), cleanup_task_resources=AsyncMock())
-    pending = {"ours": (owned, False), "theirs": (other, False)}
-    tool = SimpleNamespace(_pending_subagents=pending)
-    agent.get = lambda _name: ToolCard(id="parent-task-tool", name="task_tool", description="delegate")
-    monkeypatch.setattr(expert_team.Runner.resource_mgr, "get_tool", lambda _id: tool)
+    from openjiuwen.harness.tools.subagent.task_manager import TaskRequest
+    state, tool, _, gates, started, children, call, execute = await _group_expert_runtime(monkeypatch)
+    await execute(call("owned", "a"))
+    await asyncio.wait_for(started["a"].wait(), 2)
+    async def execute_other(_query):
+        await gates["b"].wait()
+        return {"result_type": "answer", "output": "other"}
+    other_cleanup = AsyncMock()
+    foreign = tool.task_manager.submit_batch(state._task_scope, "unrelated", [TaskRequest("general-purpose", "other")],
+                                            existing_ids=[], executor_factory=lambda execution: (execute_other, other_cleanup))
     skill_rail = SimpleNamespace(close=AsyncMock())
-    round_state._skill_rails = [skill_rail]
-    round_state._child_ids = {"this-round"}
-
+    state._skill_rails = [skill_rail]
     async def unbind(_agent, _refs):
-        assert set(pending) == {"theirs"}
-        owned.cleanup_task_resources.assert_awaited_once()
+        children[0].cleanup_task_resources.assert_awaited_once()
         skill_rail.close.assert_awaited_once()
-
+        other_cleanup.assert_not_awaited()
     monkeypatch.setattr(expert_team, "unapply_extension_hot", unbind)
-    await round_state.close()
-    await round_state.close()
-    other.cleanup_task_resources.assert_not_awaited()
-    skill_rail.close.assert_awaited_once()
-    assert (await round_state.compose("用户任务"))["reason"] == "round_closed"
+    try:
+        await state.close()
+        await state.close()
+        assert state._states["a"] == "cancelled"
+        ready = await tool.task_manager.wait_any(state._task_scope, foreign.wait_ids, 0)
+        assert ready.pending_ids == foreign.wait_ids
+        skill_rail.close.assert_awaited_once()
+    finally:
+        gates["b"].set()
+        await tool.close_task_groups("session-1")
 
 
 @pytest.mark.asyncio
@@ -511,32 +518,28 @@ async def test_cancellation_while_binding_preserves_cancel_and_cleans_completed_
 
 @pytest.mark.asyncio
 async def test_dependency_order_result_passing_and_duplicate_guard(monkeypatch):
-    round_state, agent = await _ready_round(monkeypatch, [("a", "b")])
-    await _confirm_round(round_state)
-    rail = expert_team.DynamicExpertRail(lambda _sid: round_state)
-    rail.init(agent)
-
-    early = _tool_ctx(expert_team._subagent_type("b"), "early-b")
-    await rail.before_tool_call(early)
-    assert early.extra["_skip_tool"] and "前置专家" in early.inputs.tool_msg.content
-    for expert_id, output in [("a", "资料已整理"), ("b", "审阅完成")]:
-        ctx = _tool_ctx(expert_team._subagent_type(expert_id), f"call-{expert_id}")
-        await rail.before_tool_call(ctx)
-        assert not ctx.extra.get("_skip_tool")
-        query = json.loads(ctx.inputs.tool_args)["query"]
-        assert round_state.plan["nodes"][expert_id]["task"] in query
-        if expert_id == "b":
-            assert "资料已整理" in query
-        ctx.inputs.tool_result = ToolOutput(success=True, data={"output": output})
-        await rail.after_tool_call(ctx)
-    assert round_state._completed == {"a": "资料已整理", "b": "审阅完成"}
-    assert "所有专家节点已完成" in round_state.guidance()
-
-    for call_id in ("repeat", ""):
-        rejected = _tool_ctx(expert_team._subagent_type("a"), call_id)
-        await rail.before_tool_call(rejected)
-        assert rejected.extra["_skip_tool"]
-        assert ("不可重复" if call_id else "工具调用 ID") in rejected.inputs.tool_msg.content
+    state, tool, rail, gates, _, _, call, execute = await _group_expert_runtime(monkeypatch, [("a", "b")])
+    try:
+        early = call("early", "b")
+        await rail.before_tool_call(early)
+        assert early.extra["_skip_tool"] and "前置专家" in early.inputs.tool_msg.content
+        for key in ("a", "b"):
+            value = call("call-" + key, key)
+            gates[key].set()
+            value.inputs.tool_args.pop("timeout_s")
+            result = await execute(value)
+            assert result.data["ready"][0]["status"] == "completed"
+            if key == "b":
+                assert "a evidence" in value.inputs.tool_args["tasks"][0]["task_description"]
+        assert state._completed == {"a": "a evidence", "b": "b evidence"}
+        assert "所有专家节点已完成" in state.guidance()
+        for call_id in ("repeat", ""):
+            duplicate = call(call_id, "a")
+            await rail.before_tool_call(duplicate)
+            assert duplicate.extra["_skip_tool"]
+    finally:
+        await state.close()
+        await tool.close_task_groups("session-1")
 
 
 @pytest.mark.asyncio
@@ -554,7 +557,7 @@ async def test_dynamic_plan_blocks_competing_delegation(monkeypatch, confirmed, 
     ctx.inputs.tool_name = tool_name
     await rail.before_tool_call(ctx)
     assert ctx.extra["_skip_tool"]
-    assert not round_state._inflight
+    assert not round_state._dispatches
     menu = SimpleNamespace(session=_session(), inputs=ModelCallInputs(tools=[
         SimpleNamespace(name="Agent"), SimpleNamespace(name="read_file"),
     ]))
@@ -573,4 +576,170 @@ async def test_dynamic_tasks_remain_blocked_when_session_reenters_plan_mode(monk
     ctx = _tool_ctx(expert_team._subagent_type("a"), "forged-plan-task")
     await rail.before_tool_call(ctx)
     assert ctx.extra["_skip_tool"] and "只读规划模式" in ctx.inputs.tool_msg.content
-    assert not round_state._inflight
+    assert not round_state._dispatches
+
+
+async def _group_expert_runtime(monkeypatch, edges=(), expert_ids=("a", "b")):
+    from openjiuwen.core.session.agent import Session
+    from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+    state, agent = await _ready_round(monkeypatch, edges, expert_ids)
+    await _confirm_round(state)
+    gates = {key: asyncio.Event() for key in expert_ids}
+    started = {key: asyncio.Event() for key in expert_ids}
+    children = []
+
+    def create(kind, sid, **kwargs):
+        key = next(key for key, value in state._bindings.items() if kind == value)
+        async def invoke(inputs):
+            started[key].set()
+            await gates[key].wait()
+            return {"result_type": "answer", "output": key + " evidence"}
+        child = SimpleNamespace(card=SimpleNamespace(id=sid), invoke=invoke,
+                                cleanup_task_resources=AsyncMock())
+        children.append(child)
+        return child
+
+    agent.deep_config.subagents = []
+    agent.resolve_subagent_type = lambda name: name if name in state._bindings.values() else None
+    agent.create_subagent = create
+    tool = TaskTool(ToolCard(id="group-experts", name="task_tool", description="test"), agent)
+    agent.get = lambda name: tool.card if name == "task_tool" else None
+    monkeypatch.setattr(expert_team.Runner.resource_mgr, "get_tool", lambda _id: tool)
+    session = Session(session_id="session-1")
+    rail = expert_team.DynamicExpertRail(lambda sid: state if sid == "session-1" else None)
+    rail.init(agent)
+
+    def call(call_id, *keys, action="dispatch", task_ids=()):
+        args = {"action": action, "timeout_s": 0}
+        if action == "dispatch":
+            args["tasks"] = [{"subagent_type": state._bindings[key], "task_description": key} for key in keys]
+        if task_ids:
+            args["task_ids"] = list(task_ids)
+        value = _tool_ctx("unused", call_id)
+        value.session = session
+        value.inputs.tool_args = args
+        value.inputs.tool_call.arguments = args
+        return value
+
+    async def execute(value):
+        await rail.before_tool_call(value)
+        assert not value.extra.get("_skip_tool"), getattr(value.inputs, "tool_msg", None)
+        value.inputs.tool_result = await tool.invoke(value.inputs.tool_args, session=session,
+                                                     tool_call_id=value.inputs.tool_call.id)
+        await rail.after_tool_call(value)
+        return value.inputs.tool_result
+
+    return state, tool, rail, gates, started, children, call, execute
+
+
+@pytest.mark.asyncio
+async def test_group_experts_batch_and_complete_without_wait(monkeypatch):
+    state, tool, rail, gates, started, children, call, execute = await _group_expert_runtime(monkeypatch)
+    try:
+        result = await execute(call("ab", "a", "b"))
+        assert result.success and len(result.data["pending_ids"]) == 2
+        await asyncio.wait_for(asyncio.gather(*(e.wait() for e in started.values())), 2)
+        gates["a"].set()
+        await tool.task_manager.wait_any(tool.task_manager.scope_if_active("session-1"),
+                                         [result.data["pending_ids"][0]], 2)
+        assert state._states == {"a": "completed", "b": "running"}
+        assert state._completed == {"a": "a evidence"}
+        duplicate = call("duplicate", "a")
+        await rail.before_tool_call(duplicate)
+        assert duplicate.extra["_skip_tool"]
+        assert len(children) == 2
+    finally:
+        for gate in gates.values():
+            gate.set()
+        await state.close()
+        await tool.close_task_groups("session-1")
+
+
+@pytest.mark.asyncio
+async def test_group_experts_reject_invalid_batch_atomically_and_pass_dependency_result(monkeypatch):
+    state, tool, rail, gates, started, _, call, execute = await _group_expert_runtime(monkeypatch, [("a", "b")])
+    try:
+        invalid = call("invalid", "a", "b")
+        await rail.before_tool_call(invalid)
+        assert invalid.extra["_skip_tool"] and state._states == {"a": "pending", "b": "pending"}
+        a = await execute(call("a", "a"))
+        gates["a"].set()
+        await tool.task_manager.wait_any(tool.task_manager.scope_if_active("session-1"), a.data["pending_ids"], 2)
+        b = call("b", "b")
+        await rail.before_tool_call(b)
+        assert not b.extra.get("_skip_tool")
+        assert "a evidence" in b.inputs.tool_args["tasks"][0]["task_description"]
+        foreign = call("foreign", action="cancel", task_ids=["not-ours"])
+        await rail.before_tool_call(foreign)
+        assert foreign.extra["_skip_tool"]
+    finally:
+        for gate in gates.values():
+            gate.set()
+        await state.close()
+        await tool.close_task_groups("session-1")
+
+
+@pytest.mark.asyncio
+async def test_expert_batch_has_no_pre_dispatch_semaphore_or_hard_five_limit(monkeypatch):
+    keys = tuple("abcdef")
+    state, tool, _, gates, started, children, call, execute = await _group_expert_runtime(monkeypatch, expert_ids=keys)
+    try:
+        result = await asyncio.wait_for(execute(call("six", *keys)), 2)
+        assert result.success and len(result.data["pending_ids"]) == 6
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), 2)
+        assert len(children) == 6
+    finally:
+        for gate in gates.values():
+            gate.set()
+        await state.close()
+        await tool.close_task_groups("session-1")
+
+
+@pytest.mark.asyncio
+async def test_core_dispatch_rejection_rolls_back_expert_reservations(monkeypatch):
+    state, tool, _, gates, _, children, call, execute = await _group_expert_runtime(monkeypatch)
+    try:
+        tool.task_manager.max_tasks = 0
+        rejected = await execute(call("ab", "a", "b"))
+        assert not rejected.success and not children
+        assert state._states == {"a": "pending", "b": "pending"}
+        tool.task_manager.max_tasks = 128
+        retry = await execute(call("ab", "a", "b"))
+        assert retry.success and len(retry.data["pending_ids"]) == 2
+    finally:
+        for gate in gates.values():
+            gate.set()
+        await state.close()
+        await tool.close_task_groups("session-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["failed", "timed_out", "cancelled"])
+async def test_unsuccessful_expert_blocks_successor_and_preserves_real_status(monkeypatch, outcome):
+    state, tool, rail, gates, started, _, call, execute = await _group_expert_runtime(monkeypatch, [("a", "b")])
+    if outcome == "failed":
+        original = tool.parent_agent.create_subagent
+        def create(*args, **kwargs):
+            child = original(*args, **kwargs)
+            async def fail(inputs):
+                started["a"].set()
+                return {"result_type": "error", "output": "failed evidence"}
+            child.invoke = fail
+            return child
+        tool.parent_agent.create_subagent = create
+    if outcome == "timed_out":
+        tool.task_manager.task_timeout_s = 0.01
+    try:
+        result = await execute(call("a", "a"))
+        await asyncio.wait_for(started["a"].wait(), 2)
+        if outcome == "cancelled":
+            await execute(call("cancel", action="cancel", task_ids=result.data["pending_ids"]))
+        await tool.task_manager.wait_any(state._task_scope, result.data["pending_ids"], 2)
+        assert state._states["a"] == outcome and "a" not in state._completed
+        successor = call("b", "b")
+        await rail.before_tool_call(successor)
+        assert successor.extra["_skip_tool"] and "前置专家执行失败" in successor.inputs.tool_msg.content
+    finally:
+        await state.close()
+        await tool.close_task_groups("session-1")

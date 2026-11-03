@@ -631,6 +631,7 @@ async def test_cancel_runs_teardown_when_session_not_in_active_counter(
     rail.get_cancelled_tool_results.return_value = []
     instance = MagicMock()
     instance.abort = AsyncMock()
+    instance.cancel_background_subtasks = AsyncMock(return_value=None)
     # Force the non-interaction interrupt path under test (rail teardown /
     # skip global abort).  A bare MagicMock makes ``_interaction_started``
     # truthy and would divert into cancel_round().
@@ -912,6 +913,7 @@ async def test_abort_skipped_when_other_sessions_active_even_if_target_executing
     rail = MagicMock()
     rail.get_cancelled_tool_results.return_value = []
     instance = MagicMock()
+    instance.cancel_background_subtasks = AsyncMock(return_value=None)
     setattr(instance, "abort", AsyncMock())
     setattr(instance, "_interaction_started", False)
     setattr(instance, "_invoke_active", True)

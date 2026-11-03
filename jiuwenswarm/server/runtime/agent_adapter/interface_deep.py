@@ -5094,7 +5094,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """Build SubagentRail for subagent delegation."""
         try:
             subagent_rail = BrowserTaskPromptRail(
-                include_usage_rules=self._include_outer_subagent_usage_rules()
+                include_usage_rules=self._include_outer_subagent_usage_rules(),
             )
             logger.info("[JiuWenSwarmDeepAdapter] SubagentRail create success")
         except Exception as exc:
@@ -7823,6 +7823,13 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if self._instance is None:
             return
         await self._instance.stop()
+        await self._close_task_groups(reason="adapter_stopped")
+
+    async def _close_task_groups(self, session_id=None, *, reason):
+        close = getattr(getattr(self, "_instance", None), "cancel_background_subtasks", None)
+        if not callable(close):
+            return None
+        return await close(session_id, reason=reason)
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
@@ -8152,9 +8159,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """Per-session teardown: rail abort, shell kill, cancelled tool collection."""
         sid = self._resolve_interrupt_session_id(session_id)
         cancelled_tasks = await self._cancel_session_agent_tasks(sid)
+        task_group_summary = await self._close_task_groups(sid, reason=intent)
         cancelled_tool_results = self._collect_cancelled_tools_for_session(
             session_id,
             reset_for_new_task=reset_for_new_task,
+            task_group_summary=task_group_summary,
         )
         try:
             from openjiuwen.core.sys_operation.shell_process_registry import (
@@ -8189,6 +8198,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         session_id: str | None,
         *,
         reset_for_new_task: bool = False,
+        task_group_summary: dict | None = None,
     ) -> list[dict[str, Any]]:
         """Abort rail checkpoints and collect in-flight tools for *session_id*.
 
@@ -8199,7 +8209,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             return []
         sid = self._resolve_interrupt_session_id(session_id)
         self._stream_event_rail.abort(session_id or sid)
-        self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
+        if task_group_summary is None:
+            self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
+        else:
+            self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid, task_group_summary=task_group_summary)
         cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(
             session_id or sid,
         )
