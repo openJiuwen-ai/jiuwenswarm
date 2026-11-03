@@ -153,6 +153,113 @@ async def test_visibility_catalog_hot_reload_and_disable(tmp_path, lazy):
             await asyncio.gather(*rail._cleanup_tasks)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["cn", "en"])
+async def test_catalog_guidance_requires_lookup_independently_of_parent(monkeypatch, language):
+    from openjiuwen.agent_evolving.ttse import render
+
+    parent_guidance = {
+        "cn": "没有相关类或附件为 `(empty)` 时直接执行。",
+        "en": "If none apply or the attachment is `(empty)`, proceed.",
+    }
+    monkeypatch.setattr(render, "DISK_CATALOG_GUIDANCE_CN", parent_guidance["cn"])
+    monkeypatch.setattr(render, "DISK_CATALOG_GUIDANCE_EN", parent_guidance["en"])
+    child = child_agent()
+    child.system_prompt_builder.language = language
+    rail = SubagentTTSEConsultRail(lambda: TTSEConsultDependencies(store=SimpleNamespace(catalog_counts=dict)))
+    rail.init(child)
+    try:
+        await rail.before_model_call(context(child))
+        prompt = child.system_prompt_builder.build()
+        assert parent_guidance[language] not in prompt
+        if language == "cn":
+            assert "第一次工具调用必须仅调用一次 `ttse_consult`" in prompt
+            assert "不得因目录没有明显匹配分类或为空而跳过查询" in prompt
+        else:
+            assert "MUST be exactly one `ttse_consult` call and no other calls" in prompt
+            assert "an unmatched or empty catalog is not a reason to skip" in prompt
+    finally:
+        await rail.after_invoke(context(child))
+        rail.uninit(child)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callable_id", [False, True])
+async def test_context_session_fallback_attaches_catalog(callable_id):
+    child = child_agent()
+    rail = SubagentTTSEConsultRail(lambda: TTSEConsultDependencies(store=SimpleNamespace(catalog_counts=dict)))
+    rail.init(child)
+    ctx = context(child)
+    ctx.session = None
+    ctx.context = SimpleNamespace(session_id=(lambda: "fallback-session") if callable_id else "fallback-session")
+    try:
+        await rail.before_model_call(ctx)
+        assert child.prompt_attachment_manager.add_section.call_args.kwargs["session_id"] == "fallback-session"
+    finally:
+        await rail.after_invoke(ctx)
+        rail.uninit(child)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["cn", "en"])
+@pytest.mark.parametrize("missing", ["session", "manager", "attachment_error"])
+async def test_missing_catalog_does_not_claim_attachment(language, missing):
+    child = child_agent()
+    child.system_prompt_builder.language = language
+    rail = SubagentTTSEConsultRail(lambda: TTSEConsultDependencies(store=SimpleNamespace(catalog_counts=dict)))
+    rail.init(child)
+    ctx = context(child)
+    if missing == "session":
+        ctx.session = None
+    elif missing == "manager":
+        child.prompt_attachment_manager = None
+    else:
+        child.prompt_attachment_manager.add_section.side_effect = RuntimeError("attachment unavailable")
+    try:
+        await rail.before_model_call(ctx)
+        prompt = child.system_prompt_builder.build()
+        if language == "cn":
+            assert "未随请求提供经验分类目录" in prompt
+            assert "末尾附件" not in prompt
+        else:
+            assert "No experience catalog is attached" in prompt
+            assert "trailing attachment" not in prompt
+        assert "category=all" in prompt
+        assert (
+            "第一次工具调用必须仅调用一次 `ttse_consult`" if language == "cn"
+            else "MUST be exactly one `ttse_consult` call and no other calls"
+        ) in prompt
+    finally:
+        await rail.after_invoke(ctx)
+        rail.uninit(child)
+
+
+@pytest.mark.asyncio
+async def test_reused_child_refreshes_query_and_summary_log_context(caplog, tmp_path):
+    caplog.set_level(logging.INFO, logger=SubagentTTSEConsultRail.__module__)
+    store = TTSERecordStore(TTSEConfig(store_path=str(tmp_path / "bank.json")))
+    child = child_agent()
+    parent = SimpleNamespace(create_subagent=lambda *args, **kwargs: child)
+    install_subagent_ttse_wiring(parent, lambda: TTSEConsultDependencies(store=store))
+    parent.create_subagent("general-purpose", "first-task")
+    rail = child.configured_rails()[0]
+    rail.init(child)
+    try:
+        await rail._tool.invoke({"category": "all", "query": "test"})
+        await rail.after_invoke(context(child))
+        caplog.clear()
+        assert parent.create_subagent(subagent_type="custom", subsession_id="second-task") is child
+        assert child.configured_rails() == [rail]
+        await rail.before_invoke(context(child))
+        await rail._tool.invoke({"category": "all", "query": "test"})
+        await rail.after_invoke(context(child))
+        assert "subagent_type='custom' subsession_id='second-task'" in caplog.text
+        assert "consult_start" in caplog.text and "task_summary" in caplog.text
+        assert "first-task" not in caplog.text
+    finally:
+        rail.uninit(child)
+
+
 def test_explicit_disabled_tools_and_missing_dependencies():
     child = child_agent([DisabledToolsRail(["ttse_consult"])])
     rail = SubagentTTSEConsultRail(lambda: TTSEConsultDependencies(store=object()))

@@ -53,7 +53,9 @@ The subagent prompt requires exactly one standalone `ttse_consult` as the first
 tool call for each new non-chat task when the tool is available. Read its result
 before loading skills, making an execution plan, creating todos or calling other
 tools, even when the user specifies a skill or the catalog is unmatched or empty.
-Small talk, unavailable tools and explicit user opt-outs are exempt. The runtime supplies
+Small talk, unavailable tools and explicit user opt-outs are exempt.
+If no catalog is attached, the prompt says so and uses `category=all` for the lookup.
+The runtime supplies
 the tool, guidance and shared category catalog without retrieving experience bodies.
 The model initiates the lookup; this is a prompt constraint, not runtime enforcement.
 Choose a relevant category, or

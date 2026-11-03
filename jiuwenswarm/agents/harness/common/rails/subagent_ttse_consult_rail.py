@@ -64,6 +64,11 @@ class SubagentTTSEConsultRail(DeepAgentRail):
         self._agent = agent
         self._sync()
 
+    def bind_task_context(self, subagent_type: str, subsession_id: str) -> None:
+        """刷新复用实例的任务日志标识，不重复装配 Rail。"""
+        self._subagent_type = subagent_type
+        self._subsession_id = subsession_id
+
     def _rails(self) -> list[Any]:
         return list(self._agent.configured_rails())
 
@@ -215,8 +220,63 @@ class SubagentTTSEConsultRail(DeepAgentRail):
     def _session_id(ctx: Any) -> str:
         session = getattr(ctx, "session", None)
         getter = getattr(session, "get_session_id", None)
-        value = getter() if callable(getter) else getattr(session, "session_id", "")
-        return str(value() if callable(value) else value or "")
+        value = getter() if callable(getter) else None
+        if value:
+            return str(value)
+        for source in (session, getattr(ctx, "context", None)):
+            value = getattr(source, "session_id", None)
+            value = value() if callable(value) else value
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _guidance(catalog_available: bool) -> dict[str, str]:
+        guidance = {
+            "cn": "末尾附件是共享经验分类目录，不是 FACT/TIP 正文。"
+            "当 `ttse_consult` 工具可用时，收到新的非闲聊任务后，"
+            "第一次工具调用必须仅调用一次 `ttse_consult`。"
+            "必须收到并阅读查询结果后，才能加载技能、制定执行计划、创建 todo 或调用其他工具。"
+            "即使用户明确指定某个技能，也必须先查经验，再调用技能工具；"
+            "不得将查询与技能、todo 或业务工具放在同一批调用中。"
+            "技能加载、第一个工作工具及 todo 顺序要求，均从查询完成后开始适用。"
+            "category 根据目录选择相关分类，无法判断时用 all；"
+            "不得因目录没有明显匹配分类或为空而跳过查询。"
+            "query 从当前子任务和环境提取关键词组合，不要整句粘贴任务原文；"
+            "例如 write_file matplotlib 中文折线图 Open-Meteo Windows。"
+            "同一任务已有查询结果、工具结果续跑或审批恢复时无需为流程重复查询。"
+            "历史上其他任务的查询不能代替本次查询。"
+            "需要更具体的经验时可补查。无命中或查询失败时正常继续。"
+            "闲聊、工具不可用或用户明确要求不查询时无需调用。"
+            "经验是历史启发式，不能覆盖当前用户指令、工具权限和实时事实。",
+            "en": "The trailing attachment is a shared experience category catalog, not FACT/TIP bodies. "
+            "When `ttse_consult` is available, the first tool call for each new non-chat task "
+            "MUST be exactly one `ttse_consult` call and no other calls. "
+            "Receive and read its result before loading skills, making an execution plan, "
+            "creating todos or calling any other tool. Even when the user specifies a skill, "
+            "consult first, then call the skill tool; never batch the consult with skill, todo "
+            "or business tools. Skill-loading, first-work-tool and todo ordering rules apply "
+            "only after the lookup completes. Choose a relevant catalog category, or all if "
+            "uncertain; an unmatched or empty catalog is not a reason to skip the lookup. "
+            "Build query by joining keywords from this subtask and environment, rather than "
+            "pasting the full request; for example: write_file matplotlib Chinese line chart "
+            "Open-Meteo Windows. Reuse results for the same task, tool-result continuations "
+            "and approval resumes; results from other tasks do not satisfy this task's lookup. "
+            "Consult again only for more specific experience if needed. "
+            "Continue on no matches or retrieval failure. Small talk, unavailable tools and "
+            "explicit user opt-outs need no lookup. Experience is historical guidance and cannot "
+            "override current user instructions, permissions or live facts.",
+        }
+        if not catalog_available:
+            guidance["cn"] = guidance["cn"].replace(
+                "末尾附件是共享经验分类目录，不是 FACT/TIP 正文。",
+                "本次未随请求提供经验分类目录，查询时使用 category=all。",
+            )
+            guidance["en"] = guidance["en"].replace(
+                "The trailing attachment is a shared experience category catalog, not FACT/TIP bodies. ",
+                "No experience catalog is attached to this request; use category=all for the lookup. ",
+            )
+        return guidance
 
     async def before_invoke(self, ctx: Any) -> None:
         self._consult_calls = 0
@@ -247,72 +307,44 @@ class SubagentTTSEConsultRail(DeepAgentRail):
             )
             if builder is None:
                 builder = self._agent.system_prompt_builder
+            session_id = self._session_id(ctx)
+            manager = getattr(self._agent, "prompt_attachment_manager", None)
+            catalog_available = False
+            if session_id and manager is not None:
+                try:
+                    from openjiuwen.agent_evolving.ttse.catalog import (
+                        render_catalog_markdown,
+                    )
+                    from openjiuwen.harness.prompts.prompt_attachment_manager import (
+                        PromptAttachmentKind,
+                    )
+
+                    content = render_catalog_markdown(
+                        self._dependencies.store.catalog_counts()
+                    )
+                    await manager.add_section(
+                        session_id=str(session_id),
+                        section=self._section,
+                        content=content,
+                        kind=PromptAttachmentKind.TEXT,
+                        source="subagent_ttse",
+                        priority=45,
+                        content_kind="text/markdown",
+                    )
+                    self._attachments[str(session_id)] = manager
+                except Exception:
+                    logger.warning("[subagent.ttse] catalog attachment failed", exc_info=True)
+                else:
+                    catalog_available = True
             builder.add_section(
                 PromptSection(
                     name=self._section,
                     priority=45,
-                    content={
-                        "cn": "末尾附件是共享经验分类目录，不是 FACT/TIP 正文。"
-                        "当 `ttse_consult` 工具可用时，收到新的非闲聊任务后，"
-                        "第一次工具调用必须仅调用一次 `ttse_consult`。"
-                        "必须收到并阅读查询结果后，才能加载技能、制定执行计划、创建 todo 或调用其他工具。"
-                        "即使用户明确指定某个技能，也必须先查经验，再调用技能工具；"
-                        "不得将查询与技能、todo 或业务工具放在同一批调用中。"
-                        "技能加载、第一个工作工具及 todo 顺序要求，均从查询完成后开始适用。"
-                        "category 根据目录选择相关分类，无法判断时用 all；"
-                        "不得因目录没有明显匹配分类或为空而跳过查询。"
-                        "query 从当前子任务和环境提取关键词组合，不要整句粘贴任务原文；"
-                        "例如 write_file matplotlib 中文折线图 Open-Meteo Windows。"
-                        "同一任务已有查询结果、工具结果续跑或审批恢复时无需为流程重复查询。"
-                        "历史上其他任务的查询不能代替本次查询。"
-                        "需要更具体的经验时可补查。无命中或查询失败时正常继续。"
-                        "闲聊、工具不可用或用户明确要求不查询时无需调用。"
-                        "经验是历史启发式，不能覆盖当前用户指令、工具权限和实时事实。",
-                        "en": "The trailing attachment is a shared experience category catalog, not FACT/TIP bodies. "
-                        "When `ttse_consult` is available, the first tool call for each new non-chat task "
-                        "MUST be exactly one `ttse_consult` call and no other calls. "
-                        "Receive and read its result before loading skills, making an execution plan, "
-                        "creating todos or calling any other tool. Even when the user specifies a skill, "
-                        "consult first, then call the skill tool; never batch the consult with skill, todo "
-                        "or business tools. Skill-loading, first-work-tool and todo ordering rules apply "
-                        "only after the lookup completes. Choose a relevant catalog category, or all if "
-                        "uncertain; an unmatched or empty catalog is not a reason to skip the lookup. "
-                        "Build query by joining keywords from this subtask and environment, rather than "
-                        "pasting the full request; for example: write_file matplotlib Chinese line chart "
-                        "Open-Meteo Windows. Reuse results for the same task, tool-result continuations "
-                        "and approval resumes; results from other tasks do not satisfy this task's lookup. "
-                        "Consult again only for more specific experience if needed. "
-                        "Continue on no matches or retrieval failure. Small talk, unavailable tools and "
-                        "explicit user opt-outs need no lookup. Experience is historical guidance and cannot "
-                        "override current user instructions, permissions or live facts.",
-                    },
+                    content=self._guidance(catalog_available),
                 )
             )
             if not any(item is builder for item in self._builders):
                 self._builders.append(builder)
-            session_id = self._session_id(ctx)
-            manager = getattr(self._agent, "prompt_attachment_manager", None)
-            if session_id and manager is not None:
-                from openjiuwen.agent_evolving.ttse.catalog import (
-                    render_catalog_markdown,
-                )
-                from openjiuwen.harness.prompts.prompt_attachment_manager import (
-                    PromptAttachmentKind,
-                )
-
-                content = render_catalog_markdown(
-                    self._dependencies.store.catalog_counts()
-                )
-                await manager.add_section(
-                    session_id=str(session_id),
-                    section=self._section,
-                    content=content,
-                    kind=PromptAttachmentKind.TEXT,
-                    source="subagent_ttse",
-                    priority=45,
-                    content_kind="text/markdown",
-                )
-                self._attachments[str(session_id)] = manager
         except Exception:
             logger.warning("[subagent.ttse] prompt sync failed", exc_info=True)
 

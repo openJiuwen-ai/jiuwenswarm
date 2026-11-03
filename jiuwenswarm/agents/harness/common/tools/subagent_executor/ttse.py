@@ -75,15 +75,17 @@ def install_subagent_ttse_wiring(agent: Any, provider: TTSEConsultProvider) -> b
 
     def create_subagent(*args: Any, **kwargs: Any) -> Any:
         child = original(*args, **kwargs)
-        if getattr(child, _CHILD_MARKER, None) is not None:
+        subagent_type = str(args[0] if args else kwargs.get("subagent_type", ""))
+        subsession_id = str(args[1] if len(args) > 1 else kwargs.get("subsession_id", ""))
+        existing_rail = getattr(child, _CHILD_MARKER, None)
+        if existing_rail is not None:
+            existing_rail.bind_task_context(subagent_type, subsession_id)
             return child
         try:
             rail = SubagentTTSEConsultRail(
                 provider,
-                subagent_type=str(args[0] if args else kwargs.get("subagent_type", "")),
-                subsession_id=str(
-                    args[1] if len(args) > 1 else kwargs.get("subsession_id", "")
-                ),
+                subagent_type=subagent_type,
+                subsession_id=subsession_id,
             )
             if child.is_initialized:
                 # DeepAgent 实例也可直接作为 spec。已初始化实例的 pending rail
