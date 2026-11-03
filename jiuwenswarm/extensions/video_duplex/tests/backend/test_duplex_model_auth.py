@@ -115,7 +115,7 @@ async def test_answer_carries_model_like_normal_chat(monkeypatch, source, method
         seen.append((model_name, auth_session))
         return AUTH
 
-    monkeypatch.setattr(task_adapter, "_login_model_auth", fake_auth)
+    monkeypatch.setattr(task_adapter, "login_model_auth", fake_auth)
     client = RecordingClient()
 
     await executor(client).answer(task(source))
@@ -149,7 +149,7 @@ async def test_login_model_auth_attaches_credentials(monkeypatch):
 
     monkeypatch.setattr(passthrough, "normalize_model_auth", fake_normalize)
 
-    assert await task_adapter._login_model_auth("GLM-5.1", "login-1") == AUTH
+    assert await task_adapter.login_model_auth("GLM-5.1", "login-1") == AUTH
 
 
 @pytest.mark.asyncio
@@ -162,8 +162,8 @@ async def test_login_model_auth_skips_without_model_or_login(monkeypatch):
     monkeypatch.setattr(passthrough, "expired_login_session", boom)
     monkeypatch.setattr(passthrough, "normalize_model_auth", boom)
 
-    assert await task_adapter._login_model_auth("", "login-1") is None
-    assert await task_adapter._login_model_auth("GLM-5.1", "") is None
+    assert await task_adapter.login_model_auth("", "login-1") is None
+    assert await task_adapter.login_model_auth("GLM-5.1", "") is None
 
 
 @pytest.mark.asyncio
@@ -180,7 +180,7 @@ async def test_refresh_failure_still_attaches_existing_credentials(monkeypatch):
     monkeypatch.setattr(passthrough, "normalize_model_auth", fake_normalize)
 
     warnings = record_warnings(monkeypatch)
-    assert await task_adapter._login_model_auth("GLM-5.1", "login-1") == AUTH
+    assert await task_adapter.login_model_auth("GLM-5.1", "login-1") == AUTH
     assert any("续期失败" in w and "auth service down" in w for w in warnings)
 
 
@@ -195,5 +195,5 @@ async def test_credential_failure_does_not_fail_task_and_logs_reason(monkeypatch
     monkeypatch.setattr(passthrough, "normalize_model_auth", broken)
 
     warnings = record_warnings(monkeypatch)
-    assert await task_adapter._login_model_auth("GLM-5.1", "login-1") is None
+    assert await task_adapter.login_model_auth("GLM-5.1", "login-1") is None
     assert any("挂登录凭据失败" in w and "token parse error" in w for w in warnings)

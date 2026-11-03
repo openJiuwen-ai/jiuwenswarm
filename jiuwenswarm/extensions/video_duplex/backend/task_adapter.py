@@ -35,7 +35,7 @@ def selected_model(params) -> dict[str, Any]:
 LOGIN_REFRESH_WAIT_S = 20.0
 
 
-async def _login_model_auth(model_name, auth_session) -> dict[str, Any] | None:
+async def login_model_auth(model_name, auth_session) -> dict[str, Any] | None:
     """登录模型的凭据：复用普通对话的续期和挂凭据（gateway.auth.passthrough 公开入口）。
 
     只有登录送的模型才会续期、挂凭据；自配模型原样返回 None。
@@ -349,7 +349,7 @@ class AgentTaskExecutor:
 
     async def _model_auth(self, task):
         model = self._model(task)
-        return await _login_model_auth(
+        return await login_model_auth(
             str(model.get("model_name") or "").strip(),
             self.auth_sessions.get((task.get("owner"), task.get("session"))),
         )
