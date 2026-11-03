@@ -627,6 +627,13 @@ async def test_runtime_starts_once_and_restarts_after_close(host):
     assert len(host.managers) == 2
 
 
+async def test_web_runtime_can_start_without_a_browser_request(host):
+    assert host.managers == []
+    await asyncio.gather(host.adapter.start(), host.adapter.start())
+    assert len(host.managers) == 1
+    assert host.managers[0]._schedule_task is not None
+
+
 # JM-10-V-05 streamed replies
 
 

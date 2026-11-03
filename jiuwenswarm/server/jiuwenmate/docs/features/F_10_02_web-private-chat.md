@@ -324,3 +324,17 @@ English (2026-11-04, implemented and locally verified): Include the default empl
 验证结果：前端相关回归 75 项通过，后端相关回归 55 项通过；扩展检查发现的 RPC 清单和共享文件夹具两项失败，在未修改的后端代码中同样复现。`npm run build` 成功，源码服务已重启并确认 worker 就绪。实际通过页面创建临时员工，未发送消息即在左侧出现会话；刷新后仍保留同一空会话，历史接口返回零条请求。详情页已显示独立的“核心能力”和“调用技能”，未配置时显示“暂无技能”。临时验证员工已清理。
 
 English: Register one durable empty Web conversation when employee creation succeeds, without submitting messages or starting an execution. Show curated role abilities separately from actual skills, preserving installed experts’ bundled skills. Reopening an employee must not recreate a deleted conversation. Validation: 75 frontend checks and 55 backend checks passed; two unrelated expanded-suite failures reproduce on the unchanged backend. The production build passed and the source service was restarted. UI verification confirmed the new employee appears in the conversation list before any message, retains the same empty conversation after refresh, and has zero message requests. The temporary validation employee was removed.
+
+## 2026-11-02：定时任务被误报为服务重启中断
+
+根因与证据：Web 与 IM 的 AgentManager 共用请求数据库，但运行集合和事件观察器各自独立。两者原先都会扫描定时计划，自动任务被 IM 接走后，Web 历史查询持续返回 dispatched/running=false，前端据此误报服务重启。16:07 自动触发的 `req_3db39df8bf654d85930120d9a0c6d901` 连续多次复现，最终仍正常 completed，期间 worker 未重启。此前仅验证手动“立即运行”不足以覆盖该问题，因为手动操作由 Web 运行时接收。
+
+实现：AgentManager 新增默认为真的 `schedules_enabled` 构造参数；生产 IM 工厂关闭自动计划扫描，Web 统一负责。AgentServer 启动阶段主动启动 Web 适配器，避免依赖浏览器首次请求；浏览器并发请求及重启继续复用已有启动锁。IM 消息执行与恢复保持原有渠道归属，不更改 core、数据库结构、前端状态协议或用户计划时间。
+
+同时修复两个运行视图竞态：派发写入数据库前先登记既有运行项，失败时移除；准备中排空等待派发锁，避免事件循环忙等。对 dispatched/running=false 复读请求，以反映已提交的完成结果；真实孤立派发仍按中断显示，不用强制 running 掩盖异常。
+
+验证：IM 工厂回归在原实现失败（扫描被调用一次），修复后通过。共享数据库的两个运行时自动到点测试确认仅 Web 执行，运行期间可查询 running=true，完成后为 ended/completed；另有无浏览器启动、服务重启接线、派发失败、准备中排空、完成查询竞态及真实孤立派发回归。六个相关文件共 290 项通过，3 项已有失败单独排除并记录核对：共享文件下载 Session 路径夹具、恢复渠道预期及 WeLink 对账投递。
+
+真实联调：源码服务于 16:13:07 启动，worker PID 73542 于 16:13:34 就绪。新建一次性临时计划，等待真正到点自动接收，未调用 schedule.run。请求 `req_01ccd406bcbc4f7ea4ed8dd4d5fbdba6` 的 Web 历史采样为 dispatched/running=true → ended/completed，无中断状态；计划历史确认只有一次自动运行且 completed。验证后已删除临时计划，原有两个暂停计划保持暂停。本次仅涉及后端，无新增前端改动。
+
+English: Both Web and IM managers previously scanned the same schedule store while maintaining separate running sets and event observers. Automatic work claimed by IM therefore appeared interrupted through Web, although it completed normally. Manual-run verification did not cover this path. Disable schedule sweeping in the production IM factory and eagerly start the Web adapter during AgentServer startup, preserving browser-independent scheduling and existing IM recovery ownership. Also close dispatch-registration and completion-read races without hiding genuine orphaned requests. The six-file regression run passed 290 checks with three existing failures excluded and investigated separately. After restarting the source service, a one-shot plan fired automatically without schedule.run; request `req_01ccd406bcbc4f7ea4ed8dd4d5fbdba6` was observed running and then completed through the Web history API. Its plan history contained one completed automatic run. The temporary plan was deleted and existing paused plans were preserved. No new frontend changes or schema migrations.
