@@ -246,3 +246,34 @@ test('restores reviewer status without changing the current final timeline', () 
   assert.equal(preview.executions[0]?.result?.reviewer?.reviewer_status, 'approved');
   assert.equal(preview.executions[0]?.result?.reviewer?.decision_source, 'auto_reviewer');
 });
+
+test('preserves a policy allowance reason through live results and history', () => {
+  const reviewer_metadata = {
+    decision_source: 'policy_evaluator',
+    reviewer_status: 'approved',
+    final_reviewer_status: 'approved',
+    evidence_summary: 'Your permission settings already allow this action. No approval needed.',
+    risk_level: 'low',
+  };
+  const payload = {
+    tool_call_id: 'policy-read', tool_name: 'read_file', result: 'file contents',
+    success: true, reviewer_metadata,
+  };
+  const live = normalizeToolResultPayload(payload);
+  assert.equal(live.reviewer.decision_source, 'policy_evaluator');
+  assert.equal(live.reviewer.evidence_summary, reviewer_metadata.evidence_summary);
+  assert.equal(live.reviewer.final_reviewer_status, 'approved');
+  assert.equal(live.success, true);
+  const failed = normalizeToolResultPayload({ ...payload, success: false, result: 'File not found' });
+  assert.equal(failed.success, false);
+  assert.equal(failed.reviewer.evidence_summary, reviewer_metadata.evidence_summary);
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    { role: 'user', content: 'Read the file', timestamp: '2026-10-23T00:00:01Z' },
+    { role: 'assistant', event_type: 'chat.tool_call', timestamp: '2026-10-23T00:00:02Z',
+      event_payload: { tool_call: { id: 'policy-read', name: 'read_file', arguments: {} } } },
+    { role: 'assistant', event_type: 'chat.tool_result', timestamp: '2026-10-23T00:00:03Z',
+      event_payload: payload },
+    { role: 'assistant', event_type: 'chat.final', timestamp: '2026-10-23T00:00:04Z', content: 'Done' },
+  ], 'policy-session');
+  assert.deepEqual(preview.executions[0].result.reviewer, live.reviewer);
+});

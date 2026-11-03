@@ -120,7 +120,10 @@ class SessionSwitchServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_switch(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_switch
+
+        await handle_session_switch(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_message_for_test(
         self,
@@ -244,6 +247,7 @@ async def test_success_preserves_complete_wire_metadata_and_order() -> None:
         "session_id": "target-session",
         "mode": "code.normal",
         "switched": True,
+        "moa_enabled": False,
     }
     assert response.metadata == metadata
 
@@ -319,6 +323,7 @@ async def test_server_crosses_real_runtime_and_provisioner_boundary(
             "session_id": "integration-session",
             "mode": "code.normal",
             "switched": True,
+        "moa_enabled": False,
         }
     finally:
         await runtime.close()
@@ -383,6 +388,7 @@ async def test_target_precedence_fallback_and_default_channel(
         "session_id": expected_target,
         "mode": "agent.plan",
         "switched": True,
+        "moa_enabled": False,
     }
 
 
@@ -538,6 +544,7 @@ async def test_cancelled_prepare_releases_switch_lock_for_successor() -> None:
             "session_id": "successor-session",
             "mode": "agent.plan",
             "switched": True,
+        "moa_enabled": False,
         }
     finally:
         never_release.set()

@@ -25,7 +25,7 @@ from openjiuwen.extensions.observability.content_addressing import (
     rebuild_value,
 )
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     SINGLE_AGENT_CANONICAL_MODES,
     TEAM_CANONICAL_MODES,
 )
@@ -58,9 +58,8 @@ from jiuwenswarm.observability.retention import (
 
 logger = logging.getLogger(__name__)
 
-# A database written under any other version is discarded, not migrated:
-# trajectories are diagnostic data with a retention window of days, and every
-# migration kept here was code that outlived the data it existed for.
+# Databases from another version are archived before rebuilding the active
+# store. Archives retain their original schema for offline historical access.
 _SCHEMA_VERSION = 6
 _BUSY_TIMEOUT_MS = 5000
 # Serialized name of the OTLP span status code, used to skip parsing a payload
@@ -96,6 +95,18 @@ eligible_traces AS (
             THEN 1 ELSE 0
         END
     ) = 0
+)
+"""
+
+# Tests one frame (aliased ``frames``) against ``eligible_traces``; needs the
+# CTE above in the same statement.
+_ELIGIBLE_FRAME_PREDICATE = """
+EXISTS (
+    SELECT 1
+    FROM trajectory_frame_spans AS eligible_spans
+    INNER JOIN eligible_traces
+        ON eligible_traces.trace_id = eligible_spans.trace_id
+    WHERE eligible_spans.span_ref = frames.span_ref
 )
 """
 
@@ -386,7 +397,7 @@ def _decode_payload(stored: bytes | None) -> bytes:
 
 
 class TrajectoryStore:
-    """Single-threaded SQLite writer that preserves raw record bytes unchanged."""
+    """Single-threaded SQLite writer preserving raw bytes; zero days disables expiry."""
 
     def __init__(
         self,
@@ -396,12 +407,13 @@ class TrajectoryStore:
         discard_final_span_frames: bool = DEFAULT_DISCARD_FINAL_SPAN_FRAMES,
     ) -> None:
         self.database_path = Path(database_path)
-        self.retention_days = max(1, int(retention_days))
+        parsed_retention_days = int(retention_days)
+        self.retention_days = 0 if parsed_retention_days == 0 else max(1, parsed_retention_days)
         self.discard_final_span_frames = bool(discard_final_span_frames)
         self._connection: sqlite3.Connection | None = None
 
     def initialize(self) -> None:
-        """Open the writer connection and initialize the idempotent schema."""
+        """Initialize the schema, archiving incompatible databases before rebuilding."""
         if self._connection is not None:
             return
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -409,8 +421,7 @@ class TrajectoryStore:
         try:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version not in (0, _SCHEMA_VERSION):
-                connection.close()
-                self._discard_incompatible_database(version)
+                self._archive_incompatible_database(connection, version)
                 connection = self._open_writer_connection()
             connection.execute("PRAGMA foreign_keys=ON")
             # Retention frees whole turns at a time, and only an incremental
@@ -436,17 +447,38 @@ class TrajectoryStore:
         connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         return connection
 
-    def _discard_incompatible_database(self, version: int) -> None:
-        """Delete a database written under another schema version.
+    def _archive_incompatible_database(self, connection: sqlite3.Connection, version: int) -> None:
+        """Back up an incompatible database before replacing the active files.
 
-        The file and its WAL sidecars go together: a WAL left behind would be
-        replayed into the empty database that replaces them.
+        SQLite's backup API includes committed WAL contents in a standalone
+        database. Each archive has a unique sibling directory outside the
+        stale-database sweep's search depth. Backup errors propagate before
+        any active file is removed, preventing a failed archive from silently
+        losing history. Archives retain the original schema and are never
+        automatically expired.
+
+        Args:
+            connection: Open source connection, closed after backup succeeds.
+            version: Original schema version recorded in the archive name.
         """
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        archive_dir = self.database_path.with_name(
+            f"{self.database_path.name}.schema-{version}.{timestamp}.{uuid.uuid4().hex}.archive",
+        )
+        archive_dir.mkdir()
+        archive_path = archive_dir / self.database_path.name
+        archive = sqlite3.connect(str(archive_path))
+        try:
+            connection.backup(archive)
+        finally:
+            archive.close()
+        connection.close()
         logger.warning(
-            "Trajectory database schema %s is not %s; discarding it: path=%s",
+            "Trajectory database schema %s is not %s; archived before rebuild: path=%s archive=%s",
             version,
             _SCHEMA_VERSION,
             self.database_path,
+            archive_path,
         )
         for path in database_files(self.database_path):
             path.unlink(missing_ok=True)
@@ -1038,6 +1070,7 @@ class TrajectoryStore:
         and then reclaims whatever content no remaining record or checkpoint
         reaches. Readers see the removal as a new store epoch and rebuild from
         the checkpoints. The file shrinks by an incremental vacuum afterwards.
+        A retention period of zero skips all expiry work.
 
         Args:
             now: Unix second to measure the retention window from.
@@ -1045,6 +1078,8 @@ class TrajectoryStore:
         Returns:
             The number of records removed.
         """
+        if self.retention_days == 0:
+            return 0
         connection = self._require_connection()
         cutoff = int(now if now is not None else time.time()) - self.retention_days * 86400
         try:
@@ -2219,17 +2254,29 @@ class AsyncTrajectoryReader:
             return None
         try:
             await connection.execute("BEGIN")
+            # Every query here walks frames by frame_seq and tests each frame's
+            # trace on the way, so a page costs what it returns. Joining from
+            # the eligible traces instead reached every frame they own and
+            # sorted them, which grew with every frame a session ever kept --
+            # unbounded once ``discard_final_span_frames`` is off.
             aggregate = await _fetch_one(
                 connection,
                 f"""
                 WITH {_ELIGIBLE_TRACES_CTE}
-                SELECT MIN(frames.frame_seq) AS first_frame_seq,
-                       MAX(frames.frame_seq) AS current_frame_seq
-                FROM trajectory_stream_frames AS frames
-                INNER JOIN trajectory_frame_spans AS spans
-                    ON spans.span_ref = frames.span_ref
-                INNER JOIN eligible_traces
-                    ON eligible_traces.trace_id = spans.trace_id
+                SELECT (
+                           SELECT frames.frame_seq
+                           FROM trajectory_stream_frames AS frames
+                           WHERE {_ELIGIBLE_FRAME_PREDICATE}
+                           ORDER BY frames.frame_seq ASC
+                           LIMIT 1
+                       ) AS first_frame_seq,
+                       (
+                           SELECT frames.frame_seq
+                           FROM trajectory_stream_frames AS frames
+                           WHERE {_ELIGIBLE_FRAME_PREDICATE}
+                           ORDER BY frames.frame_seq DESC
+                           LIMIT 1
+                       ) AS current_frame_seq
                 """,
                 _trajectory_scope_params(),
             )
@@ -2270,9 +2317,8 @@ class AsyncTrajectoryReader:
                 FROM trajectory_stream_frames AS frames
                 INNER JOIN trajectory_frame_spans AS spans
                     ON spans.span_ref = frames.span_ref
-                INNER JOIN eligible_traces
-                    ON eligible_traces.trace_id = spans.trace_id
                 WHERE frames.frame_seq > ?
+                  AND {_ELIGIBLE_FRAME_PREDICATE}
                 ORDER BY frames.frame_seq ASC
                 LIMIT ?
                 """,
@@ -2349,9 +2395,9 @@ class AsyncTrajectoryReader:
         await connection.execute("PRAGMA query_only=ON")
         version_row = await _fetch_one(connection, "PRAGMA user_version", ())
         if version_row is None or int(version_row[0]) != _SCHEMA_VERSION:
-            # A database from another schema version is discarded when its
-            # writer next opens it; until then it reads as absent, never as
-            # rows this reader would misinterpret.
+            # A database from another schema version is archived and replaced
+            # when its writer next opens it; until then it reads as absent,
+            # never as rows this reader would misinterpret.
             await connection.close()
             return None
         return connection

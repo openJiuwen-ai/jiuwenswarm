@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "baidu-netdisk": {
+      "type": "sse",
+      "url": "https://mcp-pan.baidu.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${BAIDU_NETDISK_ACCESS_TOKEN}"
+      },
+      "timeout": 600
+    }
+  }
+}

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # TEST ONLY: URL literals use RFC-reserved domains or ASGI's synthetic
 # ``http://test`` base; loopback listeners bind ephemeral local test servers.
-
 import base64
 import email.message
 import io
@@ -13,28 +12,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.channel_manager.web import app_web_handlers
+from gateway.channel_manager.web.web_connect import WebChannel
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentManager,
     AgentRuntime,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
+from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from gateway.extensions.agentos.agentos_router.router_client import (
     AgentOSFileTransferError,
     AgentOSRouterClient,
     build_auth_headers_from_token,
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from gateway.extensions.yuanrong_frontend_client import (
     AgentFileDownloadChunk,
     SandboxInfo,
     YuanrongAgentFileError,
     YuanrongFrontendAgentClient,
 )
-from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from gateway.routing.agent_client import WebSocketAgentServerClient
 
 
 class _FakeRegistry:
@@ -855,9 +854,9 @@ async def test_register_web_handlers_binds_container_file_client_for_agentos_rou
 async def test_container_file_http_raw_file_returns_binary_and_json() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.download_container_file = AsyncMock(  # type: ignore[method-assign]
@@ -910,9 +909,9 @@ async def test_container_file_http_raw_file_returns_binary_and_json() -> None:
 async def test_container_file_http_raw_file_offset_beyond_eof_returns_empty() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.download_container_file = AsyncMock(  # type: ignore[method-assign]
@@ -969,9 +968,9 @@ async def test_container_file_http_raw_file_offset_beyond_eof_returns_empty() ->
 async def test_container_file_http_raw_file_missing_path_is_file_not_found() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.download_container_file = AsyncMock(  # type: ignore[method-assign]
@@ -998,9 +997,9 @@ async def test_container_file_http_raw_file_missing_path_is_file_not_found() -> 
 async def test_container_file_http_downloads_sent_file_from_token() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.download_container_file = AsyncMock(  # type: ignore[method-assign]
@@ -1050,10 +1049,10 @@ async def test_container_file_http_routes_verified_download_through_e2a(
 ) -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
-    from jiuwenswarm.gateway.routing import e2a_proxy
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.routing import e2a_proxy
 
     content = b"x" * (512 * 1024 + 17)
     calls: list[dict[str, Any]] = []
@@ -1135,10 +1134,10 @@ async def test_container_file_http_rejects_verified_chunk_past_declared_size(
 ) -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
-    from jiuwenswarm.gateway.routing import e2a_proxy
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.routing import e2a_proxy
 
     async def _fetch(**kwargs: Any) -> tuple[bool, dict[str, Any]]:
         offset = int(kwargs["params"]["offset"])
@@ -1188,10 +1187,10 @@ async def test_container_file_http_verified_cross_user_rejection_has_no_fallback
 ) -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
-    from jiuwenswarm.gateway.routing import e2a_proxy
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.routing import e2a_proxy
 
     async def _reject(**kwargs: Any) -> tuple[bool, dict[str, Any]]:
         assert kwargs["user_id"] == "user-b"
@@ -1233,9 +1232,9 @@ async def test_container_file_http_verified_cross_user_rejection_has_no_fallback
 async def test_container_file_http_upload_multipart() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.upload_container_file = AsyncMock(  # type: ignore[method-assign]
@@ -1275,9 +1274,9 @@ async def test_container_file_http_upload_multipart() -> None:
 async def test_container_file_http_upload_multipart_with_dir() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.upload_container_file = AsyncMock(  # type: ignore[method-assign]
@@ -1311,9 +1310,9 @@ async def test_container_file_http_upload_multipart_with_dir() -> None:
 async def test_container_file_http_file_content_text() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.upload_container_file = AsyncMock(  # type: ignore[method-assign]
@@ -1351,9 +1350,9 @@ async def test_container_file_http_file_content_text() -> None:
 async def test_container_file_http_absent_without_router_client() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     app = build_web_channel_app(channel)
@@ -1373,13 +1372,13 @@ async def test_container_file_http_absent_without_router_client() -> None:
 async def test_container_file_http_list_files_and_markdown() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.container_file_http import (
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.container_file_http import (
         map_container_list_files,
         map_container_list_markdown,
     )
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     yuanrong_items = [
         {
@@ -1477,9 +1476,9 @@ async def test_container_file_http_list_files_and_markdown() -> None:
 async def test_container_file_http_list_missing_dir_is_file_not_found() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.list_container_files = AsyncMock(  # type: ignore[method-assign]
@@ -1511,9 +1510,9 @@ async def test_container_file_http_list_missing_dir_is_file_not_found() -> None:
 async def test_container_file_http_mkdir() -> None:
     import httpx
 
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_connect import WebChannelConfig
 
     router = _make_router_with_runtime()
     router.mkdir_container_dir = AsyncMock(  # type: ignore[method-assign]

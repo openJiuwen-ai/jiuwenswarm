@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Shared props for every ic_ds_* icon component. */
 export interface IconProps {
   /** Square edge in px; defaults to the glyph's own drawn size. */

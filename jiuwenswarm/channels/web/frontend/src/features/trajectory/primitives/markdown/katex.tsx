@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * TeX-to-React via KaTeX, replicating the rehype-katex pipeline this renderer
  * replaced: the same three-arm error chain (strict render, `strict: 'ignore'`

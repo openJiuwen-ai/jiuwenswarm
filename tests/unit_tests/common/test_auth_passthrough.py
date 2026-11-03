@@ -5,15 +5,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import login_credentials, passthrough
-from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
+from gateway.auth import login_credentials
+from gateway.auth import passthrough
+from gateway.auth.login_credentials import credential_ref_for_user
 from jiuwenswarm.common.auth.model_catalog import LoginModel
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 
 def _remote(monkeypatch, *, effective=True, apig_base="https://apig.example.com",
             whitelist=None, blocklist=None, login=None, **apig_paths):
-    from jiuwenswarm.common.auth import remote_config
+    from gateway.auth import remote_config
 
     remote_config.set_config_for_test(remote_config.parse_config({
         "is_effective": effective,
@@ -38,7 +39,7 @@ def apig_env(monkeypatch):
 def login_model(monkeypatch):
     seen: list = []
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
 
@@ -46,7 +47,7 @@ def login_model(monkeypatch):
         seen.append((session_id, allow_refresh))
         return SimpleNamespace(user_id=f"openid-{session_id}", credential=SimpleNamespace(id_token=f"id-{session_id}"))
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.service.live_session", _live)
+    monkeypatch.setattr("gateway.auth.service.live_session", _live)
     return seen
 
 
@@ -134,12 +135,12 @@ def test_no_injection_without_model_name(apig_env, login_model):
 
 
 def test_expired_session_injects_nothing_instead_of_raising(apig_env, monkeypatch, login_model):
-    from jiuwenswarm.common.auth.service import ModelAuthRequired
+    from gateway.auth.service import ModelAuthRequired
 
     def _expired(session_id=None, allow_refresh=True):
         raise ModelAuthRequired("登录已过期", "session_expired")
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.service.live_session", _expired)
+    monkeypatch.setattr("gateway.auth.service.live_session", _expired)
     params = {"model_name": "glm-5"}
     passthrough.normalize_model_auth(params, session_id="sess-1")
     assert E2A_MODEL_AUTH_PARAM_KEY not in params
@@ -153,7 +154,7 @@ def test_catalog_lookup_never_triggers_a_network_refresh(apig_env, monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models", _get_models
+        "gateway.auth.model_catalog.get_models", _get_models
     )
     passthrough.normalize_model_auth({"model_name": "glm-5"}, session_id="sess-1")
     assert seen["allow_refresh"] is False
@@ -162,15 +163,15 @@ def test_catalog_lookup_never_triggers_a_network_refresh(apig_env, monkeypatch):
 def test_request_without_session_gets_nothing_even_if_someone_is_logged_in(apig_env, monkeypatch, tmp_path):
     import time
 
-    from jiuwenswarm.common.auth import service as service_mod
-    from jiuwenswarm.common.auth import session_store as store_mod
-    from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
+    from gateway.auth import service as service_mod
+    from gateway.auth import session_store as store_mod
+    from gateway.auth.account_kit import Credential, LoginOutcome
 
     monkeypatch.setattr(store_mod, "auth_dir", lambda: tmp_path)
     store = store_mod.AuthSessionStore()
     monkeypatch.setattr(service_mod, "_service", service_mod.AuthService(store=store))
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
     session = store.create(LoginOutcome(
@@ -191,15 +192,15 @@ def test_request_without_session_gets_nothing_even_if_someone_is_logged_in(apig_
 def test_logging_in_again_keeps_the_credential_ref(apig_env, monkeypatch, tmp_path):
     import time
 
-    from jiuwenswarm.common.auth import service as service_mod
-    from jiuwenswarm.common.auth import session_store as store_mod
-    from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
+    from gateway.auth import service as service_mod
+    from gateway.auth import session_store as store_mod
+    from gateway.auth.account_kit import Credential, LoginOutcome
 
     monkeypatch.setattr(store_mod, "auth_dir", lambda: tmp_path)
     store = store_mod.AuthSessionStore()
     monkeypatch.setattr(service_mod, "_service", service_mod.AuthService(store=store))
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
 
@@ -223,17 +224,17 @@ def test_first_message_after_idle_gets_a_refreshed_token(apig_env, monkeypatch, 
     import asyncio
     import time
 
-    from jiuwenswarm.common.auth import service as service_mod
-    from jiuwenswarm.common.auth import session_store as store_mod
-    from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
-    from jiuwenswarm.gateway.app_gateway import _refresh_expired_login_credential
+    from gateway.auth import service as service_mod
+    from gateway.auth import session_store as store_mod
+    from gateway.auth.account_kit import Credential, LoginOutcome
+    from gateway.app_gateway import _refresh_expired_login_credential
 
     monkeypatch.setattr(store_mod, "auth_dir", lambda: tmp_path)
     store = store_mod.AuthSessionStore()
     auth = service_mod.AuthService(store=store)
     monkeypatch.setattr(service_mod, "_service", auth)
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel(model_name="glm-5", display_name="GLM-5")],
     )
     refreshed: list = []
@@ -273,6 +274,6 @@ def test_forwarding_path_never_refreshes_remote_config_synchronously(monkeypatch
         seen["allow_refresh"] = allow_refresh
         return None
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.apig.resolve_apig_config", _resolve)
+    monkeypatch.setattr("gateway.auth.apig.resolve_apig_config", _resolve)
     passthrough.normalize_model_auth({"model_name": "glm-5"}, session_id="sess-1")
     assert seen["allow_refresh"] is False

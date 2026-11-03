@@ -694,7 +694,11 @@ async def test_agent_manager_uses_project_dir_not_workspace_dir_for_identity(
         assert await manager.process_message(request) == "ok"
 
     lookup.assert_awaited_once_with(
-        channel_id="web", mode=mode, project_dir=expected_project, sub_mode=None,
+        channel_id="web",
+        mode=mode,
+        project_dir=expected_project,
+        sub_mode=None,
+        request=request,
     )
     assert seen_requests == [request]
     assert seen_requests[0] is request
@@ -741,7 +745,11 @@ async def test_manager_project_identity_respects_explicit_and_admitted_values(
 
     assert agent is lookup.return_value
     lookup.assert_awaited_once_with(
-        channel_id="web", mode=mode, project_dir=expected_project, sub_mode=None,
+        channel_id="web",
+        mode=mode,
+        project_dir=expected_project,
+        sub_mode=None,
+        request=request,
     )
     assert admissions == ([request] if with_callback else [])
     assert vars(request) == original_fields

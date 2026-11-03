@@ -22,7 +22,7 @@ from jiuwenswarm.channels.process_cli.protocol import (
     SingleAgentMode,
     WorkspaceSpec,
 )
-from jiuwenswarm.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
+from gateway.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
 from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 from jiuwenswarm.runtime.events import RuntimeEvent
 
@@ -160,16 +160,40 @@ def test_agent_capabilities_match_existing_definition_semantics() -> None:
 
     assert configured.to_dict()["tools"] == ["*"]
     assert configured.to_dict()["skills"] == []
-    with pytest.raises(ValueError, match="tools must not be empty"):
-        AgentSpec.from_dict(
-            {"name": "empty_tools", "instructions": "invalid", "tools": []}
-        )
+    disabled = AgentSpec.from_dict(
+        {"name": "empty_tools", "instructions": "Use no tools", "tools": []}
+    )
+    assert disabled.to_dict()["tools"] == []
     with pytest.raises(ValueError, match="must be the only"):
         AgentSpec(
             name="mixed_tools",
             instructions="invalid",
             tools=("*", "read_file"),
         )
+
+
+def test_run_scoped_capabilities_round_trip_and_validate() -> None:
+    run = OneShotRunInput.from_dict(
+        {
+            "schema_version": "0.1",
+            "type": "run",
+            "input": "hello",
+            "model": "model:example",
+            "skills": ["review"],
+            "mcp": [],
+            "permissions": {
+                "tools": {
+                    "read_file": "allow",
+                    "write_file": "ask",
+                    "run_shell": "deny",
+                }
+            },
+        }
+    )
+    assert run.to_dict()["permissions"]["tools"]["write_file"] == "ask"
+    assert OneShotRunInput.from_dict(run.to_dict()) == run
+    with pytest.raises(ValueError, match="levels must be"):
+        OneShotRunInput(input="hello", permissions={"tools": {"read_file": "always"}})
 
 
 def test_resume_identity_is_runtime_owned_and_agent_declaration_is_optional() -> None:
@@ -350,7 +374,7 @@ unexpected = sorted(
     name for name in sys.modules
     if name == 'jiuwenswarm.runtime.service'
     or name.startswith('jiuwenswarm.server.agent_ws_server')
-    or name.startswith('jiuwenswarm.gateway')
+    or name.startswith('gateway')
     or name == 'websockets'
 )
 print('UNEXPECTED=' + repr(unexpected))
@@ -373,7 +397,7 @@ def test_protocol_modules_have_no_server_or_transport_imports() -> None:
         PROJECT_ROOT / "jiuwenswarm" / "channels" / "process_cli" / "protocol"
     )
     forbidden_prefixes = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server",
         "websockets",
     )

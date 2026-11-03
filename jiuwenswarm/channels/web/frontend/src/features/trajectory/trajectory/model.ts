@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /**
  * Standalone trajectory read model.
  *
@@ -45,6 +43,9 @@ export interface TrajectoryRecordedFacts {
     finishReasons?: readonly string[]
     totalLatencyMs?: number
     timePerOutputTokenMs?: number
+    timeToFirstByteMs?: number
+    timeToFirstTokenMs?: number
+    retryCount?: number
     promptTokenIds?: unknown
     completionTokenIds?: unknown
     logprobs?: unknown

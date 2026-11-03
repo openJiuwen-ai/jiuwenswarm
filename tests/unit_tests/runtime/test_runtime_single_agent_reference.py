@@ -19,6 +19,21 @@ from jiuwenswarm.runtime.session.model import SessionExecutionState
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def isolated_agent_dirs(tmp_path, monkeypatch):
+    """会话/lifecycle 持久状态落在 tmp，而不是真实用户主目录。
+
+    create_or_resume_session 会通过 describe_session 校验持久化通道，
+    claim_runtime 会写 runtime owner 文件；不隔离时真实主目录里其他
+    测试/应用留下的同名会话会导致 NOT_FOUND，并行 worker 也会互抢。
+    """
+    sessions = tmp_path / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions
+    )
+
+
 class _Manager:
     def __init__(self) -> None:
         self.cleanup_sessions: list[tuple[str, str]] = []
@@ -72,6 +87,12 @@ def _isolated_sessions_root(
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: tmp_path)
 
 
+
+def _event(request: AgentRequest) -> RuntimeEvent:
+    return RuntimeEvent(request_id=request.request_id, channel_id=request.channel_id,
+                        session_id=request.session_id, payload={"event_type": "chat.final"})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "work_mode"),
@@ -87,7 +108,7 @@ async def test_work_and_code_normal_unary_use_session_registry(
     )
 
     async def invoke_started(request: AgentRequest, **_kwargs: Any):
-        return [request.request_id]
+        return [_event(request)]
 
     runtime._invoke_started = invoke_started  # type: ignore[method-assign]
     request = AgentRequest(
@@ -97,7 +118,7 @@ async def test_work_and_code_normal_unary_use_session_registry(
         req_method=ReqMethod.CHAT_SEND,
         params={"mode": mode, "work_mode": work_mode},
     )
-    assert await runtime.invoke(request) == [request.request_id]
+    assert [event.request_id for event in await runtime.invoke(request)] == [request.request_id]
     snapshot = runtime._session_coordinator.snapshot_session(session_id)
     assert snapshot is not None
     assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
@@ -201,8 +222,17 @@ def test_goal_delivery_is_runtime_control_work(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["agent.work.plan", "team.work.normal"])
-async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
+@pytest.mark.parametrize(
+    ("mode", "expected_work_kind"),
+    [
+        ("agent.work.plan", None),
+        ("team.work.normal", SessionWorkKind.TEAM_REQUEST),
+    ],
+)
+async def test_runtime_only_tracks_adapted_execution_modes(
+    mode: str,
+    expected_work_kind: SessionWorkKind | None,
+) -> None:
     runtime = _runtime()
     await runtime.start()
     await runtime.create_or_resume_session(channel_id="process", session_id="session")
@@ -215,13 +245,17 @@ async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
         params={"mode": mode, "work_mode": "work"},
     )
     async def invoke_started(actual: AgentRequest, **_kwargs: Any):
-        return [actual.request_id]
+        return [_event(actual)]
 
     runtime._invoke_started = invoke_started  # type: ignore[method-assign]
-    assert await runtime.invoke(request) == [request.request_id]
+    assert [event.request_id for event in await runtime.invoke(request)] == [request.request_id]
     snapshot = runtime._session_coordinator.snapshot_session("session")
     assert snapshot is not None
-    assert snapshot.executions == ()
+    if expected_work_kind is None:
+        assert snapshot.executions == ()
+    else:
+        assert snapshot.executions[-1].work_kind is expected_work_kind
+        assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
     await runtime.close()
 
 
@@ -326,7 +360,7 @@ async def test_single_agent_runtime_owns_every_user_channel(
     await runtime.start()
 
     async def invoke_started(request: AgentRequest, **_kwargs: Any):
-        return [request.request_id]
+        return [_event(request)]
 
     runtime._invoke_started = invoke_started  # type: ignore[method-assign]
     request = AgentRequest(
@@ -337,7 +371,7 @@ async def test_single_agent_runtime_owns_every_user_channel(
         params={"mode": mode, "work_mode": work_mode},
     )
 
-    assert await runtime.invoke(request) == [request.request_id]
+    assert [event.request_id for event in await runtime.invoke(request)] == [request.request_id]
     snapshot = runtime._session_coordinator.snapshot_session(request.session_id)
     assert snapshot is not None
     assert snapshot.channel_id == channel_id
@@ -346,15 +380,19 @@ async def test_single_agent_runtime_owns_every_user_channel(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["agent.work.plan", "team.work.normal"])
-async def test_plan_and_team_work_keep_their_existing_owner(
+@pytest.mark.parametrize(
+    ("mode", "runtime_owned"),
+    [("agent.work.plan", False), ("team.work.normal", True)],
+)
+async def test_team_work_moves_to_runtime_while_plan_keeps_existing_owner(
     mode: str,
+    runtime_owned: bool,
 ) -> None:
     runtime = _runtime()
     await runtime.start()
 
     async def invoke_started(request: AgentRequest, **_kwargs: Any):
-        return [request.request_id]
+        return [_event(request)]
 
     runtime._invoke_started = invoke_started  # type: ignore[method-assign]
     request = AgentRequest(
@@ -365,8 +403,9 @@ async def test_plan_and_team_work_keep_their_existing_owner(
         params={"mode": mode, "work_mode": "work"},
     )
 
-    assert await runtime.invoke(request) == [request.request_id]
-    assert runtime._session_coordinator.snapshot_session(request.session_id) is None
+    assert [event.request_id for event in await runtime.invoke(request)] == [request.request_id]
+    snapshot = runtime._session_coordinator.snapshot_session(request.session_id)
+    assert (snapshot is not None) is runtime_owned
     await runtime.close()
 
 

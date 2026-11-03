@@ -12,11 +12,11 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.chat_send import ChatSendParams
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+from gateway.channel_manager.tui.tui_connect import (
     CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
     CLI_FORWARD_REQ_METHODS,
 )
-from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
+from gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime import extension_package_manager as catalog

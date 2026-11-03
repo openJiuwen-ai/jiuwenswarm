@@ -21,6 +21,7 @@ import {
   normalizeModelOptions,
   rebaseModelDraft,
   reconcileModelReasoning,
+  syncDisplayNameWithModelName,
   type ModelDraft,
   type ModelProtocol,
 } from './modelAdapters';
@@ -101,6 +102,8 @@ export function ModelDialog({
   const [logoutConfirmation, setLogoutConfirmation] = useState(false);
   const catalogBaseline = useRef(initialValues);
   const connectionChanged = useRef(false);
+  /** Last model_name that auto-filled (or seeded) the display name; used so typing does not sync until blur/select. */
+  const aliasSyncedFromModelName = useRef(initialValues.model_name);
   const validationRequestId = useRef(0);
   const fetchRequestId = useRef(0);
   const fetchedModelLists = useRef(new Set<string>());
@@ -112,7 +115,11 @@ export function ModelDialog({
     onClose,
   });
   const values = form.getValues();
-  const errors = validateModelDraft(values, models, model?.origin_index, catalog, t);
+  const hasUnchangedApiKey = model?.has_api_key === true && !connectionChanged.current;
+  const editingSelf = model
+    ? { model_id: model.model_id, origin_index: model.origin_index }
+    : undefined;
+  const errors = validateModelDraft(values, models, editingSelf, catalog, t, hasUnchangedApiKey);
   const account = values.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
@@ -133,7 +140,7 @@ export function ModelDialog({
     request,
     onModelPatch: (patch) => {
       const current = form.getValues();
-      const next = {
+      let next = {
         ...current,
         ...(patch.model_name !== undefined ? { model_name: patch.model_name } : {}),
         ...(patch.api_base !== undefined ? { api_base: patch.api_base } : {}),
@@ -141,8 +148,13 @@ export function ModelDialog({
       };
       if (next.model_name !== current.model_name) {
         invalidateConnectionState();
+        next = syncDisplayNameWithModelName(next, aliasSyncedFromModelName.current);
+        if (!current.alias.trim() || current.alias.trim() === aliasSyncedFromModelName.current.trim()) {
+          aliasSyncedFromModelName.current = next.model_name.trim();
+        }
       }
       applyModelDraft(next);
+      if (next.alias !== current.alias) form.validate('alias');
     },
   });
 
@@ -182,6 +194,7 @@ export function ModelDialog({
     const rebasedValues = rebaseModelDraft(current, catalogBaseline.current, next);
     form.reset(next);
     applyModelDraft(rebasedValues);
+    aliasSyncedFromModelName.current = rebasedValues.model_name;
     catalogBaseline.current = next;
     const nextPreset = findVendorPreset(catalog, next.vendor_selection);
     const nextOptions: string[] = [];
@@ -210,11 +223,25 @@ export function ModelDialog({
     connectionChanged.current = true;
     invalidateConnectionState();
     fetchedModelLists.current.clear();
-    const next = applyVendorSelection(form.getValues(), selection, catalog);
+    const current = form.getValues();
+    let next = applyVendorSelection(current, selection, catalog);
+    const previousModelName = current.model_name.trim();
+    const previousSync = aliasSyncedFromModelName.current.trim();
+    // Vendor switch clears model_name; keep display-name auto-follow by clearing a
+    // previously synced alias, otherwise the old name blocks sync after the next select.
+    if (!next.model_name.trim()) {
+      const alias = current.alias.trim();
+      if (!alias || alias === previousModelName || alias === previousSync) {
+        next = { ...next, alias: '' };
+      }
+      aliasSyncedFromModelName.current = '';
+    } else {
+      aliasSyncedFromModelName.current = next.model_name;
+    }
     const nextPreset = findVendorPreset(catalog, selection);
     const nextOptions: string[] = [];
     applyModelDraft(next);
-    form.clearValidate(['api_key', 'model_name']);
+    form.clearValidate(['api_key', 'model_name', 'alias']);
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
   };
@@ -241,6 +268,10 @@ export function ModelDialog({
     }
     const currentRequestId = ++validationRequestId.current;
     const snapshot = buildEntry();
+    if (hasUnchangedApiKey && !snapshot.api_key.trim()) {
+      await persist(snapshot);
+      return;
+    }
     setTesting(true);
     setSaveError('');
     setValidationFailure(null);
@@ -300,11 +331,7 @@ export function ModelDialog({
       } else if (result.source === 'preset' && result.reason) {
         updateModelOptions([]);
         const reasonKey = FETCH_REASON_KEYS[result.reason];
-        setFetchStatus(
-          reasonKey
-            ? t(`settingsPanel.models.fetchReasons.${reasonKey}`)
-            : result.reason,
-        );
+        setFetchStatus(reasonKey ? t(`settingsPanel.models.fetchReasons.${reasonKey}`) : result.reason);
       } else {
         throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
       }
@@ -378,7 +405,7 @@ export function ModelDialog({
       name: 'protocol',
       label: t('settingsPanel.models.protocol'),
       component: 'select',
-      required: true,
+      required: !hasUnchangedApiKey,
       options: protocolOptions,
       onChange: (value) => updateProtocol(value as ModelProtocol),
     });
@@ -425,6 +452,15 @@ export function ModelDialog({
     onChange: (_modelName, nextValues) => {
       invalidateConnectionState();
       applyModelDraft(nextValues);
+    },
+    onBlur: (_modelName, nextValues) => {
+      const previous = aliasSyncedFromModelName.current;
+      const synced = syncDisplayNameWithModelName(nextValues, previous);
+      applyModelDraft(synced);
+      if (!nextValues.alias.trim() || nextValues.alias.trim() === previous.trim()) {
+        aliasSyncedFromModelName.current = synced.model_name.trim();
+      }
+      form.validate('alias');
     },
     render: ({ id, value, error, disabled, onChange, onBlur }) => (
       <ModelNameField
@@ -474,6 +510,13 @@ export function ModelDialog({
     ),
   });
   formItems.push({
+    name: 'alias',
+    label: t('settingsPanel.models.customName'),
+    component: 'input',
+    required: true,
+    placeholder: t('settingsPanel.models.customNamePlaceholder'),
+  });
+  formItems.push({
     name: 'context_window_tokens',
     label: t('settingsPanel.models.contextWindow'),
     component: 'custom',
@@ -492,12 +535,6 @@ export function ModelDialog({
         onBlur={onBlur}
       />
     ),
-  });
-  formItems.push({
-    name: 'alias',
-    label: t('settingsPanel.models.customName'),
-    component: 'input',
-    placeholder: t('settingsPanel.models.customNamePlaceholder'),
   });
   if (reasoning && reasoning.options.length > 0) {
     formItems.push({
@@ -542,7 +579,12 @@ export function ModelDialog({
         onCancel={requestClose}
       >
         {catalogLoading ? (
-          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite" data-testid="settings-model-dialog-catalog-loading">
+          <div
+            className="settings-model-dialog__catalog-status"
+            role="status"
+            aria-live="polite"
+            data-testid="settings-model-dialog-catalog-loading"
+          >
             {t('settingsPanel.models.catalogLoading')}
           </div>
         ) : null}
@@ -575,9 +617,9 @@ export function ModelDialog({
           rules={{
             alias: [
               {
-                trigger: ['change', 'blur'],
+                trigger: 'blur',
                 validator: (_alias, currentValues) =>
-                  validateModelDraft({ ...currentValues }, models, model?.origin_index, catalog, t).alias,
+                  validateModelDraft({ ...currentValues }, models, editingSelf, catalog, t).alias,
               },
             ],
             protocol: [{ validator: () => errors.protocol }],

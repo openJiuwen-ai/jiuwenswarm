@@ -275,6 +275,51 @@ async def test_team_submission_keeps_heartbeat_out_across_stale_terminal() -> No
     await admission.end_heartbeat("team-submit-race", "hb-next")
 
 
+async def test_team_session_message_admits_while_own_marker_held() -> None:
+    admission = SessionRunAdmission()
+
+    await admission.begin_session_message("sm-team", "smrun-1")
+    # The mailbox turn's own marker must not block the Team stream it is
+    # executing — that would wait for the turn to finish (self-deadlock).
+    await asyncio.wait_for(
+        admission.begin_team_session_message("sm-team"),
+        timeout=0.5,
+    )
+    # The marker still fences heartbeats while the team turn runs.
+    assert await admission.try_begin_heartbeat("sm-team", "hb-race") is False
+    await admission.end_session_message("sm-team", "smrun-1")
+
+
+async def test_team_user_still_waits_for_session_message_marker() -> None:
+    admission = SessionRunAdmission()
+
+    await admission.begin_session_message("sm-team", "smrun-1")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(admission.begin_team_user("sm-team"), timeout=0.1)
+    # Once the mailbox turn ends, the interactive team slot opens again.
+    await admission.end_session_message("sm-team", "smrun-1")
+    await asyncio.wait_for(admission.begin_team_user("sm-team"), timeout=0.5)
+    await admission.complete_team_user_submission("sm-team", accepted=False)
+    await admission.end_team_user("sm-team")
+
+
+async def test_team_session_message_requires_active_marker() -> None:
+    admission = SessionRunAdmission()
+
+    with pytest.raises(RuntimeError, match="requires an active session-message run"):
+        await admission.begin_team_session_message("sm-early")
+
+
+async def test_team_session_message_fenced_by_quiesce() -> None:
+    admission = SessionRunAdmission()
+
+    await admission.begin_session_message("sm-team", "smrun-1")
+    await admission.quiesce_session("sm-team")
+    with pytest.raises(RuntimeError, match="quiescing"):
+        await admission.begin_team_session_message("sm-team")
+    await admission.end_session_message("sm-team", "smrun-1")
+
+
 def test_retain_agent_transfers_pin_to_current_facade() -> None:
     events: list[tuple[str, object]] = []
 

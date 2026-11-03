@@ -43,6 +43,7 @@ from jiuwenswarm.common.config import (
     is_subagent_runtime_enabled,
 )
 from jiuwenswarm.common.tool_ownership import register_tool
+from jiuwenswarm.agents.harness.common.tools.multimodal_config import MULTIMODAL_TOOL_NAMES
 
 CODE_RAIL_BUNDLE = "jiuwenswarm.code.rail_bundle"
 CODE_TOOL_BUNDLE = "jiuwenswarm.code.tool_bundle"
@@ -83,6 +84,19 @@ def _build_code_rail_bundle(
 ) -> list[Any]:
     """Resolve all configured code rails through the adapter's canonical builders."""
     ctx = _require_code_context(context)
+    from jiuwenswarm.common.permission_mode import is_auto_permission_enabled
+
+    if (
+        is_auto_permission_enabled(ctx.config_base.get("permissions", {}))
+        and ctx.adapter._auto_permission_capability_enabled()  # pylint: disable=protected-access
+    ):
+        from openjiuwen.harness.schema.build_context import parent_sys_operation
+
+        model = ctx.extras.get("_parent_model")
+        operation = parent_sys_operation(ctx)
+        if model is None or operation is not ctx.adapter._sys_operation:  # pylint: disable=protected-access
+            raise RuntimeError("code_permission_spec_handles_mismatch")
+        ctx.adapter._adopt_code_spec_model(model)  # pylint: disable=protected-access
     config_snapshot = deepcopy(ctx.config_base)
     modes = config_snapshot.setdefault("modes", {})
     if not isinstance(modes, dict):
@@ -113,12 +127,15 @@ def _build_code_tool_bundle(
     ctx = _require_code_context(context)
     adapter = ctx.adapter
     configured = list(params.get("configured_tools") or [])
+    include_multimodal = bool(params.get("include_multimodal", False))
     agent_id = str(ctx.tool_owner_id or adapter._tool_owner_id())  # pylint: disable=protected-access
     tools: list[Any] = []
     with adapter._code_spec_config_scope(  # pylint: disable=protected-access
         ctx.config_base
     ):
         for tool_name in configured:
+            if include_multimodal and tool_name in MULTIMODAL_TOOL_NAMES:
+                continue
             result = adapter._get_tool_build_func(  # pylint: disable=protected-access
                 tool_name,
                 agent_id,
@@ -136,6 +153,20 @@ def _build_code_tool_bundle(
     # after materialization updates the AbilityManager owner.
     for tool in tools:
         register_tool(tool, agent_id)
+    if include_multimodal:
+        with adapter._code_spec_config_scope(ctx.config_base):  # pylint: disable=protected-access
+            tools.extend(adapter._register_multimodal_tools(  # pylint: disable=protected-access
+                agent_id,
+                fail_on_error=adapter._instance is not None,  # pylint: disable=protected-access
+            ))
+
+    # tool_search: progressive disclosure of explicitly-deferred tools.
+    # Gate-driven (not list-driven) and delegated to the adapter — mirror of
+    # the deep adapter's ``_get_tool_cards`` tail; extends ``tools`` in place
+    # so the card rides the standard spec like every configured tool above.
+    adapter._materialize_tool_retrieval_spec_tools(  # pylint: disable=protected-access
+        agent_id, tools, ctx.config_base
+    )
     return [tool.card for tool in tools if getattr(tool, "card", None) is not None]
 
 
@@ -276,7 +307,7 @@ def convert_code_config_to_deep_agent_spec(
         tools=[
             BuiltinToolSpec(
                 type=CODE_TOOL_BUNDLE,
-                params={"configured_tools": configured_tools},
+                params={"configured_tools": configured_tools, "include_multimodal": True},
             )
         ],
         subagents=[

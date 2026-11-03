@@ -611,7 +611,7 @@ test('zip and JSONL archives cut at any byte replay exactly the live view', asyn
     assert.deepEqual(progress.at(-1), {
       bytesRead: bytes.length,
       totalBytes: bytes.length,
-      records: live.rawRecords.length,
+      spans: live.rawRecords.length,
     });
   }
 });

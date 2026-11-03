@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { transformSync } from 'esbuild';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import {
   buildAgentGroupCreatePayload,
@@ -9,6 +11,7 @@ import {
 } from '../node_modules/.cache/agent-group-management/port.js';
 import {
   buildGroupCatalogViewModel,
+  collectCategories,
   mergeAgentGroupDetailWithCatalog,
 } from '../node_modules/.cache/agent-group-management/viewModel.js';
 import {
@@ -75,6 +78,8 @@ test('builds a group create payload without unsupported Agent fields', () => {
   assert.deepEqual(payload.skills, ['review']);
   assert.deepEqual(payload.quickInputs, ['评审方案']);
   assert.equal(payload.tags[0].zh, '产品研发');
+  assert.equal(payload.tags[0].id, 'product-development');
+  assert.equal(payload.tags[1].id, '交付');
   for (const forbidden of ['model', 'mcps', 'pluginNames', 'apiKey', 'apiBase', 'path']) {
     assert.equal(Object.hasOwn(payload, forbidden), false, forbidden);
   }
@@ -147,7 +152,7 @@ test('only an unbound Team selection creates the first group payload', () => {
   assert.deepEqual(buildAgentGroupSelectionPayloadForMode('agent', { kind: 'select', id: 'review-team' }, null), {});
 });
 
-test('group view model separates catalog and mine scopes and searches tags', () => {
+test('group view model separates catalog and mine scopes and excludes tags from mine search', () => {
   const local = normalizeAgentGroupListItem({
     ...rawGroup,
     id: 'local-team',
@@ -158,23 +163,36 @@ test('group view model separates catalog and mine scopes and searches tags', () 
     installed: false,
   }, 'zh');
   const item = normalizeAgentGroupListItem(rawGroup, 'zh');
+  // 分类页签改由已加载数据动态统计（#5902）：category 直接与后端自由字符串比对，
+  // 不再映射写死的 ProductDevelopment 等枚举别名；市场有几个分类出几个页签，
+  // 不截断、不自建 "Other" 聚合类型。
+  assert.deepEqual(collectCategories(['engineering', 'research', 'engineering', '']), ['engineering', 'research']);
+  assert.equal(
+    collectCategories(['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7']).length,
+    7,
+  );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'catalog',
-      category: 'ProductDevelopment',
+      category: 'engineering',
       query: '',
-      page: 1,
-      pageSize: 15,
     }).totalItems,
     1,
+  );
+  // 不存在的分类精确比对后为空，不再归入"其他"兜底分组。
+  assert.equal(
+    buildGroupCatalogViewModel([item, local], {
+      scope: 'catalog',
+      category: 'research',
+      query: '',
+    }).totalItems,
+    0,
   );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'mine',
       category: '',
-      query: '本地专属',
-      page: 1,
-      pageSize: 15,
+      query: '本地团队',
     }).totalItems,
     1,
   );
@@ -213,9 +231,93 @@ test('detail merge preserves detail data and authoritative list capability state
   assert.equal(merged.details, '详情');
 });
 
+test('Expert Team capability and content come only from detail fields', () => {
+  for (const locale of ['zh', 'en']) {
+    const catalogItem = normalizeAgentGroupListItem(rawGroup, locale);
+    for (const displayDescription of [undefined, {}, { zh: '', en: '' }, { zh: '详情介绍', en: 'Detail capability' }]) {
+      const detail = normalizeAgentGroupDetail({
+        ...rawGroup,
+        displayDescription,
+        details: 'Content details',
+      }, locale);
+      const merged = mergeAgentGroupDetailWithCatalog(detail, catalogItem);
+      assert.equal(merged.description, displayDescription?.[locale] || '');
+      assert.equal(merged.details, 'Content details');
+    }
+  }
+});
+
 test('group upload accepts zip, tar and tar.gz only', () => {
   assert.equal(isAgentGroupUploadFilename('team.zip'), true);
   assert.equal(isAgentGroupUploadFilename('team.tar'), true);
   assert.equal(isAgentGroupUploadFilename('team.tar.gz'), true);
   assert.equal(isAgentGroupUploadFilename('team.json'), false);
+});
+
+test('mine group search matches only the visible localized name (#4473)', () => {
+  const item = normalizeAgentGroupListItem({
+    ...rawGroup, name: 'hidden-package-s-6',
+    displayName: { zh: '旅游规划专家团', en: 'Travel Team' },
+    displayDescription: { zh: '生成可执行旅行方案' },
+    category: 'hidden-category', tags: [{ zh: 'hidden-tag' }],
+  }, 'zh');
+  const search = query => buildGroupCatalogViewModel([item], {
+    scope: 'mine', category: '', query, page: 1, pageSize: 12,
+  }).items.length;
+  for (const query of ['生成', 'hidden', 's', '6', 'travel']) assert.equal(search(query), 0, query);
+  for (const query of ['旅游', ' 旅游 ']) assert.equal(search(query), 1, query);
+});
+
+test('catalog filtering keeps description matches while mine excludes them', () => {
+  const item = normalizeAgentGroupListItem({ ...rawGroup, displayDescription: { zh: 'description-only' } }, 'zh');
+  const options = { category: '', query: 'description-only', page: 1, pageSize: 12 };
+  assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'catalog' }).totalItems, 1);
+  assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'mine' }).totalItems, 0);
+});
+
+test('chat group picker submits runtime names only after runtime availability checks', async () => {
+  const source = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
+  const picker = source.slice(source.indexOf('filteredGroupOptions.map((item) => {'));
+  const body = picker.match(/onClick=\{async \(\) => \{([\s\S]*?)\}\}/)[1];
+  const handler = transformSync(`async function select() {${body}}`, { loader: 'ts' }).code;
+  const selectedExpression = picker.match(/const isSelected = ([^;]+);/)[1];
+  for (const disabled of [[], ['codex']]) {
+    for (const item of [
+      { id: 'hub-asset-uuid', name: 'presentation-generation' },
+      { id: 'local-team', name: 'local-team' },
+    ]) {
+      let intent;
+      let notice;
+      const requests = [];
+      const select = new Function('item', 'agentGroupSelectionDisabled', 'activeSessionId', 'useSessionStore',
+        'setAgentGroupSelectionIntent', 'setAgentSelectionIntent', 'clearSelectedSkills', 'setAttachMenuOpen',
+        'webRequest', 'setGroupRuntimeNotice', 't', `${handler}; return select;`)(
+        item, false, 'new', { getState: () => ({ setMode() {} }) },
+        (_session, value) => { intent = value; }, () => {}, () => {}, () => {},
+        async (method, params) => { requests.push([method, params]); return { group: { disabledRuntimes: disabled } }; },
+        (value) => { notice = value; }, (key) => key,
+      );
+      await select();
+      assert.deepEqual(requests, [['agent_groups.show', { id: item.id }]]);
+      if (disabled.length) {
+        assert.equal(intent, undefined);
+        assert.equal(notice, 'chat.agentGroupRuntimeDisabled');
+      } else {
+        assert.deepEqual(buildAgentGroupSelectionPayloadForMode('team', intent), { agent_group_name: item.name });
+        assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
+      }
+    }
+  }
+});
+
+test('uninstalling an agent group asks for confirmation before calling the API', () => {
+  const source = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
+  const handler = source.slice(source.indexOf('const handleUninstallGroup'), source.indexOf('const handleReconnect'));
+  const confirmAt = handler.indexOf('window.confirm(');
+  assert.notEqual(confirmAt, -1);
+  assert.ok(confirmAt < handler.indexOf('groupClient.uninstallGroup('));
+  for (const locale of ['zh', 'en']) {
+    const messages = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), 'utf8'));
+    assert.match(messages.agentManagement.confirm.uninstallGroupMessage, /\{\{name\}\}/);
+  }
 });

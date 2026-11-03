@@ -4,11 +4,11 @@
 
 from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
-from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import WecomChannel, WecomConfig
-from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_file_service import (WecomFileService,
+from gateway.channel_manager.im_platforms.wecom.wecom_connect import WecomChannel, WecomConfig
+from gateway.channel_manager.im_platforms.wecom.wecom_file_service import (WecomFileService,
                                                                                       detect_file_extension,
                                                                                       get_mime_type)
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.base import RobotMessageRouter
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +128,8 @@ async def test_wecom_channel_file_service_initialization():
         workspace_dir="/tmp/test_workspace",
     )
     router = MagicMock(spec=RobotMessageRouter)
-    with patch('jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect.WECOM_AVAILABLE', True):
-        with patch('jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect.WSClient'):
+    with patch('gateway.channel_manager.im_platforms.wecom.wecom_connect.WECOM_AVAILABLE', True):
+        with patch('gateway.channel_manager.im_platforms.wecom.wecom_connect.WSClient'):
             channel = WecomChannel(config, router)
             
             # 验证文件服务相关属性已初始化

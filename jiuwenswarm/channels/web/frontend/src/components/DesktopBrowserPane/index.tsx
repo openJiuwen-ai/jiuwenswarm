@@ -1,7 +1,7 @@
-import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, LockKeyhole, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ElectronBrowserState } from '../../types/electron';
+import type { ElectronBrowserState, ElectronBubbleAnchorRect } from '../../types/electron';
 import './DesktopBrowserPane.css';
 
 const DEFAULT_BROWSER_URL = 'https://cn.bing.com/';
@@ -13,8 +13,8 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   const addressFocusedRef = useRef(false);
   const [address, setAddress] = useState(DEFAULT_BROWSER_URL);
   const [panels, setPanels] = useState<ElectronBrowserState[]>([]);
-  const [selectedPanel, setSelectedPanel] = useState({ sessionId, panelId: sessionId });
-  const panelId = selectedPanel.sessionId === sessionId ? selectedPanel.panelId : sessionId;
+  const [selectedPanel, setSelectedPanel] = useState({ sessionId: '', panelId: '' });
+  const panelId = selectedPanel.sessionId === sessionId ? selectedPanel.panelId : '';
   const [browserState, setBrowserState] = useState<ElectronBrowserState>({
     panelId: '',
     memberId: '',
@@ -29,7 +29,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   });
 
   const syncBounds = useCallback(() => {
-    if (!desktop || !viewportRef.current) return;
+    if (!desktop || !panelId || !viewportRef.current) return;
     const rect = viewportRef.current.getBoundingClientRect();
     void desktop.browser.setBounds(
       {
@@ -45,6 +45,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!desktop) return;
     let active = true;
+    let receivedEvent = false;
     const update = (allPanels: ElectronBrowserState[]) => {
       if (!active) return;
       const current = allPanels.filter((panel) => panel.sessionId === sessionId);
@@ -55,12 +56,23 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
         }
         return {
           sessionId,
-          panelId: current.find((panel) => !panel.memberId)?.panelId ?? current[0]?.panelId ?? sessionId,
+          panelId: current.find((panel) => panel.busy)?.panelId
+            ?? current.find((panel) => !panel.memberId)?.panelId ?? current[0]?.panelId ?? sessionId,
         };
       });
     };
-    const unsubscribe = desktop.browser.onPanelsChanged(update);
-    void desktop.browser.listPanels(sessionId).then(update);
+    const unsubscribe = desktop.browser.onPanelsChanged((allPanels) => {
+      receivedEvent = true;
+      update(allPanels);
+    });
+    // Resolve an existing page before setVisible can create the default page.
+    void desktop.browser.listPanels(sessionId).then((allPanels) => {
+      if (!receivedEvent) update(allPanels);
+    }).catch((error) => {
+      if (!active) return;
+      console.warn('[desktop.browser] list panels failed:', error);
+      if (!receivedEvent) update([]);
+    });
     return () => {
       active = false;
       unsubscribe();
@@ -74,7 +86,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop]);
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !panelId) return;
     void desktop.browser.setVisible(true, panelId);
     window.requestAnimationFrame(syncBounds);
     return () => {
@@ -83,7 +95,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop, panelId, syncBounds]);
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !panelId) return;
     let active = true;
     setAddress(DEFAULT_BROWSER_URL);
     void desktop.browser.getState(panelId).then((state) => {
@@ -103,15 +115,20 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop, panelId]);
 
   useEffect(() => {
-    if (!desktop || !viewportRef.current) return;
-    const observer = new ResizeObserver(syncBounds);
-    const handleWindowResize = () => syncBounds();
+    if (!desktop || !panelId || !viewportRef.current) return;
+    // 视口尺寸变化(窗口 resize、侧栏折叠等)后气泡锚点失准，直接收起；
+    // 重新点击按钮会重新锚定。
+    const handleViewportResize = () => {
+      syncBounds();
+      void desktop.browser.hideDownloadBubble();
+    };
+    const observer = new ResizeObserver(handleViewportResize);
     observer.observe(viewportRef.current);
-    window.addEventListener('resize', handleWindowResize);
-    syncBounds();
+    window.addEventListener('resize', handleViewportResize);
+    handleViewportResize();
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', handleWindowResize);
+      window.removeEventListener('resize', handleViewportResize);
     };
   }, [desktop, syncBounds]);
 
@@ -124,7 +141,10 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
 
   // 原生 WebContentsView 永远盖在页面 DOM 之上（z-index 对其无效），aria-modal
   // 模态弹窗（删除确认等）会被它遮挡：弹窗挂载期间隐藏原生视图，关闭后恢复。
+  // 下载气泡是独立的原生 WebContentsView（悬浮在浏览器内容之上），不受此约束。
   const [modalOverlayOpen, setModalOverlayOpen] = useState(false);
+  const downloadButtonRef = useRef<HTMLButtonElement>(null);
+  const [downloadBubbleVisible, setDownloadBubbleVisible] = useState(false);
 
   useEffect(() => {
     if (!desktop) return;
@@ -148,8 +168,10 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop]);
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !panelId) return;
     if (modalOverlayOpen) {
+      // 模态弹窗挂载期间收起气泡，避免原生视图与气泡盖住弹窗。
+      void desktop.browser.hideDownloadBubble();
       void desktop.browser.setVisible(false, panelId);
       return;
     }
@@ -158,7 +180,46 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     window.requestAnimationFrame(syncBounds);
   }, [desktop, modalOverlayOpen, panelId, syncBounds]);
 
-  if (!desktop) return null;
+  // 气泡可见状态由主进程回推（点击浏览器内容等外部关闭也在此同步）。
+  useEffect(() => {
+    if (!desktop) return;
+    return desktop.browser.onDownloadBubbleChanged(setDownloadBubbleVisible);
+  }, [desktop]);
+
+  // 面板卸载（如切换会话）时收起气泡：气泡状态不随面板实例保留。
+  useEffect(() => {
+    if (!desktop) return;
+    return () => {
+      void desktop.browser.hideDownloadBubble();
+    };
+  }, [desktop]);
+
+  // 点击工具栏其余 DOM 区域时收起气泡（浏览器内容区域的点击由主进程处理）。
+  useEffect(() => {
+    if (!desktop || !downloadBubbleVisible) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('[data-testid="desktop-browser-download"]')) return;
+      void desktop.browser.hideDownloadBubble();
+    };
+    document.addEventListener('mousedown', handleMouseDown, true);
+    return () => document.removeEventListener('mousedown', handleMouseDown, true);
+  }, [desktop, downloadBubbleVisible]);
+
+  const toggleDownloadBubble = useCallback(() => {
+    if (!desktop) return;
+    if (downloadBubbleVisible) {
+      void desktop.browser.hideDownloadBubble();
+      return;
+    }
+    const rect = downloadButtonRef.current?.getBoundingClientRect();
+    const anchor: ElectronBubbleAnchorRect | null = rect
+      ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }
+      : null;
+    void desktop.browser.showDownloadBubble(anchor);
+  }, [desktop, downloadBubbleVisible]);
+
+  if (!desktop || !panelId) return null;
 
   const navigate = (event: FormEvent) => {
     event.preventDefault();
@@ -233,13 +294,6 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
           {browserState.loading ? <X aria-hidden size={17} /> : <RefreshCw aria-hidden size={16} />}
         </button>
         <form className="desktop-browser-address-form" onSubmit={navigate} data-testid="desktop-browser-address-form">
-          {browserState.loading ? (
-            <LoaderCircle className="desktop-browser-address-icon desktop-browser-loading" aria-hidden size={15} />
-          ) : browserState.url.startsWith('https://') ? (
-            <LockKeyhole className="desktop-browser-address-icon" aria-hidden size={14} />
-          ) : (
-            <Globe2 className="desktop-browser-address-icon" aria-hidden size={15} />
-          )}
           <input
             className="desktop-browser-address"
             data-testid="desktop-browser-address"
@@ -257,6 +311,24 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
             spellCheck={false}
           />
         </form>
+        <button
+          type="button"
+          className="desktop-browser-tool-button"
+          ref={downloadButtonRef}
+          onClick={toggleDownloadBubble}
+          data-testid="desktop-browser-download"
+          aria-expanded={downloadBubbleVisible}
+          title={t('browser.pane.downloadContent')}
+          aria-label={t('browser.pane.downloadContent')}
+        >
+          <svg aria-hidden fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} width={16} height={16}>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+            />
+          </svg>
+        </button>
       </div>
       <div ref={viewportRef} className="desktop-browser-viewport" data-testid="desktop-browser-viewport">
         <span className="desktop-browser-placeholder" data-testid="desktop-browser-placeholder">

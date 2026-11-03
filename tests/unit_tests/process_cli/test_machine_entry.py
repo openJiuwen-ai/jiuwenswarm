@@ -59,7 +59,7 @@ import types
 
 from jiuwenswarm.channels.process_cli.protocol import OneShotRunResult
 
-async def run_with_signals(run_input, writer):
+async def run_with_signals(run_input, writer, *, control=None):
     writer.session_id = 'resolved-session'
     if os.environ.get('MACHINE_TEST_DIAGNOSTICS') == '1':
         print('PYTHON_DIAGNOSTIC', flush=True)
@@ -178,7 +178,6 @@ def test_machine_option_dispatches_directly_without_legacy_execution(
         ["--project-dir", "."],
         ["--trusted-dir", "."],
         ["--mode", "code.normal"],
-        ["--work-mode", "code"],
         ["--output", "human"],
         ["--timeout", "10"],
         ["--show-tools"],
@@ -216,9 +215,11 @@ def test_machine_option_does_not_change_legacy_parser_defaults_or_help() -> None
     assert defaults.trusted_dir == []
     assert defaults.timeout is None
     help_text = parser.format_help()
-    for option in ("--run-json", "--session", "--cwd", "--output", "--show-tools"):
+    for option in ("--run-json", "--session", "--cwd", "--show-tools"):
         assert option in help_text
+    assert "--output" not in help_text
     assert "--_interactive-worker" not in help_text
+    assert "--work-mode" not in help_text
 
 
 def test_help_exits_without_machine_or_runtime_imports() -> None:
@@ -226,7 +227,7 @@ def test_help_exits_without_machine_or_runtime_imports() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "--run-json" in result.stdout
-    assert "--output" in result.stdout
+    assert "--output" not in result.stdout
     assert result.stderr == ""
 
 
@@ -265,14 +266,32 @@ def test_legacy_prompt_still_calls_the_existing_app(
     module.run = run
     monkeypatch.setitem(sys.modules, module.__name__, module)
     output = _isolated_stdio(monkeypatch, "")
-    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-process", "hello", "--output=json"])
+    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-process", "hello"])
 
     with pytest.raises(SystemExit) as caught:
         cli_main.main()
 
     assert caught.value.code == 4
-    assert calls == [("hello", "json")]
+    assert calls == [("hello", "human")]
     assert output.getvalue() == "legacy-output"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["hello"]],
+)
+@pytest.mark.parametrize("output", ("human", "json", "jsonl"))
+@pytest.mark.parametrize("equals_form", (False, True))
+def test_output_option_is_rejected_before_runtime_import(
+    arguments: list[str], output: str, equals_form: bool
+) -> None:
+    option = [f"--output={output}"] if equals_form else ["--output", output]
+    result = _run_main(_GUARDED_MAIN, [*arguments, *option])
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "--output" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize("source_kind", ["stdin", "file"])
@@ -282,7 +301,7 @@ def test_execute_source_reads_one_request_and_runs_once(
     requests: list[OneShotRunInput] = []
 
     async def run(
-        run_input: OneShotRunInput, writer: OneShotWriter
+        run_input: OneShotRunInput, writer: OneShotWriter, *, control: Any = None
     ) -> OneShotRunResult:
         requests.append(run_input)
         return _success(writer)
@@ -385,7 +404,7 @@ def test_cwd_is_applied_before_importing_or_starting_runtime(
     expected_cwd = tmp_path / "working"
 
     async def run(
-        run_input: OneShotRunInput, writer: OneShotWriter
+        run_input: OneShotRunInput, writer: OneShotWriter, *, control: Any = None
     ) -> OneShotRunResult:
         calls.append("run")
         assert Path.cwd() == expected_cwd
@@ -453,7 +472,7 @@ def test_final_result_is_written_after_asyncio_shutdown(
             lifecycle.append("generator-closed")
 
     async def run(
-        run_input: OneShotRunInput, writer: OneShotWriter
+        run_input: OneShotRunInput, writer: OneShotWriter, *, control: Any = None
     ) -> OneShotRunResult:
         asyncio.create_task(background())
         await asyncio.sleep(0)
@@ -481,7 +500,9 @@ def test_final_result_is_written_after_asyncio_shutdown(
     assert decode_jsonl(output.getvalue())[-1].status == "completed"
 
 
-def test_python_native_and_child_diagnostics_do_not_pollute_jsonl() -> None:
+def test_python_native_and_child_diagnostics_do_not_pollute_jsonl(
+    tmp_path: Path,
+) -> None:
     result = subprocess.run(
         [sys.executable, "-c", _FAKE_MACHINE_MAIN, "--run-json", "-"],
         input=_document(),
@@ -489,7 +510,11 @@ def test_python_native_and_child_diagnostics_do_not_pollute_jsonl() -> None:
         text=True,
         encoding="utf-8",
         cwd=PROJECT_ROOT,
-        env=_environment(MACHINE_TEST_DIAGNOSTICS="1", MACHINE_TEST_EVENT="1"),
+        env=_environment(
+            MACHINE_TEST_DIAGNOSTICS="1",
+            MACHINE_TEST_EVENT="1",
+            JIUWENSWARM_DATA_DIR=str(tmp_path),
+        ),
         timeout=20,
         check=False,
     )
@@ -499,9 +524,39 @@ def test_python_native_and_child_diagnostics_do_not_pollute_jsonl() -> None:
     assert len(records) == 2
     assert records[0].event_type == "chat.delta"
     assert records[-1].status == "completed"
+    assert result.stderr == ""
+    logs = list((tmp_path / "agent" / "process_cli_logs").glob("*.log"))
+    assert len(logs) == 1
+    diagnostics = logs[0].read_text(encoding="utf-8")
     for marker in ("PYTHON_DIAGNOSTIC", "NATIVE_DIAGNOSTIC", "CHILD_DIAGNOSTIC"):
-        assert marker in result.stderr
+        assert marker in diagnostics
         assert marker not in result.stdout
+
+
+def test_log_directory_failure_keeps_machine_stdout_as_jsonl(tmp_path: Path) -> None:
+    log_directory = tmp_path / "agent" / "process_cli_logs"
+    log_directory.parent.mkdir()
+    log_directory.write_text("not a directory", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-c", _FAKE_MACHINE_MAIN, "--run-json", "-"],
+        input=_document(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=PROJECT_ROOT,
+        env=_environment(
+            MACHINE_TEST_DIAGNOSTICS="1",
+            JIUWENSWARM_DATA_DIR=str(tmp_path),
+        ),
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert decode_jsonl(result.stdout)[-1].status == "completed"
+    assert result.stderr.count("jiuwenswarm-process: 无法写入诊断日志：") == 1
+    assert "PYTHON_DIAGNOSTIC" not in result.stdout
 
 
 @pytest.mark.parametrize("emit_event", ["0", "1"])

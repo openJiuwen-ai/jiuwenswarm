@@ -71,6 +71,39 @@ async def test_accepted_steer_persists_supplemental_user_history(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "Compare screenshots"])
+async def test_image_receipt_keeps_original_text_and_canonical_media(query):
+    from openjiuwen.harness.schema.interaction import InputDispatchMode, SendInputRequest
+    from openjiuwen.harness.task_loop.loop_queues import LoopQueues
+    from openjiuwen.harness.task_loop.task_loop_controller import TaskLoopController
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import enqueue_bound_session_input
+
+    queues = LoopQueues()
+    controller = TaskLoopController()
+    controller.set_event_handler(SimpleNamespace(interaction_queues=queues))
+    instance = SimpleNamespace(active_round=object(), has_output_stream=lambda: True, loop_controller=controller)
+    request = SimpleNamespace(request_id="image-only", session_id="session", params={"content": "", "query": query})
+    images = [{"type": "image", "path": "/sessions/session/uploads/image.png", "filename": "image.png",
+               "mime_type": "image/png", "size_bytes": 108}]
+    entry = enqueue_bound_session_input(
+        instance, instance.active_round, request,
+        SendInputRequest(request_id="image-only", inputs={"query": "internal tool prompt"}, mode=InputDispatchMode.STEER),
+        media_items=images,
+    )
+    guard = SessionInputGuard(instance)
+    guard._session = SimpleNamespace(write_stream=AsyncMock())
+
+    await guard.publish_input_received(entry)
+
+    payload = guard._session.write_stream.await_args.args[0].payload
+    assert payload["content"] == query
+    assert payload["media_items"] == images
+    images[0]["path"] = "changed after enqueue"
+    assert entry.media_items[0]["path"] == "/sessions/session/uploads/image.png"
+    assert queues.drain_steering() == ["internal tool prompt"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [False, True])
 async def test_receipt_boundary_failure_is_unknown_and_releases_model_wait(failure):
     from jiuwenswarm.server.runtime.agent_adapter.session_input import QueuedSessionInput
@@ -238,7 +271,7 @@ async def test_protected_steer_is_refused_before_sdk_submission(
 ):
     from openjiuwen.harness.task_loop.loop_queues import LoopQueues
     from openjiuwen.harness.task_loop.task_loop_controller import TaskLoopController
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
     from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
     protected = not during_prepare
@@ -302,7 +335,7 @@ async def test_protected_steer_is_refused_before_sdk_submission(
 @pytest.mark.parametrize("cross_session", [False, True])
 async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is_stream, cross_session):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     @asynccontextmanager
     async def admission(*_args):
@@ -409,6 +442,7 @@ def _steer_ctx(max_iterations: int | None, iteration: int) -> SimpleNamespace:
         agent=SimpleNamespace(config=SimpleNamespace(max_iterations=max_iterations)),
         inputs=SimpleNamespace(react_iteration=iteration),
         session=SimpleNamespace(write_stream=AsyncMock()),
+        context=None,
         extra={"session_output_phase": "phase"},
     )
 

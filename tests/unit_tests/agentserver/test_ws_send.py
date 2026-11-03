@@ -26,7 +26,9 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.server import agent_ws_server
 from jiuwenswarm.server import ws_send
+from jiuwenswarm.server.context import build_ws_request_context
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.server.handlers._default import handle_stream, handle_unary
 
 
 class FakeWebSocket:
@@ -96,7 +98,7 @@ async def test_single_agent_stream_skips_transport_task_registry_for_every_chann
         is_stream=True,
     )
 
-    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, FakeWebSocket(), request, asyncio.Lock()))
 
     assert server._session_stream_tasks == {}
 
@@ -140,7 +142,7 @@ async def test_single_agent_goal_stream_skips_transport_task_registry() -> None:
         is_stream=True,
     )
 
-    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, FakeWebSocket(), request, asyncio.Lock()))
 
     assert server._session_stream_tasks == {}
 
@@ -357,7 +359,7 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
         is_stream=True,
     )
 
-    await server._handle_stream(FakeWebSocket(), request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, FakeWebSocket(), request, asyncio.Lock()))
     await asyncio.sleep(0)
 
     assert send_count == 1
@@ -369,32 +371,13 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
     assert server._session_stream_tasks == {}
 
 
-@pytest.mark.asyncio
-async def test_team_stream_admission_is_owned_by_actual_round_not_transport():
-    server = agent_ws_server.AgentWebSocketServer.__new__(
-        agent_ws_server.AgentWebSocketServer
-    )
-    admission = SimpleNamespace(
-        begin_user=AsyncMock(),
-        end_user=AsyncMock(),
-    )
-    server._agent_manager = None
-    server._heartbeat_runtime = SimpleNamespace(admission=admission)
-    server._should_trigger_before_chat_request_hook = lambda request: False
-    server._handle_stream_impl = AsyncMock()
-    request = AgentRequest(
-        request_id="team-persistent-stream",
-        channel_id="web",
-        session_id="team-session",
-        req_method=ReqMethod.CHAT_SEND,
-        params={"mode": "team"},
-        is_stream=True,
-    )
+def test_team_stream_admission_is_owned_by_actual_round_not_transport():
+    import inspect
 
-    await server._handle_stream(FakeWebSocket(), request, asyncio.Lock())
-
-    admission.begin_user.assert_not_awaited()
-    admission.end_user.assert_not_awaited()
+    source = inspect.getsource(handle_stream)
+    assert "begin_user" not in source
+    assert "end_user" not in source
+    assert "_heartbeat_runtime" not in source
 
 
 def test_agent_ws_server_has_no_direct_websocket_send_calls():
@@ -663,7 +646,7 @@ async def test_server_unary_disables_duplicate_runtime_hook() -> None:
     )
     ws = FakeWebSocket()
 
-    await server._handle_unary_impl(ws, request, asyncio.Lock())
+    await handle_unary(build_ws_request_context(server, ws, request, asyncio.Lock()))
 
     assert runtime.call is not None
     trigger_hook, control_handler = runtime.call
@@ -718,7 +701,7 @@ async def test_server_chat_answer_uses_runtime_interaction_api() -> None:
     )
     ws = FakeWebSocket()
 
-    await server._handle_unary_impl(ws, request, asyncio.Lock())
+    await handle_unary(build_ws_request_context(server, ws, request, asyncio.Lock()))
 
     assert runtime.call is not None
     actual_request, trigger_hook, control_handler = runtime.call
@@ -780,7 +763,7 @@ async def test_stream_control_event_does_not_consume_chunk_sequence() -> None:
     )
     ws = FakeWebSocket()
 
-    await server._handle_stream_impl(ws, request, asyncio.Lock())
+    await handle_stream(build_ws_request_context(server, ws, request, asyncio.Lock()))
 
     assert runtime_call["trigger_hook"] is False
     assert callable(runtime_call["control_handler"])

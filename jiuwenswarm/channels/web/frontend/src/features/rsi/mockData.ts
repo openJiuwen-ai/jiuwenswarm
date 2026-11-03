@@ -153,7 +153,7 @@ function buildMockTree(): RsiTreeGetResult {
       'H-04',
       'PROVISIONAL',
       null,
-      '【正在分析实验】节点默认最小宽度180px，开发评估下能不能根据内容适配，最大宽度280px，并且内容支持多行展示。评测中…',
+      '【正在分析 RSI 任务】节点默认最小宽度180px，开发评估下能不能根据内容适配，最大宽度280px，并且内容支持多行展示。评测中…',
       [{ group: 'skill', operation: 'modify', function: 'plan', target: 'planner', summary: '调整规划技能' }],
     ),
     // iteration 4
@@ -348,7 +348,8 @@ function mockArtifactRoot(taskId: string, artifactId = 'best'): string {
   return `mock://rsi/${encodeURIComponent(taskId)}/${encodeURIComponent(artifactId)}`;
 }
 
-function mockArtifactFilesList(taskId: string, path: string): RsiArtifactFilesListResult {
+function mockArtifactFilesList(taskId: string, selector: string | { artifact_id: string }): RsiArtifactFilesListResult {
+  const path = typeof selector === 'string' ? selector : mockArtifactRoot(taskId, selector.artifact_id);
   const root = path.trim().replace(/\/+$/, '') || mockArtifactRoot(taskId);
   const readmePath = `${root}/README.md`;
   const nodePath = `${root}/node.json`;

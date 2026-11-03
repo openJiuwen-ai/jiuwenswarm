@@ -13,8 +13,8 @@ from unittest import mock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.gateway.message_handler.join_exit_handlers import JoinExitHandlers
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from gateway.message_handler.join_exit_handlers import JoinExitHandlers
 
 
 class _FakeClient:

@@ -11,6 +11,7 @@ import {
 } from './codeActions/FixWithAiCodeActionProvider';
 import { disposeTerminal } from './terminal/TerminalManager';
 import { registerDiffProvider } from './editor/DiffViewer';
+import { registerActiveEditorTracking } from './context/ContextCollector';
 
 let ws: WsClient | undefined;
 let session: SessionManager | undefined;
@@ -33,6 +34,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Copy shared webview HTML into extension resources
   ensureWebviewHtml(context);
+
+  // Track the last active editor: focus moves to the chat webview before the
+  // message is sent, which clears `window.activeTextEditor`.
+  registerActiveEditorTracking(context);
 
   // Create core singletons
   const pingIntervalMs = keepAliveEnabled ? keepAliveInterval * 1000 : 0;

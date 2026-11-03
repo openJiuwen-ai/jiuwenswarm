@@ -17,6 +17,43 @@ export interface CollectedContext {
 }
 
 /**
+ * VS Code sets `window.activeTextEditor` to `undefined` whenever focus moves to
+ * a webview or terminal. The chat panel is a webview, so by the time the user
+ * presses Enter the active editor is already gone and the active file, cursor,
+ * selection and diagnostics would be dropped from the context.
+ *
+ * Keep the last real text editor around and fall back to it while the webview
+ * has focus. The tracked editor is refreshed on every active-editor change and
+ * on selection changes so it always points at the file the user last worked in.
+ */
+let lastActiveTextEditor: vscode.TextEditor | undefined;
+
+export function registerActiveEditorTracking(context: vscode.ExtensionContext): void {
+  const remember = (editor: vscode.TextEditor | undefined): void => {
+    if (editor && !editor.document.isClosed) {
+      lastActiveTextEditor = editor;
+    }
+  };
+  remember(vscode.window.activeTextEditor);
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(remember),
+    vscode.window.onDidChangeTextEditorSelection((event) => remember(event.textEditor)),
+  );
+}
+
+function currentTextEditor(): vscode.TextEditor | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (editor) {
+    lastActiveTextEditor = editor;
+    return editor;
+  }
+  if (lastActiveTextEditor?.document.isClosed) {
+    lastActiveTextEditor = undefined;
+  }
+  return lastActiveTextEditor;
+}
+
+/**
  * Collects IDE context (active file path, language, selection, diagnostics,
  * other open files, project tree, and git status) and formats it as a structured
  * text block to prepend to outgoing chat messages.
@@ -24,7 +61,7 @@ export interface CollectedContext {
  * @param mentionedPaths - explicit file paths the user @-mentioned in their message
  */
 export function collectContext(mentionedPaths: string[] = []): CollectedContext {
-  const editor = vscode.window.activeTextEditor;
+  const editor = currentTextEditor();
 
   const filePath = editor?.document.fileName;
   const lang = editor?.document.languageId;

@@ -497,9 +497,24 @@ SUPPORTED_SWARMFLOW_OPERATORS = {
     "pipeline",
     "pmap",
     "workflow",
+    "verify",
 }
 
-SUPPORTED_SWARMFLOW_TYPES = {"AgentSession", "HumanSession"}
+CONSTRUCTIBLE_SWARMFLOW_TYPES = {"Reviewer"}
+TYPE_ONLY_SWARMFLOW_TYPES = {"AgentSession", "HumanSession", "VerifyResult", "VerifyVote"}
+SUPPORTED_SWARMFLOW_TYPES = CONSTRUCTIBLE_SWARMFLOW_TYPES | TYPE_ONLY_SWARMFLOW_TYPES
+FORK_MODES = {"full", "before", "after", "keep_before_compact_after", "keep_after_compact_before"}
+SESSION_METHOD_KEYWORDS = {
+    "send": {"prompt", "schema", "notify", "options"},
+    "aclose": set(),
+    "fork": {"fork_mode", "keep_rounds", "label", "phase", "instructions", "options"},
+}
+
+# Keys accepted in workflow options bags (engine set ∪ Team backend set).
+SUPPORTED_AGENT_OPTIONS: frozenset[str] = frozenset(
+    {"label", "phase", "schema", "model", "timeout", "isolation", "agent_type", "builtin_model", "effort",
+     "agent_template"}
+)
 PROTECTED_SWARMFLOW_NAMES = SUPPORTED_SWARMFLOW_OPERATORS
 DEFERRED_THUNK_OPERATORS = {"map_parallel", "parallel", "pipeline", "pmap"}
 NON_DETERMINISTIC_IMPORTS = {"random", "time", "datetime"}
@@ -853,36 +868,141 @@ def _is_module_level_mutable_assignment(node: ast.Assign | ast.AnnAssign) -> boo
     return is_mutable_literal or is_set_call
 
 
-def _session_variable_names(tree: ast.Module) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        value = node.value
-        if not isinstance(value, ast.Call):
-            continue
-        if _call_name(value) not in {"agent_session", "human_session"}:
-            continue
-        targets = [node.target] if isinstance(node, ast.AnnAssign) else list(node.targets)
-        names.update(target.id for target in targets if isinstance(target, ast.Name))
-    return names
+def _binding_scope(node: ast.AST) -> ast.AST:
+    current = _parent(node)
+    while current is not None:
+        if isinstance(current, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            return current
+        current = _parent(current)
+    return node
 
 
-def _session_method_name(node: ast.Call, session_names: set[str]) -> str | None:
+def _session_kinds_for_name(
+    node: ast.AST, name: str, kinds: dict[tuple[ast.AST, str], set[str]],
+) -> set[str]:
+    scope = _binding_scope(node)
+    while True:
+        known = kinds.get((scope, name))
+        if known:
+            return known
+        # A local binding hides an outer session, even if it is not a session.
+        for bound in ast.walk(scope):
+            if _binding_scope(bound) is not scope:
+                continue
+            if isinstance(bound, ast.Name) and isinstance(bound.ctx, ast.Store) and bound.id == name:
+                return set()
+            if isinstance(bound, ast.arg) and bound.arg == name:
+                return set()
+            if isinstance(bound, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and bound.name == name:
+                return set()
+        outer = _binding_scope(scope)
+        if outer is scope:
+            return set()
+        scope = outer
+
+
+def _session_variable_kinds(tree: ast.Module) -> dict[tuple[ast.AST, str], set[str]]:
+    """Track factories and fork descendants within their lexical scope."""
+    kinds: dict[tuple[ast.AST, str], set[str]] = {}
+    assignments = [node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign))]
+    changed = True
+    while changed:
+        changed = False
+        for node in assignments:
+            value = node.value
+            if isinstance(value, ast.Await):
+                value = value.value
+            if not isinstance(value, ast.Call):
+                continue
+            scope = _binding_scope(node)
+            call_name = _call_name(value)
+            if call_name in {"agent_session", "human_session"}:
+                source_kinds = {call_name}
+            elif (
+                isinstance(value.func, ast.Attribute)
+                and value.func.attr == "fork"
+                and isinstance(value.func.value, ast.Name)
+            ):
+                source_kinds = _session_kinds_for_name(value, value.func.value.id, kinds).copy()
+            else:
+                continue
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                key = (scope, target.id)
+                previous = kinds.get(key, set())
+                combined = previous | source_kinds
+                if combined != previous:
+                    kinds[key] = combined
+                    changed = True
+    return kinds
+
+
+def _session_method_name(
+    node: ast.Call, session_kinds: dict[tuple[ast.AST, str], set[str]],
+) -> str | None:
     func = node.func
     if not isinstance(func, ast.Attribute):
         return None
     if not isinstance(func.value, ast.Name):
         return None
-    if func.value.id not in session_names:
+    if not _session_kinds_for_name(node, func.value.id, session_kinds):
         return None
-    if func.attr not in {"send", "aclose"}:
+    if func.attr not in {"send", "aclose", "fork"}:
         return None
     return func.attr
 
 
 def _keyword(node: ast.Call, name: str) -> ast.keyword | None:
     return next((keyword for keyword in node.keywords if keyword.arg == name), None)
+
+
+def _agent_options_issues(node: ast.Call, call_name: str, line: int, *, human: bool = False) -> list[str]:
+    """Static checks on an ``options={...}`` literal: known keys only; bare agent_template name."""
+    keyword = _keyword(node, "options")
+    options = keyword.value if keyword is not None else None
+    if options is None and call_name == "Reviewer" and len(node.args) > 3:
+        options = node.args[3]
+    if not isinstance(options, ast.Dict):
+        return []
+    errors: list[str] = []
+    values = {
+        _string_literal(key): value
+        for key, value in zip(options.keys, options.values)
+        if key is not None
+    }
+    template = values.get("agent_template")
+    agent_type = values.get("agent_type")
+    if template is not None and agent_type is not None:
+        if _string_literal(template) and _string_literal(agent_type):
+            errors.append(f"line {line}: agent_template and agent_type are mutually exclusive in {call_name}()")
+    for key_node, value_node in zip(options.keys, options.values):
+        key = _string_literal(key_node) if key_node is not None else None
+        if key is None:
+            continue
+        if key not in SUPPORTED_AGENT_OPTIONS:
+            errors.append(
+                f"line {line}: unknown agent option {key!r} in {call_name}(); "
+                f"allowed: {sorted(SUPPORTED_AGENT_OPTIONS)}"
+            )
+            continue
+        if key == "agent_template":
+            if human or call_name in {"human", "human_session"}:
+                errors.append(f"line {line}: agent_template is not valid for {call_name}()")
+            value = _string_literal(value_node)
+            if value is not None and (not value or "/" in value):
+                errors.append(
+                    f"line {line}: agent_template must be the bare member name of the bound "
+                    f"AgentGroup (no 'group/' prefix), got {value!r}"
+                )
+            elif value == "leader":
+                errors.append(
+                    f"line {line}: agent_template 'leader' is the Team Leader, not a worker; "
+                    "it already drives the conversation and cannot be a swarmflow node — "
+                    "pick a worker member of the bound AgentGroup"
+                )
+    return errors
 
 
 def _is_literal_true(node: ast.AST) -> bool:
@@ -1140,8 +1260,8 @@ def _runtime_call_issues(tree: ast.Module) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
     asyncio_modules, asyncio_functions = _asyncio_orchestration_aliases(tree)
     bindings = _single_assignment_bindings(tree)
-    session_names = _session_variable_names(tree)
-    imported_swarmflow_types = _swarmflow_imported_names(tree) & SUPPORTED_SWARMFLOW_TYPES
+    session_kinds = _session_variable_kinds(tree)
+    imported_swarmflow_types = _swarmflow_imported_names(tree) & TYPE_ONLY_SWARMFLOW_TYPES
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -1241,12 +1361,38 @@ def _runtime_call_issues(tree: ast.Module) -> tuple[list[str], list[str]]:
             elif call_name == "agent":
                 if node.args and _string_literal(node.args[0]) == "":
                     errors.append(f"line {line}: agent prompt must not be an empty string")
+                errors.extend(_agent_options_issues(node, "agent", line))
                 if not _is_directly_awaited(node) and not _is_inside_deferred_lambda(node):
                     errors.append(
                         f"line {line}: agent() must be awaited or returned from a "
                         "deferred SwarmFlow thunk"
                     )
+            elif call_name == "verify":
+                if not _is_directly_awaited(node):
+                    errors.append(f"line {line}: verify() must be awaited")
+                reviewers_kw = _keyword(node, "reviewers")
+                reviewers = node.args[0] if node.args else (reviewers_kw.value if reviewers_kw else None)
+                if reviewers is None or (isinstance(reviewers, (ast.List, ast.Tuple)) and not reviewers.elts):
+                    errors.append(f"line {line}: verify() requires non-empty reviewers")
+                threshold = _keyword(node, "threshold")
+                if threshold is not None:
+                    value = _literal_or_none(threshold.value)
+                    if type(value) not in (int, float):
+                        errors.append(f"line {line}: verify threshold must be a numeric literal")
+                errors.extend(_agent_options_issues(node, "verify", line))
+            elif call_name == "Reviewer":
+                kind_kw = _keyword(node, "kind")
+                prompt_kw = _keyword(node, "prompt")
+                kind = node.args[0] if node.args else (kind_kw.value if kind_kw else None)
+                prompt = node.args[1] if len(node.args) > 1 else (prompt_kw.value if prompt_kw else None)
+                if kind is None or _string_literal(kind) not in {"verdict", "score"}:
+                    errors.append(f"line {line}: Reviewer kind must be the literal 'verdict' or 'score'")
+                prompt_value = _string_literal(prompt) if prompt is not None else None
+                if prompt is None or (prompt_value is not None and not prompt_value.strip()):
+                    errors.append(f"line {line}: Reviewer prompt must not be empty")
+                errors.extend(_agent_options_issues(node, "Reviewer", line))
             elif call_name == "human":
+                errors.extend(_agent_options_issues(node, "human", line))
                 if node.args and _string_literal(node.args[0]) == "":
                     errors.append(f"line {line}: human prompt must not be an empty string")
                 if _keyword(node, "notify") is not None:
@@ -1257,12 +1403,21 @@ def _runtime_call_issues(tree: ast.Module) -> tuple[list[str], list[str]]:
                         "deferred SwarmFlow thunk"
                     )
             elif call_name in {"agent_session", "human_session"}:
+                if node.args:
+                    errors.append(f"line {line}: {call_name}() accepts keyword arguments only; use instructions=...")
+                for keyword in node.keywords:
+                    if keyword.arg is not None and keyword.arg not in {"label", "phase", "instructions", "options"}:
+                        errors.append(
+                            f"line {line}: {call_name}() does not accept {keyword.arg!r}; "
+                            "put schema/tuning keys in options or send()"
+                        )
                 if _is_directly_awaited(node):
                     errors.append(f"line {line}: {call_name}() is synchronous and must not be awaited")
+                errors.extend(_agent_options_issues(node, call_name, line))
             elif call_name in imported_swarmflow_types:
                 errors.append(
                     f"line {line}: do not construct {call_name} directly; "
-                    "use agent_session() or human_session()"
+                    "use the session factories or verify() to obtain runtime values"
                 )
             elif call_name in {"map_parallel", "pmap"}:
                 warnings.append(
@@ -1284,12 +1439,34 @@ def _runtime_call_issues(tree: ast.Module) -> tuple[list[str], list[str]]:
             elif call_name in {"time.time", "datetime.now", "datetime.utcnow"}:
                 warnings.append(f"line {line}: current time access is non-deterministic; pass values via args")
 
-            method_name = _session_method_name(node, session_names)
+            method_name = _session_method_name(node, session_kinds)
             if method_name is not None:
+                for keyword in node.keywords:
+                    if keyword.arg is not None and keyword.arg not in SESSION_METHOD_KEYWORDS[method_name]:
+                        errors.append(
+                            f"line {line}: session.{method_name}() does not accept {keyword.arg!r}; "
+                            "put tuning keys in options"
+                        )
+                if method_name != "fork" and len(node.args) > (1 if method_name == "send" else 0):
+                    errors.append(f"line {line}: too many positional arguments to session.{method_name}()")
                 if not _is_directly_awaited(node):
                     errors.append(
                         f"line {line}: session.{method_name}() must be awaited"
                     )
+                human = "human_session" in _session_kinds_for_name(node, node.func.value.id, session_kinds)
+                errors.extend(_agent_options_issues(node, f"session.{method_name}", line, human=human))
+                if method_name == "fork":
+                    if human:
+                        errors.append(f"line {line}: human_session does not support fork()")
+                    if node.args:
+                        errors.append(f"line {line}: session.fork() accepts keyword arguments only")
+                    mode_kw = _keyword(node, "fork_mode")
+                    mode = _string_literal(mode_kw.value) if mode_kw else "full"
+                    if mode not in FORK_MODES:
+                        errors.append(f"line {line}: fork_mode must be a supported literal: {sorted(FORK_MODES)}")
+                    keep = _keyword(node, "keep_rounds")
+                    if mode != "full" and (keep is None or _is_literal_none(keep.value)):
+                        errors.append(f"line {line}: non-full fork requires keep_rounds")
                 if method_name == "send" and _has_notify_schema_conflict(node):
                     errors.append(
                         f"line {line}: session.send(notify=True) must not also pass schema"
@@ -1440,7 +1617,11 @@ def _log_operator_issues(tree: ast.Module) -> list[str]:
             if node.id in PROTECTED_SWARMFLOW_NAMES:
                 issues.append(f"line {line}: assignment target `{node.id}` shadows swarmflow.{node.id}")
 
-    return sorted(set(issues))
+    return sorted({
+        issue + "; rename the local binding to avoid shadowing verify()"
+        if "swarmflow.verify" in issue else issue
+        for issue in issues
+    })
 
 
 def _collect_bound_names(tree: ast.Module) -> set[str]:
@@ -1699,6 +1880,39 @@ def check_orphan_role_files(roles_dir: Path, declared_role_ids: list[str], repor
             )
 
 
+def check_skill_display_md(root: Path, report: Report) -> None:
+    """Soft-check UI display metadata (warning only; does not fail validation)."""
+    path = root / "skill_display.md"
+    if not path.exists():
+        report.warn(
+            "skill_display.md",
+            "missing — recommended for UI display_name_zh/description_zh "
+            "(and en counterparts)",
+        )
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+        fm, _ = split_frontmatter(text)
+    except Exception as exc:
+        report.warn("skill_display.md", f"parse failed: {exc}")
+        return
+    if fm is None:
+        report.warn("skill_display.md", "missing YAML frontmatter (--- ... ---)")
+        return
+    required = (
+        "display_name_zh",
+        "description_zh",
+        "display_name_en",
+        "description_en",
+    )
+    missing = [key for key in required if not str(fm.get(key) or "").strip()]
+    if missing:
+        report.warn(
+            "skill_display.md",
+            "missing or empty fields: " + ", ".join(missing),
+        )
+
+
 def detect_structure(root: Path, report: Report) -> tuple[bool, bool]:
     """Return (has_swarmflow_script, is_script_only)."""
     script_path = root / "scripts" / "workflow.py"
@@ -1752,6 +1966,9 @@ def validate(root: Path) -> int:
 
     # 1. SKILL.md
     skill_fm, role_ids = validate_skill_md(root / "SKILL.md", report, script_only=is_script_only)
+
+    # 1b. skill_display.md (soft warning only)
+    check_skill_display_md(root, report)
 
     if has_swarmflow_script:
         validate_swarmflow_script(root / "scripts" / "workflow.py", root.name, report)

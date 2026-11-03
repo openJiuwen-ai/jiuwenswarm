@@ -12,10 +12,14 @@ The advance tool ``sdd_advance`` is registered by the base class when the
 rail is mounted; it lives only while DesignRail is mounted (code mode +
 ``modes.code.sdd.enabled=true``), so team/deep agents never see it.
 
-Rework (analysis_review -> analysis, design_review -> design) is driven by
-the StructuredAskUserTool "reject" answer in ``after_tool_call``; the
-declarative ``stages.<name>.next`` lists forward edges only.
+Rework (analysis_review -> analysis, design_review -> design) is driven by the
+StructuredAskUserTool "reject" answer in ``after_tool_call``; the
+declarative ``stages.<name>.next`` lists forward edges only. A production
+stage declares two forward targets: the review stage, and the stage reached
+when the user declines the review (the review stage has no skip entry point
+before its own user gate, so "skip the review" has to be a forward edge).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -45,6 +49,31 @@ _REJECT_PATTERNS = tuple(
     if kw.isascii()
 )
 _REJECT_CJK = tuple(kw for kw in _REJECT_KEYWORDS if not kw.isascii())
+# Re-gate keywords: SKILL.md R3 "需要复审" option — return to R1 for another
+# gate loop WITHOUT advancing. Distinct from reject (rework to production
+# stage) and approve (advance forward). "跳过复审" is approve, NOT regate,
+# so the keyword must be the full "需要复审" phrase, not bare "复审".
+_REGATE_KEYWORDS = ("需要复审", "re-gate", "regate")
+_REGATE_PATTERNS = tuple(
+    re.compile(fr"\b{re.escape(kw)}\b", re.IGNORECASE)
+    for kw in _REGATE_KEYWORDS
+    if kw.isascii()
+)
+_REGATE_CJK = tuple(kw for kw in _REGATE_KEYWORDS if not kw.isascii())
+# Gate-answer markers for the R3 user gate (SKILL.md). The gate answers with
+# a STRUCTURED question, so the answer text carries the chosen option label:
+#   "无需修改，进入下一阶段"       -> approve (no modifications)
+#   "用户已跳过此题，未选择任何选项。" -> approve (skipped == no modifications)
+#   "用户已取消本次问答，未作答。"     -> approve (cancelled == no modifications)
+#   "跳过复审"                     -> approve (re-gate declined)
+# Anything else is modification feedback (the "需要修改（请补充具体意见）"
+# option or the free text typed into the "Other" field).
+_GATE_APPROVE_MARKERS = (
+    "无需修改，进入下一阶段",
+    "用户已跳过此题，未选择任何选项。",
+    "用户已取消本次问答，未作答。",
+    "跳过复审",
+)
 # Fixed rework map (config lists forward edges only).
 # Wave-2 stage additions that introduce new *_review stages MUST update this map.
 _REWORK_TARGETS = {
@@ -137,6 +166,26 @@ class DesignRail(RailStateMachineBase):
                 logger.info(
                     "[DesignRail] review rejected -> rework to %s", target
                 )
+        elif self._is_regate(answer):
+            # SKILL.md R3 "需要复审": loop back to R1 for re-gate inside the
+            # review skill. The rail does NOT transition (re-gate is internal
+            # to the review skill's R1->R2->R3 loop) and must NOT log
+            # "approved" — that would mislead the agent into calling
+            # sdd_advance prematurely, skipping the re-gate loop.
+            logger.info(
+                "[DesignRail] review re-gate requested (需要复审); "
+                "skill owns R3->R1 loop, no rail transition"
+            )
+        elif self._is_gate_revision(answer):
+            # SKILL.md R3: the user asks for changes ("需要修改（请补充具体意见）"
+            # or free text typed into the "Other" field). The deliverable is
+            # revised in place by the skill and the gate may re-run; the rail
+            # does NOT transition and must NOT log "approved" — the review is
+            # not finished yet.
+            logger.info(
+                "[DesignRail] review revision requested; "
+                "skill owns the in-place revision, no rail transition"
+            )
         else:
             # Approve: do NOT auto-transition here. The SKILL.md R4 step
             # instructs the agent to call sdd_advance explicitly. Auto-
@@ -192,6 +241,31 @@ class DesignRail(RailStateMachineBase):
             if kw in text:
                 return True
         return False
+
+    def _is_regate(self, answer: str) -> bool:
+        text = (answer or "").lower()
+        for pattern in _REGATE_PATTERNS:
+            if pattern.search(text):
+                return True
+        for kw in _REGATE_CJK:
+            if kw in text:
+                return True
+        return False
+
+    def _is_gate_revision(self, answer: str) -> bool:
+        """True when the R3 gate answer is modification feedback.
+
+        The gate asks a structured question, so an answer that carries none
+        of the approve markers (approve option / skip / cancel / 跳过复审) is
+        the user asking for changes.
+        """
+        text = answer or ""
+        if not text.strip():
+            return False
+        for marker in _GATE_APPROVE_MARKERS:
+            if marker in text:
+                return False
+        return True
 
     def _next_stage(self, current: str) -> Optional[str]:
         stage_cfg = self.stages.get(current)

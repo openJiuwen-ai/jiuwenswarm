@@ -4,8 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openjiuwen.harness import AudioModelConfig, VisionModelConfig
 
-from jiuwenswarm.server.runtime.agent_adapter import interface_code
+from jiuwenswarm.agents.harness.code import spec as code_spec
+from jiuwenswarm.server.runtime.agent_adapter import interface_code, interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
@@ -162,20 +164,36 @@ async def test_code_reload_resolves_and_applies_spec_without_replacing_agent(
 
 
 @pytest.mark.asyncio
-async def test_code_multimodal_reload_preserves_snapshot_without_registering_tools(
+async def test_code_multimodal_reload_syncs_model_enabled_tools(
     monkeypatch: pytest.MonkeyPatch,
 ):
     adapter = JiuwenSwarmCodeAdapter()
     adapter._instance = _FakeDeepAgent([])
-    adapter._vision_model_config = object()
-    adapter._audio_model_config = object()
+    adapter._vision_model_config = VisionModelConfig(
+        api_key="test-key", base_url="https://vision.example/v1", model="vision-model",
+    )
+    adapter._audio_model_config = AudioModelConfig(
+        api_key="test-key", base_url="https://audio.example/v1",
+    )
     adapter._video_model_config = True
     adapter._image_gen_model_config = True
-    config_base = {"react": {"agent_name": "code"}}
+    config_base = {
+        "react": {"agent_name": "code"},
+        "modes": {"code": {"tools": ["visual_question_answering"]}},
+    }
     env_overrides = {}
-    refresh = AsyncMock(return_value=config_base)
+    async def refresh_snapshot(config, overrides):
+        adapter._config_base_cache = config
+        return config
+
+    refresh = AsyncMock(side_effect=refresh_snapshot)
     fan_out = AsyncMock()
-    sync_group = MagicMock()
+    synced = []
+
+    def sync_group(**kwargs):
+        synced.append((kwargs["warn_label"], kwargs["enabled"]))
+        return [], False
+
     monkeypatch.setattr(adapter, "_apply_multimodal_reload_snapshot", refresh)
     monkeypatch.setattr(adapter, "_fan_out_reload_to_session_adapters", fan_out)
     monkeypatch.setattr(adapter, "_sync_tool_group", sync_group)
@@ -192,7 +210,14 @@ async def test_code_multimodal_reload_preserves_snapshot_without_registering_too
         {"multimodal"},
         permission_notification=False,
     )
-    sync_group.assert_not_called()
+    assert synced == [
+        ("vision tools", True),
+        ("audio tools", True),
+        ("video tool", True),
+        ("generate_image tool", True),
+        ("generate_video tools", False),
+        ("generate_visual tool", False),
+    ]
     assert not adapter._vision_tools
     assert not adapter._audio_tools
 
@@ -228,6 +253,12 @@ async def test_code_reload_rolls_back_spec_rails_when_apply_fails(
     adapter._last_models_config_fingerprint = "old-fingerprint"
     adapter._model_cache = {"old-model": old_model}
     adapter._model_name_to_keys = {"old-model": ["old-model"]}
+    adapter._model_recipes = {"old-model": {"model_id": "old-id"}}
+    adapter._model_alias_to_key = {"old-alias": "old-model"}
+    adapter._global_index_to_cache_key = {1: "old-model"}
+    adapter._model_id_to_key = {"old-id": "old-model"}
+    adapter._model_group_cache = {"old-group": old_model}
+    adapter._kernel_identity = "old-kernel"
     template_state = ("template-a", object(), "1")
     plugin_state = {"plugin-a": (object(), "1")}
     adapter._loaded_agent_template = template_state
@@ -260,6 +291,12 @@ async def test_code_reload_rolls_back_spec_rails_when_apply_fails(
         adapter._last_models_config_fingerprint = "new-fingerprint"
         adapter._model_cache = {"new-model": new_model}
         adapter._model_name_to_keys = {"new-model": ["new-model"]}
+        adapter._model_recipes = {"new-model": {"model_id": "new-id"}}
+        adapter._model_alias_to_key = {"new-alias": "new-model"}
+        adapter._global_index_to_cache_key = {2: "new-model"}
+        adapter._model_id_to_key = {"new-id": "new-model"}
+        adapter._model_group_cache = {"new-group": new_model}
+        adapter._kernel_identity = "new-kernel"
         return new_model
 
     monkeypatch.setattr(adapter, "_create_model", create_model)
@@ -293,6 +330,12 @@ async def test_code_reload_rolls_back_spec_rails_when_apply_fails(
     assert adapter._last_models_config_fingerprint == "old-fingerprint"
     assert adapter._model_cache == {"old-model": old_model}
     assert adapter._model_name_to_keys == {"old-model": ["old-model"]}
+    assert adapter._model_recipes == {"old-model": {"model_id": "old-id"}}
+    assert adapter._model_alias_to_key == {"old-alias": "old-model"}
+    assert adapter._global_index_to_cache_key == {1: "old-model"}
+    assert adapter._model_id_to_key == {"old-id": "old-model"}
+    assert adapter._model_group_cache == {"old-group": old_model}
+    assert adapter._kernel_identity == "old-kernel"
 
 
 @pytest.mark.asyncio
@@ -338,6 +381,88 @@ async def test_code_reload_validation_failure_does_not_reregister_active_tools(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["after_bundle", "build", "registration"])
+async def test_failed_spec_resolution_restores_hot_reloaded_multimodal_instances(monkeypatch, failure):
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._instance = _FakeDeepAgent([])
+    adapter._config_base_cache = {"modes": {"code": {"tools": []}}}
+    adapter._tool_cards = []
+    adapter._vision_model_config = VisionModelConfig(
+        api_key="test-key", base_url="https://vision.example/v1", model="vision-model",
+    )
+    adapter._audio_model_config = AudioModelConfig(
+        api_key="test-key", base_url="https://audio.example/v1",
+    )
+    adapter._video_gen_model_config = True
+    old_context = code_spec.CodeBuildContext(
+        adapter=adapter, config_base=adapter._config_base_cache,
+        tool_owner_id=adapter._tool_owner_id(),
+    )
+    adapter._code_build_context = old_context
+    registered = {}
+
+    def register(tool, _owner_id):
+        registered[tool.card.name] = tool
+
+    def unregister(tool):
+        if not tool.card.stateless:
+            registered.pop(tool.card.name, None)
+
+    monkeypatch.setattr(interface_deep, "register_tool", register)
+    monkeypatch.setattr(interface_deep, "unregister_tool", unregister)
+    monkeypatch.setattr(interface_code, "register_tool", register)
+    monkeypatch.setattr(interface_code, "unregister_tool", unregister)
+    candidate_vision_config = adapter._vision_model_config
+    if failure == "registration":
+        # Vision is new in the candidate; rollback cannot rely on overwriting
+        # these registrations with instances from the previous build context.
+        adapter._vision_model_config = None
+    adapter._sync_multimodal_tools_for_runtime()
+    old_tools = list(old_context.artifacts.tools)
+    old_cards = list(adapter._instance.deep_config.tools)
+    adapter._vision_model_config = candidate_vision_config
+    candidate_context = code_spec.CodeBuildContext(
+        adapter=adapter, config_base=adapter._config_base_cache,
+        tool_owner_id=adapter._tool_owner_id(),
+    )
+    if failure == "build":
+        monkeypatch.setattr(
+            interface_deep, "create_audio_tools",
+            MagicMock(side_effect=RuntimeError("audio build failed")),
+        )
+    elif failure == "registration":
+        def fail_registration(tool, owner_id):
+            register(tool, owner_id)
+            if tool.card.name == "audio_question_answering":
+                raise RuntimeError("audio registration failed")
+
+        monkeypatch.setattr(interface_deep, "register_tool", fail_registration)
+
+    def resolve_parts(context):
+        code_spec._build_code_tool_bundle({"include_multimodal": True}, context)
+        if failure != "after_bundle":
+            pytest.fail("candidate tool failure must abort Spec replacement")
+        assert context.artifacts.tools[0] is not old_tools[0]
+        assert adapter._get_multimodal_tools() == old_tools
+        raise RuntimeError("candidate resolution failed")
+
+    candidate_spec = SimpleNamespace(resolve_parts=resolve_parts)
+    monkeypatch.setattr(adapter, "_apply_reload_config_snapshot", AsyncMock(return_value=adapter._config_base_cache))
+    monkeypatch.setattr(adapter, "_create_model", lambda _config: object())
+    monkeypatch.setattr(adapter, "_build_code_spec_snapshot", lambda _base, _config, _model: (candidate_spec, candidate_context))
+    monkeypatch.setattr(adapter, "_refresh_multimodal_configs", MagicMock())
+
+    error = "candidate resolution failed" if failure == "after_bundle" else f"audio {failure} failed"
+    with pytest.raises(RuntimeError, match=error):
+        await adapter.reload_agent_config(adapter._config_base_cache, {})
+
+    assert adapter._code_build_context is old_context
+    assert adapter._get_multimodal_tools() == old_tools
+    assert adapter._instance.deep_config.tools == old_cards
+    assert registered == {tool.card.name: tool for tool in old_tools}
+
+
+@pytest.mark.asyncio
 async def test_config_reload_does_not_replace_caller_supplied_spec(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -367,6 +492,7 @@ async def test_config_reload_does_not_replace_caller_supplied_spec(
         config_base,
         {"API_KEY": "updated"},
         None,
+        permission_notification=False,
     )
     build_snapshot.assert_not_called()
     assert adapter._instance is instance

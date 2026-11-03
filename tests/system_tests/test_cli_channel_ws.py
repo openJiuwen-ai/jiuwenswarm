@@ -135,7 +135,7 @@ async def test_cli_route_system_roundtrip(temp_home: Path, monkeypatch: pytest.M
         await _wait_for_log(agent_log, "ready:", timeout=60)
 
         gateway_proc = _start_process(
-            [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway", "--port", str(web_port)],
+            [sys.executable, "-m", "gateway.app_gateway", "--port", str(web_port)],
             env=env,
             log_path=gateway_log,
         )

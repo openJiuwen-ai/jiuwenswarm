@@ -5,7 +5,6 @@
 # TEST ONLY: credential-shaped values are constructed synthetic fixtures and
 # URL literals use RFC-reserved domains; no external request is performed.
 
-import ast
 import importlib
 import json
 import os
@@ -421,6 +420,44 @@ def test_sanitize_log_text_stays_linear_on_long_identifier_runs():
     assert elapsed < 2.0, f"masking 400k chars took {elapsed:.2f}s"
 
 
+def test_oversized_log_records_bound_sanitizer_work(monkeypatch):
+    import logging
+
+    def unexpected(_text):
+        raise AssertionError("oversized messages must not enter regex/JSON masking")
+
+    monkeypatch.setattr(utils, "_sanitize_log_text", unexpected)
+    record = logging.LogRecord(
+        "third-party", logging.INFO, __file__, 0,
+        "payload=%s api_key=secret", ("x" * 1_000_000,), None,
+    )
+    assert utils.SensitiveDataFilter().filter(record)
+    assert len(record.getMessage()) < 100
+    assert "log payload omitted" in record.getMessage()
+    assert "secret" not in record.getMessage()
+
+
+def test_email_sanitizer_stays_linear_on_punctuation_runs():
+    raw = "a+" * 200_000 + " user+tag@example.com api_key=test-only-secret"
+    began = time.perf_counter()
+    masked = utils._sanitize_log_text(raw)
+    assert time.perf_counter() - began < 2
+    assert masked.startswith("a+" * 200_000)
+    assert "user+tag@example.com" not in masked
+    assert "test-only-secret" not in masked
+
+
+def test_oversized_structured_log_keeps_valid_json():
+    import json
+
+    raw = json.dumps({"payload": "x" * 100_000, "api_key": "test-only-secret"})
+    masked = utils._sanitize_record_text(raw)
+    parsed = json.loads(masked)
+    assert parsed["log_payload_omitted"] is True
+    assert parsed["original_characters"] == len(raw)
+    assert "test-only-secret" not in masked
+
+
 class TestUserWorkspace:
     """Test user workspace functions."""
 
@@ -782,10 +819,13 @@ class TestAdditionalHardcodedPaths:
     """
 
     @staticmethod
-    def test_rail_manager_path_structure():
+    def test_rail_manager_path_structure(monkeypatch):
         """Test rail_manager.py uses get_agent_workspace_dir() for extensions path."""
         from jiuwenswarm.agents.harness.common.plugins.rail_manager import RailManager
         from jiuwenswarm.common.utils import get_user_workspace_dir
+
+        # RailManager is a singleton; drop any instance built under another test's workspace.
+        monkeypatch.setattr(RailManager, "_instance", None)
 
         workspace = get_user_workspace_dir()
         expected_path = workspace / "agent" / "workspace" / "extensions"
@@ -925,7 +965,7 @@ class TestCleanupStaleOpenjiuwenDescs:
         "relative_path",
         (
             "jiuwenswarm/app.py",
-            "jiuwenswarm/gateway/app_gateway.py",
+            "gateway/app_gateway.py",
         ),
     )
     def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
@@ -933,63 +973,84 @@ class TestCleanupStaleOpenjiuwenDescs:
         source = (root / relative_path).read_text(encoding="utf-8")
         cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 
+        # 只约束 openjiuwen SDK 本体：清理针对的是 SDK 会读取的过期描述文件。
+        # ``openjiuwen_protocol`` 是独立的纯协议包，不读取 workspace 描述文件，
+        # 按导入分组规则可以排在清理调用之前。
+        sdk_import_markers = (
+            "from openjiuwen.",
+            "from openjiuwen import",
+            "import openjiuwen.",
+            "import openjiuwen\n",
+        )
         openjiuwen_imports = [
             source.find(marker)
-            for marker in ("from openjiuwen", "import openjiuwen")
+            for marker in sdk_import_markers
             if source.find(marker) >= 0
         ]
         if openjiuwen_imports:
             assert cleanup_call < min(openjiuwen_imports)
 
     @staticmethod
-    def test_agentserver_runtime_backend_cleans_before_openjiuwen_import():
-        """Front defers OpenJiuwen; Runtime backend must still clean first."""
-        root = Path(__file__).resolve().parents[2]
-        source = (root / "jiuwenswarm" / "server" / "app_agentserver.py").read_text(
-            encoding="utf-8"
-        )
-        tree = ast.parse(source)
-        func = next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_preload_runtime_backend"
-        )
-        cleanup_lineno: int | None = None
-        openjiuwen_lineno: int | None = None
-        for node in ast.walk(func):
-            if isinstance(node, ast.Call):
-                name = None
-                if isinstance(node.func, ast.Name):
-                    name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    name = node.func.attr
-                if name == "prepare_runtime_workspace":
-                    keywords = {kw.arg: kw.value for kw in node.keywords}
-                    flag = keywords.get("cleanup_stale_descs")
-                    if isinstance(flag, ast.Constant) and flag.value is True:
-                        cleanup_lineno = node.lineno
-                if (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id == "_configure_openjiuwen_logging"
-                ):
-                    openjiuwen_lineno = (
-                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
-                    )
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "openjiuwen"
-            ):
-                openjiuwen_lineno = (
-                    node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
-                )
-            if isinstance(node, ast.Import):
-                if any(
-                    alias.name == "openjiuwen" or alias.name.startswith("openjiuwen.")
-                    for alias in node.names
-                ):
-                    openjiuwen_lineno = (
-                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
-                    )
-        assert cleanup_lineno is not None
-        assert openjiuwen_lineno is not None
-        assert cleanup_lineno < openjiuwen_lineno
+    @pytest.mark.parametrize("workspace_ready", [False, True])
+    def test_agentserver_runtime_backend_cleans_before_openjiuwen_import(monkeypatch, workspace_ready):
+        """Cleanup precedes SDK readers; a prepared workspace avoids duplicate repair."""
+        from jiuwenswarm.server.worker import runtime_backend
+
+        stages = []
+        monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1" if workspace_ready else "0")
+        monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: stages.append("cleanup"))
+
+        def prepare(stage):
+            assert ("cleanup" in stages) is not workspace_ready
+            stages.append(stage)
+
+        def configure_logging():
+            assert {"config", "sdk"}.issubset(stages)
+            stages.append("logging")
+
+        def apply_patches():
+            assert stages[-1] == "logging"
+            stages.append("patches")
+
+        monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: prepare("config"))
+        monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", lambda: prepare("sdk"))
+        monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", configure_logging)
+        monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches", apply_patches)
+
+        runtime_backend.preload_runtime_backend()
+
+        assert stages.count("cleanup") == (0 if workspace_ready else 1)
+        assert stages[-2:] == ["logging", "patches"]
+
+
+def test_gateway_logger_propagates_into_jiuwenswarm_handlers(tmp_path, monkeypatch):
+    """M0-c 回归守护：顶层 gateway 包的日志必须仍能到达 jiuuwenswarm 的 handler。
+
+    gateway 升为顶层包后 ``logging.getLogger("gateway.x")`` 不再是
+    ``jiuwenswarm`` 的子 logger——setup_logger 显式 reparent，此测试
+    断言 gateway 日志仍被 jiuwenswarm 树的 handler 捕获（否则
+    gateway.log / 控制台全部丢日志）。
+    """
+    import logging
+
+    from jiuwenswarm.common.utils import setup_logger
+
+    root = setup_logger("INFO")
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.name)
+
+    capture = _Capture()
+    logging.getLogger("jiuwenswarm").addHandler(capture)
+    try:
+        logging.getLogger("gateway.app_gateway").warning("gateway log routed?")
+        logging.getLogger("gateway.channel_manager.web.app_web_handlers").warning("nested routed?")
+    finally:
+        logging.getLogger("jiuwenswarm").removeHandler(capture)
+        capture.close()
+
+    assert "gateway.app_gateway" in captured
+    assert "gateway.channel_manager.web.app_web_handlers" in captured
+    del root

@@ -76,7 +76,7 @@ class _Lifecycle:
 
 
 @pytest.fixture
-async def lifecycle(tmp_path, monkeypatch, internal_auto_mode):
+async def lifecycle(tmp_path, monkeypatch):
     adapter = interface_deep.JiuWenSwarmDeepAdapter()
     adapter.mark_as_session_scoped("lifecycle")
     adapter._session_instance_mode = "agent"
@@ -525,7 +525,7 @@ async def test_invalid_owner_is_rejected_before_installation(lifecycle, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_real_capture_fingerprint_includes_user_and_session(lifecycle, monkeypatch):
+async def test_real_capture_overlay_changes_do_not_rebuild_graph(lifecycle, monkeypatch):
     h = lifecycle
     user, session = {}, {}
     monkeypatch.setattr(permissions_layers, "capture_permission_layers", lambda _sid: (
@@ -537,4 +537,6 @@ async def test_real_capture_fingerprint_includes_user_and_session(lifecycle, mon
     user_epoch = capture(h.adapter)[0]
     session["allow_tools"] = ["session_tool"]
     session_epoch = capture(h.adapter)[0]
-    assert len({initial, user_epoch, session_epoch}) == 3
+    assert initial == user_epoch == session_epoch
+    assert capture(h.adapter)[2]["tools"]["user_tool"] == "deny"
+    assert capture(h.adapter)[2]["tools"]["session_tool"] == "allow"

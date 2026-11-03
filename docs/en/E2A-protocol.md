@@ -24,6 +24,14 @@
 - **`channel_context`**: optional; transitional or residual keys that do not fit normalized fields; `from_dict` may migrate legacy `metadata` for compatibility.
 - E2A **does not** specify the transport (WebSocket, HTTP, etc.).
 
+`config.moa_status` always runs on the target AgentServer through E2A, including
+single-user WebSocket deployments and AgentOS routing. The Gateway forwards
+`params.model_selection` and the authenticated user identity without reading local
+MoA configuration. A successful response contains `configured` and, when ready,
+`aggregator_model_name` and `aggregator_alias`; it contains no credentials. If the
+AgentServer client is absent or not ready, the Gateway returns
+`SERVICE_UNAVAILABLE` instead of evaluating configuration in its own directory.
+
 ---
 
 ## 2. Pitfall: two meanings of `method` (required reading)
@@ -458,3 +466,32 @@ as cancellation rather than being classified as a `chat.error`.
 
 - v0.2.4b3: Merged `agent.fast` and `agent.plan` into unified `agent` mode; added `work_mode`. In Web mode, `agent.plan` + `work_mode` enables hard Plan mode.
 
+## Management Hub equipment catalog
+
+This catalog contains only Hub `agent_template` and `agent_group` packages for
+administrator allowlist configuration. It excludes plugin, MCP and local installed
+packages, and does not apply user allowlist filtering. The existing package catalog/lifecycle
+family (including `agent_groups.*`, `agent_templates.*` and plugin package queries) retains
+its user-facing discovery, local-state and permission semantics. The boundary is management
+authorization candidates versus user-facing discovery/lifecycle, not mutually exclusive asset types.
+
+The enterprise management endpoint `GET /api/v1/package-allowlists/catalog` sends the
+sessionless E2A method `hub.expert_packages.catalog` to Server. Its Server HTTP endpoint is
+`GET /api/v1/hub/expert-packages/catalog`. Parameters are empty; neither a user nor a session
+is required. The request bypasses Runtime session allocation and Agent execution
+initialization. Server retains Hub lookup, pagination, caching and deduplication.
+Gateway retains management authentication and fixed hidden-package filtering and
+no longer imports the Server catalog implementation.
+
+The enterprise runtime client targets `GATEWAY_RUNTIME_DEFAULT_HTTP_BASE`, falling
+back to the existing `AGENT_SERVER_HOST` (default `127.0.0.1`) and `AGENT_HTTP_PORT`
+(default `8766`) settings. Separate-host deployments must configure a reachable
+Server HTTP address. Server's `TEAM_SKILLS_HUB_BASE_URL` selects the Hub. WebSocket
+clients use their existing connection.
+
+The management response remains `{code: 200, message: "success", data: {items: [...],
+error: ""}}`. An unavailable Server, transport failure or Hub lookup failure produces
+empty `items` and an error message, without a local Gateway fallback. Existing Server
+cold-cache and background-refresh semantics remain in place. The pinned
+`openjiuwen-protocol` package defines `hub.expert_packages.catalog`; no application-side
+enum registration is required.

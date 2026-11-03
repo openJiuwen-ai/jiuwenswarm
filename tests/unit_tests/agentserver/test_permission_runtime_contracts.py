@@ -14,9 +14,9 @@ import pytest
 
 from openjiuwen.agent_teams.rails.team_permission_rail import TeamPermissionRail
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.session import InteractiveInput
 from openjiuwen.core.single_agent import AgentCard
-from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
+from openjiuwen.core.single_agent.interrupt.state import RESUME_INTERRUPT_ANSWERS_KEY, InterruptAnswer
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     AgentCallbackEvent,
@@ -224,18 +224,15 @@ async def test_manual_resume_identity_survives_permission_rail_replacement() -> 
         )
         await agent.ensure_initialized()
 
-        resume_input = InteractiveInput()
-        resume_input.update(
-            "tool-call-reload",
-            {
-                "approved": True,
-                "auto_confirm": False,
-                "persist_allow": False,
-            },
+        # The interrupt handler attributes the answer to the owner of the old rail's
+        # interrupt; the replacement rail is of the same class, so it owns it too.
+        answer = InterruptAnswer(
+            owner=old_rail.interrupt_owner, kind=old_rail.interrupt_kind, request=InterruptRequest(),
+            value={"approved": True, "auto_confirm": False, "persist_allow": False},
         )
         ctx = AgentCallbackContext(
             agent=agent,
-            extra={RESUME_USER_INPUT_KEY: resume_input},
+            extra={RESUME_INTERRUPT_ANSWERS_KEY: {"tool-call-reload": {old_rail.interrupt_owner: answer}}},
         )
         tool_call = SimpleNamespace(
             id="tool-call-reload",
@@ -375,7 +372,7 @@ async def test_same_permission_rail_reads_updated_host_snapshot(
             "content": "updated",
         },
     )
-    ctx = SimpleNamespace(session=None)
+    ctx = SimpleNamespace(session=None, extra={})
 
     before = await rail.resolve_interrupt(ctx, tool_call, None)
     snapshot = _native_file_guard_config(
@@ -674,8 +671,10 @@ def _install_session_child(
         history_before_request_id: str | None = None,
         reserve_activity: bool = False,
         host_external_input: bool = False,
+        external_harness_binding: dict | None = None,
+        **_: object,
     ) -> _SessionChild:
-        del history_before_request_id, host_external_input
+        del history_before_request_id, host_external_input, external_harness_binding
         lookups.append(session_id)
         if reserve_activity:
             child._register_session_agent_task(str(session_id or "default"))

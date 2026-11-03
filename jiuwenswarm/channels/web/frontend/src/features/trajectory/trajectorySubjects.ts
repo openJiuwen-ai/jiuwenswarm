@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Explicit execution-subject grouping shared by live and archive trajectory views. */
 
 import { OPENJIUWEN_ATTRIBUTES } from './semconv/constants';
@@ -99,6 +97,17 @@ function firstSpan(record: OtlpExportTraceServiceRequest | null | undefined) {
   if (record === null || record === undefined) return undefined;
   const spans = spansOf(record);
   return spans.length === 1 ? spans[0] : undefined;
+}
+
+/**
+ * Whether a subject's records appear on the analysis swimlanes in team mode.
+ *
+ * Team lanes only show concrete leaders and members; session-root / main /
+ * unassigned rows are loaded for the live window but never counted in the
+ * header OTel Span total.
+ */
+export function subjectAppearsOnTeamLanes(kind: string | null | undefined): boolean {
+  return kind === 'team_leader' || kind === 'team_member';
 }
 
 export function trajectorySubjectOf(
@@ -352,7 +361,7 @@ export function groupTrajectorySubjects(
 
   if (!options.teamMode) ensure(mainSubject, null, 'fixed');
   const belongsToTeam = (subject: TrajectorySubject): boolean => (
-    subject.kind === 'team_leader' || subject.kind === 'team_member'
+    subjectAppearsOnTeamLanes(subject.kind)
   );
   for (const record of records) {
     const span = firstSpan(record);

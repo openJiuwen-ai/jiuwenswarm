@@ -448,7 +448,7 @@ settings are mapped by the JiuwenSwarm Adapter to agent-core's
 | `symphony.skill_retrieval.retrieve.flatten_tree` | `false` | Whether retrieval flattens the skill tree |
 | `symphony.skill_retrieval.retrieve.max_exposure_depth` | `1` | Maximum tree depth exposed by one `skill_branch_explore` call |
 
-> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](symphony.md).
+> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](Symphony.md).
 
 ---
 
@@ -490,6 +490,41 @@ Generally, from highest to lowest: **values you save in the web Configuration UI
 
 ---
 
+## 11. Skill Sync Configuration (Split Server / Client Deployment)
+
+When the Server and the Client are deployed separately, each side keeps its own skill library (`~/.jiuwenswarm/agent/workspace/skills/`). The skill sync API (`/skill-sync/*`: diff / package / apply) lets a client synchronize its local skills with the server. The capability is **off by default** and must be enabled explicitly.
+
+### 11.1 Configuration keys
+
+These keys live in the main config file (`config.yaml`) and must be edited manually:
+
+| Key | Description | Default |
+| --- | --- | --- |
+| `skill_sync.enabled` | Whether the skill sync API is enabled | `false` |
+| `skill_sync.token` | Bearer token for the sync API; **must be non-empty to enable**; verified uniformly across all three endpoints (diff / package / apply) | empty (disabled) |
+
+```yaml
+skill_sync:
+  enabled: true
+  token: "<your strong random token>"
+```
+
+### 11.2 Environment variable
+
+| Variable | Description |
+| --- | --- |
+| `JIUWENSKILL_SYNC_TOKEN` | Overrides `skill_sync.token`; intended for container / split-deployment injection. Once set, a token is considered configured without touching the config file |
+
+> ⚠️ **Security notes**:
+> - With no token configured (both config and environment empty), the endpoints always return 503 — **there is no "empty token passes" path**;
+> - The token guards all three endpoints (diff / package / apply); a wrong token returns 401;
+> - Production traffic must use HTTPS (or equivalent transport-layer encryption / mTLS);
+> - Quotas: apply uploads are limited to 60MB per request (413 beyond); package batches are limited to 100 skills / 5000 files / 100MB uncompressed / 50MB zip (the upload limit sits above the package limit to leave headroom for multipart overhead).
+
+For the protocol details (SkillDigest format, diff state machine, error codes, the `checksum_algo_version` algorithm-version alignment requirement, and the pull-only rule for builtin skills), see the "Split Server / Client Deployment: Skill Sync API" section of the [Skills doc](Skills.md).
+
+---
+
 ## FAQ
 
 ### Q: Configurations not taking effect after saving?
@@ -525,3 +560,23 @@ A: No. Tool Security Guardrails corresponds to `permissions.enabled`, which defa
 A: The system automatically detects and hot-reloads the file after saving (most settings take effect immediately; a few require a process restart). If changes do not apply after a long time, check the YAML format or re-save via the Web configuration panel to trigger a refresh.
 
 ---
+
+## Keeping sessions and SQLite trajectories indefinitely
+
+Merge these fields into the existing sections in `config/config.yaml` under the data directory:
+
+```yaml
+session_cleanup:
+  retention_days: 0
+trajectory_ui:
+  retention_days: 0
+  discard_final_span_frames: false
+```
+
+`session_cleanup.retention_days` defaults to `30`. Sessions expire by directory modification time, and orphan file-operation logs are cleaned separately. Zero disables both automatic cleanup operations. The legacy `CLEANUP_PERIOD_DAYS` environment variable overrides the configuration; zero also disables cleanup there. Invalid or negative settings fall back to the default.
+
+`trajectory_ui.retention_days` defaults to `7`. Zero disables both expiry of records inside SQLite and sweeping of idle session databases, including WAL/SHM files. `discard_final_span_frames` defaults to `true`, deleting stream frames replaced by a completed span's final record; set it to `false` to keep these frames too.
+
+Restart services after editing. Session archival requires an explicit operation; there is no scheduled automatic archival. These settings leave manual archive/delete operations and ordinary log/OTel file-exporter rotation available. Disk usage grows as history accumulates.
+
+When the SQLite schema is incompatible, the SQLite backup API first saves the old database, including committed WAL contents, as a standalone database. Only a successful backup permits rebuilding the active store. Archives keep the original filename and schema inside a sibling directory named `<database-filename>.schema-<old-version>.<UTC-timestamp>.<unique-id>.archive/`. They are never automatically expired or overwritten by later upgrades. Archive failure stops initialization and preserves the original database. Read archived history offline with tools compatible with its old schema; the current trajectory UI reads only the new database.

@@ -7,7 +7,7 @@
 | 依赖项 | 版本要求 | 说明 |
 |--------|----------|------|
 | 操作系统 | Windows 10/11, macOS 10.15+, Linux | 支持主流操作系统 |
-| Python | ≥3.11, <3.14 | 推荐 Python 3.11 |
+| Python | ≥3.11 | 推荐 Python 3.11 |
 | Git | 最新版本 | 用于克隆源码 |
 | Node.js | ≥18.x | 用于前端界面 |
 | Bun | 最新版本 | 用于编译 TUI 前端包 |
@@ -35,7 +35,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 ### 创建虚拟环境
 
-使用 `uv` 新建虚拟环境（支持 3.11、3.12、3.13 任一版本）：
+使用 `uv` 新建虚拟环境（支持 3.11–3.14 任一版本）：
 
 ```bash
 uv venv --python=3.11
@@ -272,8 +272,7 @@ node --version
 
 | 包名 | 说明 | 配置文件 |
 |------|------|----------|
-| `jiuwenswarm` | 后端服务主包（含 Web 前端构建产物） | `pyproject.toml` |
-| `jiuwenswarm-tui` | TUI 终端界面 sidecar 包（含 Bun 编译的原生二进制） | `packages/jiuwenswarm-tui/pyproject.toml` |
+| `workswarm` | 后端服务主包（含 Web 前端构建产物） | `pyproject.toml` |
 
 #### 6.1.1 一键构建全部（推荐）
 
@@ -286,12 +285,10 @@ bash scripts/build.sh
 
 该脚本会依次执行：
 1. 编译 Web 前端（`jiuwenswarm/channels/web/frontend` 目录下执行 `npm run build`）
-2. 构建主包 `jiuwenswarm.whl`
-3. 如果检测到 `bun` 命令，继续构建 TUI 原生二进制和 `jiuwenswarm-tui.whl`
+2. 构建主包 `workswarm.whl`
 
-产物输出到两个目录：
-- `./dist/jiuwenswarm-<version>-py3-none-any.whl`（主包）
-- `./packages/jiuwenswarm-tui/dist/jiuwenswarm_tui-<version>-<platform>.whl`（TUI sidecar 包）
+产物输出到以下目录：
+- `./dist/workswarm-<version>-py3-none-any.whl`（主包）
 
 #### 6.1.2 单独构建 jiuwenbox 包
 

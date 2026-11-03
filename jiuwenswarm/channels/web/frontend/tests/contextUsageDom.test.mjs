@@ -57,8 +57,9 @@ async function mount(language, run) {
   try {
     await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(ContextUsageIndicator))));
     const receive = async (payload) => act(async () => useSessionStore.getState().receiveContextUsage(payload));
+    const receiveTokenUsage = async (payload) => act(async () => useSessionStore.getState().receiveSessionTokenUsage(payload));
     const click = async (element) => act(async () => element.click());
-    await run({ receive, click, sessionId, dom });
+    await run({ receive, receiveTokenUsage, click, sessionId, dom });
   } finally {
     await act(async () => root.unmount());
     useSessionStore.getState().removeRuntime(sessionId);
@@ -341,5 +342,106 @@ test('switching session or mode closes details; reopening an unobserved session 
     await act(async () => useSessionStore.getState().setMode(sessionId, 'team'));
     assert.equal(document.querySelector('[role="dialog"]'), null);
     assert.equal(document.querySelector('.context-usage-trigger'), null);
+  });
+});
+
+test('detail shows both cumulative input and output token totals in uppercase K', async () => {
+  await mount('en', async ({ receive, receiveTokenUsage, click, sessionId }) => {
+    await receive(structuredClone(fixture));
+    await receiveTokenUsage({
+      schema_version: 1,
+      revision: 3,
+      session_id: sessionId,
+      main: {
+        input_tokens: 1234,
+        output_tokens: 567,
+        input_calls: 2,
+        output_calls: 2,
+        calls_total: 2,
+      },
+      others: {
+        input_tokens: 890,
+        output_tokens: 123,
+        input_calls: 1,
+        output_calls: 1,
+        calls_total: 1,
+      },
+    });
+    await click(document.querySelector('.context-usage-trigger'));
+
+    const rows = Array.from(document.querySelectorAll('.context-usage-token-category'));
+    assert.deepEqual(
+      rows.map((row) => [
+        row.dataset.variant,
+        row.querySelector('.context-usage-token-category__label').textContent,
+        row.querySelector('[data-variant="input"]').textContent,
+        row.querySelector('[data-variant="output"]').textContent,
+      ]),
+      [
+        ['main', 'Main Agent', '1.2K', '0.6K'],
+        ['others', 'Subagents / team members', '0.9K', '0.1K'],
+      ],
+    );
+
+    await receiveTokenUsage({
+      schema_version: 1,
+      revision: 4,
+      session_id: sessionId,
+      main: {
+        input_tokens: 1234,
+        output_tokens: 567,
+        input_calls: 1,
+        output_calls: 2,
+        calls_total: 2,
+      },
+      others: {
+        input_tokens: 890,
+        output_tokens: 123,
+        input_calls: 1,
+        output_calls: 1,
+        calls_total: 1,
+      },
+    });
+    assert.equal(
+      document.querySelector('[data-variant="main"] .context-usage-token-category__label small').textContent,
+      'Some calls did not report usage',
+    );
+  });
+});
+
+for (const language of ['zh', 'en']) {
+  test(language + ': cumulative K units use one decimal and preserve unknown totals', async () => {
+    await mount(language, async ({ receiveTokenUsage, click, sessionId }) => {
+      await receiveTokenUsage({
+        schema_version: 1,
+        revision: 1,
+        session_id: sessionId,
+        main: { input_tokens: 1, output_tokens: null, input_calls: 1, output_calls: 0, calls_total: 1 },
+        others: { input_tokens: 0, output_tokens: 1234567, input_calls: 1, output_calls: 1, calls_total: 1 },
+      });
+      await click(document.querySelector('.context-usage-trigger'));
+
+      const main = document.querySelector('.context-usage-token-category[data-variant="main"]');
+      const others = document.querySelector('.context-usage-token-category[data-variant="others"]');
+      assert.equal(main.querySelector('[data-variant="input"]').textContent, '0.0K');
+      assert.equal(
+        main.querySelector('[data-variant="output"]').textContent,
+        language === 'zh' ? '未报告' : 'Not reported',
+      );
+      assert.equal(others.querySelector('[data-variant="input"]').textContent, '0.0K');
+      assert.equal(others.querySelector('[data-variant="output"]').textContent, '1,234.6K');
+    });
+  });
+}
+
+test('restored cumulative totals remain accessible without a current context snapshot', async () => {
+  await mount('en', async ({ receiveTokenUsage, click, sessionId }) => {
+    const counts = { input_tokens: 100, output_tokens: 20, input_calls: 1, output_calls: 1, calls_total: 1 };
+    await receiveTokenUsage({ schema_version: 1, revision: 2, session_id: sessionId, main: counts, others: counts });
+    const trigger = document.querySelector('.context-usage-trigger');
+    assert.ok(trigger);
+    await click(trigger);
+    assert.equal(document.querySelectorAll('.context-usage-token-category').length, 2);
+    assert.match(document.querySelector('.context-usage-detail__metric').textContent, /Not reported/);
   });
 });

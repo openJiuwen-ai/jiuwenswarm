@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+from typing import Any
+
+from gateway.common.config import get_config
+from gateway.common.paths import get_root_dir, logger
+from gateway.extensions.loader import ExtensionLoader
+from gateway.extensions.registry import ExtensionRegistry
+
+_DEFAULT_PACKAGE_EXTENSION_DIR = ("gateway", "extensions")
+_DEFAULT_EXTENSION_DIR = "/".join(_DEFAULT_PACKAGE_EXTENSION_DIR)
+# 过渡期兼容：video_duplex 扩展仍留在母仓 extensions 下。
+_LEGACY_PACKAGE_EXTENSION_DIR = ("jiuwenswarm", "extensions")
+_USER_APPLICATION_PLUGIN_DIR = "application_plugins"
+
+
+def _is_default_package_extension_dir(path: Path) -> bool:
+    parts = tuple(part.lower() for part in path.parts if part not in ("", "."))
+    return parts in (_DEFAULT_PACKAGE_EXTENSION_DIR, _LEGACY_PACKAGE_EXTENSION_DIR)
+
+
+def _legacy_package_extension_dir() -> Path | None:
+    """母仓 extensions 目录；过渡期仍需发现留在母仓的扩展。"""
+    try:
+        spec = importlib.util.find_spec("jiuwenswarm")
+    except (ImportError, ValueError):
+        return None
+    locations = getattr(spec, "submodule_search_locations", None)
+    if not locations:
+        return None
+    path = Path(next(iter(locations))) / "extensions"
+    return path if path.is_dir() else None
+
+
+def _extension_search_path_candidates(path_value: str) -> list[Path]:
+    path = Path(path_value)
+    if path.is_absolute():
+        return [path]
+
+    candidates = [path.resolve()]
+    if _is_default_package_extension_dir(path):
+        candidates.append(Path(__file__).resolve().parent)
+        legacy = _legacy_package_extension_dir()
+        if legacy is not None:
+            candidates.append(legacy)
+    return candidates
+
+
+def _split_extension_dirs(value: str) -> list[str]:
+    # 按需求使用 ';' 分割
+    return [p.strip() for p in value.split(";") if p.strip()]
+
+
+def _dedupe_extension_dirs(paths: list[str]) -> list[str]:
+    seen: set[tuple[str, ...]] = set()
+    result: list[str] = []
+    for path in paths:
+        key = tuple(part.lower() for part in Path(path).parts if part not in ("", "."))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def _extension_dir_paths_from_config(cfg: dict) -> list[str]:
+    """读取扩展搜索目录配置。
+
+    - ``extensions.extension_dirs``：额外搜索目录，';' 分割（支持绝对路径）；
+    - ``extensions.include_package_extensions``：是否包含包内默认目录
+      ``gateway/extensions``（默认 true）。gateway 独立部署形态下置 false，
+      仅经显式目录加载所需扩展；过渡期仍会兼容发现母仓 ``jiuwenswarm/extensions``
+      下尚未迁移的扩展（如 video_duplex）。
+    """
+    ext = cfg.get("extensions")
+    dirs = ext.get("extension_dirs") if isinstance(ext, dict) else None
+    include_pkg = ext.get("include_package_extensions", True) if isinstance(ext, dict) else True
+    paths = _split_extension_dirs(dirs) if isinstance(dirs, str) else []
+    if include_pkg is not False:
+        paths.append(_DEFAULT_EXTENSION_DIR)
+    return _dedupe_extension_dirs(paths)
+
+
+def _enabled_extension_filter(cfg: dict) -> set[str] | None:
+    """读取 ``extensions.enabled`` 显式启用清单；缺省/非列表返回 None（全载）。"""
+    ext = cfg.get("extensions")
+    enabled = ext.get("enabled") if isinstance(ext, dict) else None
+    if not isinstance(enabled, list):
+        return None
+    return {str(name).strip() for name in enabled if str(name).strip()}
+
+
+class ExtensionManager:
+    def __init__(
+        self,
+        registry: ExtensionRegistry,
+    ):
+        self.registry = registry
+        self.loader = ExtensionLoader(registry)
+        self._loaded_extensions: list[Any] = []
+        self._setup_search_paths()
+
+    def _setup_search_paths(self) -> None:
+        seen: set[str] = set()
+        user_plugin_dir = get_root_dir() / _USER_APPLICATION_PLUGIN_DIR
+        user_plugin_dir.mkdir(parents=True, exist_ok=True)
+        extension_dirs = _extension_dir_paths_from_config(get_config())
+        for path in [str(user_plugin_dir), *extension_dirs]:
+            for p in _extension_search_path_candidates(path):
+                if not p.exists():
+                    continue
+                key = str(p.resolve()).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                self.loader.add_search_path(p)
+
+    async def load_all_extensions(
+        self,
+        *,
+        include_transport_extensions: bool = True,
+    ) -> None:
+        roots = self.loader.discover_extension_roots()
+        enabled = _enabled_extension_filter(get_config())
+        logger.info("[ExtensionManager] 发现扩展路径: %s", roots)
+        for path in roots:
+            try:
+                manifest = self.loader.load_manifest(path)
+                if enabled is not None:
+                    name = str(
+                        manifest.get("name") or path.name
+                    ).strip()
+                    if name not in enabled:
+                        logger.info(
+                            "[ExtensionManager] 清单外扩展跳过: %s (name=%s)", path, name
+                        )
+                        continue
+                if (
+                    not include_transport_extensions
+                    and manifest.get("requires_transport") is True
+                ):
+                    logger.info(
+                        "[ExtensionManager] Runtime 直连跳过 transport 扩展: %s",
+                        path,
+                    )
+                    continue
+                loaded = await self.loader.load_extension(path, manifest=manifest)
+                if loaded:
+                    logger.info("[ExtensionManager] 加载 %s", loaded)
+                    if isinstance(loaded, list):
+                        self._loaded_extensions.extend(loaded)
+                    else:
+                        self._loaded_extensions.append(loaded)
+            except Exception as e:
+                logger.error("[ExtensionManager] 加载扩展 %s 失败: %s", path, e)
+
+    async def shutdown_all_extensions(self) -> None:
+        for ext in self._loaded_extensions:
+            try:
+                if hasattr(ext, "shutdown"):
+                    await ext.shutdown()
+            except Exception as e:
+                logger.warning("[ExtensionManager] 关闭扩展失败: %s, error=%s", ext, e)
+        self._loaded_extensions.clear()
+
+    def list_extensions(self) -> list[dict]:
+        return [
+            {"id": p.metadata.id, "name": p.metadata.name, "version": p.metadata.version}
+            for p in self._loaded_extensions
+            if hasattr(p, "metadata")
+        ]

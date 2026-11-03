@@ -10,15 +10,14 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
-from jiuwenswarm.extensions.agentos.agentos_router.config import (
+from gateway.channel_manager.protocol.ssh.ssh_connect import SshRelaySession
+from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from gateway.extensions.agentos.agentos_router.config import (
     SshChannelEndpoint,
     load_router_config,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
+from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from gateway.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
     DEFAULT_SSH_USER_TEMPLATE,
     SshSouthConnectError,
@@ -29,10 +28,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     load_yuanrong_ssh_settings,
     resolve_client_keys_dir,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import SshRelaySession
-
-from jiuwenswarm.extensions.yuanrong_frontend_client import YuanrongAgentApiError
-
+from gateway.extensions.yuanrong_frontend_client import YuanrongAgentApiError
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.schema.message import ReqMethod
 from tests.unit_tests.extensions.test_agentos_router import (
     FakeRegistryClient,
     FakeYuanRongClient,
@@ -213,7 +211,7 @@ def test_is_ssh_connect_retryable_for_cold_start_errors() -> None:
 async def test_wait_until_ready_retries_closed_then_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import jiuwenswarm.extensions.agentos.agentos_router.ssh_relay as relay_mod
+    import gateway.extensions.agentos.agentos_router.ssh_relay as relay_mod
 
     monkeypatch.setattr(relay_mod, "_SSH_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(relay_mod, "_SSH_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
@@ -317,7 +315,8 @@ async def test_thirdagent_switch_sshd_not_ready_fails() -> None:
 
 def test_import_asyncssh_raises_actionable_hint(monkeypatch: pytest.MonkeyPatch) -> None:
     import builtins
-    import jiuwenswarm.extensions.agentos.agentos_router.ssh_relay as relay_mod
+
+    import gateway.extensions.agentos.agentos_router.ssh_relay as relay_mod
 
     real_import = builtins.__import__
 
@@ -327,7 +326,7 @@ def test_import_asyncssh_raises_actionable_hint(monkeypatch: pytest.MonkeyPatch)
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _block_asyncssh)
-    with pytest.raises(RuntimeError, match=r"jiuwenswarm\[ssh\]"):
+    with pytest.raises(RuntimeError, match=r"workswarm\[ssh\]"):
         relay_mod._import_asyncssh()
 
 
@@ -880,7 +879,7 @@ async def test_router_disconnect_cancels_background_ssh_relay() -> None:
 @pytest.mark.asyncio
 async def test_wait_relay_done_timeout_cancels_southbound_task() -> None:
     """Northbound relay timeout must cancel the southbound relay_task."""
-    from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import (
+    from gateway.channel_manager.protocol.ssh.ssh_connect import (
         SshChannel,
         SshChannelConfig,
     )
@@ -929,7 +928,7 @@ async def test_wait_relay_done_timeout_cancels_southbound_task() -> None:
 async def test_unregister_session_cancels_southbound_task() -> None:
     """Northbound session teardown must cancel a still-running southbound
     relay, even when the pumps never notice the dead client (stdin blocked)."""
-    from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import (
+    from gateway.channel_manager.protocol.ssh.ssh_connect import (
         SshChannel,
         SshChannelConfig,
     )
@@ -1196,7 +1195,7 @@ async def test_relay_run_raises_south_connect_error_on_exhaustion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """连接重试耗尽 → run() 抛 SshSouthConnectError（保留原始异常）并释放 session。"""
-    import jiuwenswarm.extensions.agentos.agentos_router.ssh_relay as relay_mod
+    import gateway.extensions.agentos.agentos_router.ssh_relay as relay_mod
 
     monkeypatch.setattr(relay_mod, "_SSH_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(relay_mod, "_SSH_CONNECT_READY_TIMEOUT_SECONDS", 0.05)

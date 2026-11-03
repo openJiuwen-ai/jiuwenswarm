@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from openjiuwen_protocol.message import EventType
+from gateway.message_handler.message_handler import MessageHandler
 
 
 class _FakeAgentClient:

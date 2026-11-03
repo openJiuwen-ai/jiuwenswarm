@@ -1,0 +1,6 @@
+---
+display_name_zh: <中文展示名>
+description_zh: <给人看的中文简短描述；不要写成 Agent 触发词堆砌>
+display_name_en: <English display name>
+description_en: <Short English UI description; keep SKILL.md description for Agent triggering>
+---

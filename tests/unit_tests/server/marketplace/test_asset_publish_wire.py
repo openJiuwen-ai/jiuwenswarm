@@ -14,7 +14,7 @@ from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     "method", ["describe", "prepare", "commit", "status", "records"]
 )
 async def test_publish_wire_forwards_user_context_without_echoing_auth(method):
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
     )

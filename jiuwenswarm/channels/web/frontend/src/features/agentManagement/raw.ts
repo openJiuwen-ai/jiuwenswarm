@@ -24,6 +24,7 @@ export type RawAgentTemplateListItem = {
     leader?: boolean;
     member?: boolean;
   };
+  runtime?: { provider_name?: string };
 };
 
 export type RawAgentCapability = {
@@ -48,6 +49,7 @@ export type RawAgentTemplateDetail = RawAgentTemplateListItem & {
   mcps?: RawAgentCapability[];
   quickInputs?: RawLocalizedText[];
   pending_connectors?: string[];
+  runtime?: { provider_name?: string };
 };
 
 export type RawAgentGroupMember = {
@@ -141,6 +143,9 @@ export type RawSkillOption = {
   description?: string;
   source?: string;
   installed?: boolean;
+  /** 启用态（skills.list 原样下发）：false = 用户已停用。"我的技能"口径用它过滤，
+      见 utils/mySkills.ts filterEnabledMySkills。 */
+  enabled?: boolean;
   kind?: string;
   skill_type?: string;
   marketplace?: string;

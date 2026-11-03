@@ -16,8 +16,8 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
 from openjiuwen.harness.tools.cron import CronToolContext
 from jiuwenswarm.agents.harness.common.tools.cron import cron_tools as cron_tools_module
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
-from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
-from jiuwenswarm.gateway.cron.store import CronJob, CronJobStore
+from gateway.cron.scheduler import CronSchedulerService
+from gateway.cron.store import CronJob, CronJobStore
 
 import time
 
@@ -743,7 +743,7 @@ async def test_cron_tools_create_job_uses_route_project_id_and_work_mode(
     # 本测试断言 route 上下文 model_name 透传，不依赖外部模型配置：patch 掉
     # 严格校验，与 test_cron_tools_update_job_validates_model 保持一致。
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.cron.cron_tools.validate_cron_model",
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
         lambda raw: str(raw).strip() or None,
     )
 
@@ -905,7 +905,7 @@ async def test_cron_tools_update_job_validates_model(tmp_path, monkeypatch) -> N
         targets="web",
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.cron.cron_tools.validate_cron_model",
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
         lambda raw: "checked-model" if raw == "valid-model" else None,
     )
 
@@ -939,7 +939,7 @@ async def test_cron_tools_create_job_tool_preserves_explicit_empty_project_dir(
     finally:
         tools.reset_cron_route(token)
 
-    assert job["project_id"] == ""
+    assert job["project_id"] == "default"
     synced = push.payloads[-1]["body"]["data"]
     assert synced["project_dir"] == ""
 
@@ -1047,16 +1047,15 @@ async def test_cron_tools_update_job_rejects_invalid_patch(tmp_path, monkeypatch
     [
         pytest.param("default", "default", id="session_default_work"),
         pytest.param("default_code", "default_code", id="session_default_code"),
-        pytest.param("", "", id="session_empty_like_manual"),
+        pytest.param("", "default", id="session_empty_like_manual"),
     ],
 )
 async def test_cron_tools_create_job_inherits_session_default_project_id(
     tmp_path, monkeypatch, session_pid, expected_pid
 ):
-    """Issue #2653：对话创建未显式传 project_id 时注入会话 project_id。
+    """Issue #2653 / #5713：对话创建未显式传 project_id 时注入会话 project_id。
 
-    会话在默认项目下会落库 default/default_code（与手动未选的空串不同）；
-    列表展示层须把二者统一显示为「-」。
+    会话为空时按通道模式落默认项目（web → default），不再产生空 project_id。
     """
     _setup_project_store(tmp_path, monkeypatch)
     tools, push = _make_cron_tools(tmp_path, monkeypatch)
@@ -1223,7 +1222,6 @@ class TestComputeNextRunMissedTriggerWindow:
         assert push_dt == datetime(2026, 7, 24, 18, 25, 31, tzinfo=ZoneInfo("Asia/Shanghai"))
         assert wake_dt == push_dt
         assert run_id.startswith("one-shot:")
-
     def test_missed_trigger_beyond_window_raises(self) -> None:
         svc = _TestableScheduler.__new__(_TestableScheduler)
 

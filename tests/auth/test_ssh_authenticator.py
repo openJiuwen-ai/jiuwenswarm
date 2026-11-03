@@ -6,14 +6,14 @@ import time
 
 import pytest
 
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+from gateway.extensions.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,
 )
-from jiuwenswarm.extensions.agentos.auth.ssh_authenticator import SshPublicKeyAuthenticator
-from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import AgentOSSshKeyIssuer
-from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import (
+from gateway.extensions.auth.ssh_authenticator import SshPublicKeyAuthenticator
+from gateway.extensions.auth.ssh_key_issuer import AgentOSSshKeyIssuer
+from gateway.extensions.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
 )

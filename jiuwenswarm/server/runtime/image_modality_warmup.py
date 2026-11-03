@@ -120,7 +120,8 @@ async def warm_image_modality_cache(
     config_base: dict[str, Any] | None = None,
     *,
     reason: str,
-) -> None:
+    report_status: bool = False,
+) -> bool | None:
     """Probe every configured model once and cache the verdicts.
 
     Never raises and never leaves the caller hanging: probe failures are
@@ -134,18 +135,31 @@ async def warm_image_modality_cache(
     """
     effective_config = config_base if isinstance(config_base, dict) else get_config()
 
+    # 企业版进程预热时尚无 request 路由，本地 yaml/env 往往仍是 .env.template
+    # 占位模型；此时视为「未配置好模型」，不做多模态探测，避免打到 example.com。
+    # 真正会话会按企业库模型在 DeepAgent auto 路径按需探测。
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if is_enterprise():
+        logger.info(
+            "[ImageModalityWarmup] skipped (%s): "
+            "enterprise edition has no process-level model yet",
+            reason,
+        )
+        return True if report_status else None
+
     if get_configured_read_image_multimodal(effective_config) is not None:
         logger.info(
             "[ImageModalityWarmup] skipped (%s): "
             "react.enable_read_image_multimodal is set explicitly",
             reason,
         )
-        return
+        return True if report_status else None
 
     models = _build_probe_models(effective_config)
     if not models:
         logger.info("[ImageModalityWarmup] skipped (%s): no probeable model configured", reason)
-        return
+        return True if report_status else None
 
     logger.info("[ImageModalityWarmup] probing %d model(s) (%s)", len(models), reason)
     try:
@@ -163,22 +177,27 @@ async def warm_image_modality_cache(
             _WARMUP_TOTAL_TIMEOUT_SECONDS,
             reason,
         )
-        return
+        return False if report_status else None
 
+    available = True
     for model, verdict in zip(models, verdicts):
         key = probe_cache_key(model)
         if isinstance(verdict, BaseException):
+            available = False
             logger.warning(
                 "[ImageModalityWarmup] probe failed for %s: %s",
                 key,
                 verdict,
             )
             continue
+        if verdict is None:
+            available = False
         logger.info(
             "[ImageModalityWarmup] %s image_input=%s",
             key,
             "unknown (not cached)" if verdict is None else verdict,
         )
+    return available if report_status else None
 
 
 async def refresh_image_modality_cache(

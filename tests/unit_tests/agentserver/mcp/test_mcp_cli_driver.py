@@ -22,8 +22,10 @@ from jiuwenswarm.server.runtime.mcp.cli_driver import (
     CliManifest,
     CommandResult,
     ERR_BINARY_NOT_FOUND,
+    ERR_INSTALL_SCRIPT_DEP,
     _extract_url,
     _is_binary_not_found,
+    _is_powershell_script_dep,
     _parse_version,
     _pin_init_command,
     _safe_split_command,
@@ -318,6 +320,28 @@ class TestCliDriverInstall:
         assert res.version_ok is False
         assert res.error_kind == ""
         assert "ETIMEDOUT" in res.error
+
+    def test_install_powershell_script_dep_classified(self) -> None:
+        """npm postinstall could not spawn powershell → error_kind=
+        install_script_dep, surfacing the real cause (missing PowerShell)
+        instead of a misleading MCP_CLI_INCOMPLETE / MCP_RUNTIME_MISSING."""
+        runner = _FakeRunner({
+            "lark-cli.cmd --version": CommandResult(
+                "lark-cli.cmd --version", -1, stderr="not found",
+                error_kind=ERR_BINARY_NOT_FOUND,
+            ),
+            "npm install -g @larksuite/cli": CommandResult(
+                "npm install -g @larksuite/cli", 1,
+                stderr="npm ERR! command failed\nnpm ERR! spawn powershell.exe ENOENT",
+            ),
+        })
+        drv = CliDriver("feishu", _mkmanifest(), runner)
+        res = drv.install()
+        assert res.version_ok is False
+        assert res.error_kind == ERR_INSTALL_SCRIPT_DEP
+        # The post-init version probe (binary missing) must NOT override the
+        # install script's own diagnosis.
+        assert "powershell" in res.error
 
 class TestCliDriverAuth:
     def test_auth_step_skipif_skips(self) -> None:
@@ -716,6 +740,17 @@ class TestBinaryNotFoundDetection:
     def test_generic_oserror_not_binary_missing(self) -> None:
         assert _is_binary_not_found(OSError("broken pipe")) is False
 
+    def test_powershell_script_dep_patterns(self) -> None:
+        assert _is_powershell_script_dep("npm ERR! spawn powershell.exe ENOENT")
+        assert _is_powershell_script_dep(
+            "'powershell' is not recognized as an internal or external command"
+        )
+        # Generic ENOENT / network errors must NOT be classified as a
+        # PowerShell dependency.
+        assert not _is_powershell_script_dep("npm ERR! spawn dws.cmd ENOENT")
+        assert not _is_powershell_script_dep("npm ERR! code ETIMEDOUT registry timeout")
+        assert not _is_powershell_script_dep("")
+
 
 class TestClassifyInstallFailure:
     """_classify_install_failure maps an InstallResult onto a CliConnectError
@@ -764,6 +799,16 @@ class TestClassifyInstallFailure:
             "dingtalk", self._mk(error="request failed: ECONNREFUSED 127.0.0.1:443"),
         )
         assert exc.code == CODE_INSTALL_NETWORK
+
+    def test_script_dep_maps_to_install_script_dep(self) -> None:
+        from jiuwenswarm.server.runtime.mcp.registry import CODE_INSTALL_SCRIPT_DEP, _classify_install_failure
+        exc = _classify_install_failure(
+            "dingtalk",
+            self._mk(error="npm ERR! spawn powershell.exe ENOENT",
+                     error_kind="install_script_dep"),
+        )
+        assert exc.code == CODE_INSTALL_SCRIPT_DEP
+        assert exc.install_cmd == "npm install -g dingtalk-workspace-cli"
 
     def test_other_failure_maps_to_cli_incomplete(self) -> None:
         from jiuwenswarm.server.runtime.mcp.registry import (

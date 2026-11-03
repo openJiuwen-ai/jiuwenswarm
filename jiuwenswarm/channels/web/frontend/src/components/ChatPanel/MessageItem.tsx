@@ -4,6 +4,8 @@
  * 单条消息显示，支持 TTS 朗读
  */
 
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useConversationLeaderIdentity } from '../../features/teamOrganization/leaderIdentity';
 import { useState, useCallback, useContext, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -16,7 +18,8 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import {
   Message,
   FileDownloadItem,
@@ -41,6 +44,7 @@ import { useSpeechSynthesis } from '../../hooks';
 import clsx from 'clsx';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { isTeamP2PMessageToUser, parseTeamEventMessage } from './teamEventUtils';
+import { memberNameFromMessageId } from '../../features/teamLeaderMessages';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { AgentAvatar } from '../AgentAvatar';
@@ -51,17 +55,42 @@ import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
+import { isEnterprise } from '../../edition';
+import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownload';
+import { useAgentCatalogStore } from '../../stores/agentCatalogStore';
+import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
-import { useChatStore } from '../../stores/chatStore';
+import { conversationKey, useChatStore } from '../../stores/chatStore';
+import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
+import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
+import {
+  findReferencedAssets,
+  normalizePath,
+  resolveAssetDisplayNames,
+  selectSessionAssets,
+  useSessionAssetsStore,
+} from '../../features/sessionAssets/sessionAssets';
+import type { MediaItem } from '../../types/message';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
 import { writeClipboard } from '../../utils/writeClipboard';
 import { isSkillPackageFile } from '../../utils/skillPackageFile';
+import { resolveChatFileCategory, type ChatFileCategory } from '../../utils/chatFileCategory';
 import {
   resolveTeamLeaderDisplayName,
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
+
+const CHAT_FILE_CATEGORY_LABEL_KEY: Record<ChatFileCategory, string> = {
+  skill: 'chatUi.fileTypeSkill',
+  pdf: 'chatUi.fileTypePdf',
+  spreadsheet: 'chatUi.fileTypeSpreadsheet',
+  presentation: 'chatUi.fileTypePresentation',
+  image: 'chatUi.fileTypeImage',
+  document: 'chatUi.fileTypeDocument',
+  file: 'chatUi.fileTypeFile',
+};
 
 function openArtifactPanelForActiveMode(selectedArtifactId: string): void {
   const sessionId = useChatStore.getState().activeSessionId;
@@ -111,6 +140,7 @@ export function TeamMemberMessageFrame({
   contentClassName,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   showAvatar?: boolean;
@@ -118,9 +148,12 @@ export function TeamMemberMessageFrame({
   contentClassName?: string;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   const { i18n } = useTranslation();
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const selectedConversation = useOrganizationConversationKey(sessionId);
+  const activeSessionId = sourceTeamId ? conversationKey(sessionId ?? '', sourceTeamId) : selectedConversation;
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
   // 头像旁的成员名：leader 使用显式 session identity，否则固定 Jiuwen；其他成员
   // 使用名册 display name，查不到退回 member_id。
@@ -179,6 +212,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction = false,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   content: string;
@@ -191,6 +225,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction?: boolean;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   return (
     <TeamMemberMessageFrame
@@ -198,6 +233,7 @@ function TeamLeaderPlainTextMessage({
       showAvatar={showAvatar}
       teamLeaderIdentity={teamLeaderIdentity}
       teamGroupIdentity={teamGroupIdentity}
+      sourceTeamId={sourceTeamId}
     >
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList
@@ -239,6 +275,7 @@ export function ContextCompressionLines({
   showSummary?: boolean;
 }) {
   const { t } = useTranslation();
+  const runningElapsedSeconds = useContextCompressionElapsed(runtime);
   const showRuntime = Boolean(runtime?.summary);
   const finalSummary = !runtime && showSummary && summary && summary.count > 0 ? summary : null;
   if (!showRuntime && !finalSummary) return null;
@@ -266,6 +303,14 @@ export function ContextCompressionLines({
               ? contextCompressionRunningText(t, runtime?.processor, runtime?.summary ?? '')
               : runtime?.summary}
           </span>
+          {isRunning && runningElapsedSeconds !== undefined && (
+            <span
+              className="context-compression-elapsed"
+              data-testid="chat-panel-context-compression-elapsed"
+            >
+              {contextCompressionElapsedText(t, runningElapsedSeconds)}
+            </span>
+          )}
         </div>
       )}
       {finalSummary && (
@@ -320,6 +365,12 @@ export function getMessageActor(message: Message): string | null {
     return 'team_leader';
   }
 
+  // 队友气泡同理：id 里带着成员名，头像与身份标注都用它。
+  const memberName = memberNameFromMessageId(message.id);
+  if (memberName) {
+    return memberName;
+  }
+
   if (message.role !== 'system') {
     return null;
   }
@@ -358,6 +409,7 @@ export const MessageItem = memo(function MessageItem({
   onForkFromMessage,
 }: MessageItemProps) {
   const { t } = useTranslation();
+  const agentCatalog = useAgentCatalogStore((state) => state.catalog);
   const {
     id,
     role,
@@ -386,9 +438,18 @@ export const MessageItem = memo(function MessageItem({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
   const activeSessionId = useChatStore((state) => state.activeSessionId);
-  const sessionTeamLeaderIdentity = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
-  );
+  const sourceTeam = useTeamSelectorStore((state) => state.runtimes[activeSessionId ?? '']?.teams
+    .find((team) => team.team_id === message.sourceTeamId));
+  const sourceGroupSnapshot = useSessionStore((state) => message.sourceTeamId
+    ? state.runtimes[conversationKey(activeSessionId ?? '', message.sourceTeamId)]?.teamGroupIdentity : null);
+  const sourceGroupIdentity = message.sourceTeamId
+    ? resolveOrganizationTeamIdentity(sourceTeam, [], sourceGroupSnapshot) : null;
+  const sourceTeamLabel = message.sourceTeamId
+    ? resolveOrganizationTeamLabel(sourceTeam, [], message.sourceTeamId) : '';
+  // 任务素材（@名称 引用）：素材存在后端，历史消息里只有 @名称 文本。
+  // 渲染用户气泡时按名称解析成缩略图，这样刷新/重进会话依然能看到素材。
+  const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
+  const sessionTeamLeaderIdentity = useConversationLeaderIdentity(activeSessionId);
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? sessionTeamLeaderIdentity;
 
   // TTS
@@ -537,9 +598,31 @@ export const MessageItem = memo(function MessageItem({
     );
   }
 
-  // 交互问答「问题澄清」回显卡（ask_user 确认后前端合成注入）
+  // 交互问答「问题澄清」回显卡（ask_user 确认后前端合成注入）。
+  // 注意：ask_user 中断会清空 currentStreamId，恢复执行后 send_file_to_user 的
+  // 文件可能经 addFileItems 兜底挂到本合成卡片消息上（历史恢复同理），需一并
+  // 渲染 FileDownloadList，否则产物卡片（含技能保存按钮）不可见。
   if (isQaSummaryContent(content)) {
-    return <QaSummaryCard content={content} />;
+    const qaFileItems = fileItems?.length ? fileItems : null;
+    return (
+      <>
+        <QaSummaryCard content={content} />
+        {qaFileItems && (
+          <div className="flex justify-start" data-testid="chat-panel-qa-summary-file-list">
+            <div className="w-full max-w-[640px]">
+              <FileDownloadList
+                files={qaFileItems}
+                className="chat-message-file-list"
+                onPreview={(index) => {
+                  if (openFileInDesktopBrowser(qaFileItems[index])) return;
+                  openArtifactPanelForActiveMode(fileArtifactId(qaFileItems[index]));
+                }}
+              />
+            </div>
+          </div>
+        )}
+      </>
+    );
   }
 
   // 目标完成回显卡（目标实时跳变到 completed 时前端合成注入）
@@ -643,6 +726,13 @@ export const MessageItem = memo(function MessageItem({
 	           // 面向用户的团队消息直接展示在主会话
 	           if (event.isLeaderToUser || isTeamP2PMessageToUser(event)) {
 	             return (
+	               <div data-testid="chat-panel-user-directed-team-message" data-variant={message.sourceTeamId}>
+                     {message.sourceTeamId && (
+                       <div className="mb-1 text-xs font-medium text-text-muted"
+                         data-testid="chat-panel-message-source-team" data-variant={message.sourceTeamId}>
+                         {sourceTeamLabel}
+                       </div>
+                     )}
 	               <TeamLeaderPlainTextMessage
 	                 member={event.fromMember}
 	                 content={event.content}
@@ -651,9 +741,12 @@ export const MessageItem = memo(function MessageItem({
 	                 isStreaming={isStreaming}
 	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
-	                 teamLeaderIdentity={teamLeaderIdentity}
-	                 teamGroupIdentity={teamGroupIdentityOverride}
+	                 teamLeaderIdentity={message.sourceTeamId
+                       ? { agentTemplateId: '', displayName: sourceTeamLabel } : teamLeaderIdentity}
+	                 teamGroupIdentity={message.sourceTeamId ? sourceGroupIdentity : teamGroupIdentityOverride}
+                     sourceTeamId={message.sourceTeamId}
 	               />
+	               </div>
 	             );
 	           }
 	           
@@ -726,6 +819,25 @@ export const MessageItem = memo(function MessageItem({
 	       );
 	     }
 	     
+	     // 队友气泡：内容本身就是纯文字（没有 team.leader 那样的 JSON 包装），
+	     // 成员名从 id 里取，用来渲染身份与头像。
+	     const teamMemberName = memberNameFromMessageId(id);
+
+	     if (teamMemberName) {
+	       return (
+	         <TeamLeaderPlainTextMessage
+	           member={teamMemberName}
+              timestamp={timestamp}
+	           content={content || (isStreaming ? '正在接收中...' : '')}
+	           messageId={id}
+	           isStreaming={isStreaming}
+	           showAvatar={showAvatar}
+	           fileItems={fileItems}
+	           disableA2UIInteraction={disableA2UIInteraction}
+	         />
+	       );
+	     }
+
     return (
       <div className="flex justify-center my-4 animate-fade-in" data-testid="chat-panel-system-message-bubble">
         <div className="px-4 py-2 rounded-full bg-secondary border border-border text-text-muted text-sm">
@@ -744,14 +856,45 @@ export const MessageItem = memo(function MessageItem({
   );
   const showCopy = Boolean(isUser ? displayContent : content) && !isStreaming;
   const isPlaying = audioBase64 ? isAudioPlaying : isSpeaking;
-  const visibleMediaItems = mediaItems?.length ? mediaItems : null;
+  const rawMediaItems = mediaItems?.length ? mediaItems : null;
+  // 上传时改过名的文件，历史消息里只存了原始 filename（displayName 不落盘），刷新页面后会
+  // 退化成 EMXN1y8qOw....webp。按路径从会话素材表把用户起的名字补回来。
+  const baseMediaItems = rawMediaItems
+    ? resolveAssetDisplayNames(rawMediaItems, sessionAssets)
+    : null;
+  // 用户气泡里用 @名称 引用的素材，按当前会话素材表解析成可渲染的缩略图。
+  // 只在用户消息上做；素材表为空时不产生任何额外渲染。
+  let referencedMediaItems: MediaItem[] | null = null;
+  if (isUser && displayContent && sessionAssets.length > 0) {
+    const refs = findReferencedAssets(displayContent, sessionAssets);
+    if (refs.length > 0) {
+      const shown = new Set((baseMediaItems ?? []).map((item) => normalizePath(item.path ?? '')));
+      const extra: MediaItem[] = [];
+      for (const ref of refs) {
+        if (shown.has(normalizePath(ref.path))) continue;
+        shown.add(normalizePath(ref.path));
+        extra.push({
+          type: ref.kind === 'image' || ref.kind === 'video' || ref.kind === 'audio' ? ref.kind : 'document',
+          mimeType: '',
+          filename: ref.path.split(/[\\/]/).pop() || ref.name,
+          displayName: ref.name,
+          path: ref.path,
+        });
+      }
+      referencedMediaItems = extra.length > 0 ? extra : null;
+    }
+  }
+  const visibleMediaItems = referencedMediaItems
+    ? [...(baseMediaItems ?? []), ...referencedMediaItems]
+    : baseMediaItems;
   const visibleFileItems = fileItems?.length ? fileItems : null;
   const hasDisplayText = Boolean(displayContent);
   const hasBubbleContent = isUser
     ? hasDisplayText || isStreaming
     : Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
   const showFork = Boolean(
-    onForkFromMessage &&
+    !isEnterprise() &&
+      onForkFromMessage &&
       !isStreaming &&
       (role === 'user' || role === 'assistant') &&
       hasBubbleContent
@@ -785,6 +928,13 @@ export const MessageItem = memo(function MessageItem({
         )}
         data-testid="chat-panel-bubble-wrapper"
       >
+        {!isUser && message.agentTemplateName && (
+          <div className="chat-message-expert">
+            {agentCatalog?.find(
+              (item) => item.id === message.agentTemplateName || item.runtimePackageName === message.agentTemplateName,
+            )?.displayName || message.agentTemplateName}
+          </div>
+        )}
         {!isUser && (
           <div className="hidden" data-testid="chat-panel-thinking-summary" aria-hidden="true" />
         )}
@@ -958,18 +1108,9 @@ export const MessageItem = memo(function MessageItem({
   );
 });
 
-function formatFileSize(bytes: number | undefined): string {
-  if (bytes === undefined || bytes === null || isNaN(bytes)) return '';
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const size = bytes / Math.pow(1024, i);
-  return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
 function skillPackageDisplayName(file: FileDownloadItem): string {
   const raw = (file.name || file.path || '').replace(/\\/g, '/').split('/').pop() || '';
-  return raw.replace(/(\.skill)?\.zip$/i, '').replace(/\.skill$/i, '') || raw || 'skill';
+  return raw || 'skill';
 }
 
 function resolveFileDownloadToken(file: FileDownloadItem): string | undefined {
@@ -1005,12 +1146,6 @@ function getSavedSkillTokens(): Set<string> {
   } catch { return new Set<string>(); }
 }
 
-function getFileExtension(name: string): string {
-  const parts = name.split('.');
-  if (parts.length < 2) return '';
-  return parts[parts.length - 1].toUpperCase();
-}
-
 function FileDownloadList({
   files,
   className,
@@ -1032,14 +1167,19 @@ function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fetch(file.download_url, { method: 'HEAD' })
+      fileDownloadHead(file.download_url)
         .then((res) => {
-          if (!cancelled && !res.ok) {
-            setExpiredSet((prev) => new Set(prev).add(index));
+          if (!cancelled) {
+            setExpiredSet((prev) => {
+              const next = new Set(prev);
+              if (res.ok && isEnterprise()) next.delete(index);
+              else if (!res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) next.add(index);
+              return next;
+            });
           }
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!cancelled && !isEnterprise()) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1061,6 +1201,10 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
+    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
+      window.alert(t('artifacts.downloadFailed', { name: file.name }));
+      return;
+    }
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
@@ -1085,7 +1229,7 @@ function FileDownloadList({
     const downloadToken = resolveFileDownloadToken(file);
     if (!downloadToken) return;
     if (!sessionId) {
-      window.alert('当前无活跃会话，无法保存 Skill');
+      window.alert(t('chatUi.saveSkillNoSession'));
       return;
     }
 
@@ -1105,7 +1249,7 @@ function FileDownloadList({
     } catch (error) {
       if (isImportOverwriteRequired(error)) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        const overwrite = window.confirm(`${errorMsg}\n是否覆盖保存？`);
+        const overwrite = window.confirm(t('chatUi.saveSkillOverwriteConfirm', { message: errorMsg }));
         if (!overwrite) return;
         try {
           await webRequest('skills.import_local', importParams(true));
@@ -1130,7 +1274,6 @@ function FileDownloadList({
     <div data-testid="chat-panel-file-download-list"
     className={clsx('mt-2 space-y-2', className)}>
       {files.map((file, index) => {
-        const ext = getFileExtension(file.name);
         const expired = expiredSet.has(index);
         const isSkill = isSkillPackageFile(file);
         const displayName = isSkill ? skillPackageDisplayName(file) : file.name;
@@ -1172,23 +1315,25 @@ function FileDownloadList({
               aria-label={onPreview ? t('artifacts.openPreview', { name: displayName }) : undefined}
             >
               {isSkill ? (
-                <div className="flex-shrink-0 w-6 h-6 rounded-lg bg-accent-subtle flex items-center justify-center">
-                  <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
-                  </svg>
-                </div>
+                <img
+                  src={skillPackageIcon}
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  width={24}
+                  height={24}
+                  data-testid="file-icon"
+                  data-variant="skill"
+                  className="flex-shrink-0 select-none"
+                  style={{ width: 24, height: 24, display: 'block', flexShrink: 0 }}
+                />
               ) : (
                 <FileIcon fileName={file.name} size={24} className="flex-shrink-0 select-none" />
               )}
               <div className="flex-1 min-w-0" data-testid="chat-panel-file-download-info">
                 <div className="text-sm font-medium text-text leading-snug truncate" data-testid="chat-panel-file-download-name">{displayName}</div>
                 <div className="flex items-center gap-1.5 mt-0.5" data-testid="chat-panel-file-download-meta">
-                  {!isSkill && (
-                    <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-mono font-medium text-text-muted bg-secondary leading-none" data-testid="chat-panel-file-download-ext">
-                      {ext || 'FILE'}
-                    </span>
-                  )}
-                  <span className="text-xs text-text-muted" data-testid="chat-panel-file-download-size">{formatFileSize(file.size)}</span>
+                  <span className="text-xs text-text-muted" data-testid="chat-panel-file-download-type">{t(CHAT_FILE_CATEGORY_LABEL_KEY[resolveChatFileCategory(file)])}</span>
                   {expired && (
                     <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-mono font-medium text-danger bg-danger/10 leading-none" data-testid="chat-panel-file-download-expired">
                       {t('chatUi.fileExpired')}
@@ -1200,7 +1345,7 @@ function FileDownloadList({
             {isSkill ? (
               <div className="flex-shrink-0 flex items-center gap-2">
                 {saveSuccessIndex === index && (
-                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">保存成功</span>
+                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">{t('chatUi.saveSkillSuccess')}</span>
                 )}
                 <button
                   type="button"
@@ -1217,9 +1362,9 @@ function FileDownloadList({
                     event.stopPropagation();
                     void handleSaveSkill(file, index);
                   }}
-                  title={isSaved ? '已保存' : '保存'}
+                  title={isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 >
-                  {isSaving ? '保存中...' : isSaved ? '已保存' : '保存'}
+                  {isSaving ? t('chatUi.saveSkillSaving') : isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 </button>
               </div>
             ) : (

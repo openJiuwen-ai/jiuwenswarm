@@ -11,18 +11,18 @@ from __future__ import annotations
 from types import SimpleNamespace
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from openjiuwen_protocol.message import Message
+from gateway.message_handler.command_parser.slash_command import (
     ParsedChannelControl,
     ParsedControlAction,
 )
-from jiuwenswarm.gateway.message_handler.join_exit_handlers import (
+from gateway.message_handler.join_exit_handlers import (
     JoinExitHandlers,
     _join_err_team_not_exist,
 )
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-from jiuwenswarm.gateway.routing.session_sharing import SessionSharingRegistry
+from gateway.message_handler.message_handler import MessageHandler
+from gateway.routing.session_sharing import SessionSharingRegistry
 
 
 # ── copy helper ──
@@ -58,12 +58,18 @@ def _make_msg(*, user_id: str = "ou_user1") -> Message:
     )
 
 
-def _make_handler(resp: AgentResponse, registry: SessionSharingRegistry):
+def _make_handler(
+    resp: AgentResponse,
+    registry: SessionSharingRegistry,
+    notice_infos: list[dict] | None = None,
+):
     client = _FakeClient(resp)
     notices: list[str] = []
     published: list = []
 
     async def _send_channel_notice(_uis, _ch, _sid, text):
+        if notice_infos is not None:
+            notice_infos.append(_uis)
         notices.append(text)
 
     async def _publish_robot_messages(msg):
@@ -139,6 +145,35 @@ async def test_scoped_team_name_still_works() -> None:
 
     assert len(registry.lookup_member(sid, "player-1")) == 1
     assert not any("不匹配" in n for n in notices)
+
+
+@pytest.mark.anyio
+async def test_xiaoyi_join_notice_keeps_platform_task_open() -> None:
+    sid = "sess_xiaoyi"
+    resp = AgentResponse(
+        request_id="r", channel_id="xiaoyi", ok=True,
+        payload={"members": [{"member_id": "player-1", "role": "human_agent"}]},
+    )
+    registry = SessionSharingRegistry()
+    notice_infos: list[dict] = []
+    handler, _ = _make_handler(resp, registry, notice_infos)
+    msg = _make_msg()
+    msg.channel_id = "xiaoyi"
+    msg.chat_id = "physical-session"
+    msg.metadata = {
+        **(msg.metadata or {}),
+        "xiaoyi_session_id": "physical-session",
+        "xiaoyi_task_id": "task-1",
+        "xiaoyi_conversation_id": "conversation-1",
+    }
+
+    await handler.join_slash_handler(
+        {}, "xiaoyi", msg,
+        _join_parsed(f"team_报数游戏小队_session_{sid}", "player-1"),
+    )
+
+    assert len(registry.lookup_member(sid, "player-1")) == 1
+    assert notice_infos[-1]["meta_data"]["xiaoyi_team_task_hold"] is True
 
 
 @pytest.mark.anyio

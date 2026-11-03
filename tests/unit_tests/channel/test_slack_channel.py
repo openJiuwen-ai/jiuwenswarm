@@ -8,15 +8,15 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.im_platforms.slack import slack_connect
-from jiuwenswarm.gateway.channel_manager.im_platforms.slack.slack_connect import (
+from openjiuwen_protocol.message import EventType, Message
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.im_platforms.slack import slack_connect
+from gateway.channel_manager.im_platforms.slack.slack_connect import (
     SlackChannel,
     SlackChannelConfig,
 )
-from jiuwenswarm.gateway.routing.keys import SlackDeliveryTarget, make_delivery_target
-from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from gateway.routing.keys import SlackDeliveryTarget, make_delivery_target
+from gateway.routing.session_sharing import RoutingTarget
 
 
 def _message(

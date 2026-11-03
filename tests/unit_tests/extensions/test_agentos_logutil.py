@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
+from gateway.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
     format_agentos,
     log_agentos,

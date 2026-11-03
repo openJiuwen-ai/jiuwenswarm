@@ -1,0 +1,52 @@
+.icon {
+  flex: 0 0 auto;
+  stroke: currentColor;
+}
+
+.completed {
+  color: var(--color-feedback-success);
+}
+
+.failed {
+  color: var(--color-feedback-danger);
+}
+
+.running {
+  color: var(--color-action-primary);
+}
+
+.pending,
+.skipped {
+  color: var(--color-text-weak);
+}
+
+/* Filled marks draw the glyph in the page background over a solid disc. */
+.fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+.mark {
+  stroke: var(--color-surface-card);
+}
+
+.track {
+  opacity: 0.25;
+}
+
+.spinner {
+  transform-origin: 8px 8px;
+  animation: diagnosis-status-spin 0.9s linear infinite;
+}
+
+@keyframes diagnosis-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}

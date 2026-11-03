@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 _SERVICE_LOGGER_NAMES = {
     "web": "jiuwenswarm.channels.web.debug_dump",
     "agentserver": "jiuwenswarm.server.debug_dump",
-    "gateway": "jiuwenswarm.gateway.debug_dump",
+    "gateway": "gateway.debug_dump",
 }
 
 

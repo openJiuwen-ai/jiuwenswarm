@@ -9,60 +9,76 @@ live here instead of being duplicated per attachment kind.
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import os
 import re
+import stat
 from pathlib import Path
 
 # Characters no mainstream filesystem accepts inside a name: ASCII control
 # chars, POSIX/Windows path separators, and the rest of the Windows-reserved
 # punctuation. Everything else — including non-ASCII letters — is kept.
-_UNSAFE_FILENAME_CHARS = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]+')
-
-# Bidirectional overrides let a name render as a different extension than the
-# one on disk (``evil‮gnp.md`` shows up as ``evil.md``), so they are
-# stripped even though a filesystem would happily store them.
-_BIDI_CONTROL_CHARS = re.compile("[‎‏‪-‮⁦-⁩]")
-
-# Session ids are machine-generated ASCII and name a directory, so they keep
-# the stricter allowlist: anything unexpected collapses to an underscore.
-_UNSAFE_SESSION_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
-
-_WINDOWS_RESERVED_NAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{index}" for index in range(1, 10)}
-    | {f"LPT{index}" for index in range(1, 10)}
+from gateway.common.attachment_safety import (  # noqa: F401
+    safe_session_dirname,
+    safe_upload_filename,
 )
 
-# ext4/APFS/NTFS all cap a single name at 255 bytes. Budget in bytes rather
-# than characters: 180 CJK characters are 540 bytes and would be rejected.
-_MAX_FILENAME_BYTES = 180
-_MAX_SESSION_ID_CHARS = 120
+UPLOAD_READ_CHUNK_BYTES = 512 * 1024
 
 
-def safe_upload_filename(filename: str, *, fallback: str) -> str:
-    """Turn a browser-supplied filename into a safe, still-readable name.
+def read_session_upload_chunk(session_id: str, raw_path: str, offset: int, limit: int) -> dict:
+    """Read a bounded chunk from this tenant's direct session-upload children."""
+    from jiuwenswarm.common.obs_files import MAX_FILE_BYTES
+    from jiuwenswarm.common.utils import get_agent_sessions_dir
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
-    Only characters a filesystem rejects are replaced, so Unicode names
-    (Chinese, Japanese, accented Latin, ...) survive intact — the stored path
-    keeps telling both the user and the agent which file it is.
-
-    Args:
-        filename: Raw name from the upload payload; directory parts are dropped.
-        fallback: Name to use when nothing usable remains (e.g. ``document-1.md``).
-
-    Returns:
-        A single path component safe to join onto the uploads directory.
-    """
-    name = _sanitize_name(filename)
-    if not name:
-        name = _sanitize_name(fallback) or "upload"
-    return _truncate_filename_bytes(name, _MAX_FILENAME_BYTES)
-
-
-def safe_session_dirname(session_id: str | None) -> str:
-    """Return the directory name for a session's upload folder."""
-    text = str(session_id or "default").strip() or "default"
-    return _UNSAFE_SESSION_CHARS.sub("_", text)[:_MAX_SESSION_ID_CHARS]
+    if not session_id or safe_session_dirname(session_id) != session_id:
+        raise ValueError("invalid session_id")
+    if offset < 0 or not 0 < limit <= UPLOAD_READ_CHUNK_BYTES:
+        raise ValueError("invalid offset or limit")
+    root = TenantContext.current_tenant_root()
+    uploads = get_agent_sessions_dir() / session_id / "uploads"
+    path = Path(raw_path)
+    path_in_uploads = path.is_absolute() and path.parent == uploads
+    name_ok = path.name not in {"", ".", ".."}
+    under_tenant = root is not None and uploads.is_relative_to(root)
+    if not path_in_uploads or not name_ok or not under_tenant:
+        raise PermissionError("path outside tenant session uploads")
+    # Anchor every directory and the leaf by descriptor; never follow a symlink.
+    # Pair each os.open with os.close in the same try/finally arm (G.PRM.03);
+    # a deferred list-close is opaque to that static check.
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(root, directory_flags, 0o700)
+    try:
+        for part in uploads.relative_to(root).parts:
+            parent_fd = directory
+            directory = os.open(part, directory_flags, 0o700, dir_fd=parent_fd)
+            os.close(parent_fd)
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+            dir_fd=directory,
+        )
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise PermissionError("upload must be a single-link regular file")
+            if info.st_size > MAX_FILE_BYTES or offset > info.st_size:
+                raise ValueError("invalid upload size or offset")
+            os.lseek(descriptor, offset, os.SEEK_SET)
+            data = os.read(descriptor, min(limit, info.st_size - offset))
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory)
+    return {
+        "data_base64": base64.b64encode(data).decode("ascii"),
+        "offset": offset, "chunk_size": len(data), "size": info.st_size,
+        "eof": offset + len(data) >= info.st_size,
+        "name": path.name, "mime_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+    }
 
 
 def unique_upload_path(path: Path) -> Path:
@@ -78,7 +94,7 @@ def unique_upload_path(path: Path) -> Path:
     return path.with_name(f"{stem}-overflow{suffix}")
 
 
-def atomic_write_unique(target: Path, data: bytes) -> Path:
+def atomic_write_unique(target: Path, data: bytes, *, directory_fd: int | None = None) -> Path:
     """Write *data* beside *target* without overwriting an existing file.
 
     The create-and-open is atomic: ``os.open`` is called with
@@ -92,14 +108,28 @@ def atomic_write_unique(target: Path, data: bytes) -> Path:
     actually written.  After 999 name collisions (a pathological state)
     it raises ``FileExistsError`` rather than silently overwriting.
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if is_enterprise():
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+            check_workspace_write, is_workspace_quota_enabled, resolve_effective_quota,
+        )
+
+        if is_workspace_quota_enabled():
+            resolve_effective_quota(force_refresh=True)
+            check_workspace_write(additional_bytes=len(data))
+    if directory_fd is None:
+        target.parent.mkdir(parents=True, exist_ok=True)
     stem = target.stem
     suffix = target.suffix
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     for index in range(1000):
         candidate = target if index == 0 else target.with_name(f"{stem}-{index}{suffix}")
         try:
-            fd = os.open(candidate, flags, 0o644)
+            fd = os.open(
+                candidate.name if directory_fd is not None else candidate,
+                flags, 0o600 if directory_fd is not None else 0o644, dir_fd=directory_fd,
+            )
         except FileExistsError:
             continue
         try:
@@ -112,7 +142,7 @@ def atomic_write_unique(target: Path, data: bytes) -> Path:
                 f.write(data)
         except BaseException:
             try:
-                os.unlink(candidate)
+                os.unlink(candidate.name if directory_fd is not None else candidate, dir_fd=directory_fd)
             except OSError:
                 pass
             raise
@@ -120,35 +150,3 @@ def atomic_write_unique(target: Path, data: bytes) -> Path:
     raise FileExistsError(f"no free upload slot under {target}")
 
 
-def _sanitize_name(filename: str) -> str:
-    """Strip directories and unsafe characters; return "" when nothing is left."""
-    name = Path(str(filename or "")).name.strip()
-    name = _BIDI_CONTROL_CHARS.sub("", name)
-    name = _UNSAFE_FILENAME_CHARS.sub("_", name)
-    # Windows silently drops trailing dots and spaces; strip them so the stored
-    # name matches what every platform reports back.
-    name = name.rstrip(". ").strip()
-    if not name or name in {".", ".."}:
-        return ""
-    if Path(name).stem.upper() in _WINDOWS_RESERVED_NAMES:
-        return ""
-    return name
-
-
-def _truncate_filename_bytes(name: str, max_bytes: int) -> str:
-    """Cap a name at ``max_bytes`` UTF-8 bytes, keeping its extension."""
-    if len(name.encode("utf-8")) <= max_bytes:
-        return name
-
-    suffix = Path(name).suffix
-    suffix_bytes = len(suffix.encode("utf-8"))
-    if suffix_bytes >= max_bytes:
-        return _truncate_text_bytes(name, max_bytes)
-
-    stem = _truncate_text_bytes(Path(name).stem, max_bytes - suffix_bytes)
-    return f"{stem}{suffix}" if stem else _truncate_text_bytes(name, max_bytes)
-
-
-def _truncate_text_bytes(text: str, max_bytes: int) -> str:
-    """Cut ``text`` to ``max_bytes``, never splitting a UTF-8 sequence."""
-    return text.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")

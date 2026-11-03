@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 const VIEWPORT_MARGIN = 8;
 const TOOLTIP_GAP = 6;
 
-type TooltipPlacement = 'top' | 'bottom';
+type TooltipPlacement = 'top' | 'bottom' | 'right';
 
 type TooltipAlign = 'center' | 'left' | 'right';
 
@@ -31,10 +31,15 @@ interface UseAdaptiveTooltipOptions {
   placement?: TooltipPlacement;
   /** 最大宽度（px），不传时用 .adaptive-tooltip 的默认 320px */
   maxWidth?: number;
+  /** 保留提示文案中的换行。 */
+  multiline?: boolean;
   /** 用此 ref 指向的元素的 rect 作为定位锚点（替代事件触发元素）。
    *  典型场景：hover 子元素（被截断的标题 span）时，tooltip 相对于稳定行容器定位。
    *  data-tooltip 文本仍然从事件触发元素读取。 */
   anchorRef?: RefObject<HTMLElement | null>;
+  /** portal 挂载容器，默认 document.body。触发元素位于 top layer 弹窗（showModal 打开的 <dialog>）内时
+   *  必须传该 dialog 元素：普通 DOM 无论 z-index 多高都会被 top layer 整体盖住。 */
+  containerRef?: RefObject<HTMLElement | null>;
 }
 
 /**
@@ -43,7 +48,7 @@ interface UseAdaptiveTooltipOptions {
  * 仍放不下时收进视口内（VIEWPORT_MARGIN 兜底）。
  *
  * offsetX: 相对触发元素宽度的百分比偏移（负值向左），0 = 居中，-50 = 左移半个触发元素宽度。
- * placement: 'top' 显示在触发元素上方，'bottom'（默认）显示在下方。
+ * placement: 'top' 显示在触发元素上方，'bottom'（默认）显示在下方，'right' 显示在右侧。
  *
  * 自动隐藏时机：hover/focus 离开、点击任意位置、焦点移到其他元素、
  * 触发元素被卸载（如弹出菜单关闭）或页面滚动/缩放。
@@ -55,6 +60,9 @@ interface UseAdaptiveTooltipOptions {
  *   const { tooltip, handlers } = useAdaptiveTooltip({ maxWidth: 400 });
  *   <button data-tooltip="提示" {...handlers}>...</button>
  *   {tooltip}
+ *
+ * 触发元素在 top layer 弹窗（showModal 的 <dialog>）内时传 containerRef 指向该 dialog，
+ * 否则 tooltip portal 到 body 会被弹窗整体盖住。
  */
 export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { tooltip: ReactNode; handlers: TooltipHandlers } {
   const offsetPct = options?.offsetX ?? 0;
@@ -63,6 +71,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
   const placement = options?.placement ?? 'bottom';
   const maxWidth = options?.maxWidth;
   const anchorRef = options?.anchorRef;
+  const containerRef = options?.containerRef;
   const [state, setState] = useState<TooltipState | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number; visible: boolean } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -107,36 +116,60 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     const height = el.offsetHeight;
     const { left, right, top, bottom } = state.buttonRect;
     const buttonWidth = right - left;
-    const maxLeft = window.innerWidth - VIEWPORT_MARGIN - width;
-    const viewportHeight = window.innerHeight;
+    // Modal <dialog> is top-layer; keep tips inside its box so overflow:hidden
+    // on form-dialog-surface does not clip them, and so body portals are not
+    // painted underneath the dialog.
+    const dialogRect = triggerRef.current?.closest('dialog')?.getBoundingClientRect();
+    const minTop = dialogRect ? dialogRect.top + VIEWPORT_MARGIN : VIEWPORT_MARGIN;
+    const maxBottom = dialogRect
+      ? dialogRect.bottom - VIEWPORT_MARGIN
+      : window.innerHeight - VIEWPORT_MARGIN;
+    const minLeft = dialogRect ? dialogRect.left + VIEWPORT_MARGIN : VIEWPORT_MARGIN;
+    const maxLeftBound = dialogRect
+      ? dialogRect.right - VIEWPORT_MARGIN
+      : window.innerWidth - VIEWPORT_MARGIN;
+    const maxLeft = Math.max(minLeft, maxLeftBound - width);
+    const viewportHeight = maxBottom;
     let finalTop: number;
-    if (state.placement === 'top') {
+    if (state.placement === 'right') {
+      finalTop = Math.max(minTop, Math.min(top + (bottom - top - height) / 2, viewportHeight - height));
+    } else if (state.placement === 'top') {
       const topPos = top - TOOLTIP_GAP - height;
       const spaceBelow = viewportHeight - bottom - TOOLTIP_GAP;
-      finalTop = topPos >= VIEWPORT_MARGIN ? topPos : (spaceBelow >= height ? bottom + TOOLTIP_GAP : topPos);
+      finalTop = topPos >= minTop ? topPos : (spaceBelow >= height ? bottom + TOOLTIP_GAP : topPos);
     } else {
       const bottomPos = bottom + TOOLTIP_GAP;
-      const spaceAbove = top - TOOLTIP_GAP;
-      finalTop = bottomPos + height <= viewportHeight - VIEWPORT_MARGIN ? bottomPos : (spaceAbove >= height ? top - TOOLTIP_GAP - height : bottomPos);
+      const spaceAbove = top - TOOLTIP_GAP - minTop;
+      finalTop = bottomPos + height <= viewportHeight ? bottomPos : (spaceAbove >= height ? top - TOOLTIP_GAP - height : bottomPos);
     }
 
     let finalLeft: number;
-    if (align === 'left') {
-      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left, maxLeft));
+    if (state.placement === 'right') {
+      const rightPos = right + TOOLTIP_GAP;
+      const leftPos = left - TOOLTIP_GAP - width;
+      finalLeft = rightPos <= maxLeft
+        ? rightPos
+        : Math.max(minLeft, Math.min(leftPos, maxLeft));
+    } else if (align === 'left') {
+      finalLeft = Math.max(minLeft, Math.min(left, maxLeft));
     } else if (align === 'right') {
-      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(right - width, maxLeft));
+      finalLeft = Math.max(minLeft, Math.min(right - width, maxLeft));
     } else {
       const shift = (buttonWidth * offsetPct) / 100;
       const centered = left + buttonWidth / 2 - width / 2 - shift;
-      if (centered < VIEWPORT_MARGIN) {
-        finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left - shift, maxLeft));
+      if (centered < minLeft) {
+        finalLeft = Math.max(minLeft, Math.min(left - shift, maxLeft));
       } else if (centered > maxLeft) {
-        finalLeft = Math.min(Math.max(right - width - shift, VIEWPORT_MARGIN), maxLeft);
+        finalLeft = Math.min(Math.max(right - width - shift, minLeft), maxLeft);
       } else {
         finalLeft = centered;
       }
     }
-    setPosition({ top: finalTop + offsetY, left: finalLeft, visible: true });
+    setPosition({
+      top: Math.max(minTop, Math.min(finalTop + offsetY, viewportHeight - height)),
+      left: Math.max(minLeft, Math.min(finalLeft, maxLeft)),
+      visible: true,
+    });
   }, [state, offsetPct, offsetY, align]);
 
   useEffect(() => {
@@ -152,13 +185,18 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     };
     // 触发元素可能在 hover/focus 期间被整体卸载（如弹出菜单关闭），
     // 此时 mouseleave/blur 永远不会触发，state 会残留并在容器重新挂载时复活旧 tooltip。
-    // 仅监听触发元素父节点的 childList，避免 document.body subtree 在流式输出时反复回调。
+    // 菜单可能随任意祖先节点一起卸载；只监听各级 childList，避免 subtree
+    // 在流式输出时因无关后代变动反复回调。
     const trigger = triggerRef.current;
-    const parentNode = trigger?.parentNode as Node | null;
+    // 点击可能在显示 tooltip 的同一轮渲染中关闭菜单；此时卸载发生在监听注册之前。
+    if (!trigger?.isConnected) {
+      hideTooltip();
+      return;
+    }
     const observer = new MutationObserver(() => {
       if (triggerRef.current && !triggerRef.current.isConnected) hideTooltip();
     });
-    if (parentNode) {
+    for (let parentNode = trigger?.parentNode; parentNode; parentNode = parentNode.parentNode) {
       observer.observe(parentNode, { childList: true });
     }
     window.addEventListener('resize', hideTooltip);
@@ -174,11 +212,13 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     };
   }, [state]);
 
+  const portalHost = triggerRef.current?.closest('dialog') ?? document.body;
   const tooltip = state
     ? createPortal(
         <div
           ref={tooltipRef}
           className="adaptive-tooltip"
+          data-testid={triggerRef.current?.dataset.testid ? `${triggerRef.current.dataset.testid}-tooltip` : undefined}
           style={{
             position: 'fixed',
             top: position ? position.top : -9999,
@@ -186,12 +226,13 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
             visibility: position?.visible ? 'visible' : 'hidden',
             zIndex: 10000,
             maxWidth: maxWidth !== undefined ? `${maxWidth}px` : undefined,
+            whiteSpace: options?.multiline ? 'pre-line' : undefined,
           }}
           role="tooltip"
         >
           {state.text}
         </div>,
-        document.body
+        containerRef?.current ?? portalHost,
       )
     : null;
 

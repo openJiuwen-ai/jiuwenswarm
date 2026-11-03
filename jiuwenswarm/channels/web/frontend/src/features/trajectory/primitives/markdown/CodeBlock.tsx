@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 // CodeBlock: one code surface for every consumer — markdown fences, the
 // run_code program body, and the details panel's raw args/output — with
 // shiki highlighting for the registered grammars and an identical-geometry

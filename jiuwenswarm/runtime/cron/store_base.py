@@ -17,7 +17,7 @@ class CronJobStoreBackend(Protocol):
 
     supports_watch: bool
 
-    async def list_jobs(self) -> list[CronJob]:
+    async def list_jobs(self, *, strict: bool = False) -> list[CronJob]:
         ...
 
     async def get_job(self, job_id: str) -> CronJob | None:
@@ -46,6 +46,8 @@ class CronJobStoreBackend(Protocol):
         app_id: str = "",
         work_mode: str = "work",
         user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
         credential_ref: str = "",
     ) -> CronJob:
         ...

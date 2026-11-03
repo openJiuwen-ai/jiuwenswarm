@@ -482,6 +482,27 @@ def normalize_and_validate(
                         message=("MCP URL must start with http:// or https://; "
                                  "keep the scheme outside declared placeholders"),
                     )
+        if package.credentials_type == "oauth" and package.integration_type == "remote-mcp":
+            # Migrate legacy packages in the private snapshot, never the installed copy.
+            # Hub treats placeholders as token-schema inputs; the host adds this header.
+            normalized = False
+            for server in config.get("mcpServers", {}).values():
+                if not isinstance(server, dict):
+                    continue
+                headers = server.get("headers", {})
+                if not isinstance(headers, dict):
+                    continue
+                for key in list(headers):
+                    if str(key).lower() == "authorization" and headers[key] == "Bearer ${OAUTH_ACCESS_TOKEN}":
+                        del headers[key]
+                        normalized = True
+                if "headers" in server and not headers:
+                    del server["headers"]
+            if normalized:
+                package.integration_file.write_text(
+                    json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                )
+                changes.append("mcp.host_oauth_authorization")
         placeholders = set(_PLACEHOLDER.findall(json.dumps(config)))
         defined = set()
         if package.credentials_file:

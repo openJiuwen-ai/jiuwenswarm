@@ -21,7 +21,7 @@ from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.duplex_input import DuplexLineReader
 from jiuwenswarm.channels.process_cli.live_layout import FORWARDED_RECEIPT_PREFIX
 from jiuwenswarm.channels.process_cli.prompt import LIVE_INPUT_PROMPT
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     deprecate_mode,
     is_plan_mode,
@@ -39,6 +39,7 @@ _STEER_CONTEXT_KEYS = (
     "project_dir",
     "trusted_dirs",
     "supports_user_interaction",
+    "supports_permission_approval",
 )
 _TARGET_CHANGED_MARKERS = (
     "supplemental input was not sent",
@@ -193,7 +194,9 @@ def classify_delivery_error(code: str, message: str) -> LiveInputReceipt:
             "unknown",
             "补充输入投递结果未知，请勿自动重试",
         )
-    if code == "SESSION_INPUT_TARGET_CHANGED" or _message_marks_target_changed(normalized):
+    if code == "SESSION_INPUT_TARGET_CHANGED" or _message_marks_target_changed(
+        normalized
+    ):
         return LiveInputReceipt("rejected", "补充输入未投递：当前执行状态已变化")
     return LiveInputReceipt("rejected", f"补充输入未投递：{message}")
 
@@ -327,7 +330,10 @@ class LiveSessionInputController:
             name="process-cli-interaction-input-read",
         )
         try:
-            return str(await self._read_task or "").strip()
+            line = await self._read_task
+            if line is None:
+                raise EOFError("process CLI interaction input ended")
+            return str(line).strip()
         finally:
             self._read_task = None
 

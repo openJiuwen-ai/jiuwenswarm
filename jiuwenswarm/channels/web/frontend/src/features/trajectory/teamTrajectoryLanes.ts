@@ -1,5 +1,3 @@
-// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
 /** Pure Team lane read model for parallel member swimlane navigation. */
 
 import type { TrajectorySubjectGroup } from './trajectorySubjects';

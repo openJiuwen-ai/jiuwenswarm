@@ -1,4 +1,5 @@
 import { withCatalogCache, type CatalogCacheMetadata } from '../catalogCache';
+import { isEnterprise } from '../../edition';
 import { connectorApi } from '../../services/connectorApi';
 import { webRequest } from '../../services/webClient';
 import { requestEquipmentList } from '../equipmentListRequest';
@@ -19,7 +20,7 @@ import {
   normalizeSkillOption,
   normalizeTeamMarketplaceSkill,
 } from './adapter';
-import type { McpOption, SkillOption } from './types';
+import type { AgentDraft, McpOption, SkillOption } from './types';
 import type {
   RawAgentDetailPayload,
   RawAgentFileListPayload,
@@ -31,6 +32,62 @@ import type {
 
 export { AgentManagementError } from './port';
 export type { AgentCatalogListOptions, AgentInstallResult, AgentManagementClient, SkillListOptions } from './port';
+
+function agentTemplateWritePayload(draft: AgentDraft) {
+  return {
+    id: draft.id,
+    name: draft.name,
+    description: draft.description,
+    persona: draft.persona,
+    tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
+    skills: draft.skillRefs,
+    mcps: draft.useExternalHarness ? [] : draft.mcpRefs,
+    quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
+    ...(draft.useExternalHarness
+      ? { runtime: { provider_name: draft.externalHarnessProvider, config: {} } }
+      : {}),
+  };
+}
+
+const POD_RETRY_INTERVAL_MS = 2_000;
+const POD_RETRY_BUDGET_MS = 60_000;
+
+export function isPodStartingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+  return code === 'NO_POD_AVAILABLE' || message.includes('NO_POD_AVAILABLE') || message.includes('Pod 冷启动中');
+}
+
+/** 从第一次 Pod 冷启动失败起，每 2 秒重试，最多再等 60 秒。其他错误立刻抛出。 */
+export async function retryWhilePodStarting<T>(
+  run: () => Promise<T>,
+  options: {
+    onWaiting?: () => void;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<T> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let firstFailureAt: number | null = null;
+  for (;;) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isPodStartingError(error)) throw error;
+      const failedAt = now();
+      firstFailureAt ??= failedAt;
+      if (failedAt - firstFailureAt >= POD_RETRY_BUDGET_MS) {
+        throw new AgentManagementError('pod_start_timeout', 'pod_start_timeout', false);
+      }
+      options.onWaiting?.();
+      await sleep(POD_RETRY_INTERVAL_MS);
+    }
+  }
+}
 
 function rethrowAgentError(error: unknown): never {
   if (error instanceof AgentManagementError) {
@@ -113,16 +170,21 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     source: 'live',
     async listCatalog(options: AgentCatalogListOptions = {}) {
       try {
-        const payload = await requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
-          webRequest,
-          'agent_templates.list',
-          {
-            ...(options.filter ? { filter: options.filter } : {}),
-            ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
-            ...(options.query ? { query: options.query } : {}),
-          },
-          !options.query,
-        );
+        const params = {
+          ...(options.filter ? { filter: options.filter } : {}),
+          ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
+          ...(options.query ? { query: options.query } : {}),
+        };
+        const loadCatalog = () =>
+          requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
+            webRequest,
+            'agent_templates.list',
+            params,
+            !options.query,
+          );
+        const payload = isEnterprise()
+          ? await retryWhilePodStarting(loadCatalog, { onWaiting: options.onPodStarting })
+          : await loadCatalog();
 
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),
@@ -135,7 +197,11 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async getDefinition(id) {
       try {
-        const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id }, { timeoutMs: 90000 });
+        const payload = await webRequest<RawAgentDetailPayload>(
+          'agent_templates.show',
+          { id },
+          { timeoutMs: 90000 },
+        );
         if (!payload.template) {
           throw new AgentManagementError('Agent detail is empty', 'agent_detail_empty', false);
         }
@@ -214,6 +280,9 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
         if (localResult.status === 'rejected') throw localResult.reason;
         const marketplace = marketplaceResult.status === 'fulfilled' ? marketplaceResult.value : [];
         const local = localResult.value;
+        // installed 沿用 mcp.list summary 的语义：预置恒为 true（包随应用分发，未连接也能发起
+        // 连接），hub 条目按真实安装态下发。抽屉"我的MCP" tab 的归属不依赖 installed，由
+        // AgentEditor 的 isMine 用 connectionState 判断，避免两个 tab 内容雷同。
         const byRuntimeName = new Map<string, McpOption>();
         [...marketplace, ...local].forEach((item) => {
           const runtimePackageName = item.runtimePackageName || item.name;
@@ -290,16 +359,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async createAgent(draft) {
       try {
-        await webRequest('agent_templates.create', {
-          id: draft.id,
-          name: draft.name,
-          description: draft.description,
-          persona: draft.persona,
-          tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
-          skills: draft.skillRefs,
-          mcps: draft.mcpRefs,
-          quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
-        });
+        await webRequest('agent_templates.create', agentTemplateWritePayload(draft));
         invalidateAgentCatalog();
       } catch (error) {
         return rethrowAgentError(error);
@@ -307,16 +367,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async updateAgent(draft) {
       try {
-        await webRequest('agent_templates.update', {
-          id: draft.id,
-          name: draft.name,
-          description: draft.description,
-          persona: draft.persona,
-          tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
-          skills: draft.skillRefs,
-          mcps: draft.mcpRefs,
-          quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
-        });
+        await webRequest('agent_templates.update', agentTemplateWritePayload(draft));
         invalidateAgentCatalog();
       } catch (error) {
         return rethrowAgentError(error);

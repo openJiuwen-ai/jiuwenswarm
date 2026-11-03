@@ -17,6 +17,8 @@ import uuid as uuid_module
 from pathlib import Path
 from typing import Any
 
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+
 # Importing ``readline`` transparently upgrades the builtin ``input()`` with
 # line editing: left/right cursor movement, history, and correct multi-byte
 # UTF-8 deletion (so backspacing a Chinese character removes the whole glyph
@@ -56,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 # 基于 get_agent_workspace_dir()（~/.jiuwenswarm/agent/workspace），
 # 跟随 JIUWENSWARM_DATA_DIR 做多实例隔离，与 config.yaml 保持同一基准。
-from jiuwenswarm.common.mode_matrix import NEW_CANONICAL_MODES
+from gateway.common.mode_matrix import NEW_CANONICAL_MODES
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 _STATE_FILE = get_agent_workspace_dir() / "cli_trusted_dirs_state.json"
@@ -271,15 +273,6 @@ VALID_MODES = frozenset({
     "agent", "agent.plan", "agent.fast", "code.plan", "code.normal", "code.team", "team",
     "team.plan", "team.plan.normal", "team.plan.code",
 }) | set(NEW_CANONICAL_MODES)
-
-# Sources that require the answer to be sent via ``chat.send`` (streaming) to
-# resume the paused agent task.  Other sources use ``chat.user_answer``.
-_INTERRUPT_RESUME_SOURCES = frozenset({
-    "confirm_interrupt",
-    "permission_interrupt",
-    "ask_user_interrupt",
-    "evolution_interrupt",
-})
 
 
 def _permission_answer_for_card(
@@ -503,7 +496,7 @@ async def _run_interactive_loop(
     # chat.final but the team keeps working (creating workflows, delegating
     # to members, etc.). Only chat.processing_status(is_processing=False)
     # or team.error should terminate the CLI stream.
-    from jiuwenswarm.common.mode_matrix import is_team_mode
+    from gateway.common.mode_matrix import is_team_mode
     team_mode = is_team_mode(request.get("params", {}).get("mode"))
     # When the team leader replies with text but creates no tasks (e.g. a
     # simple greeting), the server's team-completion logic never fires
@@ -774,6 +767,7 @@ async def _run_interactive_loop(
                 renderer.clear_loading()
                 if supports_user_interaction and sys.stdin.isatty():
                     request_id = payload.get("request_id", "")
+                    interrupt_id = str(payload.get("interrupt_id") or "")
                     source = payload.get("source", "")
                     questions = payload.get("questions", [])
                     primary = (
@@ -832,7 +826,7 @@ async def _run_interactive_loop(
                     )
 
                     try:
-                        if source in _INTERRUPT_RESUME_SOURCES and request_id:
+                        if source in INTERRUPT_RESUME_SOURCES and request_id:
                             # Interrupt resume: send via chat.send (streaming)
                             # to resume the paused agent task. Using
                             # chat.user_answer here would NOT resume the task.
@@ -848,6 +842,7 @@ async def _run_interactive_loop(
                                     "session_id": request["params"]["session_id"],
                                     "query": "",
                                     "request_id": request_id,
+                                    **({"interrupt_id": interrupt_id} if interrupt_id else {}),
                                     "answers": answers,
                                     "source": source,
                                     "mode": request["params"]["mode"],
@@ -1002,7 +997,7 @@ async def _run_jsonl_loop(
     renderer: JsonlRenderer,
     request: dict,
 ) -> int:
-    from jiuwenswarm.common.mode_matrix import is_team_mode
+    from gateway.common.mode_matrix import is_team_mode
     team_mode = is_team_mode(request.get("params", {}).get("mode"))
     await client.send_request(request)
     while True:
@@ -1038,7 +1033,7 @@ async def _run_json_loop(
     renderer: JsonRenderer,
     request: dict,
 ) -> int:
-    from jiuwenswarm.common.mode_matrix import is_team_mode
+    from gateway.common.mode_matrix import is_team_mode
     team_mode = is_team_mode(request.get("params", {}).get("mode"))
     await client.send_request(request)
     has_error = False
@@ -1151,7 +1146,7 @@ def run_chat(args: argparse.Namespace) -> int:
     if error is not None:
         return error
 
-    from jiuwenswarm.common.mode_matrix import is_team_mode as is_team_runtime_mode
+    from gateway.common.mode_matrix import is_team_mode as is_team_runtime_mode
     is_team_mode = is_team_runtime_mode(args.mode)
     supports_user_interaction = False
 

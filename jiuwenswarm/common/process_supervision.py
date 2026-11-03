@@ -7,6 +7,11 @@ down: ``jiuwenswarm-start --stop`` kills one port owner (SIGTERM/SIGKILL, or
 ``taskkill /F`` on Windows), and the pip upgrade makes the Gateway SIGTERM
 itself. So only exits that cannot come from a stop path are respawned; anything
 else keeps the historical "one child exits => everything stops" behaviour.
+
+SIGKILL is the one exception (issue #4946): it is also what the OOM killer and
+infrastructure send, and reading it as a stop path turned every external hard
+kill into a full-stack teardown. A SIGKILLed child is respawned under the same
+uptime/budget gates as a crash; see ``_Child.should_respawn``.
 """
 
 from __future__ import annotations
@@ -61,6 +66,9 @@ _POSIX_CRASH_SIGNALS = frozenset(
     for name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE")
     if hasattr(signal, name)
 )
+# POSIX reserves 9 for SIGKILL; Windows lacks the constant (a hard kill reads
+# as exit code 1 there), so the literal keeps the gate testable everywhere.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
 def is_crash_exit(returncode: int) -> bool:
@@ -189,7 +197,16 @@ class _Child:
                 return True
             logger.error("[app] %s requested too many restarts; shutting down", self.name)
             return False
-        if not is_crash_exit(returncode) or uptime < _MIN_UPTIME_FOR_RESTART:
+        if not is_crash_exit(returncode):
+            # SIGKILL cannot be classified as a crash (stop paths escalate to it
+            # after a SIGTERM that did not take effect), but reading it as a stop
+            # path tore the whole service down on every external hard kill — OOM
+            # killer, infra (issue #4946). Respawn it under the same gates as a
+            # crash; the restart budget bounds the churn a stop-path SIGKILL can
+            # cause.
+            if returncode >= 0 or -returncode != _SIGKILL:
+                return False
+        if uptime < _MIN_UPTIME_FOR_RESTART:
             return False
         if self.proc is not None and _upgrade_pending_for(self.proc.pid):
             return False

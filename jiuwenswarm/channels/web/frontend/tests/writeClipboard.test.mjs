@@ -41,9 +41,22 @@ test('returns true when the Clipboard API accepts the write', async () => {
   }
 });
 
-test('returns false when the Clipboard API rejects, without claiming success', async () => {
+test('falls back to execCommand when the Clipboard API rejects', async () => {
   const restore = installDom({
     clipboard: { writeText: async () => { throw new Error('denied'); } },
+    execCommand: (command) => command === 'copy',
+  });
+  try {
+    assert.equal(await writeClipboard('secret'), true);
+  } finally {
+    restore();
+  }
+});
+
+test('returns false when Clipboard API rejects and execCommand also fails', async () => {
+  const restore = installDom({
+    clipboard: { writeText: async () => { throw new Error('denied'); } },
+    execCommand: () => false,
   });
   try {
     assert.equal(await writeClipboard('secret'), false);

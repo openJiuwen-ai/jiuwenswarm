@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox import __version__
+from jiuwenbox.perf_trace import configure_from_env as configure_perf_trace
 from jiuwenbox.server.auth import BearerTokenAuthMiddleware, get_configured_token
 from jiuwenbox.server.audit_logger import AuditLogger
 from jiuwenbox.models.sandbox import InvalidJobIdError, InvalidSandboxIdError
@@ -31,6 +32,7 @@ from jiuwenbox.server.policy_reader import PolicyReader
 from jiuwenbox.server.proxy_manager import ProxyManager
 from jiuwenbox.server.policy_engine import PolicyValidationError
 from jiuwenbox.server.runtime.process import enable_child_subreaper
+from jiuwenbox.supervisor.network import cleanup_orphaned_uplinks
 
 # Operator-facing env: when set, the audit JSONL is persisted to this
 # directory using a ``{sandbox_id}-{ts}.audit.log`` filename per sandbox.
@@ -60,6 +62,20 @@ def get_configured_health_body() -> str | None:
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+async def _cleanup_orphaned_sandbox_network(reason: str) -> None:
+    """Sweep leftover ``jwb*`` veths / ``jbx-*`` netns from a previous crash.
+
+    Isolated uplink state lives in the kernel, not in the jiuwenbox process, so
+    SIGKILL / OOM / stop-timeout leaves host NICs behind. Best-effort: a
+    failure here must not abort startup or shutdown.
+    """
+    try:
+        await asyncio.to_thread(cleanup_orphaned_uplinks, reason=reason)
+    except Exception:  # noqa: BLE001
+        logger.exception("orphan network cleanup (%s) failed", reason)
+
 
 _sandbox_manager: SandboxManager | None = None
 _proxy_manager: ProxyManager | None = None
@@ -260,6 +276,8 @@ def _chmod_uds_socket_if_any() -> None:
 @asynccontextmanager
 async def lifespan(_application: FastAPI):
     global _sandbox_manager, _proxy_manager, _proxy_only_mode
+    # Only opens a log when jiuwenbox-server was started with --perf.
+    configure_perf_trace()
     # Both of these have to run after uvicorn has spun up its event loop -
     # ``set_default_executor`` requires a running loop, and raising NOFILE is
     # only effective within the live process. They are also independent of
@@ -292,6 +310,10 @@ async def lifespan(_application: FastAPI):
         # earliest safe point. No-op on non-Linux / when prctl is denied;
         # logs internally.
         enable_child_subreaper()
+        # Registry is ephemeral across restarts; leftover host veths / netns
+        # from a previous ungraceful stop are not. Sweep them before any new
+        # sandbox can collide with a stale ``jbx-*`` name or occupy a /30.
+        await _cleanup_orphaned_sandbox_network("startup")
         _sandbox_manager = _build_sandbox_manager(policy_reader=policy_reader)
         # Wire the SIGCHLD-driven zombie reaper onto the running uvicorn
         # loop. Failure is non-fatal: the manager logs and the server keeps
@@ -314,11 +336,25 @@ async def lifespan(_application: FastAPI):
                 "start_idle_reaper failed during lifespan startup; idle sandboxes "
                 "will not be auto-reaped",
             )
+        start_warm_pool = getattr(_sandbox_manager.runtime, "start_warm_pool", None)
+        if start_warm_pool is not None:
+            try:
+                await asyncio.to_thread(start_warm_pool, _sandbox_manager.policy)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Warm pool failed to start; sandbox create stays on the cold path",
+                )
     _proxy_manager = ProxyManager(policy_reader=policy_reader)
     logger.info("box-server started (version %s)", __version__)
     if get_configured_token() is not None:
         logger.info("API authentication enabled")
     await _proxy_manager.start()
+    policy_sync = None
+    if _sandbox_manager is not None and os.getenv("JIUWENBOX_RUNTIME_PROFILE", "").strip().lower() == "agentos":
+        from jiuwenbox.server.etcd_sync.service import PolicySyncService
+
+        policy_sync = PolicySyncService.from_env(_sandbox_manager)
+        await policy_sync.start()
     # 在 proxy 起来之后、yield (接受请求) 之前给 UDS 打权限: 此刻 uvicorn 已
     # 经 bind 并 listen 完成, socket inode 必然存在; 改 mode 不会和首个请求
     # 抢时序。
@@ -332,6 +368,22 @@ async def lifespan(_application: FastAPI):
     try:
         yield
     finally:
+        if policy_sync is not None:
+            await policy_sync.stop()
+        # Drop host veths first (milliseconds). Waiting on daemon SIGTERM can
+        # exceed systemd TimeoutStopSec; if SIGKILL then arrives, NICs would
+        # leak. Tear the uplinks down before that wait.
+        try:
+            if _sandbox_manager is not None:
+                stop_warm_pool = getattr(
+                    _sandbox_manager.runtime, "stop_warm_pool", None,
+                )
+                if stop_warm_pool is not None:
+                    await asyncio.to_thread(stop_warm_pool)
+                await asyncio.to_thread(_sandbox_manager.drop_all_host_uplinks)
+        except Exception:  # noqa: BLE001
+            logger.exception("drop_all_host_uplinks failed during lifespan shutdown")
+        await _cleanup_orphaned_sandbox_network("shutdown-fast")
         # Stop accepting MCP requests before tearing down managed resources.
         try:
             await _mcp_session_cm.__aexit__(None, None, None)

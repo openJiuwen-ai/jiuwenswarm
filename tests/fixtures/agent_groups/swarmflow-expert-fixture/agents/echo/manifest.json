@@ -1,0 +1,56 @@
+{
+  "version": "1.0.0",
+  "package_type": "agent_template",
+  "name": "echo",
+  "description": "Echo expert: repeats the ticket it is given, nothing else.",
+  "persona": {
+    "dir": "./persona"
+  },
+  "display_name": {
+    "en": "Echo Expert",
+    "zh": "回声专家"
+  },
+  "display_description": {
+    "en": "Reads the ticket named in its task, echoes it through one tool, and returns the echoed value.",
+    "zh": "从任务里读出工单号，调用回声工具原样返回，并把回声值作为最小产物交回给调用方核对。"
+  },
+  "category": "Engineering",
+  "avatar": "",
+  "source": "local",
+  "default_init_input": {
+    "en": "ticket: T-001",
+    "zh": "ticket: T-001"
+  },
+  "tags": [
+    { "en": "echo", "zh": "回声" },
+    { "en": "ticket", "zh": "工单" },
+    { "en": "fixture", "zh": "验收" }
+  ],
+  "quick_inputs": [
+    { "en": "ticket: T-001", "zh": "ticket: T-001" },
+    { "en": "ticket: T-002, echo it back", "zh": "ticket: T-002，原样回声" },
+    { "en": "echo the ticket in this task", "zh": "回声本任务里的工单号" }
+  ],
+  "tools": [
+    {
+      "file": "tools/echo_tool.py",
+      "class": "EchoTool",
+      "display_name": { "en": "echo_ticket", "zh": "echo_ticket" },
+      "display_description": {
+        "en": "Echoes a ticket string back to the caller.",
+        "zh": "把传入的工单号原样回声给调用方。"
+      }
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/ticket_rail.py",
+      "class": "TicketRail",
+      "display_name": { "en": "ticket_rail", "zh": "ticket_rail" },
+      "display_description": {
+        "en": "Pins the echoed ticket to the one named in the task.",
+        "zh": "把回声的工单号锁定为任务里给出的那一个。"
+      }
+    }
+  ]
+}

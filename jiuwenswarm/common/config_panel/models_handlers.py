@@ -30,6 +30,8 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     _ensure_model_business_ids,
+    _normalize_legacy_model_nulls,
+    _recover_existing_model_fields,
     get_config,
     get_config_raw,
     get_available_models,
@@ -48,6 +50,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
+from jiuwenswarm.common.model_errors import ModelSelectionError
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -204,6 +207,133 @@ def resolve_model_config_obj_for_validate(
     return model_config_obj
 
 
+def resolve_persisted_mcc_for_validate(model_name: str) -> dict[str, Any]:
+    """从热更新后的配置中查找对应模型的 ``model_client_config``。
+
+    与 :func:`resolve_model_config_obj_for_validate` 同一查找口径
+    （``model_name`` 或 ``alias`` 匹配 ``models.defaults``，返回深拷贝），
+    但取条目的 mcc 段。``custom_headers`` / ``ssl_cert`` 等配置页未暴露的
+    write-only 字段只在持久化条目中存在，探测（「测试连接」）以它们为基线
+    才能与保存后的对话路径走同一份配置；找不到或读取失败时返回空 dict，
+    探测退化为仅表单字段（历史行为）。
+    """
+    import copy as _copy
+
+    try:
+        _cfg = get_config()
+        _models = get_default_models(_cfg)
+        for entry in _models:
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config")
+            if not isinstance(mcc, dict):
+                continue
+            entry_model_name = str(mcc.get("model_name", "")).strip()
+            entry_alias = str(entry.get("alias", "")).strip()
+            if entry_model_name == model_name or entry_alias == model_name:
+                logger.info(
+                    "[config.validate_model] loaded persisted model_client_config "
+                    "for '%s' (matched_by=%s)",
+                    model_name,
+                    "model_name" if entry_model_name == model_name else "alias",
+                )
+                return _copy.deepcopy(mcc)
+        logger.info(
+            "[config.validate_model] no persisted model_client_config found for '%s'",
+            model_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[config.validate_model] failed to read persisted model_client_config, "
+            "using draft fields only. %s",
+            exc,
+        )
+    return {}
+
+
+def resolve_validate_endpoint_profile(
+    params: dict[str, Any],
+    persisted_mcc: dict[str, Any],
+    api_base: str,
+) -> str | None:
+    """解析「测试连接」的端点方言：草稿 → host 推断 → 持久化条目兜底。
+
+    持久化兜底与保存合并（``_merge_models_for_replace_all``）同口径：
+    条目切到 Anthropic 协议或换用其他供应商预设时，保存会丢弃旧方言，
+    探测也不得回退；其余情况表单未携带方言即视为保留持久化值（编辑表单
+    不暴露该字段，缺失不代表清空）。``vendor_key`` 由前端透传；旧版
+    payload 不带该字段时按"未变更"处理会误用旧方言，因此优先信任
+    payload 与持久化的显式比较。
+    """
+    explicit = params.get("endpoint_profile")
+    profile = effective_endpoint_profile(api_base, explicit)
+    if profile:
+        return profile
+    if normalize_provider_value(str(params.get("model_provider") or "")) == "Anthropic":
+        return None
+    if (params.get("vendor_key") or "") != (persisted_mcc.get("vendor_key") or ""):
+        return None
+    return str(persisted_mcc.get("endpoint_profile") or "") or None
+
+
+def build_probe_model_client_config(
+    model_provider: str,
+    api_key: str,
+    api_base: str,
+    *,
+    endpoint_profile: str = "",
+    verify_ssl: bool | None = None,
+    persisted_mcc: dict[str, Any] | None = None,
+) -> ModelClientConfig:
+    """构造探测用 ``ModelClientConfig``：持久化条目为基线，表单草稿值覆盖。
+
+    对话路径（``interface_deep.build_model_from_entry``）把持久化 mcc 整包传给
+    core，``custom_headers`` 等字段自然生效；探测此前只拼表单可见字段，导致
+    依赖请求头鉴权的网关「对话正常、测试 401」。此函数让探测与对话共享
+    同一份持久化配置：表单字段（用户正在编辑的草稿）始终权威覆盖，探测
+    预算（client_id / timeout / max_retries）最后固定，不被条目的
+    ``timeout: 1800`` 等运行值污染。
+
+    ``verify_ssl`` 为 None 表示表单未提交该项：保留基线值，基线也没有时
+    用 False（探测历史默认，而非 core 的 True——自签证书网关的探测结论
+    不因本次修复翻转）。基线含非法字段类型时构造失败，退化为仅表单字段
+    （历史行为）并告警，不让脏配置打断探测。
+    """
+
+    def _assemble(persisted: dict[str, Any] | None) -> ModelClientConfig:
+        probe_fields: dict[str, Any] = dict(persisted or {})
+        probe_fields.pop("model_name", None)
+        probe_fields.update(
+            {
+                "client_id": "config-validate",
+                "client_provider": model_provider,
+                "api_key": api_key,
+                "api_base": api_base,
+                "timeout": 25.0,
+                "max_retries": 0,
+            }
+        )
+        if endpoint_profile:
+            probe_fields["endpoint_profile"] = endpoint_profile
+        elif "endpoint_profile" in probe_fields:
+            del probe_fields["endpoint_profile"]
+        if verify_ssl is not None:
+            probe_fields["verify_ssl"] = verify_ssl
+        elif "verify_ssl" not in probe_fields:
+            probe_fields["verify_ssl"] = False
+        return ModelClientConfig(**probe_fields)
+
+    try:
+        return _assemble(persisted_mcc)
+    except Exception:
+        logger.warning(
+            "[config.validate_model] persisted model_client_config rejected by "
+            "ModelClientConfig (invalid field types); probing with draft fields only",
+            exc_info=True,
+        )
+        return _assemble(None)
+
+
 def _merge_models_for_replace_all(
     parsed: list[dict[str, Any]],
     raw_defaults: list[dict[str, Any]],
@@ -224,6 +354,12 @@ def _merge_models_for_replace_all(
     out: list[dict[str, Any]] = []
     for item in parsed:
         origin_idx = item.get("origin_index")
+        model_id = item.get("model_id")
+        if model_id:
+            origin_idx = next((i for i, entry in enumerate(raw_defaults)
+                               if isinstance(entry, dict) and entry.get("model_id") == model_id), None)
+            if origin_idx is None:
+                raise ConfigPanelBadRequest(f"unknown model_id: {model_id}")
         raw_entry = None
         resolved_entry = None
         if isinstance(origin_idx, int) and 0 <= origin_idx < len(raw_defaults):
@@ -233,8 +369,13 @@ def _merge_models_for_replace_all(
 
         if raw_entry is not None and isinstance(raw_entry, dict):
             new_entry = _copy.deepcopy(raw_entry)
+            # setdefault 对"键存在但值为 null"的脏条目返回 None，归一回空 dict
             new_mcc = new_entry.setdefault("model_client_config", {})
+            if not isinstance(new_mcc, dict):
+                new_mcc = new_entry["model_client_config"] = {}
             new_mco = new_entry.setdefault("model_config_obj", {})
+            if not isinstance(new_mco, dict):
+                new_mco = new_entry["model_config_obj"] = {}
             resolved_mcc = (resolved_entry or {}).get("model_client_config", {}) or {}
             resolved_mco = (resolved_entry or {}).get("model_config_obj", {}) or {}
 
@@ -271,6 +412,7 @@ def _merge_models_for_replace_all(
                 new_entry["alias"] = item["alias"]
             # vendor_key + plan: persist the exact provider selection identity
             # into model_client_config (or clear it).
+            previous_vendor = str(new_mcc.get("vendor_key") or "")
             if item.get("vendor_key"):
                 new_mcc["vendor_key"] = item["vendor_key"]
             else:
@@ -280,15 +422,21 @@ def _merge_models_for_replace_all(
             else:
                 new_mcc.pop("plan", None)
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
-            # 前端透传则落库；不传则清掉(避免残留旧方言)。Anthropic 协议时此字段被 core 忽略。
+            # 编辑表单不暴露该字段(Anthropic 协议下 core 忽略)，payload 缺失不等于
+            # 用户要求清空：仅当切到 Anthropic 协议或换用其他供应商预设时丢弃持久化
+            # 值，否则保留(与 TUI 保存路径同口径)，避免静默刷掉手写 YAML 的方言。
+            # payload 显式值/保存时 host 推断值始终优先落库。
             if item.get("endpoint_profile"):
                 new_mcc["endpoint_profile"] = item["endpoint_profile"]
-            else:
+            elif (
+                normalize_provider_value(str(item.get("model_provider") or "")) == "Anthropic"
+                or (item.get("vendor_key") or "") != previous_vendor
+            ):
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
             # api_key: resolved holds the decrypted plaintext shown to the frontend.
             # Unchanged → keep raw (placeholder or ciphertext); changed → encrypt new value.
-            if not _values_match(item["api_key"], resolved_mcc.get("api_key")):
+            if item.get("api_key_provided", True) and not _values_match(item["api_key"], resolved_mcc.get("api_key")):
                 new_mcc["api_key"] = (
                     crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
                 )
@@ -425,7 +573,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
         vendor_key = str(item.get("vendor_key") or "").strip() or None
         plan = str(item.get("plan") or "").strip() or None
         if plan:
-            from jiuwenswarm.common.model_vendor_registry import PlanKind
+            from gateway.common.model_vendor_registry import PlanKind
 
             try:
                 plan = PlanKind(plan).value
@@ -456,9 +604,11 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             aliases_seen[alias] = idx
 
         parsed.append({
+            "model_id": item.get("model_id"),
             "model_name": model_name,
             "api_base": api_base,
             "api_key": api_key,
+            "api_key_provided": "api_key" in item,
             "model_provider": model_provider,
             "temperature": temperature,
             "is_default": is_default,
@@ -471,7 +621,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             "origin_index": origin_index,
             # vendor_key is an opaque hint
             # selector; not validated (the selector only ever emits keys
-            # present in jiuwenswarm.common.model_vendor_registry). It is
+            # present in gateway.common.model_vendor_registry). It is
             # persisted so the UI can match a configured entry back to its
             # preset for icon display / re-selection. Not required.
             "vendor_key": vendor_key,
@@ -501,7 +651,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
     crypto = _get_crypto_provider()
 
     raw_cfg = get_config_raw()
-    raw_defaults = raw_cfg.get("models", {}).get("defaults") if isinstance(raw_cfg, dict) else None
+    raw_defaults = (raw_cfg.get("models") or {}).get("defaults") if isinstance(raw_cfg, dict) else None
     if not isinstance(raw_defaults, list):
         raw_defaults = []
     resolved_defaults = get_default_models()
@@ -566,10 +716,16 @@ async def config_validate_model_handler(
         return
     api_base = api_base.rstrip("/")
 
-    verify_ssl = bool(params.get("verify_ssl", False))
-    # 未显式传方言时按 api_base host 推断已知自建网关(如 vllm)，
-    # 保证"测试连接"与保存后的真实运行走同一条 core 路由。
-    endpoint_profile = effective_endpoint_profile(api_base, params.get("endpoint_profile"))
+    verify_ssl: bool | None = None
+    if "verify_ssl" in params:
+        verify_ssl = bool(params.get("verify_ssl"))
+    # 探测以持久化条目为基线：custom_headers / ssl_cert 等配置页未暴露的
+    # write-only 字段随条目进入探测请求，与保存后的对话路径同口径。
+    persisted_mcc = resolve_persisted_mcc_for_validate(model)
+    # 方言解析：草稿优先；未显式传时按 api_base host 推断已知自建网关(如
+    # vllm)；仍未命中且保存会保留持久化值时回退条目方言——保证"测试连接"
+    # 与保存后的真实运行走同一条 core 路由。
+    endpoint_profile = resolve_validate_endpoint_profile(params, persisted_mcc, api_base)
 
     model_config_obj = resolve_model_config_obj_for_validate(model, params)
 
@@ -590,15 +746,13 @@ async def config_validate_model_handler(
         model,
         model_request_config.model_dump(),
     )
-    model_client_config = ModelClientConfig(
-        client_id="config-validate",
-        client_provider=model_provider,
+    model_client_config = build_probe_model_client_config(
+        model_provider,
+        api_key,
+        api_base,
         endpoint_profile=endpoint_profile,
-        api_key=api_key,
-        api_base=api_base,
-        timeout=25.0,
-        max_retries=0,
         verify_ssl=verify_ssl,
+        persisted_mcc=persisted_mcc,
     )
     # Anthropic-compatible endpoints that send thinking.budget_tokens
     # require max_tokens > budget. Use the actual budget core would emit
@@ -652,6 +806,8 @@ async def models_list_handler(
     req_id: Any,
     params: Any,
     session_id: Any,
+    *,
+    zen_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     """返回已配置的所有默认模型列表（与 config.get 一致，返回解密后的完整值）。
 
@@ -679,8 +835,13 @@ async def models_list_handler(
         result = []
         active_model = ""
         for idx, entry in enumerate(models):
-            mcc = entry.get("model_client_config", {})
-            mco = entry.get("model_config_obj", {})
+            # 脏配置防御：YAML 里 `model_config_obj:` 后只跟注释时值为 null，
+            # dict.get 的默认值不生效；非 dict 条目（旧版/手改 YAML）直接跳过。
+            # 跳过而非删除以保持 origin_index 与 models.defaults 原始位置对齐。
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config") or {}
+            mco = entry.get("model_config_obj") or {}
             is_default = entry.get("is_default", False)
             model_name = str(mcc.get("model_name", "") or "").strip()
             result_entry = {
@@ -688,10 +849,11 @@ async def models_list_handler(
                 # 迁移/校验后注入，前端据此关联模型组与路由。
                 "model_id": entry.get("model_id", ""),
                 "model_name": model_name,
-                "api_base": mcc.get("api_base", ""),
-                # 凭据绝不能随列表下发到浏览器
-                "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
-                "model_provider": mcc.get("client_provider", ""),
+                "api_base": str(mcc.get("api_base") or ""),
+                # 保持旧设置页的编辑/测试/保存协议；登录模型凭据不可下发。
+                "api_key": "" if is_login_model(entry) else str(mcc.get("api_key") or ""),
+                "has_api_key": bool(mcc.get("api_key")),
+                "model_provider": str(mcc.get("client_provider") or ""),
                 "temperature": mco.get("temperature"),
                 "reasoning_level": reasoning_level_display(mco.get("reasoning_level")),
                 "is_default": is_default,
@@ -700,7 +862,7 @@ async def models_list_handler(
                 # 并让 agentos 进 ModelSelector 下拉（is_default!==false || is_agentos）
                 "is_agentos": bool(mco.get("_source") == "agentos"),
                 # 免费模型标记：前端据此归进「免费模型」分组、并从设置页的模型配置里滤掉。
-                # 下面追加 Zen 模型那段设的是同一个字段，**两处必须一致**。
+                # AgentServer ``append_zen_free_models`` 追加的 Zen 条目使用同一个字段。
                 "is_free": bool(entry.get("is_free")),
                 "alias": entry.get("alias", ""),
                 "origin_index": idx,
@@ -720,44 +882,19 @@ async def models_list_handler(
                 # 登录送的模型：前端据此置灰编辑
                 result_entry.update(source=entry.get("source"), read_only=True)
             result.append(result_entry)
-        # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
-        # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
-        # False），使前端把它视为可选模型，同时不会改变首个配置模型作为
-        # active_model 的既有语义。
-        try:
-            from jiuwenswarm.server.runtime.opencode_zen import (
-                get_zen_free_model_entries,
-            )
-
-            existing_names = {str(item.get("model_name") or "") for item in result}
-            for entry in get_zen_free_model_entries():
-                mcc = entry.get("model_client_config") or {}
-                mco = entry.get("model_config_obj") or {}
-                model_name = str(mcc.get("model_name") or "").strip()
-                if not model_name or model_name in existing_names:
-                    continue
-                result.append({
-                    "model_name": model_name,
-                    "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
-                    "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature"),
-                    "reasoning_level": reasoning_level_display(mco.get("reasoning_level")),
-                    "is_default": entry.get("is_default"),
-                    "is_agentos": False,
-                    "is_free": True,
-                    "alias": entry.get("alias", ""),
-                    # Preserve an explicit context-window value supplied by
-                    # the runtime cache; otherwise use the shared default.
-                    "context_window_tokens": (
-                        parse_positive_int(entry.get("context_window_tokens"))
-                        or parse_positive_int(mco.get("context_window"))
-                        or DEFAULT_CONTEXT_WINDOW_TOKENS
-                    ),
-                })
-                existing_names.add(model_name)
-        except Exception:
-            logger.warning("[models.list] append Zen free models failed", exc_info=True)
+        # Zen 免费模型缓存在 AgentServer。调用方把已经格式化好的公开行传进来
+        # （Gateway 经 models.zen_entries 取得）。is_default 保持调用方给的值
+        # （通常是 None），使前端把它视为可选模型，同时不会改变首个配置模型
+        # 作为 active_model 的既有语义。
+        existing_names = {str(item.get("model_name") or "") for item in result}
+        for row in zen_rows or []:
+            if not isinstance(row, dict):
+                continue
+            model_name = str(row.get("model_name") or "").strip()
+            if not model_name or model_name in existing_names:
+                continue
+            result.append(row)
+            existing_names.add(model_name)
 
         # active_model 为列表首位的模型（主对话默认）
         active_model = result[0]["model_name"] if result else ""
@@ -780,6 +917,7 @@ async def models_replace_all_handler(
     *,
     on_config_saved: Any = None,
     agent_client: Any = None,
+    user_id: str = "",
 ) -> None:
     """原子地用提交的列表整体替换 models.defaults。
 
@@ -806,9 +944,11 @@ async def models_replace_all_handler(
         # AgentOS entries and model groups are validated and preserved.
         candidate_models = dict((get_config_raw().get("models") or {}))
         candidate_models["defaults"] = new_models
+        _recover_existing_model_fields(candidate_models)
+        _normalize_legacy_model_nulls(candidate_models)
         _ensure_model_business_ids(candidate_models)
         raise_if_invalid(candidate_models)
-        update_default_models_in_config(candidate_models["defaults"])
+        update_default_models_in_config(candidate_models["defaults"], cron_references_checked=True)
 
         applied_without_restart = await _apply_models_change(
             on_config_saved, agent_client, changed_keys=["models.defaults"], force=True
@@ -820,6 +960,8 @@ async def models_replace_all_handler(
         })
     except ConfigPanelBadRequest as exc:
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+    except ModelSelectionError as exc:
+        await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code, payload=exc.to_payload())
     except Exception as exc:  # noqa: BLE001
         logger.warning("[models.replace_all] %s", exc)
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
@@ -884,7 +1026,7 @@ async def _apply_models_change(
         else:
             get_config()
     except Exception:  # noqa: BLE001
-        pass
+        return False
     return True
 
 
@@ -893,6 +1035,7 @@ def register_models_handlers(
     *,
     on_config_saved: Any = None,
     agent_client: Any = None,
+    user_id: str = "",
 ) -> None:
     """在 channel 上注册 Web 侧 models/config 域本地 handler。
 
@@ -900,6 +1043,12 @@ def register_models_handlers(
     AgentServer）由 gateway 侧 ``_register_config_proxy`` 包装；ConfigAdapter
     直接本地执行。两侧注册入口各自调用本函数，注册语义保持一致。
     """
+
+    from jiuwenswarm.common.config_panel.model_resource_handlers import register_model_resource_handlers
+
+    register_model_resource_handlers(
+        channel, on_config_saved=on_config_saved, agent_client=agent_client, user_id=user_id,
+    )
 
     async def _config_validate_model(ws, req_id, params, session_id):
         await config_validate_model_handler(channel, ws, req_id, params)
@@ -916,6 +1065,7 @@ def register_models_handlers(
             channel, ws, req_id, params, session_id,
             on_config_saved=on_config_saved,
             agent_client=agent_client,
+            user_id=user_id,
         )
 
     channel.register_method("config.validate_model", _config_validate_model)

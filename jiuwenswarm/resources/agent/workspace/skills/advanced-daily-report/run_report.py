@@ -206,8 +206,9 @@ def collect_email_stats(date: str = None) -> dict:
         try:
             args = '("name" "python-imap" "version" "1.0" "vendor" "python")'
             mail._simple_command("ID", args)
-        except:
-            pass
+        except (imaplib.IMAP4.error, OSError) as exc:
+            # ID 命令对部分邮箱可选；失败不影响后续 STATUS 拉取
+            print(f"DEBUG: IMAP ID command skipped: {exc}", file=sys.stderr)
 
         # 使用 STATUS 命令获取邮件统计（绕过 SELECT 的 Unsafe Login 限制）
         total_emails = 0

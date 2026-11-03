@@ -237,6 +237,73 @@ def test_mcp_placeholder_needs_schema(tmp_path):
     assert run(root, "mcp")["wrapper"] is None
 
 
+@pytest.mark.parametrize("header", ["Authorization", "authorization"])
+def test_host_oauth_mcp_normalizes_legacy_host_provided_access_token(tmp_path, header):
+    root = mcp(tmp_path, {
+        "url": "https://mcp.canva.cn/mcp",
+        "headers": {header: "Bearer ${OAUTH_ACCESS_TOKEN}", "X-Client": "desktop"},
+    })
+    manifest = json.loads((root / "manifest.json").read_text())
+    manifest["credentials"] = {"type": "oauth"}
+    write(root, "manifest.json", manifest)
+
+    result = run(root, "mcp")
+    assert result["wrapper"] is None
+    assert "mcp.host_oauth_authorization" in result["normalizations"]
+    config = json.loads((root / "mcp.json").read_text())
+    assert config["mcpServers"]["demo"]["headers"] == {"X-Client": "desktop"}
+    assert not (root / "token-schema.json").exists()
+
+
+@pytest.mark.parametrize("placeholder", ["TOKEN", "OAUTH_ACCESS_T0KEN", "OAUTH_UNDECLARED", "OAUTH_ACCESS_TOKEN"])
+def test_host_oauth_does_not_allow_arbitrary_placeholders(tmp_path, placeholder):
+    root = mcp(tmp_path, {
+        "url": "https://mcp.canva.cn/mcp",
+        "headers": {"Authorization": "Bearer ${OAUTH_ACCESS_TOKEN}", "X-Extra": "${" + placeholder + "}"},
+    })
+    manifest = json.loads((root / "manifest.json").read_text())
+    manifest["credentials"] = {"type": "oauth"}
+    write(root, "manifest.json", manifest)
+
+    with pytest.raises(PublishValidationError) as error:
+        run(root, "mcp")
+    assert error.value.code == "UNDEFINED_PLACEHOLDER"
+    assert error.value.field == "credentials"
+
+
+@pytest.mark.parametrize("credential_type", [None, "token"])
+def test_access_token_placeholder_requires_schema_without_host_oauth(tmp_path, credential_type):
+    root = mcp(tmp_path, {
+        "url": "https://example.com/mcp",
+        "headers": {"Authorization": "Bearer ${OAUTH_ACCESS_TOKEN}"},
+    })
+    if credential_type:
+        manifest = json.loads((root / "manifest.json").read_text())
+        manifest["credentials"] = {"type": credential_type, "file": "token-schema.json"}
+        write(root, "manifest.json", manifest)
+        write(root, "token-schema.json", {"fields": []})
+
+    with pytest.raises(PublishValidationError) as error:
+        run(root, "mcp")
+    assert error.value.code == "UNDEFINED_PLACEHOLDER"
+
+
+@pytest.mark.parametrize("authorization", ["Bearer privatevalue", "Bearer ${OAUTH_ACCESS_TOKEN}privatevalue"])
+def test_host_oauth_still_rejects_literal_credentials(tmp_path, authorization):
+    root = mcp(tmp_path, {
+        "url": "https://mcp.canva.cn/mcp",
+        "headers": {"Authorization": authorization},
+    })
+    manifest = json.loads((root / "manifest.json").read_text())
+    manifest["credentials"] = {"type": "oauth"}
+    write(root, "manifest.json", manifest)
+
+    with pytest.raises(PublishValidationError) as error:
+        run(root, "mcp")
+    assert error.value.code == "SENSITIVE_CONTENT"
+    assert "privatevalue" not in str(error.value)
+
+
 @pytest.mark.parametrize(
     "server",
     [

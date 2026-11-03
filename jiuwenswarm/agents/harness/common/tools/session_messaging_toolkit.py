@@ -19,7 +19,7 @@ from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import SystemPromptPriority
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.server.runtime.session.session_message_service import (
     SessionMessageSource,

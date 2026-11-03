@@ -27,9 +27,9 @@
     <img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="License" />
   </a>
   <a href="https://gitcode.com/openJiuwen/jiuwenswarm/releases">
-    <img src="https://img.shields.io/pypi/v/jiuwenswarm.svg" alt="Release" />
+    <img src="https://img.shields.io/pypi/v/workswarm.svg" alt="Release" />
   </a>
-  <img src="https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg" alt="Python Version" />
+  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python 3.11, 3.12, 3.13, 3.14" />
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="OS Support" />
   <img src="https://img.shields.io/badge/agent-coordination--engineering-purple.svg" alt="Coordination Engineering" />
   <img src="https://img.shields.io/badge/skill-self--evolution-teal.svg" alt="Skill Self-Evolution" />
@@ -51,7 +51,7 @@
 | --- | --- |
 | 多智能体协作 | 复杂任务不再是一个 Agent 的战场：Leader 自动拆解任务、组建团队，多个 Agent 专业分工、动态协商 |
 | 分布式 Agent Swarm | 突破单机算力瓶颈：Leader/Teammate 跨进程、跨机器部署，多机协同处理大规模任务 |
-| Swarmflow | 用 Python 工作流脚本做确定性多阶段编排：Leader 驱动各阶段 Agent 衔接；支持 **HITL**（`human` / `human_session`）、**Team token 预算**与 TUI **`/swarmflows`** 运行树监控 |
+| Swarmflow | 用 Python 工作流脚本做确定性多阶段编排：Leader 驱动各阶段 Agent 衔接；支持 **HITL**（`human` / `human_session`）、**Team token 预算**、TUI **`/swarmflows`** 运行树监控，以及 worker 可选开启的**渐进式工具暴露**（`swarmflow_progressive_tool`） |
 | Skill 自演进 | 能力越用越强而非越跑越僵：执行出错或用户不满时自动检测信号、优化 Skill 定义 |
 | Skill Hub 流通 | 能力资产一次沉淀、处处复用：Skill 在开发者之间搜索、安装、组合与二次创作 |
 | Auto Harness | 评测驱动、端到端自动优化 Harness：不是训练模型权重，而是让 Harness 在实战中自动学习、自动优化 |
@@ -78,14 +78,16 @@
 
 ### 命令行版
 
+环境要求：Python `>=3.11,<3.15`。
+
 ```bash
 # 安装 JiuwenSwarm
 ## 方式一：默认安装
-pip install jiuwenswarm
+pip install workswarm
 
 ## 方式二：使用国内镜像源（推荐）
 # 清华源
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 初始化 JiuwenSwarm（首次启动）
 jiuwenswarm-init
@@ -96,20 +98,6 @@ jiuwenswarm-start
 
 启动后访问 http://localhost:5173 打开前端页面即可使用。
 
-如需使用 TUI（终端交互界面），在启动 JiuwenSwarm 后另开终端：
-
-```bash
-# 安装 JiuwenSwarm-tui
-## 方式一：默认安装
-pip install jiuwenswarm-tui
-
-## 方式二：使用国内镜像源（推荐）
-# 清华源
-pip install jiuwenswarm-tui -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 启动 JiuwenSwarm-tui
-jiuwenswarm-tui
-```
 
 > 详细安装指导请见：[安装指南](docs/zh/安装指南.md)
 

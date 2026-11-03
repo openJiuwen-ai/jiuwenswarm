@@ -1,5 +1,6 @@
 import { webClient } from '../services/webClient';
 import type { Message } from '../types';
+import { mergeUniqueMessages, toOwnerTeamMessage } from '../components/ChatPanel/teamEventUtils';
 import type {
   HumanShareCommand,
   TeamTask,
@@ -7,15 +8,19 @@ import type {
   TeamTaskStatus,
 } from '../stores/sessionStore';
 import { normalizeFinalContent } from '../utils/finalContent';
+import { ownerTeamId } from './teamOrganization/conversation';
+import { useTeamSelectorStore } from '../stores/teamSelectorStore';
+import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
+import { isDepartedTeamMemberStatus } from './teamMemberDeparture';
+import {
+  mergeTaskTimeline,
+  toTaskTimelineEntry,
+  type TeamTaskTimelineEntry,
+} from '../components/teamArea/groupChatTimeline';
 import {
   findOverlappingFileExecutionEvent,
   mergeFileDownloadItems,
 } from '../utils/fileDownloadDedup';
-import {
-  createTaskProgressBaseline,
-  registerConfirmedTaskCreation,
-  type TaskProgressBaseline,
-} from './teamTaskProgressBaseline';
 
 interface TeamMember {
   id: string;
@@ -27,6 +32,9 @@ interface TeamMember {
   mode?: string;
   role?: string;
   cli_agent?: string | null;
+  workflow_run_id?: string;
+  agent_template?: string | null;
+  display_name?: string | null;
 }
 
 interface TeamTaskEvent {
@@ -52,12 +60,17 @@ interface TeamTaskEvent {
 
 export interface TeamHistoryPanelState {
   members: TeamMember[];
+  /** 回放结束时已离队的成员：不进名册，只供按 member_id 查名字 / 头像。 */
+  departedMembers: TeamMember[];
   tasks: TeamTask[];
   taskEvents: TeamTaskEvent[];
+  /** 子话题时间线用的任务流转事件，按时间升序、逐条保留。 */
+  taskTimeline: TeamTaskTimelineEntry[];
   executionEvents: TeamMemberExecutionEvent[];
+  organizationExecutionEvents?: Record<string, TeamMemberExecutionEvent[]>;
+  organizationTeamStates?: Record<string, TeamHistoryPanelState>;
   messages: Message[];
   humanShareCommands: HumanShareCommand[];
-  taskProgressBaseline: TaskProgressBaseline;
 }
 
 interface TeamHistoryGetResponse {
@@ -345,12 +358,15 @@ function extractTracerData(record: Record<string, unknown>): {
 function collectTeamState(records: Record<string, unknown>[], sessionId: string): TeamHistoryPanelState {
   const members = new Map<string, TeamMember>();
   const taskEvents = new Map<string, TeamTaskEvent>();
+  const taskTimeline: TeamTaskTimelineEntry[] = [];
   const tasks = new Map<string, TeamTask>();
   const executionEvents = new Map<string, TeamMemberExecutionEvent>();
   const humanShareCommands = new Map<string, HumanShareCommand>();
   const messages: Message[] = [];
   const shutdownMembers = new Set<string>();
-  let taskProgressBaseline = createTaskProgressBaseline();
+  // 被移出名册的成员快照：旧历史里休眠退场也只记了 shutdown，
+  // 随后的 status_changed → dormant 要靠它找回展示名 / mode / role。
+  const retiredMembers = new Map<string, TeamMember>();
 
   const addMember = (memberId: string, timestamp: number) => {
     if (!shouldKeepMember(memberId)) {
@@ -376,6 +392,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       return;
     }
     shutdownMembers.add(memberId);
+    const retired = members.get(memberId);
+    if (retired) {
+      retiredMembers.set(memberId, retired);
+    }
     members.delete(memberId);
   };
 
@@ -460,14 +480,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       skills: skills || existing?.skills,
       files: files || existing?.files,
       workflow_run_id: pickString(rawTask, ['workflow_run_id']) || existing?.workflow_run_id,
-      // A paused run's visual progress must not creep after a reload; the
-      // freeze point is this record's own timestamp (the pause event).
-      ...(typeof rawTask.progress_frozen === 'boolean'
-        ? {
-            progress_frozen: rawTask.progress_frozen,
-            progress_frozen_at: rawTask.progress_frozen ? nextTimestamp : undefined,
-          }
-        : { progress_frozen: existing?.progress_frozen, progress_frozen_at: existing?.progress_frozen_at }),
       // Truncation flags: read raw with explicit guards so a status-only
       // record (no flags) falls back to `existing?` — never resets to false.
       // Mirrors the title/content `|| existing?` pattern above.
@@ -716,14 +728,17 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         );
       }
       if (pickString(event, ['type']) === 'team.member.shutdown') {
-        applyMemberShutdown(memberId);
+        // 休眠退场不离队，状态由随后的 status_changed → dormant 落定。
+        if (pickString(event, ['target_status']) !== 'dormant') {
+          applyMemberShutdown(memberId);
+        }
         continue;
       }
       if (!shouldKeepMember(memberId)) {
         continue;
       }
       const memberStatus = pickString(event, ['new_status', 'status']);
-      if (memberStatus === 'shut_down') {
+      if (isDepartedTeamMemberStatus(memberStatus)) {
         applyMemberShutdown(memberId);
         continue;
       }
@@ -731,7 +746,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       if (
         shutdownMembers.has(memberId) &&
         memberEventType !== 'team.member.spawned' &&
-        memberEventType !== 'team.member.restarted'
+        memberEventType !== 'team.member.restarted' &&
+        // 旧历史的 shutdown 事件不带 target_status，休眠成员已被提前移出；
+        // 终态 dormant 说明它仍在名册上，要恢复回来。
+        memberStatus !== 'dormant'
       ) {
         continue;
       }
@@ -739,7 +757,8 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       // 回放是逐条覆盖同一个 member 记录的，而只有部分事件带 name / mode
       // （registered 带，spawned / status_changed 不带）。后到的事件不能把先前
       // 学到的展示名冲掉，否则恢复出来的面板会退回显示 member_id。
-      const knownMember = members.get(memberId);
+      const knownMember = members.get(memberId) ?? retiredMembers.get(memberId);
+      retiredMembers.delete(memberId);
       members.set(memberId, {
         id: `hist-member-${memberId}`,
         member_id: memberId,
@@ -750,6 +769,10 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         mode: pickString(event, ['mode']) || knownMember?.mode || undefined,
         role: pickString(event, ['role']) || knownMember?.role || undefined,
         cli_agent: pickString(event, ['cli_agent']) || knownMember?.cli_agent || undefined,
+        // 镜像 worker 的头像键与专家身份都靠这两个字段；丢了就退回 run 作用域 id 的哈希插画
+        workflow_run_id: pickString(event, ['workflow_run_id']) || knownMember?.workflow_run_id || undefined,
+        agent_template: pickString(event, ['agent_template']) || knownMember?.agent_template || undefined,
+        display_name: pickString(event, ['display_name']) || knownMember?.display_name || undefined,
       });
       continue;
     }
@@ -765,12 +788,9 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     const content = pickString(event, ['content']);
     const teamId = pickString(event, ['team_id']);
 
-    if (type === 'team.task.created') {
-      taskProgressBaseline = registerConfirmedTaskCreation(
-        Array.from(tasks.values()),
-        taskProgressBaseline,
-        taskId
-      );
+    const timelineEntry = toTaskTimelineEntry(event, eventTimestamp);
+    if (timelineEntry) {
+      taskTimeline.push(timelineEntry);
     }
 
     taskEvents.set(taskId, {
@@ -792,17 +812,62 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
 
   return {
     members: Array.from(members.values()),
+    departedMembers: Array.from(retiredMembers.values(), (member) => ({ ...member, status: 'shut_down' })),
     tasks: Array.from(tasks.values()),
     taskEvents: Array.from(taskEvents.values()),
+    taskTimeline: mergeTaskTimeline([], taskTimeline),
     executionEvents: Array.from(executionEvents.values()),
     messages,
     humanShareCommands: Array.from(humanShareCommands.values()),
-    taskProgressBaseline,
   };
 }
 
 export function parseTeamHistoryPanelRecords(records: unknown[], sessionId: string): TeamHistoryPanelState {
   return collectTeamState(records.filter(isRecord), sessionId);
+}
+
+/** Restore each Team's complete panel state into its own conversation projection. */
+export function parseOrganizationHistoryPanelRecords(records: unknown[], sessionId: string): TeamHistoryPanelState {
+  const state = parseTeamHistoryPanelRecords(records, sessionId);
+  if (!isTeamOrganizationUiEnabled()) return state;
+  const ownerRecords: Record<string, unknown>[] = [];
+  const teams = new Map<string, Record<string, unknown>[]>();
+  const ownerId = ownerTeamId(sessionId)
+    || useTeamSelectorStore.getState().runtimes[sessionId]?.teams.find(team => team.is_owner)?.team_id;
+  if (!ownerId) return state;
+  for (const record of records.filter(isRecord)) {
+    const payload = isRecord(record.event_payload) ? { ...record, ...record.event_payload } : record;
+    const event = extractTeamEvent(record);
+    const teamId = String(payload.team_id || payload.team_name || event?.team_id || event?.team_name || '').trim();
+    if (!teamId || teamId === ownerId) {
+      ownerRecords.push(record);
+      continue;
+    }
+    const teamRecords = teams.get(teamId) ?? [];
+    teamRecords.push(record);
+    teams.set(teamId, teamRecords);
+  }
+  if (!teams.size) return state;
+  const ownerState = parseTeamHistoryPanelRecords(ownerRecords, sessionId);
+  const organizationTeamStates = Object.fromEntries([...teams].map(([teamId, teamRecords]) => [
+    teamId, parseTeamHistoryPanelRecords(teamRecords, sessionId),
+  ]));
+  const userMessages = Object.entries(organizationTeamStates).flatMap(([teamId, teamState]) =>
+    teamState.messages.flatMap((message) => {
+      const ownerMessage = toOwnerTeamMessage({ ...message, teamId });
+      return ownerMessage ? [ownerMessage] : [];
+    }),
+  );
+  return {
+    // Mirror only user-directed messages; boards, timelines and collaboration remain isolated.
+    ...ownerState,
+    messages: mergeUniqueMessages([...ownerState.messages, ...userMessages])
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)),
+    organizationTeamStates,
+    organizationExecutionEvents: Object.fromEntries(Object.entries(organizationTeamStates).map(([teamId, teamState]) => [
+      teamId, teamState.executionEvents,
+    ])),
+  };
 }
 
 interface TeamSnapshotResponse {
@@ -859,9 +924,12 @@ async function reconcileTasksFromSnapshot(
   signal?: AbortSignal
 ): Promise<TeamHistoryPanelState> {
   try {
+    const ownerId = isTeamOrganizationUiEnabled()
+      ? ownerTeamId(sessionId) || useTeamSelectorStore.getState().runtimes[sessionId]?.teams.find((team) => team.is_owner)?.team_id
+      : null;
     const response = await webClient.request<TeamSnapshotResponse>(
       'team.snapshot',
-      { session_id: sessionId },
+      { session_id: sessionId, ...(ownerId ? { team_name: ownerId } : {}) },
       { signal, timeoutMs: 5000 }
     );
     const snapshotTasks = Array.isArray(response?.tasks) ? response.tasks : [];
@@ -928,7 +996,7 @@ export async function loadTeamHistoryPanelState(
     cursor = nextCursor;
   }
 
-  const state = parseTeamHistoryPanelRecords(records, sessionId);
+  const state = parseOrganizationHistoryPanelRecords(records, sessionId);
   // Prefer live DB snapshot as the authoritative board when the monitor is
   // still up — refreshes placeholder / wrong-id waiting cards to real
   // task_id + body. When the monitor is down (empty snapshot), keep the

@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
+import { toast } from '../ui/Toast/toastStore';
 import type { SkillGraphPanelHandle } from '../SkillGraphPanel';
 import { coordinateSymphonyEnabledChange } from './symphonyGraphAction';
 import { GRAPH_READING_MIN_VISIBLE_MS } from './skillPanelUtils';
@@ -24,8 +25,6 @@ export function useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabl
   const [graphReading, setGraphReading] = useState(false);
   const [symphonyEnabledDraft, setSymphonyEnabledDraft] = useState(symphonyEnabled);
   const [symphonySaving, setSymphonySaving] = useState(false);
-  const [symphonySaveError, setSymphonySaveError] = useState<string | null>(null);
-  const [graphActionError, setGraphActionError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -41,16 +40,11 @@ export function useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabl
     }
   }, [symphonyEnabled, symphonySaving]);
 
-  const clearGraphActionError = useCallback(() => {
-    setGraphActionError(null);
-  }, []);
-
   const updateSymphonyEnabled = useCallback(
     async (enabled: boolean) => {
       if (!isConnected || symphonySaving || enabled === symphonyEnabledDraft) return;
       setSymphonyEnabledDraft(enabled);
       setSymphonySaving(true);
-      setSymphonySaveError(null);
       const result = await coordinateSymphonyEnabledChange({
         enabled,
         save: onSymphonyEnabledChange,
@@ -58,11 +52,15 @@ export function useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabl
         request: webRequest,
         refreshFailedMessage: t('skills.graph.errors.refreshFailed'),
         cancelFailedMessage: t('skills.graph.errors.cancelFailed'),
-        onGraphActionStart: clearGraphActionError,
       });
       if (result.configSaveFailed) {
         setSymphonyEnabledDraft(symphonyEnabled);
-        setSymphonySaveError(t('skills.graph.orchestration.saveFailed'));
+        toast.open({
+          id: 'skill-panel-action-error',
+          content: t('skills.graph.orchestration.saveFailed'),
+          variant: 'error',
+          duration: 8,
+        });
         setSymphonySaving(false);
         return;
       }
@@ -71,19 +69,16 @@ export function useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabl
         return;
       }
       if (result.graphActionError) {
-        setGraphActionError(result.graphActionError);
+        toast.open({
+          id: 'skill-panel-action-error',
+          content: result.graphActionError,
+          variant: 'error',
+          duration: 8,
+        });
       }
       setSymphonySaving(false);
     },
-    [
-      clearGraphActionError,
-      isConnected,
-      onSymphonyEnabledChange,
-      symphonyEnabled,
-      symphonyEnabledDraft,
-      symphonySaving,
-      t,
-    ],
+    [isConnected, onSymphonyEnabledChange, symphonyEnabled, symphonyEnabledDraft, symphonySaving, t],
   );
 
   const updateGraphReading = useCallback((reading: boolean) => {
@@ -115,9 +110,6 @@ export function useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabl
     graphReading,
     symphonyEnabledDraft,
     symphonySaving,
-    symphonySaveError,
-    graphActionError,
-    clearGraphActionError,
     updateSymphonyEnabled,
     updateGraphReading,
   };

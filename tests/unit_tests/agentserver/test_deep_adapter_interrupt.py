@@ -9,11 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
 
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, ToolInterruptEntry, ToolInterruptionState
 from openjiuwen.harness.schema.interaction import SendInputRequest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -170,15 +171,17 @@ def _nonpermission_core_state(
     tool_call_id: str = "call-control",
     metadata: dict | None = None,
 ) -> SimpleNamespace:
-    tool_call = SimpleNamespace(id=tool_call_id, name=tool_name)
-    request = InterruptRequest(metadata=metadata or {})
-    state = SimpleNamespace(
+    tool_call = ToolCall(id=tool_call_id, type="function", name=tool_name, arguments="{}")
+    request = InterruptRequest(interrupt_id=f"intr_{tool_call_id}", metadata=metadata or {})
+    state = ToolInterruptionState(
+        ai_message=AssistantMessage(content="", tool_calls=[tool_call]),
+        iteration=0,
         interrupted_tools={
-            tool_call_id: SimpleNamespace(
+            tool_call_id: ToolInterruptEntry(
                 tool_call=tool_call,
                 interrupt_requests={tool_call_id: request},
             )
-        }
+        },
     )
     return SimpleNamespace(
         get_session_id=MagicMock(return_value=session_id),
@@ -860,6 +863,7 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
             "query": "resume",
             "mode": "agent",
             "source": "permission_interrupt",
+            "answers": [{"selected_options": ["allow_once"]}],
         },
     )
 
@@ -879,17 +883,24 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
     resume_task = asyncio.create_task(prepare_resume())
     await resume_started.wait()
 
-    assert adapter._permission_dispatch.lock.locked() is True
-    assert resume_task.done() is False
-    allow_cutover.set()
-    fresh = await fresh_task
-    loop_session.get_state.return_value = None
-    adapter._permission_dispatch.release(fresh)
-    with pytest.raises(
-        RootPermissionQueueError,
-        match="interaction_resume_state_missing",
-    ):
-        await resume_task
+    try:
+        assert adapter._permission_dispatch.lock.locked() is True
+        assert resume_task.done() is False
+        allow_cutover.set()
+        fresh = await fresh_task
+        loop_session.get_state.return_value = None
+        adapter._permission_dispatch.release(fresh)
+        with pytest.raises(
+            RootPermissionQueueError,
+            match="interaction_resume_state_missing",
+        ):
+            await resume_task
+    finally:
+        allow_cutover.set()
+        for task in (fresh_task, resume_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(fresh_task, resume_task, return_exceptions=True)
 
 
 def test_callback_claim_retires_accepted_handoff_after_request_finalizes() -> None:
@@ -1334,7 +1345,7 @@ async def test_unmark_cleans_rail_on_normal_completion() -> None:
 
     getattr(adapter, "_unmark_session_active")("sess_a")
 
-    rail.cleanup_session.assert_called_once_with("sess_a")
+    rail.cleanup_session.assert_called_once_with("sess_a", preserve_tool_call_ids=False)
     assert "sess_a" not in getattr(adapter, "_active_session_ids")
 
 

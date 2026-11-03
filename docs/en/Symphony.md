@@ -37,7 +37,7 @@ The skill graph is the relationship graph used by orchestration. Each node repre
 
 #### Improve orchestration from actual usage
 
-When **Dynamic Graph** is enabled, Symphony uses the outcomes of completed tasks to improve skill-combination suggestions for later related tasks. Turning it off returns orchestration to the static graph without deleting accumulated data.
+When **Dynamic Graph** is enabled, Core Symphony Observation collects execution evidence and produces runtime graph snapshots. Flow distills successful skill combinations that meet its thresholds into candidate skill packages. JiuwenSwarm reviews and installs a candidate after user confirmation. Turning the switch off returns orchestration to the static graph without deleting accumulated data.
 
 #### What problem does it solve?
 
@@ -412,7 +412,8 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: true
+    flow:
+      enabled: true
 
   orchestration:
     mode: fast
@@ -513,3 +514,7 @@ This is an easy distinction to miss: building the skill graph is not composing a
 - [Configuration](Configuration.md)
 - [Agent Team](AgentTeam.md)
 - [Chinese: Symphony](../zh/Symphony-技能编排与分发.md)
+
+### Development boundaries
+
+`openjiuwen.symphony` owns retrieval, fingerprint extraction, graph orchestration, and evolution algorithms. JiuwenSwarm owns model configuration and usage, build status, Web/RPC, runtime tools, and skill-package installation. Configuration parsing lives in `jiuwenswarm/common/symphony_config.py`. Deployments require an openjiuwen version with the corresponding public interfaces. Removing unused SDK leftovers does not change persistent graph directories or user configuration paths.

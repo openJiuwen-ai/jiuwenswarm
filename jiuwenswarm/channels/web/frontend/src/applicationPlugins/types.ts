@@ -32,6 +32,7 @@ export interface ApplicationPluginSettingsProps {
 export interface ApplicationPluginTaskInputActionProps {
   fallback: ReactNode;
   eligible: boolean;
+  hasTextDraft?: boolean;
   sessionId: string | null;
   ensureSession: (initialTitle?: string) => Promise<string | null>;
   labels: {

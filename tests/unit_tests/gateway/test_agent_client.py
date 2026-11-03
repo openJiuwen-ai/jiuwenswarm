@@ -5,17 +5,26 @@ import logging
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.e2a.wire_codec import (
+from openjiuwen_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
     parse_agent_server_wire_chunk,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.gateway.routing import agent_client
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from gateway.routing import agent_client
+from gateway.routing.agent_client import (
+    AgentServerUnaryTimeout,
+    WebSocketAgentServerClient,
+)
+
+# 复用 request_id 两个测试的外层安全超时。请求自身的超时（0.05s/0.2s）由
+# send_request 内部控制；外层只兜底防挂死。CI 以 xdist 并行跑全量 UT 时事件
+# 循环会被严重拖慢（曾观测到内层 0.2s 定时器延迟 >1s 才触发），1s 的旧值
+# 会把挂起保护误触发成 TimeoutError，故放宽到 5s（内部超时的 25 倍）。
+_OUTER_WAIT_TIMEOUT = 5.0
 
 
 class FakeWebSocket:
@@ -114,7 +123,7 @@ class ReconnectingAgentClientHarness(AgentClientHarness):
         self.connect_calls: list[str] = []
         self.reconnected_ws = FakeWebSocket()
 
-    async def connect(self, uri: str) -> None:
+    async def connect(self, uri: str, extra_headers=None) -> None:
         self.connect_calls.append(uri)
         self._uri = uri
         self._ws = self.reconnected_ws
@@ -228,7 +237,7 @@ async def test_send_request_stream_keeps_tail_window_for_processing_status(monke
     client.set_ws_for_test(FakeWebSocket())
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
+        "gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
         0.05,
     )
 
@@ -302,7 +311,7 @@ async def test_send_request_stream_absorbs_duplicate_complete_frames(monkeypatch
     client.set_ws_for_test(FakeWebSocket())
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
+        "gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
         0.05,
     )
 
@@ -427,7 +436,7 @@ async def test_message_receiver_loop_stops_on_closed_websocket():
 
 @pytest.mark.asyncio
 async def test_message_receiver_loop_logs_close_diagnostics(caplog):
-    target_logger = logging.getLogger("jiuwenswarm.gateway.routing.agent_client")
+    target_logger = logging.getLogger("gateway.routing.agent_client")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.INFO, logger=target_logger.name)
 
@@ -576,3 +585,132 @@ async def test_send_request_clears_connection_when_send_fails():
     response = await asyncio.wait_for(task, timeout=0.1)
     assert response.ok is True
     assert client.has_message_queue_for_test("rid-after-send-close") is False
+
+
+class ManualResponseWebSocket:
+    """记录发送的请求，由测试决定何时回包（模拟 AgentServer 的可控时序）。"""
+
+    def __init__(self) -> None:
+        self.frames: asyncio.Queue[str] = asyncio.Queue()
+        self.sent_payloads: list[dict] = []
+
+    async def send(self, data: str) -> None:
+        self.sent_payloads.append(json.loads(data))
+
+    async def recv(self) -> str:
+        return await self.frames.get()
+
+    def respond_unary(self, request_id: str, payload: dict) -> None:
+        wire = encode_agent_response_for_wire(
+            AgentResponse(
+                request_id=request_id,
+                channel_id="acp",
+                ok=True,
+                payload=payload,
+            ),
+            response_id=request_id,
+        )
+        self.frames.put_nowait(json.dumps(wire))
+
+    async def close(self) -> None:
+        pass
+
+
+async def _wait_for_send(ws: ManualResponseWebSocket, count: int) -> None:
+    for _ in range(1000):
+        if len(ws.sent_payloads) >= count:
+            return
+        await asyncio.sleep(0.001)
+    raise AssertionError(f"AgentServer 未收到 {count} 个请求: sent={ws.sent_payloads}")
+
+
+@pytest.mark.asyncio
+async def test_send_request_delivers_response_when_request_id_reused_after_completion():
+    """回归（#4940）：unary 请求完成后立即复用同 request_id，第二次响应必须送达。
+
+    完成清理曾无条件给 rid 立 2s "已取消"标记，接收循环会把复用请求的响应
+    当残余丢弃，导致新请求挂到超时，其注册项又让后续同 rid 请求被
+    DuplicateRequestIdError 拒绝。
+    """
+    client = AgentClientHarness()
+    ws = ManualResponseWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+
+    def make_env(message: str):
+        return e2a_from_agent_fields(
+            request_id="rid-reuse-after-done",
+            channel_id="acp",
+            session_id="sess-reuse-after-done",
+            params={"message": message},
+            is_stream=False,
+        )
+
+    try:
+        task = asyncio.create_task(client.send_request(make_env("first"), timeout=2.0))
+        await _wait_for_send(ws, 1)
+        ws.respond_unary("rid-reuse-after-done", {"echo": "first"})
+        first = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        assert first.ok is True
+        assert first.payload == {"echo": "first"}
+
+        # 完成后立即（原 2s 已取消标记窗口内）复用同 rid
+        task = asyncio.create_task(client.send_request(make_env("second"), timeout=2.0))
+        await _wait_for_send(ws, 2)
+        ws.respond_unary("rid-reuse-after-done", {"echo": "second"})
+        second = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        assert second.ok is True
+        assert second.payload == {"echo": "second"}
+        assert client.has_message_queue_for_test("rid-reuse-after-done") is False
+    finally:
+        receiver.cancel()
+        await receiver
+
+
+@pytest.mark.asyncio
+async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(caplog):
+    """弃单（超时）后保留已取消标记：复用请求的响应被丢弃并记 warning.
+
+    防串线的既定取舍：超时后旧请求的响应可能迟到，放行会串进复用同 rid 的
+    新等待者。与正常完成路径（不立标记）相区分。
+    """
+    target_logger = logging.getLogger("gateway.routing.agent_client")
+    target_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.WARNING, logger=target_logger.name)
+
+    client = AgentClientHarness()
+    ws = ManualResponseWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+
+    def make_env(message: str):
+        return e2a_from_agent_fields(
+            request_id="rid-reuse-after-timeout",
+            channel_id="acp",
+            session_id="sess-reuse-after-timeout",
+            params={"message": message},
+            is_stream=False,
+        )
+
+    try:
+        # 第一次：不回包，等它超时（弃单）
+        task = asyncio.create_task(client.send_request(make_env("first"), timeout=0.05))
+        await _wait_for_send(ws, 1)
+        with pytest.raises(AgentServerUnaryTimeout):
+            await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+
+        # 超时后立即复用同 rid；此时回包（旧请求的迟到响应与新请求的响应
+        # 在接收侧不可区分）——都应被已取消标记丢弃
+        task = asyncio.create_task(client.send_request(make_env("second"), timeout=0.2))
+        await _wait_for_send(ws, 2)
+        ws.respond_unary("rid-reuse-after-timeout", {"echo": "second"})
+        with pytest.raises(AgentServerUnaryTimeout):
+            await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        assert "新请求的响应被丢弃" in caplog.text
+        assert client.has_message_queue_for_test("rid-reuse-after-timeout") is False
+    finally:
+        target_logger.removeHandler(caplog.handler)
+        receiver.cancel()
+        await receiver

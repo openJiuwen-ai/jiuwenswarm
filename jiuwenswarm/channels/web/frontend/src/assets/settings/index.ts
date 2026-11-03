@@ -1,13 +1,14 @@
 import type { FunctionComponent, SVGProps } from 'react';
-import { Play as TestIcon } from 'lucide-react';
 import GeneralIcon from './navigation/general.svg?react';
 import ModelsIcon from './navigation/models.svg?react';
 import AgentIcon from './navigation/agent.svg?react';
 import BrowserIcon from './navigation/browser.svg?react';
 import ChannelsIcon from './navigation/channels.svg?react';
 import PersonalContextIcon from './navigation/personal-context.svg?react';
+import RecommendationIcon from './navigation/recommendation.svg?react';
 import ExperimentalIcon from './navigation/experimental.svg?react';
 import RefreshIcon from './actions/refresh.svg?react';
+import ConnectivityIcon from './actions/connectivity.svg?react';
 import EditIcon from './actions/edit.svg?react';
 import EnableIcon from './actions/enable.svg?react';
 import DisableIcon from './actions/disable.svg?react';
@@ -31,12 +32,13 @@ export const settingsNavigationIcons = {
   browser: BrowserIcon,
   channels: ChannelsIcon,
   personalContext: PersonalContextIcon,
+  recommendation: RecommendationIcon,
   experimental: ExperimentalIcon,
 } as const satisfies Record<string, SettingsNavigationIcon>;
 
 export const settingsActionIcons = {
   refresh: RefreshIcon,
-  test: TestIcon,
+  test: ConnectivityIcon,
   edit: EditIcon,
   enable: EnableIcon,
   disable: DisableIcon,

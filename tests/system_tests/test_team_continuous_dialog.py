@@ -275,7 +275,7 @@ async def test_team_continuous_dialog(temp_home: Path, monkeypatch: pytest.Monke
 
         logger.info("Starting gateway on port %s", web_port)
         gateway_proc = _start_process(
-            [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway", "--port", str(web_port)],
+            [sys.executable, "-m", "gateway.app_gateway", "--port", str(web_port)],
             env=env,
             log_path=gateway_log,
         )
