@@ -1,29 +1,27 @@
 ---
 title: 设计文档索引
-author: kdgmpw
-author_email: lishuqi4@huawei.com
+author: openjiuwen_ai
+author_email: openjiuwen_ai@163.com
 generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-02T17:20+08:00 -->
+<!-- generated-at: 2026-11-03T14:25+08:00 -->
 
 # 设计文档索引 (INDEX)
 
-> 开发前 3 · 开发中 0 · 开发后 3 · 已否决 0
-
-按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出，全局统计按文档去重。
+按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出。
 
 ## 模块目录
 
-| 模块 | 设计数 |
-|---|---|
-| [agent_teams](#module-1) | 1 |
-| [agent_teams/workflow](#module-2) | 3 |
-| [jiuwenswarm](#module-3) | 3 |
-| [jiuwenswarm/channels/web/frontend](#module-4) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-5) | 1 |
-| [jiuwenswarm/observability](#module-6) | 1 |
+| 模块 |
+|---|
+| [agent_teams](#module-1) |
+| [agent_teams/workflow](#module-2) |
+| [jiuwenswarm](#module-3) |
+| [jiuwenswarm/channels/web/frontend](#module-4) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-5) |
+| [jiuwenswarm/observability](#module-6) |
 
 <a id="module-1"></a>
 

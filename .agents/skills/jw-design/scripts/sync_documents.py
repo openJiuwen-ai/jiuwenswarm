@@ -186,7 +186,7 @@ def index_row(doc: Document, parent: Path, designs: dict[str, Document]) -> str:
 
 
 def render_index(path: Path, title: str, docs: list[Document], identity: GitIdentity, designs: dict[str, Document]) -> str:
-    """Generate module navigation with globally deduplicated document counts."""
+    """Generate module navigation and document listings without global totals."""
     metadata = {"title": title, "author": identity.name, "author_email": identity.email, "generated": True}
     header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
     unique_docs = list({doc.path: doc for doc in docs}.values())
@@ -198,13 +198,13 @@ def render_index(path: Path, title: str, docs: list[Document], identity: GitIden
     lines = [
         f"---\n{header}\n---", "", f"# {title}", "",
         "由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。", "",
-        f"共 {len(unique_docs)} 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。", "",
-        "## 模块导航", "", "| 模块 | 文档数 |", "|---|---|",
+        "按模块分组；跨模块文档在各相关分组展示。", "",
+        "## 模块导航", "", "| 模块 |", "|---|",
     ]
     for number, name in enumerate(names, start=1):
-        lines.append(f"| [{cell(name)}](#module-{number}) | {len(grouped[name])} |")
+        lines.append(f"| [{cell(name)}](#module-{number}) |")
     if not names:
-        lines.extend(["| — | 0 |", "", "暂无文档。"])
+        lines.extend(["| — |", "", "暂无文档。"])
     else:
         lines.append("")
     type_order = {"D": 0, "F": 1, "B": 2, "S": 3}

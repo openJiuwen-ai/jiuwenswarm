@@ -97,6 +97,7 @@ import {
   MAIN_TRAJECTORY_SUBJECT_ID,
   subjectAppearsOnTeamLanes,
 } from './trajectorySubjects';
+import { buildTeamControlModel } from './teamControlTimeline';
 import {
   countTurns,
   unrecordedTurnRanges,
@@ -264,6 +265,14 @@ export interface TrajectoryPanelSummary {
    * "select all" summary stay in sync.
    */
   spans: number;
+  /** Scheduled Team control facts, when `main` contains task events. */
+  team?: {
+    members: number;
+    tasks: number;
+    completedTasks: number;
+    reviewRuns: number;
+    controlEvents: number;
+  };
 }
 
 function ignoreTimelineRange(): void {}
@@ -384,6 +393,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   // absent from the store fall back to the short run id inside the grouping.
   const workflowRuns = useSessionStore(
     (s) => s.runtimes[sessionId]?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
+  );
+  const sessionTeamDispatchMode = useSessionStore(
+    state => state.runtimes[sessionId]?.teamDispatchMode,
   );
   // The panel is not remounted when the session or its mode changes, so the
   // stable callbacks below read the mode through a ref instead of closing
@@ -1237,6 +1249,23 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     teamMode,
   ]);
   const subjectGroups = subjectView.groups;
+  const teamControlModel = useMemo(
+    () => (teamMode ? buildTeamControlModel(allDisplayedRawRecords) : null),
+    [allDisplayedRawRecords, teamMode],
+  );
+  const scheduledTeamControlModel = teamControlModel !== null && teamControlModel.tasks.length > 0
+    ? teamControlModel
+    : null;
+  const scheduledTeamMode = teamMode
+    && scheduledTeamControlModel !== null
+    && (sessionTeamDispatchMode === undefined || sessionTeamDispatchMode === 'scheduled');
+  const reviewRunCount = subjectGroups.groups.filter(group => (
+    group.subject.id.startsWith('team-reviewer:')
+  )).length;
+  const teamMemberCount = subjectGroups.groups.filter(group => (
+    (group.subject.kind === 'team_leader' || group.subject.kind === 'team_member')
+    && !group.subject.id.startsWith('team-reviewer:')
+  )).length;
   const selectedSubjectGroup = selectedSubjectId === null
     ? undefined
     : (subjectGroups.byId.get(selectedSubjectId)
@@ -1304,8 +1333,26 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     onSummaryChangeRef.current?.({
       agents: lanes.length,
       spans: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
+      ...(scheduledTeamMode && scheduledTeamControlModel !== null
+        ? {
+          team: {
+            members: teamMemberCount,
+            tasks: scheduledTeamControlModel.tasks.length,
+            completedTasks: scheduledTeamControlModel.completedTaskCount,
+            reviewRuns: reviewRunCount,
+            controlEvents: scheduledTeamControlModel.controlRecordCount,
+          },
+        }
+        : {}),
     });
-  }, [diagnosisNodesKey, sharedTimeAxis]);
+  }, [
+    diagnosisNodesKey,
+    reviewRunCount,
+    scheduledTeamControlModel,
+    scheduledTeamMode,
+    sharedTimeAxis,
+    teamMemberCount,
+  ]);
   const exportArchiveRef = useRef<() => void>(() => {});
   const exitReplayRef = useRef<() => void>(() => {});
   const onArchiveActionsReadyRef = useRef(onArchiveActionsReady);
@@ -1813,6 +1860,18 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
         hideToolbar={sharedTimeAxis}
+        {...(sharedTimeAxis && scheduledTeamMode && scheduledTeamControlModel !== null
+          ? {
+            controlTimeline: {
+              model: scheduledTeamControlModel,
+              domain: timeAxis.domain,
+              viewport: timeAxis.viewport,
+              ...(timeAxis.mapSharedTime === undefined
+                ? {}
+                : { mapTime: timeAxis.mapSharedTime }),
+            },
+          }
+          : {})}
         {...(analysisViewState === undefined ? {} : { externalViewState: analysisViewState })}
         {...(sharedTimeAxis
           ? {

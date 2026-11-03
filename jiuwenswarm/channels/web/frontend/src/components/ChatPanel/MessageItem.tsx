@@ -18,7 +18,8 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import {
   Message,
   FileDownloadItem,
@@ -274,6 +275,7 @@ export function ContextCompressionLines({
   showSummary?: boolean;
 }) {
   const { t } = useTranslation();
+  const runningElapsedSeconds = useContextCompressionElapsed(runtime);
   const showRuntime = Boolean(runtime?.summary);
   const finalSummary = !runtime && showSummary && summary && summary.count > 0 ? summary : null;
   if (!showRuntime && !finalSummary) return null;
@@ -301,6 +303,14 @@ export function ContextCompressionLines({
               ? contextCompressionRunningText(t, runtime?.processor, runtime?.summary ?? '')
               : runtime?.summary}
           </span>
+          {isRunning && runningElapsedSeconds !== undefined && (
+            <span
+              className="context-compression-elapsed"
+              data-testid="chat-panel-context-compression-elapsed"
+            >
+              {contextCompressionElapsedText(t, runningElapsedSeconds)}
+            </span>
+          )}
         </div>
       )}
       {finalSummary && (
