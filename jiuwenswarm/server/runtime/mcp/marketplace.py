@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from jiuwenswarm.common.utils import get_workspace_dir
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
     install_hub_asset_package,
 )
@@ -29,9 +29,19 @@ from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
     HubInstallStateStore,
 )
 from jiuwenswarm.server.runtime.mcp import registry
+from jiuwenswarm.server.runtime.mcp.paths import ensure_builtins_packages
 from jiuwenswarm.server.runtime.mcp.package_manifest import load_mcp_package
 
 logger = logging.getLogger(__name__)
+
+
+def get_workspace_dir() -> Path:
+    """MCP 数据根锚点：租户感知的 agent workspace（保留旧名供测试 patch）。
+
+    个人版即全局 ``~/.jiuwenswarm/agent/workspace``；企业版随 ``TenantContext``
+    解析到 ``workspace_{tenant_key}``，Hub 安装记录按租户隔离。
+    """
+    return get_agent_workspace_dir()
 
 
 def _mcp_root() -> Path:
@@ -39,7 +49,9 @@ def _mcp_root() -> Path:
 
 
 def _builtin_root() -> Path:
-    return _mcp_root() / "mcp_builtins"
+    pkgs = _mcp_root() / "mcp_builtins"
+    ensure_builtins_packages(pkgs)
+    return pkgs
 
 
 def _hub_root() -> Path:

@@ -165,10 +165,12 @@ def _load_runtime_state() -> Mapping[str, Any]:
     import json  # pylint: disable=import-outside-toplevel
 
     from jiuwenswarm.common.utils import (  # pylint: disable=import-outside-toplevel
-        get_workspace_dir,
+        get_agent_workspace_dir,
     )
 
-    state_path = get_workspace_dir() / "mcp" / "state.json"
+    # 租户感知锚点：企业版随 TenantContext 解析到 workspace_{tenant_key}，
+    # 与 server 侧 MCP state store 的读写根一致。
+    state_path = get_agent_workspace_dir() / "mcp" / "state.json"
     try:
         with state_path.open("r", encoding="utf-8-sig") as state_file:
             state = json.load(state_file)

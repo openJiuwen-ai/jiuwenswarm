@@ -45,9 +45,18 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
+
+
+def get_workspace_dir() -> Path:
+    """MCP 数据根锚点：租户感知的 agent workspace（保留旧名供测试 patch）。
+
+    个人版即全局 ``~/.jiuwenswarm/agent/workspace``；企业版随 ``TenantContext``
+    解析到 ``workspace_{tenant_key}``，state.json 按租户隔离。
+    """
+    return get_agent_workspace_dir()
 
 _STATE_VERSION = 1
 _STATE_FILE = "state.json"
