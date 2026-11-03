@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: kdgmpw
-author_email: lishuqi4@huawei.com
+author: openjiuwen_ai
+author_email: openjiuwen_ai@163.com
 generated: true
 ---
 

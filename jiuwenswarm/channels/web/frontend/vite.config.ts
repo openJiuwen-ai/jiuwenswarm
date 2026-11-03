@@ -251,6 +251,26 @@ function downloadContentType(filePath: string): string {
   return DOWNLOAD_CONTENT_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream'
 }
 
+// Parse one HTTP byte range without accepting multipart ranges; mirrors the
+// gateway ``_parse_single_byte_range`` semantics for the dev middleware.
+function parseSingleByteRange(rangeHeader: string, fileSize: number): [number, number] | null {
+  if (fileSize <= 0 || !rangeHeader.startsWith('bytes=') || rangeHeader.includes(',')) return null
+  const value = rangeHeader.slice('bytes='.length)
+  const dash = value.indexOf('-')
+  if (dash < 0) return null
+  const startText = value.slice(0, dash)
+  const endText = value.slice(dash + 1)
+  if (!startText) {
+    if (!/^\d+$/.test(endText) || Number(endText) <= 0) return null
+    return [Math.max(0, fileSize - Number(endText)), fileSize - 1]
+  }
+  if (!/^\d+$/.test(startText) || (endText && !/^\d+$/.test(endText))) return null
+  const start = Number(startText)
+  if (start >= fileSize) return null
+  const end = endText ? Math.min(Number(endText), fileSize - 1) : fileSize - 1
+  return end >= start ? [start, end] : null
+}
+
 function handleFileStreamError(res: ServerResponse, error: NodeJS.ErrnoException): void {
   if (res.headersSent) {
     res.destroy(error)
@@ -1509,14 +1529,35 @@ function devFileContentApi(): Plugin {
             return
           }
 
-          res.statusCode = 200
-          res.setHeader('content-type', downloadContentType(fullPath))
-          res.setHeader('cache-control', 'no-store')
-          if (req.method === 'HEAD') {
+          // Browsers cannot seek media (designer video preview) unless the
+          // endpoint honors Range requests; answer 206/416 like app_web.
+          const fileSize = fs.statSync(fullPath).size
+          const rangeHeader = String(req.headers.range || '').trim()
+          const byteRange = rangeHeader ? parseSingleByteRange(rangeHeader, fileSize) : null
+          if (rangeHeader && byteRange === null) {
+            res.statusCode = 416
+            res.setHeader('content-range', `bytes */${fileSize}`)
+            res.setHeader('content-length', '0')
+            res.setHeader('accept-ranges', 'bytes')
+            res.setHeader('cache-control', 'no-store')
             res.end()
             return
           }
-          const fileStream = fs.createReadStream(fullPath)
+          const [start, end] = byteRange ?? [0, Math.max(fileSize - 1, 0)]
+          const contentLength = fileSize === 0 ? 0 : end - start + 1
+          res.statusCode = byteRange ? 206 : 200
+          res.setHeader('content-type', downloadContentType(fullPath))
+          res.setHeader('content-length', String(contentLength))
+          res.setHeader('accept-ranges', 'bytes')
+          res.setHeader('cache-control', 'no-store')
+          if (byteRange) {
+            res.setHeader('content-range', `bytes ${start}-${end}/${fileSize}`)
+          }
+          if (req.method === 'HEAD' || contentLength === 0) {
+            res.end()
+            return
+          }
+          const fileStream = fs.createReadStream(fullPath, { start, end })
           fileStream.once('error', (error) => {
             server.config.logger.error(`[file-api] Failed to read ${fullPath}: ${(error as Error).message}`)
             handleFileStreamError(res, error)

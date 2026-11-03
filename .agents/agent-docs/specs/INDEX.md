@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: kdgmpw
-author_email: lishuqi4@huawei.com
+author: openjiuwen_ai
+author_email: openjiuwen_ai@163.com
 generated: true
 ---
 
