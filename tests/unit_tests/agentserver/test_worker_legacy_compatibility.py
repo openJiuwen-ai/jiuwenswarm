@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 import psutil
 import pytest
@@ -38,15 +39,30 @@ if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):
 """
 
 
+@pytest.fixture
+def legacy_workspace(monkeypatch):
+    """Keep historical Unix socket paths below the OS limit, including under xdist."""
+    from jiuwenswarm.common import utils
+
+    with tempfile.TemporaryDirectory(prefix="jw-old-") as directory:
+        with monkeypatch.context() as patch:
+            workspace = Path(directory)
+            patch.setattr(utils, "_workspace_base_dir", workspace)
+            patch.setenv("JIUWENSWARM_DATA_DIR", str(workspace))
+            yield workspace
+
+
 @pytest.mark.asyncio
-async def test_unknown_legacy_worker_does_not_block_startup_and_requires_explicit_pid(monkeypatch, tmp_path):
+async def test_unknown_legacy_worker_does_not_block_startup_and_requires_explicit_pid(
+    monkeypatch, tmp_path, legacy_workspace,
+):
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     shim = tmp_path / "shim"
     shim.mkdir()
     (shim / "sitecustomize.py").write_text(LEGACY_SHIM, encoding="utf-8")
     suffix = "pipe" if os.name == "nt" else "sock"
-    path = get_user_workspace_dir() / "run" / f"runtime-worker.{suffix}"
+    path = legacy_workspace / "run" / f"runtime-worker.{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(shim), str(SOURCE)])}
     with (tmp_path / "legacy.stderr.log").open("wb") as stderr:
@@ -69,6 +85,8 @@ async def test_unknown_legacy_worker_does_not_block_startup_and_requires_explici
         assert worker.create_time() == born and worker.is_running()
         outcome = await shutdown_resident_worker(timeout=5, include_legacy=True, legacy_worker_pid=worker.pid)
         assert outcome["ok"] is True and outcome["pid"] == worker.pid
+        # Reap our child before checking PID existence; POSIX retains zombies.
+        await asyncio.to_thread(process.wait, 5)
         assert not psutil.pid_exists(worker.pid)
     finally:
         if not supervisor._stopping:
@@ -104,6 +122,7 @@ async def test_changed_installed_dependency_replaces_resident_worker(monkeypatch
         second = RuntimeSupervisor(Readiness(), socket_path=path, stub=True, max_restarts=0)
         await asyncio.wait_for(second.run_until_ipc_ready(), 15)
         assert second.worker_pid != pid
+        assert await owned.wait(timeout=3) is not None
         assert not psutil.pid_exists(pid)
     finally:
         if second is not None:
@@ -201,6 +220,7 @@ async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch,
         await front.stop()
         with pytest.raises(RuntimeError, match="forced to exit.*incomplete"):
             await shutdown_resident_worker(socket_path=path, timeout=.7)
+        assert await owned.wait(timeout=3) is not None
         assert not psutil.pid_exists(pid)
     finally:
         if not front._stopping:
@@ -211,11 +231,13 @@ async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("foreign_identity_key", ["JIUWENSWARM_RUNTIME_PROFILE", "JIUWENSWARM_RUNTIME_INSTANCE"])
-async def test_stop_does_not_claim_a_different_installations_historical_endpoint(monkeypatch, tmp_path, foreign_identity_key):
+async def test_stop_does_not_claim_a_different_installations_historical_endpoint(
+    monkeypatch, tmp_path, foreign_identity_key, legacy_workspace,
+):
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     suffix = "pipe" if os.name == "nt" else "sock"
-    path = get_user_workspace_dir() / "run" / f"runtime-worker.{suffix}"
+    path = legacy_workspace / "run" / f"runtime-worker.{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PYTHONPATH": str(SOURCE), foreign_identity_key: "foreign-installation"}
     with (tmp_path / "foreign.stderr.log").open("wb") as stderr:

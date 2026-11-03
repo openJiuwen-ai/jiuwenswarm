@@ -8,6 +8,7 @@ modules:
   - jiuwenswarm/server/supervisor
   - jiuwenswarm/server/worker
   - jiuwenswarm/channels/desktop
+  - tests/unit_tests/agentserver
 files:
   - jiuwenswarm/server/supervisor/runtime_supervisor.py
   - jiuwenswarm/server/supervisor/resident_lifecycle.py
@@ -16,6 +17,7 @@ files:
   - jiuwenswarm/debug_launcher.py
   - jiuwenswarm/channels/desktop/electron/main.cjs
   - scripts/jiuwenswarm.spec
+  - tests/unit_tests/agentserver/test_worker_legacy_compatibility.py
 designs: []
 design_note: 修复已确认的常驻与最终退出契约及回退前暴露的兼容回归，未建立独立方案文档。
 ---
@@ -93,6 +95,8 @@ Windows 扩展回归初轮为 9948 passed、23 skipped、64 failed、6 errors。
 因此，本修复不能声明解决 #6063：AgentServer 收尾仍使用默认 detach；`start_services`、`app` 的终端收尾也未覆盖常驻 Worker 的最终退出。Windows 回调验证不等于原生 SIGINT，更不能代替 openEuler 验收。普通 Front 重启保持常驻仍是有效契约；终端最终退出需要另行区分，并覆盖多实例归属和重启行为后再验收。
 
 本次推送后 develop 继续推进到 `4512240b4242da3ff329c8b17fddc993f79cc9be`，重新合入时仅五份生成索引冲突；使用当前同步工具重建并保留双方源文档。新增的 Worker 启动补丁、TTSE 插件和会话清理路径纳入复验，合并候选为 424 passed、8 skipped、2 failed；失败仍为上述两项 Windows 下的 POSIX 信号模拟。四个 CodeCheck 修改文件没有被此次主干合并改变。
+
+旧云端 Linux UT 报告的四项历史 Worker 失败还暴露两类测试夹具缺陷：xdist 的长临时目录使 AF_UNIX 路径超过系统长度限制；真实退出后由测试持有的 Popen 子进程尚未回收，`pid_exists()` 仍能看到 zombie。历史端点用例现使用短、独立的临时 workspace，仍按实际旧端点规则生成路径；处置后先通过持有的进程句柄回收子进程，再检查 PID。没有把 zombie 当作存活 Runtime，也没有放宽进程归属或退出断言。该文件 9 项 Windows 回归通过，原生 Linux 结果仍需云端确认。
 
 ## 遗留与重验条件
 
