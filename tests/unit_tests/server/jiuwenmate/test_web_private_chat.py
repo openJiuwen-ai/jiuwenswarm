@@ -716,6 +716,7 @@ def test_consecutive_fragments_of_one_execution_are_merged():
 
 async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_first(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("第一个对话的问题", "第二个对话的问题")
 
     first = (await host.send(agent_id, "第一个对话的问题", conversation_id="conv-a")).payload
@@ -726,10 +727,11 @@ async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_firs
     assert first["conversation"]["title"] == "第一个对话的问题"
     assert first["request"]["conversation_id"] == "conv-a"
     listed = await host.conversations(agent_id)
-    assert [item["conversation_id"] for item in listed] == ["conv-b", "conv-a"]
+    assert [item["conversation_id"] for item in listed] == ["conv-b", "conv-a", initial["conversation_id"]]
     assert {item["conversation_id"]: item["last_message"] for item in listed} == {
         "conv-b": "第二个对话的问题",
         "conv-a": "第一个对话的问题",
+        initial["conversation_id"]: "",
     }
     a = (await host.history(agent_id, "conv-a")).payload["requests"]
     b = (await host.history(agent_id, "conv-b")).payload["requests"]
@@ -743,6 +745,7 @@ async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_firs
 
 async def test_conversation_pin_state_persists_and_changes_list_order(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("较早的对话", "较新的对话")
     first = (await host.send(agent_id, "较早的对话", conversation_id="conv-old")).payload["request"]
     await host.settled(first["request_id"])
@@ -756,7 +759,7 @@ async def test_conversation_pin_state_persists_and_changes_list_order(host):
         pinned=True,
     )
     assert pinned.ok and pinned.payload["conversation"]["pinned"] is True
-    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-old", "conv-new"]
+    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-old", "conv-new", initial["conversation_id"]]
 
     unpinned = await host.call(
         ReqMethod.JIUWENMATE_CONVERSATION_PIN,
@@ -765,20 +768,23 @@ async def test_conversation_pin_state_persists_and_changes_list_order(host):
         pinned=False,
     )
     assert unpinned.ok and unpinned.payload["conversation"]["pinned"] is False
-    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-new", "conv-old"]
+    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-new", "conv-old", initial["conversation_id"]]
 
 
-async def test_a_new_conversation_is_listed_only_after_its_first_message(host):
+async def test_reading_another_empty_conversation_preserves_only_the_initial_conversation(host):
     agent_id = await host.colleague()
+    initial = await host.conversations(agent_id)
+    assert len(initial) == 1 and initial[0]["last_message"] == ""
 
     history = await host.history(agent_id, "conv-new")
 
     assert history.ok and history.payload == {"requests": []}
-    assert await host.conversations(agent_id) == []
+    assert await host.conversations(agent_id) == initial
 
 
 async def test_the_title_is_the_start_of_the_first_message_and_can_be_renamed(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("请帮我  整理\n本周研发进展并输出一份详细的周报", "继续")
 
     await host.send(agent_id, "请帮我  整理\n本周研发进展并输出一份详细的周报", message_id="msg-long")
@@ -791,15 +797,16 @@ async def test_the_title_is_the_start_of_the_first_message_and_can_be_renamed(ho
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME, agent_id=agent_id, conversation_id=CONVERSATION, title=" "
     )
 
-    assert [item["title"] for item in titled] == ["请帮我 整理 本周研发进展并输出一份详细"]
-    assert [item["last_message"] for item in titled] == ["继续"]
+    assert [item["title"] for item in titled] == ["请帮我 整理 本周研发进展并输出一份详细", initial["title"]]
+    assert [item["last_message"] for item in titled] == ["继续", ""]
     assert renamed.ok and renamed.payload["conversation"]["title"] == "周报"
     assert not empty.ok and empty.payload["code"] == "BAD_REQUEST"
-    assert [item["title"] for item in await host.conversations(agent_id)] == ["周报"]
+    assert [item["title"] for item in await host.conversations(agent_id)] == ["周报", initial["title"]]
 
 
 async def test_a_deleted_conversation_is_hidden_and_refuses_new_messages(host):
     agent_id = await host.colleague()
+    initial = (await host.conversations(agent_id))[0]
     host.core.release("今天进展")
     request = (await host.send(agent_id, "今天进展")).payload["request"]
     await host.settled(request["request_id"])
@@ -810,7 +817,7 @@ async def test_a_deleted_conversation_is_hidden_and_refuses_new_messages(host):
 
     assert deleted.ok and deleted.payload == {"deleted": True}
     assert again.payload["code"] == "NOT_FOUND" and refused.payload["code"] == "NOT_FOUND"
-    assert await host.conversations(agent_id) == []
+    assert await host.conversations(agent_id) == [initial]
     assert (await host.request(request["request_id"]))["replies"] == ["回复：今天进展"]
 
 
