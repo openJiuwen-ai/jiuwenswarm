@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import time
 
@@ -78,8 +79,79 @@ async def _start_supervisor(front: object, host: str, port: int) -> object:
     return supervisor
 
 
+def _configure_openjiuwen_logging() -> None:
+    """Bind OpenJiuwen logging to the writable workspace before Front serves.
+
+    Front handles control-plane requests (``history.get`` among them) whose
+    todo snapshot lazily imports OpenJiuwen. Without an explicit configuration
+    OpenJiuwen falls back to its relative default ``./logs/``, resolved against
+    the process CWD. AgentOS sandboxes run with CWD=/ on a read-only root, so
+    logger creation raises and the history stream aborts before its done frame.
+
+    Both branches are guarded: a missing or malformed ``logging.yaml`` (or an
+    unwritable path inside it) must not crash Front startup, so the workspace
+    fallback config is tried next and only if that also fails does the function
+    give up with a warning, leaving Front's default logging intact.
+    """
+    from jiuwenswarm.common.utils import get_root_dir
+
+    logging_yaml = get_root_dir() / "config" / "logging.yaml"
+    if logging_yaml.exists():
+        try:
+            from openjiuwen.core.common.logging.log_config import configure_log
+
+            configure_log(str(logging_yaml))
+            return
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] openjiuwen logging.yaml config failed; "
+                "trying workspace fallback",
+                exc_info=True,
+            )
+
+    try:
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+
+        home = (
+            os.environ.get("JIUWENSWARM_HOME")
+            or os.environ.get("HOME")
+            or os.path.expanduser("~")
+        )
+        configure_log_config({
+            "backend": "default",
+            "level": "INFO",
+            "log_path": f"{home}/.jiuwenswarm/logs/",
+            "log_file": "run/jiuwen.log",
+            "output": ["file"],
+            "structured_output_format": "json",
+            "interface_log_file": "interface/jiuwen_interface.log",
+            "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+            "performance_log_file": "performance/jiuwen_performance.log",
+        })
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] openjiuwen log config failed; Front keeps default logging",
+            exc_info=True,
+        )
+        return
+
+    try:
+        from openjiuwen.core.common.logging import LogManager
+
+        for _lg in LogManager.get_all_loggers().values():
+            _lg.set_level(logging.CRITICAL)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] openjiuwen log level tuning failed; "
+            "Front keeps default levels",
+            exc_info=True,
+        )
+
+
 async def _run(host: str, port: int) -> None:
     from jiuwenswarm.server.front.server import AgentServerFront
+
+    _configure_openjiuwen_logging()
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
