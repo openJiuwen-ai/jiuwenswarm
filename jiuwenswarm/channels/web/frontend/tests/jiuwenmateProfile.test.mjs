@@ -1146,7 +1146,7 @@ test('an empty knowledge catalog tells the user to publish a page first', () => 
   });
   assert.match(markup, /添加知识/);
   assert.match(markup, /没有可装载的已发布知识页面/);
-  assert.match(markup, /左侧「知识」/);
+  assert.match(markup, /左侧「资产」/);
 });
 
 test('channel reply mode renders a compact selected state and disables changes while saving', () => {
