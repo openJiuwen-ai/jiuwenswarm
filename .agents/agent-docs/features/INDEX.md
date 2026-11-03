@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: openjiuwen_ai
-author_email: openjiuwen_ai@163.com
+author: Rossoneri
+author_email: 863031676@qq.com
 generated: true
 ---
 
@@ -19,7 +19,8 @@ generated: true
 | [jiuwenswarm/agents/harness/common/rails](#module-2) |
 | [jiuwenswarm/agents/harness/common/tools](#module-3) |
 | [jiuwenswarm/channels/web/frontend](#module-4) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-5) |
+| [jiuwenswarm/channels/web/frontend/src/components/ChatPanel](#module-5) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-6) |
 
 <a id="module-1"></a>
 
@@ -54,6 +55,15 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 
 <a id="module-5"></a>
+
+## jiuwenswarm/channels/web/frontend/src/components/ChatPanel
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261103_1036_topic-list-presentation](F_20261103_1036_topic-list-presentation.md) | F | 首页话题推荐标题与无边框列表 | Rossoneri | jiuwenswarm/channels/web/frontend/src/components/ChatPanel | jiuwenswarm/channels/web/frontend/src/components/ChatPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ChatPanel.css, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json | 无独立 D：按用户提供的列表样式参考实施，无独立设计。 |
+| [F_20261103_1057_composer-follow-up-question](F_20261103_1057_composer-follow-up-question.md) | F | 回答后在输入框占位位置显示下一步提问 | Rossoneri | jiuwenswarm/channels/web/frontend/src/components/ChatPanel | jiuwenswarm/channels/web/frontend/src/components/ChatPanel/index.tsx, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/channels/web/frontend/src/hooks/usePromptSuggestionBox.ts, jiuwenswarm/agents/harness/common/recommendation/prompt_suggestion.py, jiuwenswarm/server/runtime/recommendation_rpc.py, gateway/channel_manager/web/app_web_handlers.py, jiuwenswarm/channels/web/frontend/tests/recommendation.test.mjs | 无独立 D：按用户明确要求调整既有提示词推荐交互，无独立设计。 |
+
+<a id="module-6"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 

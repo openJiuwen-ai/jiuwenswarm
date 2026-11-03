@@ -526,11 +526,6 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
-  // Where the settings page should land when a recommendation link opened it.
-  const [recommendationSettingsFocus, setRecommendationSettingsFocus] = useState<number | null>(null);
-  useEffect(() => {
-    if (activeNav !== 'settings') setRecommendationSettingsFocus(null);
-  }, [activeNav]);
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -4139,23 +4134,6 @@ function AppContent({
     ],
   );
 
-  const handleOpenRecommendationSettings = useCallback(() => {
-    setRecommendationSettingsFocus(Date.now());
-    setRequestedSettingsModuleId('recommendation');
-    setActiveNav('settings');
-  }, []);
-
-  const handleCorrectRecommendation = useCallback((initialInputValue: string) => {
-    const project = projects.find((item) => item.project_id === topicStarterProjectId) ?? null;
-    setRequestedSettingsModuleId(null);
-    setSelectedProject(project);
-    requestSessionNavigation('new', {
-      initialInputValue,
-      preserveProject: Boolean(project),
-      project: project ?? undefined,
-    });
-  }, [projects, requestSessionNavigation, setSelectedProject, topicStarterProjectId]);
-
   const handleNavigate = useCallback(
     (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
       if (nav !== 'settings' && !confirmLeaveSettings()) {
@@ -4695,7 +4673,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     chat={(
                       <ChatPanel
                         promptSuggestionBox={promptSuggestionBox}
-                        onOpenRecommendationSettings={handleOpenRecommendationSettings}
+                        onOpenGeneralSettings={() => requestSettingsModule('general')}
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
                         onForkSession={handleForkSession}
@@ -4919,8 +4897,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             <SettingsPage
               definition={settingsPageDefinition}
               appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : undefined}
-              recommendationFocus={recommendationSettingsFocus}
-              onCorrectRecommendation={handleCorrectRecommendation}
               onRecommendationEnabledChange={promptSuggestionBox.setEnabled}
               isConnected={isConnected}
               connectionState={connectionState}

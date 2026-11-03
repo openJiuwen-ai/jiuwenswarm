@@ -1879,5 +1879,5 @@ recommendation:
   topic_enabled: null
   prompt_enabled: null
   # 话题推荐模型：models 中某个模型的 model_id。
-  # follow_main 只留给还没选过的旧配置，读取时按列表第一项解析，设置页不再提供这个选项。
-  model: follow_main
+  # 未配置时为空，不自动使用聊天模型。
+  model: ""
