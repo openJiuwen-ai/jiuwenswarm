@@ -28,13 +28,16 @@ SYSTEM_PROMPT = (
     "For a stale revision or queue conflict, query and correct once. Never repeat an identical write. "
     "Cancellation acceptance means stopping is pending, not stopped. Modification acceptance is not completion. "
     "Only state=reordered confirms reorder. Never claim success without a successful receipt. "
-    "Information answers require observed interaction_id and explicit user answers; permission requests require manual clicks; execution confirmation cards use the separate voice confirmation flow or on-screen clicks. Do not submit approval answers through this manager. "
+    "Information answers require observed interaction_id and explicit user answers; "
+    "permission requests require manual clicks; execution confirmation cards use the separate voice "
+    "confirmation flow or on-screen clicks. Do not submit approval answers through this manager. "
     "Do not create new tasks or undo external effects yourself. Explain unsupported requests. "
     "If information_answers_allowed=false, direct all information form answers to the on-screen form. "
     "Scheduled jobs are reachable only through jiuwen_cron_query, jiuwen_cron_update and jiuwen_cron_delete. "
     "Query the jobs first and copy job_id from that receipt; a schedule or time change uses cron_expr with the "
     "user's timezone. Jobs with protected=true are driven by a settings switch: explain that instead of changing them. "
-    "Creating a new scheduled job is not available here; say it must be requested as a new task, never claim one exists. "
+    "Creating a new scheduled job is not available here; say it must be requested as a new task, "
+    "never claim one exists. "
     "Respond briefly in reply_language if configured; match means use the user's language."
 )
 
@@ -76,7 +79,9 @@ async def request_step(messages):
     try:
         entry = select_model(get_default_models(), os.getenv("DUPLEX_QUEUE_MANAGER_MODEL", "").strip())
     except ValueError as exc:
-        raise ValueError("Set DUPLEX_QUEUE_MANAGER_MODEL to one configured text model, or configure a default text model") from exc
+        raise ValueError(
+            "Set DUPLEX_QUEUE_MANAGER_MODEL to one configured text model, or configure a default text model"
+        ) from exc
     client = dict(entry["model_client_config"])
     name = client.pop("model_name")
     client.update(client_id="duplex-queue-manager", timeout=10, max_retries=0,
@@ -201,9 +206,16 @@ async def manage_queue(
                 proposal = parse_manager_json(raw)
                 if not isinstance(proposal, dict):
                     raise ValueError("Invalid queue manager proposal")
-                if set(proposal) == {"response"} and isinstance(proposal["response"], str) and proposal["response"].strip():
+                if (
+                    set(proposal) == {"response"}
+                    and isinstance(proposal["response"], str)
+                    and proposal["response"].strip()
+                ):
                     return {"managed_by": "text_queue_manager", "response": proposal["response"][:2000],
-                            "receipts": receipts, "message": "Report only facts supported by these receipts. Do not call queue management again for this request."}
+                            "receipts": receipts, "message": (
+                                "Report only facts supported by these receipts. "
+                                "Do not call queue management again for this request."
+                            )}
                 if set(proposal) != {"tool"} or not isinstance(proposal["tool"], dict):
                     raise ValueError("Invalid queue manager tool proposal")
                 tool = proposal["tool"]
@@ -221,4 +233,7 @@ async def manage_queue(
     except Exception as exc:
         return {"managed_by": "text_queue_manager", "state": "incomplete", "receipts": receipts,
                 "error": str(exc)[:1000] or type(exc).__name__,
-                "message": "Management did not finish. Earlier receipts remain valid; do not assume rollback or success, or repeat this request automatically."}
+                "message": (
+                    "Management did not finish. Earlier receipts remain valid; do not assume rollback or success, "
+                    "or repeat this request automatically."
+                )}

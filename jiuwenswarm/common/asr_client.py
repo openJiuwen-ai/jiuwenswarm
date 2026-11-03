@@ -274,7 +274,10 @@ class DashScopeRunTaskAdapter:
                 "header": {"action": "finish-task", "task_id": task_id, "streaming": "duplex"},
                 "payload": {"input": {}},
             }))
-            while (event := await _next_event(conn))[0] != "task-finished":
+            while True:
+                event = await _next_event(conn)
+                if event[0] == "task-finished":
+                    break
                 sentence = ((event[1].get("payload") or {}).get("output") or {}).get("sentence") or {}
                 if event[0] == "result-generated" and sentence.get("sentence_end") and not sentence.get("heartbeat"):
                     sentences.append(str(sentence.get("text") or "").strip())

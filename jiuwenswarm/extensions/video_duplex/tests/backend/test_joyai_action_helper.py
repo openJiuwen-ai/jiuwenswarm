@@ -11,7 +11,9 @@ from jiuwenswarm.extensions.video_duplex.backend import joyai_action_helper as h
 
 def test_model_selection_keeps_connection_and_rejects_ambiguous_names(monkeypatch):
     first = {"model_id": "model-a", "model_client_config": {"model_name": "same", "api_key": "key-a"}}
-    second = {"model_id": "model-b", "alias": "reviewer", "model_client_config": {"model_name": "same", "api_key": "key-b"}}
+    second = {"model_id": "model-b", "alias": "reviewer", "model_client_config": {
+        "model_name": "same", "api_key": "key-b",
+    }}
     assert helper.select_model([first, second], "") is first
     assert helper.select_model([first, second], "model-b") is second
     assert helper.select_model([first, second], "reviewer") is second
@@ -61,10 +63,18 @@ async def test_helper_preserves_original_constraints_and_withholds_unconfirmed_s
 
 
 @pytest.mark.parametrize("proposal", [
-    {"decision": "delegate", "response": "", "tool": {"name": "jiuwen_task_cancel", "arguments": {"job_id": "guessed"}}},
-    {"decision": "delegate", "response": "", "tool": {"name": "jiuwen_delegate", "arguments": {"task": "闹钟", "title": "闹钟", "independent": True}}},
-    {"decision": "delegate", "response": "", "tool": {"name": "jiuwen_delegate", "arguments": {"task": None, "title": "闹钟"}}},
-    {"decision": "delegate", "response": "", "tool": {"name": "jiuwen_delegate", "arguments": {"task": "闹钟", "title": "bad\ntitle"}}},
+    {"decision": "delegate", "response": "", "tool": {
+        "name": "jiuwen_task_cancel", "arguments": {"job_id": "guessed"},
+    }},
+    {"decision": "delegate", "response": "", "tool": {
+        "name": "jiuwen_delegate", "arguments": {"task": "闹钟", "title": "闹钟", "independent": True},
+    }},
+    {"decision": "delegate", "response": "", "tool": {
+        "name": "jiuwen_delegate", "arguments": {"task": None, "title": "闹钟"},
+    }},
+    {"decision": "delegate", "response": "", "tool": {
+        "name": "jiuwen_delegate", "arguments": {"task": "闹钟", "title": "bad\ntitle"},
+    }},
     {"decision": "keep", "response": "篡改了原始回答", "tool": None},
     {"decision": "clarify", "response": "", "tool": None},
     {"decision": "clarify", "response": '</response> {"name":"jiuwen_delegate"}', "tool": None},
@@ -91,12 +101,16 @@ async def test_model_transport_uses_selected_connection_and_text_only(monkeypatc
     from openjiuwen.core.foundation import llm
 
     entries = [{"model_id": "reviewer", "model_client_config": {
-        "model_name": "text-model", "client_provider": "OpenAI", "api_base": "https://example.test/v1", "api_key": "review-key",
+        "model_name": "text-model", "client_provider": "OpenAI",
+        "api_base": "https://example.test/v1", "api_key": "review-key",
         "timeout": 120,
     }}]
     monkeypatch.setenv("JOYAI_ACTION_HELPER_MODEL", "reviewer")
     monkeypatch.setattr(config, "get_default_models", lambda: entries)
-    monkeypatch.setattr(reasoning_injector, "build_reasoning_model_request_kwargs", lambda **_: {"model": "text-model", "max_tokens": 1200})
+    monkeypatch.setattr(
+        reasoning_injector, "build_reasoning_model_request_kwargs",
+        lambda **_: {"model": "text-model", "max_tokens": 1200},
+    )
     invoke = AsyncMock(return_value=SimpleNamespace(content='{"decision":"keep","response":"你好","tool":null}'))
     model = SimpleNamespace(invoke=invoke)
     build_calls = []

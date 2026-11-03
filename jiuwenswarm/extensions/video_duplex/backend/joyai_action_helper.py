@@ -37,10 +37,14 @@ def select_model(entries: list[dict[str, Any]], requested: str) -> dict[str, Any
     """Select an existing connection without mixing credentials between models."""
     usable = [entry for entry in entries if (entry.get("model_client_config") or {}).get("model_name")]
     if requested:
-        matches = [entry for entry in usable if requested in {
-            entry.get("model_id"), entry.get("alias"),
-            entry["model_client_config"].get("model_name"),
-        }]
+        matches = []
+        for entry in usable:
+            names = {
+                entry.get("model_id"), entry.get("alias"),
+                entry["model_client_config"].get("model_name"),
+            }
+            if requested in names:
+                matches.append(entry)
         if len(matches) != 1:
             raise ValueError("Select one configured JOYAI_ACTION_HELPER_MODEL")
         return matches[0]
@@ -136,7 +140,9 @@ async def review_action(
     if set(arguments) != {"task", "title"} or not isinstance(arguments["title"], str):
         raise ValueError("Invalid JoyAI action helper arguments")
     title = arguments["title"].strip()
-    if not title or len(title) > 80 or "\n" in title or "\r" in title:
+    if not title or len(title) > 80:
+        raise ValueError("Invalid JoyAI action helper title")
+    if "\n" in title or "\r" in title:
         raise ValueError("Invalid JoyAI action helper title")
     parse_qwen_omni_tool_call({**tool, "call_id": command_id})
     # Retain the complete user instruction even if the reviewer paraphrased it.
@@ -157,5 +163,8 @@ def submission_response(job: dict[str, Any], reply_language: str, instruction: s
         reply_language == "match" and not re.search(r"[\u4e00-\u9fff]", instruction)
     )
     if job.get("reused") or job.get("status") not in {"queued", "running"}:
-        return "This request has a task record; please check its current result." if english else "该请求已有任务记录，请以当前任务结果为准。"
+        return (
+            "This request has a task record; please check its current result."
+            if english else "该请求已有任务记录，请以当前任务结果为准。"
+        )
     return "Your request has been submitted to Core; the result is pending." if english else "请求已提交给 Core，尚未确认执行结果。"

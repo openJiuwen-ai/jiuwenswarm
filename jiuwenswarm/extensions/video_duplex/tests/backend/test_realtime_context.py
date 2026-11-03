@@ -24,7 +24,8 @@ def saved(monkeypatch, tmp_path):
 def test_transcript_preserves_roles_and_does_not_promote_assistant_claims():
     records = history(2) + [
         dict(id="reason", role="assistant", event_type="chat.reasoning", content="private reasoning"),
-        dict(id="reported", role="assistant", event_type="chat.final", presentation="tool_result", content="Core reports a file"),
+        dict(id="reported", role="assistant", event_type="chat.final",
+             presentation="tool_result", content="Core reports a file"),
     ]
     turns = context.transcript(records)
     assert len(turns) == 3
@@ -67,7 +68,10 @@ async def test_memory_is_cached_but_task_status_is_fresh(saved, monkeypatch):
     compressor = AsyncMock(side_effect=select)
     monkeypatch.setattr(context, "select_memory", compressor)
     status = "running"
-    tasks = lambda: {"jobs": [{"job_id": "job-a", "status": status, "revision": 1}]}
+
+    def tasks():
+        return {"jobs": [{"job_id": "job-a", "status": status, "revision": 1}]}
+
     first = await context.prepare_context("chat-a", "alice", tasks)
     assert first["memory_method"] == "selected_excerpts"
     status = "completed"
@@ -97,7 +101,10 @@ async def test_compressor_failure_uses_bounded_fallback(saved, monkeypatch):
     saved.extend(history(40))
     for record in saved:
         record["content"] += '"\\' * 2000
-    tasks = lambda: {"jobs": [dict(job_id=str(i), status="running", question="x" * 8000) for i in range(30)]}
+
+    def tasks():
+        return {"jobs": [dict(job_id=str(i), status="running", question="x" * 8000) for i in range(30)]}
+
     result = await context.prepare_context("chat-a", "alice", tasks)
     assert len(json.dumps(result, ensure_ascii=False)) <= context.MAX_CONTEXT_CHARS
     assert result["context_incomplete"]
@@ -106,10 +113,12 @@ async def test_compressor_failure_uses_bounded_fallback(saved, monkeypatch):
 
 async def test_task_snapshot_is_read_after_compression(saved, monkeypatch):
     ready = False
+
     async def select(older):
         nonlocal ready
         ready = True
         return [{"source_id": older[0]["source_id"], "text": older[0]["text"]}]
+
     def tasks():
         assert ready
         return {"jobs": []}
