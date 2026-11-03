@@ -109,7 +109,8 @@ async def test_invalid_launch_parameters_rejected_without_disclosing_token(field
 
 
 @pytest.mark.parametrize("field,value", [("token", "c" * 64), ("generation", 0),
-    ("data_scope", "c" * 64), ("code_identity", "c" * 64), ("kind", "hello")])
+    ("data_scope", "c" * 64), ("code_identity", "c" * 64), ("kind", "hello"),
+    ("transport", "resident"), ("token", None), ("generation", True)])
 async def test_bad_auth_does_not_consume_the_legitimate_connection(field, value, caplog):
     listener = FrontLoopbackListener(timeout=3)
     await listener.start(code_identity="a" * 64, data_scope="b" * 64)
@@ -522,13 +523,16 @@ async def test_failed_startup_reclaims_listener_stream_and_process(monkeypatch, 
 async def test_killing_real_front_exits_attached_worker(monkeypatch, tmp_path, harmony_runtime):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
-    script = Path(__file__).with_name("fixtures") / "loopback_front.py"
+    reaping = sys.platform.startswith("linux")
+    script_name = "loopback_reaper.py" if reaping else "loopback_front.py"
+    script = Path(__file__).with_name("fixtures") / script_name
     output = tmp_path / "front.json"
     front = subprocess.Popen([sys.executable, str(script), str(output)], env=os.environ.copy(),
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     worker = actual_front = None
     try:
-        await _wait_until(output.exists, timeout=15)
+        await _wait_until(lambda: output.exists() or front.poll() is not None, timeout=15)
+        assert front.poll() is None, "Front fixture exited before publishing Worker readiness"
         state = json.loads(output.read_text())
         worker = psutil.Process(state["worker_pid"])
         actual_front = psutil.Process(state["front_pid"])
@@ -536,6 +540,10 @@ async def test_killing_real_front_exits_attached_worker(monkeypatch, tmp_path, h
         await asyncio.to_thread(actual_front.wait, 5)
         await asyncio.to_thread(worker.wait, 8)
         assert not worker.is_running()
+        if reaping:
+            assert await asyncio.to_thread(front.wait, 5) == 0
+            exits = json.loads(output.with_suffix(".reaped.json").read_text(encoding="utf-8"))
+            assert exits[str(worker.pid)] == 0
         assert not list(tmp_path.rglob("*.sock"))
     finally:
         for process in (worker, actual_front):
@@ -543,7 +551,7 @@ async def test_killing_real_front_exits_attached_worker(monkeypatch, tmp_path, h
                 process.kill()
                 await asyncio.to_thread(process.wait, 5)
         if front.poll() is None:
-            front.kill()
+            front.terminate()
         await asyncio.to_thread(front.wait, 5)
 
 

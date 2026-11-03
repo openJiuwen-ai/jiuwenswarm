@@ -36,6 +36,14 @@ def _fingerprint(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
 
 
+def _bounded_integer(value: object, upper_bound: int) -> bool:
+    return type(value) is int and 0 < value < upper_bound
+
+
+def _valid_timeout(value: object) -> bool:
+    return type(value) in {int, float} and math.isfinite(value) and value > 0
+
+
 async def _read_transport_frame(reader: asyncio.StreamReader) -> dict[str, Any]:
     header = await reader.readexactly(HEADER.size)
     size = HEADER.unpack(header)[0]
@@ -64,15 +72,19 @@ class LoopbackParameters:
         port = payload.get("port")
         generation = payload.get("generation")
         timeout = payload.get("timeout")
-        if (
-            payload.get("transport") != FRONT_LOOPBACK or payload.get("host") != _HOST
-            or type(port) is not int or not 0 < port < 65536
-            or type(generation) is not int or not 0 < generation < 2**63
-            or not _fingerprint(payload.get("token"))
-            or not _fingerprint(code_identity) or payload.get("code_identity") != code_identity
-            or not _fingerprint(data_scope) or payload.get("data_scope") != data_scope
-            or type(timeout) not in {int, float} or not math.isfinite(timeout) or timeout <= 0
-        ):
+        checks = (
+            payload.get("transport") == FRONT_LOOPBACK,
+            payload.get("host") == _HOST,
+            _bounded_integer(port, 65536),
+            _bounded_integer(generation, 2**63),
+            _fingerprint(payload.get("token")),
+            _fingerprint(code_identity),
+            payload.get("code_identity") == code_identity,
+            _fingerprint(data_scope),
+            payload.get("data_scope") == data_scope,
+            _valid_timeout(timeout),
+        )
+        if not all(checks):
             raise ValueError("runtime_ipc=front_loopback stage=parameters invalid launch parameters")
         return cls(port, generation, code_identity, data_scope, payload["token"], float(timeout))
 
@@ -86,6 +98,21 @@ class LoopbackParameters:
         return {"kind": _AUTH, "transport": FRONT_LOOPBACK, "token": self.token,
                 "generation": self.generation, "code_identity": self.code_identity,
                 "data_scope": self.data_scope}
+
+    def matches_auth(self, frame: dict[str, Any]) -> bool:
+        """Check transport identity without exposing the one-use token."""
+        token = frame.get("token")
+        if not _fingerprint(token):
+            return False
+        return all((
+            frame.get("kind") == _AUTH,
+            frame.get("transport") == FRONT_LOOPBACK,
+            hmac.compare_digest(token, self.token),
+            type(frame.get("generation")) is int,
+            frame.get("generation") == self.generation,
+            frame.get("code_identity") == self.code_identity,
+            frame.get("data_scope") == self.data_scope,
+        ))
 
 
 class FrontLoopbackListener:
@@ -132,6 +159,14 @@ class FrontLoopbackListener:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    def _accepts_auth(self, frame: dict[str, Any]) -> bool:
+        expected = self._parameters
+        if expected is None or self._accepted is None:
+            return False
+        if self._accepted.done():
+            return False
+        return expected.matches_auth(frame)
+
     async def _authenticate(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         conn = StreamConnection(reader, writer)
         adopted = False
@@ -139,17 +174,7 @@ class FrontLoopbackListener:
             timeout = max(0.001, min(_AUTH_TIMEOUT, self._deadline - time.monotonic()))
             async with asyncio.timeout(timeout):
                 frame = await _read_transport_frame(reader)
-                expected = self._parameters
-                token = frame.get("token")
-                if (
-                    expected is None or self._accepted is None or self._accepted.done()
-                    or frame.get("kind") != _AUTH or frame.get("transport") != FRONT_LOOPBACK
-                    or not _fingerprint(token) or not hmac.compare_digest(token, expected.token)
-                    or type(frame.get("generation")) is not int
-                    or frame.get("generation") != expected.generation
-                    or frame.get("code_identity") != expected.code_identity
-                    or frame.get("data_scope") != expected.data_scope
-                ):
+                if not self._accepts_auth(frame):
                     logger.warning("runtime_ipc=front_loopback stage=auth rejected")
                     return
                 # Claim synchronously before the first await so concurrent
@@ -161,7 +186,7 @@ class FrontLoopbackListener:
                 self._accepted.set_result(conn)
                 adopted = True
                 logger.info("runtime_ipc=front_loopback stage=auth accepted generation=%s", self.generation)
-        except (OSError, asyncio.IncompleteReadError, TimeoutError, IpcError):
+        except (OSError, asyncio.IncompleteReadError, IpcError):
             logger.warning("runtime_ipc=front_loopback stage=auth rejected or timed out")
         finally:
             if not adopted:
@@ -225,8 +250,9 @@ class FrontConnectSessionSource:
                     raise IpcError("Invalid transport authentication acknowledgement")
         except BaseException as exc:
             await self.close()
-            if isinstance(exc, (OSError, TimeoutError, asyncio.IncompleteReadError, IpcError)):
-                raise ConnectionError(f"runtime_ipc=front_loopback stage={stage} errno={getattr(exc, 'errno', None)}") from None
+            if isinstance(exc, (OSError, asyncio.IncompleteReadError, IpcError)):
+                detail = f"runtime_ipc=front_loopback stage={stage} errno={getattr(exc, 'errno', None)}"
+                raise ConnectionError(detail) from None
             raise
         logger.info("runtime_ipc=front_loopback stage=connected generation=%s", self.generation)
 
