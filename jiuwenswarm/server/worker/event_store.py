@@ -276,9 +276,14 @@ class WorkerEventStore:
 
     def replay(self, request: AgentRequest, *, after: int) -> list[dict[str, Any]]:
         scope = request_scope(request)
-        return [copy.deepcopy(frame) for owner, frame, _ in self._frames
-                if owner == scope and frame["sequence"] > after
-                and self.frame_interaction_pending(frame)]
+        frames: list[dict[str, Any]] = []
+        for owner, frame, _ in self._frames:
+            if owner != scope or frame["sequence"] <= after:
+                continue
+            if not self.frame_interaction_pending(frame):
+                continue
+            frames.append(copy.deepcopy(frame))
+        return frames
 
     def record_for_frame(self, frame: dict[str, Any]) -> DispatchRecord | None:
         """The dispatch record that owns a replayed frame, if any."""
