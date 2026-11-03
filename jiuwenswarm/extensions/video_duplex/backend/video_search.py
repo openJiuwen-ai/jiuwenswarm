@@ -381,6 +381,8 @@ async def execute_core_agent(
     interaction_answer: Any = None,
     brief_nonce: str = "",
     managed_task_binding: dict[str, str] | None = None,
+    model: dict[str, Any] | None = None,
+    model_auth: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -413,6 +415,8 @@ async def execute_core_agent(
         "video_core_session_id": core_session_id,
         "video_delegation_context": delegation_context or [],
     }
+    if model:
+        params.update(model)
     media_item = _frame_media_item(frame_data_url)
     if media_item is not None:
         params["media_items"] = [media_item]
@@ -424,6 +428,10 @@ async def execute_core_agent(
         params = {**answer_request.params, "log_as_user": False}
     if managed_task_binding is not None:
         params["managed_task_binding"] = managed_task_binding
+    if model_auth is not None:
+        from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+
+        params[E2A_MODEL_AUTH_PARAM_KEY] = model_auth
     env = e2a_from_agent_fields(
         request_id=request_id,
         channel_id=VIDEO_TOOL_CHANNEL_ID,

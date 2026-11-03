@@ -21,6 +21,32 @@ from .tasks.prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def selected_model(params) -> dict[str, Any]:
+    """主对话下拉选的模型（前端随派任务带来），字段和普通对话 chat.send 一样。"""
+    model = {"model_name": str(params.get("model_name") or "").strip()}
+    if isinstance(params.get("model_selection"), dict):
+        model["model_selection"] = params["model_selection"]
+    return {key: value for key, value in model.items() if value}
+
+
+async def _login_model_auth(model_name, auth_session) -> dict[str, Any] | None:
+    """登录模型的凭据：复用普通对话转发时的续期和挂凭据（Gateway 的同一套函数）。"""
+    if not model_name or not auth_session:
+        return None
+    from types import SimpleNamespace
+
+    from gateway.app_gateway import _normalize_model_auth, _refresh_expired_login_credential
+    from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+
+    msg = SimpleNamespace(id=model_name, params={"model_name": model_name},
+                          metadata={"auth_session": auth_session})
+    await _refresh_expired_login_credential(msg)
+    _normalize_model_auth(msg.params, msg)
+    return msg.params.get(E2A_MODEL_AUTH_PARAM_KEY)
+
+
 AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
 
@@ -104,8 +130,10 @@ async def task_agent_query(client, method, params, session, owner):
 
 
 class AgentTaskExecutor:
-    def __init__(self, client, store, normalize_media):
+    def __init__(self, client, store, normalize_media, auth_sessions=None):
         self.client, self.store, self.normalize_media = client, store, normalize_media
+        # 发起连接的登录会话，按 (owner, scope) 记在内存里，不落盘
+        self.auth_sessions = auth_sessions if auth_sessions is not None else {}
         from gateway.extensions.video_duplex.backend.tasks.bridge import (
             GatewayTaskEndpoint,
         )
@@ -236,7 +264,10 @@ class AgentTaskExecutor:
     async def answer(self, task):
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
+        from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+
         request = self.answer_input(task).to_agent_request()
+        model_auth = await self._model_auth(task)
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
@@ -246,7 +277,10 @@ class AgentTaskExecutor:
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params=request.params,
+                params={
+                    **request.params,
+                    **({E2A_MODEL_AUTH_PARAM_KEY: model_auth} if model_auth else {}),
+                },
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -276,6 +310,15 @@ class AgentTaskExecutor:
             else None,
             brief_nonce=task["id"],
             managed_task_binding=self.endpoint.binding(task),
+            model=task["request"].get("model") or None,
+            model_auth=await self._model_auth(task),
+        )
+
+    async def _model_auth(self, task):
+        model = (task.get("request") or {}).get("model") or {}
+        return await _login_model_auth(
+            str(model.get("model_name") or "").strip(),
+            self.auth_sessions.get((task.get("owner"), task.get("session"))),
         )
 
     async def cancel(self, task):
@@ -324,6 +367,7 @@ class VideoSearchManager:
         self._service = None
         self.subscribers = {}
         self._approval_cards = {}
+        self._auth_sessions = {}
 
     @property
     def service(self):
@@ -331,7 +375,7 @@ class VideoSearchManager:
             store = TaskStore(self.path or task_database())
             self._service = TaskService(
                 store,
-                AgentTaskExecutor(self.client, store, self.normalize_media),
+                AgentTaskExecutor(self.client, store, self.normalize_media, self._auth_sessions),
                 on_change=self.changed,
                 concurrency=self.concurrency,
                 notification_timeout=AGENT_QUERY_TIMEOUT + 2 * EVENT_SEND_TIMEOUT + 1,
@@ -341,6 +385,9 @@ class VideoSearchManager:
     async def scope(self, ws, params):
         owner, session = await self.authorized_scope(ws, params.get("search_session_id", ""))
         self.subscribers[(owner, session, id(ws))] = ws
+        auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+        if auth_session:
+            self._auth_sessions[(owner, session)] = auth_session
         return owner, session
 
     async def authorized_scope(self, ws, scope):
@@ -550,6 +597,7 @@ class VideoSearchManager:
         turn_id="",
         command_id="",
         scheduling=None,
+        model=None,
     ):
         owner, scope = await self.scope(ws, {"search_session_id": search_session_id})
         request = dict(
@@ -561,6 +609,8 @@ class VideoSearchManager:
             turn_id=turn_id,
         )
         request.update(scheduling or {})
+        if model:
+            request["model"] = model
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )
@@ -599,6 +649,7 @@ class VideoSearchManager:
                     tool_call_id=call.call_id,
                     tool_name=call.name,
                     turn_id=params.get("turn_id", ""),
+                    model=selected_model(params),
                     scheduling={
                         k: call.arguments[k]
                         for k in ("independent", "depends_on", "resources")
