@@ -33,6 +33,13 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
     E2A_WIRE_INTERNAL_METADATA_KEYS,
 )
+from jiuwenswarm.gateway.telemetry import (
+    attach_message_trace, bind_agent_request_trace, bind_message_trace,
+    bind_request_trace, complete_request_trace, current_request_trace,
+    get_message_trace, queue_request_trace, queue_response_trace,
+    release_message_trace, release_queued_message_traces, release_request_continuation,
+    release_response_trace, retain_request_continuation, trace_stage,
+)
 from jiuwenswarm.common.config import get_evolution_auto_save_enabled
 from jiuwenswarm.gateway.routing.session_map import SessionMap
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
@@ -554,6 +561,10 @@ class MessageHandler(ABC):
             msg.metadata["member_name"] = mname
 
         self._remember_user_query_context(msg)
+        attach_message_trace(msg)
+        queue_request_trace(msg)
+        if getattr(self, "_trace_request_stopped", False):
+            release_message_trace(msg, requests=True)
         self._user_messages.put_nowait(msg)
         logger.info(
             "[MessageHandler] _user_messages 入队: id=%s channel_id=%s session_id=%s",
@@ -759,6 +770,9 @@ class MessageHandler(ABC):
             metadata=metadata,
             enable_streaming=False,
         )
+        operation = get_message_trace(msg)
+        if operation is not None:
+            attach_message_trace(out, operation)
         await self.publish_robot_messages(out)
         logger.warning(
             "[MessageHandler] rejected unknown team.* chat.send: "
@@ -809,6 +823,9 @@ class MessageHandler(ABC):
             metadata=metadata,
             enable_streaming=False,
         )
+        operation = get_message_trace(msg)
+        if operation is not None:
+            attach_message_trace(out, operation)
         await self.publish_robot_messages(out)
         logger.warning(
             "[MessageHandler] rejected non-streaming team chat.send: "
@@ -1104,6 +1121,29 @@ class MessageHandler(ABC):
             app_id=_app_id or None,
         )
         await self.publish_robot_messages(msg)
+
+    def _start_traced_notice(self, msg: "Message", text: str) -> None:
+        """Preserve asynchronous notices while their response is enqueued."""
+        operation = get_message_trace(msg)
+        if operation is not None:
+            operation.retain_delivery()
+        try:
+            task = asyncio.create_task(self.send_channel_notice(
+                {"id": msg.id, "meta_data": msg.metadata}, msg.channel_id, msg.session_id, text,
+            ))
+        except BaseException:
+            if operation is not None:
+                operation.release_delivery(reason="task_start_failed")
+            raise
+        if operation is not None:
+            def release(done: asyncio.Task) -> None:
+                reason = "task_cancelled" if done.cancelled() else ""
+                if not done.cancelled() and done.exception() is not None:
+                    reason = "task_failed"
+                    error = done.exception()
+                    logger.error("Channel notice task failed", exc_info=(type(error), error, error.__traceback__))
+                operation.release_delivery(reason=reason)
+            task.add_done_callback(release)
 
     def _pop_stream_tracking(self, rid: str) -> None:
         """Remove all per-request stream tracking entries for *rid*."""
@@ -1510,13 +1550,11 @@ class MessageHandler(ABC):
         if agent_notify == "fire_and_forget":
             # Still forward cancelled_tools once AgentServer responds — otherwise
             # the UI keeps spinning until refresh (history was written, live push not).
-            task = asyncio.create_task(
-                self._send_interrupt_to_agent(
-                    env_interrupt,
-                    channel_id=msg.channel_id,
-                    session_id=sid_for_agent,
-                    metadata=cancel_metadata or None,
-                )
+            task = self._start_interrupt_task(
+                env_interrupt,
+                channel_id=msg.channel_id,
+                session_id=sid_for_agent,
+                metadata=cancel_metadata or None,
             )
             self._fire_and_forget_tasks.add(task)
             task.add_done_callback(self._fire_and_forget_tasks.discard)
@@ -1570,6 +1608,9 @@ class MessageHandler(ABC):
                 request_metadata=msg.metadata,
                 app_id=msg.app_id or "",
             )
+            operation = get_message_trace(msg)
+            if operation is not None:
+                attach_message_trace(out, operation)
             await self.publish_robot_messages(out)
             logger.info(
                 "[MessageHandler] 已转发 AgentServer 中断结果: request_id=%s ok=%s",
@@ -2672,6 +2713,9 @@ class MessageHandler(ABC):
 
     async def publish_user_messages(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（异步）."""
+        queue_request_trace(msg)
+        if getattr(self, "_trace_request_stopped", False):
+            release_message_trace(msg, requests=True)
         await self._user_messages.put(msg)
 
     async def _publish_runtime_wake(self, msg: "Message") -> None:
@@ -2682,6 +2726,9 @@ class MessageHandler(ABC):
 
     def publish_user_messages_nowait(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（同步）."""
+        queue_request_trace(msg)
+        if getattr(self, "_trace_request_stopped", False):
+            release_message_trace(msg, requests=True)
         self._user_messages.put_nowait(msg)
 
     async def consume_user_messages(self, timeout: float | None = None) -> "Message | None":
@@ -2828,6 +2875,34 @@ class MessageHandler(ABC):
         except Exception:
             return None
 
+    def _set_trace_dispatch_stopped(self, stopped: bool) -> None:
+        """Release observational state for responses produced after dispatch stops."""
+        self._trace_dispatch_stopped = stopped
+
+    @staticmethod
+    def _attach_derived_response_owner(msg: "Message") -> None:
+        operation = current_request_trace()
+        if operation is None:
+            return
+        owner = getattr(operation, "parent_operation", None)
+        if owner is None:
+            return
+        if getattr(msg, "_gateway_trace_operation", None) is not None:
+            return
+        if getattr(msg, "id", "") != operation.request_id:
+            return
+        if getattr(msg, "channel_id", "") != owner.channel:
+            return
+        attach_message_trace(msg, owner)
+
+    @staticmethod
+    def _is_failed_chunk(chunk: object) -> bool:
+        """Whether a stream chunk represents a failed response."""
+        if getattr(chunk, "ok", True) is False:
+            return True
+        payload = getattr(chunk, "payload", None)
+        return isinstance(payload, dict) and payload.get("event_type") == "chat.error"
+
     async def publish_robot_messages(self, msg: "Message") -> None:
         """将 Agent 响应放入 robot_messages 队列."""
         # Outbound Pipeline（数字分身出站路由）— 在入队前运行
@@ -2836,11 +2911,27 @@ class MessageHandler(ABC):
                 await self._outbound_pipeline.apply(msg)
             except Exception:
                 logger.exception("Outbound pipeline error, message queued without routing")
-        await self._robot_messages.put(msg)
+        self._attach_derived_response_owner(msg)
+        msg = queue_response_trace(msg)
+        if getattr(self, "_trace_dispatch_stopped", False):
+            release_message_trace(msg)
+        try:
+            await self._robot_messages.put(msg)
+        except BaseException:
+            release_response_trace(msg, reason="queue_failed")
+            raise
 
     def publish_robot_messages_nowait(self, msg: "Message") -> None:
         """将 Agent 响应放入 robot_messages 队列（同步）."""
-        self._robot_messages.put_nowait(msg)
+        self._attach_derived_response_owner(msg)
+        msg = queue_response_trace(msg)
+        if getattr(self, "_trace_dispatch_stopped", False):
+            release_message_trace(msg)
+        try:
+            self._robot_messages.put_nowait(msg)
+        except BaseException:
+            release_response_trace(msg, reason="queue_failed")
+            raise
 
     async def consume_robot_messages(self, timeout: float | None = None) -> "Message | None":
         """消费一条 robot_messages；timeout 为 None 则阻塞，否则超时返回 None."""
@@ -2921,6 +3012,10 @@ class MessageHandler(ABC):
             return ensured, ensured != external
 
     async def _prepare_agent_dispatch_message(self, msg: "Message") -> "Message":
+        with trace_stage("preprocess.session"):
+            return await self._prepare_agent_dispatch_message_impl(msg)
+
+    async def _prepare_agent_dispatch_message_impl(self, msg: "Message") -> "Message":
         from jiuwenswarm.common.schema.message import ReqMethod
 
         msg = self._attach_original_request_to_ask_user_answer(msg)
@@ -4140,6 +4235,9 @@ class MessageHandler(ABC):
             event_type=EventType.CHAT_MESSAGE_UPDATED,
             metadata=msg.metadata,
         )
+        operation = get_message_trace(msg)
+        if operation is not None:
+            attach_message_trace(update_msg, operation)
         await self.publish_robot_messages(update_msg)
         logger.info(
             "[MessageHandler] before_chat hook modified params, update pushed: "
@@ -4187,23 +4285,24 @@ class MessageHandler(ABC):
     async def _dispatch_interrupt_evolution_approval_as_chat_send(
         self,
         msg: "Message",
-    ) -> None:
+    ) -> bool:
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if self._is_current_pending_evolution_approval(
             msg.session_id,
             (msg.params or {}).get("request_id") if isinstance(msg.params, dict) else None,
         ):
-            self._user_messages.put_nowait(
-                replace(msg, req_method=ReqMethod.CHAT_SEND, is_stream=True)
-            )
-            return
+            forwarded = replace(msg, req_method=ReqMethod.CHAT_SEND, is_stream=True)
+            attach_message_trace(forwarded, get_message_trace(msg))
+            self.publish_user_messages_nowait(forwarded)
+            return True
         logger.info(
             "[MessageHandler] stale interrupt evolution approval answer ignored: "
             "session_id=%s request_id=%s",
             msg.session_id,
             (msg.params or {}).get("request_id") if isinstance(msg.params, dict) else None,
         )
+        return False
 
     @staticmethod
     def _ensure_regular_evolution_approval_metadata(payload: dict[str, Any]) -> dict[str, Any]:
@@ -4260,7 +4359,7 @@ class MessageHandler(ABC):
                 queued_attachments if isinstance(queued_attachments, list) else None,
                 self._get_session_last_user_query(msg.session_id),
             )
-            self._user_messages.put_nowait(queued_msg)
+            self._enqueue_supplement_continuation(queued_msg, msg)
             logger.info(
                 "[MessageHandler] evolution approval answered (resolved), "
                 "queued supplement dispatched: id=%s session_id=%s",
@@ -4320,6 +4419,18 @@ class MessageHandler(ABC):
 
     def _clear_session_evolution_states(self, session_id: str | None) -> None:
         self._evolution_approval.clear_session(session_id)
+
+    def _enqueue_supplement_continuation(self, msg: "Message", source: "Message") -> None:
+        """Retain the originating operation until the continuation exits."""
+        operation = get_message_trace(source) or current_request_trace()
+        if operation is not None:
+            operation = operation.parent_operation or operation
+            retain_request_continuation(msg, operation)
+        try:
+            self.publish_user_messages_nowait(msg)
+        except BaseException:
+            release_request_continuation(msg, reason="queue_failed")
+            raise
 
     @staticmethod
     def _build_supplement_continuation_query(
@@ -4469,57 +4580,83 @@ class MessageHandler(ABC):
         self,
         env: "E2AEnvelope",
     ) -> "AgentResponse":
-        await self._apply_session_login_owner(env)
-        return await send_agent_request_with_timeout(
-            self.agent_client,
-            env,
-            label="MessageHandler",
-        )
+        with trace_stage("preprocess.login_owner"):
+            await self._apply_session_login_owner(env)
+        with bind_agent_request_trace(env):
+            return await send_agent_request_with_timeout(
+                self.agent_client,
+                env,
+                label="MessageHandler",
+            )
 
-    async def _process_non_stream_request(self, msg: "Message", env: "E2AEnvelope") -> Any:
+    async def _process_non_stream_request(
+        self, msg: "Message", env: "E2AEnvelope", *, complete_trace: bool = False,
+    ) -> Any:
         """执行单次非流式 Agent 请求并将结果写入 robot_messages（供串行或后台任务复用）。"""
-        try:
-            resp = await self._send_non_stream_agent_request(env)
-            out = self._response_to_message(
-                resp,
-                session_id=msg.session_id,
-                request_metadata=msg.metadata,
-                app_id=msg.app_id or "",
-                request_method=msg.req_method,
-                request_params=msg.params if isinstance(msg.params, dict) else None,
-            )
-            await self.publish_robot_messages(out)
-            logger.info(
-                "[MessageHandler] Agent 响应已写入 robot_messages: request_id=%s channel_id=%s",
-                resp.request_id,
-                resp.channel_id,
-            )
-            if (
-                self._is_interrupt_evolution_approval_chat_send(msg, method=env.method)
-                and self._approval_response_resolved(resp)
-            ):
-                answer_payload = msg.params if isinstance(msg.params, dict) else {}
-                answer_request_id = answer_payload.get("request_id")
-                await self._complete_evolution_approval_if_current(
-                    msg,
-                    str(answer_request_id or ""),
+        with bind_message_trace(msg):
+            outcome = "success"
+            try:
+                resp = await self._send_non_stream_agent_request(env)
+                operation = get_message_trace(msg)
+                if operation is not None and getattr(resp, "ok", True) is False:
+                    operation.record_outcome("failed")
+                out = self._response_to_message(
+                    resp,
+                    session_id=msg.session_id,
+                    request_metadata=msg.metadata,
+                    app_id=msg.app_id or "",
+                    request_method=msg.req_method,
+                    request_params=msg.params if isinstance(msg.params, dict) else None,
                 )
-            return resp
-        except Exception as e:
-            logger.exception("AgentServer send_request failed for %s: %s", msg.id, e)
-            err_msg = self._build_error_out_message(msg, e)
-            await self.publish_robot_messages(err_msg)
-            logger.info(
-                "[MessageHandler] 错误响应已写入 robot_messages: id=%s channel_id=%s",
-                msg.id,
-                msg.channel_id,
-            )
-            return None
-        finally:
-            # A non-stream AgentServer call can still emit cron server_push
-            # frames while it is awaited.  Release its owner mapping only after
-            # the request completes.
-            self._stream_user_ids.pop(env.request_id or "", None)
+                if operation is not None:
+                    attach_message_trace(out, operation)
+                await self.publish_robot_messages(out)
+                logger.info(
+                    "[MessageHandler] Agent 响应已写入 robot_messages: request_id=%s channel_id=%s",
+                    resp.request_id,
+                    resp.channel_id,
+                )
+                if (
+                    self._is_interrupt_evolution_approval_chat_send(msg, method=env.method)
+                    and self._approval_response_resolved(resp)
+                ):
+                    answer_payload = msg.params if isinstance(msg.params, dict) else {}
+                    answer_request_id = answer_payload.get("request_id")
+                    await self._complete_evolution_approval_if_current(
+                        msg,
+                        str(answer_request_id or ""),
+                    )
+                return resp
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                operation = get_message_trace(msg)
+                if operation is not None:
+                    operation.record_outcome(outcome)
+                raise
+            except Exception as e:
+                outcome = "failed"
+                operation = get_message_trace(msg)
+                if operation is not None:
+                    operation.record_outcome(outcome)
+                logger.exception("AgentServer send_request failed for %s: %s", msg.id, e)
+                err_msg = self._build_error_out_message(msg, e)
+                if operation is not None:
+                    attach_message_trace(err_msg, operation)
+                await self.publish_robot_messages(err_msg)
+                logger.info(
+                    "[MessageHandler] 错误响应已写入 robot_messages: id=%s channel_id=%s",
+                    msg.id,
+                    msg.channel_id,
+                )
+                return None
+            finally:
+                # A non-stream AgentServer call can still emit cron server_push
+                # frames while it is awaited.  Release its owner mapping only after
+                # the request completes.
+                self._stream_user_ids.pop(env.request_id or "", None)
+                operation = get_message_trace(msg)
+                if operation is not None and complete_trace:
+                    complete_request_trace(msg, outcome)
 
     # ---------- 入队 -> AgentServer -> 出队 转发循环 ----------
 
@@ -4546,16 +4683,30 @@ class MessageHandler(ABC):
 
         async def run() -> None:
             if bypass:
-                await self._process_non_stream_request(msg, env)
+                await self._process_non_stream_request(msg, env, complete_trace=True)
             else:
+                lock_started = time.monotonic()
                 async with lock:
-                    await self._process_non_stream_request(msg, env)
+                    operation = get_message_trace(msg)
+                    if operation is not None:
+                        operation.event("queue.lock_acquired", {
+                            "queue_wait_ms": round((time.monotonic() - lock_started) * 1000, 3),
+                        })
+                    await self._process_non_stream_request(msg, env, complete_trace=True)
 
         self._active_chat_tasks[rid] = (
             msg.params.get("mode", "plan") if isinstance(msg.params, dict) else "plan"
         )
         self._non_stream_chat_messages[rid] = msg
+        operation = get_message_trace(msg)
+        if operation is not None:
+            operation.accepted = True
         task = asyncio.create_task(run(), name=f"gw-chat-{rid[:24]}")
+        if operation is not None:
+            task.add_done_callback(lambda done: complete_request_trace(msg, "cancelled") if done.cancelled() else None)
+        task.add_done_callback(lambda done: release_request_continuation(
+            msg, reason="task_cancelled" if done.cancelled() else "",
+        ))
         self._non_stream_chat_tasks[rid] = task
         task.add_done_callback(cleanup)
         await self._broadcast_task_global_running()
@@ -4577,6 +4728,11 @@ class MessageHandler(ABC):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _forward_loop(self) -> None:
+        # This long-lived consumer must not inherit its creator's request.
+        with bind_request_trace(None):
+            await self._forward_loop_impl()
+
+    async def _forward_loop_impl(self) -> None:
         """循环：从 user_messages 取消息，经 AgentServerClient 发往 AgentServer，将响应写入 robot_messages.
         支持流式和非流式两种模式。使用 timeout=None 阻塞等待，保证有消息时第一时间被唤醒处理；
         stop 时 task 被 cancel 会打断 get() 并退出。
@@ -4587,10 +4743,16 @@ class MessageHandler(ABC):
 
         while self._running:
             msg = None
+            trace_scope = None
+            handed_off = False
+            outcome = "success"
             try:
                 msg = await self.consume_user_messages(timeout=None)
                 if msg is None:
                     continue
+
+                trace_scope = bind_message_trace(msg)
+                trace_scope.__enter__()
 
                 # Explicit steer/follow_up is normalized before slash commands.
                 # Busy-session chat.send is classified later, after the target
@@ -4671,7 +4833,7 @@ class MessageHandler(ABC):
                     if is_evolution_approval_answer:
                         msg.params = self._ensure_regular_evolution_approval_metadata(answer_payload)
                         if self._is_interrupt_evolution_approval_answer_payload(msg.params):
-                            await self._dispatch_interrupt_evolution_approval_as_chat_send(msg)
+                            handed_off = await self._dispatch_interrupt_evolution_approval_as_chat_send(msg)
                             continue
                     agent_msg = await self._prepare_agent_dispatch_message(msg)
                     env = self.message_to_e2a(agent_msg)
@@ -4867,7 +5029,7 @@ class MessageHandler(ABC):
                             bot_id=msg.bot_id,
                             metadata=sup_meta,
                         )
-                        self._user_messages.put_nowait(new_msg)
+                        self._enqueue_supplement_continuation(new_msg, msg)
                         logger.info(
                             "[MessageHandler] supplement: 旧任务已取消，新任务已入队: id=%s session_id=%s",
                             new_msg.id, msg.session_id,
@@ -4912,13 +5074,11 @@ class MessageHandler(ABC):
                                 agent_msg.params.get("mode", "")
                                 if isinstance(agent_msg.params, dict) else ""
                             )
-                            asyncio.create_task(
-                                self._send_pause_and_govern_streams(
-                                    env_interrupt, msg, pause_mode,
-                                )
+                            self._start_pause_task(
+                                env_interrupt, msg, pause_mode,
                             )
                         else:
-                            asyncio.create_task(self._send_interrupt_to_agent(env_interrupt))
+                            self._start_interrupt_task(env_interrupt)
                         # 检查当前 session 是否有活跃的流式任务
                         current_sid = msg.session_id
                         has_active_task = False
@@ -4954,13 +5114,11 @@ class MessageHandler(ABC):
                         if stripped:
                             parsed = parse_channel_control_text(stripped)
                             if parsed.action is ParsedControlAction.REVIEW_BAD:
-                                asyncio.create_task(
-                                    self.send_channel_notice(
-                                        {"id": msg.id, "meta_data": msg.metadata},
-                                        msg.channel_id,
-                                        msg.session_id,
-                                        "非法指令，/review 参数过长或含有非法控制字符",
-                                    )
+                                operation = get_message_trace(msg)
+                                if operation is not None:
+                                    operation.record_outcome("failed", reason="invalid_command")
+                                self._start_traced_notice(
+                                    msg, "非法指令，/review 参数过长或含有非法控制字符",
                                 )
                                 continue
                             if parsed.action is ParsedControlAction.REVIEW_OK:
@@ -4978,13 +5136,11 @@ class MessageHandler(ABC):
                                     pr_arg or "<none>",
                                 )
                             elif parsed.action is ParsedControlAction.SECURITY_REVIEW_BAD:
-                                asyncio.create_task(
-                                    self.send_channel_notice(
-                                        {"id": msg.id, "meta_data": msg.metadata},
-                                        msg.channel_id,
-                                        msg.session_id,
-                                        "非法指令，/security-review 参数过长或含有非法控制字符",
-                                    )
+                                operation = get_message_trace(msg)
+                                if operation is not None:
+                                    operation.record_outcome("failed", reason="invalid_command")
+                                self._start_traced_notice(
+                                    msg, "非法指令，/security-review 参数过长或含有非法控制字符",
                                 )
                                 continue
                             elif parsed.action is ParsedControlAction.SECURITY_REVIEW_OK:
@@ -5007,6 +5163,9 @@ class MessageHandler(ABC):
                                         )
                                     )
                                 except GitPreExecError as exc:
+                                    operation = get_message_trace(msg)
+                                    if operation is not None:
+                                        operation.record_outcome("failed", reason="command_failed")
                                     await self.send_channel_notice(
                                         {"id": msg.id, "meta_data": msg.metadata},
                                         msg.channel_id,
@@ -5084,7 +5243,9 @@ class MessageHandler(ABC):
                         msg.session_id,
                         (msg.params or {}).get("request_id") if isinstance(msg.params, dict) else None,
                     ):
+                        original_msg = msg
                         msg = replace(msg, is_stream=True)
+                        attach_message_trace(msg, get_message_trace(original_msg))
                     else:
                         logger.info(
                             "[MessageHandler] stale interrupt evolution approval chat.send ignored: "
@@ -5095,7 +5256,8 @@ class MessageHandler(ABC):
                         continue
                 agent_msg = await self._prepare_agent_dispatch_message(msg)
                 pre_hook_params = self._snapshot_hook_watch_params(agent_msg)
-                await self._trigger_before_chat_request_hook(agent_msg)
+                with trace_stage("preprocess.hook"):
+                    await self._trigger_before_chat_request_hook(agent_msg)
                 await self._publish_hook_params_update_if_changed(agent_msg, pre_hook_params)
                 env = self.message_to_e2a(agent_msg)
                 stream_rid = env.request_id or msg.id
@@ -5109,14 +5271,29 @@ class MessageHandler(ABC):
                         if self._should_cancel_existing_stream_before_chat_send(msg):
                             await self._cancel_stream_tasks_for_channel(msg)
                         await self._start_stream_task(msg, env, stream_rid)
+                        handed_off = True
                         # 不 await，让流式任务在后台运行，_forward_loop 继续处理下一个消息
                     elif self._non_stream_rpc_may_run_parallel(env):
                         # 非流式且非聊天：后台执行，避免慢 RPC（如 SkillNet）阻塞队列中的其它请求
                         method_label = env.method or "none"
-                        asyncio.create_task(
-                            self._process_non_stream_request(msg, env),
+                        operation = get_message_trace(msg)
+                        if operation is not None:
+                            operation.accepted = True
+                        task = asyncio.create_task(
+                            self._process_non_stream_request(msg, env, complete_trace=True),
                             name=f"gw-nonstr-{method_label}-{stream_rid[:24]}",
                         )
+                        if operation is not None:
+                            task.add_done_callback(
+                                lambda done, source=msg: (
+                                    complete_request_trace(source, "cancelled")
+                                    if done.cancelled() else None
+                                )
+                            )
+                        task.add_done_callback(lambda done, queued_msg=msg: release_request_continuation(
+                            queued_msg, reason="task_cancelled" if done.cancelled() else "",
+                        ))
+                        handed_off = True
                         logger.info(
                             "[MessageHandler] 非流式 RPC 已后台执行: id=%s method=%s",
                             msg.id,
@@ -5124,7 +5301,9 @@ class MessageHandler(ABC):
                         )
                     else:
                         await self._start_non_stream_chat_task(msg, env)
+                        handed_off = True
                 except Exception as e:
+                    outcome = "failed"
                     logger.exception("AgentServer send_request failed for %s: %s", msg.id, e)
                     # 流式任务启动在 tracking 写入后、process_stream 成功登记前
                     # 抛异常（典型如 _send_processing_status / create_task 失败）时，
@@ -5144,8 +5323,10 @@ class MessageHandler(ABC):
                         msg.id, msg.channel_id,
                     )
             except asyncio.CancelledError:
+                outcome = "cancelled"
                 break
             except Exception as exc:  # noqa: BLE001
+                outcome = "failed"
                 # One malformed channel message must not terminate the single
                 # forwarding loop shared by TUI/Web/IM/A2A.
                 logger.exception(
@@ -5164,8 +5345,43 @@ class MessageHandler(ABC):
                             "[MessageHandler] failed to publish forward-loop error: id=%s",
                             getattr(msg, "id", None),
                         )
+            finally:
+                if trace_scope is not None:
+                    operation = get_message_trace(msg)
+                    task = self._non_stream_chat_tasks.get(getattr(msg, "id", ""))
+                    if (task is not None and not task.done()
+                            and self._non_stream_chat_messages.get(getattr(msg, "id", "")) is msg):
+                        handed_off = True
+                    if operation is not None and not handed_off:
+                        complete_request_trace(msg, outcome)
+                    if not handed_off:
+                        release_request_continuation(msg, reason="task_cancelled" if outcome == "cancelled" else "")
+                    trace_scope.__exit__(None, None, None)
 
     async def process_stream(
+        self, env: "E2AEnvelope", session_id: str | None,
+        request_metadata: dict[str, Any] | None, *, emit_processing_status: bool = True,
+    ) -> None:
+        operation = getattr(env, "_gateway_trace_operation", None)
+        outcome = "success"
+        with bind_request_trace(operation), bind_agent_request_trace(env):
+            try:
+                await self._process_stream_impl(env, session_id, request_metadata,
+                                                emit_processing_status=emit_processing_status)
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                raise
+            except Exception:
+                outcome = "failed"
+                raise
+            finally:
+                if operation is not None:
+                    inner_outcome = getattr(env, "_gateway_trace_outcome", None)
+                    if inner_outcome is not None:
+                        operation.record_outcome(inner_outcome)
+                    complete_request_trace(env, outcome)
+
+    async def _process_stream_impl(
         self,
         env: "E2AEnvelope",
         session_id: str | None,
@@ -5191,10 +5407,15 @@ class MessageHandler(ABC):
             extra={"session_id": session_id} if session_id else {},
         )
         try:
-            await self._sync_agentos_cron_jobs(env)
-            await self._apply_session_login_owner(env)
+            with trace_stage("preprocess.cron_sync"):
+                await self._sync_agentos_cron_jobs(env)
+            with trace_stage("preprocess.login_owner"):
+                await self._apply_session_login_owner(env)
             async for chunk in self.agent_client.send_request_stream(env):
                 _proc_count += 1
+                operation = getattr(env, "_gateway_trace_operation", None)
+                if operation is not None and self._is_failed_chunk(chunk):
+                    operation.record_outcome("failed")
                 if _proc_count <= 3:
                     _pl = getattr(chunk, "payload", None) or {}
                     _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
@@ -5304,12 +5525,14 @@ class MessageHandler(ABC):
             )
         except asyncio.CancelledError:
             cancelled = True
+            setattr(env, "_gateway_trace_outcome", "cancelled")
             logger.info(
                 "[MessageHandler] Stream 被取消: request_id=%s total_chunks=%s",
                 rid, _proc_count,
             )
         # Background stream failures must reach the client before per-request cleanup.
         except Exception as exc:  # pylint: disable=broad-exception-caught
+            setattr(env, "_gateway_trace_outcome", "failed")
             if resolve_session_input_mode(env.params) is not None:
                 from jiuwenswarm.common.schema.message import Message, ReqMethod
 
@@ -5449,11 +5672,12 @@ class MessageHandler(ABC):
                 timestamp=time.time(),
                 user_id=user_id,
             )
-            response = await send_agent_request_with_timeout(
-                self.agent_client,
-                snapshot_env,
-                label="cron.jobs.sync",
-            )
+            with bind_agent_request_trace(snapshot_env):
+                response = await send_agent_request_with_timeout(
+                    self.agent_client,
+                    snapshot_env,
+                    label="cron.jobs.sync",
+                )
             if not response.ok:
                 logger.warning(
                     "[Cron] AgentOS cron snapshot rejected: request_id=%s payload=%s",
@@ -5514,15 +5738,33 @@ class MessageHandler(ABC):
         self._stream_modes[stream_rid] = (
             msg.params.get("mode", "plan") if isinstance(msg.params, dict) else "plan"
         )
+        operation = get_message_trace(msg)
         if emit_processing_status:
-            await self._send_processing_status(
-                stream_rid,
-                msg.session_id,
-                msg.channel_id,
-                is_processing=True,
-                app_id=msg.app_id or "",
-                team_id=stream_route.get("team_id", ""),
-            )
+            if operation is not None and msg.id != operation.request_id:
+                await self._send_processing_status(
+                    stream_rid,
+                    msg.session_id,
+                    msg.channel_id,
+                    is_processing=True,
+                    app_id=msg.app_id or "",
+                    team_id=stream_route.get("team_id", ""),
+                    trace_operation=operation,
+                )
+            else:
+                await self._send_processing_status(
+                    stream_rid,
+                    msg.session_id,
+                    msg.channel_id,
+                    is_processing=True,
+                    app_id=msg.app_id or "",
+                    team_id=stream_route.get("team_id", ""),
+                )
+        if operation is not None:
+            operation.accepted = True
+            setattr(env, "_gateway_trace_operation", operation)
+            continuation = getattr(msg, "_gateway_trace_continuation", None)
+            if continuation is not None:
+                setattr(env, "_gateway_trace_continuation", continuation)
         task = asyncio.create_task(
             self.process_stream(
                 env,
@@ -5531,6 +5773,11 @@ class MessageHandler(ABC):
                 emit_processing_status=emit_processing_status,
             )
         )
+        if operation is not None:
+            task.add_done_callback(lambda done: complete_request_trace(msg, "cancelled") if done.cancelled() else None)
+        task.add_done_callback(lambda done: release_request_continuation(
+            msg, reason="task_cancelled" if done.cancelled() else "",
+        ))
         self._stream_tasks[stream_rid] = task
         self._stream_channels[stream_rid] = msg.channel_id
         self._stream_sessions[stream_rid] = msg.session_id
@@ -5565,6 +5812,60 @@ class MessageHandler(ABC):
                 "[MessageHandler] cancelled cron waiter cleanup failed: session_id=%s",
                 session_id, exc_info=True,
             )
+
+    def _start_interrupt_task(
+        self, env: "E2AEnvelope", *, channel_id: str | None = None,
+        session_id: str | None = None, metadata: dict | None = None,
+    ) -> asyncio.Task:
+        """Keep a derived request associated until its background task exits."""
+        operation = current_request_trace()
+        if operation is not None and not operation.finished and operation.channel == (env.channel or ""):
+            setattr(env, "_gateway_trace_operation", operation)
+            operation.retain_delivery()
+        else:
+            operation = None
+        try:
+            task = asyncio.create_task(self._send_interrupt_to_agent(
+                env, channel_id=channel_id, session_id=session_id, metadata=metadata,
+            ))
+        except BaseException:
+            if operation is not None:
+                operation.release_delivery(reason="task_start_failed")
+            raise
+        if operation is not None:
+            task.add_done_callback(lambda done: operation.release_delivery(
+                reason="task_cancelled" if done.cancelled() else "",
+            ))
+        return task
+
+    def _start_pause_task(
+        self,
+        env: "E2AEnvelope",
+        msg: "Message",
+        session_mode: str,
+    ) -> asyncio.Task:
+        """Run pause governance under the request's delivery lifetime."""
+        operation = current_request_trace()
+        if operation is not None and not operation.finished and operation.channel == (env.channel or ""):
+            setattr(env, "_gateway_trace_operation", operation)
+            operation.retain_delivery()
+        else:
+            operation = None
+        try:
+            task = asyncio.create_task(
+                self._send_pause_and_govern_streams(env, msg, session_mode),
+            )
+        except BaseException:
+            if operation is not None:
+                operation.release_delivery(reason="task_start_failed")
+            raise
+        if operation is not None:
+            task.add_done_callback(lambda done: operation.release_delivery(
+                reason="task_cancelled" if done.cancelled() else "",
+            ))
+        self._fire_and_forget_tasks.add(task)
+        task.add_done_callback(self._fire_and_forget_tasks.discard)
+        return task
 
     async def _send_interrupt_to_agent(
         self,
@@ -5660,6 +5961,7 @@ class MessageHandler(ABC):
     async def _send_processing_status(
         self, request_id: str, session_id: str | None, channel_id: str, *,
         is_processing: bool, app_id: str = "", team_id: str = "",
+        trace_operation: Any | None = None,
     ) -> None:
         """发送 chat.processing_status 事件到客户端。"""
         from jiuwenswarm.common.schema.message import Message, EventType
@@ -5685,6 +5987,8 @@ class MessageHandler(ABC):
             event_type=EventType.CHAT_PROCESSING_STATUS,
             metadata={"mode": _mode} if _mode else None,
         )
+        if trace_operation is not None:
+            attach_message_trace(status_msg, trace_operation)
         await self.publish_robot_messages(status_msg)
         # 广播全局运行态快照给所有 ws 客户端（不按 session 路由），用于多窗口配置保存锁。
         # running 取当前活跃任务集合快照（任务结束时该 dict 已 pop 对应 rid），
@@ -5765,17 +6069,21 @@ class MessageHandler(ABC):
         """
         cancelled_tools = payload.get("cancelled_tools", [])
         for tool_info in cancelled_tools:
-            await self.publish_robot_messages(
-                self._build_tool_result_message(
-                    channel_id, session_id, tool_info, metadata
-                )
-            )
+            result = self._build_tool_result_message(channel_id, session_id, tool_info, metadata)
+            owner = current_request_trace()
+            if owner is not None:
+                attach_message_trace(result, owner.parent_operation or owner)
+            await self.publish_robot_messages(result)
 
     async def start_forwarding(self) -> None:
         """启动入队 -> AgentServer -> 出队 的转发任务."""
         if self._forward_task is not None:
             return
         self._running = True
+        self._trace_request_stopped = False
+        manager = getattr(self, "_channel_manager", None)
+        if manager is None or getattr(manager, "_running", False):
+            self._set_trace_dispatch_stopped(False)
         self._runtime_wake_handler = self._publish_runtime_wake
         self._previous_runtime_wake_handler = install_runtime_wake_handler(
             self._runtime_wake_handler
@@ -5786,6 +6094,10 @@ class MessageHandler(ABC):
     async def stop_forwarding(self) -> None:
         """停止转发任务."""
         self._running = False
+        self._trace_request_stopped = True
+        manager = getattr(self, "_channel_manager", None)
+        if manager is None or not getattr(manager, "_running", False):
+            self._set_trace_dispatch_stopped(True)
 
         # Stop admission before awaiting task cleanup.
         if self._forward_task is not None:
@@ -5851,6 +6163,10 @@ class MessageHandler(ABC):
                 pass
             self._forward_task = None
 
+        release_queued_message_traces(self._user_messages, requests=True)
+        manager = getattr(self, "_channel_manager", None)
+        if manager is None or not getattr(manager, "_running", False):
+            release_queued_message_traces(self._robot_messages)
         logger.info("[MessageHandler] 转发循环已停止")
 
     # ---------- 状态 ----------

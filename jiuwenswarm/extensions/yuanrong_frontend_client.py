@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import contextvars
+from contextlib import aclosing, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Mapping, TypedDict
 
@@ -90,6 +91,14 @@ from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk, A
 logger = logging.getLogger(__name__)
 
 # YuanRong POST /files/mkdir ``mode``: 3-4 octal digits (e.g. 755 / 0700).
+from jiuwenswarm.gateway.telemetry import (
+    bind_agent_request_trace,
+    current_request_trace,
+    get_message_trace,
+    inject_request_headers,
+    record_cleanup_result,
+    trace_operation,
+)
 _MKDIR_MODE_RE = re.compile(r"^[0-7]{3,4}$")
 
 # POST /api/agent is async: create returns instance_id before startup probes
@@ -101,6 +110,11 @@ _AGENT_RUNNING_RETRY_INTERVAL_SECONDS = 1.0
 _AGENT_FAILED_STATUSES = frozenset(
     {"failed", "error", "deleted", "stopped", "killed"}
 )
+
+
+def _is_inactive_trace(trace: object | None) -> bool:
+    """Whether a trace is absent or already finished."""
+    return trace is None or trace.finished
 
 
 @dataclass(frozen=True)
@@ -607,16 +621,22 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if mounts:
             payload["mounts"] = list(mounts)
 
-        resolved_trace_id = bind_southbound_trace_id(trace_id)
-        status, body = await asyncio.to_thread(
-            self._do_agent_create, payload, resolved_trace_id
+        resolved_trace_id = bind_southbound_trace_id(
+            inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id
         )
-        parsed = self._parse_agent_api_response(body, status)
-        instance_id = str(parsed.get("instance_id") or "").strip()
-        if not instance_id:
-            raise YuanrongAgentApiError(
-                f"create agent missing instance_id: status={status}, body={body!r}"
+        with (trace_operation("gw.frontend.create", attributes={"http.request.method": "POST"})
+              if current_request_trace() is not None else nullcontext(None)) as operation:
+            status, body = await asyncio.to_thread(
+                self._do_agent_create, payload, resolved_trace_id
             )
+            if operation is not None:
+                operation.set_attribute("http.response.status_code", status)
+            parsed = self._parse_agent_api_response(body, status)
+            instance_id = str(parsed.get("instance_id") or "").strip()
+            if not instance_id:
+                raise YuanrongAgentApiError(
+                    f"create agent missing instance_id: status={status}, body={body!r}"
+                )
 
         info = SandboxInfo(
             sandbox_id=instance_id,
@@ -655,21 +675,39 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if not normalized_sandbox_id:
             raise ValueError("sandbox_id is required to delete sandbox")
 
-        resolved_trace_id = bind_southbound_trace_id(trace_id)
-        status, body = await asyncio.to_thread(
-            self._do_agent_delete,
-            normalized_sandbox_id,
-            resolved_trace_id,
+        resolved_trace_id = bind_southbound_trace_id(
+            inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id
         )
-        if self._agent_api_not_found(status, body):
-            logger.info(
-                "[YuanrongFrontendAgentClient] delete_sandbox: already gone "
-                "instance_id=%s trace_id=%s",
-                normalized_sandbox_id,
-                resolved_trace_id,
-            )
-            return
-        self._parse_agent_api_response(body, status)
+        try:
+            with (trace_operation("gw.frontend.delete", attributes={"http.request.method": "DELETE"})
+                  if current_request_trace() is not None else nullcontext(None)) as operation:
+                status, body = await asyncio.to_thread(
+                    self._do_agent_delete,
+                    normalized_sandbox_id,
+                    resolved_trace_id,
+                )
+                if operation is not None:
+                    operation.set_attribute("http.response.status_code", status)
+                if self._agent_api_not_found(status, body):
+                    if operation is not None:
+                        operation.record_outcome("skipped", reason="not_found")
+                    record_cleanup_result("frontend.delete", "skipped", reason="not_found")
+                    logger.info(
+                        "[YuanrongFrontendAgentClient] delete_sandbox: already gone "
+                        "instance_id=%s trace_id=%s",
+                        normalized_sandbox_id,
+                        resolved_trace_id,
+                    )
+                    return
+                self._parse_agent_api_response(body, status)
+        except asyncio.CancelledError:
+            record_cleanup_result("frontend.delete", "cancelled", reason="cancelled")
+            raise
+        except Exception as exc:
+            outcome = "timeout" if self._is_timeout_error(exc) else "failed"
+            record_cleanup_result("frontend.delete", outcome, reason=type(exc).__name__)
+            raise
+        record_cleanup_result("frontend.delete", "success", reason="removed")
         logger.info(
             "[YuanrongFrontendAgentClient] delete_sandbox: instance_id=%s trace_id=%s",
             normalized_sandbox_id,
@@ -688,11 +726,23 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         normalized_id = str(instance_id or "").strip()
         if not normalized_id:
             raise ValueError("instance_id is required to get agent info")
-        status, body = await asyncio.to_thread(
-            self._do_agent_get, normalized_id, trace_id
-        )
-        parsed = self._parse_agent_api_response(body, status)
-        return _merge_agent_instance_payload(parsed)
+        sdk_trace_id = inject_request_headers({}).get(TRACE_ID_HEADER)
+        if sdk_trace_id:
+            trace_id = bind_southbound_trace_id(sdk_trace_id)
+        with (
+            trace_operation(
+                "gw.frontend.get",
+                attributes={"instance_id": normalized_id, "http.request.method": "GET"},
+            )
+            if current_request_trace() is not None else nullcontext(None)
+        ) as operation:
+            status, body = await asyncio.to_thread(
+                self._do_agent_get, normalized_id, trace_id
+            )
+            if operation is not None:
+                operation.set_attribute("http.response.status_code", status)
+            parsed = self._parse_agent_api_response(body, status)
+            return _merge_agent_instance_payload(parsed)
 
     async def wait_until_running(
         self, instance_id: str, *, trace_id: str | None = None
@@ -718,65 +768,78 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             if self._wait_running_interval_s is None
             else float(self._wait_running_interval_s)
         )
-        deadline = asyncio.get_running_loop().time() + timeout_s
-        attempt = 0
-        last_error: BaseException | None = None
-        last_status = ""
-        # Only GET poll retries share one id; every other YuanRong call mints.
-        poll_trace_id = bind_southbound_trace_id(trace_id)
-        while True:
-            attempt += 1
-            instance: dict[str, Any] = {}
-            try:
-                instance = await self.get_agent_info(
-                    normalized_id, trace_id=poll_trace_id
-                )
-                last_error = None
-            except YuanrongAgentApiError as exc:
-                last_error = exc
-            status = _instance_status(instance)
-            last_status = status
-            if status in _AGENT_FAILED_STATUSES:
-                raise YuanrongAgentApiError(
-                    f"agent instance failed: instance_id={normalized_id}, "
-                    f"status={status}"
-                )
-            if _is_agent_running(instance):
-                logger.info(
-                    "[YuanrongFrontendAgentClient] instance running after GET poll: "
-                    "instance_id=%s attempt=%s status=%s trace_id=%s",
+        with (trace_operation("gw.frontend.wait_running", attributes={"instance_id": normalized_id})
+              if current_request_trace() is not None else nullcontext(None)) as operation:
+            deadline = asyncio.get_running_loop().time() + timeout_s
+            attempt = 0
+            last_error: BaseException | None = None
+            last_status = ""
+            # Only GET poll retries share one id; every other YuanRong call mints.
+            poll_trace_id = bind_southbound_trace_id(
+                inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id
+            )
+            while True:
+                attempt += 1
+                instance: dict[str, Any] = {}
+                try:
+                    instance = await self.get_agent_info(
+                        normalized_id, trace_id=poll_trace_id
+                    )
+                    last_error = None
+                except YuanrongAgentApiError as exc:
+                    last_error = exc
+                status = _instance_status(instance)
+                last_status = status
+                if operation is not None:
+                    operation.set_attribute("poll.count", attempt)
+                    operation.set_attribute(
+                        "poll.status",
+                        status if status in _AGENT_FAILED_STATUSES
+                        or status == _AGENT_RUNNING_STATUS else "other",
+                    )
+                if status in _AGENT_FAILED_STATUSES:
+                    raise YuanrongAgentApiError(
+                        f"agent instance failed: instance_id={normalized_id}, "
+                        f"status={status}"
+                    )
+                if _is_agent_running(instance):
+                    logger.info(
+                        "[YuanrongFrontendAgentClient] instance running after GET poll: "
+                        "instance_id=%s attempt=%s status=%s trace_id=%s",
+                        normalized_id,
+                        attempt,
+                        status or _AGENT_RUNNING_STATUS,
+                        poll_trace_id,
+                    )
+                    return instance
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    if operation is not None:
+                        operation.record_outcome("timeout", reason="wait_running_timeout")
+                    detail = (
+                        str(last_error)
+                        if last_error is not None
+                        else f"status={last_status or 'empty'}"
+                    )
+                    raise YuanrongAgentApiError(
+                        f"agent instance not running after "
+                        f"{timeout_s:.0f}s: "
+                        f"instance_id={normalized_id}, last={detail}, "
+                        f"trace_id={poll_trace_id}"
+                    )
+                sleep_for = min(interval_s, remaining)
+                logger.debug(
+                    "[YuanrongFrontendAgentClient] GET not running yet: "
+                    "instance_id=%s attempt=%s status=%s sleep=%.1fs last_error=%s "
+                    "trace_id=%s",
                     normalized_id,
                     attempt,
-                    status or _AGENT_RUNNING_STATUS,
+                    status or "empty",
+                    sleep_for,
+                    type(last_error).__name__ if last_error is not None else "-",
                     poll_trace_id,
                 )
-                return instance
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                detail = (
-                    str(last_error)
-                    if last_error is not None
-                    else f"status={last_status or 'empty'}"
-                )
-                raise YuanrongAgentApiError(
-                    f"agent instance not running after "
-                    f"{timeout_s:.0f}s: "
-                    f"instance_id={normalized_id}, last={detail}, "
-                    f"trace_id={poll_trace_id}"
-                )
-            sleep_for = min(interval_s, remaining)
-            logger.debug(
-                "[YuanrongFrontendAgentClient] GET not running yet: "
-                "instance_id=%s attempt=%s status=%s sleep=%.1fs last_error=%s "
-                "trace_id=%s",
-                normalized_id,
-                attempt,
-                status or "empty",
-                sleep_for,
-                type(last_error).__name__ if last_error is not None else "-",
-                poll_trace_id,
-            )
-            await asyncio.sleep(sleep_for)
+                await asyncio.sleep(sleep_for)
 
     async def upload_agent_file(
         self,
@@ -1458,6 +1521,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         *,
         timeout: float | None = None,
         raise_on_timeout: bool = False,
+        trace_response: bool = False,
+        preparation_trace: bool = False,
     ) -> tuple[int, str]:
         resolved_timeout = (
             self._invoke_timeout_s if timeout is None else float(timeout)
@@ -1465,10 +1530,24 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         try:
             with urllib.request.urlopen(req, timeout=resolved_timeout) as resp:
                 status = int(getattr(resp, "status", 200))
+                if trace_response:
+                    operation = current_request_trace()
+                    if operation is not None:
+                        operation.event("http.response_headers", {"status_code": status})
+                        operation.event("response.first", {"outcome": "success" if 200 <= status < 400 else "failed"})
                 text = resp.read().decode("utf-8", errors="replace")
+                if trace_response and operation is not None:
+                    operation.event("http.response.completed", {"status_code": status})
                 return status, text
         except urllib.error.HTTPError as err:
+            if trace_response:
+                operation = current_request_trace()
+                if operation is not None:
+                    operation.event("http.response_headers", {"status_code": int(err.code)})
+                    operation.event("response.first", {"outcome": "failed"})
             text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
+            if trace_response and operation is not None:
+                operation.event("http.response.completed", {"status_code": int(err.code)})
             logger.error(
                 "[YuanrongFrontendAgentClient] HTTP error: url=%s code=%d",
                 req.full_url,
@@ -1481,6 +1560,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 req.full_url,
                 str(err),
             )
+            if trace_response or preparation_trace:
+                operation = current_request_trace()
+                if operation is not None:
+                    operation.record_outcome("timeout" if self._is_timeout_error(err) else "failed",
+                                             reason=type(err).__name__)
             if raise_on_timeout and self._is_timeout_error(err):
                 raise YuanrongAgentTimeoutError(
                     f"request timeout after {resolved_timeout}s: "
@@ -1505,14 +1589,15 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         req = urllib.request.Request(
             self._agent_create_url(),
             data=data,
-            headers=apply_trace_header(
+            headers=inject_request_headers(apply_trace_header(
                 {"Content-Type": "application/json"}, trace_id
-            ),
+            )),
             method="POST",
         )
         return self._urlopen_request(
             req,
             timeout=self._agent_timeout_s,
+            preparation_trace=True,
             raise_on_timeout=True,
         )
 
@@ -1521,9 +1606,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
     ) -> tuple[int, str]:
         req = urllib.request.Request(
             self._agent_delete_url(instance_id),
-            headers=apply_trace_header(
+            headers=inject_request_headers(apply_trace_header(
                 {"Content-Type": "application/json"}, trace_id
-            ),
+            )),
             method="DELETE",
         )
         return self._urlopen_request(
@@ -1537,14 +1622,15 @@ class YuanrongFrontendAgentClient(AgentServerClient):
     ) -> tuple[int, str]:
         req = urllib.request.Request(
             self._agent_delete_url(instance_id),  # same URL: /api/agent/{instanceId}
-            headers=apply_trace_header(
+            headers=inject_request_headers(apply_trace_header(
                 {"Content-Type": "application/json"}, trace_id
-            ),
+            )),
             method="GET",
         )
         return self._urlopen_request(
             req,
             timeout=self._agent_timeout_s,
+            preparation_trace=True,
         )
 
     def _invoke_url(self) -> str:
@@ -1764,6 +1850,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             session_context = json.dumps({"sessionCtx": uid}, ensure_ascii=False)
             headers["X-Session-Context"] = session_context
         bound = apply_trace_header(headers, request_id)
+        bound = inject_request_headers(bound)
         resolved_trace_id = extract_trace_id(bound)
         if uid:
             logger.debug(
@@ -1802,9 +1889,15 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         )
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
-        return self._urlopen_request(req, raise_on_timeout=True)
+        return self._urlopen_request(req, raise_on_timeout=True, trace_response=True)
 
     async def send_request(
+        self, envelope: E2AEnvelope, *, timeout: float | None = None,
+    ) -> AgentResponse:
+        with bind_agent_request_trace(envelope):
+            return await self._send_request_scoped(envelope, timeout=timeout)
+
+    async def _send_request_scoped(
         self,
         envelope: E2AEnvelope,
         *,
@@ -1831,6 +1924,10 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 envelope.user_id,
             )
         except YuanrongAgentApiError as e:
+            operation = current_request_trace()
+            if operation is not None:
+                operation.record_outcome("timeout" if isinstance(e, YuanrongAgentTimeoutError) else "failed",
+                                         reason=type(e).__name__)
             logger.warning(
                 "[YuanrongFrontendAgentClient] invoke failed: %s trace_id=%s",
                 e,
@@ -1838,15 +1935,66 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             )
             return AgentResponse(
                 request_id=envelope.request_id,
-                channel_id=envelope.channel_id,
+                channel_id=envelope.channel,
                 ok=False,
                 payload={"error": str(e)},
             )
         # 仍需 AgentRequest 形状供 _parse_invoke_response 填充 request_id/channel_id 兜底
         request = e2a_to_agent_request(envelope)
-        return self._parse_invoke_response(body, status, request)
+        response = self._parse_invoke_response(body, status, request)
+        operation = current_request_trace()
+        if operation is not None and not response.ok:
+            operation.record_outcome("failed", reason="agent_response")
+        return response
 
     async def send_request_stream(self, envelope: E2AEnvelope) -> AsyncIterator[AgentResponseChunk]:
+        # Preserve the original flow when no tracing operation is associated.
+        current = current_request_trace()
+        attached = get_message_trace(envelope)
+        if _is_inactive_trace(current) and _is_inactive_trace(attached):
+            async with aclosing(self._send_request_stream_scoped(envelope)) as stream:
+                async for chunk in stream:
+                    yield chunk
+            return
+        # Run the scope in its own task so yielding does not leak its context to the caller.
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        consumed = asyncio.Event()
+
+        async def produce() -> None:
+            try:
+                with bind_agent_request_trace(envelope):
+                    async with aclosing(self._send_request_stream_scoped(envelope)) as stream:
+                        async for chunk in stream:
+                            await queue.put(("chunk", chunk))
+                            await consumed.wait()
+                            consumed.clear()
+            except asyncio.CancelledError as exc:
+                if asyncio.current_task().cancelling():
+                    raise
+                await queue.put(("error", exc))
+            except Exception as exc:
+                await queue.put(("error", exc))
+            else:
+                await queue.put(("done", None))
+
+        task = asyncio.create_task(produce())
+        try:
+            while True:
+                kind, value = await queue.get()
+                if kind == "done":
+                    break
+                if kind == "error":
+                    raise value
+                yield value
+                consumed.set()
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _send_request_stream_scoped(self, envelope: E2AEnvelope) -> AsyncIterator[AgentResponseChunk]:
         """发送流式请求.
 
         Args:
@@ -1876,9 +2024,16 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             )
         )
         try:
+            first_response = True
             while True:
                 item_type, text = await queue.get()
                 if item_type == "chunk" and text:
+                    if first_response:
+                        operation = current_request_trace()
+                        if operation is not None:
+                            operation.event("response.first", {"outcome": "success"})
+                            operation.event("response.received", {"outcome": "success"})
+                        first_response = False
                     # SSE 解析已完成，复用 wire_codec 反解 chunk body
                     parsed_obj = self._normalize_invoke_chunk(text)
                     yield AgentResponseChunk(
@@ -1890,6 +2045,10 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                         metadata=dict(parsed_obj.get("metadata") or {}),
                     )
                 elif item_type == "error":
+                    operation = current_request_trace()
+                    if operation is not None:
+                        operation.event("response.first", {"outcome": "failed"})
+                        operation.record_outcome("failed", reason="http_error")
                     yield AgentResponseChunk(
                         request_id=request.request_id,
                         channel_id=request.channel_id,
@@ -1933,6 +2092,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         try:
             with urllib.request.urlopen(req, timeout=self._invoke_timeout_s) as resp:
                 status = int(getattr(resp, "status", 200))
+                operation = current_request_trace()
+                if operation is not None:
+                    operation.event("http.response_headers", {"status_code": status})
 
                 if not (200 <= status < 300):
                     text = resp.read().decode("utf-8", errors="replace")
@@ -1955,6 +2117,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                             self._process_sse_chunk(
                                 sse_line_buffer, call.out_queue, call.loop
                             )
+                        if operation is not None:
+                            operation.event("http.response.completed", {"status_code": status})
                         break
 
                     chunk_text = chunk.decode("utf-8", errors="replace")
@@ -1975,7 +2139,12 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                                 data_content, call.out_queue, call.loop
                             )
         except urllib.error.HTTPError as err:
+            operation = current_request_trace()
+            if operation is not None:
+                operation.event("http.response_headers", {"status_code": int(err.code)})
             text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
+            if operation is not None:
+                operation.event("http.response.completed", {"status_code": int(err.code)})
             logger.error(
                 "[YuanrontFrontendAgentClient] stream HTTP error: session_id=%s, code=%d",
                 call.session_id,

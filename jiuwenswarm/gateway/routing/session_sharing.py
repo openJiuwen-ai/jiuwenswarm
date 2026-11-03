@@ -8,12 +8,25 @@ import asyncio
 import logging
 import time
 import uuid
+from contextlib import nullcontext
+from copy import copy
 from dataclasses import dataclass, field
 from typing import Optional
 
 from jiuwenswarm.gateway.routing.keys import ChannelKey, DeliveryTarget, IdentityKey, RoutingKey
 
 logger = logging.getLogger(__name__)
+
+
+def _trace_matches_delivery(
+    operation: object, channel_id: str, origin_ws: str, target_ws: str,
+) -> bool:
+    """Whether this operation can be attached to the physical delivery."""
+    if operation.channel != channel_id:
+        return False
+    if not origin_ws or not target_ws:
+        return True
+    return origin_ws == target_ws
 
 
 # ── 订阅角色常量 ──────────────────────────────────────────────
@@ -522,10 +535,30 @@ class SessionDispatcher:
         避免把 _group_by_container 的同源字段重复作为参数传入。
         """
         delivery = group_subs[0].delivery
+        from jiuwenswarm.gateway.telemetry import bind_request_trace, get_message_trace
+
+        operation = get_message_trace(msg)
+        trace_scope = nullcontext()
+        if operation is not None:
+            metadata = getattr(msg, "metadata", None)
+            origin_ws = str(metadata.get("ws_id") or "") if isinstance(metadata, dict) else ""
+            target_ws = str(getattr(delivery, "ws_id", "") or "")
+            if not _trace_matches_delivery(
+                operation, container_key.channel_id, origin_ws, target_ws,
+            ):
+                operation = None
+                msg = copy(msg)
+                try:
+                    delattr(msg, "_gateway_trace_operation")
+                except AttributeError:
+                    pass
+                trace_scope = bind_request_trace(None)
         channel = channel_manager.get_channel(
             ChannelKey(container_key.channel_id, container_key.app_id),
         )
         if channel is None:
+            if operation is not None:
+                operation.record_outcome("incomplete", reason="fanout_no_channel")
             logger.warning(
                 "[dispatch] channel not found: channel_id=%s app_id=%s"
                 " (registered: %s)",
@@ -536,17 +569,22 @@ class SessionDispatcher:
 
         routing_target = SessionDispatcher._build_routing_target(target, group_subs, delivery)
         try:
-            await asyncio.wait_for(
-                channel.send(msg, routing_target=routing_target),
-                timeout=10.0,
-            )
+            with trace_scope:
+                await asyncio.wait_for(
+                    channel.send(msg, routing_target=routing_target),
+                    timeout=10.0,
+                )
         except asyncio.TimeoutError:
+            if operation is not None:
+                operation.record_outcome("incomplete", reason="fanout_timeout")
             logger.error(
                 "[dispatch] send timed out after 10s: channel=%s app=%s intent=%s"
                 " — skipping to unblock dispatch loop",
                 container_key.channel_id, container_key.app_id, target.intent,
             )
         except Exception:
+            if operation is not None:
+                operation.record_outcome("incomplete", reason="fanout_failed")
             logger.exception(
                 "[dispatch] send failed: channel=%s app=%s intent=%s",
                 container_key.channel_id, container_key.app_id, target.intent,

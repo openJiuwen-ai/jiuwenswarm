@@ -103,6 +103,10 @@ class E2AEnvelope:
     通道与互操作：
     - channel_context：**可选溢出**；主路径上通道侧信息应在**网关入口**映射为规范化字段。
     - a2a_metadata / acp_meta：与 A2A/ACP 互操作时使用。
+
+    追踪：
+    - traceparent：可选 W3C Trace Context 父上下文；用于 Gateway 与 AgentServer
+      在同一请求内建立真实父子 span。未提供时保持旧行为。
     """
 
     # --- 基础 / 关联 ---
@@ -144,6 +148,9 @@ class E2AEnvelope:
     channel_context: dict[str, Any] = field(default_factory=dict)
     a2a_metadata: dict[str, Any] = field(default_factory=dict)
     acp_meta: dict[str, Any] = field(default_factory=dict)
+
+    # --- 追踪：可选 W3C Trace Context 父上下文 ---
+    traceparent: str | None = None
 
     def ensure_timestamp(self) -> None:
         """若未设置 timestamp，则填当前 UTC ISO8601。"""
@@ -407,6 +414,7 @@ def _envelope_from_dict(data: dict[str, Any]) -> E2AEnvelope:
         channel_context=channel_context,
         a2a_metadata=dict(data.get("a2a_metadata") or {}),
         acp_meta=dict(data.get("acp_meta") or {}),
+        traceparent=data.get("traceparent"),
     )
 
 

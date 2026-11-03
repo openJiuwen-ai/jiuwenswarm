@@ -12,6 +12,10 @@ from abc import ABC
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from jiuwenswarm.gateway.telemetry import (
+    attach_message_trace, bind_message_trace, bind_request_trace, get_message_trace,
+    release_queued_message_traces, release_response_trace,
+)
 from jiuwenswarm.gateway.routing.keys import ChannelKey
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,8 @@ def _build_mention_target(names: list[str]) -> dict[str, Any]:
         "member_names": tuple(names),
         "speaker": None,
     }
+
+
 
 
 class ChannelManager(ABC):
@@ -410,6 +416,11 @@ class ChannelManager(ABC):
         self._on_config_updated = callback
 
     async def _dispatch_robot_messages(self) -> None:
+        # This long-lived consumer must not inherit its creator's request.
+        with bind_request_trace(None):
+            await self._dispatch_robot_messages_impl()
+
+    async def _dispatch_robot_messages_impl(self) -> None:
         """出队派发循环：从 MessageHandler 消费 robot_messages，按 channel_id 投递到对应 Channel.
 
         V2: 支持通过 metadata.fan_out_targets 进行 team 模式多目标分发。
@@ -423,10 +434,15 @@ class ChannelManager(ABC):
             return
         while self._running:
             msg = None
+            trace_scope = None
+            delivery_reason = ""
             try:
                 msg = await consume(timeout=1.0)
                 if msg is None:
                     continue
+
+                trace_scope = bind_message_trace(msg)
+                trace_scope.__enter__()
 
                 # payload event_type 供下方 _inject_file_delivery_fanout 判断文件/媒体注入
                 _pl = getattr(msg, "payload", None) or {}
@@ -470,12 +486,14 @@ class ChannelManager(ABC):
                                 timeout=15.0,
                             )
                         except asyncio.TimeoutError:
+                            delivery_reason = "delivery_failed"
                             logger.error(
                                 "[ChannelManager] dispatch_to_session timed out after 15s:"
                                 " session=%s id=%s — skipping to unblock dispatch loop",
                                 msg.session_id, msg.id,
                             )
                         except Exception:
+                            delivery_reason = "delivery_failed"
                             logger.exception(
                                 "[ChannelManager] dispatch_to_session failed:"
                                 " session=%s id=%s",
@@ -503,6 +521,7 @@ class ChannelManager(ABC):
                 if _is_feishu_fanout:
                     targets = self.get_channels_by_id(msg.channel_id)
                     if not targets:
+                        delivery_reason = "no_channel"
                         logger.warning(
                             "[ChannelManager] 飞书 fan-out: 无 channel channel_id=%s id=%s",
                             msg.channel_id, getattr(msg, "id", ""),
@@ -517,6 +536,7 @@ class ChannelManager(ABC):
                     ):
                         fanout_meta.pop(_k, None)
                     fanout_msg = dataclasses.replace(msg, metadata=fanout_meta)
+                    attach_message_trace(fanout_msg, get_message_trace(msg))
                     logger.info(
                         "[ChannelManager] 飞书 fan-out: channel_id=%s targets=%d id=%s",
                         msg.channel_id, len(targets), getattr(msg, "id", ""),
@@ -525,6 +545,7 @@ class ChannelManager(ABC):
                         try:
                             await ch.send(fanout_msg)
                         except Exception as e:
+                            delivery_reason = "delivery_failed"
                             logger.error(
                                 "[ChannelManager] 飞书 fan-out 投递失败: channel_id=%s app=%s id=%s: %s",
                                 msg.channel_id, getattr(ch, "app_id", "?"),
@@ -566,22 +587,31 @@ class ChannelManager(ABC):
                                 event_type,
                             )
                     except Exception as e:
+                        delivery_reason = "delivery_failed"
                         logger.error("send to channel %s: %s", msg.channel_id, e, exc_info=True)
                         if msg.id and msg.id.startswith("cron-push-"):
                             await self._notify_cron_delivery_error(msg, e)
                 else:
+                    delivery_reason = "no_channel"
                     logger.warning(
                         "[ChannelManager] 未找到 Channel，丢弃 robot_messages: channel_id=%s id=%s",
                         msg.channel_id, msg.id,
                     )
             except asyncio.CancelledError:
+                delivery_reason = "delivery_cancelled"
                 break
             except Exception:
+                delivery_reason = "delivery_failed"
                 logger.exception(
                     "[ChannelManager] dispatch loop iteration error (continuing): id=%s channel_id=%s",
                     getattr(msg, "id", None), getattr(msg, "channel_id", None),
                 )
                 continue
+            finally:
+                if msg is not None:
+                    release_response_trace(msg, reason=delivery_reason)
+                if trace_scope is not None:
+                    trace_scope.__exit__(None, None, None)
 
     async def _notify_cron_delivery_error(self, original_msg: "Message", error: Exception) -> None:
         """推送失败时，通过 web channel 发送 chat.error 通知前端。"""
@@ -698,12 +728,18 @@ class ChannelManager(ABC):
         if self._dispatch_task is not None:
             return
         self._running = True
+        set_stopped = getattr(self._message_handler, "_set_trace_dispatch_stopped", None)
+        if callable(set_stopped):
+            set_stopped(False)
         self._dispatch_task = asyncio.create_task(self._dispatch_robot_messages())
         logger.info("[ChannelManager] 出队派发循环已启动 (robot_messages -> Channel.send)")
 
     async def stop_dispatch(self) -> None:
         """停止出队派发任务."""
         self._running = False
+        set_stopped = getattr(self._message_handler, "_set_trace_dispatch_stopped", None)
+        if callable(set_stopped):
+            set_stopped(True)
         if self._dispatch_task is not None:
             self._dispatch_task.cancel()
             try:
@@ -711,4 +747,5 @@ class ChannelManager(ABC):
             except asyncio.CancelledError:
                 pass
             self._dispatch_task = None
+        release_queued_message_traces(getattr(self._message_handler, "_robot_messages", None))
         logger.info("[ChannelManager] 出队派发循环已停止")
