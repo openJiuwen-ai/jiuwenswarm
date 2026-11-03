@@ -45,6 +45,9 @@ from .template_models import (
     SKILL_PREBUILT_TEMPLATE_TABLE_DEF,
 )
 
+# Team control and quota tables are created by TeamMysqlActor.start().
+# Initializing them here as well takes a metadata lock while a chat
+# pre-reserve transaction is open on the same tables.
 ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     GATEWAY_ENC_KEYPAIR_TABLE_DEF,
     GATEWAY_SIGN_KEYPAIR_TABLE_DEF,

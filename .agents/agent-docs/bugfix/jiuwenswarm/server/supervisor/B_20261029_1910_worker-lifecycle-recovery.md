@@ -92,6 +92,8 @@ Windows 扩展回归初轮为 9948 passed、23 skipped、64 failed、6 errors。
 
 因此，本修复不能声明解决 #6063：AgentServer 收尾仍使用默认 detach；`start_services`、`app` 的终端收尾也未覆盖常驻 Worker 的最终退出。Windows 回调验证不等于原生 SIGINT，更不能代替 openEuler 验收。普通 Front 重启保持常驻仍是有效契约；终端最终退出需要另行区分，并覆盖多实例归属和重启行为后再验收。
 
+本次推送后 develop 继续推进到 `4512240b4242da3ff329c8b17fddc993f79cc9be`，重新合入时仅五份生成索引冲突；使用当前同步工具重建并保留双方源文档。新增的 Worker 启动补丁、TTSE 插件和会话清理路径纳入复验，合并候选为 424 passed、8 skipped、2 failed；失败仍为上述两项 Windows 下的 POSIX 信号模拟。四个 CodeCheck 修改文件没有被此次主干合并改变。
+
 ## 遗留与重验条件
 
 原生 DMG/EXE 的真实打包退出及升级，需要对应平台使用该 PR 当前提交构建后复验。#5964 原机器的物理内存/SDK 初始化触发原因仍需要同进程时间线与系统事件证据；本修复覆盖已复现的日志 sink 阻塞风险和不可自行恢复的状态机。

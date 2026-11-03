@@ -3441,7 +3441,7 @@ async def test_config_set_history_only_save_rewrites_config_yaml(monkeypatch, tm
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.refresh_external_cli_builtin_models",
-        lambda agents: None,
+        lambda agents, **_: None,
     )
 
     await channel.methods["config.set"](
