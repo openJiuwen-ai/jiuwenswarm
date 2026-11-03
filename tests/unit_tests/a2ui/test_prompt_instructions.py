@@ -56,6 +56,18 @@ def test_a2ui_prompt_heading_text_is_plain_text():
     assert "会被解析成无序列表" in zh
 
 
+def test_a2ui_prompt_component_fit():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "Card/list is not a universal fallback" in en
+    assert "single object detail layout, not a multi-card demo" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "不是万能 fallback" in zh
+    assert "不要生成多卡片 demo" in zh
+
+
 def test_a2ui_prompt_wraps_outermost_ui_in_card():
     en = build_a2ui_autonomy_instruction("en")
 
