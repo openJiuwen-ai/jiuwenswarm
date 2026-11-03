@@ -1905,7 +1905,7 @@ X-Session-Id: web_a1b2c3d4e5f6
 
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `force_refresh` / `forceRefresh` / `refresh` | bool | 否 | 为真时 Agent 同步全量 `du` 后再返回；默认只读 Agent 进程内缓存 |
+| `force_refresh` | bool | 否 | 为真时 Agent 同步全量 `du` 后再返回；默认只读 Agent 进程内缓存 |
 | `session_id` | string | 否 | 真实聊天会话 id（亦可 `X-Session-Id`）；用于企业版 Runtime 路由 |
 
 - **返回参数**（`data`）：
