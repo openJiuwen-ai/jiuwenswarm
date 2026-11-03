@@ -9,7 +9,6 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -54,18 +53,6 @@ _PUSH_RETRY_SECONDS = 3.0
 _PUSH_MAX_CONNECT_FAILURES = 3
 # 与 WebSocketAgentServerClient._delayed_cleanup_cancelled_request_id 对齐。
 _CANCELLED_RID_TTL_SECONDS = 2.0
-
-
-@dataclass(frozen=True)
-class _StreamScope:
-    """Session identity used to decide whether a new stream may supersede another."""
-
-    channel: str
-    user_id: str
-    agent_id: str
-    service_id: str
-    workspace_key: str
-    session_id: str
 
 
 async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
@@ -210,8 +197,12 @@ class HttpSseAgentServerClient(AgentServerClient):
         self._push_ready = asyncio.Event()
         self._push_handlers: set[asyncio.Task[None]] = set()
         self._stream_lock = asyncio.Lock()
+        # Only tracks streams that have finished or been explicitly abandoned so
+        # late residual SSE frames of *that* request_id can be dropped. A new
+        # stream must never cancel another in-flight stream: steer/supplemental
+        # chat.send shares the parent session and delivers chat.input_received
+        # on the parent SSE (personal-edition WS multiplexes the same way).
         self._cancelled_request_ids: set[str] = set()
-        self._inflight_stream_ids: dict[str, _StreamScope | None] = {}
         self._link_mtls = link_mtls_config
         # False：连续 TCP 失败后停（企业按 Pod IP）。True：继续重连（开源固定 URL）。
         self._retry_push_connect = retry_push_connect
@@ -360,7 +351,6 @@ class HttpSseAgentServerClient(AgentServerClient):
         self._base_url = None
         self._api_root = None
         self._cancelled_request_ids.clear()
-        self._inflight_stream_ids.clear()
         logger.info("[HttpSseAgentServerClient] 已断开")
 
     async def send_request(
@@ -404,37 +394,13 @@ class HttpSseAgentServerClient(AgentServerClient):
     def _is_stream_cancelled(self, rid: str) -> bool:
         return bool(rid) and rid in self._cancelled_request_ids
 
-    def _stream_scope(self, envelope: E2AEnvelope) -> _StreamScope | None:
-        """Identify a stream by session so shared clients do not cross-cancel."""
-        if not envelope.session_id or not str(envelope.user_id or "").strip():
-            return None
-        return _StreamScope(
-            channel=str(envelope.channel or ""),
-            user_id=str(envelope.user_id or ""),
-            agent_id=str(envelope.agent_id or ""),
-            service_id=str(envelope.service_id or ""),
-            workspace_key=str(envelope.workspace_key or ""),
-            session_id=str(envelope.session_id or ""),
-        )
-
-    def _supersede_other_streams(
-        self, rid: str, scope: _StreamScope | None
-    ) -> None:
-        """Only supersede streams belonging to the same identified session."""
-        if scope is None:
-            return
-        for other, other_scope in list(self._inflight_stream_ids.items()):
-            if other and other != rid and other_scope == scope:
-                self._cancelled_request_ids.add(other)
-                asyncio.create_task(self._delayed_cleanup_cancelled_request_id(other))
-
     async def _mark_stream_cancelled(self, rid: str) -> None:
+        """Mark one finished stream so only *its* late residual frames are dropped."""
         if not rid:
             return
         async with self._stream_lock:
             already = rid in self._cancelled_request_ids
             self._cancelled_request_ids.add(rid)
-            self._inflight_stream_ids.pop(rid, None)
         if not already:
             asyncio.create_task(self._delayed_cleanup_cancelled_request_id(rid))
 
@@ -480,13 +446,8 @@ class HttpSseAgentServerClient(AgentServerClient):
             assembled.url,
             assembled.used_rpc_fallback,
         )
-        # This client is shared across users and Runtime-routed Pods. A new
-        # request must never cancel another session merely by sharing the client.
-        scope = self._stream_scope(envelope)
-        async with self._stream_lock:
-            self._supersede_other_streams(rid, scope)
-            if rid:
-                self._inflight_stream_ids[rid] = scope
+        # Concurrent streams for the same session must coexist (parent chat +
+        # steer short receipt). Never cancel a peer stream when opening another.
         timeout = httpx.Timeout(_STREAM_READ_TIMEOUT, connect=_CONNECT_TIMEOUT_SECONDS)
         try:
             async with http.stream(
