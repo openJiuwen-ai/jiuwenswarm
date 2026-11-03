@@ -170,12 +170,16 @@ def preset_mcp_definitions() -> tuple[int, dict[str, dict[str, Any]]]:
     return parsed
 
 
-def ensure_managed_mcps() -> None:
-    """Reconcile the env preset into the current tenant's state.json.
+def ensure_managed_mcps(tenant_key: str | None = None) -> None:
+    """Reconcile the env preset into the given tenant's state.json.
 
-    Called once per tenant per process from TenantAgentPool (tenant context
-    bound). Requires a bound tenant workspace root — without one (e.g. a
-    startup-time path) there is nothing sensible to seed, so it returns.
+    Binds the tenant context itself (scoped): the pool may create the
+    manager BEFORE the request layer binds TenantContext — the HTTP invoke
+    path resolves the manager first and ``strategy.bind_request`` binds
+    afterwards — so an ambient-context guard alone would silently skip the
+    first seeding, and with the manager then pool-cached it would never
+    retry. Falls back to the ambient tenant key when ``tenant_key`` is
+    omitted; without any key (startup-time paths) there is nothing to seed.
     Credential files of withdrawn entries are dropped best-effort after the
     state write; failures never propagate to the caller.
     """
@@ -185,15 +189,18 @@ def ensure_managed_mcps() -> None:
         return
     try:
         from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-
-        if TenantContext.current_agent_workspace_root() is None:
-            return
     except ImportError:
         logger.debug("[mcp.preset] tenant context unavailable; skip preset seed")
         return
-    from jiuwenswarm.server.runtime.mcp import state_store
+    key = str(tenant_key or "").strip() or TenantContext.current_tenant_key()
+    if not key:
+        return
+    with TenantContext.scoped(key):
+        if TenantContext.current_agent_workspace_root() is None:
+            return
+        from jiuwenswarm.server.runtime.mcp import state_store
 
-    result = state_store.apply_managed_preset(ts, defs)
+        result = state_store.apply_managed_preset(ts, defs)
     if not result.get("applied"):
         return
     for name in result.get("removed", []):

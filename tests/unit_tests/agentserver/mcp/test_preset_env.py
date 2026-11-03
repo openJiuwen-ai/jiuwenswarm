@@ -304,22 +304,36 @@ def test_ensure_skips_without_tenant_binding(
     assert not (tmp_path / "mcp" / "state.json").exists()
 
 
-def test_ensure_applies_into_bound_tenant_workspace(
+def test_ensure_seeds_explicit_tenant_without_ambient_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Regression for the HTTP-invoke ordering bug: the pool creates the
+    manager BEFORE the request layer binds TenantContext, so the hook must
+    bind the tenant itself from its explicit key — the ambient context is
+    empty at that moment. Full chain through the real TenantContext.bind /
+    tenant_paths resolution, hermetic via a patched workspace base."""
     _set_env(monkeypatch, {"ts": 1000, "servers": {"dify-echo": dict(REMOTE)}})
-    workspace = tmp_path / "workspace_t1" / "agent" / "jiuwenclaw_workspace"
-    token = tenant_context._TENANT_AGENT_WORKSPACE_ROOT_CV.set(str(workspace))
-    try:
-        with patch.object(ss, "get_workspace_dir", return_value=workspace):
-            preset_env.ensure_managed_mcps()
-        state_file = workspace / "mcp" / "state.json"
-        assert state_file.is_file()
-        state = json.loads(state_file.read_text(encoding="utf-8"))
-        assert state["mcp"]["dify-echo"]["managed"] == "env"
-        assert state["preset"]["ts"] == 1000
-    finally:
-        tenant_context._TENANT_AGENT_WORKSPACE_ROOT_CV.reset(token)
+    import jiuwenswarm.common.utils as common_utils
+    import jiuwenswarm.enterprise as enterprise_pkg
+    from jiuwenswarm.enterprise.tenant import tenant_paths
+
+    # is_enterprise is module-bound in three places on this chain (utils,
+    # tenant_paths, and the package attr tenant_context resolves at call
+    # time) — patch each binding or path resolution silently mixes layouts.
+    with patch.object(enterprise_pkg, "is_enterprise", return_value=True), \
+         patch.object(common_utils, "is_enterprise", return_value=True), \
+         patch.object(tenant_paths, "is_enterprise", return_value=True), \
+         patch.object(common_utils, "get_user_workspace_dir", return_value=tmp_path):
+        preset_env.ensure_managed_mcps("t1")
+    state_file = (
+        tmp_path / "workspace_t1" / "agent" / "jiuwenclaw_workspace"
+        / "mcp" / "state.json"
+    )
+    assert state_file.is_file()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["mcp"]["dify-echo"]["managed"] == "env"
+    assert state["mcp"]["dify-echo"]["state"] == "connected"
+    assert state["preset"]["ts"] == 1000
 
 
 # --------------------------------------------------------------------------- #
@@ -346,13 +360,15 @@ async def test_pool_seeds_preset_once_per_tenant(tmp_path: Path) -> None:
          ), \
          patch(
              "jiuwenswarm.server.runtime.mcp.preset_env.ensure_managed_mcps",
-             side_effect=lambda: calls.append("preset"),
+             side_effect=lambda key: calls.append(f"preset:{key}"),
          ):
         first = await pool._ensure_agent_manager("t1")
         second = await pool._ensure_agent_manager("t1")
     assert first is second
     assert calls.count("seed") == 1
-    assert calls.count("preset") == 1
+    # Seeded exactly once, with the pool's explicit tenant key (the hook
+    # must not depend on the ambient context — see the ordering regression).
+    assert calls.count("preset:t1") == 1
 
 
 @pytest.mark.asyncio

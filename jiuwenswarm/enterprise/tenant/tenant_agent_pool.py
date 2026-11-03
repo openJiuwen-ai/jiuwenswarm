@@ -179,7 +179,7 @@ class TenantAgentPool:
                         ensure_managed_mcps,
                     )
 
-                    ensure_managed_mcps()
+                    ensure_managed_mcps(tenant_key)
                 except Exception:  # noqa: BLE001 — preset seeding must never block the pool
                     logger.warning(
                         "[TenantAgentPool] preset mcp seed failed tenant_key=%s",
