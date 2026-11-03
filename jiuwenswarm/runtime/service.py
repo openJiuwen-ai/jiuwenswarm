@@ -343,6 +343,10 @@ def _client_tool_answer_mismatch(request: AgentRequest) -> Iterator[None]:
         raise ClientToolAnswerMismatch("no paused execution waits on these client tool results") from exc
 
 
+def _awaits_answers(execution: SessionExecutionSnapshot) -> bool:
+    return bool(execution.waiting_control_ids) and not execution.state.terminal
+
+
 class AgentRuntime:
     """Own the existing ``AgentManager`` and its in-memory resources.
 
@@ -1064,6 +1068,14 @@ class AgentRuntime:
     def get_session_snapshot(self, session_id: str):
         """Read the authoritative execution state without attaching a consumer."""
         return self._session_coordinator.snapshot_session(session_id)
+
+    def sessions_awaiting_answers(self) -> tuple[str, ...]:
+        """The Sessions with an unfinished execution paused on interactions (questions, client tool calls)."""
+        return tuple(
+            snapshot.session_id
+            for snapshot in self._session_coordinator.snapshot_sessions()
+            if any(_awaits_answers(execution) for execution in snapshot.executions)
+        )
 
     def recoverable_control(
         self, session_id: str, request_id: str, execution_id: str,

@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ctypes
 import dataclasses
 import errno
-import grp
 import json
 import logging
+import marshal
 import os
-import pwd
+import re
 import shutil
 import signal
 import socket
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +35,11 @@ from typing import Any
 
 import yaml
 
+from jiuwenbox import perf_trace
 from jiuwenbox.logging_config import configure_logging
+from jiuwenbox.supervisor.landlock import encode_landlock_payload
+from jiuwenbox.supervisor.id_map import install_identity_id_map
+from jiuwenbox.supervisor.posix_id import resolve_posix_id
 from jiuwenbox.models.policy import CgroupPolicy, NetworkMode, NetworkPolicy, SecurityPolicy
 from jiuwenbox.models.sandbox import (
     BackgroundExecResult,
@@ -157,6 +163,24 @@ SANDBOX_DAEMON_SOURCE = _SUPERVISOR_DIR / "sandbox_daemon.py"
 _LANDLOCK_LAUNCHER_BYTES = LANDLOCK_LAUNCHER_SOURCE.read_bytes()
 _SANDBOX_DAEMON_BYTES = SANDBOX_DAEMON_SOURCE.read_bytes()
 PYTHON_EXECUTABLE = "python3"
+# Kept in sync with ``supervisor/landlock_launcher.py``. The launcher runs
+# inside the sandbox and cannot import this module.
+DROP_UID_ENV = "JIUWENBOX_DROP_UID"
+DROP_GID_ENV = "JIUWENBOX_DROP_GID"
+DAEMON_CODE_FD_ENV = "JIUWENBOX_DAEMON_CODE_FD"
+PERF_CHILD_ENV = "JIUWENBOX_PERF_CHILD"
+WARM_COMMIT_FD_ENV = "JIUWENBOX_WARM_COMMIT_FD"
+WARM_PARKED_MARKER = "JIUWENBOX_WARM_PARKED"
+CLONE_NEWNET = 0x40000000
+_LIBC = ctypes.CDLL("libc.so.6", use_errno=True)
+_LIBC.setns.argtypes = [ctypes.c_int, ctypes.c_int]
+_LIBC.setns.restype = ctypes.c_int
+_daemon_code_lock = threading.Lock()
+_cached_daemon_code: bytes | None = None
+_CHILD_PERF_RE = re.compile(
+    rb"^JIUWENBOX_PERF\t([^\t\r\n]+)\t([0-9]+(?:\.[0-9]+)?)\s*$",
+    re.MULTILINE,
+)
 
 # Python ForkServer fast path (transparent optimisation, default ON).
 # Exec requests whose command is the simple ``python3 -c CODE``
@@ -332,7 +356,11 @@ def _python_fastpath_candidate(command: list[str]) -> bool:
 # children either).
 DAEMON_CONNECT_TIMEOUT_SECONDS = 2.0
 DAEMON_SHUTDOWN_TIMEOUT_SECONDS = 3.0
-DAEMON_STARTUP_GRACE_SECONDS = 0.3
+# Printed by the daemon once the control socket is in accept(). Create
+# waits for this instead of a fixed grace sleep.
+DAEMON_READY_MARKER = "JIUWENBOX_DAEMON_READY"
+DAEMON_READY_TIMEOUT_SECONDS = 5.0
+DAEMON_READY_POLL_SECONDS = 0.002
 DAEMON_MAX_RESPONSE_BYTES = 256 * 1024 * 1024
 # Upper bound on how much of the daemon's spawn-time stdout/stderr we
 # include in the ``RuntimeError`` raised when the supervisor exits before
@@ -574,8 +602,6 @@ def enable_child_subreaper() -> bool:
         logger.debug("PR_SET_CHILD_SUBREAPER unavailable on %s", sys.platform)
         return False
     try:
-        import ctypes
-
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
         ret = libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
     except OSError as exc:
@@ -707,11 +733,149 @@ def _resolve_exec_concurrency() -> int:
     return _detect_default_exec_concurrency()
 
 
+def _identity_map_pipes(policy: SecurityPolicy) -> tuple[int | None, int | None, int | None, int | None]:
+    """Pipes for bwrap ``--info-fd`` and ``--userns-block-fd``.
+
+    Returns ``(info_read, info_write, block_read, block_write)``. All four
+    are ``None`` when this sandbox keeps bwrap's own one-id map.
+    """
+    if not policy.namespace.user or os.geteuid() != 0:
+        return None, None, None, None
+    info_r, info_w = os.pipe()
+    block_r, block_w = os.pipe()
+    os.set_inheritable(info_w, True)
+    os.set_inheritable(block_r, True)
+    return info_r, info_w, block_r, block_w
+
+
+def _close_identity_map_pipes(
+    info_r: int | None,
+    info_w: int | None,
+    block_r: int | None,
+    block_w: int | None,
+    *,
+    install: bool,
+) -> None:
+    """Close the map pipes. ``install`` writes the map before unblocking bwrap."""
+    if info_w is not None:
+        _safe_close_fd(info_w)
+    if block_r is not None:
+        _safe_close_fd(block_r)
+    try:
+        if install and info_r is not None and block_w is not None:
+            install_identity_id_map(info_r, block_w)
+    finally:
+        if info_r is not None:
+            _safe_close_fd(info_r)
+        if block_w is not None:
+            _safe_close_fd(block_w)
+
+
 def _safe_close_fd(fd: int) -> None:
     try:
         os.close(fd)
     except OSError:
         logger.debug("Failed to close fd %d", fd, exc_info=True)
+
+
+def _netns_file(namespace: str) -> str:
+    """Return the nsfs file for a named netns created by ``ip netns add``."""
+    for root in ("/run/netns", "/var/run/netns"):
+        candidate = os.path.join(root, namespace)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join("/run/netns", namespace)
+
+
+def _enter_netns(namespace: str) -> None:
+    """Join ``namespace`` in the calling process. Used from ``preexec_fn``."""
+    path = _netns_file(namespace)
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC, 0o644)
+    try:
+        if _LIBC.setns(fd, CLONE_NEWNET) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err), path)
+    finally:
+        os.close(fd)
+
+
+def _child_preexec(
+    netns_name: str | None,
+    cgroup_procs_paths: list[str],
+    protect_oom: bool,
+):
+    """Return the post-fork hook, or None when the child needs no setup.
+
+    ``setns`` replaces ``ip netns exec``: the child joins the prepared
+    netns and then execs bwrap directly. The parent stays in the host
+    netns. Cgroup migration stays in the same hook so it still happens
+    before bwrap clones.
+    """
+    if not netns_name and not cgroup_procs_paths:
+        return None
+
+    def _preexec() -> None:
+        if netns_name:
+            _enter_netns(netns_name)
+        child_pid = os.getpid()
+        for procs_path in cgroup_procs_paths:
+            with open(procs_path, "w", encoding="utf-8") as fh:
+                fh.write(str(child_pid))
+        if protect_oom:
+            try:
+                with open("/proc/self/oom_score_adj", "w", encoding="ascii") as fh:
+                    fh.write("-1000")
+            except OSError:
+                pass
+
+    return _preexec
+
+
+def _daemon_code_blob() -> bytes:
+    """Compile the daemon once per process and cache the marshal bytes."""
+    global _cached_daemon_code
+    with _daemon_code_lock:
+        if _cached_daemon_code is None:
+            code = compile(
+                _SANDBOX_DAEMON_BYTES,
+                SANDBOX_DAEMON_SANDBOX_PATH,
+                "exec",
+            )
+            _cached_daemon_code = marshal.dumps(code)
+        return _cached_daemon_code
+
+
+def _open_daemon_code_memfd() -> int:
+    """Return a memfd positioned at the start of the cached daemon bytecode."""
+    if not hasattr(os, "memfd_create"):
+        raise OSError("os.memfd_create is required to pass daemon bytecode")
+    blob = _daemon_code_blob()
+    fd = os.memfd_create("jiuwenbox-daemon-code", getattr(os, "MFD_CLOEXEC", 0x0001))
+    try:
+        offset = 0
+        while offset < len(blob):
+            offset += os.write(fd, blob[offset:])
+        os.lseek(fd, 0, os.SEEK_SET)
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _record_child_perf(sandbox_id: str, startup_log_file: Any | None) -> None:
+    """Copy launcher timing lines into the perf log. No-op when collection is off."""
+    if not perf_trace.enabled() or startup_log_file is None:
+        return
+    try:
+        startup_log_file.seek(0)
+        data = startup_log_file.read(DAEMON_STARTUP_LOG_MAX_BYTES)
+    except (OSError, ValueError):
+        return
+    if not data:
+        return
+    for match in _CHILD_PERF_RE.finditer(data):
+        step = match.group(1).decode("ascii", "replace")
+        perf_trace.record_elapsed(step, sandbox_id, float(match.group(2)))
 
 
 def _summarize_command(command: list[str], max_length: int = 180) -> str:
@@ -741,6 +905,8 @@ class ProcessRuntime(RuntimeAdapter):
         self._network_modes: dict[str, NetworkMode] = {}
         self._netns_names: dict[str, str] = {}
         self._uplink_handles: dict[str, network_module.UplinkHandle] = {}
+        self._firewall_threads: dict[str, threading.Thread] = {}
+        self._firewall_errors: dict[str, BaseException] = {}
         self._sandbox_ip_addresses: dict[str, str | None] = {}
         self._directory_roots: dict[str, Path] = {}
         self._file_roots: dict[str, Path] = {}
@@ -753,6 +919,10 @@ class ProcessRuntime(RuntimeAdapter):
         self._host_firewall_refcounts: dict[tuple[int, int], int] = {}
         self._sandbox_host_firewall_rules: dict[str, list[tuple[int, int]]] = {}
         self._cgroup_handles: dict[str, cgroup_module.CgroupHandle] = {}
+        self._warm_pool: Any | None = None
+        self._mount_client: Any | None = None
+        self._warm_commits: dict[str, int] = {}
+        self._warm_logs: dict[str, Any] = {}
         # Admission-control semaphore for ``exec``. Lazy-initialized in
         # ``_ensure_exec_semaphore`` because ``asyncio.Semaphore`` binds to
         # the running loop on first use, and ``ProcessRuntime`` is built
@@ -1048,6 +1218,10 @@ class ProcessRuntime(RuntimeAdapter):
         seccomp_fd: int | None,
         listener_fd: int | None = None,
         sandbox_ip: str | None = None,
+        daemon_code_fd: int | None = None,
+        warm_commit_fd: int | None = None,
+        id_map_info_fd: int | None = None,
+        id_map_block_fd: int | None = None,
     ) -> list[str]:
         """Build a ready-to-spawn bwrap argv vector for ``command``.
 
@@ -1129,32 +1303,62 @@ class ProcessRuntime(RuntimeAdapter):
             config.command = [
                 PYTHON_EXECUTABLE,
                 "-S",
+                "-u",
                 SANDBOX_LAUNCHER_PATH,
                 payload,
                 "--daemon",
                 SANDBOX_DAEMON_SANDBOX_PATH,
             ]
 
+        if daemon_code_fd is not None:
+            config.env[DAEMON_CODE_FD_ENV] = str(daemon_code_fd)
+        if perf_trace.enabled():
+            config.env[PERF_CHILD_ENV] = "1"
+
         config.seccomp_fd = seccomp_fd
-        if self._needs_privdrop_for_process_identity(
+        # A full identity map replaces bwrap's one-id ``--uid`` map, so the
+        # launcher can setuid to whatever id checkout resolved.
+        identity_map = (
+            config.unshare_user
+            and os.geteuid() == 0
+            and id_map_info_fd is not None
+            and id_map_block_fd is not None
+        )
+        if identity_map:
+            config.uid = None
+            config.gid = None
+        if identity_map or self._needs_privdrop_for_process_identity(
             process_uid,
-            use_user_namespace=policy.namespace.user,
+            use_user_namespace=config.unshare_user and not identity_map,
         ):
             if process_uid is None or process_gid is None:
                 raise RuntimeError(
                     "run_as_user/run_as_group could not be resolved for privilege drop",
                 )
-            config.command = self._wrap_command_with_privdrop(
-                config.command,
-                process_uid,
-                process_gid,
-            )
+            config.env[DROP_UID_ENV] = str(process_uid)
+            config.env[DROP_GID_ENV] = str(process_gid)
             logger.info(
-                "Dropping sandbox command to host uid %d gid %d via Python",
+                "Sandbox command will drop to host uid %d gid %d inside the launcher",
                 process_uid,
                 process_gid,
             )
-        return config.to_args()
+        if warm_commit_fd is not None:
+            # Identity and Landlock arrive on this pipe at checkout. Start as
+            # root in the sandbox namespaces so setuid can still run then.
+            config.uid = None
+            config.gid = None
+            config.env.pop(DROP_UID_ENV, None)
+            config.env.pop(DROP_GID_ENV, None)
+            config.env[WARM_COMMIT_FD_ENV] = str(warm_commit_fd)
+        args = config.to_args()
+        if identity_map:
+            args[1:1] = [
+                "--info-fd",
+                str(id_map_info_fd),
+                "--userns-block-fd",
+                str(id_map_block_fd),
+            ]
+        return args
 
     def _get_netns_name(self, sandbox_id: str) -> str:
         return self._netns_names.setdefault(
@@ -1181,7 +1385,8 @@ class ProcessRuntime(RuntimeAdapter):
         if network_module.namespace_exists(namespace):
             network_module.delete_named_namespace(namespace)
 
-        network_module.create_named_namespace(namespace)
+        with perf_trace.span("netns.add", sandbox_id):
+            network_module.create_named_namespace(namespace)
         uplink_handle: network_module.UplinkHandle | None = None
         try:
             uplink_handle = network_module.setup_network_uplink(
@@ -1189,9 +1394,10 @@ class ProcessRuntime(RuntimeAdapter):
                 sandbox_id,
                 policy.network.uplink,
                 management_ports=self._server_protect_ports(),
+                apply_firewall=False,
             )
-            network_module.setup_network_isolation(policy.network, namespace=namespace)
             self._uplink_handles[sandbox_id] = uplink_handle
+            self._start_firewall_setup(sandbox_id, uplink_handle, policy, namespace)
         except Exception:
             if uplink_handle is not None:
                 network_module.teardown_network_uplink(uplink_handle)
@@ -1206,6 +1412,94 @@ class ProcessRuntime(RuntimeAdapter):
             raise
 
         return namespace
+
+    def _start_firewall_setup(
+        self,
+        sandbox_id: str,
+        handle: network_module.UplinkHandle,
+        policy: SecurityPolicy,
+        namespace: str,
+    ) -> None:
+        """Program host and netns firewall rules while the daemon starts.
+
+        veth setup stays on the create path. Host FORWARD/NAT and the
+        in-namespace filter run on separate threads so the wall time is the
+        slower of the two. The netns thread joins that namespace with
+        ``setns`` and runs iptables-restore directly. Create joins this
+        thread before reporting the sandbox ready.
+        """
+
+        def _program() -> None:
+            host_error: BaseException | None = None
+            netns_error: BaseException | None = None
+
+            def _host() -> None:
+                nonlocal host_error
+                try:
+                    with perf_trace.span("firewall.host", sandbox_id):
+                        network_module.apply_uplink_firewall(handle)
+                except BaseException as exc:  # noqa: BLE001
+                    host_error = exc
+
+            def _netns() -> None:
+                nonlocal netns_error
+                try:
+                    with perf_trace.span("firewall.netns", sandbox_id):
+                        # Resolve names in the host netns. Doing it after
+                        # setns sends the lookup out of the sandbox before
+                        # NAT exists, and the first query waits out the
+                        # resolver timeout.
+                        with perf_trace.span("firewall.resolve", sandbox_id):
+                            egress_rules = network_module.build_network_rules(
+                                policy.network.egress,
+                            )
+                            ingress_rules = network_module.build_network_rules(
+                                policy.network.ingress,
+                            )
+                        _enter_netns(namespace)
+                        with perf_trace.span("firewall.restore", sandbox_id):
+                            network_module.apply_iptables_rules(
+                                egress_rules,
+                                ingress_rules,
+                                namespace=None,
+                                bring_up_loopback=False,
+                            )
+                except BaseException as exc:  # noqa: BLE001
+                    netns_error = exc
+
+            workers = (
+                threading.Thread(
+                    target=_host,
+                    name=f"jiuwenbox-fw-host-{sandbox_id}",
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=_netns,
+                    name=f"jiuwenbox-fw-ns-{sandbox_id}",
+                    daemon=True,
+                ),
+            )
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+            error = host_error or netns_error
+            if error is not None:
+                self._firewall_errors[sandbox_id] = error
+
+        thread = threading.Thread(
+            target=_program,
+            name=f"jiuwenbox-fw-{sandbox_id}",
+            daemon=True,
+        )
+        self._firewall_threads[sandbox_id] = thread
+        thread.start()
+
+    def _reap_firewall_setup(self, sandbox_id: str) -> BaseException | None:
+        thread = self._firewall_threads.pop(sandbox_id, None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join()
+        return self._firewall_errors.pop(sandbox_id, None)
 
     @staticmethod
     def _directory_spec(directory: object) -> tuple[str, str | None]:
@@ -1240,20 +1534,20 @@ class ProcessRuntime(RuntimeAdapter):
                 return os.getuid(), os.getgid()
 
         try:
-            uid = pwd.getpwnam(policy.process.run_as_user).pw_uid
-        except KeyError:
+            uid = resolve_posix_id(policy.process.run_as_user, kind="user")
+        except ValueError:
             uid = 65534
         try:
-            gid = grp.getgrnam(policy.process.run_as_group).gr_gid
-        except KeyError:
+            gid = resolve_posix_id(policy.process.run_as_group, kind="group")
+        except ValueError:
             gid = 65534
         return uid, gid
 
     @staticmethod
     def _resolve_process_uid(policy: SecurityPolicy) -> int:
         try:
-            return pwd.getpwnam(policy.process.run_as_user).pw_uid
-        except KeyError:
+            return resolve_posix_id(policy.process.run_as_user, kind="user")
+        except ValueError:
             return 65534
 
     @classmethod
@@ -1540,29 +1834,6 @@ class ProcessRuntime(RuntimeAdapter):
             return False
         return os.geteuid() == 0 and uid is not None and uid != 0
 
-    @staticmethod
-    def _wrap_command_with_privdrop(
-        command: list[str],
-        uid: int,
-        gid: int,
-    ) -> list[str]:
-        """Wrap ``command`` in a short Python helper that drops uid/gid.
-
-        Uses stdlib ``os.setuid`` / ``os.setgid`` so jiuwenbox does not depend
-        on the external ``setpriv(1)`` binary from util-linux.
-        """
-        encoded_command = json.dumps(command)
-        script = "; ".join([
-            "import json, os",
-            f"uid, gid = {uid}, {gid}",
-            f"cmd = json.loads({encoded_command!r})",
-            "exec('try:\\n os.setgroups([])\\nexcept OSError:\\n pass', globals())",
-            "os.setgid(gid)",
-            "os.setuid(uid)",
-            "os.execvp(cmd[0], cmd)",
-        ])
-        return [PYTHON_EXECUTABLE, "-S", "-c", script]
-
     def _ensure_policy_directories(
         self,
         sandbox_id: str,
@@ -1641,12 +1912,6 @@ class ProcessRuntime(RuntimeAdapter):
                 "sandbox_path": sandbox_path,
             })
         return binds
-
-    @staticmethod
-    def _wrap_command_in_namespace(command: list[str], namespace: str | None) -> list[str]:
-        if not namespace:
-            return command
-        return [network_module.IP_BINARY, "netns", "exec", namespace, *command]
 
     def _policy_for_sandbox(self, sandbox_id: str, policy_path: Path) -> SecurityPolicy:
         policy = self._runtime_policies.get(sandbox_id)
@@ -2009,6 +2274,440 @@ class ProcessRuntime(RuntimeAdapter):
         """Return the IPv4 snapshot injected for the current lifecycle."""
         return self._sandbox_ip_addresses.get(sandbox_id)
 
+    def start_warm_pool(self, template: SecurityPolicy) -> None:
+        """Park sandboxes in the background. No-op when the pool size is 0."""
+        from jiuwenbox.server.runtime.warm_pool import WarmPool, warm_pool_size
+
+        size = warm_pool_size()
+        if size <= 0 or self._warm_pool is not None:
+            return
+        pool = WarmPool(self, template, size)
+        self._warm_pool = pool
+        pool.start()
+
+    def stop_warm_pool(self) -> None:
+        pool = self._warm_pool
+        self._warm_pool = None
+        if pool is not None:
+            pool.stop()
+
+    def replace_warm_pool_template(self, template: SecurityPolicy) -> None:
+        """Retarget parked sandboxes after the server default policy changes."""
+        pool = self._warm_pool
+        if pool is None:
+            return
+        pool.replace_template(template)
+
+    def attach_mount_client(self, client: Any) -> None:
+        self._mount_client = client
+
+    def spawn_warm_slot(self, template: SecurityPolicy) -> str:
+        """Start one sandbox and return once it is parked before Landlock."""
+        from jiuwenbox.server.runtime.warm_pool import boot_policy
+
+        slot_id = "w" + uuid.uuid4().hex[:20]
+        policy = boot_policy(template)
+        self._runtime_policies[slot_id] = policy
+        self._network_modes[slot_id] = policy.network.mode
+        commit_r, commit_w = os.pipe()
+        os.set_inheritable(commit_w, False)
+        os.set_inheritable(commit_r, True)
+        self._warm_commits[slot_id] = commit_w
+        try:
+            self._spawn_parked_process(slot_id, policy, commit_r)
+        except Exception:
+            _safe_close_fd(commit_r)
+            self.destroy_warm_slot(slot_id)
+            raise
+        finally:
+            _safe_close_fd(commit_r)
+        return slot_id
+
+    def destroy_warm_slot(self, slot_id: str) -> None:
+        """Kill a parked or half-adopted sandbox and drop its host resources."""
+        proc = self._processes.get(slot_id)
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        self._processes.pop(slot_id, None)
+        commit_fd = self._warm_commits.pop(slot_id, None)
+        if commit_fd is not None:
+            _safe_close_fd(commit_fd)
+        startup_log = self._warm_logs.pop(slot_id, None)
+        if startup_log is not None:
+            try:
+                startup_log.close()
+            except OSError:
+                pass
+        netns_name = self._netns_names.get(slot_id)
+        self._teardown_cgroup(slot_id)
+        self._cleanup_sandbox_artifacts(slot_id, netns_name)
+
+    async def _try_warm_adopt(
+        self,
+        sandbox_id: str,
+        policy: SecurityPolicy,
+        policy_path: Path,
+        env: dict[str, str] | None,
+    ) -> int | None:
+        pool = self._warm_pool
+        if pool is None:
+            return None
+        matched, slot_id = pool.acquire(policy)
+        if not matched:
+            return None
+        with perf_trace.span("pool.checkout", sandbox_id):
+            if slot_id is None:
+                return None
+        try:
+            return await asyncio.to_thread(
+                self._adopt_warm_slot,
+                slot_id,
+                sandbox_id,
+                policy,
+                policy_path,
+                dict(env or {}),
+            )
+        except Exception:
+            logger.exception(
+                "Warm checkout failed for %s; creating the sandbox directly",
+                sandbox_id,
+            )
+            return None
+
+    def _adopt_warm_slot(
+        self,
+        slot_id: str,
+        sandbox_id: str,
+        policy: SecurityPolicy,
+        policy_path: Path,
+        env: dict[str, str],
+    ) -> int:
+        from jiuwenbox.server.runtime.warm_pool import mount_specs
+
+        moved = False
+        try:
+            self._rekey_sandbox(slot_id, sandbox_id)
+            moved = True
+            self._runtime_policies[sandbox_id] = policy
+            self._network_modes[sandbox_id] = policy.network.mode
+            self._policy_paths[sandbox_id] = policy_path
+            self._landlock_payloads[sandbox_id] = encode_landlock_payload(policy)
+            with perf_trace.span("pool.mount", sandbox_id):
+                self._policy_binds_for_sandbox(sandbox_id, policy)
+                specs = mount_specs(policy, self._policy_binds.get(sandbox_id, []))
+                self._mount_into_slot(sandbox_id, policy, specs)
+                self._rename_slot_netns(sandbox_id)
+            with perf_trace.span("pool.commit", sandbox_id):
+                self._commit_warm_slot(sandbox_id, policy, env)
+            proc = self._processes[sandbox_id]
+            logger.info(
+                "Warm sandbox adopted for %s (pid=%d)",
+                sandbox_id,
+                proc.pid,
+            )
+            return int(proc.pid)
+        except Exception:
+            self.destroy_warm_slot(sandbox_id if moved else slot_id)
+            raise
+
+    def _rekey_sandbox(self, old: str, new: str) -> None:
+        names = (
+            "_processes",
+            "_policy_paths",
+            "_runtime_policies",
+            "_policy_binds",
+            "_network_modes",
+            "_netns_names",
+            "_uplink_handles",
+            "_sandbox_ip_addresses",
+            "_directory_roots",
+            "_file_roots",
+            "_launcher_dirs",
+            "_control_dirs",
+            "_daemon_socket_ready",
+            "_seccomp_bpf",
+            "_landlock_payloads",
+            "_cgroup_handles",
+            "_background_processes",
+            "_sandbox_host_firewall_rules",
+            "_warm_commits",
+            "_warm_logs",
+        )
+        for name in names:
+            bucket = getattr(self, name)
+            if old in bucket:
+                bucket[new] = bucket.pop(old)
+        self._fastpath_activated.discard(old)
+
+    def _sandbox_mount_pid(self, host_pid: int) -> int:
+        """Return the bwrap child that actually lives in the new mount namespace."""
+        parent_ns = os.readlink(f"/proc/{host_pid}/ns/mnt")
+        children_path = f"/proc/{host_pid}/task/{host_pid}/children"
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                tokens = Path(children_path).read_text(encoding="ascii").split()
+            except OSError:
+                tokens = []
+            for token in tokens:
+                child = int(token)
+                try:
+                    child_ns = os.readlink(f"/proc/{child}/ns/mnt")
+                except OSError:
+                    continue
+                if child_ns != parent_ns:
+                    return child
+            time.sleep(0.01)
+        raise RuntimeError(f"bwrap pid {host_pid} has no sandboxed child")
+
+    def _mount_into_slot(
+        self,
+        sandbox_id: str,
+        policy: SecurityPolicy,
+        specs: list[dict],
+    ) -> None:
+        client = self._mount_client
+        if client is None:
+            raise RuntimeError("mount helper is not attached")
+        proc = self._processes[sandbox_id]
+        if proc.poll() is not None:
+            raise RuntimeError(f"Parked sandbox {sandbox_id} exited before checkout")
+        mount_pid = self._sandbox_mount_pid(proc.pid)
+        client.apply(mount_pid, policy.namespace.user, specs)
+
+    def _rename_slot_netns(self, sandbox_id: str) -> None:
+        current = self._netns_names.get(sandbox_id)
+        if not current:
+            return
+        renamed = network_module.netns_name_for_sandbox(sandbox_id)
+        if current == renamed:
+            return
+        network_module.rename_named_namespace(current, renamed)
+        self._netns_names[sandbox_id] = renamed
+
+    def _commit_warm_slot(
+        self,
+        sandbox_id: str,
+        policy: SecurityPolicy,
+        env: dict[str, str],
+    ) -> None:
+        commit_fd = self._warm_commits.pop(sandbox_id)
+        startup_log = self._warm_logs.pop(sandbox_id)
+        try:
+            uid = resolve_posix_id(policy.process.run_as_user, kind="user")
+            gid = resolve_posix_id(policy.process.run_as_group, kind="group")
+            message = json.dumps({
+                "uid": uid,
+                "gid": gid,
+                "landlock_b64": self._landlock_payloads[sandbox_id],
+                "env": env,
+            }).encode()
+            os.write(commit_fd, message)
+        finally:
+            _safe_close_fd(commit_fd)
+        proc = self._processes[sandbox_id]
+        try:
+            self._wait_for_startup_marker(
+                sandbox_id,
+                proc,
+                startup_log,
+                DAEMON_READY_MARKER.encode(),
+            )
+        finally:
+            try:
+                startup_log.close()
+            except OSError:
+                pass
+        self._daemon_socket_ready[sandbox_id] = True
+
+    def _wait_for_startup_marker(
+        self,
+        sandbox_id: str,
+        proc: subprocess.Popen,
+        startup_log: Any,
+        marker: bytes,
+    ) -> None:
+        deadline = time.monotonic() + DAEMON_READY_TIMEOUT_SECONDS
+        while True:
+            if proc.poll() is not None:
+                self._verify_daemon_alive(
+                    sandbox_id,
+                    proc,
+                    self._netns_names.get(sandbox_id),
+                    startup_log,
+                )
+            try:
+                startup_log.seek(0)
+                data = startup_log.read(DAEMON_STARTUP_LOG_MAX_BYTES)
+            except (OSError, ValueError):
+                data = b""
+            if marker in data:
+                if marker == DAEMON_READY_MARKER.encode():
+                    _record_child_perf(sandbox_id, startup_log)
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Sandbox {sandbox_id} did not reach {marker.decode()} "
+                    f"within {DAEMON_READY_TIMEOUT_SECONDS}s"
+                )
+            time.sleep(DAEMON_READY_POLL_SECONDS)
+
+    def _spawn_parked_process(
+        self,
+        slot_id: str,
+        policy: SecurityPolicy,
+        commit_read_fd: int,
+    ) -> None:
+        """Same startup as ``create``, but stop when the launcher parks."""
+        netns_name = self._ensure_named_netns(slot_id, policy)
+        if policy.network.mode == NetworkMode.ISOLATED:
+            uplink = self._uplink_handles.get(slot_id)
+            sandbox_ip = uplink.sandbox_ip if uplink is not None else None
+        else:
+            sandbox_ip = None
+        self._sandbox_ip_addresses[slot_id] = sandbox_ip
+        self._ensure_launcher_dir(slot_id)
+        self._ensure_landlock_payload(slot_id, policy)
+        self._daemon_socket_ready[slot_id] = False
+        listener = self._create_daemon_listener(slot_id, policy)
+        listener_fd = listener.fileno()
+        seccomp_fd: int | None = None
+        try:
+            seccomp_fd = self._open_seccomp_fd_from_bytes(
+                self._ensure_seccomp_bpf(slot_id, policy),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to build seccomp filter for warm slot %s",
+                slot_id,
+                exc_info=True,
+            )
+        code_fd: int | None = None
+        try:
+            code_fd = _open_daemon_code_memfd()
+        except OSError:
+            logger.warning(
+                "Failed to prepare daemon bytecode for warm slot %s",
+                slot_id,
+                exc_info=True,
+            )
+        info_r, info_w, block_r, block_w = _identity_map_pipes(policy)
+        try:
+            bwrap_args = self._build_sandbox_bwrap_args(
+                slot_id,
+                policy,
+                list(SANDBOX_DAEMON_COMMAND),
+                workdir=None,
+                sandbox_env=None,
+                netns_attached=netns_name is not None,
+                seccomp_fd=seccomp_fd,
+                listener_fd=listener_fd,
+                sandbox_ip=sandbox_ip,
+                daemon_code_fd=code_fd,
+                warm_commit_fd=commit_read_fd,
+                id_map_info_fd=info_w,
+                id_map_block_fd=block_r,
+            )
+        except Exception:
+            if code_fd is not None:
+                _safe_close_fd(code_fd)
+            listener.close()
+            _close_identity_map_pipes(info_r, info_w, block_r, block_w, install=False)
+            raise
+
+        cgroup_handle: cgroup_module.CgroupHandle | None = None
+        cgroup_procs_paths: list[str] = []
+        if not policy.cgroup.is_empty():
+            try:
+                cgroup_handle = cgroup_module.setup(slot_id, policy.cgroup)
+            except cgroup_module.CgroupSetupError as exc:
+                if seccomp_fd is not None:
+                    _safe_close_fd(seccomp_fd)
+                if code_fd is not None:
+                    _safe_close_fd(code_fd)
+                listener.close()
+                _close_identity_map_pipes(
+                    info_r, info_w, block_r, block_w, install=False,
+                )
+                raise RuntimeError(
+                    f"Failed to apply cgroup limits for warm slot {slot_id}: {exc}"
+                ) from exc
+            cgroup_procs_paths = [
+                str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
+            ]
+        preexec = _child_preexec(
+            netns_name,
+            cgroup_procs_paths,
+            policy.cgroup.memory_max is not None,
+        )
+        startup_log = tempfile.TemporaryFile(
+            prefix=f"jiuwenbox-{slot_id}-startup-",
+            suffix=".log",
+        )
+        self._warm_logs[slot_id] = startup_log
+        pass_fds = [listener_fd, commit_read_fd]
+        if seccomp_fd is not None:
+            pass_fds.append(seccomp_fd)
+        if code_fd is not None:
+            pass_fds.append(code_fd)
+        if info_w is not None and block_r is not None:
+            pass_fds.extend((info_w, block_r))
+        try:
+            proc = subprocess.Popen(
+                bwrap_args,
+                stdout=startup_log,
+                stderr=subprocess.STDOUT,
+                env=_sandbox_process_env(None),
+                pass_fds=tuple(pass_fds),
+                start_new_session=True,
+                preexec_fn=preexec,
+            )
+        except Exception:
+            if cgroup_handle is not None:
+                try:
+                    cgroup_module.teardown(cgroup_handle)
+                except Exception:
+                    logger.warning(
+                        "cgroup teardown failed after warm Popen error for %s",
+                        slot_id,
+                        exc_info=True,
+                    )
+            _close_identity_map_pipes(info_r, info_w, block_r, block_w, install=False)
+            raise
+        finally:
+            if seccomp_fd is not None:
+                _safe_close_fd(seccomp_fd)
+            if code_fd is not None:
+                _safe_close_fd(code_fd)
+            try:
+                listener.close()
+            except OSError:
+                pass
+        try:
+            _close_identity_map_pipes(info_r, info_w, block_r, block_w, install=True)
+        except Exception:
+            proc.kill()
+            raise
+        self._processes[slot_id] = proc
+        if cgroup_handle is not None:
+            self._cgroup_handles[slot_id] = cgroup_handle
+        self._wait_for_startup_marker(
+            slot_id,
+            proc,
+            startup_log,
+            WARM_PARKED_MARKER.encode(),
+        )
+        firewall_error = self._reap_firewall_setup(slot_id)
+        if firewall_error is not None:
+            raise firewall_error
+
     async def create(
         self,
         sandbox_id: str,
@@ -2021,7 +2720,16 @@ class ProcessRuntime(RuntimeAdapter):
                 raise RuntimeError(f"Sandbox {sandbox_id} already has a running process")
             self._processes.pop(sandbox_id, None)
 
-        policy = self._load_policy(policy_path)
+        with perf_trace.span("create.load_policy", sandbox_id):
+            policy = self._load_policy(policy_path)
+            self._runtime_policies[sandbox_id] = policy
+            self._network_modes[sandbox_id] = policy.network.mode
+            self._policy_paths[sandbox_id] = Path(policy_path)
+        adopted = await self._try_warm_adopt(sandbox_id, policy, Path(policy_path), env)
+        if adopted is not None:
+            return adopted
+        # A failed checkout destroys the id. Put the request policy back
+        # before the cold path builds a new sandbox under the same id.
         self._runtime_policies[sandbox_id] = policy
         self._network_modes[sandbox_id] = policy.network.mode
         self._policy_paths[sandbox_id] = Path(policy_path)
@@ -2030,7 +2738,8 @@ class ProcessRuntime(RuntimeAdapter):
         # its snapshot before network setup so a failed rebuild cannot expose
         # the old address through the runtime adapter.
         self._sandbox_ip_addresses.pop(sandbox_id, None)
-        netns_name = self._ensure_named_netns(sandbox_id, policy)
+        with perf_trace.span("create.netns_uplink", sandbox_id):
+            netns_name = self._ensure_named_netns(sandbox_id, policy)
         if policy.network.mode == NetworkMode.ISOLATED:
             uplink_handle = self._uplink_handles.get(sandbox_id)
             sandbox_ip = uplink_handle.sandbox_ip if uplink_handle is not None else None
@@ -2041,18 +2750,23 @@ class ProcessRuntime(RuntimeAdapter):
         else:
             sandbox_ip = None
         self._sandbox_ip_addresses[sandbox_id] = sandbox_ip
-        self._policy_binds_for_sandbox(sandbox_id, policy)
-        self._install_sandbox_host_firewall_rules(sandbox_id, policy)
+        with perf_trace.span("create.policy_binds", sandbox_id):
+            self._policy_binds_for_sandbox(sandbox_id, policy)
+        with perf_trace.span("create.host_firewall", sandbox_id):
+            self._install_sandbox_host_firewall_rules(sandbox_id, policy)
 
         # Pre-build expensive per-sandbox artifacts so subsequent ``exec``
         # calls only have to allocate a fresh seccomp memfd and assemble the
         # bwrap argv list.
-        self._ensure_launcher_dir(sandbox_id)
-        self._ensure_landlock_payload(sandbox_id, policy)
+        with perf_trace.span("create.launcher", sandbox_id):
+            self._ensure_launcher_dir(sandbox_id)
+        with perf_trace.span("create.landlock", sandbox_id):
+            self._ensure_landlock_payload(sandbox_id, policy)
         self._daemon_socket_ready[sandbox_id] = False
 
         try:
-            listener = self._create_daemon_listener(sandbox_id, policy)
+            with perf_trace.span("create.listener", sandbox_id):
+                listener = self._create_daemon_listener(sandbox_id, policy)
         except OSError as exc:
             self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
             raise RuntimeError(
@@ -2063,9 +2777,10 @@ class ProcessRuntime(RuntimeAdapter):
 
         seccomp_fd: int | None = None
         try:
-            seccomp_fd = self._open_seccomp_fd_from_bytes(
-                self._ensure_seccomp_bpf(sandbox_id, policy),
-            )
+            with perf_trace.span("create.seccomp", sandbox_id):
+                seccomp_fd = self._open_seccomp_fd_from_bytes(
+                    self._ensure_seccomp_bpf(sandbox_id, policy),
+                )
         except Exception:
             logger.warning(
                 "Failed to build seccomp filter for sandbox %s; continuing without seccomp",
@@ -2073,18 +2788,38 @@ class ProcessRuntime(RuntimeAdapter):
                 exc_info=True,
             )
 
-        bwrap_args = self._build_sandbox_bwrap_args(
-            sandbox_id,
-            policy,
-            list(SANDBOX_DAEMON_COMMAND),
-            workdir=None,
-            sandbox_env=env,
-            netns_attached=netns_name is not None,
-            seccomp_fd=seccomp_fd,
-            listener_fd=listener_fd,
-            sandbox_ip=sandbox_ip,
-        )
-        daemon_cmd = self._wrap_command_in_namespace(bwrap_args, netns_name)
+        code_fd: int | None = None
+        try:
+            code_fd = _open_daemon_code_memfd()
+        except OSError:
+            logger.warning(
+                "Failed to prepare daemon bytecode for %s; launcher will compile the script",
+                sandbox_id,
+                exc_info=True,
+            )
+        info_r, info_w, block_r, block_w = _identity_map_pipes(policy)
+        try:
+            with perf_trace.span("create.bwrap_args", sandbox_id):
+                bwrap_args = self._build_sandbox_bwrap_args(
+                    sandbox_id,
+                    policy,
+                    list(SANDBOX_DAEMON_COMMAND),
+                    workdir=None,
+                    sandbox_env=env,
+                    netns_attached=netns_name is not None,
+                    seccomp_fd=seccomp_fd,
+                    listener_fd=listener_fd,
+                    sandbox_ip=sandbox_ip,
+                    daemon_code_fd=code_fd,
+                    id_map_info_fd=info_w,
+                    id_map_block_fd=block_r,
+                )
+                daemon_cmd = bwrap_args
+        except Exception:
+            if code_fd is not None:
+                _safe_close_fd(code_fd)
+            _close_identity_map_pipes(info_r, info_w, block_r, block_w, install=False)
+            raise
 
         process_env = _sandbox_process_env(env)
         process_env.pop(SANDBOX_IP_ENV, None)
@@ -2098,6 +2833,10 @@ class ProcessRuntime(RuntimeAdapter):
         pass_fd_list: list[int] = [listener_fd]
         if seccomp_fd is not None:
             pass_fd_list.append(seccomp_fd)
+        if code_fd is not None:
+            pass_fd_list.append(code_fd)
+        if info_w is not None and block_r is not None:
+            pass_fd_list.extend((info_w, block_r))
         pass_fds = tuple(pass_fd_list)
 
         # Apply cgroup resource limits *before* spawning bwrap, then migrate
@@ -2128,10 +2867,15 @@ class ProcessRuntime(RuntimeAdapter):
                 )
                 if seccomp_fd is not None:
                     _safe_close_fd(seccomp_fd)
+                if code_fd is not None:
+                    _safe_close_fd(code_fd)
                 try:
                     listener.close()
                 except OSError:
                     pass
+                _close_identity_map_pipes(
+                    info_r, info_w, block_r, block_w, install=False,
+                )
                 self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
                 raise RuntimeError(
                     f"Failed to apply cgroup limits for sandbox "
@@ -2142,29 +2886,14 @@ class ProcessRuntime(RuntimeAdapter):
             ]
         protect_oom = policy.cgroup.memory_max is not None
 
-        def _preexec_attach_to_cgroup() -> None:
-            # Runs in the child after fork, before execve. Writing our own
-            # PID into each cgroup.procs migrates this process (and so
-            # bwrap, and every descendant bwrap spawns) into the per-sandbox
-            # cgroup before any user-controlled code starts. Any OSError
-            # here propagates as a nonzero child exit, which the daemon
-            # readiness probe surfaces to the caller -- silently leaving
-            # the sandbox unconstrained would defeat the policy.
-            child_pid = os.getpid()
-            for procs_path in cgroup_procs_paths:
-                with open(procs_path, "w", encoding="utf-8") as fh:
-                    fh.write(str(child_pid))
-            # Descendants inherit this score. User commands raise theirs
-            # to +1000 before exec so the OOM killer prefers them even
-            # when this write is rejected (no CAP_SYS_RESOURCE).
-            if protect_oom:
-                try:
-                    with open("/proc/self/oom_score_adj", "w", encoding="ascii") as fh:
-                        fh.write("-1000")
-                except OSError:
-                    pass
-
-        preexec = _preexec_attach_to_cgroup if cgroup_procs_paths else None
+        # preexec runs after fork and before exec. It joins the prepared
+        # netns (instead of ``ip netns exec``) and migrates into the
+        # per-sandbox cgroup before bwrap clones. Any OSError here becomes
+        # a nonzero child exit, which the readiness probe surfaces.
+        # Descendants inherit the OOM score. User commands raise theirs
+        # to +1000 before exec so the OOM killer prefers them even when
+        # this write is rejected (no CAP_SYS_RESOURCE).
+        preexec = _child_preexec(netns_name, cgroup_procs_paths, protect_oom)
 
         # Capture daemon stdout/stderr into an anonymous tempfile so that
         # if the supervisor dies before becoming ready we can include the
@@ -2181,19 +2910,22 @@ class ProcessRuntime(RuntimeAdapter):
             suffix=".log",
         )
         try:
-            proc = subprocess.Popen(
-                daemon_cmd,
-                stdout=startup_log_file,
-                stderr=subprocess.STDOUT,
-                env=process_env,
-                pass_fds=pass_fds,
-                start_new_session=True,
-                preexec_fn=preexec,
-            )
+            with perf_trace.span("create.popen", sandbox_id):
+                proc = subprocess.Popen(
+                    daemon_cmd,
+                    stdout=startup_log_file,
+                    stderr=subprocess.STDOUT,
+                    env=process_env,
+                    pass_fds=pass_fds,
+                    start_new_session=True,
+                    preexec_fn=preexec,
+                )
         except Exception:
             startup_log_file.close()
             if seccomp_fd is not None:
                 _safe_close_fd(seccomp_fd)
+            if code_fd is not None:
+                _safe_close_fd(code_fd)
             try:
                 listener.close()
             except OSError:
@@ -2210,25 +2942,35 @@ class ProcessRuntime(RuntimeAdapter):
                         exc_info=True,
                     )
             self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+            _close_identity_map_pipes(info_r, info_w, block_r, block_w, install=False)
             raise
 
         if seccomp_fd is not None:
             _safe_close_fd(seccomp_fd)
+        if code_fd is not None:
+            _safe_close_fd(code_fd)
         # The daemon now owns the listener fd in its process; box-server's
         # copy is no longer useful and must not block accept-loop teardown.
         try:
             listener.close()
         except OSError:
             pass
+        try:
+            _close_identity_map_pipes(info_r, info_w, block_r, block_w, install=True)
+        except Exception:
+            proc.kill()
+            self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+            raise
 
         self._processes[sandbox_id] = proc
         if cgroup_handle is not None:
             self._cgroup_handles[sandbox_id] = cgroup_handle
 
         try:
-            await self._wait_daemon_ready(
-                sandbox_id, proc, netns_name, startup_log_file,
-            )
+            with perf_trace.span("create.wait_ready", sandbox_id):
+                await self._wait_daemon_ready(
+                    sandbox_id, proc, netns_name, startup_log_file,
+                )
         finally:
             # Parent no longer needs the fd; the daemon keeps writing into
             # its own (kernel-anonymous) copy until it exits.
@@ -2246,26 +2988,63 @@ class ProcessRuntime(RuntimeAdapter):
         netns_name: str | None,
         startup_log_file: Any | None = None,
     ) -> None:
-        """Verify the daemon is alive and mark its IPC channel ready.
+        """Verify the daemon is in ``accept()`` and firewall setup finished.
 
-        Box-server already created the listener and ``listen()``ed before
-        spawning bubblewrap, so the kernel will queue connection attempts
-        immediately - there is no socket file we still have to wait for. We
-        sleep briefly to ensure the daemon process has had a chance to
-        ``accept()`` (so the very first request does not block waiting for
-        a worker thread to spin up) and confirm the bwrap parent has not
-        already exited with an error.
-
-        ``startup_log_file`` is the tempfile that captured the daemon's
-        stdout/stderr; on failure :meth:`_verify_daemon_alive` reads from
-        it to enrich the resulting ``RuntimeError`` with the underlying
-        diagnostic (Python traceback, bwrap message, ...). It is optional
-        so existing call sites and tests that build the runtime by hand
-        can still drive the verification step without one.
+        The daemon writes ``JIUWENBOX_DAEMON_READY`` once it has adopted the
+        listener. Create polls that marker instead of sleeping a fixed grace
+        period. Host and netns iptables run on a side thread started after
+        the veth exists; this wait joins that thread before the sandbox is
+        reported ready.
         """
-        await asyncio.sleep(DAEMON_STARTUP_GRACE_SECONDS)
-        self._verify_daemon_alive(sandbox_id, proc, netns_name, startup_log_file)
+        deadline = time.monotonic() + DAEMON_READY_TIMEOUT_SECONDS
+        with perf_trace.span("daemon.wait_marker", sandbox_id):
+            while True:
+                self._verify_daemon_alive(sandbox_id, proc, netns_name, startup_log_file)
+                if self._startup_log_has_marker(startup_log_file):
+                    _record_child_perf(sandbox_id, startup_log_file)
+                    break
+                if time.monotonic() >= deadline:
+                    self._abandon_unready_daemon(sandbox_id, proc, netns_name)
+                    raise RuntimeError(
+                        f"Sandbox daemon for {sandbox_id} did not become ready "
+                        f"within {DAEMON_READY_TIMEOUT_SECONDS}s."
+                    )
+                await asyncio.sleep(DAEMON_READY_POLL_SECONDS)
+        with perf_trace.span("daemon.join_firewall", sandbox_id):
+            firewall_error = await asyncio.to_thread(self._reap_firewall_setup, sandbox_id)
+        if firewall_error is not None:
+            self._abandon_unready_daemon(sandbox_id, proc, netns_name)
+            raise firewall_error
         self._daemon_socket_ready[sandbox_id] = True
+
+    def _abandon_unready_daemon(
+        self,
+        sandbox_id: str,
+        proc: subprocess.Popen,
+        netns_name: str | None,
+    ) -> None:
+        """Kill a daemon that must not outlive a failed create."""
+        self._processes.pop(sandbox_id, None)
+        if proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
+
+    @staticmethod
+    def _startup_log_has_marker(startup_log_file: Any | None) -> bool:
+        if startup_log_file is None:
+            return False
+        try:
+            startup_log_file.seek(0)
+            data = startup_log_file.read(DAEMON_STARTUP_LOG_MAX_BYTES)
+        except (OSError, ValueError):
+            return False
+        if not data:
+            return False
+        return DAEMON_READY_MARKER.encode() in data
 
     def _verify_daemon_alive(
         self,
@@ -2359,6 +3138,7 @@ class ProcessRuntime(RuntimeAdapter):
         if control_dir is not None:
             shutil.rmtree(control_dir, ignore_errors=True)
         self._daemon_socket_ready.pop(sandbox_id, None)
+        self._reap_firewall_setup(sandbox_id)
         uplink_handle = self._uplink_handles.pop(sandbox_id, None)
         if uplink_handle is not None:
             network_module.teardown_network_uplink(uplink_handle)

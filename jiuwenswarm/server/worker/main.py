@@ -46,7 +46,7 @@ def main() -> None:
     enable_worker_diagnostics()
     parser = argparse.ArgumentParser(prog="jiuwenswarm-runtime-worker")
     parser.add_argument(
-        "--socket", required=True, help="Unix socket or named-pipe path."
+        "--socket", help="Unix socket or named-pipe path (resident mode)."
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18092)
@@ -57,11 +57,30 @@ def main() -> None:
     parser.add_argument("--stub-exit-on-request", action="store_true")
     parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    code_identity_value = None
-    if args.identity_from_parent:
-        from jiuwenswarm.server.supervisor.identity import read_launch_identity
+    from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 
-        code_identity_value = read_launch_identity()
+    mode = runtime_ipc_mode()
+    if mode == FRONT_LOOPBACK and not args.identity_from_parent:
+        parser.error("front_loopback requires a private parent launch payload")
+    if mode != FRONT_LOOPBACK and not args.socket:
+        parser.error("resident mode requires --socket")
+    code_identity_value = None
+    session_source = None
+    if args.identity_from_parent:
+        from jiuwenswarm.server.supervisor.identity import data_scope, read_launch_payload
+
+        payload = read_launch_payload()
+        code_identity_value = payload["code_identity"]
+        if mode == FRONT_LOOPBACK:
+            from jiuwenswarm.server.ipc.loopback import FrontConnectSessionSource, LoopbackParameters
+
+            session_source = FrontConnectSessionSource(
+                LoopbackParameters.from_payload(
+                    payload.pop("runtime_ipc", None), code_identity=code_identity_value, data_scope=data_scope(),
+                ),
+            )
+        elif payload.get("runtime_ipc") is not None:
+            parser.error("runtime IPC mode does not match the parent launch payload")
     if args.stub:
         from jiuwenswarm.server.worker.stub import StubExit, serve_stub
 
@@ -69,10 +88,11 @@ def main() -> None:
         try:
             asyncio.run(
                 serve_stub(
-                    args.socket,
+                    args.socket or "",
                     ready_delay=args.stub_ready_delay,
                     exit_on_request=args.stub_exit_on_request,
                     code_identity_value=code_identity_value,
+                    session_source=session_source,
                 )
             )
             exit_code = 0
@@ -88,8 +108,9 @@ def main() -> None:
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port,
-                                       code_identity_value=code_identity_value))
+    task = loop.create_task(serve_worker(args.socket or "", host=args.host, port=args.port,
+                                       code_identity_value=code_identity_value,
+                                       session_source=session_source))
 
     def _stop() -> None:
         task.cancel()

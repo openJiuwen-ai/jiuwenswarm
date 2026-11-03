@@ -1,0 +1,7 @@
+# Test-only package defaults. No model or embedding credentials belong here.
+ttse:
+  evolve_enabled: true
+  inject_enabled: true
+  dream_enabled: true
+  consult_top_k: 8
+  consult_retrieve_mode: hybrid

@@ -4,14 +4,26 @@
 from __future__ import annotations
 
 import logging
+import time
 
 LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 UVICORN_LOGGER_NAMES = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
 
+class MillisecondFormatter(logging.Formatter):
+    """``asctime`` with millisecond precision. ``datefmt`` has no ``%f``."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        formatted = time.strftime(
+            datefmt or self.datefmt or LOG_DATE_FORMAT,
+            self.converter(record.created),
+        )
+        return f"{formatted}.{int(record.msecs):03d}"
+
+
 def _timestamp_formatter() -> logging.Formatter:
-    return logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+    return MillisecondFormatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
 
 
 def _set_handler_formatters(logger: logging.Logger, formatter: logging.Formatter) -> None:
@@ -28,8 +40,11 @@ def patch_uvicorn_logging() -> None:
     """
     from uvicorn.config import LOGGING_CONFIG
 
-    LOGGING_CONFIG["formatters"]["default"]["fmt"] = LOG_FORMAT
-    LOGGING_CONFIG["formatters"]["default"]["datefmt"] = LOG_DATE_FORMAT
+    default_formatter = LOGGING_CONFIG["formatters"]["default"]
+    default_formatter["()"] = "jiuwenbox.logging_config.MillisecondFormatter"
+    default_formatter["fmt"] = LOG_FORMAT
+    default_formatter["datefmt"] = LOG_DATE_FORMAT
+    default_formatter.pop("use_colors", None)
     logging.getLogger("uvicorn.error").name = "uvicorn"
 
 

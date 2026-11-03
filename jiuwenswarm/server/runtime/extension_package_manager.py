@@ -1618,6 +1618,15 @@ def resolve_plugin_dir(name: Any) -> Path:
     )
 
 
+def plugin_package_exists(name: Any) -> bool:
+    """Whether a plugin package directory of this name is installed, valid or not."""
+    safe_name = _reject_package_name(name, "plugin")
+    return any(
+        _package_dir_if_present(root, safe_name) is not None
+        for root in (_local_root(_PLUGIN_PACKAGE_KIND), _built_in_root(_PLUGIN_PACKAGE_KIND))
+    )
+
+
 def read_manifest_version(pkg_dir: Path) -> str:
     """Return stripped manifest.json version, or empty string if missing/invalid."""
     manifest = _read_package_manifest(pkg_dir)
