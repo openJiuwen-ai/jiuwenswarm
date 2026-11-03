@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Any
 
 EVENT_GATEWAY_REQUEST = "gateway.request"
+EVENT_UI_RENDER = "ui.render"
 
 #: The single upstream WebUI method that carries browser ui.* events.
 WEBUI_DISPATCH_METHOD = "webui.dispatch"
@@ -63,7 +64,12 @@ class GatewayRoute(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class GatewayRequestInput:
-    """One inbound WS frame before native dispatch."""
+    """One inbound WS frame before native dispatch.
+
+    ``headers`` mirrors ``request_context.headers`` of the browser frame with
+    lower-cased names. The authentication gate only looks for the presence of
+    ``authorization``; validating the token is the job of a USER handler.
+    """
 
     method: str
     params: Mapping[str, Any] = field(default_factory=_empty_mapping)
@@ -71,6 +77,7 @@ class GatewayRequestInput:
     connection_id: str = ""
     user_id: str | None = None
     channel_id: str = "web"
+    headers: Mapping[str, str] = field(default_factory=_empty_headers)
 
 
 @dataclass(frozen=True, slots=True)

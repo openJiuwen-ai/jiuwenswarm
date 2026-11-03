@@ -31,7 +31,7 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.gateway.extensions_v2 import bootstrap
-from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import AUTH_STORE_KEY
+from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import has_authorization
 from jiuwenswarm.gateway.extensions_v2.builtin.router import GatewayLocalRouter, LocalRequest
 from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig
 from jiuwenswarm.gateway.extensions_v2.loader import LoadedPackage, load_gateway_packages
@@ -43,6 +43,9 @@ from jiuwenswarm.gateway.extensions_v2.models import (
     gateway_session_id,
 )
 from jiuwenswarm.gateway.extensions_v2.state import UiStateStore
+from jiuwenswarm.gateway.extensions_v2.webui.registry import ActiveRenderRegistry
+from jiuwenswarm.gateway.extensions_v2.webui.runtime import GatewayWebUIRuntime
+from jiuwenswarm.gateway.extensions_v2.webui.transport import GatewayTransport
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,11 @@ class GatewayRuntime:
         self.config = config
         self.bus = ExtensionEventBus()
         self.store = UiStateStore()
-        self.router = GatewayLocalRouter(self.store)
+        self.router = GatewayLocalRouter()
+        self.webui = GatewayWebUIRuntime(
+            bus=self.bus,
+            transport=GatewayTransport(channel),
+        )
         self._handler_ids: list[str] = []
         self._builtin_ids: list[str] = []
         self._user_handlers: dict[str, int] = {}
@@ -68,6 +75,12 @@ class GatewayRuntime:
         self._auth_providers = 0
         self._management: Any = None
         self._started = False
+
+    @property
+    def registry(self) -> ActiveRenderRegistry:
+        """Active render instances owned by the WebUI runtime."""
+
+        return self.webui.registry
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -111,6 +124,7 @@ class GatewayRuntime:
         self._packages.clear()
         self._auth_provider_ids.clear()
         self._auth_providers = 0
+        await self.webui.shutdown()
         self.store.clear()
         self._started = False
 
@@ -150,15 +164,15 @@ class GatewayRuntime:
         enabled = policy.enabled if policy is not None else True
         return enabled and self.has_auth_provider
 
-    def is_authenticated(self, connection_id: str) -> bool:
-        """Whether the connection already stored an ``auth.session`` value."""
+    def is_authenticated(self, headers: Mapping[str, str] | None) -> bool:
+        """Whether the frame carried an authorization header.
 
-        if not connection_id:
-            return False
-        return (
-            self.store.get(scope="connection", scope_id=connection_id, key=AUTH_STORE_KEY)
-            is not None
-        )
+        The Gateway never validates the token; a USER handler owns that. Callers
+        that already went through ``gateway.request`` should read the gate's
+        decision instead of calling this.
+        """
+
+        return has_authorization(headers)
 
     async def connection_id(self, ws: Any) -> str:
         """Public connection id used by package-management frames."""
@@ -254,8 +268,12 @@ class GatewayRuntime:
         req_id: str,
         method: str,
         params: Mapping[str, Any],
+        headers: Mapping[str, str] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Run one inbound frame through ``gateway.request``.
+
+        ``headers`` mirrors ``request_context.headers`` of the browser frame:
+        the login gate and USER handlers read ``authorization`` from it.
 
         Returns ``(visited, params)``. ``visited=True`` means the frame was
         answered locally and the native dispatch must be skipped; otherwise the
@@ -274,6 +292,7 @@ class GatewayRuntime:
             connection_id=connection_id,
             user_id=self._user_id(ws),
             channel_id=self._channel_id(),
+            headers=_normalized_headers(headers),
         )
         try:
             result = await asyncio.wait_for(
@@ -335,6 +354,7 @@ class GatewayRuntime:
                 connection_id=request.connection_id,
                 session_id=request.session_id,
                 user_id=request.user_id,
+                headers=request.headers,
             )
         )
         await self._respond(
@@ -378,6 +398,7 @@ class GatewayRuntime:
         if not connection_id:
             return
         self.store.drop_connection(connection_id)
+        await self.webui.drop_connection(connection_id)
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -420,6 +441,18 @@ def _session_of(params: Mapping[str, Any]) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def _normalized_headers(headers: Mapping[str, str] | None) -> Mapping[str, str]:
+    """Lower-case header names so lookups stay case-insensitive."""
+
+    if not isinstance(headers, Mapping):
+        return MappingProxyType({})
+    normalized: dict[str, str] = {}
+    for name, value in headers.items():
+        if isinstance(name, str) and isinstance(value, str):
+            normalized[name.strip().lower()] = value
+    return MappingProxyType(normalized)
 
 
 def _async_handler(handler: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:

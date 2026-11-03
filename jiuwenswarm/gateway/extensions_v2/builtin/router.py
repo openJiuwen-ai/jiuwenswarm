@@ -15,8 +15,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Final
 
-from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import is_authenticated
-from jiuwenswarm.gateway.extensions_v2.state import UiStateStore
+from jiuwenswarm.gateway.extensions_v2.builtin.auth_gate import has_authorization
 
 CODE_ROUTE_UNSUPPORTED: Final[str] = "ROUTE_UNSUPPORTED"
 
@@ -39,6 +38,7 @@ class LocalRequest:
     connection_id: str = ""
     session_id: str | None = None
     user_id: str | None = None
+    headers: Mapping[str, str] = field(default_factory=_empty_mapping)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +53,7 @@ class LocalResponse:
 class GatewayLocalRouter:
     """Closed table of methods the Gateway can answer without AgentServer."""
 
-    def __init__(self, store: UiStateStore) -> None:
-        self._store = store
+    def __init__(self) -> None:
         self._methods: dict[str, LocalHandler] = {}
         self.register(METHOD_AUTH_STATUS, self._auth_status)
 
@@ -86,7 +85,9 @@ class GatewayLocalRouter:
         return await handler(request)
 
     async def _auth_status(self, request: LocalRequest) -> LocalResponse:
+        # Token validity belongs to the login package; the Gateway only reports
+        # whether this frame carried one.
         return LocalResponse(
             ok=True,
-            payload={"authenticated": is_authenticated(self._store, request.connection_id)},
+            payload={"authenticated": has_authorization(request.headers)},
         )

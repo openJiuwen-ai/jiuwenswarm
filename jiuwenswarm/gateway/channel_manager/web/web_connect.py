@@ -1892,9 +1892,15 @@ class WebChannel(BaseWsChannel):
 
         # ── Gateway 扩展运行时：原生分发前拦截本帧 ──
         # 无 USER handler 时直接返回 (False, params)，路径与未接入扩展一致。
+        # request_context.headers 随帧透传：认证门禁只判断 authorization 是否存在，
+        # token 校验由 USER 扩展包负责。
         from jiuwenswarm.gateway.extensions_v2 import intercept_gateway_frame
 
-        _visited, params = await intercept_gateway_frame(ws, req_id, method, params)
+        _request_context = data.get("request_context")
+        _headers = _request_context.get("headers") if isinstance(_request_context, dict) else None
+        _visited, params = await intercept_gateway_frame(
+            ws, req_id, method, params, _headers if isinstance(_headers, dict) else None
+        )
         if _visited:
             return
 

@@ -7,8 +7,10 @@ together with their CORE handler, a second adds the platform BUILTIN handlers
 that observe existing event types. A host calls both before the runtime
 publishes packages, so a package always meets a fully registered bus.
 
-The ``http`` namespace is added here because outbound requests carry no WebUI
-state.
+The WebUI family (``ui.render``) is registered by
+:class:`GatewayWebUIRuntime`, exactly like AgentServer delegates its ``ui.*``
+events to ``WebUIRuntime``. The ``http`` namespace is added here because
+outbound requests carry no WebUI state.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ if TYPE_CHECKING:
 def register_event_types(bus: ExtensionEventBus, runtime: GatewayRuntime) -> None:
     """Register event types and their CORE handlers."""
 
-    del runtime
+    runtime.webui.register_event_types(bus)
     register_gateway_request_events(bus, build_request_core_handler())
 
 
@@ -46,6 +48,7 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
             HandlerLevel.BUILTIN,
         ),
     ]
+    handler_ids.extend(runtime.webui.register_handlers(bus))
     handler_ids.append(
         bus.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
@@ -57,9 +60,12 @@ def register_handlers(bus: ExtensionEventBus, runtime: GatewayRuntime) -> list[s
     handler_ids.append(
         bus.register_event_handler(
             EVENT_GATEWAY_REQUEST,
-            build_auth_gate_handler(runtime.store, enforce=lambda: runtime.has_auth_provider),
+            build_auth_gate_handler(
+                policy=runtime.config.auth,
+                enforce=lambda: runtime.has_auth_provider,
+            ),
             {},
             HandlerLevel.BUILTIN,
-        ),
+        )
     )
     return handler_ids

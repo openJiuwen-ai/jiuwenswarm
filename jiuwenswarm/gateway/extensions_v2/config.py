@@ -25,6 +25,19 @@ MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
+class AuthPolicy:
+    """Pre-dispatch authentication policy enforced by the BUILTIN gate.
+
+    ``enabled=False`` restores the unguarded Gateway. The gate never validates
+    credentials and never renders a view: it only requires an ``authorization``
+    header on every frame and lets a USER handler decide whether the credential
+    is valid and what the browser should show.
+    """
+
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class HttpPolicy:
     """Outbound request policy used by ``ops.http.fetch``."""
 
@@ -84,6 +97,7 @@ class GatewayExtensionConfig:
     enabled: bool = True
     install_dir: Path = Path(DEFAULT_INSTALL_DIR)
     http: HttpPolicy = HttpPolicy()
+    auth: AuthPolicy = AuthPolicy()
 
 
 def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExtensionConfig:
@@ -103,7 +117,14 @@ def load_gateway_config(config: Mapping[str, Any] | None = None) -> GatewayExten
         enabled=enabled if isinstance(enabled, bool) else True,
         install_dir=_resolve_dir(install_dir),
         http=_read_http_policy(gateway.get("http")),
+        auth=_read_auth_policy(gateway.get("auth")),
     )
+
+
+def _read_auth_policy(raw: Any) -> AuthPolicy:
+    policy = raw if isinstance(raw, Mapping) else {}
+    enabled = policy.get("enabled")
+    return AuthPolicy(enabled=enabled if isinstance(enabled, bool) else True)
 
 
 def _read_http_policy(raw: Any) -> HttpPolicy:
