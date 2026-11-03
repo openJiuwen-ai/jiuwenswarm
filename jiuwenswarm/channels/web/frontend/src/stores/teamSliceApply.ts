@@ -107,6 +107,10 @@ export function applyTeamSnapshotToSession(
   // 例外是镜像出来的 swarmflow worker（带 workflow_run_id）：它们只存在于前端、
   // 不进 team.db 名册，快照缺席不代表已被移除，原样保留（规则同
   // reconcileSnapshotRoster）；同一 member_id 两边都有时以快照为准，离队清理不丢。
+  // 保留无需按 teamId 过滤：函数入口已将 sessionId 重定向为 conversationKey
+  // （owner → 裸 sessionId，专家 team → sessionId##teamId），且镜像 worker 事件的
+  // team_id 是 workflow 名、不会被 expertTeamId 认领——镜像 worker 只存在于 owner
+  // 主投影，各专家投影互不相通，切换 Team 不会读到上一个 Team 的镜像成员。
   const currentStore = useSessionStore.getState();
   const snapshotMemberIds = new Set(members.map((member) => member.member_id));
   const mirroredMembers = (currentStore.getRuntime(sessionId)?.teamMembers ?? []).filter(

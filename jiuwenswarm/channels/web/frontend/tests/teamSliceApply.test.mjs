@@ -158,3 +158,52 @@ test('member mapping passes through workflow_run_id / agent_template / display_n
   assert.equal(member.agent_template, 'research-specialist');
   assert.equal(member.display_name, '研究专家');
 });
+
+/**
+ * Mirrored workers never leak across teams. The projection key is redirected
+ * per team at the function entry (owner -> bare sessionId, expert team ->
+ * sessionId##teamId), and mirrored workers only ever land in the owner
+ * projection (their event team_id is the workflow name, which expertTeamId
+ * never claims). Applying a snapshot for team Y therefore reads team Y's own
+ * projection only — team X's mirrored workers are neither read nor carried
+ * over, and switching back to X finds them untouched.
+ */
+test('applying an expert-team snapshot leaves the owner projection untouched', () => {
+  seedOwnerTeam();
+  // The owner projection holds real members plus mirrored workers.
+  useSessionStore.getState().setTeamMembers(SESSION_ID, [
+    mirroredWorker('a'),
+    { id: 'm-real', member_id: 'researcher', status: 'ready', timestamp: 1 },
+  ]);
+
+  // Seed an expert team on the selector so its snapshot writes its own key.
+  const selector = useTeamSelectorStore.getState();
+  useTeamSelectorStore.setState({
+    runtimes: {
+      [SESSION_ID]: {
+        ...selector.runtimes[SESSION_ID],
+        teams: [
+          ...selector.runtimes[SESSION_ID].teams,
+          { team_id: 'expert-team', team_name: 'expert-team', is_owner: false },
+        ],
+        selectedTeamId: 'expert-team',
+      },
+    },
+  });
+
+  applyTeamSnapshotToSession(SESSION_ID, 'expert-team', {
+    members: [{ member_id: 'expert-lead', status: 'ready' }],
+    tasks: [],
+  });
+
+  // The owner projection (bare sessionId) still holds its mirrored workers.
+  const ownerMembers = useSessionStore.getState().runtimes[SESSION_ID].teamMembers;
+  assert.deepEqual(
+    ownerMembers.map((m) => m.member_id).sort(),
+    ['researcher', 'wf_a'].sort()
+  );
+  // The expert projection holds exactly the expert roster.
+  const expertMembers = useSessionStore
+    .getState().runtimes[`${SESSION_ID}::expert-team`].teamMembers;
+  assert.deepEqual(expertMembers.map((m) => m.member_id), ['expert-lead']);
+});

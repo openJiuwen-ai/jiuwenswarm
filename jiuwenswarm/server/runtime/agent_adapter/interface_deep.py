@@ -17019,11 +17019,14 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.agents.harness.team import get_team_manager
         from openjiuwen.agent_teams.constants import USER_PSEUDO_MEMBER_NAME
         from openjiuwen.agent_teams.interaction.payload import HumanAgentMessage
-        from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
 
         from openjiuwen.agent_teams.schema.events import format_swarmflow_human_reply_target
 
         if skip:
+            # Sentinel lives in agent-core alongside the human-turn skip logic
+            # this reply feeds; imported here (skip-only path) so a plain
+            # answer never touches this symbol.
+            from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
             answer = HUMAN_REPLY_SKIP
 
         target = format_swarmflow_human_reply_target(corr, run_id)
