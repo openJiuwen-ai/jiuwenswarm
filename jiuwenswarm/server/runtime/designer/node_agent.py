@@ -28,6 +28,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_role,
 )
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.server.runtime.designer.ffmpeg_runner import run_off_loop
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_prompt,
@@ -1376,7 +1377,7 @@ class DesignerGraphToolkit:
             logger.debug("call_video_model wan-prompt stamp failed", exc_info=True)
         try:
             frame_out = path.with_name(f"{path.stem}_lastframe.jpg")
-            extracted = extract_last_frame(path, dest=frame_out)
+            extracted = await run_off_loop(extract_last_frame, path, frame_out)
             if extracted is not None:
                 stamp_last_frame_onto_next_clips(
                     graph,
@@ -1408,11 +1409,12 @@ class DesignerGraphToolkit:
                 compose_required_predecessor_ids,
             )
             from jiuwenswarm.server.runtime.designer.handlers.compose import (
-                compose_predecessor_media_ready,
+                compose_predecessors_missing_media,
             )
 
             states = (self.ctx.run or {}).get("node_states") or {}
             waiting: list[str] = []
+            completed: list[str] = []
             required = compose_required_predecessor_ids(
                 self.ctx.graph if isinstance(self.ctx.graph, dict) else {}
             )
@@ -1428,12 +1430,14 @@ class DesignerGraphToolkit:
                 if status not in {"completed", "complete", "done", "success"}:
                     waiting.append(f"{nid}:{status or 'pending'}")
                     continue
-                if not compose_predecessor_media_ready(
-                    self.ctx.graph if isinstance(self.ctx.graph, dict) else {},
-                    self.ctx.run if isinstance(self.ctx.run, dict) else {},
-                    nid,
-                ):
-                    waiting.append(f"{nid}:media_missing")
+                completed.append(nid)
+            missing = await run_off_loop(
+                compose_predecessors_missing_media,
+                deepcopy(self.ctx.graph if isinstance(self.ctx.graph, dict) else {}),
+                deepcopy(self.ctx.run if isinstance(self.ctx.run, dict) else {}),
+                completed,
+            )
+            waiting.extend(f"{nid}:media_missing" for nid in missing)
             if waiting:
                 return (
                     "ffmpeg_compose blocked: waiting for clips/audio "
