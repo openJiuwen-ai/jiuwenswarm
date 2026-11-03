@@ -8,11 +8,14 @@ import os
 import re
 import time
 from typing import Any, Callable
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import httpx
 
+from jiuwenswarm.common import asr_client
+from jiuwenswarm.common.asr_client import AUDIO_SUFFIXES, AsrClient, decrypt_api_key
 from jiuwenswarm.extensions.video_duplex.backend import joyai_provider
+from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure, safe_error_detail
 
 
 MAX_AUDIO_CHARS = 2_000_000
@@ -52,13 +55,26 @@ def tts_model_config() -> tuple[str, str, str, str]:
 
 def asr_model_config() -> tuple[str, str, str]:
     """Read the normalized ASR endpoint, with legacy ASR_* fallback."""
+    # VOICE_API_KEY is stored in plain text; the config panel encrypts ASR_API_KEY.
+    api_key = (os.environ.get("VOICE_API_KEY") or "").strip() or decrypt_api_key(
+        (os.environ.get("ASR_API_KEY") or "").strip()
+    )
     return (
         (os.environ.get("VOICE_ASR_ENDPOINT") or os.environ.get("ASR_API_BASE") or "")
         .strip()
         .rstrip("/"),
-        (os.environ.get("VOICE_API_KEY") or os.environ.get("ASR_API_KEY") or "").strip(),
+        api_key,
         (os.environ.get("VOICE_ASR_MODEL") or os.environ.get("ASR_MODEL_NAME") or "").strip(),
     )
+
+
+def asr_transcription_mode() -> str:
+    return (os.environ.get("VOICE_ASR_MODE") or os.environ.get("ASR_API_MODE") or "").strip()
+
+
+def resolve_asr_endpoint(endpoint: str, model: str) -> tuple[str, str]:
+    """Resolve a full ASR endpoint to its request kind and SDK base URL."""
+    return asr_client.resolve_asr_endpoint(endpoint, model, asr_transcription_mode())
 
 
 def clean_model_text(text: str) -> str:
@@ -69,40 +85,6 @@ def is_ignorable_asr_filler(transcript: str) -> bool:
     """Return true only when ASR produced punctuation and filler sounds."""
     normalized = re.sub(r"[\W_]+", "", str(transcript or "").lower())
     return bool(normalized and _ASR_FILLER_ONLY.fullmatch(normalized))
-
-
-def _asr_uses_transcription_endpoint(model: str) -> bool:
-    mode = (
-        os.environ.get("VOICE_ASR_MODE") or os.environ.get("ASR_API_MODE") or ""
-    ).strip().casefold()
-    if mode in {"transcription", "transcriptions", "audio"}:
-        return True
-    if mode in {"chat", "chat_completion", "chat_completions"}:
-        return False
-    normalized = model.casefold()
-    return any(name in normalized for name in ("sensevoice", "whisper", "telespeechasr"))
-
-
-def _openai_endpoint_base(endpoint: str, route: str) -> str:
-    parsed = urlsplit(endpoint)
-    path = parsed.path.rstrip("/")
-    if not path.casefold().endswith(route.casefold()):
-        return endpoint.rstrip("/")
-    base_path = path[: -len(route)].rstrip("/")
-    return urlunsplit((parsed.scheme, parsed.netloc, base_path, "", ""))
-
-
-def resolve_asr_endpoint(endpoint: str, model: str) -> tuple[str, str]:
-    """Resolve a full ASR endpoint to its request kind and SDK base URL."""
-    path = urlsplit(endpoint).path.rstrip("/").casefold()
-    transcription_route = "/audio/transcriptions"
-    chat_route = "/chat/completions"
-    if path.endswith(transcription_route):
-        return "transcription", _openai_endpoint_base(endpoint, transcription_route)
-    if path.endswith(chat_route):
-        return "chat", _openai_endpoint_base(endpoint, chat_route)
-    kind = "transcription" if _asr_uses_transcription_endpoint(model) else "chat"
-    return kind, endpoint.rstrip("/")
 
 
 def resolve_tts_endpoint(endpoint: str) -> str:
@@ -118,13 +100,7 @@ def _decode_audio_data_url(data_url: str, index: int) -> tuple[str, bytes, str]:
     if not separator or not is_allowed_audio_data_url(data_url):
         raise ValueError("audio data URL is invalid")
     mime_type = header[5:].partition(";")[0].casefold()
-    suffix = {
-        "audio/mpeg": ".mp3",
-        "audio/mp4": ".m4a",
-        "audio/ogg": ".ogg",
-        "audio/webm": ".webm",
-        "audio/wav": ".wav",
-    }.get(mime_type, ".audio")
+    suffix = AUDIO_SUFFIXES.get(mime_type, ".audio")
     try:
         audio = base64.b64decode(encoded, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
@@ -149,45 +125,21 @@ async def transcribe_audio(
         ]
         return "。".join(text for text in transcripts if text)
 
-    from openai import AsyncOpenAI
-
     endpoint, api_key, model = asr_model_config()
     if not audio_inputs or not all((endpoint, api_key, model)):
         return ""
-    endpoint_kind, api_base = resolve_asr_endpoint(endpoint, model)
-    client = AsyncOpenAI(api_key=api_key, base_url=api_base, timeout=45.0)
-    try:
-        if endpoint_kind == "transcription":
-            transcripts: list[str] = []
-            for index, (data_url, _) in enumerate(audio_inputs, start=1):
-                filename, audio, mime_type = _decode_audio_data_url(data_url, index)
-                response = await client.audio.transcriptions.create(
-                    model=model,
-                    file=(filename, audio, mime_type),
-                )
-                text = response if isinstance(response, str) else getattr(response, "text", "")
-                cleaned = clean_model_text(str(text or ""))
-                if cleaned:
-                    transcripts.append(cleaned)
-            return "。".join(transcripts)
-
-        content = [
-            {"type": "audio_url", "audio_url": {"url": data_url}}
-            for data_url, _ in audio_inputs
-        ]
-        content.append({
-            "type": "text",
-            "text": "只转写清晰可辨的用户中文，不要解释；静音、噪声或听不清时返回空字符串，不得补写。",
-        })
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=160,
-            temperature=0,
-        )
-        return clean_model_text(response.choices[0].message.content or "")
-    finally:
-        await client.close()
+    # 来源: 沿用原 AsyncOpenAI(timeout=45.0) 与 openai SDK 默认 max_retries=2
+    client = AsrClient(
+        endpoint, api_key, model, timeout=45.0, max_retries=2,
+        transcription_mode=asr_transcription_mode(),
+    )
+    transcripts: list[str] = []
+    for index, (data_url, _) in enumerate(audio_inputs, start=1):
+        filename, audio, mime_type = _decode_audio_data_url(data_url, index)
+        cleaned = clean_model_text(await client.transcribe(audio, mime_type, filename=filename))
+        if cleaned:
+            transcripts.append(cleaned)
+    return "。".join(transcripts)
 
 
 async def synthesize_speech(text: str, *, use_joyai_voice: bool) -> tuple[bytes, str, str]:
@@ -210,9 +162,28 @@ async def synthesize_speech(text: str, *, use_joyai_voice: bool) -> tuple[bytes,
             resolve_tts_endpoint(endpoint), headers=headers, json=payload
         )
     if response.status_code >= 400:
-        raise RuntimeError(f"TTS 请求失败 ({response.status_code})")
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"message": response.text[:1500]}
+        error = body.get("error", body) if isinstance(body, dict) else {}
+        if isinstance(error, dict):
+            detail = "; ".join(f"{key}={error[key]}" for key in ("code", "type", "message", "detail") if error.get(key))
+        else:
+            detail = str(error)
+        headers = getattr(response, "headers", {})
+        provider_request_id = headers.get("x-request-id") or headers.get("request-id") or (
+            body.get("request_id") if isinstance(body, dict) else ""
+        )
+        diagnostic = (
+            f"TTS 请求失败 (HTTP {response.status_code}); model={model}; voice={voice or '(未配置)'}; "
+            f"provider_request_id={provider_request_id or '(未提供)'}; {detail or '服务未提供具体原因'}"
+        )
+        if api_key:
+            diagnostic = diagnostic.replace(api_key, "******")
+        raise RuntimeError(safe_error_detail(diagnostic))
     if not response.content:
-        raise RuntimeError("TTS 没有返回音频")
+        raise RuntimeError(f"TTS 没有返回音频 (HTTP {response.status_code}); model={model}; voice={voice or '(未配置)'}")
     return response.content, "audio/mpeg", model
 
 
@@ -257,17 +228,19 @@ def create_voice_handlers(
                 text, use_joyai_voice=use_joyai_voice()
             )
         except Exception as exc:  # noqa: BLE001
+            error = duplex_failure(exc, stage="TTS 合成", request_id=req_id)
             await asyncio.to_thread(log_event, {
                 **request_log,
                 "stage": "tts_failed",
                 "latency_ms": round((time.perf_counter() - started_at) * 1_000, 1),
-                "error": str(exc).strip() or "TTS failed",
+                "error": error,
+                "error_type": type(exc).__name__,
             })
             await channel.send_response(
                 ws,
                 req_id,
                 ok=False,
-                error=str(exc).strip() or "TTS failed",
+                error=error,
                 code="TTS_ERROR",
             )
             return
@@ -362,7 +335,7 @@ def create_voice_handlers(
             })
             await channel.send_event(ws, "video.tts.cancelled", {"stream_id": stream_id})
         except Exception as exc:  # noqa: BLE001
-            error = str(exc).strip() or "TTS stream failed"
+            error = duplex_failure(exc, stage="TTS 流式合成", request_id=request_id) + f" [stream_id={stream_id}, chunks={sequence}]"
             await asyncio.to_thread(log_event, {
                 "stage": "tts_stream_failed",
                 "request_id": request_id,
@@ -372,10 +345,12 @@ def create_voice_handlers(
                 "latency_ms": round((time.perf_counter() - started_at) * 1_000, 1),
                 "first_chunk_ms": first_chunk_ms,
                 "error": error,
+                "error_type": type(exc).__name__,
             })
             await channel.send_event(ws, "video.tts.error", {
                 "stream_id": stream_id,
                 "error": error,
+                "error_type": type(exc).__name__,
             })
         finally:
             current = asyncio.current_task()
@@ -495,7 +470,7 @@ def create_voice_handlers(
                 log_event=log_asr,
             )
         except Exception as exc:  # noqa: BLE001
-            error = str(exc) or "ASR failed"
+            error = duplex_failure(exc, stage="ASR 语音识别", request_id=req_id)
             await asyncio.to_thread(log_asr, {
                 **request_log,
                 "outcome": "failed",
@@ -503,6 +478,7 @@ def create_voice_handlers(
                 "has_transcript": False,
                 "latency_ms": round((time.perf_counter() - started_at) * 1000),
                 "error": error,
+                "error_type": type(exc).__name__,
             })
             await channel.send_response(
                 ws, req_id, ok=False, error=error, code="ASR_ERROR"

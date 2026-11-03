@@ -113,6 +113,9 @@ _ensure_req_method("MCP_APP_CALL_TOOL", "mcp_app.call_tool")
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")
 
+_ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
+_ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
+
 __all__ = [
     "PROMPT_SUGGESTION_READY_EVENT",
     "SESSION_REQUEST_COMPLETED_EVENT",
