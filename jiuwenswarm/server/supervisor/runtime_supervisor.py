@@ -741,7 +741,7 @@ class RuntimeSupervisor:
             else:
                 from jiuwenswarm.common.utils import get_logs_dir
 
-                directory = get_logs_dir() / "runtime_diagnostics"
+                directory = get_logs_dir() / "agent" / "runtime_diagnostics"
             self._last_dump_path = dump_runtime_state(directory, snapshot)
             self._observed_loop_lag = 0.0
             logger.warning(

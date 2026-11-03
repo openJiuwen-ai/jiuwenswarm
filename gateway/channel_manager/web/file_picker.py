@@ -155,9 +155,9 @@ def _last_dir_state_path() -> Path:
     try:
         from gateway.common.paths import get_user_workspace_dir
 
-        base = get_user_workspace_dir()
+        base = get_user_workspace_dir() / "infra"
     except Exception:  # noqa: BLE001
-        base = Path.home() / ".jiuwenswarm"
+        base = Path.home() / ".jiuwenswarm" / "infra"
     return base / _LAST_DIR_FILENAME
 
 

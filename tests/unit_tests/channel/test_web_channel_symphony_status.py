@@ -33,7 +33,7 @@ async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, mo
 
     await channel._persist_frontend_context_usage(frame)
 
-    records = (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8").splitlines()
+    records = (tmp_path / "agent" / "context_usage.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(record) for record in records] == [frame]
 
 
@@ -54,9 +54,9 @@ def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
     WebChannel._write_frontend_context_usage("first")
     WebChannel._write_frontend_context_usage("second")
 
-    assert (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8") == "second\n"
-    assert (tmp_path / "context_usage.jsonl.1").read_text(encoding="utf-8") == "first\n"
-    assert not (tmp_path / "context_usage.jsonl.2").exists()
+    assert (tmp_path / "agent" / "context_usage.jsonl").read_text(encoding="utf-8") == "second\n"
+    assert (tmp_path / "agent" / "context_usage.jsonl.1").read_text(encoding="utf-8") == "first\n"
+    assert not (tmp_path / "agent" / "context_usage.jsonl.2").exists()
 
 
 class _FakeClient:

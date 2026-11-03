@@ -2,7 +2,7 @@
 
 """Gateway 日志初始化（``gateway.common.paths.setup_logger`` 的 Gateway 版本）。
 
-输出目录与母仓一致：``~/.jiuwenswarm/agent/.logs/``；``gateway.log`` 可通过
+输出目录与母仓一致：``~/.jiuwenswarm/infra/logs/agent/``；``gateway.log`` 可通过
 ``AGENTOS_GATEWAY_LOG_DIR`` 独立存放。级别取自共享 ``config.yaml`` 的
 ``logging`` 段。handler / 级别 / 过滤器的定义与母仓逐行一致，仅根 logger
 从 ``jiuwenswarm`` 换成 ``gateway``。已知偏差：根级别聚合把 ``console``
@@ -319,7 +319,7 @@ def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
 
     install_runtime_log_filter()
     _reconfigure_stdio_utf8()
-    logs_root = get_logs_dir()
+    logs_root = get_logs_dir() / "agent"
     logs_root.mkdir(parents=True, exist_ok=True)
 
     levels = _resolve_logging_levels(log_level)

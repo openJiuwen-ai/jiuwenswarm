@@ -59,14 +59,14 @@ def _create_persistent() -> PersistentStore:
     from gateway.common.utils import (
         get_checkpoint_dir,
         get_config_file,
-        get_user_workspace_dir,
+        get_domain_data_dir,
     )
 
     from gateway.storage.backends.file_persistent import FilePersistentBackend
 
     # 个人版定时任务不走这里的文件表，仍由 runtime 的文件或 etcd 存储。
     # 这里不传 cron 文件路径，注册表里的 cron_job 只留数据库布局，个人版不会去读它。
-    persistent_root = get_user_workspace_dir() / "gateway" / "persistent"
+    persistent_root = get_domain_data_dir() / "gateway" / "persistent"
     config_file = get_config_file()
     session_map_file = get_checkpoint_dir() / "session_map.json"
     return FilePersistentBackend(

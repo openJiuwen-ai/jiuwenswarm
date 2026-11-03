@@ -8,9 +8,11 @@ import json
 import os
 import re
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
-import uuid
+
+from jiuwenswarm.common.utils import get_logs_dir
 
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
@@ -79,24 +81,24 @@ def _append_jsonl(path: Path, event: dict[str, Any]) -> None:
 
 
 def _append_realtime_telemetry(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "realtime-interrupt.jsonl"
+    path = get_logs_dir() / "video" / "realtime-interrupt.jsonl"
     _append_jsonl(path, event)
 
 
 def _append_realtime_session_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "realtime-session.jsonl"
+    path = get_logs_dir() / "video" / "realtime-session.jsonl"
     event = {"server_time": datetime.now(timezone.utc).isoformat(), **event}
     _append_jsonl(path, event)
 
 
 def _append_qwen_realtime_error_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "qwen-realtime-errors.jsonl"
+    path = get_logs_dir() / "video" / "qwen-realtime-errors.jsonl"
     event = {"server_time": datetime.now(timezone.utc).isoformat(), **event}
     _append_jsonl(path, event)
 
 
 def _append_video_event_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "video-live-events.jsonl"
+    path = get_logs_dir() / "video" / "video-live-events.jsonl"
     event = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         **event,
@@ -105,7 +107,7 @@ def _append_video_event_log(event: dict[str, Any]) -> None:
 
 
 def _append_asr_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "asr-results.jsonl"
+    path = get_logs_dir() / "video" / "asr-results.jsonl"
     record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         **event,
@@ -116,7 +118,7 @@ def _append_asr_log(event: dict[str, Any]) -> None:
 def _append_joyai_log(event: dict[str, Any]) -> None:
     event = dict(event)
     model_raw_content = event.pop("model_raw_content", None)
-    path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
+    path = get_logs_dir() / "video" / "joyai-video.jsonl"
     record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         **event,
@@ -132,7 +134,7 @@ def _append_joyai_log(event: dict[str, Any]) -> None:
     )
     if not raw_content.strip():
         return
-    raw_path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
+    raw_path = get_logs_dir() / "video" / "joyai-raw-content.jsonl"
     raw_record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         "request_id": event.get("request_id", ""),

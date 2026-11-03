@@ -139,7 +139,7 @@ def dump_async_state(service_name: str) -> Path | None:
     """
     log = _service_logger(service_name)
     try:
-        dump_dir = get_logs_dir() / "async_dump"
+        dump_dir = get_logs_dir() / "agent" / "async_dump"
         dump_dir.mkdir(parents=True, exist_ok=True)
         now = time.time()
         millis = int(now * 1000) % 1000
@@ -213,7 +213,7 @@ def _enable_faulthandler(service_name: str) -> None:
     if previous is not None:
         _release_crash_fd(previous)
     try:
-        path = get_logs_dir() / f"faulthandler-{service_name}.log"
+        path = get_logs_dir() / "agent" / f"faulthandler-{service_name}.log"
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     except OSError:
         faulthandler.enable()

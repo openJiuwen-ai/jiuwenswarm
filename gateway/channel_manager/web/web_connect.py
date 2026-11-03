@@ -2221,7 +2221,7 @@ class WebChannel(BaseWsChannel):
     @staticmethod
     def _write_frontend_context_usage(serialized: str) -> None:
         """Append one serialized frontend usage frame from a worker thread."""
-        output_path = get_logs_dir() / _CONTEXT_USAGE_JSONL_FILENAME
+        output_path = get_logs_dir() / "agent" / _CONTEXT_USAGE_JSONL_FILENAME
         output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         serialized_line = f"{serialized}\n"
         serialized_size = len(serialized_line.encode("utf-8"))

@@ -53,8 +53,8 @@ PURPOSE_SKILL_CONTENT_IMAGE = "skill_content_image"
 def _get_secret_file_path() -> Path:
     workspace = os.getenv("JIUWENSWARM_WORKSPACE")
     if workspace:
-        return Path(workspace) / "config" / _SECRET_FILE_NAME
-    return Path.home() / ".jiuwenswarm" / "config" / _SECRET_FILE_NAME
+        return Path(workspace) / "infra" / "config" / _SECRET_FILE_NAME
+    return Path.home() / ".jiuwenswarm" / "infra" / "config" / _SECRET_FILE_NAME
 
 
 def _load_or_create_secret() -> str:

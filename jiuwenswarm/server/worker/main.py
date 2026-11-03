@@ -10,6 +10,11 @@ import logging
 from os import _exit as exit_process
 import signal
 
+from jiuwenswarm.common.utils import (
+    configure_openjiuwen_core_logging,
+    configure_openjiuwen_runtime_logging,
+)
+
 
 def _activate_managed_external_cli_paths() -> None:
     """Expose managed external CLI SDK paths before runtime modules load.
@@ -34,6 +39,11 @@ def _activate_managed_external_cli_paths() -> None:
 
 
 def main() -> None:
+    # 日志引导：须先于任何可能创建 openjiwen logger 的导入执行。
+    # 置于 main() 而非模块级：front/supervisor 进程也会 import 本模块，
+    # 模块级调用会在导入期加载 openjiuwen，破坏 front 侧导入隔离契约。
+    configure_openjiuwen_runtime_logging()
+    configure_openjiuwen_core_logging()
     logging.basicConfig(level=logging.INFO)
     from jiuwenswarm.common.background_logging import (
         enable_background_logging,

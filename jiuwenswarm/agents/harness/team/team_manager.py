@@ -44,7 +44,7 @@ from gateway.common.cron_team_completion import (
 from gateway.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.utils import get_domain_data_dir
 
 configure_agent_teams_home()
 
@@ -188,7 +188,7 @@ def sync_team_observability() -> None:
         return
 
     try:
-        traces_dir = str(cfg.get("traces_dir") or get_user_workspace_dir() / ".trace")
+        traces_dir = str(cfg.get("traces_dir") or get_domain_data_dir() / ".trace")
         obs_cfg = build_observability_config(
             cfg,
             service_name="jiuwenswarm",

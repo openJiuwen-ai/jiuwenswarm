@@ -13,6 +13,8 @@ import time
 import uuid
 from pathlib import Path
 
+from jiuwenswarm.common.utils import get_infra_data_dir
+
 from jiuwenswarm.server.ipc.client import try_connect
 from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 
@@ -43,14 +45,13 @@ def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
-    from jiuwenswarm.common.utils import get_user_workspace_dir
     from jiuwenswarm.server.supervisor.identity import data_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
     scope = data_scope()[:16]
     instance = _runtime_instance_token()
     sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
-    path = get_user_workspace_dir() / "run" / sock_name
+    path = get_infra_data_dir() / "run" / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
         directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"

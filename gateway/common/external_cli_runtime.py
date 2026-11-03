@@ -754,9 +754,15 @@ def _declares_provider_entry_point(site_packages: Path, name: str) -> bool:
 
 
 def _manifest_path() -> Path:
-    return (
-        Path(__file__).resolve().parents[1] / "resources" / "external_cli_runtime.json"
-    )
+    # manifest 固定在 jiuwenswarm 包 resources/ 下；gateway 与 jiuwenswarm
+    # 是同仓不同顶层的两个包（wheel 部署亦分属两个顶层目录），不能以本包
+    # parents[1] 定位，经 gateway.common.paths._find_package_root() 解析。
+    from gateway.common.paths import _find_package_root
+
+    package_root = _find_package_root()
+    if package_root is not None:
+        return package_root / "resources" / "external_cli_runtime.json"
+    return Path(__file__).resolve().parents[1] / "resources" / "external_cli_runtime.json"
 
 
 def _load_manifest() -> dict[str, Any]:

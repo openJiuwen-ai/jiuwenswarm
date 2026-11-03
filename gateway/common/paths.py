@@ -71,11 +71,30 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
-# --- 包内资源与配置目录 ---
+# --- 数据根分区（domain/infra 两区，与 jiuwenswarm.common.utils 同契约）---
+# gateway 包自包含：分区根由本模块手工推导（同 get_user_workspace_dir 的
+# env/home 语义），不 import jiuwenswarm。
+_DOMAIN_DIR_NAME = "domain"
+_INFRA_DIR_NAME = "infra"
 _config_dir: Path | None = None
 _workspace_dir: Path | None = None
 _root_dir: Path | None = None
 _initialized: bool = False
+
+
+def get_domain_data_dir() -> Path:
+    """获取业务区根：会话/工作区/租户/运行态快照等用户产生、需留存的数据
+    一律经此派生；企业版挂共享卷（跨 Pod 存活），个人版为普通子目录。
+    """
+    return get_user_workspace_dir() / _DOMAIN_DIR_NAME
+
+
+def get_infra_data_dir() -> Path:
+    """获取系统区根：IPC socket/锁、业务 config 的程序副本、本机安装物、
+    缓存、日志等程序自维护数据一律经此派生；企业版挂私有卷（随 Pod 生命
+    周期），个人版为普通子目录。
+    """
+    return get_user_workspace_dir() / _INFRA_DIR_NAME
 
 
 def _find_package_root() -> Path | None:
@@ -101,8 +120,8 @@ def _resolve_paths() -> None:
         return
 
     workspace_dir = get_user_workspace_dir()
-    user_config_dir = workspace_dir / "config"
-    user_workspace_dir = workspace_dir / "agent" / "workspace"
+    user_config_dir = get_infra_data_dir() / "config"
+    user_workspace_dir = get_domain_data_dir() / "agent" / "workspace"
     if user_config_dir.exists():
         # 已初始化的用户工作区优先，保证源码运行与安装包运行路径一致
         _root_dir = workspace_dir
@@ -159,7 +178,7 @@ def env_url(name: str, default: str) -> str:
 
 # --- agent 工作区子目录 ---
 def get_agent_root_dir() -> Path:
-    return get_user_workspace_dir() / "agent"
+    return get_domain_data_dir() / "agent"
 
 
 def get_agent_home_dir() -> Path:
@@ -197,7 +216,7 @@ def get_cron_jobs_path() -> Path:
 
 
 def get_xy_tmp_dir() -> Path:
-    xy_tmp_dir = get_user_workspace_dir() / "tmp" / "xiaoyi"
+    xy_tmp_dir = get_infra_data_dir() / "tmp" / "xiaoyi"
     xy_tmp_dir.mkdir(parents=True, exist_ok=True)
     return xy_tmp_dir
 
@@ -206,32 +225,41 @@ def get_xy_tmp_dir() -> Path:
 _legacy_migration_done: bool = False
 
 
+def _move_if_absent(old: Path, new: Path) -> None:
+    """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
+
+    并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
+    if not old.exists() or new.exists():
+        return
+    new.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(old), str(new))
+    except FileNotFoundError:
+        pass
+
+
 def _migrate_legacy_checkpoint_and_logs() -> None:
-    """一次性迁移 ``.checkpoint`` / ``.logs`` 到 ``agent/`` 下。"""
+    """数据根旧平铺路径一次性搬迁。
+
+    - ``.checkpoint``（业务态）→ ``domain/agent/``
+    - ``.logs``（系统日志）→ ``infra/logs/agent/``
+    """
     global _legacy_migration_done
     if _legacy_migration_done:
         return
     _legacy_migration_done = True
 
     workspace = get_user_workspace_dir()
-    agent_root = workspace / "agent"
-
-    for name in (".checkpoint", ".logs"):
-        legacy = workspace / name
-        new_path = agent_root / name
-        if legacy.exists() and not new_path.exists():
-            agent_root.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(legacy), str(new_path))
+    _move_if_absent(workspace / ".checkpoint", get_agent_root_dir() / ".checkpoint")
+    _move_if_absent(workspace / ".logs", get_logs_dir() / "agent")
 
 
 def get_checkpoint_dir() -> Path:
-    _migrate_legacy_checkpoint_and_logs()
     return get_agent_root_dir() / ".checkpoint"
 
 
 def get_logs_dir() -> Path:
-    _migrate_legacy_checkpoint_and_logs()
-    return get_agent_root_dir() / ".logs"
+    return get_infra_data_dir() / "logs"
 
 
 def get_gateway_log_dir() -> Optional[Path]:
@@ -352,7 +380,8 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
         cleanup_stale_openjiuwen_descs()
 
     workspace_dir = get_user_workspace_dir()
-    for path in (workspace_dir / "agent" / "workspace", workspace_dir / "agent" / "home"):
+    for path in (get_domain_data_dir() / "agent" / "workspace",
+                 get_domain_data_dir() / "agent" / "home"):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -385,3 +414,14 @@ __all__ = [
     "resolve_git_branch",
     "set_user_home",
 ]
+
+# 旧平铺 checkpoint/logs 迁移在导入期执行一次：先于本包任何目录创建
+# 行为（_resolve_paths 的 mkdir、prepare_runtime_workspace），保证迁移
+# 目标位不被抢占。失败仅降级告警：迁移幂等，下次启动重试。
+try:
+    _migrate_legacy_checkpoint_and_logs()
+except Exception:  # noqa: BLE001
+    logger.warning(
+        "legacy checkpoint/logs migration failed; retried on next start",
+        exc_info=True,
+    )

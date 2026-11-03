@@ -1024,7 +1024,11 @@ async def test_request_joyai_frame_without_instruction_sends_image_only(
 def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setattr(video_live.Path, "home", lambda: tmp_path)
+    from jiuwenswarm.common import utils as common_utils
+
+    # 隔离 utils 的路径缓存（get_infra_data_dir 经缓存解析，不走 Path.home）
+    monkeypatch.setattr(common_utils, "_workspace_base_dir", tmp_path / ".jiuwenswarm")
+    monkeypatch.setattr(common_utils, "_user_home", tmp_path)
 
     video_live._append_joyai_log({
         "request_id": "request-response",
@@ -1048,7 +1052,7 @@ def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
         "model_raw_content": "</silence>",
     })
 
-    log_path = tmp_path / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
+    log_path = tmp_path / ".jiuwenswarm" / "infra" / "logs" / "video" / "joyai-raw-content.jsonl"
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert records == [
         {
@@ -1063,7 +1067,7 @@ def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
             "adapter_content": "</response> 我来搜索。",
         }
     ]
-    main_log = tmp_path / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
+    main_log = tmp_path / ".jiuwenswarm" / "infra" / "logs" / "video" / "joyai-video.jsonl"
     main_records = [
         json.loads(line) for line in main_log.read_text(encoding="utf-8").splitlines()
     ]
