@@ -13,6 +13,7 @@ from typing import Any
 from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2 import bootstrap
+from jiuwenswarm.extensions_v2.session_compaction.service import SessionCompactionService
 from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_store_dir
 from jiuwenswarm.extensions_v2.event_types.session_start import SessionStartEventBus
 from jiuwenswarm.extensions_v2.management import ExtensionManager
@@ -31,6 +32,7 @@ class ExtensionAssembly:
     manager: ExtensionManager
     webui: WebUIRuntime
     transport: RenderTransport
+    compact: SessionCompactionService
 
 
 _ASSEMBLY: ExtensionAssembly | None = None
@@ -64,6 +66,7 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
                     bus,
                     assembly.webui,
                     file_service=getattr(server, "session_workspace_files", None),
+                    compact_service=assembly.compact,
                 ),
             )
         except Exception:  # noqa: BLE001 - extensions must not block chat startup
@@ -89,6 +92,10 @@ def get_webui_runtime() -> WebUIRuntime | None:
     return _ASSEMBLY.webui if _ASSEMBLY is not None else None
 
 
+def get_compaction_service() -> SessionCompactionService | None:
+    return _ASSEMBLY.compact if _ASSEMBLY is not None else None
+
+
 async def shutdown_extensions() -> None:
     """Release active views and package handlers without deleting install copies."""
 
@@ -97,6 +104,7 @@ async def shutdown_extensions() -> None:
         assembly = _ASSEMBLY
         if assembly is None:
             return
+        await assembly.compact.close()
         await assembly.manager.shutdown()
         await assembly.webui.shutdown()
         _ASSEMBLY = None
@@ -128,7 +136,11 @@ def _build_assembly(server: Any) -> ExtensionAssembly:
         catalog=catalog,
         workspace_locator=_workspace_locator(server),
     )
-    return ExtensionAssembly(bus=bus, manager=manager, webui=webui, transport=transport)
+    compact = SessionCompactionService(
+        bus, policy_epoch=lambda: tuple((record.package_id, id(record)) for record in manager.active_packages()),
+        invocation_guard=lambda ops: manager.registry.is_ready and manager.registry.runtime.is_active_invocation(ops),
+    )
+    return ExtensionAssembly(bus=bus, manager=manager, webui=webui, transport=transport, compact=compact)
 
 
 async def _activate_installed(manager: ExtensionManager) -> None:
