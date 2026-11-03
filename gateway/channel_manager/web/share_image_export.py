@@ -407,6 +407,7 @@ class _ShareImageJob:
     download_claimed_at: float | None = None
     download_attempt_id: str | None = None
     upload_in_progress: bool = False
+    access_scope: str = field(default="", repr=False)
 
 
 class ShareImageExportManager:
@@ -435,6 +436,7 @@ class ShareImageExportManager:
         render_auth: ShareImageRenderAuth | None = None,
         renderer: str = "server",
         browser_options: dict[str, Any] | None = None,
+        access_scope: str = "",
     ) -> dict[str, Any]:
         self._cleanup_expired()
         normalized_session_id = session_id.strip()
@@ -444,6 +446,8 @@ class ShareImageExportManager:
         with self._lock:
             active_job = self._get_active_job_locked(normalized_session_id)
             if active_job is not None:
+                if active_job.access_scope != access_scope:
+                    raise PermissionError("share_export_access_denied")
                 return {**self._status(active_job), "reused": True, "client_token": active_job.client_token}
 
         job_id = uuid.uuid4().hex
@@ -473,11 +477,14 @@ class ShareImageExportManager:
             snapshot_path=snapshot_path,
             result_path=result_path,
             renderer=renderer,
+            access_scope=access_scope,
         )
         with self._lock:
             active_job = self._get_active_job_locked(normalized_session_id)
             if active_job is not None:
                 shutil.rmtree(directory, ignore_errors=True)
+                if active_job.access_scope != access_scope:
+                    raise PermissionError("share_export_access_denied")
                 return {**self._status(active_job), "reused": True, "client_token": active_job.client_token}
             self._jobs[job_id] = job
             self._active_job_ids_by_session[normalized_session_id] = job_id
@@ -735,6 +742,13 @@ class ShareImageExportManager:
                 setattr(job, key, value)
             job.updated_at = time.time()
 
+    def can_access_job(self, job_id: str, access_scope: str) -> bool:
+        """Check an HTTP caller's opaque scope without exposing it in job status."""
+        job = self._get_job(job_id)
+        if job is None or not access_scope:
+            return False
+        return secrets.compare_digest(job.access_scope.encode(), access_scope.encode())
+
     def get_status(self, job_id: str, *, include_client_token: bool = False) -> dict[str, Any] | None:
         self._cleanup_expired()
         job = self._get_job(job_id)
@@ -856,6 +870,11 @@ def _run_cli() -> int:
     return 0
 
 
+def main() -> int:
+    """Run the public command-line entry point for share-image export."""
+    return _run_cli()
+
+
 _share_image_export_manager: "ShareImageExportManager | None" = None
 _share_image_export_manager_lock = threading.Lock()
 
@@ -875,4 +894,4 @@ def get_share_image_export_manager() -> "ShareImageExportManager":
 
 
 if __name__ == "__main__":
-    raise SystemExit(_run_cli())
+    raise SystemExit(main())

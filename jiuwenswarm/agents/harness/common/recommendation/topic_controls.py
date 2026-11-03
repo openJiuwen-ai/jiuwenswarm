@@ -287,7 +287,7 @@ def _unusable_reason(entry: dict[str, Any]) -> str | None:
 
 
 def _chosen_entry(config: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The entry chosen in settings, or None to follow the main model (also when the chosen one was removed)."""
+    """Return only the explicitly chosen entry, never an implicit chat model."""
     section = config.get("recommendation")
     model_id = str(section.get("model") or "") if isinstance(section, dict) else ""
     if model_id in ("", FOLLOW_MAIN_MODEL):
@@ -295,21 +295,13 @@ def _chosen_entry(config: dict[str, Any], entries: list[dict[str, Any]]) -> dict
     return next((entry for entry in entries if str(entry.get("model_id") or "") == model_id), None)
 
 
-def _main_model(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The model a new chat uses by default: the default entry of the first listed model name."""
-    if not entries:
-        return None
-    name = _model_name(entries[0])
-    return next((entry for entry in entries if _model_name(entry) == name and entry.get("is_default") is True),
-                entries[0])
-
-
 def recommendation_model_options(auth_session: str | None) -> dict[str, Any]:
     """The chat models the topic model can be chosen from, each with why it cannot be when it cannot."""
     config = get_config()
     entries = [entry for entry in get_available_models(config, auth_session) if _model_name(entry)]
-    chosen = _chosen_entry(config, entries) or _main_model(entries)
+    chosen = _chosen_entry(config, entries)
     return {
+        "configured_model": str((_chosen_entry(config, entries) or {}).get("model_id") or ""),
         "selected_model": str(chosen["model_id"]) if chosen is not None and chosen.get("model_id") else "",
         "model_options": [{"model_id": str(entry.get("model_id") or ""),
                            "name": str(entry.get("alias") or "") or _model_name(entry),
@@ -318,18 +310,64 @@ def recommendation_model_options(auth_session: str | None) -> dict[str, Any]:
 
 
 def save_recommendation_model(model: str) -> bool:
-    """Keep one configured model id. The composer selection is not a recommendation model."""
-    entries = [entry for entry in get_default_models(get_config()) if _model_name(entry)]
-    entry = next((entry for entry in entries if str(entry.get("model_id") or "") == model), None)
-    if entry is None or _unusable_reason(entry) is not None:
-        return False
+    """Keep a model id, or clear the binding and disable topics for an empty id."""
+    # Clearing a binding must not depend on the old model still being available or usable.
+    if model:
+        entries = [entry for entry in get_default_models(get_config()) if _model_name(entry)]
+        entry = next((entry for entry in entries if str(entry.get("model_id") or "") == model), None)
+        if entry is None or _unusable_reason(entry) is not None:
+            return False
 
     def mutate(config: dict[str, Any]) -> dict[str, Any]:
         section = config.get("recommendation")
         if not isinstance(section, dict):
             section = config["recommendation"] = {}
         section["model"] = model
+        if not model:
+            section.pop("model_config", None)
+            section["topic_enabled"] = False
         return config
+    update_config(mutate)
+    return True
+
+
+def recommendation_model_configuration(*, include_api_key: bool = False) -> dict[str, Any]:
+    """Return dedicated configuration, optionally including the key for editing."""
+    section = get_config().get("recommendation") or {}
+    stored = section.get("model_config") if isinstance(section, dict) else None
+    if not isinstance(stored, dict):
+        return {}
+    return {key: value for key, value in stored.items() if key != "api_key" or include_api_key} | {
+        "has_api_key": bool(stored.get("api_key")),
+    }
+
+
+def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
+    """Save an independent OpenAI-compatible connection, never a chat catalog entry."""
+    fields = ("model", "provider", "api_base", "api_key", "vendor_key", "plan", "endpoint_profile")
+    if any(key in values and not isinstance(values[key], str) for key in fields):
+        return False
+    clean = {key: str(values.get(key) or "").strip() for key in fields}
+    if clean["provider"] != "OpenAI" or not clean["model"] or len(clean["model"]) > 100:
+        return False
+    if not clean["api_base"].startswith(("http://", "https://")) or len(clean["api_base"]) > 512:
+        return False
+    section = get_config().get("recommendation") or {}
+    previous = (section.get("model_config") or {}) if isinstance(section, dict) else {}
+    if not clean["api_key"] and isinstance(previous, dict):
+        if all(clean[key] == previous.get(key) for key in ("api_base", "provider", "vendor_key", "plan")):
+            clean["api_key"] = str(previous.get("api_key") or "")
+    if not clean["api_key"] or len(clean["api_key"]) > 2048:
+        return False
+
+    def mutate(config: dict[str, Any]) -> dict[str, Any]:
+        target = config.get("recommendation")
+        if not isinstance(target, dict):
+            target = config["recommendation"] = {}
+        target["model_config"] = clean
+        target["model"] = ""
+        return config
+
     update_config(mutate)
     return True
 
@@ -339,16 +377,25 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
 
     The override applies only when ``ARK_API_KEY``, ``ARK_MODEL``, ``ARK_BASE_URL`` and
     ``ARK_CONTEXT_WINDOW_TOKENS`` are all set. Otherwise the choice is one configured
-    model id. An unset choice or a legacy ``follow_main`` value uses the first
-    configured model. Name, endpoint, key and window come from that entry. None when
+    model id. An unset choice or a legacy ``follow_main`` value has no model.
+    Name, endpoint, key and window come from the explicit entry. None when
     that model cannot be called this way.
     """
     override = ArkBackgroundConfig.from_environ(environ)
     if override is not None:
         return override
     config = get_config()
+    section = config.get("recommendation") or {}
+    dedicated = section.get("model_config") if isinstance(section, dict) else None
+    if isinstance(dedicated, dict):
+        if not all(dedicated.get(key) for key in ("api_key", "api_base", "model")):
+            return None
+        return ArkBackgroundConfig(
+            api_key=dedicated["api_key"], model=dedicated["model"], base_url=dedicated["api_base"],
+            context_window_tokens=131072,
+        )
     entries = [entry for entry in get_default_models(config) if _model_name(entry)]
-    entry = _chosen_entry(config, entries) or _main_model(entries)
+    entry = _chosen_entry(config, entries)
     if entry is None or _unusable_reason(entry) is not None:
         return None
     client = entry.get("model_client_config") or {}

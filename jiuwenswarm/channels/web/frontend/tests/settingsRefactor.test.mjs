@@ -271,11 +271,11 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the ten-module order and fails invalid registrations', () => {
+test('registry definition preserves module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*recommendationModule,\s*archivedTasksModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [
@@ -527,6 +527,21 @@ test('simple Settings definitions reject unknown sources and derive required i18
     () => validateSettingsI18n(definition, (key) => requiredKeys.has(key)),
     /Missing settings i18n key: settingsPanel\.fields\.chrome_path\.placeholder/,
   );
+});
+
+test('settings items can explicitly override a module source without bypassing field validation', () => {
+  const create = (item) => createSettingsPageDefinition({
+    id: 'mixed-source-settings', compositionMode: 'base',
+    accessPolicy: { evaluate: () => ({ level: 'editable' }) },
+    modules: [{ id: 'general', titleKey: 'settings.general', icon: () => null, source: 'locale',
+      sections: [{ id: 'general', items: [item] }],
+    }],
+  });
+  const item = { id: 'topics', component: 'switch', key: 'topic_recommendation_enabled', source: 'config' };
+  assert.equal(create(item).modules[0].sections[0].items[0].source, 'config');
+  assert.throws(() => create({ ...item, source: 'locale' }), /does not belong to source locale/);
+  assert.throws(() => create({ ...item, source: 'unknown' }), /unsupported settings source/);
+  assert.throws(() => create({ ...item, key: 'unregistered_field' }), /does not belong to source config/);
 });
 
 test('open-source Settings composition preserves the registered modules and editable policy', () => {
@@ -1987,7 +2002,8 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.doesNotMatch(app, /ConfigPanel|BrowserPanel|ChannelsPanel|ExtensionsHubPanel/);
   assert.match(settingsChannelsModule, /import \{ SettingsChannelsPanel \} from '\.\/SettingsChannelsPanel'/);
   assert.doesNotMatch(settingsChannelsModule, /components\/ChannelsPanel/);
-  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'models' \| 'agent'/);
+  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'general' \| 'models' \| 'agent'/);
+  assert.doesNotMatch(settingsNavigation, /'recommendation'/);
   assert.match(settingsNavigation, /SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module'/);
   assert.equal(existsSync(new URL('src/components/ConfigPanel/index.tsx', root)), false);
   assert.equal(existsSync(new URL('src/components/BrowserPanel/index.tsx', root)), false);
