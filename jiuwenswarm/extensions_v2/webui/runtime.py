@@ -160,10 +160,18 @@ class WebUIRuntime:
         self.registry.drop_connection(connection_id)
 
     async def drop_package(self, package_id: str) -> None:
-        """Remove all views of a package and notify the browser."""
+        """Clear package views, retaining undelivered clears for cleanup retry."""
 
-        for instance in self.registry.drop_package(package_id):
-            await self.transport.send_clear(clear_frame(instance, reason="package_unloaded"))
+        for instance in self.registry.snapshot():
+            if instance.target.package_id != package_id:
+                continue
+            async with self.registry.evict(instance) as current:
+                if not current:
+                    continue
+                delivered = await self.transport.send_clear(clear_frame(instance, reason="package_unloaded"))
+                if not delivered:
+                    raise RuntimeError(f"Could not clear package view: {instance.target.key}")
+                self.registry.drop_instance(instance.target)
 
     async def drop_session(self, session_id: str) -> None:
         """Remove all views of a session and notify the browser."""

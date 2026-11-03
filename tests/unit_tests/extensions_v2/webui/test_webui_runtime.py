@@ -132,6 +132,21 @@ async def test_uninstall_clears_views_of_the_package(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_package_cleanup_retains_failed_clear_for_retry(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    runtime, _manager = await _runtime(tmp_path, transport)
+    target = RenderTarget("s1", SLOT, PACKAGE, INSTANCE)
+    await runtime.render(UiRenderInput(target=target, root=RenderNode("Text", {"value": "hello"})))
+    transport.fail = True
+    with pytest.raises(RuntimeError, match="Could not clear package view"):
+        await runtime.drop_package(PACKAGE)
+    assert runtime.registry.contains(target)
+    transport.fail = False
+    await runtime.drop_package(PACKAGE)
+    assert not runtime.registry.contains(target)
+
+
+@pytest.mark.asyncio
 async def test_eviction_happens_after_the_new_frame_is_delivered(tmp_path: Path) -> None:
     transport = FakeTransport()
     registry = ActiveRenderRegistry(max_instances_per_session=1)

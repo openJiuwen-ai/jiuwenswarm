@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jiuwenswarm.extensions_v2.config import resolve_install_dir
+from jiuwenswarm.extensions_v2.config import resolve_install_dir, resolve_store_dir
 
 
 def test_absolute_config_path_is_used(tmp_path: Path) -> None:
@@ -45,3 +45,10 @@ def test_default_directory_is_under_workspace(monkeypatch, tmp_path: Path) -> No
     )
 
     assert resolve_install_dir({}) == tmp_path / "extension_pkgs"
+
+
+def test_store_directory_follows_the_host_workspace(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
+
+    assert resolve_store_dir() == tmp_path / "extension" / "store"
+    assert not (tmp_path / "extension").exists()

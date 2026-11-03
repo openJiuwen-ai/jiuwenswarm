@@ -44,6 +44,13 @@ def _read_config() -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def resolve_store_dir() -> Path:
+    """Resolve package data under the host's existing user workspace."""
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    return (get_user_workspace_dir() / "extension" / "store").resolve()
+
+
 def _configured_value(config: Mapping[str, Any]) -> str:
     extensions = config.get("extensions")
     if not isinstance(extensions, Mapping):
