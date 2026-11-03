@@ -6,7 +6,7 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-02T20:49+08:00 -->
+<!-- generated-at: 2026-11-03T11:57+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -102,7 +102,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-03 |
 
 <a id="module-8"></a>
 
@@ -112,7 +112,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-03 |
 
 <a id="module-9"></a>
 
@@ -122,7 +122,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-03 |
 
 <a id="module-10"></a>
 
@@ -132,7 +132,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-03 |
 
 <a id="module-11"></a>
 
@@ -142,4 +142,4 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-02 |
+| [D-20261102-1502-harmony-runtime-ipc](active/D-20261102-1502-harmony-runtime-ipc/design.md) | HarmonyOS AgentServer Front 与 Worker 进程间通信适配方案 | in-development | douran | core | 2026-11-03 |

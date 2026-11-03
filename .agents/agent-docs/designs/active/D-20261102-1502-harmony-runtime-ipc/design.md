@@ -8,7 +8,7 @@ author: douran
 author_email: douran1@huawei.com
 reviewers: []
 created: 2026-11-02
-updated: 2026-11-02
+updated: 2026-11-03
 domain: core
 modules:
   - jiuwenswarm/server/ipc
@@ -113,7 +113,7 @@ AgentServer 进程内部才启动 Runtime Worker。当前鸿蒙外壳将 AgentSe
 
 - 现有 Hello、readiness、heartbeat、request、wire 和 shutdown 协议继续复用。
 - 当前 IPC 单帧上限保持 32 MB。
-- 平台选择复用已有鸿蒙环境识别，显式 IPC 配置可以覆盖默认值；不能用“非 Windows 等于 Unix socket”判断 HarmonyOS。
+- 平台选择复用已有鸿蒙环境识别，显式 IPC 配置仅在已识别的鸿蒙环境内覆盖默认值；不能用“非 Windows 等于 Unix socket”判断 HarmonyOS。
 - 鸿蒙打包代码已使用 `subprocess.Popen` 启动服务，并通过 `127.0.0.1` 检查 AgentServer、Gateway 和 Frontend；loopback TCP 是当前启动链已依赖的能力。
 - HarmonyOS Python 不保证支持 `socketpair()` 或 `Popen(pass_fds=...)`，方案不能以二者可用为前提。
 - HarmonyOS 沙箱对匿名 `AF_UNIX` 能力缺少可靠保证，方案不使用 `AF_UNIX`。
@@ -160,11 +160,11 @@ Runtime Worker
 - 依据：Worker 不 bind，不依赖 Unix socket 路径、`AF_UNIX`、`socketpair` 或 `pass_fds`；鸿蒙现有启动链已依赖 `127.0.0.1`。
 - 代价：Front 需要维护临时 listener、认证和接受超时；Worker 不支持跨 Front 常驻。
 
-#### D-02 鸿蒙默认启用，保留显式覆盖
+#### D-02 仅鸿蒙启用，鸿蒙内保留诊断覆盖
 
 - 未设置 IPC mode 时，已识别的鸿蒙运行环境默认使用 `front_loopback`；识别沿用 runtime 标志、`ohos` 平台标识或 HNP PATH 规则；
-- 普通 POSIX/Windows 未设置时保持当前行为；
-- 显式 `JIUWENSWARM_RUNTIME_IPC=front_loopback` 或 `resident` 优先于默认值；未知值失败，不自动降级。
+- 普通 POSIX/Windows 固定保持当前行为，忽略 IPC mode 配置，避免遗留环境变量使普通桌面进入新路径；
+- 仅在已识别的鸿蒙环境内，显式 `JIUWENSWARM_RUNTIME_IPC=front_loopback` 或 `resident` 优先于默认值；鸿蒙内未知值失败，不自动降级。
 
 #### D-03 HarmonyOS 使用 attached Worker
 
@@ -276,7 +276,7 @@ os.environ["JIUWEN_HARMONY_RUNTIME"] = "1"
 
 - Linux/macOS 默认继续使用 Unix socket 和 resident Worker；
 - Windows 默认继续使用 Named Pipe；
-- 鸿蒙默认启用新路径，普通桌面仅显式 `front_loopback` 启用；
+- 鸿蒙默认启用新路径，普通桌面固定保留原 IPC，不接受 `front_loopback` 覆盖；
 - 既有业务消息、protocol version 和 Gateway 协议不变。
 
 交付顺序为：主仓实现和测试 → 鸿蒙仓更新基线并核对环境识别 → 重建 HNP/覆盖层 → 真机验证。不能先设置新 transport 再等待主仓补实现。
@@ -350,11 +350,13 @@ Front bind 127.0.0.1:0
 | listener/stream 关闭次序错误 | 明确所有权，覆盖失败注入和资源回收测试 |
 | token 泄露或未绑定 generation | 仅经 stdin 传递、不写日志、auth 后失效 |
 | HNP 与覆盖层版本不一致 | freshness 和包内版本检查 |
-| 误用于普通桌面部署 | 默认仅在已识别的鸿蒙环境启用；桌面仍需显式配置 |
+| 误用于普通桌面部署 | 先判断鸿蒙环境；普通桌面忽略遗留 IPC 配置，固定保留原路径 |
 
 HarmonyOS `front_loopback` 不支持 Worker 跨 Front 常驻，符合当前 orchestrator 生命周期。未来若允许 Front 独立热重启，需要重新评估可重连 listener、IPC Kit 或 Worker lease/fencing。
 
 ## 10. 按日期记录的评审与设计修订
+
+- 2026-11-03：用户明确要求合入后只有鸿蒙使用新 IPC、其他系统保持原样。收紧 D-02：非鸿蒙固定 resident，遗留的 `JIUWENSWARM_RUNTIME_IPC=front_loopback` 不再构成跨平台覆盖；只保留鸿蒙内诊断覆盖。此条替代先前允许普通桌面显式启用 loopback 的决定。
 
 - 2026-11-02：因 HarmonyOS Python 不保证支持 `socketpair`、`pass_fds`，且匿名 `AF_UNIX` 缺少可靠保证，替代原 inherited socketpair 决策。主方案改为 Front 监听 `127.0.0.1:0`、Worker 主动连接并一次性认证；IPC 上层协议复用、HarmonyOS attached Worker、普通桌面平台行为不变等决定继续有效。
 - 尚未进入正式评审。

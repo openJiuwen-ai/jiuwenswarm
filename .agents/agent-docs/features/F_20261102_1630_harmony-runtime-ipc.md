@@ -52,7 +52,7 @@ develop 初始验证基线为 `08515d6e721edb9933b55ef389b07c6301f70f1f`；交�
 
 - 未设置、空值或纯空格的 `JIUWENSWARM_RUNTIME_IPC` 使用平台默认值。普通 Windows 继续 Named Pipe，普通 Linux/macOS 继续 Unix socket 和 resident Worker。
 - 识别为鸿蒙后默认 `front_loopback`。识别沿用既有 MCP CLI 规则：`JIUWEN_HARMONY_RUNTIME=1`、`sys.platform == "ohos"`，或 PATH 中存在同时包含 `/data/app/` 与 `/hnp/` 的目录。判断提取到纯工具模块，避免 IPC 反向依赖 Runtime/MCP。
-- 显式 `resident`、`front_loopback` 保留诊断覆盖；未知值报错，运行失败不自动降级。Windows 真实默认路径独立验证，不把跨平台显式 loopback 自测写成 Windows 默认变更。
+- 2026-11-03 按用户要求收紧平台边界：先识别鸿蒙，非鸿蒙固定 resident，忽略 IPC 配置及遗留的 `front_loopback`。只有鸿蒙内保留显式 `resident`、`front_loopback` 诊断覆盖，鸿蒙内未知值报错，运行失败不自动降级。
 - Front 在 Worker 启动前监听 IPv4 `127.0.0.1:0`。随机 256-bit token、独立 generation、代码身份和数据范围通过 stdin 引导；token 不进入 argv、环境变量或日志。
 - 认证候选并发处理，认证帧最多 4096 bytes、单个候选最多 2 秒，受总建连截止时间约束。非法或慢候选不消费合法 Worker 的一次连接机会；首个合法连接关闭 listener。
 - Worker 先 connect/auth，收到 transport 确认后才发送 Hello 并加载 Runtime。业务连接复用 `StreamConnection`，不使用 AF_UNIX、socketpair 或 pass_fds，不获取 resident endpoint 锁。
@@ -87,6 +87,22 @@ attached 的严格 loader/shutdown drain 也仅在新 source 下启用；普通 
 
 实际日志、wheel、隔离安装目录和基线复现位于本地任务证据目录 `D:\work_space\.codex-temp\harmony-ipc-main-prs-20261102`，不提交日志、凭据或用户运行数据。
 wheel 探针验证导入来自隔离安装目录而非 editable 源码；测试过程中核对原生 Worker PID，不能仅依靠 launcher return code 或 ACK。
+
+## 2026-11-03 平台门禁收紧
+
+用户要求只有鸿蒙使用新 IPC，其他系统维持原样。检查发现启动链没有注入 `JIUWENSWARM_RUNTIME_IPC`，但旧实现仍接受桌面上的显式覆盖，因此收紧 `runtime_ipc_mode()`：先识别鸿蒙，非鸿蒙直接返回 resident，忽略包括 `front_loopback`、空白和未知值在内的 IPC 配置；仅鸿蒙内继续支持诊断覆盖。
+
+中英文操作说明、D-02 和 S 规约同步。没有改 Named Pipe、Unix socket、业务协议、进程启动参数或原有常驻/关闭实现；测试分支的临时默认策略不变。
+
+新增 Windows/macOS/Linux 配置矩阵及真实 Windows 遗留变量回归；attached 失败/恢复测试显式模拟鸿蒙环境，不再依赖跨平台 IPC 覆盖。新 IPC 集由 75 项扩展为 90 项，在两分支均全部通过。
+
+- develop 的 IPC、phase2、entrypoint、MCP、residency、resident shutdown、shutdown deadline、identity cache 八文件：293 passed、4 skipped。跳过项均为 Unix socket 专用用例。
+- 0.2.8 的 IPC、phase2、entrypoint、MCP 四文件：169 passed、1 skipped。
+- Windows 实际 Named Pipe 用例分别验证无配置和遗留 `front_loopback`，禁止创建 loopback listener；Front detach 后原 PID 存活，重连同一 PID，显式 shutdown 后进程退出。
+- 标记与 HNP PATH 默认选择、认证/Hello/Runtime 先后、Front 强退回收等场景仍通过。真机限制不变。
+- 两版本按修正后的源码重新构建 wheel 并隔离安装；Windows 默认 Named Pipe、模拟鸿蒙默认 loopback 的请求均成功，四个 Worker 均以 0 退出且原生 PID 已消失。
+
+本轮证据位于 `D:\work_space\.codex-temp\harmony-ipc-verification-20261103\platform-gate`；前一节 2026-11-02 的结果保留为当时证据，不替代此轮结果。
 
 ## 覆盖、检视与限制
 

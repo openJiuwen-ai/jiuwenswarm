@@ -4,20 +4,15 @@ AgentServer 在鸿蒙运行环境默认使用 `front_loopback`：Front 在 `127.
 Worker 不绑定 Unix socket，不获取 resident Worker 锁；Front 断开后 Worker 清理 Runtime 并退出。
 普通 Linux/macOS 继续默认使用 Unix socket、Windows 继续默认使用 Named Pipe。
 
-## 默认行为与手动覆盖
+## 平台选择与鸿蒙诊断
 
 使用本分支代码更新鸿蒙安装包后，按原有方式启动即可，无需再手动设置 `JIUWENSWARM_RUNTIME_IPC`。
 鸿蒙识别沿用现有规则：`JIUWEN_HARMONY_RUNTIME=1`、`sys.platform == "ohos"`，或 PATH 中存在同时包含 `/data/app/` 和 `/hnp/` 的目录。
 因此，Python 报告为 Linux 的 HNP 沙箱也能默认启用新 transport。
 
-仅在普通桌面平台手动测试时，需要显式选择：
+未识别为鸿蒙的环境固定使用原有 resident IPC。即使 Windows、普通 Linux/macOS 遗留了 `JIUWENSWARM_RUNTIME_IPC=front_loopback`，也不会因此启用新路径；本 PR 不在启动脚本或配置中注入该变量。
 
-```powershell
-$env:JIUWENSWARM_RUNTIME_IPC = 'front_loopback'
-jiuwenswarm-agentserver
-```
-
-显式设置 `JIUWENSWARM_RUNTIME_IPC=resident` 可以覆盖鸿蒙默认值；未设置、空值或纯空格使用平台默认值。未知值仍会报错。
+`JIUWENSWARM_RUNTIME_IPC` 仅在已识别的鸿蒙环境内提供诊断覆盖：`resident` 可覆盖鸿蒙默认值，`front_loopback` 显式选择新路径；未设置、空值或纯空格使用鸿蒙默认值，未知值报错。
 失败时查看 `runtime_ipc=front_loopback`、阶段和 errno。实现不会静默回退到 Unix socket。
 地址和一次性 token 通过 Worker stdin 传递，不需要配置固定 IPC 端口，也不要把 token 加到命令行或日志。
 

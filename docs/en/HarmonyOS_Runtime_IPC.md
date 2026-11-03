@@ -4,20 +4,15 @@ AgentServer defaults to `front_loopback` in HarmonyOS runtimes. The Front listen
 The Worker creates no Unix socket or resident ownership lock and exits after the Front disconnects.
 Ordinary Linux/macOS installations still default to Unix sockets and Windows to Named Pipes.
 
-## Defaults and explicit overrides
+## Platform selection and HarmonyOS diagnostics
 
 After updating the HarmonyOS package with this branch, start it normally. No additional `JIUWENSWARM_RUNTIME_IPC` setting is required.
 Detection preserves the existing rules: `JIUWEN_HARMONY_RUNTIME=1`, `sys.platform == "ohos"`, or a PATH directory containing both `/data/app/` and `/hnp/`.
 This also covers HNP Python runtimes that report Linux.
 
-An explicit setting is only needed to test this transport on an ordinary desktop:
+Non-HarmonyOS environments always use their existing resident IPC. A leftover `JIUWENSWARM_RUNTIME_IPC=front_loopback` on Windows or ordinary Linux/macOS cannot enable the new transport. Startup scripts and configuration do not inject this variable.
 
-```powershell
-$env:JIUWENSWARM_RUNTIME_IPC = 'front_loopback'
-jiuwenswarm-agentserver
-```
-
-An explicit `JIUWENSWARM_RUNTIME_IPC=resident` overrides the HarmonyOS default. Unset, empty or whitespace-only values use the platform default; unknown values fail.
+`JIUWENSWARM_RUNTIME_IPC` provides diagnostic overrides only inside a detected HarmonyOS runtime: `resident` overrides its default and `front_loopback` explicitly selects the new path. Unset, empty or whitespace-only values use the HarmonyOS default; unknown values fail there.
 Logs identify `runtime_ipc=front_loopback`, the failing stage and errno; there is no automatic fallback to Unix sockets.
 Connection parameters and a one-use token travel through the existing private Worker stdin payload. No fixed IPC port or command-line credentials are required.
 

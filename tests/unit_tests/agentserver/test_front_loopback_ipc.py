@@ -32,16 +32,21 @@ def _parameters(payload: dict) -> LoopbackParameters:
     return LoopbackParameters.from_payload(payload, code_identity="a" * 64, data_scope="b" * 64)
 
 
-@pytest.mark.parametrize("value,expected", [(None, "resident"), ("", "resident"),
-    ("resident", "resident"), (" front_loopback ", "front_loopback")])
-def test_explicit_mode_preserves_desktop_default(monkeypatch, value, expected):
+@pytest.fixture
+def harmony_runtime(monkeypatch):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+@pytest.mark.parametrize("value", [None, "", "resident", "front_loopback", " front_loopback ", "typo"])
+def test_ipc_configuration_cannot_change_desktop_transport(monkeypatch, platform, value):
     monkeypatch.delenv("JIUWEN_HARMONY_RUNTIME", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin")
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_IPC", raising=False)
     if value is not None:
         monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", value)
-    assert runtime_ipc_mode() == expected
+    assert runtime_ipc_mode() == "resident"
 
 
 @pytest.mark.parametrize("platform,marker,path,expected", [
@@ -76,6 +81,7 @@ def test_harmony_allows_explicit_transport_override(monkeypatch, override):
 
 
 def test_unknown_mode_does_not_fall_back(monkeypatch):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "typo")
     with pytest.raises(ValueError, match="Unsupported JIUWENSWARM_RUNTIME_IPC"):
         RuntimeSupervisor(Readiness())
@@ -228,7 +234,7 @@ async def test_silent_candidate_does_not_delay_legitimate_worker():
         await listener.close()
 
 
-async def test_stopping_during_auth_reclaims_worker_and_listener(monkeypatch):
+async def test_stopping_during_auth_reclaims_worker_and_listener(monkeypatch, harmony_runtime):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setattr(worker_process, "build_worker_command", lambda *args, **kwargs:
                         [sys.executable, "-c", "import time; time.sleep(20)"])
@@ -378,7 +384,7 @@ async def _wait_until(predicate, timeout=10):
 
 
 @pytest.mark.parametrize("mode_source", ["explicit", "harmony-marker", "hnp-path"])
-async def test_real_supervisor_restarts_with_fresh_credentials_and_reaps_worker(monkeypatch, tmp_path, caplog, mode_source):
+async def test_real_supervisor_restarts_with_fresh_credentials_and_reaps_worker(monkeypatch, tmp_path, caplog, mode_source, harmony_runtime):
     if mode_source != "explicit":
         monkeypatch.delenv("JIUWENSWARM_RUNTIME_IPC", raising=False)
         if mode_source == "harmony-marker":
@@ -450,7 +456,7 @@ async def test_real_supervisor_restarts_with_fresh_credentials_and_reaps_worker(
 
 
 @pytest.mark.parametrize("failure", ["spawn", "exit-before-auth", "hello", "hello-generation", "gateway-attach"])
-async def test_failed_startup_reclaims_listener_stream_and_process(monkeypatch, tmp_path, failure):
+async def test_failed_startup_reclaims_listener_stream_and_process(monkeypatch, tmp_path, failure, harmony_runtime):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     launches = []
@@ -513,7 +519,7 @@ async def test_failed_startup_reclaims_listener_stream_and_process(monkeypatch, 
         await supervisor.stop()
 
 
-async def test_killing_real_front_exits_attached_worker(monkeypatch, tmp_path):
+async def test_killing_real_front_exits_attached_worker(monkeypatch, tmp_path, harmony_runtime):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
     script = Path(__file__).with_name("fixtures") / "loopback_front.py"
@@ -541,7 +547,8 @@ async def test_killing_real_front_exits_attached_worker(monkeypatch, tmp_path):
         await asyncio.to_thread(front.wait, 5)
 
 
-async def test_default_native_transport_survives_front_restart(monkeypatch, tmp_path):
+@pytest.mark.parametrize("legacy_ipc_override", [None, "front_loopback"])
+async def test_default_native_transport_survives_front_restart(monkeypatch, tmp_path, legacy_ipc_override):
     """An ordinary desktop still uses its original resident transport."""
     from jiuwenswarm.server.ipc.client import connect_with_retry
     from jiuwenswarm.server.ipc.stream import PipeConnection
@@ -549,6 +556,8 @@ async def test_default_native_transport_survives_front_restart(monkeypatch, tmp_
 
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_IPC", raising=False)
     monkeypatch.delenv("JIUWEN_HARMONY_RUNTIME", raising=False)
+    if legacy_ipc_override is not None:
+        monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", legacy_ipc_override)
     monkeypatch.setenv("PATH", os.pathsep.join(entry for entry in os.environ.get("PATH", "").split(os.pathsep)
                                              if not ("/data/app/" in entry and "/hnp/" in entry)))
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
@@ -597,7 +606,7 @@ async def test_default_native_transport_survives_front_restart(monkeypatch, tmp_
             await asyncio.to_thread(native.wait, 5)
 
 
-async def test_failed_startup_cleanup_reports_failure_without_hanging(monkeypatch):
+async def test_failed_startup_cleanup_reports_failure_without_hanging(monkeypatch, harmony_runtime):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     monkeypatch.setattr(worker_process.WorkerProcess, "spawn", AsyncMock(side_effect=OSError("injected spawn failure")))
     supervisor = RuntimeSupervisor(Readiness(), stub=True)

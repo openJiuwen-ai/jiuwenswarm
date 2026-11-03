@@ -26,7 +26,7 @@ files:
 Front/Supervisor 负责 Worker 准入与生命周期；Worker 负责 Runtime 和请求执行。
 `JIUWENSWARM_RUNTIME_IPC` 未设置、空值或纯空格时，鸿蒙运行环境默认使用 `front_loopback`，普通 POSIX/Windows 继续使用 Unix socket/Named Pipe。
 鸿蒙识别复用 `common.runtime_platform.is_harmony_runtime()`：运行标志 `JIUWEN_HARMONY_RUNTIME=1`、`sys.platform == "ohos"`，或 PATH 中同时包含 `/data/app/` 和 `/hnp/` 的目录；不将普通 Linux 推断为鸿蒙。
-显式 `front_loopback` 或 `resident` 优先于平台默认值；未知配置立即失败。Front 和 Worker 使用同一识别函数和继承的环境选择模式。
+未识别为鸿蒙的环境固定使用 resident，忽略 `JIUWENSWARM_RUNTIME_IPC`，包括遗留的 `front_loopback` 或无效配置。只有已识别的鸿蒙环境允许显式 `front_loopback` 或 `resident` 覆盖其默认值；鸿蒙中的未知配置立即失败。Front 和 Worker 使用同一识别函数和继承的环境选择模式。
 不探测失败后自动回退，也不修改 Gateway、Runtime 业务协议或 Linux resident owner/fencing。
 
 依据：[D-20261102-1502-harmony-runtime-ipc](../../../../designs/active/D-20261102-1502-harmony-runtime-ipc/design.md)。
@@ -65,7 +65,7 @@ listener 关闭不等待已经交给 Supervisor 的 stream 生命周期；Python
 
 ## 适用限制与验证入口
 
-本仓实现可在普通 Windows/POSIX 显式启用，在已识别的鸿蒙环境默认启用。HarmonyOS loopback、asyncio 和 stdin 能力仍需真机验证。
+本仓实现仅在已识别的鸿蒙环境启用；普通 Windows/POSIX 不能仅凭 IPC 配置切换到新路径。HarmonyOS loopback、asyncio 和 stdin 能力仍需真机验证。
 鸿蒙打包仓须同时更新业务基线、HNP 和 Python 覆盖层；无需新增 IPC 环境变量。本仓的 transport 实现不表示 HAP 已构建、签名或验收。
 attached 模式不支持 Worker 跨 Front 重启常驻。
 

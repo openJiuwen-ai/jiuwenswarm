@@ -15,10 +15,12 @@ FRONT_LOOPBACK = "front_loopback"
 
 
 def runtime_ipc_mode() -> str:
-    """Default HarmonyOS to loopback while honoring explicit overrides."""
+    """Keep desktop IPC unchanged; accept overrides only on HarmonyOS."""
+    if not is_harmony_runtime():
+        return RESIDENT
     mode = os.environ.get("JIUWENSWARM_RUNTIME_IPC", "").strip()
     if not mode:
-        mode = FRONT_LOOPBACK if is_harmony_runtime() else RESIDENT
+        mode = FRONT_LOOPBACK
     if mode not in {RESIDENT, FRONT_LOOPBACK}:
         raise ValueError("Unsupported JIUWENSWARM_RUNTIME_IPC; use resident or front_loopback")
     return mode
