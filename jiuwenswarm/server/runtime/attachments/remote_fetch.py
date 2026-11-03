@@ -259,10 +259,44 @@ def _remaining(deadline: float) -> float:
     return remaining
 
 
-def _set_read_timeout(connection: http.client.HTTPConnection, timeout: float) -> None:
-    sock = getattr(connection, "sock", None)
-    if sock is not None:
+def _set_read_timeout(sock: socket.socket | None, timeout: float) -> None:
+    if sock is None:
+        return
+    try:
         sock.settimeout(max(0.001, timeout))
+    except OSError:
+        return
+
+
+def _shutdown_socket(sock: socket.socket | None) -> None:
+    if sock is None:
+        return
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
+def _response_socket(
+    response: http.client.HTTPResponse | None,
+) -> socket.socket | None:
+    fp = getattr(response, "fp", None)
+    raw = getattr(fp, "raw", None)
+    return getattr(raw, "_sock", None)
+
+
+def _response_fileno(response: http.client.HTTPResponse | None) -> int | None:
+    fp = getattr(response, "fp", None)
+    if fp is None:
+        return None
+    try:
+        return fp.fileno()
+    except (OSError, ValueError):
+        return None
 
 
 def _temp_file(target: Path) -> Path:
@@ -311,36 +345,60 @@ def _commit_temp(temp_path: Path, target: Path, *, overwrite: bool) -> Path:
     raise RuntimeError("could not allocate a unique filename")
 
 
-def _arm_deadline(
-    connection: http.client.HTTPConnection,
-    deadline: float,
-) -> tuple[threading.Timer, threading.Event]:
-    """Close ``connection`` when the total deadline expires.
+class _DeadlineGuard:
+    """Shut down the live socket when the total deadline expires.
 
-    Socket timeouts bound one ``recv`` call. A peer that sends one byte just
-    before each timeout can keep ``getresponse()`` or ``readline()`` alive.
-    Shutting the socket down from a timer thread makes the blocked call fail.
+    ``HTTPConnection.getresponse()`` closes ``connection.sock`` when the
+    response says ``Connection: close``. The response file object still owns
+    the fd. Save the socket at arm time and also shut the response fd through
+    a duplicate, so the watchdog always reaches the live connection.
     """
-    expired = threading.Event()
 
-    def _expire() -> None:
-        expired.set()
-        sock = getattr(connection, "sock", None)
-        if sock is None:
+    def __init__(
+        self,
+        connection: http.client.HTTPConnection,
+        deadline: float,
+    ) -> None:
+        self._connection = connection
+        self._socket = connection.sock
+        self._response: http.client.HTTPResponse | None = None
+        self.expired = threading.Event()
+        self._timer = threading.Timer(
+            max(0.0, deadline - time.monotonic()), self._expire
+        )
+        self._timer.daemon = True
+        self._timer.start()
+
+    @property
+    def read_socket(self) -> socket.socket | None:
+        return self._socket or getattr(self._connection, "sock", None)
+
+    def attach_response(self, response: http.client.HTTPResponse) -> None:
+        self._response = response
+        response_socket = _response_socket(response)
+        if response_socket is not None:
+            self._socket = response_socket
+
+    def cancel(self) -> None:
+        self._timer.cancel()
+
+    def _expire(self) -> None:
+        self.expired.set()
+        _shutdown_socket(self._socket)
+        _shutdown_socket(getattr(self._connection, "sock", None))
+        fd = _response_fileno(self._response)
+        if fd is None or fd < 0:
             return
         try:
-            sock.shutdown(socket.SHUT_RDWR)
+            duplicate = os.dup(fd)
         except OSError:
-            pass
+            return
         try:
-            sock.close()
+            sock = socket.socket(fileno=duplicate)
         except OSError:
-            pass
-
-    timer = threading.Timer(max(0.0, deadline - time.monotonic()), _expire)
-    timer.daemon = True
-    timer.start()
-    return timer, expired
+            os.close(duplicate)
+            return
+        _shutdown_socket(sock)
 
 
 def _request_once(
@@ -351,8 +409,7 @@ def _request_once(
 ) -> tuple[
     http.client.HTTPConnection,
     http.client.HTTPResponse,
-    threading.Timer,
-    threading.Event,
+    _DeadlineGuard,
 ]:
     path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
     headers = {
@@ -366,22 +423,22 @@ def _request_once(
         remaining = _remaining(deadline)
         connect_timeout = min(remaining, CONNECT_TIMEOUT_SECONDS)
         connection = _build_connection(parsed, address, connect_timeout)
-        timer: threading.Timer | None = None
-        expired = threading.Event()
+        guard: _DeadlineGuard | None = None
         success = False
         try:
             connection.request("GET", path, headers=headers)
-            timer, expired = _arm_deadline(connection, deadline)
+            guard = _DeadlineGuard(connection, deadline)
             response = connection.getresponse()
+            guard.attach_response(response)
             success = True
-            return connection, response, timer, expired
+            return connection, response, guard
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
-            if expired.is_set():
+            if guard is not None and guard.expired.is_set():
                 raise RuntimeError("download timed out") from exc
             last_error = exc
         finally:
-            if timer is not None and not success:
-                timer.cancel()
+            if guard is not None and not success:
+                guard.cancel()
         connection.close()
     raise RuntimeError(f"download failed: {last_error}")
 
@@ -416,7 +473,7 @@ def download_url_to_workspace(
     while True:
         parsed = _parsed_url(current_url)
         addresses = _resolve_public_addresses(parsed, deadline=deadline)
-        connection, response, timer, expired = _request_once(
+        connection, response, guard = _request_once(
             parsed, addresses, deadline=deadline
         )
 
@@ -443,7 +500,7 @@ def download_url_to_workspace(
             written = 0
             with temp_path.open("wb") as out:
                 while True:
-                    _set_read_timeout(connection, _remaining(deadline))
+                    _set_read_timeout(guard.read_socket, _remaining(deadline))
                     # ``read`` loops until the requested size or EOF, so one
                     # call can outlive the deadline when the peer sends a
                     # trickle. ``read1`` performs at most one socket read.
@@ -456,7 +513,7 @@ def download_url_to_workspace(
                             f"remote file exceeds the {max_bytes} byte limit"
                         )
                     out.write(chunk)
-            if expired.is_set():
+            if guard.expired.is_set():
                 raise RuntimeError("download timed out")
             if declared_length is not None and written != declared_length:
                 raise RuntimeError("download failed: incomplete body")
@@ -464,11 +521,11 @@ def download_url_to_workspace(
             temp_path = None
             return committed
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
-            if expired.is_set():
+            if guard.expired.is_set():
                 raise RuntimeError("download timed out") from exc
             raise RuntimeError(f"download failed: {exc}") from exc
         finally:
-            timer.cancel()
+            guard.cancel()
             connection.close()
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)

@@ -497,3 +497,38 @@ def test_slow_headers_are_cut_by_watchdog(monkeypatch, tmp_path) -> None:
 
     assert elapsed < 2.0
     assert list(tmp_path.iterdir()) == []
+
+
+def test_slow_chunked_body_with_connection_close(monkeypatch, tmp_path) -> None:
+    """``getresponse`` closes connection.sock; the watchdog still reaches the fd."""
+    original = tmp_path / "a.txt"
+    original.write_bytes(b"original")
+    server = _TrickleServer(
+        b"HTTP/1.1 200 OK\r\n"
+        b"Connection: close\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"\r\n",
+        b"f" * 1000,
+    )
+    monkeypatch.setattr(
+        remote_fetch,
+        "_resolve_public_addresses",
+        lambda parsed, deadline=None: ("127.0.0.1",),
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="timed out"):
+            remote_fetch.download_url_to_workspace(
+                f"http://example.com:{server.port}/a.txt",
+                tmp_path,
+                preferred_name="a.txt",
+                overwrite=True,
+                timeout=0.4,
+            )
+    finally:
+        elapsed = time.monotonic() - started
+        server.close()
+
+    assert elapsed < 2.0
+    assert original.read_bytes() == b"original"
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
