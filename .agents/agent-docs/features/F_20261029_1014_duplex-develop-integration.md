@@ -164,3 +164,21 @@ flowchart TD
 - 合并顺序：后端 #10476 → #10477 → #10478 → 前端运行部分 → 设置与桌面部分。各自面向 develop，只带自身文件，不携带前置 PR 的大差异。设置界面的完整运行依赖前端运行部分的文案和后端协议。
 
 本轮在两个独立候选分别验证：运行部分 260 项 Node 回归通过，Vite 生产构建通过（1m19s）；设置与桌面部分 7 项 Node 回归及桌面 Python 契约 44 passed、1 skipped（平台条件），第二份 Vite 生产构建通过（1m15s）。两次构建均沿用本机内存限制，仅有构建体积等提示。未执行真实供应商或跨平台实机音视频验证。拆分仅搬移已评审内容，额外变化限定为本段交付记录与生成索引。
+
+
+## 2026-11-04 桌面与设置检视修复
+
+核对 GitCode !9508 的意见，补齐 macOS Electron 打包 Info.plist 的
+NSMicrophoneUsageDescription；已有字段先 Set，不存在时 Add，两步均失败则让构建失败，
+避免无麦克风用途声明的包静默产出。与现有 audio-input entitlement 配套；
+未在 Windows 上宣称完成 macOS TCC 实机验证。
+
+配置仍只支持新建/编辑 Qwen，但 enabled=true 时保留关闭开关，即使旧 JoyAI 配置
+不满足 Qwen 校验也可关闭。关闭后继续要求完整 Qwen 配置才能重新开启，不暴露 JoyAI 编辑入口。
+保存与表单描述复用独立 PR 基线中已有的 settingsPanel.voice.requiredFields 中英文文案，
+避免依赖前置 PR 才存在的翻译键。没有改回 JoyAI 的配置有效性判定。
+
+Electron 选择器补充 Windows 与 macOS 系统选择器不可用时的实际 fallback 放行路径：
+注入有屏幕和窗口的来源、选择屏幕、断言 callback 返回正确 video 源且只调用一次、
+关闭选择器。现有拒绝/取消路径保留。Electron 选择器 6 项、设置校验 3 项通过；
+设置布局未改变，未执行浏览器视觉或 macOS 签名包实机验证。
