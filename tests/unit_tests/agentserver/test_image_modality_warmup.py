@@ -34,6 +34,12 @@ def _model_entry(model_name: str, api_base: str = "https://api.example.invalid")
     }
 
 
+@pytest.fixture(autouse=True)
+def _personal_edition(monkeypatch: pytest.MonkeyPatch):
+    """Default these unit tests to personal edition; enterprise cases override."""
+    monkeypatch.setattr("jiuwenswarm.enterprise.is_enterprise", lambda: False)
+
+
 @pytest.mark.asyncio
 async def test_warmup_probes_each_configured_model_once():
     config = {"models": {"defaults": [_model_entry("model-a"), _model_entry("model-b")]}}
@@ -85,6 +91,26 @@ async def test_warmup_skipped_when_switch_is_explicit():
 
     with patch.object(image_modality_warmup, "probe_image_support", _fake_probe):
         await warm_image_modality_cache(config, reason="test")
+
+    assert call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_warmup_skipped_in_enterprise_edition(monkeypatch: pytest.MonkeyPatch):
+    """Enterprise process warmup has no routed model yet; do not probe placeholders."""
+    monkeypatch.setattr("jiuwenswarm.enterprise.is_enterprise", lambda: True)
+    config = {"models": {"defaults": [_model_entry("model-a")]}}
+    call_count = 0
+
+    async def _fake_probe(model):
+        nonlocal call_count
+        call_count += 1
+        return True
+
+    with patch.object(image_modality_warmup, "probe_image_support", _fake_probe):
+        assert await warm_image_modality_cache(
+            config, reason="startup", report_status=True
+        ) is True
 
     assert call_count == 0
 

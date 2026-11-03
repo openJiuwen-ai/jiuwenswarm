@@ -363,6 +363,8 @@ const EMPTY_PUBLISHED_WINDOW: PublishedTrajectoryWindow = {
   checkpoints: EMPTY_TRAJECTORY_CHECKPOINTS,
 };
 
+const EMPTY_WORKFLOW_RUNS: readonly never[] = [];
+
 /**
  * Tool-panel visibility and other App chrome state must not rebuild the
  * session projection. The panel owns its own transport updates; parent-only
@@ -391,6 +393,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
   const sessionTeamMode = mode === 'team';
+  // Swarmflow run summaries (task names) for the workflow lane grouping; runs
+  // absent from the store fall back to the short run id inside the grouping.
+  const workflowRuns = useSessionStore(
+    (s) => s.runtimes[sessionId]?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
+  );
   const sessionTeamDispatchMode = useSessionStore(
     state => state.runtimes[sessionId]?.teamDispatchMode,
   );
@@ -1858,6 +1865,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         active={active}
         groups={subjectGroups}
         messages={copy.toolbar}
+        workflowRuns={workflowRuns}
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
         hideToolbar={sharedTimeAxis}

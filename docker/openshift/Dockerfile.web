@@ -16,7 +16,10 @@ RUN npm install
 COPY jiuwenswarm/channels/web/frontend/ ./
 COPY jiuwenswarm/scripts/ /build/jiuwenswarm/scripts/
 COPY jiuwenswarm/resources/ /build/jiuwenswarm/resources/
-RUN npm run build
+# User Web images retain their Manager-compatible base; standalone builds can pass '/'.
+ARG VITE_BASE_PATH=./
+ARG VITE_API_PREFIX=""
+RUN VITE_BASE_PATH="${VITE_BASE_PATH}" VITE_API_PREFIX="${VITE_API_PREFIX}" npm run build
 
 # ---------- 阶段2:nginx 运行 ----------
 FROM ${NGINX_IMAGE}

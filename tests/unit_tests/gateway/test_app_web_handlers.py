@@ -243,6 +243,17 @@ class FakeAgentClient:
             self.reload_finished.set()
 
 
+def test_client_attach_methods_are_plain_forwards_to_agent_server() -> None:
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    # A client's attach requests are answered by AgentServer, never by a local handler.
+    methods = {"client.attach", "client.renew", "client.list", "client.conversation.messages"}
+    assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+    assert methods <= app_web_handlers._FORWARD_REQ_METHODS
+    assert not methods & channel.methods.keys()
+
+
 @pytest.mark.asyncio
 async def test_models_get_returns_editable_detail_with_api_key(monkeypatch) -> None:
     class FakeCatalog:
@@ -3430,7 +3441,7 @@ async def test_config_set_history_only_save_rewrites_config_yaml(monkeypatch, tm
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.refresh_external_cli_builtin_models",
-        lambda agents: None,
+        lambda agents, **_: None,
     )
 
     await channel.methods["config.set"](

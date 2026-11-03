@@ -121,6 +121,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.tool_call",
         "chat.tool_update",
         "chat.tool_result",
+        "client.attachments_changed",
         "chat.processing_status",
         "chat.llm_call_start",
         "chat.llm_call_end",
