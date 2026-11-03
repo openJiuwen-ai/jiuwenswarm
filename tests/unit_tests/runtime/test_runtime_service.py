@@ -300,6 +300,47 @@ async def test_team_attach_only_registers_persistent_waiter_kind() -> None:
     assert details.session_message_id is None
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("work_mode", ["work", "code"])
+async def test_stale_team_attachment_does_not_execute_or_preempt_heartbeat(
+    monkeypatch, streaming, work_mode,
+):
+    session_id = "single-agent-attach"
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"mode": f"agent.{work_mode}.normal", "work_mode": work_mode},
+    )
+    admission = SessionRunAdmission()
+    preempt = AsyncMock(return_value=True)
+    admission.set_heartbeat_preemptor(preempt)
+    assert await admission.try_begin_heartbeat(session_id, "running-heartbeat")
+    manager = FakeAgentManager()
+    runtime = AgentRuntime(agent_manager=manager, admission_controller=admission)
+    runtime._started = True
+    runtime._ensure_session_registered = AsyncMock()
+    request = AgentRequest(
+        request_id="stale-attach", channel_id="web", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=streaming,
+        params={"query": "", "mode": "team", TEAM_ATTACH_ONLY_PARAM: True},
+    )
+    try:
+        async with asyncio.timeout(1):
+            events = (
+                await _collect_events(runtime.stream(request))
+                if streaming else await runtime.invoke(request)
+            )
+        assert len(events) == 1
+        assert events[0].is_complete and events[0].ok
+        assert events[0].payload is None
+        assert not manager.agent_calls
+        assert not manager.foreground_calls
+        runtime._ensure_session_registered.assert_not_awaited()
+        preempt.assert_not_awaited()
+        assert not await admission.try_begin_heartbeat(session_id, "second-heartbeat")
+    finally:
+        await admission.end_heartbeat(session_id, "running-heartbeat")
+
+
 class FakeAgentManager:
     def __init__(self) -> None:
         self.cancel_calls: list[str] = []
