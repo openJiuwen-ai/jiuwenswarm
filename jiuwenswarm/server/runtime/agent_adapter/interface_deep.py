@@ -6068,6 +6068,13 @@ class JiuWenSwarmDeepAdapter:
         )
 
         if files_changed:
+            isolation_key = _sys_operation_isolation_key(card)
+            if not launcher.base_url or not isolation_key:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] sandbox recreation skipped: "
+                    "missing endpoint or isolation key"
+                )
+                return
             try:
                 from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
                     force_recreate_jiuwenbox_sandbox,
@@ -6082,6 +6089,7 @@ class JiuWenSwarmDeepAdapter:
             try:
                 new_sandbox_id = await force_recreate_jiuwenbox_sandbox(
                     launcher.base_url,
+                    shared_key=f"{str(launcher.base_url).rstrip('/')}|{isolation_key}",
                     policy=new_policy,
                     policy_mode=extra.get("policy_mode", "append"),
                     preserve_files_upload=upload_list,

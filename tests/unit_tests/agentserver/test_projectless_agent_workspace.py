@@ -1,12 +1,12 @@
 import asyncio
 import json
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.core.sys_operation import OperationMode
 from openjiuwen.core.sys_operation.cwd import (
     get_cwd,
     get_project_root,
@@ -28,11 +28,11 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.agent_ws_server import (
     resolve_request_project_dir,
 )
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-    JiuWenSwarmDeepAdapter,
-)
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
+)
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
 )
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
@@ -688,6 +688,76 @@ def test_projectless_sandbox_mounts_task_root_instead_of_server_cwd(
         for mount in mounts
     )
     assert not any(mount["host_path"] == str(server_cwd) for mount in mounts)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_recreation_is_scoped_to_current_isolation(monkeypatch):
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    recreate = AsyncMock(side_effect=["sandbox-a-new", "sandbox-b-new"])
+    monkeypatch.setattr(jiuwenbox, "force_recreate_jiuwenbox_sandbox", recreate)
+    monkeypatch.setattr(interface_deep, "is_enterprise", lambda: False)
+    monkeypatch.setattr(
+        interface_deep, "build_filesystem_policy", lambda *_args, **_kwargs: ({}, []),
+    )
+    monkeypatch.setattr(
+        interface_deep, "_sys_operation_isolation_key", lambda card: card.isolation_key,
+    )
+
+    for isolation_key in ("session-a", "session-b"):
+        adapter = object.__new__(JiuWenSwarmDeepAdapter)
+        adapter._sys_operation_card = SimpleNamespace(
+            mode=OperationMode.SANDBOX,
+            isolation_key=isolation_key,
+            gateway_config=SimpleNamespace(
+                launcher_config=SimpleNamespace(
+                    base_url="http://sandbox/", sandbox_type="jiuwenbox", extra_params={},
+                ),
+            ),
+        )
+        adapter._workspace_dir = None
+        adapter._is_code_agent = False
+        adapter._resolve_project_dir_for_sandbox = lambda: None
+        await adapter.apply_sandbox_runtime_patch({"files": {}}, files_changed=True)
+
+    assert [call.kwargs["shared_key"] for call in recreate.await_args_list] == [
+        "http://sandbox|session-a", "http://sandbox|session-b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_recreation_without_isolation_key_does_not_clear_endpoint(
+    monkeypatch,
+):
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    recreate = AsyncMock()
+    monkeypatch.setattr(jiuwenbox, "force_recreate_jiuwenbox_sandbox", recreate)
+    monkeypatch.setattr(interface_deep, "is_enterprise", lambda: False)
+    monkeypatch.setattr(
+        interface_deep, "build_filesystem_policy", lambda *_args, **_kwargs: ({}, []),
+    )
+    monkeypatch.setattr(interface_deep, "_sys_operation_isolation_key", lambda _card: None)
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._sys_operation_card = SimpleNamespace(
+        mode=OperationMode.SANDBOX,
+        gateway_config=SimpleNamespace(
+            launcher_config=SimpleNamespace(
+                base_url="http://sandbox", sandbox_type="jiuwenbox", extra_params={},
+            ),
+        ),
+    )
+    adapter._workspace_dir = None
+    adapter._is_code_agent = False
+    adapter._resolve_project_dir_for_sandbox = lambda: None
+
+    await adapter.apply_sandbox_runtime_patch({"files": {}}, files_changed=True)
+
+    recreate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
