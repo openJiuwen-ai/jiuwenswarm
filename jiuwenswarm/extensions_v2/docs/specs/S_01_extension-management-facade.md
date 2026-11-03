@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / extension-management-facade` |
 | 关联特性 | [F_03](../features/F_03_registry-facade.md) |
 | 所属模块 | `jiuwenswarm/extensions_v2/management/registry.py` |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-11-03 |
 | 方案状态 | 当前实现契约 |
 
 ## 1. 范围与责任
@@ -88,10 +88,12 @@
 ### 5.1 构造
 
 ```python
-ExtensionManager(install_dir: Path)
+ExtensionManager(install_dir: Path, *, store_dir: Path | None = None)
 ```
 
 `install_dir` 立即展开为绝对路径，不要求目录已存在。
+传入 store_dir 时，构造 `openjiuwen.core.extension.data.JsonStore` 并在初始化时注入；不传则不装配持久化服务。
+AgentServer 始终传入 `resolve_store_dir()`，其目录为当前 Swarm 用户数据根下的 `extension/store`。
 
 ### 5.2 初始化
 
@@ -102,6 +104,7 @@ async def init(
     host_version: str | None = None,
     host_event_types: Callable[[ExtensionEventBus], None] | None = None,
     host_handlers: Callable[[ExtensionEventBus], None] | None = None,
+    cleanup_callbacks: Sequence[PackageResourceCleanup] = (),
 ) -> None
 ```
 
@@ -109,6 +112,8 @@ async def init(
 - 先调用 `Registry.init`，再调用 `open_install_dir`。
 - `host_event_types` 只注册事件类型与 CORE Handler；`host_handlers` 只注册产品 Handler。
 - 任一步失败：若 Registry 已绑定则解除上下文，重建空 Registry，并抛出原异常。
+- cleanup_callbacks 交给 Core；宿主回调按顺序在 store 删除前执行，失败不能吞掉。
+  该接口与成功后的 inactive callback 通知分开，后者保持既有兼容行为。
 
 ### 5.3 安装
 
@@ -136,8 +141,8 @@ async def load_installed() -> list[ActivationReport]
 async def uninstall(package_id: str) -> ActivationReport
 ```
 
-- 生效包：委托 `Registry.uninstall`，成功后删除该版本目录并通知 inactive callback。
-- 未生效但存在副本：删除该包全部版本目录，返回 `SUCCESS`，通知 callback。
+- 生效包与未生效副本统一委托 `Registry.uninstall`。Core 完成撤销、资源回调、store 数据与安装副本删除。
+- 仅全部完成才返回 SUCCESS，并在操作锁外通知 inactive callback；清理失败保留 Core 记录供重试。
 - 既无生效记录也无副本：返回 agent-core 的 `EXTENSION_PACKAGE_NOT_INSTALLED`。
 - 被依赖或在途时返回 agent-core 的拒绝结果，不删除文件。
 
@@ -172,10 +177,13 @@ async def shutdown() -> None
 ```
 
 - 按依赖方在前的顺序检查 Core 的 `uninstall_decision` 并调用公开 `Runtime.unpublish`。
-- 不删除安装副本。
+- 撤销时保留记录，等待 `cleanup_package_resources(..., reason="shutdown")`，然后移除记录。
+- 不删除安装副本或 store 数据。
 - 单个包失败记录日志后继续处理独立包；只为成功撤销的包发送退出通知。
 - 仍有失败包时抛出 `ExtensionFailure` 并保留门面及上下文，允许查询和再次关闭。
 - 全部成功后解除 Core 上下文，门面回到未初始化状态；重新装配使用新 Bus。
+
+store 宿主集成说明与验证见 [F_03](../features/F_03_registry-facade.md#91-store-宿主集成)。
 
 ## 6. 错误码
 

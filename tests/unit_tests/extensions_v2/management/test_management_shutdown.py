@@ -32,8 +32,8 @@ async def test_shutdown_releases_dependents_before_dependencies_and_unbinds_cont
     released: list[str] = []
     unpublish = manager.registry.runtime.unpublish
 
-    def record_release(package_id: str, target: ExtensionEventBus) -> None:
-        unpublish(package_id, target)
+    def record_release(package_id: str, target: ExtensionEventBus, *, keep_record: bool = False) -> None:
+        unpublish(package_id, target, keep_record=keep_record)
         released.append(package_id)
 
     monkeypatch.setattr(manager.registry.runtime, "unpublish", record_release)
@@ -98,7 +98,7 @@ async def test_release_exception_retains_context_and_does_not_notify(
     runtime = manager.registry.runtime
     unpublish = runtime.unpublish
 
-    def fail_release(package_id: str, target: ExtensionEventBus) -> None:
+    def fail_release(package_id: str, target: ExtensionEventBus, *, keep_record: bool = False) -> None:
         raise RuntimeError("release failed")
 
     monkeypatch.setattr(runtime, "unpublish", fail_release)

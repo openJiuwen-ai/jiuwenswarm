@@ -18,12 +18,15 @@ import yaml
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
+from openjiuwen.core.events.ops_impl.store import unconfigure_store
 from openjiuwen.core.extension import (
     ActivePackageRecord,
     ActivationReport,
     ExtensionFailure,
+    PackageResourceCleanup,
     Registry,
 )
+from openjiuwen.core.extension.data import JsonStore
 from openjiuwen.core.extension.errors import OperationError, operation_error
 from openjiuwen.core.extension.manifest import load_manifest
 from openjiuwen.core.extension.management import (
@@ -61,8 +64,9 @@ def _manifest_domain(root: Path) -> str:
 class ExtensionManager:
     """Stable host entry; all control-plane work is delegated to ``Registry``."""
 
-    def __init__(self, install_dir: Path) -> None:
+    def __init__(self, install_dir: Path, *, store_dir: Path | None = None) -> None:
         self.install_dir = Path(install_dir).expanduser().resolve()
+        self._store = JsonStore(store_dir) if store_dir is not None else None
         self._registry = Registry()
         self._operation_lock = asyncio.Lock()
         self._bus: ExtensionEventBus | None = None
@@ -84,6 +88,7 @@ class ExtensionManager:
         host_version: str | None = None,
         host_event_types: Callable[[ExtensionEventBus], None] | None = None,
         host_handlers: Callable[[ExtensionEventBus], None] | None = None,
+        cleanup_callbacks: Sequence[PackageResourceCleanup] = (),
     ) -> None:
         """Bind the bus and open the install directory once.
 
@@ -99,14 +104,18 @@ class ExtensionManager:
                     event_bus,
                     host_event_types=host_event_types,
                     host_handlers=host_handlers,
+                    store=self._store,
+                    cleanup_callbacks=cleanup_callbacks,
                 )
                 self._registry.open_install_dir(self.install_dir, host_version=host_version)
             except asyncio.CancelledError:
+                unconfigure_store(event_bus)
                 unbind_context(event_bus)
                 self._registry = Registry()
                 raise
             except Exception:
                 if self._registry.is_ready:
+                    unconfigure_store(event_bus)
                     unbind_context(event_bus)
                 self._registry = Registry()
                 raise
@@ -157,17 +166,11 @@ class ExtensionManager:
             return list(await self._registry.install(roots))
 
     async def uninstall(self, package_id: str) -> ActivationReport:
-        """Remove an active package, or delete an installed-only copy."""
+        """Delegate active and installed-only package removal to Core."""
 
         async with self._operation_lock:
             self._require_ready()
             report = await self._registry.uninstall(package_id)
-            if _is_not_active(report):
-                removed, error = self._remove_inactive(package_id)
-                if removed:
-                    report = _success(package_id, "uninstall")
-                elif error is not None:
-                    report = _failure(package_id, "uninstall", error)
         if report.status == "SUCCESS":
             await self._notify_inactive(package_id)
         return report
@@ -237,7 +240,11 @@ class ExtensionManager:
                             logger.warning("[ExtensionsV2] cannot release %s: %s", package_id, decision.code)
                             failed.append(package_id)
                             continue
-                        runtime.unpublish(package_id, bus)
+                        runtime.unpublish(package_id, bus, keep_record=True)
+                        await runtime.cleanup_package_resources(
+                            package_id, active[package_id].generation, reason="shutdown",
+                        )
+                        runtime.drop_active(package_id)
                     except Exception:  # noqa: BLE001 - continue releasing independent packages
                         logger.exception("[ExtensionsV2] failed to release package %s", package_id)
                         failed.append(package_id)
@@ -246,6 +253,7 @@ class ExtensionManager:
                     finally:
                         remaining.discard(package_id)
             if not failed:
+                unconfigure_store(bus)
                 unbind_context(bus)
                 self._bus = None
                 self._session_start = None
@@ -310,18 +318,6 @@ class ExtensionManager:
             )
         return accepted, rejected
 
-    def _remove_inactive(self, package_id: str) -> tuple[bool, OperationError | None]:
-        manager = self._registry.package_manager
-        roots = [root for root in manager.list_installed() if root.parent.name == package_id]
-        if not roots:
-            return False, None
-        for root in roots:
-            try:
-                manager.remove_installed(package_id, root.name)
-            except ExtensionFailure as exc:
-                return False, exc.as_error()
-        return True, None
-
     def _remove_failed_copies(
         self,
         reports: Sequence[ActivationReport],
@@ -356,25 +352,6 @@ class ExtensionManager:
                 StatusCode.EXTENSION_LOAD_FAILED,
                 reason="extension manager is not initialized",
             )
-
-
-def _is_not_active(report: ActivationReport) -> bool:
-    return (
-        report.status == "FAILED"
-        and report.error is not None
-        and report.error.code == "EXTENSION_PACKAGE_NOT_INSTALLED"
-    )
-
-
-def _success(package_id: str, operation: str) -> ActivationReport:
-    return ActivationReport(
-        plan_id="",
-        package_id=package_id,
-        operation=operation,
-        status="SUCCESS",
-        previous_generation=None,
-        current_generation=None,
-    )
 
 
 def _failure(package_id: str, operation: str, error: OperationError) -> ActivationReport:
