@@ -6150,6 +6150,26 @@ class JiuWenSwarmDeepAdapter:
             params,
         )
 
+    async def load_enterprise_mcp_names(self, request: AgentRequest) -> set[str]:
+        """Refresh this adapter's policy cache and return enabled MCP names.
+
+        Keep the resolved configuration local to this session adapter; do not
+        persist enterprise templates to shared YAML or marketplace state.
+        """
+        resolved = await self._load_enterprise_config(
+            request, base=dict(self._config_base_cache or {}),
+        )
+        self._config_base_cache = resolved.config.copy()
+        mcp_section = resolved.config.get("mcp") or {}
+        names: set[str] = set()
+        for entry in mcp_section.get("servers", []):
+            if not isinstance(entry, dict) or not entry.get("enabled", True):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if name:
+                names.add(name)
+        return names
+
     async def reconcile_session_mcp(
         self,
         session_id: str | None,
@@ -6210,17 +6230,7 @@ class JiuWenSwarmDeepAdapter:
             ConfigSource, resolve_config_source,
         )
         if execution_request is not None and resolve_config_source() == ConfigSource.ENTERPRISE:
-            resolved = await child._load_enterprise_config(
-                execution_request, base=dict(child._config_base_cache or {}),
-            )
-            child._config_base_cache = resolved.config.copy()
-            mcp_section = resolved.config.get("mcp") or {}
-            needed_set = {
-                str(entry.get("name") or "").strip()
-                for entry in mcp_section.get("servers", [])
-                if isinstance(entry, dict) and entry.get("enabled", True)
-                and str(entry.get("name") or "").strip()
-            }
+            needed_set = await child.load_enterprise_mcp_names(execution_request)
         if child._instance is None:
             pending_holder = getattr(
                 child,

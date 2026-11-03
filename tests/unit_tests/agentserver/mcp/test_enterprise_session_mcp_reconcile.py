@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -12,8 +12,8 @@ from jiuwenswarm.enterprise.config import config_provider
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
-def _child(servers: list[dict]) -> SimpleNamespace:
-    return SimpleNamespace(
+def _child(servers: list[object]) -> SimpleNamespace:
+    child = SimpleNamespace(
         _instance=object(),
         _config_base_cache={"mcp": {"servers": [{"name": "local-only"}]}},
         _session_selected_mcp=set(),
@@ -27,6 +27,39 @@ def _child(servers: list[dict]) -> SimpleNamespace:
         refresh_skill_rails=AsyncMock(),
         discard_transient_skill_retrieval_session_profile=Mock(),
     )
+    child.load_enterprise_mcp_names = MethodType(
+        JiuWenSwarmDeepAdapter.load_enterprise_mcp_names, child,
+    )
+    return child
+
+
+@pytest.mark.asyncio
+async def test_enterprise_mcp_names_normalize_and_filter_entries():
+    child = _child([
+        None, "invalid", {}, {"name": "   "}, {"name": None},
+        {"name": "disabled", "enabled": False},
+        {"name": " policy-mcp "}, {"name": "policy-mcp", "enabled": True},
+    ])
+    request = SimpleNamespace(channel_id="web")
+
+    assert await child.load_enterprise_mcp_names(request) == {"policy-mcp"}
+    child._load_enterprise_config.assert_awaited_once_with(
+        request, base={"mcp": {"servers": [{"name": "local-only"}]}},
+    )
+    assert child._config_base_cache == child._load_enterprise_config.return_value.config
+    assert child._config_base_cache is not child._load_enterprise_config.return_value.config
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", [{}, {"mcp": None}, {"mcp": {}}])
+async def test_enterprise_mcp_names_allow_missing_section(config):
+    child = _child([])
+    child._config_base_cache = None
+    child._load_enterprise_config.return_value.config = config
+    request = SimpleNamespace(channel_id="web")
+
+    assert await child.load_enterprise_mcp_names(request) == set()
+    child._load_enterprise_config.assert_awaited_once_with(request, base={})
 
 
 @pytest.fixture
