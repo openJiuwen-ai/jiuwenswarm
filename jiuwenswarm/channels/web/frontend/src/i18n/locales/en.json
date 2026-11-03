@@ -3947,8 +3947,7 @@
       "Communication": "Communication",
       "Engineering": "Engineering",
       "Life": "Life",
-      "Custom": "Custom",
-      "Other": "Other"
+      "Custom": "Custom"
     },
     "actions": {
       "working": "Working",
