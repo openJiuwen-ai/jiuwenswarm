@@ -3486,6 +3486,9 @@ async def _process_team_message_stream(
             dispatch_mode=team_dispatch_mode,
             model_selection=runtime_model_selection,
         )
+        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
+
+        assign_shared_sandbox_sys_operation(team_spec, deep_agent)
         if group_input is not None and request_metadata.get("group_members") is not None:
             update_session_metadata(session_id=session_id,
                 group_members=request_metadata["group_members"],
