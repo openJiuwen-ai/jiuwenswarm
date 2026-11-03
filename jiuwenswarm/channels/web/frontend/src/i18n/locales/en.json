@@ -407,7 +407,7 @@
       "catalogEmptySkills": "No installed skill can be assigned",
       "catalogEmptyConnectors": "No connected connector can be assigned",
       "catalogEmptyPlugins": "No installed plugin can be assigned",
-      "catalogEmptyKnowledge": "No published knowledge page can be assigned. Add and publish pages from Knowledge first.",
+      "catalogEmptyKnowledge": "No published knowledge page can be assigned. Add and publish pages from Assets first.",
       "modelSelection": "Choose a model",
       "knowledgeSource": "Source",
       "knowledgeUpdatedAt": "Updated",
