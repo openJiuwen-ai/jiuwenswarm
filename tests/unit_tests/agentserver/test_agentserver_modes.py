@@ -497,6 +497,7 @@ def test_build_inputs_maps_skill_evolution_interrupt_answers_to_actions(monkeypa
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
 
@@ -572,6 +573,7 @@ def test_build_inputs_maps_paired_develop_permission_scopes(
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     request = AgentRequest(
