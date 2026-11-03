@@ -82,6 +82,11 @@ _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
 )
 
 
+def _is_pinned_schema_tool(tool_name: str, registered_card: Any) -> bool:
+    """True when the recall tool is registered and therefore directly callable."""
+    return tool_name == _PINNED_SCHEMA_TOOL_NAME and registered_card is not None
+
+
 def _json_safe_value(value: Any) -> Any:
     """Convert tool invoke results (e.g. ToolOutput) to JSON-serializable values."""
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -1600,7 +1605,9 @@ class ProgressiveToolRail(DeepAgentRail):
                 "tool_name": tool_name,
             }
 
-        if tool_name in self.eager_tools:
+        if tool_name in self.eager_tools or _is_pinned_schema_tool(
+            tool_name, registered_card
+        ):
             return {
                 "success": False,
                 "error": f"工具 '{tool_name}' 是常驻可见工具，可直接调用，无需通过 invoke_tool。",

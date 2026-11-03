@@ -12,6 +12,9 @@ from openjiuwen.harness.prompts.sections import SectionName
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
     ProgressiveToolRail,
 )
+from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
+    InvokeToolInput,
+)
 
 _RECALL = "recall_compressed_context"
 _MISSING = object()
@@ -223,3 +226,41 @@ async def test_lazy_load_off_keeps_input_order_for_non_disabled_tools() -> None:
     await rail.before_model_call(ctx)
 
     assert _names(ctx.inputs.tools) == [_RECALL, "ordinary_deferred", "read_file"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_tool_tells_model_to_call_registered_recall_directly() -> None:
+    """A schema-visible recall tool is not deferred, so invoke_tool must not say it is missing."""
+    recall = _card(_RECALL)
+    deferred = _card("ordinary_deferred")
+    rail = ProgressiveToolRail(eager_tools=["read_file"])
+    rail._cached_all_tool_infos = [recall, deferred]
+    rail._cached_deferred_tool_infos = [deferred]
+
+    registered = await rail._invoke_target_tool(
+        None,
+        InvokeToolInput(tool_name=_RECALL, arguments={}),
+    )
+    assert registered["success"] is False
+    assert "可直接调用" in registered["error"]
+
+    rail._cached_all_tool_infos = []
+    missing = await rail._invoke_target_tool(
+        None,
+        InvokeToolInput(tool_name=_RECALL, arguments={}),
+    )
+    assert "未注册" in missing["error"]
+
+    rail._cached_all_tool_infos = [recall]
+    rail._disabled_tools = {_RECALL}
+    disabled = await rail._invoke_target_tool(
+        None,
+        InvokeToolInput(tool_name=_RECALL, arguments={}),
+    )
+    assert "禁用" in disabled["error"]
+
+    ordinary = await rail._invoke_target_tool(
+        None,
+        InvokeToolInput(tool_name="ordinary_deferred", arguments={}),
+    )
+    assert "可直接调用" not in ordinary["error"]
