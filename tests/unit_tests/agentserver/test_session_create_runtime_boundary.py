@@ -94,6 +94,7 @@ class CreateRuntime:
                 # ``agent`` wire form; metadata persistence performs its own
                 # lazy migration to ``agent.work.normal``.
                 canonical_mode="agent",
+                execution_profile=provision_input.execution_profile,
             ),
         )
         self.prepared.append(prepared)
@@ -166,6 +167,22 @@ def create_request() -> AgentRequest:
             "view_id": "view-7",
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_role_creation_fields_cross_server_runtime_boundary():
+    trace = []
+    runtime = CreateRuntime(trace)
+    server = make_server(runtime)
+    ws = RecordingWebSocket(trace)
+    request = create_request()
+    request.params.update({"execution_profile": "app_role", "role_instructions": "Fisherman"})
+    await server.handle_session_create_for_test(ws, request, asyncio.Lock())
+    await asyncio.wait_for(runtime.commit_entered.wait(), timeout=1)
+    assert runtime.inputs[0].execution_profile == "app_role"
+    assert runtime.inputs[0].role_instructions == "Fisherman"
+    response = parse_agent_server_wire_unary(ws.sent[0])
+    assert response.payload["execution_profile"] == "app_role"
 
 
 def test_session_create_handler_is_runtime_adapter_only() -> None:

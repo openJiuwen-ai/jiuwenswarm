@@ -38,6 +38,14 @@ sequenceDiagram
 - **状态上报**：每个运行实例签发独立的状态令牌（经 `WORKSWARM_STATUS_TOKEN` 注入），应用按 push 主动上报运行状态，或由市场按 pull 轮询应用的 `/_workswarm/status` 读取（静态托管默认 pull）。上报携带单调递增序号，旧消息不会覆盖新状态；市场据此跟踪 `starting / running / stopping` 生命周期——启动后等待应用进入 `running`（最长 30 秒），发现应用自行退出则转入 `stopping` 清理。
 - **AI 能力**：应用自己的客户端或服务直接访问 Gateway，不经过应用市场。应用按 AI 角色管理会话，复用默认模型策略和历史；超时、重试、清空及退出删除均由应用负责。
 
+市场通过 `WORKSWARM_SOURCE_SESSION` 向启动和停止脚本传入创建应用的来源会话 ID（未登记来源时为空）。应用服务端通过 Gateway 的 `session.get_metadata` 查询其 `project_id` 与 `work_mode`，创建角色会话时继承这两个字段，使 NPC 会话展示在创建应用的项目下；后续消息使用相同工作模式。来源缺失或查询失败时应明确报错，不能静默创建到默认项目。旧市场可使用应用自身保存的来源会话配置。
+
+`WORKSWARM_SOURCE_SESSION` passes the manifest's source session ID to start and stop scripts. The app queries `session.get_metadata` through Gateway and inherits `project_id` and `work_mode` when creating NPC sessions and sending messages. Missing or unavailable sources must produce an explicit error. Apps on older hosts may use their own saved source session configuration.
+
+纯对话 NPC 可在 `session.create` 中指定 `execution_profile:"app_role"` 和 `role_instructions`：保留精简基础系统提示、应用角色规则及自身历史，不加载项目指令、记忆、技能或工具。项目归属不变，支持流式响应和取消。详见[角色会话说明](../../../docs/zh/AppRoleSessions.md)。
+
+Text-only NPCs can create sessions with `execution_profile:"app_role"` and `role_instructions`. They retain a compact base system prompt, application character rules, and their own dialogue history, without project instructions, memory, skills, or tools. Project ownership is unchanged; streaming and cancellation remain available. See [application role sessions](../../../docs/en/AppRoleSessions.md).
+
 市场注入的 `WORKSWARM_GATEWAY_API_URL` 为 Web Channel `/ws`，`WORKSWARM_GATEWAY_URL` 为通用 `/tui`；地址缺失时应用明确报错。状态令牌仅用于状态上报，不能用作会话接口凭据。纯静态托管不提供 AI 转发；有服务端需求的应用可提供自己的 `scripts/app_server.py`，由启动模板运行。
 
 应用市场不承载具体应用的业务逻辑、角色记忆或 AI 消息转发。应用、技能和市场扩展分别维护：更新技能不需要重启 WorkSwarm，修改应用通常只需刷新页面或重启该应用。

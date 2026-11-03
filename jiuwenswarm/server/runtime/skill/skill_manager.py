@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlparse
 import yaml
+import portalocker
 import urllib3
 import httpx
 import requests
@@ -932,6 +933,20 @@ class SkillManager:
         refresh_marketplaces = bool(params.get("refresh_marketplaces", False))
         if refresh_marketplaces:
             await self._sync_marketplace_repos()
+        # Startup migration may have been followed by a stale manager write or
+        # a legacy installer. Reconcile against disk before projecting the UI.
+        from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
+
+        if (self._skills_dir / BUILTIN_CATALOG_NAME / "SKILL.md").is_file():
+            self.reload_state()
+            if any(p.get("name") == BUILTIN_CATALOG_NAME and p.get("source") == "builtin"
+                   for p in self._get_installed_plugins()):
+                try:
+                    with portalocker.Lock(str(self._skills_dir / ".builtin-catalog.lock"), timeout=30):
+                        migrate_builtin_catalog(get_builtin_skills_dir(), self._skills_dir)
+                except (OSError, ValueError, portalocker.exceptions.LockException) as exc:
+                    logger.warning("Builtin catalog reconciliation failed; preserving skills: %s", exc)
+                self.reload_state()
         # 每次列举前，把手动拷入 skills 目录、尚未登记的本地技能补登记为 local，
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
         self._register_unmanaged_local_skills()

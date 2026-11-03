@@ -146,6 +146,9 @@ def test_market_assigns_non_conflicting_ports_and_injects_gateway_config(tmp_pat
                 assert env["WORKSWARM_GATEWAY_PORT"]=="25001"
                 assert env["WORKSWARM_GATEWAY_API_URL"]=="ws://127.0.0.1:25000/ws"
                 assert env["WORKSWARM_GATEWAY_URL"]=="ws://127.0.0.1:25001/tui"
+                assert env["WORKSWARM_SOURCE_SESSION"] == "source"
+                instance = manager._service.get_instance(result["instance_id"])
+                assert manager._service._instance_env(instance)["WORKSWARM_SOURCE_SESSION"] == "source"
         finally:
             blocker.close();await manager.shutdown()
     asyncio.run(run())

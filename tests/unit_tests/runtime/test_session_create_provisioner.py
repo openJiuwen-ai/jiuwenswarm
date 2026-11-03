@@ -124,6 +124,46 @@ def _install_product_hooks(
 
 
 @pytest.mark.asyncio
+async def test_app_role_create_persists_configuration_and_disables_prewarm(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    original = provisioner._agent_manager.claim_prewarmed_session
+    captured = {}
+
+    async def claim(**kwargs):
+        captured.update(kwargs)
+        return await original(**kwargs)
+
+    monkeypatch.setattr(provisioner._agent_manager, "claim_prewarmed_session", claim)
+    prepared = await provisioner.prepare_session_create(_input(execution_profile="app_role", role_instructions="Fisherman"))
+    metadata = get_session_metadata(prepared.result.session_id)
+    assert metadata["execution_profile"] == "app_role"
+    assert metadata["role_instructions"] == "Fisherman"
+    assert captured["prewarm_eligible"] is False
+    assert prepared.result.moa_enabled is False
+    await provisioner.abort_session_provision(prepared)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overrides", [
+    {"execution_profile": "unknown"},
+    {"execution_profile": "app_role"},
+    {"execution_profile": "app_role", "role_instructions": "rules", "persist_session": True},
+    {"execution_profile": "app_role", "role_instructions": "rules", "mode": "team"},
+])
+async def test_invalid_role_configuration_is_rejected_before_session_claim(monkeypatch, tmp_path, overrides):
+    state = _State()
+    _install_product_hooks(monkeypatch, tmp_path, state)
+    provisioner = _provisioner(state)
+    with pytest.raises(SessionProvisionError):
+        await provisioner.prepare_session_create(_input(**overrides))
+    assert "claim" not in state.events
+
+
+@pytest.mark.asyncio
 async def test_create_prepares_metadata_and_commits_kvc_after_delivery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,

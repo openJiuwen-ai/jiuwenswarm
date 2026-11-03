@@ -145,6 +145,8 @@ Loadable modules. Each skill typically defines goals, steps, tool usage, and out
 
 Built-in capabilities are discovered through `workswarm-builtin` (WorkSwarm Built-in Capabilities). The model reads its catalog and loads only the relevant skill files; member skills are no longer separate default installations. The catalog prompt guides app development to code mode without a runtime mode gate. Upgrades archive unchanged, source-confirmed legacy copies and preserve customized copies and disabled preferences.
 
+App Market / app-market is included in the unified catalog as `workswarm-app-builder`; open the WorkSwarm Built-in Capabilities details to find app development. Copies verified against historical releases are archived as well. Modified copies that cannot be verified remain available as local skills in the added-skills group rather than the built-in group.
+
 **Examples:**
 
 - `skill-creator` — skill creation assistant, helps generate new skills  

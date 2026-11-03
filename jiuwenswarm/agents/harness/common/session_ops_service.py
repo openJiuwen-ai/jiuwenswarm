@@ -439,6 +439,9 @@ def fork_session(
         "project_dir": source_meta.get("project_dir", ""),
     }
     metadata["moa_enabled"] = source_meta.get("moa_enabled") is True
+    for field in ("execution_profile", "role_instructions", "work_mode"):
+        if field in source_meta:
+            metadata[field] = source_meta[field]
     if "model_selection" in source_meta:
         metadata["model_selection"] = copy.deepcopy(source_meta["model_selection"])
     if "model" in source_meta:

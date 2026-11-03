@@ -659,6 +659,10 @@ def _write_metadata_unfenced(
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
         # later attempts to switch the session to another runtime.
+        if current is not None and current.get("execution_profile") == "app_role":
+            to_write = to_write.copy()
+            to_write["execution_profile"] = current["execution_profile"]
+            to_write["role_instructions"] = current["role_instructions"]
         if current is not None and isinstance(
             current.get("session_runtime_binding"),
             dict,
@@ -991,6 +995,8 @@ def init_session_metadata(
     work_mode: str = "",
     channel_metadata: dict[str, Any] | None = None,
     agent_group_name: str = "",
+    execution_profile: str = "default",
+    role_instructions: str = "",
 ) -> None:
     """初始化会话元数据(同步写,确保创建后立即可读)
 
@@ -1031,6 +1037,12 @@ def init_session_metadata(
     }
     if agent_group_name:
         metadata["agent_group_name"] = agent_group_name
+    from jiuwenswarm.runtime.app_role import normalize_execution_profile
+
+    execution_profile, role_instructions = normalize_execution_profile(execution_profile, role_instructions)
+    if execution_profile != "default":
+        metadata["execution_profile"] = execution_profile
+        metadata["role_instructions"] = role_instructions
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
     _write_metadata_sync(session_id, metadata)

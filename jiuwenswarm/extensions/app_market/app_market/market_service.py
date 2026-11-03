@@ -167,6 +167,7 @@ class MarketService:
             ):
                 env.pop(key, None)
             env.update(self._gateway_env())
+            env["WORKSWARM_SOURCE_SESSION"] = manifest.source_session or ""
             env["WORKSWARM_APP_HOST"] = self._app_host
             env["WORKSWARM_APP_PORT"] = str(port)
             env["PORT"] = str(port)
@@ -386,6 +387,8 @@ class MarketService:
         ):
             env.pop(key, None)
         env.update(self._gateway_env())
+        manifest = self._storage.load_manifest(instance.app_id)
+        env["WORKSWARM_SOURCE_SESSION"] = (manifest.source_session or "") if manifest else ""
         env["WORKSWARM_APP_HOST"] = self._app_host
         env["WORKSWARM_APP_PORT"] = str(instance.port)
         env["PORT"] = str(instance.port)

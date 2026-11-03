@@ -31,7 +31,7 @@ description: |
 
 | 操作 | 既有接口及参数 | 约束 |
 |---|---|---|
-| 创建 | Web `/ws`：`session.create`，`create_token`、`persist_session:false`、`mode:"agent"`、`work_mode:"work"`、`title` | 保存返回的真实 `session_id`；不指定模型 |
+| 创建 | Web `/ws`：`session.create`，`create_token`、`persist_session:false`、`mode:"agent"`、`project_id`、`work_mode`、`title` | 项目与工作模式继承创建应用的会话；纯对话角色指定 `execution_profile:"app_role"` 和 `role_instructions`；保存真实 `session_id`；不指定模型 |
 | 检查 | Web：`session.get_metadata`，`session_id` | 仅明确 `NOT_FOUND/SESSION_NOT_FOUND` 才补建；断连、超时、鉴权错误不代表会话丢失 |
 | 消息 | Web：`chat.send`，`session_id`、`query/content`、`mode/work_mode`，`is_stream:true` | accepted 不是答案；匹配 session 和 request ID 的 `chat.final`，忽略旧请求重放和 keepalive；错误、审批或提问明确处理 |
 | 中断 | Web：`chat.interrupt`，`session_id`、`wait_for_stop:true` | 超时或重开时停止旧回合，丢弃迟到响应 |
@@ -40,6 +40,8 @@ description: |
 
 ## 会话与请求规范
 
+- 纯文字 NPC、棋手等无需工具的角色使用 `execution_profile:"app_role"`。创建时将人格、业务规则、输出 schema 写入 `role_instructions`（1–12000 字符），后续聊天仅发送当前业务输入。宿主保留精简基础系统提示；不加载项目指令、个人/项目记忆、技能和工具。创建响应必须确认 `execution_profile:"app_role"`；旧宿主不支持时明确提示升级，不降级到普通助手。需要工具的角色继续使用普通会话。轻量角色仅支持文字对话和取消，不支持暂停/继续、增强执行、永续记忆、cron 或装备工具；保留自身对话历史。
+- 角色会话必须绑定创建应用的项目。市场通过 `WORKSWARM_SOURCE_SESSION` 注入发布清单的来源会话 ID；应用服务端调用 `session.get_metadata` 读取其 `project_id` 和 `work_mode`，创建角色会话时透传这两个字段。不要以应用子目录代替项目路径，也不要固定 `work_mode:"work"`；消息请求沿用角色会话的工作模式。旧市场未注入时，可从应用自身配置读取发布时保存的来源会话 ID。来源缺失或查询失败时明确报错，不静默建到默认项目；真正的默认项目沿用来源的默认项目 ID 与工作模式。
 - 每用户、每应用、每个稳定 AI 角色最多一个活动会话；N 个角色最多 N 个会话。应用保存绑定和幂等创建 token，初始化串行执行，多标签页不能并发建会话或请求同一角色。不使用时间戳或局号作为 role_id。
 - 默认 `persist_session:false`，仍保留普通多轮历史；该参数不是聊天历史保存开关。不要为保存对局开启永续记忆，不修改元数据绕过创建配置。
 - 独立对局默认新局重置：清空本地棋盘，检查并复用角色会话，中断并 rewind 历史，成功后才启用操作；缺失才创建新会话。新局首轮重新初始化，禁止旧棋盘搭配新会话。

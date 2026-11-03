@@ -6,11 +6,11 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-03T11:55+08:00 -->
+<!-- generated-at: 2026-11-03T16:38+08:00 -->
 
 # 设计文档索引 (INDEX)
 
-> 开发前 3 · 开发中 1 · 开发后 3 · 已否决 0
+> 开发前 3 · 开发中 2 · 开发后 3 · 已否决 0
 
 按模块目录分组，组内按生命周期展示；跨模块设计在各相关模块下列出，全局统计按文档去重。
 
@@ -24,10 +24,14 @@ generated: true
 | [jiuwenswarm/agents/harness/common](#module-4) | 1 |
 | [jiuwenswarm/channels/web/frontend](#module-5) | 1 |
 | [jiuwenswarm/common](#module-6) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-7) | 1 |
-| [jiuwenswarm/observability](#module-8) | 1 |
-| [jiuwenswarm/resources/agent/workspace/skills](#module-9) | 1 |
-| [jiuwenswarm/server/runtime/skill](#module-10) | 1 |
+| [jiuwenswarm/extensions/app_market](#module-7) | 1 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-8) | 1 |
+| [jiuwenswarm/observability](#module-9) | 1 |
+| [jiuwenswarm/resources/agent/workspace/skills](#module-10) | 1 |
+| [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-11) | 1 |
+| [jiuwenswarm/runtime](#module-12) | 1 |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-13) | 1 |
+| [jiuwenswarm/server/runtime/skill](#module-14) | 1 |
 
 <a id="module-1"></a>
 
@@ -95,17 +99,17 @@ generated: true
 
 <a id="module-7"></a>
 
-## jiuwenswarm/gateway/channel_manager/web
+## jiuwenswarm/extensions/app_market
 
-### 开发前 (proposals)
+### 开发中 (active)
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
+| [D-20261103-1444-app-role-session](active/D-20261103-1444-app-role-session/design.md) | 应用角色会话的最小提示词运行配置 | in-development | kdgmpw | harness | 2026-11-03 |
 
 <a id="module-8"></a>
 
-## jiuwenswarm/observability
+## jiuwenswarm/gateway/channel_manager/web
 
 ### 开发前 (proposals)
 
@@ -115,6 +119,16 @@ generated: true
 
 <a id="module-9"></a>
 
+## jiuwenswarm/observability
+
+### 开发前 (proposals)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
+
+<a id="module-10"></a>
+
 ## jiuwenswarm/resources/agent/workspace/skills
 
 ### 开发中 (active)
@@ -123,7 +137,37 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261103-1123-builtin-skill-catalog](active/D-20261103-1123-builtin-skill-catalog/design.md) | 内置 Skill 总目录与按需加载设计方案 | in-development | kdgmpw | harness | 2026-11-03 |
 
-<a id="module-10"></a>
+<a id="module-11"></a>
+
+## jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261103-1444-app-role-session](active/D-20261103-1444-app-role-session/design.md) | 应用角色会话的最小提示词运行配置 | in-development | kdgmpw | harness | 2026-11-03 |
+
+<a id="module-12"></a>
+
+## jiuwenswarm/runtime
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261103-1444-app-role-session](active/D-20261103-1444-app-role-session/design.md) | 应用角色会话的最小提示词运行配置 | in-development | kdgmpw | harness | 2026-11-03 |
+
+<a id="module-13"></a>
+
+## jiuwenswarm/server/runtime/agent_adapter
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261103-1444-app-role-session](active/D-20261103-1444-app-role-session/design.md) | 应用角色会话的最小提示词运行配置 | in-development | kdgmpw | harness | 2026-11-03 |
+
+<a id="module-14"></a>
 
 ## jiuwenswarm/server/runtime/skill
 
@@ -132,3 +176,7 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [D-20261103-1123-builtin-skill-catalog](active/D-20261103-1123-builtin-skill-catalog/design.md) | 内置 Skill 总目录与按需加载设计方案 | in-development | kdgmpw | harness | 2026-11-03 |
+
+## ⚠ 无法解析（已跳过，请运行 validate 修复）
+
+- `proposals/D-20261103-1444-app-role-session/design.md` — 文件夹缺少 design.md

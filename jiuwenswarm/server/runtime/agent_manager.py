@@ -1267,6 +1267,8 @@ class AgentManager:
         prewarm_eligible: bool = True,
         moa_enabled: bool = False,
         create_token: str | None = None,
+        execution_profile: str = "default",
+        role_instructions: str = "",
     ):
         token = str(create_token or "").strip()
         key = self.warm_pool.make_key(
@@ -1280,6 +1282,8 @@ class AgentManager:
         # Session，避免为布尔开关复制预热槽。但它属于 session.create 的幂等
         # 身份，同一 create_token 不允许用不同值重试。
         create_signature = (key, bool(prewarm_eligible), bool(persist_session), bool(moa_enabled))
+        if execution_profile != "default":
+            create_signature += (execution_profile, role_instructions)
         token_key = (key.channel_id, token)
         async with self._session_create_token_lock:
             if token:

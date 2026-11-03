@@ -1,0 +1,64 @@
+{
+  "_catalog_files": {
+    "SKILL.md": [
+      {
+        "digest": "7ce7e37f34ead53a642a4801a5b64d2b3c68d9d0ddcd61aacdeddf78174853d6",
+        "revision": "079f09d91efc3442f5200a38595d21b8a5251207"
+      }
+    ],
+    "skill_display.md": [
+      {
+        "digest": "c3157b7ed7b53abeec9b60915591eb0fded5be08143dfcdb8c490e255ef47b6f",
+        "revision": "079f09d91efc3442f5200a38595d21b8a5251207"
+      }
+    ]
+  },
+  "agent-creator": [
+    {
+      "digest": "294d0855ecd2dbb2f608e26e1f229fb8928467eacf0297766f7e2a505dbd84e7",
+      "revision": "715e370cd6bf4c6f3f7bccd33d15cce929bde5d6"
+    }
+  ],
+  "agent-group-creator": [
+    {
+      "digest": "bd1223e55e77b265476e9b972cff3b29c680c3dbc581c4b10318aaca0de6f313",
+      "revision": "f0d0bde84ab48fec40288d6dc3f3bbd2c8a855f7"
+    }
+  ],
+  "huawei-cloud-maas-setup": [
+    {
+      "digest": "37f19164aebd235b0009bcefaada191f3de2a9d859231f746c9fad63862f454f",
+      "revision": "4868f0d311a8cf83c4a449ac6273b0a850f575fa"
+    }
+  ],
+  "plugin-creator": [
+    {
+      "digest": "ad5e4c272e5914d2bdea71d15af17427bdbe5337838daf7d85ccad770b99d1f2",
+      "revision": "e99393616946aef6d3fb655b5735cb52bff7809f"
+    }
+  ],
+  "rsi-program-dataset-creator": [
+    {
+      "digest": "4bd19154fe52e0b6d1e48b1f47e3d8ac9eaf19b94d8cab5395174a59ead96c84",
+      "revision": "51876a286e71e493654c2a205190662b7f344ed2"
+    }
+  ],
+  "skill-creator": [
+    {
+      "digest": "84c39088c2c9baf0bfa6b38028d1582291ae3f6720d503d3cc8be9ba4697a00f",
+      "revision": "41b411963abca21dcd6c32f06ac1f67e8b6df6aa"
+    }
+  ],
+  "skill-omni-creation": [
+    {
+      "digest": "1fb5ed33c2b00a3a3dc60e20fccbe9a1998f0cddaf8414fc8e4e28acb07a1a1e",
+      "revision": "8460a3cc7d2efa4fc7c877e410dc47153744033d"
+    }
+  ],
+  "swarmskill-creator": [
+    {
+      "digest": "d95f6ba71103b6e74ff720b42366f15ab23e7522a59aa79292d0f834385aa034",
+      "revision": "87c2d620e58c132543752354b37215c3a90797bb"
+    }
+  ]
+}

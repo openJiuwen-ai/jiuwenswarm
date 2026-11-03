@@ -1602,6 +1602,17 @@ class JiuWenSwarm:
                 query = message
             elif message is not None:
                 query = message
+        from jiuwenswarm.runtime.app_role import app_role_instructions, validate_app_role_request
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        session_metadata = get_session_metadata(request.session_id, enable_writeback=False) if request.session_id else {}
+        if app_role_instructions(session_metadata) is not None:
+            validate_app_role_request(session_metadata, params)
+            turn = UserTurn(text=query, channel=request.channel_id or "web", language="zh", files={})
+            return {
+                "conversation_id": request.session_id, "query": query,
+                "enable_memory": False, "supports_user_interaction": False,
+            }, "off", turn
         # /debug 请求级指令：仅 agent/code 在此剥离前缀；team 自行从
         # ``turn.text`` 解析 /debug（见 team_helpers），故此处对 team 不剥离。
         _request_debug = False

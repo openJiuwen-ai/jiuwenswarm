@@ -4,6 +4,7 @@ import json
 import asyncio
 import re
 import shutil
+import hashlib
 from pathlib import Path
 
 from jiuwenswarm.common import utils
@@ -79,6 +80,77 @@ def test_tree_digest_ignores_checkout_line_endings_and_detects_new_resources(tmp
     assert skill_tree_digest(tmp_path) == expected
     (tmp_path / "user-note.txt").write_text("keep")
     assert skill_tree_digest(tmp_path) != expected
+
+
+def test_known_historical_release_and_reinstalled_copy_are_both_archived(tmp_path):
+    builtin, skills = _workspace(tmp_path)
+    migrate_builtin_catalog(builtin, skills)
+    source = skills / "sample"
+    shutil.copytree(builtin / BUILTIN_CATALOG_NAME / "references/capabilities/sample", source)
+    (source / "SKILL.md").write_text("trusted older release", encoding="utf-8")
+    digest = skill_tree_digest(source)
+    versions = {"sample": [{"revision": "verified-test-release", "digest": digest}]}
+    (builtin / BUILTIN_CATALOG_NAME / "legacy_versions.json").write_text(json.dumps(versions))
+    state_file = skills / "skills_state.json"
+    state = json.loads(state_file.read_text())
+    state["installed_plugins"] = [{"name": "sample", "source": "builtin"}]
+    state_file.write_text(json.dumps(state))
+    migrate_builtin_catalog(builtin, skills)
+    migrate_builtin_catalog(builtin, skills)
+    assert not source.exists()
+    archives = list((skills / BUILTIN_CATALOG_NAME / ".legacy").glob("sample*"))
+    assert len(archives) == 2
+    assert any((a / "SKILL.md").read_text() == "trusted older release" for a in archives)
+    assert json.loads(state_file.read_text())["installed_plugins"] == []
+
+
+def test_catalog_navigation_updates_known_release_and_preserves_user_edit(tmp_path):
+    builtin, skills = _workspace(tmp_path)
+    catalog = skills / BUILTIN_CATALOG_NAME
+    previous = (catalog / "SKILL.md").read_bytes()
+    digest = hashlib.sha256(previous.replace(b"\r\n", b"\n")).hexdigest()
+    versions = {"_catalog_files": {"SKILL.md": [{"digest": digest}]}}
+    (builtin / BUILTIN_CATALOG_NAME / "legacy_versions.json").write_text(json.dumps(versions))
+    seed = builtin / BUILTIN_CATALOG_NAME / "SKILL.md"
+    seed.write_text("App Market navigation", encoding="utf-8")
+    migrate_builtin_catalog(builtin, skills)
+    assert (catalog / "SKILL.md").read_text() == "App Market navigation"
+    assert list((catalog / ".legacy/catalog-files").iterdir())[0].read_bytes() == previous
+    (catalog / "SKILL.md").write_text("my custom navigation", encoding="utf-8")
+    seed.write_text("updated packaged navigation", encoding="utf-8")
+    migrate_builtin_catalog(builtin, skills)
+    assert (catalog / "SKILL.md").read_text() == "my custom navigation"
+
+
+def test_skill_list_reconciles_stale_state_and_separates_customized_builtin(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.skill import skill_manager
+
+    builtin, skills = _workspace(tmp_path)
+    state_file = skills / "skills_state.json"
+    state = json.loads(state_file.read_text())
+    state["installed_plugins"].append({"name": BUILTIN_CATALOG_NAME, "source": "builtin"})
+    state_file.write_text(json.dumps(state))
+    monkeypatch.setattr(skill_manager, "get_builtin_skills_dir", lambda: builtin)
+    monkeypatch.setattr(skill_manager, "get_agent_skills_dir", lambda: skills)
+    manager = skill_manager.SkillManager(workspace_dir=str(tmp_path))
+    manager._skills_dir = skills
+    manager._state_file = state_file
+    manager.reload_state()
+    migrate_builtin_catalog(builtin, skills)
+    # Simulate an old installer bringing back an identical top-level copy.
+    shutil.copytree(builtin / BUILTIN_CATALOG_NAME / "references/capabilities/sample", skills / "sample")
+    state_file.write_text(json.dumps(state))
+    listed = asyncio.run(manager.handle_skills_list({"with_installed": True}))
+    assert [s["name"] for s in listed["skills"] if s["source"] == "builtin"] == [BUILTIN_CATALOG_NAME]
+    assert not (skills / "sample").exists()
+    # Unknown modifications remain active assets, but are no longer builtins.
+    (skills / "sample").mkdir()
+    (skills / "sample/SKILL.md").write_text("---\nname: sample\ndescription: custom\n---\nmy custom rules")
+    state_file.write_text(json.dumps(state))
+    listed = asyncio.run(manager.handle_skills_list({}))
+    customized = next(s for s in listed["skills"] if s["name"] == "sample")
+    assert customized["source"] == "local"
+    assert "my custom rules" in (skills / "sample/SKILL.md").read_text()
 
 
 def test_shipped_catalog_has_one_discovery_entry_and_all_leaf_links_work(tmp_path, monkeypatch):

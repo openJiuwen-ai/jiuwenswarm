@@ -12606,6 +12606,8 @@ class AgentWebSocketServer:
                     model_selection=params.get("model_selection"),
                     moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
+                    execution_profile=params.get("execution_profile", "default"),
+                    role_instructions=params.get("role_instructions", ""),
                 )
             )
             params.pop("_work_mode_explicit", None)
@@ -12628,6 +12630,8 @@ class AgentWebSocketServer:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.execution_profile != "default":
+                payload["execution_profile"] = result.execution_profile
             if result.explicit_id_compatibility:
                 payload.update(
                     {

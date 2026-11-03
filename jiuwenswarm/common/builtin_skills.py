@@ -51,6 +51,37 @@ def skill_tree_digest(directory: Path) -> str:
     return digest.hexdigest()
 
 
+def _refresh_catalog_navigation(builtin_dir: Path, catalog: Path, versions: dict) -> None:
+    """Refresh only navigation files that exactly match a known shipped version."""
+    for name in ("SKILL.md", "skill_display.md"):
+        target = catalog / name
+        source = builtin_dir / BUILTIN_CATALOG_NAME / name
+        if not target.is_file() or not source.is_file() or target.is_symlink():
+            continue
+        previous = target.read_bytes()
+        replacement = source.read_bytes()
+        if previous.replace(b"\r\n", b"\n") == replacement.replace(b"\r\n", b"\n"):
+            continue
+        digest = hashlib.sha256(previous.replace(b"\r\n", b"\n")).hexdigest()
+        trusted = versions.get("_catalog_files", {}).get(name, [])
+        if not any(item.get("digest") == digest for item in trusted):
+            continue
+        backup = catalog / ".legacy" / "catalog-files" / f"{name}-{digest[:12]}"
+        if not backup.resolve().is_relative_to(catalog.resolve()):
+            raise ValueError("Catalog navigation archive escapes workspace")
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if backup.exists() and backup.read_bytes() != previous:
+            raise ValueError("Conflicting catalog navigation archive")
+        backup.write_bytes(previous)
+        descriptor, temporary = tempfile.mkstemp(prefix=".catalog-navigation-", dir=catalog)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(replacement)
+            os.replace(temporary, target)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+
 def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     """Archive unchanged, source-confirmed legacy installs after catalog install.
 
@@ -69,6 +100,9 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     if not isinstance(state, dict):
         raise ValueError("Skill state must be an object")
     hashes = json.loads((builtin_dir / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text(encoding="utf-8"))
+    versions_file = builtin_dir / BUILTIN_CATALOG_NAME / "legacy_versions.json"
+    versions = json.loads(versions_file.read_text(encoding="utf-8")) if versions_file.is_file() else {}
+    _refresh_catalog_navigation(builtin_dir, catalog, versions)
     plugins = state.get("installed_plugins", [])
     configs = state.get("skill_configs", {})
     if not isinstance(plugins, list) or not isinstance(configs, dict):
@@ -76,6 +110,7 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     local_names = {item.get("name") for item in state.get("local_skills", []) if isinstance(item, dict)}
     migrated = set(state.get("builtin_catalog_migrated", []))
     disabled = set(state.get("builtin_catalog_disabled", []))
+    customized = set(state.get("builtin_catalog_customized", []))
     retained = []
     for plugin in plugins:
         name = plugin.get("name") if isinstance(plugin, dict) else None
@@ -85,22 +120,34 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
             continue
         source = skills_dir / name
         archive = catalog / ".legacy" / name
+        expected = {hashes[name]}
+        expected.update(item["digest"] for item in versions.get(name, []) if isinstance(item, dict) and item.get("digest"))
         try:
             if source.is_symlink() or archive.is_symlink():
                 raise ValueError("Linked legacy skill")
             if source.exists():
-                if archive.exists() or skill_tree_digest(source) != hashes[name]:
-                    logger.warning("Preserving modified or conflicting legacy skill: %s", name)
-                    retained.append(plugin)
+                digest = skill_tree_digest(source)
+                if digest not in expected:
+                    logger.warning("Preserving customized legacy builtin as a local skill: %s", name)
+                    customized.add(name)
+                    retained.append({**plugin, "source": "local", "marketplace": "local", "legacy_builtin": True})
                     continue
+                # A previously archived copy must not prevent a verified old
+                # install from being migrated again. Preserve both copies.
+                suffix = 0
+                while archive.exists():
+                    suffix += 1
+                    archive = catalog / ".legacy" / f"{name}-{digest[:12]}-{suffix}"
                 archive.parent.mkdir(parents=True, exist_ok=True)
                 # Both paths must remain inside the selected workspace.
                 if not source.resolve().is_relative_to(skills_dir.resolve()) or not archive.resolve().is_relative_to(catalog.resolve()):
                     raise ValueError("Legacy skill path escapes workspace")
                 source.rename(archive)
-            elif not archive.is_dir() or skill_tree_digest(archive) != hashes[name]:
-                retained.append(plugin)
-                continue
+            else:
+                candidates = [archive, *sorted((catalog / ".legacy").glob(f"{name}-*"))]
+                if not any(p.is_dir() and not p.is_symlink() and skill_tree_digest(p) in expected for p in candidates):
+                    retained.append(plugin)
+                    continue
             migrated.add(name)
             config = configs.get(name, {})
             if (isinstance(config, dict) and config.get("enabled") is False) or plugin.get("enabled") is False:
@@ -111,6 +158,7 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     state["installed_plugins"] = retained
     state["builtin_catalog_migrated"] = sorted(migrated)
     state["builtin_catalog_disabled"] = sorted(disabled)
+    state["builtin_catalog_customized"] = sorted(customized)
     preferences = catalog / "references" / "migration.md"
     preferences.parent.mkdir(parents=True, exist_ok=True)
     preferences.write_text(
