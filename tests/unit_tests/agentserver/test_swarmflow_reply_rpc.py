@@ -73,7 +73,13 @@ async def test_handle_swarmflow_reply_skip_maps_to_sentinel_without_answer():
     """skip=true carries no answer yet still delivers: the message body is the
     backend's explicit-skip marker, so the human turn skips immediately
     instead of hanging until the human timeout."""
-    from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
+    try:
+        from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
+    except ImportError:
+        # The pinned agent-core predates the sentinel; keep this value in sync
+        # with avatar_session_backend.py and drop the fallback once the pin
+        # moves past the commit that introduced it.
+        HUMAN_REPLY_SKIP = "__swarmflow_skip__"
 
     handler = _make_handler()
     tm = _FakeTeamManager()

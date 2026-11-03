@@ -17040,7 +17040,13 @@ class JiuWenSwarmDeepAdapter:
             # Sentinel lives in agent-core alongside the human-turn skip logic
             # this reply feeds; imported here (skip-only path) so a plain
             # answer never touches this symbol.
-            from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
+            try:
+                from openjiuwen.agent_teams.workflow.backends.avatar_session_backend import HUMAN_REPLY_SKIP
+            except ImportError:
+                # The pinned agent-core predates the sentinel. Keep this value
+                # in sync with avatar_session_backend.py and drop the fallback
+                # once the pin moves past the commit that introduced it.
+                HUMAN_REPLY_SKIP = "__swarmflow_skip__"
             answer = HUMAN_REPLY_SKIP
 
         target = format_swarmflow_human_reply_target(corr, run_id)
