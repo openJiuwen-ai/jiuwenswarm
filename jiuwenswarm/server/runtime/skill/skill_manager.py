@@ -11087,6 +11087,10 @@ class SkillManager:
 
     async def handle_skills_source_install(self, params: dict) -> dict:
         """Install one exact Provider artifact through the common transaction."""
+        for key in ("source_id", "skill_id", "version_id"):
+            value = params.get(key)
+            if value is not None and not isinstance(value, str):
+                return self._source_error("invalid_params", f"{key} must be a string")
         source_id = str(params.get("source_id") or "").strip()
         skill_id = str(params.get("skill_id") or "").strip()
         version_id = str(params.get("version_id") or "").strip()
@@ -11094,7 +11098,9 @@ class SkillManager:
             return self._source_error(
                 "missing_params", "source_id, skill_id and version_id are required"
             )
-        force = bool(params.get("force", False))
+        force = params.get("force", False)
+        if not isinstance(force, bool):
+            return self._source_error("invalid_params", "force must be a boolean")
         # 市场展示名（技能广场卡片名）透传落盘，让「我的技能」与技能广场同名显示
         market_display_name = str(params.get("display_name") or "").strip()[:200]
         market_version = str(params.get("version") or "").strip()[:100]
@@ -11174,6 +11180,16 @@ class SkillManager:
 
     async def handle_skills_update(self, params: dict) -> dict:
         """Update an installed SkillRef through the same verified install transaction."""
+        for key in (
+            "source_id",
+            "skill_id",
+            "target_version_id",
+            "version_id",
+            "expected_current_version_id",
+        ):
+            value = params.get(key)
+            if value is not None and not isinstance(value, str):
+                return self._source_error("invalid_params", f"{key} must be a string")
         source_id = str(params.get("source_id") or "").strip()
         skill_id = str(params.get("skill_id") or "").strip()
         target_version_id = str(
@@ -11639,7 +11655,14 @@ class SkillManager:
         user / 未标记可卸。真正删除仍委托 ``handle_skills_uninstall``。
         """
 
-        name = str(params.get("name") or "").strip()
+        name_raw = params.get("name")
+        if name_raw is not None and not isinstance(name_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "name must be a string",
+            }
+        name = str(name_raw or "").strip()
         if not name:
             return {
                 "success": False,
@@ -11664,7 +11687,17 @@ class SkillManager:
                 "error_message": "service_id and agent_id are required",
             }
 
-        origin = str(params.get("origin") or "").strip()
+        # Type-invalid origins must never silently degrade to name-only
+        # matching: a wrongly-typed origin would otherwise uninstall a
+        # different same-named installation (#5882).
+        origin_raw = params.get("origin")
+        if origin_raw is not None and not isinstance(origin_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "origin must be a string",
+            }
+        origin = str(origin_raw or "").strip()
         installation = self._find_web_uninstall_installation(name=name, origin=origin)
         if installation is None:
             logger.warning(
