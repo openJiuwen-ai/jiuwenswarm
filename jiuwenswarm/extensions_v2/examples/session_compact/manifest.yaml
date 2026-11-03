@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.session-compact
+  version: 1.0.0
+  displayName: Project Compaction
+extensions:
+  - id: project-compaction
+    runtime: backend
+    module: extension.py

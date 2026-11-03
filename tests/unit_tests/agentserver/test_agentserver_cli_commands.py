@@ -430,7 +430,7 @@ async def test_handle_command_add_dir_sends_no_target_dirty_signal_without_waiti
 
 
 @pytest.mark.asyncio
-async def test_handle_command_compact_returns_custom_instructions(server, fake_ws, monkeypatch):
+async def test_handle_command_compact_keeps_original_path_while_extension_is_deferred(server, fake_ws, monkeypatch):
     request = AgentRequest(
         request_id="req-compact",
         channel_id="tui",
