@@ -789,6 +789,62 @@ async def test_config_set_persists_ttse_enabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_set_dual_permission_keys_mode_wins(monkeypatch):
+    """双键同发以 permissions_mode 为准，跳过 enabled 写（评审
+    2026-10-30：frozenset 迭代序不定，两键先后写产生顺序依赖终态）。"""
+    channel = FakeWebChannel()
+    mode_calls: list[str] = []
+    enabled_calls: list[bool] = []
+
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config_raw",
+        lambda: {"permissions": {"mode": "auto"}},
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config",
+        lambda: {"permissions": {"mode": "auto"}},
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_permissions_mode_in_config",
+        lambda mode: mode_calls.append(mode),
+    )
+
+    async def record_enabled(value):
+        enabled_calls.append(value)
+
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_permissions_enabled_in_config",
+        record_enabled,
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload, reload_options
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            on_config_saved=on_config_saved,
+        )
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-perm-dual",
+        {"permissions_enabled": "true", "permissions_mode": "full_access"},
+        "sess-perm-dual",
+    )
+
+    assert mode_calls == ["full_access"]
+    assert enabled_calls == []
+    assert channel.responses[-1]["payload"]["updated"] == ["permissions_mode"]
+
+
+@pytest.mark.asyncio
 async def test_models_replace_all_applies_scoped_reload_before_responding(monkeypatch):
     channel = FakeWebChannel()
     reload_started = asyncio.Event()

@@ -25,6 +25,8 @@ _cached_global: dict[str, Any] | None = None
 _cached_agents: dict[str, dict[str, Any]] = {}
 _cached_template_permissions: dict[str, Any] | None = None
 _cache_source: str | None = None
+# 入缓存时用户 config.yaml 的 (st_mtime_ns, st_size)，用于探测跨进程写入。
+_cached_yaml_stat: tuple[int, int] | None = None
 _session_overlays: dict[str, dict[str, Any]] = {}
 
 PERMISSIONS_SESSION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -73,10 +75,12 @@ def get_permissions_agent_base() -> dict[str, Any] | None:
 
 def clear_permissions_config_cache() -> None:
     global _cached_global, _cached_agents, _cached_template_permissions, _cache_source
+    global _cached_yaml_stat
     _cached_global = None
     _cached_agents = {}
     _cached_template_permissions = None
     _cache_source = None
+    _cached_yaml_stat = None
 
 
 def clear_session_permissions_overlay(session_id: str | None = None) -> None:
@@ -168,6 +172,35 @@ def _ingest_permissions_raw(raw: dict[str, Any], source: str) -> dict[str, Any]:
     return copy.deepcopy(_cached_global)
 
 
+def _current_yaml_stat() -> tuple[int, int] | None:
+    """用户 config.yaml 的 (st_mtime_ns, st_size)；不可 stat 时返回 None。"""
+    try:
+        stat = os.stat(_permissions_yaml_path())
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _record_yaml_stat() -> None:
+    """入缓存/落盘后记录 yaml stat，作为跨进程失步探测的基线。"""
+    global _cached_yaml_stat
+    _cached_yaml_stat = _current_yaml_stat()
+
+
+def _yaml_cache_stale() -> bool:
+    """探测 yaml 是否被本进程之外改写（网关/agent server 双进程各持缓存）。
+
+    一侧 mode.set 落盘后另一侧若永不重读，引擎将始终以启动时的模式
+    决策，且其 runtime persist 整段写回会 clobber 掉对侧切换（E2E
+    round-024 S4 实证）。以 yaml mtime+size 为准；memory ingest（企业
+    版）与本进程落盘后的记录不参与探测。
+    """
+    if _cache_source != "yaml" or _cached_yaml_stat is None:
+        return False
+    current = _current_yaml_stat()
+    return current is not None and current != _cached_yaml_stat
+
+
 def _load_yaml_cache(*, force_reload: bool = False) -> dict[str, Any]:
     """加载 yaml 缓存，返回剥掉 ``agents`` 后的全局段。
 
@@ -175,10 +208,28 @@ def _load_yaml_cache(*, force_reload: bool = False) -> dict[str, Any]:
     覆盖表，必须读 ``_cached_agents``，**禁止**对返回值做 ``.get("agents")``
     （返回值永远不含该键）。
     """
-    global _cached_global
+    global _cached_yaml_stat
     if not force_reload and _cached_global is not None:
-        return copy.deepcopy(_cached_global)
+        if not _yaml_cache_stale():
+            return copy.deepcopy(_cached_global)
+    # get_config 的 20s TTL 解析缓存可能早于外部写入：读取前先失效再整段
+    # 重读，保证 raw 内容与随后记录的 stat 指向同一份文件。否则首次加载
+    # 落在 TTL 窗口内时，raw 是旧解析、基线却记了新 mtime/size，
+    # _yaml_cache_stale 恒 False，跨进程失步探测永久失效（检视 2026-10-29）。
+    try:
+        from jiuwenswarm.common.config import clear_config_cache
+
+        clear_config_cache()
+    except Exception:  # 失效失败不阻塞重读
+        logger.warning(
+            "[permissions_config] clear_config_cache failed before reload",
+            exc_info=True,
+        )
+    stat_before = _current_yaml_stat()
     raw = _load_permissions_from_yaml()
+    # 读取期间文件又被改写：以读取前 stat 为基线，下一次调用判 stale 重读。
+    stat_after = _current_yaml_stat()
+    _cached_yaml_stat = stat_before if stat_after != stat_before else stat_after
     return _ingest_permissions_raw(raw, "yaml")
 
 
@@ -763,6 +814,7 @@ def _persist_global_permissions_to_yaml(permissions: dict[str, Any]) -> None:
         data = {}
     data["permissions"] = section
     dump_yaml_round_trip(yaml_path, data)
+    _record_yaml_stat()
 
 
 def _persist_agent_permissions_to_yaml(agent_id: str, body: dict[str, Any]) -> None:
@@ -783,6 +835,7 @@ def _persist_agent_permissions_to_yaml(agent_id: str, body: dict[str, Any]) -> N
     stored = sanitize_agent_permissions_body(body)
     agents[agent_id] = stored
     dump_yaml_round_trip(yaml_path, data)
+    _record_yaml_stat()
 
 
 def _event_loop_is_running() -> bool:

@@ -28,6 +28,9 @@ from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
 from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import (
     TeamMemberNotifyingLLMRetryRail,
 )
+from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
+    MultimodalImageRail,
+)
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import (
     ResponsePromptRail,
 )
@@ -44,6 +47,7 @@ STREAM_EVENT = "swarm.stream_event"
 AVATAR_PROMPT = "swarm.avatar_prompt"
 WORKSPACE_QUOTA = "swarm.workspace_quota"
 TEAM_MEMBER_LLM_RETRY = "swarm.team_member_llm_retry"
+MULTIMODAL_IMAGE = "swarm.multimodal_image"
 
 
 class ResponsePromptInput(ConstructionInput):
@@ -89,6 +93,13 @@ harness_element(
     description="Blocks bash/exec when workspace quota is exhausted.",
     builder=WorkspaceQuotaRail,
 )
+harness_element(
+    kind=ElementKind.RAIL,
+    name=MULTIMODAL_IMAGE,
+    description="Feeds request image attachments into the member's model context, "
+    "or strips image blocks when the model has no native image input.",
+    builder=MultimodalImageRail,
+)
 
 
 @harness_element(
@@ -110,4 +121,5 @@ __all__ = [
     "AVATAR_PROMPT",
     "WORKSPACE_QUOTA",
     "TEAM_MEMBER_LLM_RETRY",
+    "MULTIMODAL_IMAGE",
 ]

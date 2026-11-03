@@ -31,14 +31,19 @@ async def test_mixed_batch_no_read_before_all_resources_approved(
     if symlink:
         target = allowed / "link.txt"
         target.symlink_to(b)
+    # mode 契约（评审 CR-015 修复）下 preset 主导缺省轴，但显式 deny
+    # 取严合并存活：legacy 分支经 external_directory '*'→defaults 映射，
+    # native 分支走 paths 逐路径 deny（longest-prefix + deny 优先）。
     config = (
         {"external_directory": {"*": "deny"}}
         if legacy
         else {
             "file_guard": {
                 "enabled": True,
-                "defaults": {"read": "deny"},
-                "paths": [{"path": str(allowed), "read": "allow"}],
+                "paths": [
+                    {"path": str(allowed), "read": "allow"},
+                    {"path": str(tmp_path), "read": "deny"},
+                ],
             }
         }
     )
