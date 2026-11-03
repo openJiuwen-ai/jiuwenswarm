@@ -57,7 +57,6 @@ class _Span:
     def close(self) -> None:
         if self._start is None:
             self.note_start()
-        assert self._start is not None
         _write(self._step, self._sandbox_id, self._start, time.perf_counter())
 
 
