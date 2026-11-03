@@ -93,7 +93,7 @@ def _patch_transport(monkeypatch, responses):
     connections: list[tuple[str, _FakeConnection]] = []
     queue = list(responses)
 
-    def factory(parsed, address, timeout):
+    def factory(parsed, address, timeout, holder):
         response = queue.pop(0) if len(queue) > 1 else queue[0]
         sink: list = []
         connection = _FakeConnection(response, sink)
@@ -221,7 +221,7 @@ def test_redirect_to_private_host_is_rejected(monkeypatch, tmp_path) -> None:
     )
     calls = {"count": 0}
 
-    def factory(parsed, address, timeout):
+    def factory(parsed, address, timeout, holder):
         calls["count"] += 1
         return connection
 
@@ -362,15 +362,37 @@ def test_total_deadline_stops_a_slow_sender(monkeypatch, tmp_path) -> None:
 
 def test_https_connection_pins_address_and_keeps_sni(monkeypatch) -> None:
     calls: dict[str, object] = {}
+    holder = remote_fetch._SocketHolder()
+
+    class _FakeTLSSocket:
+        def __init__(self) -> None:
+            self.handshakes = 0
+            self.closed = False
+
+        def do_handshake(self) -> None:
+            self.handshakes += 1
+            calls["holder_at_handshake"] = holder.get()
+
+        def close(self) -> None:
+            self.closed = True
+
+    tls_socket = _FakeTLSSocket()
 
     class _FakeContext:
-        def wrap_socket(self, sock, server_hostname=None):
+        def wrap_socket(
+            self,
+            sock,
+            server_hostname=None,
+            do_handshake_on_connect=True,
+        ):
             calls["sni"] = server_hostname
-            return sock
+            calls["do_handshake_on_connect"] = do_handshake_on_connect
+            return tls_socket
 
     connection = remote_fetch._PinnedHTTPSConnection(
         "example.com",
         pinned_address="93.184.216.34",
+        socket_holder=holder,
         port=443,
         timeout=5.0,
         context=_FakeContext(),
@@ -385,6 +407,38 @@ def test_https_connection_pins_address_and_keeps_sni(monkeypatch) -> None:
 
     assert calls["address"] == ("93.184.216.34", 443)
     assert calls["sni"] == "example.com"
+    assert calls["do_handshake_on_connect"] is False
+    assert calls["holder_at_handshake"] is tls_socket
+    assert tls_socket.handshakes == 1
+    assert connection.sock is tls_socket
+
+
+def test_connect_phase_is_covered(monkeypatch) -> None:
+    class _SlowConnection:
+        sock = None
+
+        def request(self, *_args, **_kwargs):
+            time.sleep(0.08)
+
+        def getresponse(self):
+            raise AssertionError("deadline must stop the request")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        remote_fetch,
+        "_build_connection",
+        lambda *_args, **_kwargs: _SlowConnection(),
+    )
+    parsed = remote_fetch.urlparse("http://example.com/a.txt")
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        remote_fetch._request_once(
+            parsed,
+            ("93.184.216.34",),
+            deadline=time.monotonic() + 0.02,
+        )
 
 
 def test_dns_lookup_is_bounded(monkeypatch, tmp_path) -> None:
@@ -409,7 +463,13 @@ def test_dns_lookup_is_bounded(monkeypatch, tmp_path) -> None:
 class _TrickleServer:
     """Tiny TCP server that sends a header, then one byte at a time."""
 
-    def __init__(self, header: bytes, trickle: bytes, interval: float = 0.05) -> None:
+    def __init__(
+        self,
+        header: bytes,
+        trickle: bytes,
+        interval: float = 0.05,
+        suffix: bytes = b"",
+    ) -> None:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._socket.bind(("127.0.0.1", 0))
@@ -418,6 +478,7 @@ class _TrickleServer:
         self._header = header
         self._trickle = trickle
         self._interval = interval
+        self._suffix = suffix
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -436,6 +497,8 @@ class _TrickleServer:
                     if self._stop.wait(self._interval):
                         return
                     connection.sendall(bytes([byte]))
+                if self._suffix:
+                    connection.sendall(self._suffix)
             except OSError:
                 return
 
@@ -524,6 +587,44 @@ def test_slow_chunked_body_with_connection_close(monkeypatch, tmp_path) -> None:
                 preferred_name="a.txt",
                 overwrite=True,
                 timeout=0.4,
+            )
+    finally:
+        elapsed = time.monotonic() - started
+        server.close()
+
+    assert elapsed < 2.0
+    assert original.read_bytes() == b"original"
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
+def test_slow_chunked_payload_with_connection_close(monkeypatch, tmp_path) -> None:
+    """A valid chunked response with a slowly sent payload still hits the deadline."""
+    original = tmp_path / "a.txt"
+    original.write_bytes(b"original")
+    server = _TrickleServer(
+        b"HTTP/1.1 200 OK\r\n"
+        b"Connection: close\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"\r\n"
+        b"40\r\n",
+        b"a" * 64,
+        interval=0.05,
+        suffix=b"\r\n0\r\n\r\n",
+    )
+    monkeypatch.setattr(
+        remote_fetch,
+        "_resolve_public_addresses",
+        lambda parsed, deadline=None: ("127.0.0.1",),
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="timed out"):
+            remote_fetch.download_url_to_workspace(
+                f"http://example.com:{server.port}/a.txt",
+                tmp_path,
+                preferred_name="a.txt",
+                overwrite=True,
+                timeout=0.3,
             )
     finally:
         elapsed = time.monotonic() - started

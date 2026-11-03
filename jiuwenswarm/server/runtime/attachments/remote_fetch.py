@@ -193,12 +193,36 @@ def _resolve_target(workspace: Path, filename: str, *, overwrite: bool) -> Path:
     return candidate
 
 
+class _SocketHolder:
+    """Latest live socket for one request, shared with the deadline guard."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._socket: socket.socket | None = None
+
+    def set(self, sock: socket.socket | None) -> None:
+        with self._lock:
+            self._socket = sock
+
+    def get(self) -> socket.socket | None:
+        with self._lock:
+            return self._socket
+
+
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     """HTTP connection that dials a validated address, not a fresh DNS result."""
 
-    def __init__(self, host: str, *, pinned_address: str, **kwargs) -> None:
+    def __init__(
+        self,
+        host: str,
+        *,
+        pinned_address: str,
+        socket_holder: _SocketHolder,
+        **kwargs,
+    ) -> None:
         super().__init__(host, **kwargs)
         self._pinned_address = pinned_address
+        self._socket_holder = socket_holder
 
     def connect(self) -> None:
         self.sock = self._create_connection(
@@ -206,32 +230,57 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
             self.timeout,
             self.source_address,
         )
+        self._socket_holder.set(self.sock)
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection pinned to an address while keeping SNI and cert checks."""
 
-    def __init__(self, host: str, *, pinned_address: str, **kwargs) -> None:
+    def __init__(
+        self,
+        host: str,
+        *,
+        pinned_address: str,
+        socket_holder: _SocketHolder,
+        **kwargs,
+    ) -> None:
         super().__init__(host, **kwargs)
         self._pinned_address = pinned_address
+        self._socket_holder = socket_holder
 
     def connect(self) -> None:
-        sock = self._create_connection(
+        raw = self._create_connection(
             (self._pinned_address, self.port),
             self.timeout,
             self.source_address,
         )
+        self._socket_holder.set(raw)
+        # Split wrap and handshake so the guard can reach the SSLSocket while
+        # the TLS handshake is still running. A slow handshake must not outlive
+        # the request deadline.
         try:
-            self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+            ssl_sock = self._context.wrap_socket(
+                raw,
+                server_hostname=self.host,
+                do_handshake_on_connect=False,
+            )
         except BaseException:
-            sock.close()
+            raw.close()
             raise
+        self._socket_holder.set(ssl_sock)
+        try:
+            ssl_sock.do_handshake()
+        except BaseException:
+            ssl_sock.close()
+            raise
+        self.sock = ssl_sock
 
 
 def _build_connection(
     parsed: ParseResult,
     address: str,
     timeout: float,
+    socket_holder: _SocketHolder,
 ) -> http.client.HTTPConnection:
     host = str(parsed.hostname or "")
     default_port = 443 if parsed.scheme.lower() == "https" else 80
@@ -240,6 +289,7 @@ def _build_connection(
         return _PinnedHTTPSConnection(
             host,
             pinned_address=address,
+            socket_holder=socket_holder,
             port=port,
             timeout=timeout,
             context=ssl.create_default_context(),
@@ -247,6 +297,7 @@ def _build_connection(
     return _PinnedHTTPConnection(
         host,
         pinned_address=address,
+        socket_holder=socket_holder,
         port=port,
         timeout=timeout,
     )
@@ -348,19 +399,22 @@ def _commit_temp(temp_path: Path, target: Path, *, overwrite: bool) -> Path:
 class _DeadlineGuard:
     """Shut down the live socket when the total deadline expires.
 
-    ``HTTPConnection.getresponse()`` closes ``connection.sock`` when the
-    response says ``Connection: close``. The response file object still owns
-    the fd. Save the socket at arm time and also shut the response fd through
-    a duplicate, so the watchdog always reaches the live connection.
+    The guard starts before ``connection.request()``, so it covers the TCP
+    connect and TLS handshake. ``_SocketHolder`` receives the socket as soon
+    as it exists. ``HTTPConnection.getresponse()`` can close
+    ``connection.sock`` for ``Connection: close``; the response fd is still
+    live, so the guard also shuts it through a duplicate.
     """
 
     def __init__(
         self,
         connection: http.client.HTTPConnection,
+        socket_holder: _SocketHolder,
         deadline: float,
     ) -> None:
         self._connection = connection
-        self._socket = connection.sock
+        self._holder = socket_holder
+        self._socket = socket_holder.get()
         self._response: http.client.HTTPResponse | None = None
         self.expired = threading.Event()
         self._timer = threading.Timer(
@@ -371,7 +425,10 @@ class _DeadlineGuard:
 
     @property
     def read_socket(self) -> socket.socket | None:
-        return self._socket or getattr(self._connection, "sock", None)
+        sock = getattr(self._connection, "sock", None)
+        if sock is not None:
+            return sock
+        return self._holder.get()
 
     def attach_response(self, response: http.client.HTTPResponse) -> None:
         self._response = response
@@ -385,6 +442,7 @@ class _DeadlineGuard:
     def _expire(self) -> None:
         self.expired.set()
         _shutdown_socket(self._socket)
+        _shutdown_socket(self._holder.get())
         _shutdown_socket(getattr(self._connection, "sock", None))
         fd = _response_fileno(self._response)
         if fd is None or fd < 0:
@@ -422,22 +480,30 @@ def _request_once(
     for address in addresses:
         remaining = _remaining(deadline)
         connect_timeout = min(remaining, CONNECT_TIMEOUT_SECONDS)
-        connection = _build_connection(parsed, address, connect_timeout)
-        guard: _DeadlineGuard | None = None
+        holder = _SocketHolder()
+        connection = _build_connection(
+            parsed, address, connect_timeout, holder
+        )
+        # Start the guard before request(): HTTPS performs the TCP connect and
+        # TLS handshake inside request(), and both must respect the deadline.
+        guard = _DeadlineGuard(connection, holder, deadline)
         success = False
         try:
             connection.request("GET", path, headers=headers)
-            guard = _DeadlineGuard(connection, deadline)
+            if guard.expired.is_set():
+                connection.close()
+                raise RuntimeError("download timed out")
             response = connection.getresponse()
             guard.attach_response(response)
             success = True
             return connection, response, guard
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
-            if guard is not None and guard.expired.is_set():
+            if guard.expired.is_set():
+                connection.close()
                 raise RuntimeError("download timed out") from exc
             last_error = exc
         finally:
-            if guard is not None and not success:
+            if not success:
                 guard.cancel()
         connection.close()
     raise RuntimeError(f"download failed: {last_error}")
