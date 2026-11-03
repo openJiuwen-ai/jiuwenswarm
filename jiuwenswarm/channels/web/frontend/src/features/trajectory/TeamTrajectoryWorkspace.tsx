@@ -6,6 +6,10 @@ import type { TrajectoryViewState } from './client/TrajectoryExplorer';
 import { trajectoryTranslator, type TrajectoryKey } from './client/i18n';
 import { TrajectoryToolbar } from './client/TrajectoryToolbar';
 import { buildTeamMemberLanes, type TeamMemberLaneModel } from './teamTrajectoryLanes';
+import {
+  groupTeamMemberLanesByWorkflowRun,
+  type WorkflowRunLaneSummary,
+} from './teamTrajectoryWorkflowGroups';
 import type { TrajectorySubjectGroups } from './trajectorySubjects';
 import css from './TeamTrajectoryWorkspace.module.css';
 
@@ -20,6 +24,13 @@ export interface TeamTrajectoryWorkspaceProps {
   active: boolean;
   groups: TrajectorySubjectGroups;
   messages?: Partial<Record<TrajectoryKey, string>>;
+  /**
+   * Swarmflow run summaries from the session store. Lanes whose member name
+   * opens with a run slug collapse into one collapsible group per run, headed
+   * by the run's task name; absent summaries still group by the untracked
+   * `wf-<12hex>` member-name pattern.
+   */
+  workflowRuns?: readonly WorkflowRunLaneSummary[];
   /** Currently expanded member subject id, or `null` when every lane is collapsed. */
   selectedSubjectId: string | null;
   onSelectSubject: (subjectId: string | null) => void;
@@ -151,6 +162,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   active,
   groups,
   messages,
+  workflowRuns,
   selectedSubjectId,
   onSelectSubject,
   memberView,
@@ -162,6 +174,11 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
 }: TeamTrajectoryWorkspaceProps) {
   const { t } = useTranslation();
   const lanes = buildTeamMemberLanes(groups.groups);
+  const { ungrouped, groups: workflowGroups } = groupTeamMemberLanesByWorkflowRun(
+    lanes,
+    workflowRuns ?? [],
+  );
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
   const translate = useMemo(() => trajectoryTranslator(messages), [messages]);
   const [actualDuration, setActualDuration] = useState(false);
   const [actualTime, setActualTime] = useState(false);
@@ -194,6 +211,115 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     const rowBounds = rowElement.getBoundingClientRect();
     lanesElement.scrollTop += rowBounds.top - lanesBounds.top;
   }, [pinToken, selectedSubjectId]);
+
+  const renderLaneRow = (lane: TeamMemberLaneModel) => {
+    const expanded = lane.subjectId === selectedSubjectId;
+    const select = () => onSelectSubject(expanded ? null : lane.subjectId);
+    const expand = () => {
+      if (!expanded) onSelectSubject(lane.subjectId);
+      // Keep this agent's name on screen each time one of its bars is opened.
+      setPinToken(value => value + 1);
+    };
+    return (
+      <div
+        ref={(element) => {
+          if (element === null) laneRowsRef.current.delete(lane.subjectId);
+          else laneRowsRef.current.set(lane.subjectId, element);
+        }}
+        key={lane.subjectId}
+        role="listitem"
+        className={`${css.laneRow} ${expanded ? css.laneRowExpanded : ''}`}
+        data-member-subject={lane.subjectId}
+        data-highlighted={agentSelection?.isHighlighted?.(lane.subjectId) === true ? 'true' : 'false'}
+        data-testid="team-trajectory-lane-row"
+      >
+        {memberView(lane.subjectId, {
+          expanded,
+          viewState,
+          toolbarAddon: (
+            <MemberToolbarControl
+              lane={lane}
+              expanded={expanded}
+              onClick={select}
+              {...(agentSelection === undefined
+                ? {}
+                : {
+                  included: agentSelection.isIncluded(lane.subjectId),
+                  onToggleIncluded: () => agentSelection.onToggle(lane.subjectId),
+                  showIncludeToggle: agentSelection.showIncludeToggle(lane.subjectId),
+                  onSelectAll: () => agentSelection.onSelectAll(lane.subjectId),
+                  canSelectAll: agentSelection.canSelectAll(lane.subjectId),
+                  selectAllActive: agentSelection.isSelectAllActive(lane.subjectId),
+                })}
+            />
+          ),
+          onOverviewActivate: expand,
+        })}
+      </div>
+    );
+  };
+
+  const renderWorkflowGroup = (group: (typeof workflowGroups)[number]) => {
+    // The selected member's group stays expanded so its lane never disappears
+    // behind a collapse the toggle cannot undo.
+    const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
+    const expanded = expandedGroups.has(group.runId)
+      || selected;
+    const toggle = () => {
+      setExpandedGroups((current) => {
+        const next = new Set(current);
+        if (next.has(group.runId)) next.delete(group.runId);
+        else next.add(group.runId);
+        return next;
+      });
+    };
+    return (
+      <div
+        key={group.runId}
+        role="listitem"
+        className={`${css.workflowGroup} ${selected ? css.workflowGroupSelected : ''}`}
+        data-testid="team-trajectory-workflow-group"
+        data-variant={group.runId}
+        data-status={group.status}
+      >
+        <button
+          type="button"
+          className={css.workflowGroupHeader}
+          aria-expanded={expanded}
+          aria-label={t('trajectory.team.workflowGroupAria', {
+            name: group.name,
+            count: group.lanes.length,
+          })}
+          title={group.runId}
+          data-testid="team-trajectory-workflow-group-header"
+          data-variant={group.runId}
+          onClick={toggle}
+        >
+          <span className={`${css.statusDot} ${css[`status_${group.status}`]}`} aria-hidden="true" />
+          <span className={css.workflowGroupName} title={group.name}>{group.name}</span>
+          <span className={css.workflowGroupShortId}>{group.shortId}</span>
+          <span
+            className={css.workflowGroupCount}
+            data-testid="team-trajectory-workflow-group-count"
+            data-variant={group.runId}
+          >
+            {t('trajectory.team.workflowGroupOperators', { count: group.lanes.length })}
+          </span>
+          <span
+            className={`${css.chevron} ${expanded ? css.chevronExpanded : ''}`}
+            aria-hidden="true"
+          >
+            {'>'}
+          </span>
+        </button>
+        {expanded ? (
+          <div className={css.workflowGroupLanes} role="list">
+            {group.lanes.map((lane) => renderLaneRow(lane))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div
@@ -232,52 +358,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         aria-label={t('trajectory.team.memberLanes')}
         data-testid="team-trajectory-lanes"
       >
-        {lanes.map((lane) => {
-          const expanded = lane.subjectId === selectedSubjectId;
-          const select = () => onSelectSubject(expanded ? null : lane.subjectId);
-          const expand = () => {
-            if (!expanded) onSelectSubject(lane.subjectId);
-            // Keep this agent's name on screen each time one of its bars is opened.
-            setPinToken(value => value + 1);
-          };
-          return (
-            <div
-              ref={(element) => {
-                if (element === null) laneRowsRef.current.delete(lane.subjectId);
-                else laneRowsRef.current.set(lane.subjectId, element);
-              }}
-              key={lane.subjectId}
-              role="listitem"
-              className={`${css.laneRow} ${expanded ? css.laneRowExpanded : ''}`}
-              data-member-subject={lane.subjectId}
-              data-highlighted={agentSelection?.isHighlighted?.(lane.subjectId) === true ? 'true' : 'false'}
-              data-testid="team-trajectory-lane-row"
-            >
-              {memberView(lane.subjectId, {
-                expanded,
-                viewState,
-                toolbarAddon: (
-                  <MemberToolbarControl
-                    lane={lane}
-                    expanded={expanded}
-                    onClick={select}
-                    {...(agentSelection === undefined
-                      ? {}
-                      : {
-                        included: agentSelection.isIncluded(lane.subjectId),
-                        onToggleIncluded: () => agentSelection.onToggle(lane.subjectId),
-                        showIncludeToggle: agentSelection.showIncludeToggle(lane.subjectId),
-                        onSelectAll: () => agentSelection.onSelectAll(lane.subjectId),
-                        canSelectAll: agentSelection.canSelectAll(lane.subjectId),
-                        selectAllActive: agentSelection.isSelectAllActive(lane.subjectId),
-                      })}
-                  />
-                ),
-                onOverviewActivate: expand,
-              })}
-            </div>
-          );
-        })}
+        {ungrouped.map((lane) => renderLaneRow(lane))}
+        {workflowGroups.map((group) => renderWorkflowGroup(group))}
       </div>
     </div>
   );
