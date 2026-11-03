@@ -4,6 +4,9 @@
 
 - eager_tools: always visible in the model tools schema
 - skill-gated tools: direct-visible only while their required skill is active
+- recall_compressed_context: kept in the schema when registered, ungated, and
+  not disabled, even if it is absent from eager_tools. It is not listed as a
+  deferred tool, so navigation does not tell the model that a direct call fails
 - deferred_tools: registered at runtime but hidden from schema; accessed via
   tools_search + invoke_tool
 - disabled_tools / DisabledToolsRail: excluded from schema, navigation,
@@ -59,6 +62,9 @@ logger = logging.getLogger(__name__)
 
 _LOG_PREFIX = "[ProgressiveToolRail]"
 _REQUIRED_SKILL_KEY = "required_skill"
+# Registered by agent-core only while compression recall is enabled. Pinning the
+# name here does not register the tool; an input list without it is unchanged.
+_PINNED_SCHEMA_TOOL_NAME = "recall_compressed_context"
 _EAGER_DEEPRESEARCH_BINDINGS_KEY = "__eager_deepresearch_bindings__"
 _DEEPRESEARCH_CONTEXT_TOOLS = frozenset({
     "deepresearch_execute",
@@ -119,6 +125,9 @@ class ProgressiveToolRail(DeepAgentRail):
 
     - eager_tools: always visible in the model tools schema
     - skill-gated tools: direct-visible only while their declared skill is active
+    - recall_compressed_context: schema-visible when registered and ungated,
+      ordered after eager and active skill-gated tools. Disabled and skill
+      gates still win. Absent from the input list, it is not invented
     - deferred_tools: registered in ability_manager but hidden from schema;
       accessed via tools_search (get schema) + invoke_tool (proxy call)
     - ordinary tool schema stays stable, maximizing LLM prefix cache
@@ -803,14 +812,23 @@ class ProgressiveToolRail(DeepAgentRail):
                     if name not in active_gated_names:
                         active_gated_names.append(name)
                 continue
-            if not lazy_load_active or name in self.eager_tools:
+            if (
+                not lazy_load_active
+                or name in self.eager_tools
+                or name == _PINNED_SCHEMA_TOOL_NAME
+            ):
                 filtered_tools.append(tool)
         if lazy_load_active:
             # Canonical eager order — never follow ability_manager / MCP rebind order.
             # Mid-task send_file_to_user <-> tools_search swaps break LLM prefix cache.
+            # _order_tools_by_name_list emits every name in the key, so the pinned
+            # tool is appended only when eager and active gates do not already place it.
+            ordered_names = [*self.eager_tools, *active_gated_names]
+            if _PINNED_SCHEMA_TOOL_NAME not in ordered_names:
+                ordered_names.append(_PINNED_SCHEMA_TOOL_NAME)
             inputs.tools = self._order_tools_by_name_list(
                 filtered_tools,
-                [*self.eager_tools, *active_gated_names],
+                ordered_names,
             )
         else:
             inputs.tools = filtered_tools
@@ -1115,26 +1133,45 @@ class ProgressiveToolRail(DeepAgentRail):
             )
             return []
 
+    def _deferred_tools(self, tools: list[Any], disabled: Iterable[str]) -> list[Any]:
+        """Return tools that stay hidden and are advertised as not directly callable.
+
+        Skill-gated and disabled tools are omitted. The pinned recall tool is
+        schema-visible, so leaving it here would tell the model a direct call fails.
+        """
+        blocked = set(disabled)
+        deferred: list[Any] = []
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "")
+            declared, _required_skill = _required_skill_requirement(tool)
+            if (
+                not name
+                or declared
+                or name in self.eager_tools
+                or name in blocked
+                or name == _PINNED_SCHEMA_TOOL_NAME
+            ):
+                continue
+            deferred.append(tool)
+        return deferred
+
     async def _refresh_deferred_tool_cache(
         self, agent: Any = None
     ) -> None:
         """Refresh cached tool lists from live ability_manager.
 
         ``_cached_all_tool_infos`` stays unfiltered for staleness checks.
-        Deferred/nav/search/invoke omit both non-eager and disabled tools so
-        blacklist entries never appear in the navigation section.
+        Deferred/nav/search/invoke omit disabled tools, skill-gated tools, and
+        the pinned recall tool. The recall tool is schema-visible, so navigation
+        must not describe it as a tool that cannot be called directly.
         """
         resolved = agent or self._resolve_runtime_agent()
         all_tools = await self._get_all_tool_infos(resolved)
         self._cached_all_tool_infos = all_tools
-        disabled = self._current_disabled_tools()
-        deferred_tools = []
-        for tool in all_tools:
-            name = str(getattr(tool, "name", "") or "")
-            declared, _required_skill = _required_skill_requirement(tool)
-            if not declared and name not in self.eager_tools and name not in disabled:
-                deferred_tools.append(tool)
-        self._cached_deferred_tool_infos = deferred_tools
+        self._cached_deferred_tool_infos = self._deferred_tools(
+            all_tools,
+            self._current_disabled_tools(),
+        )
 
     @staticmethod
     def _tool_name_set(tools: list[Any]) -> set[str]:
@@ -1193,13 +1230,10 @@ class ProgressiveToolRail(DeepAgentRail):
         ):
             await self._refresh_deferred_tool_cache(agent)
             return
-        disabled = self._current_disabled_tools()
-        live_deferred = []
-        for tool in live_tools:
-            name = str(getattr(tool, "name", "") or "")
-            declared, _required_skill = _required_skill_requirement(tool)
-            if not declared and name not in self.eager_tools and name not in disabled:
-                live_deferred.append(tool)
+        live_deferred = self._deferred_tools(
+            live_tools,
+            self._current_disabled_tools(),
+        )
         if self._tool_name_set(live_deferred) != self._tool_name_set(
             self._cached_deferred_tool_infos
         ):
