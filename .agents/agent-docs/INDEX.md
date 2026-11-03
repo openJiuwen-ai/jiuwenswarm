@@ -9,30 +9,30 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 29 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+按模块分组；跨模块文档在各相关分组展示。
 
 ## 模块导航
 
-| 模块 | 文档数 |
-|---|---|
-| [agent_teams](#module-1) | 1 |
-| [agent_teams/workflow](#module-2) | 3 |
-| [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
-| [gateway/channel_manager/web](#module-4) | 2 |
-| [gateway/message_handler](#module-5) | 1 |
-| [jiuwenswarm](#module-6) | 3 |
-| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-7) | 1 |
-| [jiuwenswarm/agents/harness/common/rails](#module-8) | 2 |
-| [jiuwenswarm/agents/harness/common/tools](#module-9) | 2 |
-| [jiuwenswarm/agents/harness/common/tools/cron](#module-10) | 1 |
-| [jiuwenswarm/channels/web](#module-11) | 2 |
-| [jiuwenswarm/channels/web/frontend](#module-12) | 3 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-13) | 1 |
-| [jiuwenswarm/observability](#module-14) | 1 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-15) | 4 |
-| [tests/unit_tests/gateway](#module-16) | 1 |
-| [tests/unit_tests/personal_context](#module-17) | 1 |
-| [未分类](#module-18) | 12 |
+| 模块 |
+|---|
+| [agent_teams](#module-1) |
+| [agent_teams/workflow](#module-2) |
+| [gateway/channel_manager/im_platforms/xiaoyi](#module-3) |
+| [gateway/channel_manager/web](#module-4) |
+| [gateway/message_handler](#module-5) |
+| [jiuwenswarm](#module-6) |
+| [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-7) |
+| [jiuwenswarm/agents/harness/common/rails](#module-8) |
+| [jiuwenswarm/agents/harness/common/tools](#module-9) |
+| [jiuwenswarm/agents/harness/common/tools/cron](#module-10) |
+| [jiuwenswarm/channels/web](#module-11) |
+| [jiuwenswarm/channels/web/frontend](#module-12) |
+| [jiuwenswarm/gateway/channel_manager/web](#module-13) |
+| [jiuwenswarm/observability](#module-14) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-15) |
+| [tests/unit_tests/gateway](#module-16) |
+| [tests/unit_tests/personal_context](#module-17) |
+| [未分类](#module-18) |
 
 <a id="module-1"></a>
 

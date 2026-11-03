@@ -26,7 +26,12 @@ def permission_interaction(metadata):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool_rule,expected", [(True, "tools.write_file"), (False, "tiered_policy:defaults.*")])
-async def test_sdk_rule_reaches_enterprise_question_without_changing_approval(monkeypatch, tool_rule, expected):
+async def test_sdk_rule_reaches_enterprise_question_without_changing_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_rule: bool,
+    expected: str,
+) -> None:
+    """Preserve SDK approval evidence while applying enterprise UI restrictions."""
     config = {
         "enabled": True, "package_builtin_rules": False,
         "defaults": {"*": "ask"}, "file_guard": {"enabled": False},
@@ -48,22 +53,22 @@ async def test_sdk_rule_reaches_enterprise_question_without_changing_approval(mo
 
     assert enterprise["source"] == "permission_interrupt"
     assert enterprise["questions"][0].pop("matched_rule") == expected
-
-    # 2f5f0691f 起企业版安全护栏会隐藏「永久记住」选项并去掉对应提示文案，
-    # 两侧 payload 因此不再逐字相同。本用例只要求该护栏差异之外不改变审批语义。
     personal_question = personal["questions"][0]
     enterprise_question = enterprise["questions"][0]
-    assert "matched_rule" not in personal_question
-    assert [option["value"] for option in personal_question["options"]].count("always_allow") == 1
-    assert enterprise_question["options"] == [
-        option for option in personal_question["options"] if option["value"] != "always_allow"
+    assert [option["value"] for option in personal_question["options"]] == [
+        "allow_once", "session_allow", "always_allow", "reject",
     ]
-    assert personal_question["question"].startswith(enterprise_question["question"])
-    assert "永久记住" in personal_question["question"][len(enterprise_question["question"]):]
-    assert {key: value for key, value in enterprise_question.items() if key not in {"options", "question"}} == {
-        key: value for key, value in personal_question.items() if key not in {"options", "question"}
-    }
-    assert enterprise["event_type"] == personal["event_type"]
+    assert [option["value"] for option in enterprise_question["options"]] == [
+        "allow_once", "session_allow", "reject",
+    ]
+    assert "永久记住" in personal_question["question"]
+    assert "永久记住" not in enterprise_question["question"]
+    assert "会话内记住" in enterprise_question["question"]
+    expected_enterprise = deepcopy(personal)
+    expected_question = expected_enterprise["questions"][0]
+    expected_question["options"].pop(2)
+    expected_question["question"] = personal_question["question"].split("；选择「永久记住」", 1)[0]
+    assert enterprise == expected_enterprise
     assert interaction == original
     assert result.needs_approval and result.matched_rule == expected
 
