@@ -55,7 +55,7 @@ python .agents/skills/jw-design/scripts/sync_documents.py --document .agents/age
 
 示例路径需要换成实际文件。仅重新生成时省略 --document；工具可以从其他 cwd 启动，默认根目录按脚本所在仓库解析。
 自动维护 `.agents/agent-docs/INDEX.md`、`designs/INDEX.md`、`features/INDEX.md`、`bugfix/INDEX.md`、`specs/INDEX.md`。
-总索引与 F/B/S 索引按 modules 分组，提供模块导航和文档数量；跨模块文档在各相关分组展示，总数按源文件去重，未声明模块的放入未分类。
+总索引与 F/B/S 索引按 modules 分组，提供模块导航；跨模块文档在各相关分组展示，未声明模块的放入未分类。所有索引不记录文档总数、各模块文档数量或全局生命周期数量汇总，避免新增文档时反复修改公共统计行。
 组内保留类型、作者、模块、代码文件和关联 D，目录不再承担唯一检索功能；已有 D 索引继续按模块和生命周期展示。
 模块名称展示沿用各仓 D 索引的规则：core 省略固定 openjiuwen/ 前缀，swarm 保留跨仓完整路径；不改写源文档的声明。
 索引是生成视图，事实只在源 frontmatter 维护。不启动常驻 watcher、不安装 Git hook，也不增加提交或外部操作权限。

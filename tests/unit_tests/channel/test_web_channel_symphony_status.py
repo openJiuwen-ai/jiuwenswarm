@@ -84,6 +84,7 @@ async def test_web_channel_stream_callback_preserves_delivery_state_and_legacy_p
     )
     handler = object.__new__(MessageHandler)
     handler._stream_app_ids = {}
+    # publish_stream_chunk 会合并 _stream_metadata；__new__ 绕过 __init__，需手挂。
     handler._stream_metadata = {}
     handler._handle_evolution_chunk = AsyncMock(return_value=True)
     handler.publish_robot_messages = channel.send

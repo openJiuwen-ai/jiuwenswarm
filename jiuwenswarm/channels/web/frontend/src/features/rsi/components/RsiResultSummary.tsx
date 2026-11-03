@@ -11,14 +11,14 @@ import { useTranslation } from 'react-i18next';
 import optimizeImage from '../../../assets/rsi/rsi-optimize.svg';
 import type { RsiTaskGetResult, RsiReportGetResult, RsiUsageGetResult } from '../types';
 import { formatArtifactScore, formatGain, formatTokensK, presentRsiNode, typeDisplayLabel } from '../rsiPresentation';
-import { resolveRsiArtifactSource } from '../rsiArtifactFiles';
+import { resolveRsiArtifactSource, type RsiArtifactSource } from '../rsiArtifactFiles';
 import { useRsiStore } from '../rsiStore';
 
 interface RsiResultSummaryProps {
   task: RsiTaskGetResult;
   report: RsiReportGetResult | null;
   usage: RsiUsageGetResult | null;
-  onOpenArtifact: (path: string, title: string) => void;
+  onOpenArtifact: (source: RsiArtifactSource, title: string) => void;
 }
 
 export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiResultSummaryProps) {
@@ -33,10 +33,14 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
   const gainFmt = formatGain(gain);
   const bestArtifactId = task.best_artifact?.artifact_id ?? report?.best_artifact?.artifact_id ?? null;
   const bestNode =
-    tree?.nodes.find((node) => bestArtifactId != null && node.snapshot_artifact_id === bestArtifactId) ??
-    [...(tree?.nodes ?? [])].filter((node) => node.type === 'ADOPTED').sort((a, b) => b.iteration - a.iteration)[0] ??
-    null;
-  const bestArtifactSource = bestNode ? resolveRsiArtifactSource(bestNode, task.task_id) : null;
+    tree?.nodes.find((node) => bestArtifactId != null && (
+      node.snapshot_artifact_id === bestArtifactId || (task.scenario === 'HARNESS' && node.node_id === bestArtifactId)
+    )) ??
+    (task.scenario === 'HARNESS' && bestArtifactId != null
+      ? null
+      : [...(tree?.nodes ?? [])].filter((node) => node.type === 'ADOPTED')
+        .sort((a, b) => b.iteration - a.iteration)[0] ?? null);
+  const bestArtifactSource = bestNode ? resolveRsiArtifactSource(bestNode, task.task_id, task.scenario) : null;
   const bestPresentation = bestNode
     ? presentRsiNode(bestNode, {
         scenario: task.scenario,
@@ -125,7 +129,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
                 <button
                   type="button"
                   className="rsi-best__link"
-                  onClick={() => onOpenArtifact(bestArtifactSource.path, bestName ?? '论文预览')}
+                  onClick={() => onOpenArtifact(bestArtifactSource, bestName ?? task.name)}
                   data-testid="rsi-best-link"
                   data-variant="link"
                 >

@@ -1499,19 +1499,45 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._write_json(404, {"error": "file_not_found"})
                 return
 
+            file_size = full_path.stat().st_size
             mime_type, _ = mimetypes.guess_type(full_path.name)
-            self.send_response(200)
+            # Browsers cannot seek media (e.g. the designer video preview
+            # timeline) unless the endpoint honors Range requests; answer
+            # 206/416 like the gateway ``serve_file_chunks`` implementation.
+            range_header = str(self.headers.get("Range") or "").strip()
+            byte_range = (
+                _parse_single_byte_range(range_header, file_size)
+                if range_header
+                else None
+            )
+            if range_header and byte_range is None:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            start, end = byte_range or (0, max(file_size - 1, 0))
+            content_length = 0 if file_size == 0 else end - start + 1
+            self.send_response(206 if byte_range is not None else 200)
             self.send_header("Content-Type", mime_type or "application/octet-stream")
-            self.send_header("Content-Length", str(full_path.stat().st_size))
+            self.send_header("Content-Length", str(content_length))
+            self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
+            if byte_range is not None:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
-            if self.command != "HEAD":
+            if self.command != "HEAD" and content_length > 0:
+                remaining = content_length
                 with full_path.open("rb") as file_obj:
-                    while True:
-                        chunk = file_obj.read(65536)
+                    file_obj.seek(start)
+                    while remaining > 0:
+                        chunk = file_obj.read(min(65536, remaining))
                         if not chunk:
                             break
                         self.wfile.write(chunk)
+                        remaining -= len(chunk)
             return
 
         if path == "/file-api/file-content":
@@ -2440,6 +2466,22 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     self.path = quote("/" + rel_path, safe="/")
                     if parsed.query:
                         self.path += "?" + parsed.query
+            # Reuse dev-stable's static-prefix fallback for named public files.
+            # Asset requests stay confined to assets/ and never fall back to public files.
+            missing_public_path = in_base and not target.exists() and not asset_request
+            if missing_public_path and Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS:
+                parts = rel_path.split('/')
+                for index in range(1, len(parts)):
+                    candidate_rel = '/'.join(parts[index:])
+                    candidate = (base_dir / candidate_rel).resolve()
+                    candidate_in_base = os.path.commonpath([str(base_dir), str(candidate)]) == str(base_dir)
+                    if candidate_in_base and candidate.is_file():
+                        rel_path = candidate_rel
+                        target = candidate
+                        self.path = quote('/' + rel_path, safe='/')
+                        if parsed.query:
+                            self.path += '?' + parsed.query
+                        break
         except (OSError, ValueError):
             self._static_cache_control = None
             self._write_json(400, {"error": "invalid_path"})

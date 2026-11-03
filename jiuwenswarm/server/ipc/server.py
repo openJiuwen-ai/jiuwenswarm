@@ -69,6 +69,9 @@ def _peer_uid(sock: object) -> int | None:
 class IpcServer:
     """Accept supervisor connections on a Unix socket or a Windows named pipe."""
 
+    reconnectable = True
+    generation: int | None = None
+
     def __init__(self, path: str) -> None:
         self.path = path
         self._queue: asyncio.Queue[IpcConnection] = asyncio.Queue()
@@ -76,6 +79,7 @@ class IpcServer:
         self._listener: object | None = None
         self._thread: threading.Thread | None = None
         self._closed = False
+        self._released = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._owner_lease: object | None = None
 
@@ -164,22 +168,33 @@ class IpcServer:
     async def accept(self) -> IpcConnection:
         return await self._queue.get()
 
-    async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+    async def stop_accepting(self) -> None:
+        """Stop admission while accepted sessions finish their final replies."""
+        if not self._closed:
+            self._closed = True
+            if self._unix is not None:
+                self._unix.close()
+            listener = self._listener
+            if listener is not None:
+                close = getattr(listener, "close", None)
+                if callable(close):
+                    close()
+                self._listener = None
+        # Retrying after cancellation must also drain connections left queued.
         while not self._queue.empty():
             await self._queue.get_nowait().close()
+
+    async def close(self) -> None:
+        """Release the listener after callers close their accepted sessions."""
+        if self._released:
+            return
+        await self.stop_accepting()
         if self._unix is not None:
-            self._unix.close()
             await self._unix.wait_closed()
             self._unix = None
-        listener = self._listener
-        if listener is not None:
-            close = getattr(listener, "close", None)
-            if callable(close):
-                close()
-            self._listener = None
+        # Another close may release ownership while wait_closed is pending.
+        if self._released:
+            return
         if os.name != "nt":
             try:
                 Path(self.path).unlink()
@@ -188,3 +203,4 @@ class IpcServer:
         if self._owner_lease is not None:
             self._owner_lease.release()
             self._owner_lease = None
+        self._released = True

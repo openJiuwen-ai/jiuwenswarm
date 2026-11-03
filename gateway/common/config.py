@@ -2410,7 +2410,7 @@ _DEFAULT_SANDBOX_STARTUP_MODE = "internal"
 # YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
 _VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
 _DEFAULT_YUANRONG_EXECUTOR = "docker"
-_DEFAULT_YUANRONG_URL = "http://yuanrong.local"
+_DEFAULT_YUANRONG_URL = "http://127.0.0.1:18093"
 _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
     "image",
     "workdir",
@@ -2551,7 +2551,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     - 若 yaml 中存在: ``image`` / ``workdir`` / ``mounts`` / ``cpu`` /
       ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs`` /
       ``user`` / ``group``
-    - ``url`` 为空时回落占位 ``http://yuanrong.local`` (仅作 cache key)
+    - ``url`` 为空时回落 ``http://127.0.0.1:18093``
 
     Raises:
         ValueError: yaml 里 ``preserve_file_sharing_mode`` 写了非法值时, 直接

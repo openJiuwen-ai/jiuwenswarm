@@ -327,7 +327,7 @@ class FailingAgentClient(FakeAgentClient):
 
 
 @pytest.mark.asyncio
-async def test_web_cron_allocation_failure_publishes_tenant_notification_without_session(tmp_path, monkeypatch):
+async def test_web_cron_allocation_failure_publishes_no_notification(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
 
     from gateway.common.cron_events import cron_notification_scope
@@ -346,19 +346,17 @@ async def test_web_cron_allocation_failure_publishes_tenant_notification_without
         run_id = f"{job.id}:1234"
         await scheduler.on_wake(job, run_id)
         await scheduler.run_tasks[run_id]
-        frame = await asyncio.wait_for(queue.get(), 1)
-        assert frame["event"] == "cron.run.updated"
-        assert frame["payload"]["status"] == "failed"
-        assert frame["payload"]["session_id"] is None
-        assert frame["payload"]["phase"] == "finished"
+        # Run-status notifications are disabled: even a failed allocation
+        # stays silent instead of reaching the task list.
+        assert queue.empty()
     finally:
         bus.unsubscribe(scope, queue)
 
 
 @pytest.mark.asyncio
-async def test_web_cron_failure_notification_carries_interrupt_reason(tmp_path):
-    """Interrupt failures keep their reason in result_text; the run hint must
-    expose it so the task list tooltip is not empty."""
+async def test_web_cron_failure_notification_is_disabled(tmp_path):
+    """Run-status notifications are disabled; even a failed run with a
+    result_text reason must not publish cron.run.updated."""
     store = CronJobStore(path=tmp_path / "jobs.json")
     job = await _create_one_job(store, targets="web")
     handler = FakeMessageHandler()
@@ -384,9 +382,7 @@ async def test_web_cron_failure_notification_carries_interrupt_reason(tmp_path):
         msg.payload for msg in handler.published
         if (msg.payload or {}).get("event_type") == "cron.run.updated"
     ]
-    assert notices
-    assert notices[-1]["status"] == "failed"
-    assert notices[-1]["error"] == reason
+    assert notices == []
 
 
 @pytest.mark.asyncio
@@ -521,8 +517,7 @@ async def test_web_cron_stream_uses_one_web_session_without_result_broadcast(tmp
             await scheduler.handle_event(event)
     assert len([msg for msg in handler.published if (msg.payload or {}).get("event_type") == "chat.final"]) == 1
     notices = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "cron.run.updated"]
-    assert [event["phase"] for event in notices] == ["started", "finished", "reminder"]
-    assert all("content" not in event for event in notices)
+    assert notices == []
 
 
 @pytest.mark.asyncio
@@ -556,7 +551,8 @@ async def test_web_cron_terminal_error_publishes_one_visible_chat_error(tmp_path
     assert len(errors) == 1
     assert errors[0]["error"] == "model offline"
     assert scheduler.runs[run_id].status == "failed"
-    assert any((msg.payload or {}).get("phase") == "finished" for msg in handler.published)
+    # Run-status notifications are disabled: no extra "finished" hint is
+    # published for the task list.
 
 
 @pytest.mark.asyncio
@@ -592,10 +588,9 @@ async def test_lifecycle_cancel_does_not_persist_a_failure(tmp_path, targets):
         if item.get("event_type") == "cron.run.updated" and item.get("phase") == "reminder"
     ] == []
     if targets == "web":
+        # Run-status notifications are disabled: a cancelled run stays silent.
         notices = [item for item in payloads if item.get("event_type") == "cron.run.updated"]
-        # The run still reports that it stopped, but never as a user-facing reminder.
-        assert [item["phase"] for item in notices] == ["started", "finished"]
-        assert all(item["notify"] is False for item in notices)
+        assert notices == []
 
 
 @pytest.mark.asyncio
@@ -902,8 +897,7 @@ class TestCronFailureDelivery:
         assert len(errors) == 1
         assert errors[0].payload["error"] == state.result_text
         notifications = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "cron.run.updated"]
-        assert [event["phase"] for event in notifications] == ["started", "finished", "reminder"]
-        assert all("content" not in event for event in notifications)
+        assert notifications == []
         failure_log = next(
             call
             for call in warning_mock.call_args_list
@@ -1185,7 +1179,7 @@ class TestHandleEventStoreValidation:
         assert content == "result: 9am now"
 
     @pytest.mark.asyncio
-    async def test_web_push_update_includes_execution_session_id(self, tmp_path):
+    async def test_web_push_update_stays_silent(self, tmp_path):
         store_file = tmp_path / "cron_jobs.json"
         store = CronJobStore(path=store_file)
         job = await _create_one_job(store, targets="web")
@@ -1203,15 +1197,9 @@ class TestHandleEventStoreValidation:
         ev = _Event(at_ts=time.time(), seq=1, kind="push_update", job_id=job.id, run_id=run_id)
         await svc.handle_event(ev)
 
-        assert len(handler.published) == 1
-        msg = handler.published[0]
-        assert msg.channel_id == "web"
-        assert msg.session_id is None
-        assert msg.payload["user_id"] == ""
-        assert msg.payload["event_type"] == "cron.run.updated"
-        assert msg.payload["session_id"] == run_info["session_id"]
-        assert msg.payload["notify"] is True
-        assert "content" not in msg.payload
+        # Run-status notifications are disabled: web runs deliver results
+        # through the execution session only, so push_update stays silent.
+        assert handler.published == []
 
     @pytest.mark.asyncio
     async def test_wake_executes_normally_when_job_present(self, tmp_path):
@@ -3891,14 +3879,14 @@ async def test_enterprise_manual_run_parks_and_writes_a_hold(tmp_path, monkeypat
     assert svc.local_permission_hold_session(job.id) == session_id
 
     notices = [msg.payload for msg in handler.published if (msg.payload or {}).get("event_type") == "cron.run.updated"]
-    assert notices[-1]["phase"] == "paused"
-    assert notices[-1]["status"] == "awaiting_approval"
+    # Run-status notifications are disabled: the pause is visible only in
+    # the run state, not as a task-list notification.
+    assert notices == []
     assert state.finished_at is None
     svc.jobs[job.id] = job
     svc.mark_permission_resume(session_id)
     await asyncio.sleep(0)
-    assert handler.published[-1].payload["status"] == "succeeded"
-    assert handler.published[-1].payload["run_id"] == run_id
+    assert notices == []
 
 
 @pytest.mark.asyncio
