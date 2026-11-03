@@ -11,6 +11,7 @@ import os
 import subprocess
 import struct
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -549,7 +550,9 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
     root = Path(__file__).resolve().parents[3]
     monkeypatch.setenv("PYTHONPATH", str(root))
-    socket = str(tmp_path / ("runtime.pipe" if os.name == "nt" else "runtime.sock"))
+    # macOS pytest paths can exceed the Unix socket address limit.
+    socket_dir = tempfile.TemporaryDirectory(prefix="jw-id-", dir=tmp_path if os.name == "nt" else "/tmp")
+    socket = str(Path(socket_dir.name) / ("runtime.pipe" if os.name == "nt" else "runtime.sock"))
     worker = WorkerProcess(socket, host="127.0.0.1", port=18092, stub=True)
     conn = None
     try:
@@ -566,3 +569,4 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
         if conn is not None:
             await conn.close()
         await worker.stop(timeout=5)
+        socket_dir.cleanup()

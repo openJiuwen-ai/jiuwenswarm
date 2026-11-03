@@ -132,10 +132,36 @@ class TestDecodedPayloads:
     @staticmethod
     @pytest.mark.parametrize("value", ["always_allow", "allow_always", "永久记住", "Always allow"])
     def test_always_allow_persists(monkeypatch, value):
+        monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
         payload = _decode(monkeypatch, value)
         assert payload["approved"] is True
         assert payload["auto_confirm"] is True
         assert payload["persist_allow"] is True
+
+    @staticmethod
+    @pytest.mark.parametrize("value", ["always_allow", "allow_always", "永久记住", "Always allow"])
+    def test_always_allow_degrades_to_session_on_enterprise(monkeypatch, value):
+        """企业版即使回传永久记住，也只会话内生效、不写盘。"""
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        payload = _decode(monkeypatch, value)
+        assert payload["approved"] is True
+        assert payload["auto_confirm"] is True
+        assert payload["persist_allow"] is False
+
+    @staticmethod
+    @pytest.mark.parametrize("value", ["allow_always", "总是允许", "Always Allow"])
+    def test_evolution_allow_always_keeps_action_on_personal(monkeypatch, value):
+        monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+        payload = _decode(monkeypatch, value, source="evolution_interrupt")
+        assert payload == {"action": "allow_always"}
+
+    @staticmethod
+    @pytest.mark.parametrize("value", ["allow_always", "总是允许", "Always Allow"])
+    def test_evolution_allow_always_degrades_to_once_on_enterprise(monkeypatch, value):
+        """企业版即使回传总是允许，也只按本次允许生效。"""
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        payload = _decode(monkeypatch, value, source="evolution_interrupt")
+        assert payload == {"action": "allow_once"}
 
     @staticmethod
     @pytest.mark.parametrize("value", ["reject", "拒绝", "Reject"])

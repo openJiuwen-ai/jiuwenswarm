@@ -615,4 +615,56 @@ async def preflight_team_mcps(spec: Any) -> list[str]:
     return dropped
 
 
-__all__ = ["enrich_team_spec_for_swarm", "preflight_team_mcps"]
+def assign_shared_sandbox_sys_operation(spec: Any, deep_agent: Any) -> None:
+    """Point every team member at the main agent's sandbox SysOperation.
+
+    ``setup_agent`` keeps a member's own ``sys_operation`` when the spec
+    already has one. Reusing the main agent's id makes ``SysOperationSpec.resolve``
+    return that registered sandbox instead of creating a local one.
+
+    No-op when the main agent has no sandbox SysOperation.
+    """
+    shared = _shared_sandbox_sys_operation_spec(deep_agent)
+    if shared is None:
+        return
+    agents = getattr(spec, "agents", None)
+    if isinstance(agents, dict):
+        for name, agent_spec in list(agents.items()):
+            if not hasattr(agent_spec, "model_copy"):
+                continue
+            agents[name] = agent_spec.model_copy(update={"sys_operation": shared})
+    reviewer = getattr(spec, "reviewer_agent", None)
+    if hasattr(reviewer, "model_copy"):
+        spec.reviewer_agent = reviewer.model_copy(update={"sys_operation": shared})
+    logger.info(
+        "[swarm.assembly] team members share sandbox sys_operation %s",
+        shared.id,
+    )
+
+
+def _shared_sandbox_sys_operation_spec(deep_agent: Any) -> Any:
+    """Copy the main agent's sandbox card into a member SysOperationSpec."""
+    from openjiuwen.core.sys_operation import OperationMode
+    from openjiuwen.core.sys_operation.config import SandboxGatewayConfig
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    config = getattr(deep_agent, "deep_config", None)
+    sys_operation = getattr(config, "sys_operation", None)
+    if getattr(sys_operation, "mode", None) != OperationMode.SANDBOX:
+        return None
+    run_config = getattr(sys_operation, "_run_config", None)
+    gateway = getattr(run_config, "config", None)
+    if not isinstance(gateway, SandboxGatewayConfig):
+        return None
+    return SysOperationSpec(
+        id=str(sys_operation.id),
+        mode=OperationMode.SANDBOX,
+        gateway_config=gateway,
+    )
+
+
+__all__ = [
+    "assign_shared_sandbox_sys_operation",
+    "enrich_team_spec_for_swarm",
+    "preflight_team_mcps",
+]

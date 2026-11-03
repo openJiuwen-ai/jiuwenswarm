@@ -17,7 +17,11 @@ from jiuwenswarm.server.runtime.session import session_metadata
 def _patch_metadata(monkeypatch: pytest.MonkeyPatch, metadata: dict[str, Any]) -> list[dict[str, Any]]:
     written: list[dict[str, Any]] = []
     monkeypatch.setattr(session_metadata, "_read_metadata", lambda _sid, cache_bust=True: dict(metadata))
-    monkeypatch.setattr(session_metadata, "_enqueue_write", lambda _sid, data: written.append(dict(data)))
+    monkeypatch.setattr(
+        session_metadata,
+        "_enqueue_write",
+        lambda _sid, data, **_kwargs: written.append(dict(data)),
+    )
     return written
 
 
@@ -55,6 +59,26 @@ def test_persist_dispatch_mode_writes_metadata(monkeypatch: pytest.MonkeyPatch) 
     team_helpers.persist_session_team_dispatch_mode("s1", "scheduled")
 
     assert written == [{"session_id": "s1", "title": "t", "session_team_dispatch_mode": "scheduled"}]
+
+
+def test_team_mode_writes_only_merge_their_owned_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[dict[str, Any], frozenset[str] | None]] = []
+    monkeypatch.setattr(
+        session_metadata,
+        "_read_metadata",
+        lambda _sid, cache_bust=True: {"session_id": "s1", "title": "t"},
+    )
+    monkeypatch.setattr(
+        session_metadata,
+        "_enqueue_write",
+        lambda _sid, data, **kwargs: calls.append((dict(data), kwargs.get("merge_fields"))),
+    )
+
+    team_helpers.persist_session_team_dispatch_mode("s1", "scheduled")
+    team_helpers.persist_session_team_bootstrap_mode("s1", "leader")
+
+    assert calls[0][1] == frozenset({"session_team_dispatch_mode"})
+    assert calls[1][1] == frozenset({"session_team_bootstrap_mode"})
 
 
 async def _build_spec(

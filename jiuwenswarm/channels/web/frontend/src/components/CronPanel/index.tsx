@@ -325,7 +325,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 在这里创建/编辑/停止/删除任务后也要通知它刷新，否则侧边栏那边的任务文件夹会显示过期数据
   const reloadCronStore = useCronStore((s) => s.reload);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
-  const runUpdates = useCronStore((s) => s.runUpdates);
   // 手动创建未选项目时，后端以此把任务归入 default/default_code（Issue #5713）。
   const currentWorkMode = useWorkspaceStore((s) => s.workMode);
 
@@ -1086,24 +1085,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 因此这里只有两态：过期 → 过期；否则 → 启用，不显示"禁用"中间态
         // （沿用 upstream 提交 59cf6de7 的约束）
         const isProactive = job.id === PROACTIVE_AUTO_JOB_ID;
-        const executions = Object.values(runUpdates).filter((run) => run.job_id === job.id);
-        // Keep run ordering stable when an older run finishes or sends its reminder.
-        const latest = executions.sort((left, right) => right.firstSeenAt - left.firstSeenAt)[0];
-        return (
-          <div className="flex flex-col items-start gap-1" data-testid="cron-job-status" data-variant={job.id}>
-            <StatusBadge enabled={isProactive ? !job.expired : job.enabled} expired={job.expired} />
-            {latest && (
-              <span
-                className="text-xs text-text-muted"
-                data-testid="cron-job-run-status"
-                data-variant={job.id}
-                title={latest.error}
-              >
-                {t(`cron.execution.${latest.status}`)}
-              </span>
-            )}
-          </div>
-        );
+        return <StatusBadge enabled={isProactive ? !job.expired : job.enabled} expired={job.expired} />;
       },
     },
     {

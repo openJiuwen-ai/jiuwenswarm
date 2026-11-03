@@ -73,6 +73,33 @@ export function isTeamMemberCollaborationMessage(message: Message): boolean {
   return !event.isLeaderToUser && !isTeamP2PMessageToUser(event);
 }
 
+/** Only explicit user-facing Team events are mirrored; collaboration stays Team-local. */
+export function toOwnerTeamMessage(message: Message): Message | null {
+  if (!message.teamId || message.role !== 'system') return null;
+  const event = parseTeamEventMessage(message);
+  if (!event || (!event.isLeaderToUser && !isTeamP2PMessageToUser(event))) return null;
+  return {
+    ...message,
+    id: `owner-team-message-${message.teamId}-${event.messageId || message.id}`,
+    teamId: undefined,
+    sourceTeamId: message.teamId,
+  };
+}
+
+/** Merge restored and live messages by logical Team event identity. */
+export function mergeUniqueMessages(messages: Message[]): Message[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const event = parseTeamEventMessage(message);
+    const key = event
+      ? ['team', message.sourceTeamId || '', event.type, event.messageId, event.fromMember, event.toMember || '', event.timestamp || '', event.content].join(':')
+      : `${message.id}:${message.content}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function isTeamActivityMessage(message: Message): boolean {
   return Boolean(parseTeamEventMessage(message));
 }

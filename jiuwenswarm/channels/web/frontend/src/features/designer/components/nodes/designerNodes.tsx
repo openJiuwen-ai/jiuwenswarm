@@ -223,7 +223,7 @@ function DesignerNodeShell({
         ) : null}
         <div className="designer-node__body">{body}</div>
         {nodeError ? (
-          <p className="designer-node__error" data-testid="designer-node-error" title={nodeError}>
+          <p className="designer-node__error nodrag nopan nowheel" data-testid="designer-node-error" title={nodeError}>
             {isDesignerModerationError(nodeError) ? t('designer.run.moderationBlocked') : nodeError}
           </p>
         ) : null}

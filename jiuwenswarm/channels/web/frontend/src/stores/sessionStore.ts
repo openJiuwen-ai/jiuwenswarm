@@ -727,7 +727,7 @@ export interface SessionRuntime {
 }
 
 function createEmptyRuntime(
-  sessionId?: string,
+  sessionId: string,
   availableModels: ModelEntry[] = [],
   availableModelGroups: ModelGroup[] = [],
 ): SessionRuntime {
@@ -741,7 +741,9 @@ function createEmptyRuntime(
     ? availableModels.find((model) => model.model_id === restoredSelection.id)
     : null;
   return {
-    mode: loadModeFromStorage(),
+    // Only the new-conversation draft inherits the last selected mode.
+    // Existing Sessions restore their own mode from backend metadata.
+    mode: sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadModeFromStorage() : DEFAULT_MODE,
     lastMacroRoutedMode: null,
     selectedModelName: restoreLegacyName ? legacyName : restoredModel?.model_name ?? null,
     selectedModelSelection: restoreLegacyName
@@ -1578,7 +1580,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = skill.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (
         isAgentGroupSelected(
           runtime.mode,
@@ -1777,7 +1779,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = pluginId.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (runtime.enabledPlugins.includes(normalized)) return state;
       return {
         runtimes: {
@@ -1829,7 +1831,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = mcpName.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (runtime.enabledMcps.includes(normalized)) return state;
       return {
         runtimes: {
@@ -2186,7 +2188,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   applyWorkflowUpdate: (sessionId, workflow) => {
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       return {
         runtimes: {
           ...state.runtimes,

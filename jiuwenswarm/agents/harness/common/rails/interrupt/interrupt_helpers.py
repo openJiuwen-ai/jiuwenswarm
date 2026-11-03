@@ -35,7 +35,9 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     ALWAYS_ALLOW,
     REJECT,
     SESSION_ALLOW,
+    resolve_permission_action,
 )
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
     ToolInvocationKeyV1,
 )
@@ -48,6 +50,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction impo
     sanitize_permission_ui_payload,
 )
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.enterprise import is_enterprise
 
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
@@ -1630,16 +1633,44 @@ def _normalize_question_option(option: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+# agent-core 权限 ask 文案里会附带「选择「永久记住」…」提示；企业版不出该按钮时一并去掉。
+_PERMANENT_REMEMBER_HINT_RE = re.compile(
+    r"[；;]?\s*选择「永久记住」[^。\n]*。?",
+)
+
+
 # 权限审批的兜底选项。``value`` 取自 ``permission_options``，与解析回答用的是同一份
 # 词表：web / CLI 回传 ``value``，TUI 回传 ``label``，两条路都要能被 ``build_inputs``
 # 解出同一个动作。label / description 保持原样，渲染出的文案不变。
+#
+# 企业版不提供 always 档（权限卡「永久记住」/ 演进卡「总是允许」）：写回本地
+# user overlay / approval_overrides 或跨次自动放行，与 Manager 权威源不一致。
+# 个人版仍保留四档权限选项。
 def _default_interrupt_options() -> list[dict[str, str]]:
-    return [
+    options = [
         {"value": ALLOW_ONCE, "label": "本次允许", "description": "仅本次授权执行"},
         {"value": SESSION_ALLOW, "label": "会话内记住", "description": "本次会话内自动放行同类操作"},
-        {"value": ALWAYS_ALLOW, "label": "永久记住", "description": "写回磁盘，所有会话均自动放行"},
         {"value": REJECT, "label": "拒绝", "description": "拒绝执行此工具"},
     ]
+    if not is_enterprise():
+        options.insert(
+            2,
+            {
+                "value": ALWAYS_ALLOW,
+                "label": "永久记住",
+                "description": "写回磁盘，所有会话均自动放行",
+            },
+        )
+    return options
+
+
+def _is_always_allow_option(option: dict[str, Any]) -> bool:
+    """权限「永久记住」与演进「总是允许」均映射到 ALWAYS_ALLOW。"""
+    return resolve_permission_action(option.get("value") or option.get("label")) == ALWAYS_ALLOW
+
+
+def _strip_permanent_remember_hint(message: str) -> str:
+    return _PERMANENT_REMEMBER_HINT_RE.sub("", message or "").strip()
 
 
 def _plan_approval_interrupt_options(
@@ -1656,6 +1687,17 @@ def _plan_approval_interrupt_options(
     return build_plan_approval_options_from_message(message)
 
 
+def _fallback_interrupt_options(
+    source: str,
+    tool_name: str,
+    message: str,
+) -> list[dict[str, Any]]:
+    return (
+        _plan_approval_interrupt_options(source, tool_name, message)
+        or _default_interrupt_options()
+    )
+
+
 def _question_options_from_ui_options(
     value_obj: Any,
     source: str,
@@ -1670,11 +1712,15 @@ def _question_options_from_ui_options(
         if normalized["label"]:
             options.append(normalized)
     if options:
+        # 企业版统一隐藏 always 档：权限「永久记住」与技能演进「总是允许」都不保留。
+        if is_enterprise():
+            options = [
+                option for option in options if not _is_always_allow_option(option)
+            ]
+            if not options:
+                return _fallback_interrupt_options(source, tool_name, message)
         return options
-    return (
-        _plan_approval_interrupt_options(source, tool_name, message)
-        or _default_interrupt_options()
-    )
+    return _fallback_interrupt_options(source, tool_name, message)
 
 
 def _classify_structured_approval(
@@ -1789,6 +1835,8 @@ def _format_question_from_interaction(
         ask_title = str(metadata.get("ask_title") or "").strip()
         header = ask_title or (f"权限审批: {tool_name}" if tool_name else "权限审批")
         question = message
+        if is_enterprise():
+            question = _strip_permanent_remember_hint(question)
 
     question_data = {
         "question": question,
@@ -1799,6 +1847,12 @@ def _format_question_from_interaction(
         "multi_select": False,
     }
     if source == "permission_interrupt":
+        if is_enterprise():
+            metadata = _extract_interaction_metadata(payload)
+            metadata.update(_extract_interrupt_metadata(value_obj))
+            matched_rule = metadata.get("matched_rule")
+            if isinstance(matched_rule, str) and matched_rule.strip():
+                question_data["matched_rule"] = redact_secret_values(matched_rule)
         if invocation_record is not None:
             question_data["card_id"] = invocation_record.key.invocation_id
         if reviewer_metadata:

@@ -4,6 +4,31 @@ import test from 'node:test';
 
 const { useSessionStore } = await import('../node_modules/.cache/agent-selection/sessionStore.mjs');
 
+test('an existing Session does not inherit another window\'s Team mode preference', () => {
+  const previousStorage = globalThis.localStorage;
+  globalThis.localStorage = window.localStorage;
+  const previousMode = localStorage.getItem('jiuwenclaw_mode');
+  const store = useSessionStore.getState();
+  try {
+    localStorage.setItem('jiuwenclaw_mode', 'team');
+    store.removeRuntime('new');
+    assert.equal(store.ensureRuntime('new').mode, 'team');
+    assert.equal(store.ensureRuntime('existing-agent').mode, 'agent');
+    store.addEnabledPlugin('existing-plugin-session', 'test-plugin');
+    assert.equal(store.getRuntime('existing-plugin-session').mode, 'agent');
+    store.setCurrentSession({ session_id: 'existing-team', mode: 'team.work.normal' });
+    assert.equal(store.getRuntime('existing-team').mode, 'team');
+  } finally {
+    for (const id of ['new', 'existing-agent', 'existing-plugin-session', 'existing-team']) {
+      store.removeRuntime(id);
+    }
+    store.setCurrentSession(null);
+    if (previousMode === null) localStorage.removeItem('jiuwenclaw_mode');
+    else localStorage.setItem('jiuwenclaw_mode', previousMode);
+    globalThis.localStorage = previousStorage;
+  }
+});
+
 test('stale send completion cannot consume a newer Agent clear intent', () => {
   const sessionId = 'agent-selection-race';
   const store = useSessionStore.getState();

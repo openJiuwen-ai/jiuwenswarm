@@ -4,6 +4,7 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 // Reserved DOM origin only. HTTP is rejected; WebSocket is an in-memory transport, never a network client.
 const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://permission-answer.invalid', pretendToBeVisual: true });
@@ -41,7 +42,7 @@ for (const [key, value] of Object.entries({
 after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
-const { AuthorizationPrompt } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
+const { AuthorizationPrompt, AuthorizationQuestionDetails } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
 const { ToolCallDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolCallDisplay.js');
 const { ToolGroupDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolGroupDisplay.js');
 const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
@@ -49,6 +50,33 @@ const { default: i18n } = await import('../node_modules/.cache/permission-answer
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
 const { evaluatePlanToggle } = await import('../node_modules/.cache/permission-answer-transport/features/planMode/planModeGate.js');
 const sessionId = 'permission-transport';
+
+test('only enterprise cards display literal matched rules in both languages', async () => {
+  const originalEdition = window.__JIUWENSWARM_EDITION__;
+  const originalLanguage = i18n.language;
+  const base = { header: 'Permission', question: 'Approve?', options: [] };
+  const render = (item) => renderToStaticMarkup(createElement(I18nextProvider, { i18n },
+    createElement(AuthorizationQuestionDetails, { questions: [item], requestId: 'rule-display' })));
+  try {
+    for (const language of ['zh', 'en']) {
+      await i18n.changeLanguage(language);
+      const rule = 'rules[write]: <script>example</script> `literal`';
+      window.__JIUWENSWARM_EDITION__ = 'enterprise';
+      const html = render({ ...base, matched_rule: rule });
+      assert.match(html, /interaction-slot-matched-rule/);
+      assert.ok(html.includes(language === 'zh' ? '匹配规则' : 'Matched rule'));
+      assert.match(html, /&lt;script&gt;example&lt;\/script&gt;/);
+      assert.doesNotMatch(html, /<script>/);
+      assert.doesNotMatch(render(base), /interaction-slot-matched-rule/);
+      window.__JIUWENSWARM_EDITION__ = 'personal';
+      assert.equal(render({ ...base, matched_rule: rule }), render(base));
+    }
+  } finally {
+    if (originalEdition === undefined) delete window.__JIUWENSWARM_EDITION__;
+    else window.__JIUWENSWARM_EDITION__ = originalEdition;
+    await i18n.changeLanguage(originalLanguage);
+  }
+});
 const question = (extra = {}) => ({
   header: 'Read permission', question: 'Read protected file?', tool_payload: { file_path: '/protected.txt' },
   options: [{ value: 'allow_once', label: 'Allow once' }, { value: 'reject', label: 'Reject' }], ...extra,
