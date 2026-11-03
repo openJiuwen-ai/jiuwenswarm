@@ -138,6 +138,29 @@ async def test_new_package_does_not_repeat_old_empty_matchers_and_reinstall_is_n
 
 
 @pytest.mark.asyncio
+async def test_package_scope_keeps_user_match_pattern_and_does_not_replay_a_miss(host):
+    terminal_only = USER_CODE.replace('self.start, {})', 'self.start, {"surface": "terminal"})')
+    await _install(host, "start.a", terminal_only)
+    await _install(host, "start.b")
+    assert len(await _start(host)) == 2
+    assert [row["caller"] for row in _entered(host)] == ["start.b"]
+    assert await host.manager.ensure_session_started(
+        _context("s2"), request_id="r2", channel_id="cli", is_interactive=True, surface="terminal",
+    ) == ()
+
+
+@pytest.mark.asyncio
+async def test_extension_cannot_supply_host_package_match_key(host):
+    source = USER_CODE.replace(
+        'self.start, {})', 'self.start, {"__session_start_package_id__": "start.b"})',
+    )
+    package = write_package(host.tmp / "source", package_id="start.a", module_source=source)
+    report = (await host.manager.install([package]))[0]
+    assert report.status == "FAILED"
+    assert host.manager.active_packages() == ()
+
+
+@pytest.mark.asyncio
 async def test_successful_reload_starts_new_generation_and_failed_reload_keeps_old(host):
     await _install(host)
     await _start(host)

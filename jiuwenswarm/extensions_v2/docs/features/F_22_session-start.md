@@ -4,13 +4,13 @@
 | --- | --- |
 | 编号 | F_22 / session-start |
 | 建档日期 | 2026-10-28 |
-| 后续修订 | 2026-11-02，按既定 session.append 七段格式对齐 Claude Mods 字段；旧字段迁移见第 4.2 节，验证按版本分别记录 |
+| 后续修订 | 2026-11-03，包定向从 Core `handler_ids` 改为宿主注册期匹配；2026-11-02 按既定 session.append 七段格式对齐 Claude Mods 字段，旧字段迁移见第 4.2 节 |
 | 计划与进度入口 | [EXTV2-18 / Server PR06](../designs/extensions-v2-development-plan.md#extv2-18-激活实例首次输入前初始化) |
 | 主责契约 | [S_12](../specs/S_12_session-start.md) |
 
 ## 1. 范围、状态与依据
 
-本项保留每个 Worker 包激活实例在首次受支持原生输入前至多尝试一次初始化通知的粒度。本次仅收敛公开观察字段和默认回执；包身份、真实激活记录、generation、发布的 Handler IDs 和请求路由仍由平台门持有，不放进公开 Event。配套 Core !110 提供既有 handler_ids 筛选，本次不新增 Core API，也不改 session.append。
+本项保留每个 Worker 包激活实例在首次受支持原生输入前至多尝试一次初始化通知的粒度。公开观察字段和默认回执保持 Claude Mods 对齐版本；包身份、真实激活记录、generation、发布的 Handler IDs 和请求路由仍由平台持有，不放进公开 Event。宿主注册期绑定可信包匹配条件，Core 恢复普通 `trigger(event, session)` 和既有 matcher；不改 session.append。
 
 对照 [Claude 官方类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，固定提交 bf2323b3021c9d3db7a31e1e7d61068c3f704497，文件头 2.1.277。2026-11-02 重新下载官方 main 与固定文件，内容一致；这是此次字段核对的依据，不混用传统大写 SessionStart/SessionEnd Hooks。本地事件仍是 Python frozen dataclass，None 表示对应可选值缺失，并非直接接收任意 TypeScript/JSON 对象。
 
@@ -34,13 +34,15 @@
 ### 3.1 触发前后与粒度
 
 ```text
+安装/加载：Runtime 发布 Handler，宿主 EventBus 从可信包元数据注入私有包匹配条件
 原生 chat.send unary / stream → Front / Supervisor → Worker
   → 原权限准入、模型应用、执行目录绑定
   → Adapter 构造真实 SessionContext（session_id、cwd、项目根/模型等可得资料）
   → manager.ensure_session_started(..., surface=宿主声明, is_interactive=原能力)
-  → SessionStartGate 选择尚未尝试的真实激活实例和本包公开 Handler IDs
-  → 构造 SessionStartInput(cwd, surface, isInteractive)，私有绑定真实 session_id
-  → await bus.trigger(Event("session.start", input), context, handler_ids=本包IDs)
+  → SessionStartGate 选择尚未尝试的真实激活实例，以发布 ID 核对实例版本
+  → 构造 SessionStartInput(cwd, surface, isInteractive)，私有绑定真实 session_id 与目标包 ID
+  → await bus.trigger(Event("session.start", input), context)
+  → session.start matcher 先筛目标包，再检查用户声明的公开字段 pattern
   → Core 为 USER 创建本次 Ops，绑定会话和包身份
   → USER 准备本包资源 → await next_handler(event)
   → 剩余 Handler → session_start_core 核对可信原输入和会话/目录
@@ -98,7 +100,7 @@ SessionStartOutput(cwd="D:/projects/demo/src")
 
 例如插件读取 rules.json 到自己的 self._rules，后续同一对象的 on_usage 使用这份规则。start CORE 不保存规则；同一实例的成员状态使两个回调能复用。示例包先保存首个工作区观察值，后续用量 Handler 记录初始化是否完成；跨会话状态必须另外按 session_id 管理，不把首个工作区当成所有会话的目录。
 
-下列代码来自 [现有示例包](../../examples/session_start/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。空 matcher 匹配本次候选内的本事件；可按公开输入字段等值筛选，例如 surface/clientId/isInteractive/reason，大小写必须与具体事件的字段一致。未匹配不表示以后自动补发。
+下列代码来自 [现有示例包](../../examples/session_start/extension.py)，由扩展管理入口按其 manifest 安装后发布 USER 订阅。用户传入的空 pattern 仍由宿主补上私有包匹配条件，因此只匹配本包的 `session.start`；用户还可按本事件的公开输入字段 cwd/surface/isInteractive 等值筛选。未匹配不表示以后自动补发。
 
 ```python
 """Prepare activation-owned state once, then use it on normal notifications."""
@@ -174,13 +176,25 @@ Worker 启动时注册事件类型、Matcher、Validator 和唯一默认 CORE；
 
 USER 处理本包资源，通过 `return await next_handler(event)` 继续本条链。默认 CORE 只确认真实平台通知，不再次执行创建、切换、删除或关闭。输入均只读；提前短路伪造回执、修改输入、在 next 之后换身份无效，沿既有 Core USER 故障隔离处理。真实宿主操作的所有权和最终成功判断仍在原平台业务。
 
-初始化门为 [management/session_start.py](../../management/session_start.py)，真实 Adapter 接线为 [interface_deep.py](../../../server/runtime/agent_adapter/interface_deep.py)。默认 CORE 核对私有调用作用域里的 session_id，并核对绑定 cwd 与公开 cwd 一致，生成一次真实 cwd 回执。原激活记录和发布 ID 的去重逻辑保持；不把可观察包代次误作用户可改的输入。
+初始化门为 [management/session_start.py](../../management/session_start.py)，宿主 EventBus 注册期绑定与 matcher 为 [event_types/session_start.py](../../event_types/session_start.py)，真实 Adapter 接线为 [interface_deep.py](../../../server/runtime/agent_adapter/interface_deep.py)。默认 CORE 核对私有调用作用域里的 session_id，并核对绑定 cwd 与公开 cwd 一致，生成一次真实 cwd 回执。原激活记录和发布 ID 的去重逻辑保持；发布 ID 不再作为 Core trigger 参数。
 
 USER 普通异常沿 Core 隔离；框架错误和原输入取消传播，不自动重放已经开始的初始化尝试。调用开始即标记已尝试，外部副作用不自动回滚。门拒绝重入，重载仍沿 Core 热切换并重新核对真实实例；在途计数成对保护卸载。
 
 字段范围以 [S_12](../specs/S_12_session-start.md) 为准。Worker 持有唯一 EventBus；Front/Supervisor 继续沿用原请求路由。普通通知不新增聊天、历史写入或 UI 渲染。每份特性文档独立维护，不把 start、attach、detach、end 合成一个模糊的会话状态事件。
 
 ## 6. 验收与未决问题
+
+### 2026-11-03 宿主注册期包匹配
+
+本轮在 Swarm `feature/session-start-match-pattern-20261103`（目标基线 `4b6021ca8`）和 Core 同名独立工作树（目标基线 `45e6418c`）中，撤回 Core `trigger(handler_ids=...)`，改由 `SessionStartEventBus` 在 Runtime 发布 `session.start` Handler 时从已核实的 PackageMetadata 注入私有包匹配键。Gate 用调用局部作用域绑定目标包，不增加 `SessionStartInput` 的公开字段；matcher 先核对目标包，再按用户原有 pattern 匹配。用户仍可注册 `{}`，无需填写包 ID；保留发布 ID 仅用于激活实例版本核对与注销。
+
+Windows / Python 3.11.15，显式 `PYTHONPATH` 指向两份候选源码。目标分支更新后，Core 相关 Events、Extension、callback、AgentRuntime 和 DeepAgent 绑定回归 **709 passed、1 skipped**；Swarm 扩展、Runtime、Worker 活性与原生生命周期相关回归 **1458 passed、5 skipped、2 deselected**。两项 deselected 为先前在未修改基线也复现的 LoopBeat 计时断言。新增回归覆盖两包空 pattern 隔离、用户 `surface` pattern 保留且不补发、私有包匹配键不能由扩展自填、重载和卸载重装。对应报告为 `core_relevant-rebased.xml`、`swarm_relevant-rebased.xml` 及同名 `.log`，均在 `D:/work_space/.codex-temp/session-start-match-pattern-20261103/`。
+
+扩大到目标分支新增 store 用例时，Core 首轮 **761 passed、2 skipped、2 failed**，同两项 store 用例在未修改的 Core 目标基线也失败；Swarm 首轮 **1463 passed、5 skipped、2 deselected、1 failed**，失败的 store 持久化用例在未修改的 Swarm 目标基线也复现。当前通过数明确排除 Core `test_ops_store.py` 与 `core/extension/data`、Swarm `test_store_persistence.py`，不宣称全套通过；失败日志为 `core-rebased.log`、`swarm-rebased.log`，基线对照为 `swarm-target-store.log` 及 Core 目标工作树定向运行记录。初版候选基于 Core `4aceb5cd` / Swarm `b7892d368` 时的回归为 581 passed/1 skipped 与 1414 passed/5 skipped/2 deselected，仅保留在 `core-regression.xml`、`swarm-regression.xml` 中，不作为更新目标后的通过数。
+
+初版候选的独立 Python 进程使用真实 Assembly、Registry 和磁盘包，先安装 A、再安装 B、重载 A；USER 进入顺序为 A/B/A，后续输入无重复，Core `trigger` 形参为 self/event/session，记录为同目录 `process-probe.log`。更新目标分支后，经真实 Front → Supervisor → 子 Worker 安装 A、首次原生 `chat.send`、安装 B、再次原生 `chat.send`：USER start 顺序仅为 A/B，两轮真实模型均收到 `chat.final` 与 `chat.usage_summary`，公开输入仍仅含 cwd/surface/isInteractive，真实 CORE 回执为 cwd；USER 记录的两仓源码路径指向本次候选工作树。结果见 `real-worker-155436/result.json`、USER JSONL 与原生请求响应；`cleanup.json` 确认 Worker PID 退出和端口关闭。
+
+桌面 HTML 中 `session.start` 的完整 Gate 源码摘录与候选文件逐字一致，调用链和源码链接已按当前候选更新；Edge 无页面脚本错误，1440px/390px 视口均无横向溢出，截图与检查脚本保存在同目录。本轮未执行非 Windows 环境或远端 CI；2026-11-02 的真实模型结果只属于当时的 `handler_ids` 版本。
 
 ### 2026-11-02 Claude Mods 字段修订
 
