@@ -37,6 +37,7 @@ import {
   isPending,
   latestSharedFiles,
   sharedFileKey,
+  type JiuwenMateApi,
   type JiuwenMateChatRequest,
   type JiuwenMateConversation,
   type JiuwenMateModelCatalog,
@@ -122,7 +123,7 @@ interface ColleagueWorkspacePageProps {
   colleagues: readonly JiuwenMateColleague[];
   selectedColleagueId: string;
   intent?: JiuwenMateWorkspaceIntent | null;
-  chat: JiuwenMateChatApi;
+  chat: JiuwenMateChatApi & Partial<Pick<JiuwenMateApi, 'listArtifacts'>>;
   /** Changes each time the connection to the server is restored. */
   connectionEpoch: number;
   onSelectColleague: (id: string) => void;
@@ -287,6 +288,25 @@ export function ColleagueWorkspacePage({
   const webWorkspace = agentId === colleagueId && (!workspace || workspace.channel === 'web');
   const sharingConversation = webWorkspace && chatConversationId === SHARING_CONVERSATION_ID;
   const privateChat = usePrivateChat(chat, sharingConversation ? '' : chatAgentId, chatConversationId, connectionEpoch);
+  const [employeeArtifacts, setEmployeeArtifacts] = useState<{ agentId: string; files: JiuwenMateSharedFile[] } | null>(null);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
+  const [artifactsError, setArtifactsError] = useState('');
+  const artifactRevision = privateChat.requests.map((item) => `${item.requestId}:${item.status}`).join('|');
+  useEffect(() => {
+    if (rightPanel !== 'artifacts' || !chat.listArtifacts || !colleagueId) return;
+    let cancelled = false;
+    setArtifactsLoading(true);
+    setArtifactsError('');
+    const ids = channelSourceAgentKey.split('\u0000').filter(Boolean);
+    Promise.all(ids.map((id) => chat.listArtifacts!(id))).then((files) => {
+      if (!cancelled) setEmployeeArtifacts({ agentId: colleagueId, files: files.flat() });
+    }).catch((error: unknown) => {
+      if (!cancelled) setArtifactsError(errorMessage(error) || 'failed');
+    }).finally(() => {
+      if (!cancelled) setArtifactsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [chat, colleagueId, channelSourceAgentKey, rightPanel, artifactRevision, connectionEpoch]);
   const messageListRef = useRef<HTMLOListElement | null>(null);
   const followReplies = useRef(true);
   const boardRef = useRef(board);
@@ -546,7 +566,10 @@ export function ColleagueWorkspacePage({
 
   if (!colleague) return null;
 
-  const artifacts = latestSharedFiles(privateChat.requests);
+  const artifacts = latestSharedFiles([
+    ...privateChat.requests,
+    { files: employeeArtifacts?.agentId === colleagueId ? employeeArtifacts.files : [] },
+  ]);
 
   const loadOlderChannelMessages = async () => {
     if (!channelApi || !channelAgentId || !channelId || !channelNextCursor || loadingOlderChannelMessages) return;
@@ -1517,10 +1540,14 @@ export function ColleagueWorkspacePage({
               <div className={`jiuwenmate-side-panel__body${visibleArtifact ? ' jiuwenmate-side-panel__body--preview' : ''}`} data-testid="jiuwenmate-artifact-list">
               {visibleArtifact ? (
                 <FilePreview artifact={{ id: visibleArtifact.outputId, name: visibleArtifact.name, downloadUrl: visibleArtifact.downloadUrl ?? undefined, size: visibleArtifact.size }} />
+              ) : artifactsError ? (
+                <p className="jiuwenmate-records__empty" role="alert" data-testid="jiuwenmate-artifacts-error">{t('jiuwenmate.chat.failed', { reason: artifactsError })}</p>
+              ) : artifactsLoading && artifacts.length === 0 ? (
+                <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-artifacts-loading">{t('common.loading')}</p>
               ) : artifacts.length === 0 ? (
                 <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noArtifacts')}</p>
               ) : artifacts.map((file) => (
-                <button key={file.outputId} type="button" className="jiuwenmate-side-panel__artifact" onClick={() => setSelectedArtifact(file)}>
+                <button key={file.outputId} type="button" className="jiuwenmate-side-panel__artifact" data-testid="jiuwenmate-artifact-item" onClick={() => setSelectedArtifact(file)}>
                   <FileText aria-hidden />
                   <span><strong>{file.name}</strong><small>{formatSharedFileSize(file.size)}</small></span>
                 </button>

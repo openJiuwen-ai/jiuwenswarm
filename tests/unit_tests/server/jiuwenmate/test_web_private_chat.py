@@ -323,6 +323,19 @@ async def test_history_lists_the_conversation_in_order(host):
     assert [item["replies"] for item in requests] == [["回复：第一条"], ["回复：第二条"]]
 
 
+async def test_artifacts_list_existing_employee_outputs_without_sharing_or_chat_history(host):
+    agent_id = await host.colleague()
+    service = host.adapter._colleagues()
+    session = service.workspaces.ensure_session(WEB_NAMESPACE, agent_id, "session-existing")
+    (session / "output" / "知识摘要.md").write_text("existing report", encoding="utf-8")
+    response = await host.call(ReqMethod.JIUWENMATE_ARTIFACT_LIST, agent_id=agent_id)
+    assert response.ok
+    assert [item["name"] for item in response.payload["files"]] == ["知识摘要.md"]
+    assert response.payload["files"][0]["download_url"]
+    missing = await host.call(ReqMethod.JIUWENMATE_ARTIFACT_LIST, agent_id="unknown-agent")
+    assert not missing.ok
+
+
 async def test_history_before_the_first_message_is_empty_and_creates_nothing(host):
     agent_id = await host.colleague()
 
