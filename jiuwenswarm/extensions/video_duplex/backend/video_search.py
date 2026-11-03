@@ -425,7 +425,8 @@ async def execute_core_agent(
         await normalize_media_attachments(params, core_session_id)
     if interaction_answer is not None:
         answer_request = interaction_answer.to_agent_request()
-        params = {**answer_request.params, "log_as_user": False}
+        # 审批卡作答续跑整体换成作答请求，所选模型要补回来，否则 Core 退回默认模型
+        params = {**answer_request.params, "log_as_user": False, **(model or {})}
     if managed_task_binding is not None:
         params["managed_task_binding"] = managed_task_binding
     if model_auth is not None:
