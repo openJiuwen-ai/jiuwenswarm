@@ -88,6 +88,16 @@ def test_a2ui_prompt_ok_cancel_button_row_right_aligned():
     assert "按钮行上方必须放一条 Divider 分割线" in zh
 
 
+def test_a2ui_prompt_forbids_emoji_in_ui_text():
+    en = build_a2ui_autonomy_instruction("en")
+
+    assert "MUST NOT contain emoji" in en
+
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "禁止使用 emoji" in zh
+
+
 def test_a2ui_prompt_defines_hotel_booking_actions():
     instruction = build_a2ui_browser_workflow_instruction()
 
