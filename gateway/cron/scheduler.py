@@ -2649,11 +2649,11 @@ class CronSchedulerService:
         if not jid or not sid:
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_active_session_rel,
                 cron_active_sessions_hash_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+            from gateway.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
 
             client = get_gateway_redis_client_if_open()
             if client is None:
@@ -2685,11 +2685,11 @@ class CronSchedulerService:
         if not jid:
             return
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_active_session_rel,
                 cron_active_sessions_hash_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+            from gateway.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
 
             client = get_gateway_redis_client_if_open()
             if client is None:
@@ -2710,11 +2710,11 @@ class CronSchedulerService:
             return {}
         out = self.list_active_exec_sessions()
         try:
-            from jiuwenswarm.extensions.redis.redis_keys import (
+            from gateway.extensions.redis.redis_keys import (
                 cron_active_session_scan_rel,
                 cron_active_sessions_hash_rel,
             )
-            from jiuwenswarm.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+            from gateway.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
 
             client = get_gateway_redis_client_if_open()
             if client is None:
