@@ -710,7 +710,7 @@
       "test": "测试"
     },
     "agent": {
-      "a2aDuplex": {
+      "teamRules": {
         "title": "Group 团队规则",
         "description": "已关闭。Agent 忙时收到新消息，由监工决定打断、插入或排队。",
         "restartHint": "修改后重启团队生效。",

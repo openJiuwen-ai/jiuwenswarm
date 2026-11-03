@@ -914,12 +914,12 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def update_duplex_router_in_config(updates: dict[str, Any]) -> None:
-    """Merge ``updates`` into the ``duplex_router`` section under the config write lock."""
+def update_team_rules_in_config(updates: dict[str, Any]) -> None:
+    """Merge ``updates`` into the ``team_rules`` section under the config write lock."""
     def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(data.get("duplex_router"), dict):
-            data["duplex_router"] = {}
-        data["duplex_router"].update(updates)
+        if not isinstance(data.get("team_rules"), dict):
+            data["team_rules"] = {}
+        data["team_rules"].update(updates)
         return data
 
     update_config(_mutate)

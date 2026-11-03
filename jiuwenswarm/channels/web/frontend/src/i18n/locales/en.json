@@ -717,7 +717,7 @@
       "test": "Test"
     },
     "agent": {
-      "a2aDuplex": {
+      "teamRules": {
         "title": "Group team rules",
         "description": "Off. When a busy agent gets a new message, the supervisor decides to interrupt, insert or queue it.",
         "restartHint": "Restart the team after changes.",

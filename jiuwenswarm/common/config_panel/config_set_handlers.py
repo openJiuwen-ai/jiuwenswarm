@@ -59,7 +59,7 @@ from jiuwenswarm.common.config import (
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
-    update_duplex_router_in_config,
+    update_team_rules_in_config,
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
@@ -110,13 +110,13 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     build_models_defaults_from_frontend,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
-from jiuwenswarm.common.duplex_router import (
-    DUPLEX_ROUTER_API_KEY_ENV,
-    DUPLEX_ROUTER_API_KEY_PARAM,
-    DUPLEX_ROUTER_PARAM_KEYS,
-    DuplexRouterSettingsError,
-    build_duplex_router_update,
-    duplex_router_panel_view,
+from jiuwenswarm.common.team_rules import (
+    TEAM_RULES_API_KEY_ENV,
+    TEAM_RULES_API_KEY_PARAM,
+    TEAM_RULES_PARAM_KEYS,
+    TeamRulesSettingsError,
+    build_team_rules_update,
+    team_rules_panel_view,
 )
 from jiuwenswarm.common.moa_config import (
     MOA_CONFIG_KEYS,
@@ -369,7 +369,7 @@ CONFIG_SET_ENV_MAP = {
     "perplexity_api_key": "PERPLEXITY_API_KEY",
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
-    DUPLEX_ROUTER_API_KEY_PARAM: DUPLEX_ROUTER_API_KEY_ENV,
+    TEAM_RULES_API_KEY_PARAM: TEAM_RULES_API_KEY_ENV,
     "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
     "github_token": "GITHUB_TOKEN",
     "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
@@ -1476,10 +1476,10 @@ def apply_config_payload(
             raise ConfigPanelBadRequest(str(exc)) from exc
     try:
         # Validate before any write so a bad supervisor setting leaves .env and config.yaml untouched.
-        duplex_router_update = build_duplex_router_update(
+        team_rules_update = build_team_rules_update(
             params, resolve_env_vars(get_config_raw()), _saved_environment(),
         )
-    except DuplexRouterSettingsError as exc:
+    except TeamRulesSettingsError as exc:
         raise ConfigPanelBadRequest(str(exc)) from exc
     # Collaboration writes only its switches and interval; Jev credentials use the shared env fields.
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
@@ -1731,13 +1731,13 @@ def apply_config_payload(
         except Exception as e:
             logger.warning("[config.set] 写回 skill_retrieval 失败: %s", e)
 
-    if duplex_router_update:
+    if team_rules_update:
         try:
-            update_duplex_router_in_config(duplex_router_update)
+            update_team_rules_in_config(team_rules_update)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[config.set] 写回 duplex_router 失败: %s", exc)
-            raise ConfigPanelInternalError("failed to update duplex_router") from exc
-        yaml_updated.extend(sorted(DUPLEX_ROUTER_PARAM_KEYS.intersection(params)))
+            logger.warning("[config.set] 写回 team_rules 失败: %s", exc)
+            raise ConfigPanelInternalError("failed to update team_rules") from exc
+        yaml_updated.extend(sorted(TEAM_RULES_PARAM_KEYS.intersection(params)))
 
     if moa_params:
         try:
@@ -1938,7 +1938,7 @@ async def config_get_handler(
             proactive_cfg.get("max_rounds_per_tick", 20))
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
-        payload.update(duplex_router_panel_view(resolve_env_vars(raw), _saved_environment()))
+        payload.update(team_rules_panel_view(resolve_env_vars(raw), _saved_environment()))
     except Exception:  # noqa: BLE001
         for key, value in flatten_moa_for_config_panel({}).items():
             payload.setdefault(key, value)
@@ -1989,7 +1989,7 @@ async def config_get_handler(
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")
-        for key, value in duplex_router_panel_view({}, _saved_environment()).items():
+        for key, value in team_rules_panel_view({}, _saved_environment()).items():
             payload.setdefault(key, value)
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 

@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Group team rules (duplex supervisor) settings and their TeamAgentSpec wiring."""
+"""Group team rules settings and their TeamAgentSpec wiring."""
 
 from types import SimpleNamespace
 
@@ -10,16 +10,16 @@ from jiuwenswarm.agents.harness.team.config_loader import load_team_spec_dict
 from jiuwenswarm.common import config
 from jiuwenswarm.common.config_panel import config_set_handlers as handlers
 from jiuwenswarm.common.config_panel.models_handlers import ConfigPanelBadRequest
-from jiuwenswarm.common.duplex_router import duplex_router_panel_view, resolve_duplex_spec
+from jiuwenswarm.common.team_rules import team_rules_panel_view, resolve_team_rules_spec
 from jiuwenswarm.server.control import config_service
 
-KEY_ENV = "DUPLEX_ROUTER_API_KEY"
+KEY_ENV = "TEAM_RULES_API_KEY"
 ENABLED = {
-    "duplex_router_enabled": "true",
-    "duplex_router_format": "anthropic",
-    "duplex_router_api_base": "https://relay.example/v1",
-    "duplex_router_model": "claude-opus",
-    "duplex_router_api_key": "unit-test-key",
+    "team_rules_enabled": "true",
+    "team_rules_format": "anthropic",
+    "team_rules_api_base": "https://relay.example/v1",
+    "team_rules_model": "claude-opus",
+    "team_rules_api_key": "unit-test-key",
 }
 TEAM = {"modes": {"team": {"t": {"agents": {"leader": {}, "teammate": {}}}}}}
 
@@ -49,7 +49,7 @@ def test_save_keeps_key_in_env_and_only_its_name_in_yaml(settings_file, monkeypa
 
     raw = settings_file.read()
     assert raw["other"] == "keep"
-    assert raw["duplex_router"] == {
+    assert raw["team_rules"] == {
         "enabled": True, "format": "anthropic", "api_base": "https://relay.example/v1",
         "model": "claude-opus", "api_key_env": KEY_ENV,
     }
@@ -59,18 +59,18 @@ def test_save_keeps_key_in_env_and_only_its_name_in_yaml(settings_file, monkeypa
     monkeypatch.setattr(config_service, "_browser_credential_environment", lambda: {KEY_ENV: "unit-test-key"})
     panel = config_service.get_panel()
     for key in ("enabled", "format", "api_base", "model", "api_key"):
-        assert panel[f"duplex_router_{key}"] == ENABLED[f"duplex_router_{key}"]
+        assert panel[f"team_rules_{key}"] == ENABLED[f"team_rules_{key}"]
 
 
 def test_invalid_or_incomplete_save_writes_nothing(settings_file):
     before = settings_file.path.read_bytes()
     for bad in (
-        {**ENABLED, "duplex_router_api_base": "file:///tmp/secret"},
-        {**ENABLED, "duplex_router_api_base": "https://user:pw@relay.example/v1"},
-        {**ENABLED, "duplex_router_api_base": "https://relay.example/v1#frag"},
-        {**ENABLED, "duplex_router_format": "grpc"},
-        {**ENABLED, "duplex_router_model": ""},
-        {**ENABLED, "duplex_router_api_key": ""},
+        {**ENABLED, "team_rules_api_base": "file:///tmp/secret"},
+        {**ENABLED, "team_rules_api_base": "https://user:pw@relay.example/v1"},
+        {**ENABLED, "team_rules_api_base": "https://relay.example/v1#frag"},
+        {**ENABLED, "team_rules_format": "grpc"},
+        {**ENABLED, "team_rules_model": ""},
+        {**ENABLED, "team_rules_api_key": ""},
     ):
         with pytest.raises(ConfigPanelBadRequest):
             handlers.apply_config_payload(bad)
@@ -87,69 +87,69 @@ def test_save_goes_through_config_write_lock(settings_file, monkeypatch):
         return real_update_config(mutator, **kwargs)
 
     monkeypatch.setattr(config, "update_config", spy)
-    config.update_duplex_router_in_config({"enabled": False})
+    config.update_team_rules_in_config({"enabled": False})
     assert locked == [True]
-    assert settings_file.read()["duplex_router"] == {"enabled": False}
+    assert settings_file.read()["team_rules"] == {"enabled": False}
     assert settings_file.read()["other"] == "keep"
 
 
 def test_turning_off_needs_nothing_else(settings_file):
     handlers.apply_config_payload(dict(ENABLED))
-    handlers.apply_config_payload({"duplex_router_enabled": "false", "duplex_router_api_key": ""})
-    raw = settings_file.read()["duplex_router"]
+    handlers.apply_config_payload({"team_rules_enabled": "false", "team_rules_api_key": ""})
+    raw = settings_file.read()["team_rules"]
     assert raw["enabled"] is False and raw["api_key_env"] == ""
-    assert resolve_duplex_spec(settings_file.read()) is None
+    assert resolve_team_rules_spec(settings_file.read()) is None
 
 
 def test_jev_without_own_key_reuses_browser_jev(settings_file, monkeypatch):
-    jev = {"duplex_router_enabled": "true", "duplex_router_format": "jev",
-           "duplex_router_api_base": "", "duplex_router_model": "", "duplex_router_api_key": ""}
+    jev = {"team_rules_enabled": "true", "team_rules_format": "jev",
+           "team_rules_api_base": "", "team_rules_model": "", "team_rules_api_key": ""}
     with pytest.raises(ConfigPanelBadRequest, match="api_key"):
         handlers.apply_config_payload(dict(jev))
     monkeypatch.setenv("TYPESAFE_API_KEY", "browser-key")
     handlers.apply_config_payload(dict(jev))
     raw = settings_file.read()
-    assert raw["duplex_router"]["api_key_env"] == ""
-    assert resolve_duplex_spec(raw) == {
+    assert raw["team_rules"]["api_key_env"] == ""
+    assert resolve_team_rules_spec(raw) == {
         "enabled": True, "mode": "active", "format": "jev", "api_base": "https://api.typesafe.ai/v1",
         "endpoint": "/systemone", "model": "jev-1.13.0", "api_key_env": "TYPESAFE_API_KEY",
     }
-    view = duplex_router_panel_view(raw)
-    assert view["duplex_router_jev_key_configured"] == "true"
-    assert view["duplex_router_jev_model"] == "jev-1.13.0"
+    view = team_rules_panel_view(raw)
+    assert view["team_rules_jev_key_configured"] == "true"
+    assert view["team_rules_jev_model"] == "jev-1.13.0"
 
 
 
 def test_jev_key_saved_to_env_by_another_process_counts(settings_file):
     # The panel reads the saved .env; saving must accept the same key even if os.environ is stale.
     settings_file.env_file.write_text('TYPESAFE_API_KEY="browser-key"\n')
-    handlers.apply_config_payload({"duplex_router_enabled": "true", "duplex_router_format": "jev",
-                                   "duplex_router_api_base": "", "duplex_router_model": "",
-                                   "duplex_router_api_key": ""})
-    assert settings_file.read()["duplex_router"]["format"] == "jev"
+    handlers.apply_config_payload({"team_rules_enabled": "true", "team_rules_format": "jev",
+                                   "team_rules_api_base": "", "team_rules_model": "",
+                                   "team_rules_api_key": ""})
+    assert settings_file.read()["team_rules"]["format"] == "jev"
 
 def test_jev_follows_browser_provider_and_own_key_wins():
     base = {"browser": {"decision": {"provider": "openrouter"}},
-            "duplex_router": {"enabled": True, "format": "jev"}}
-    spec = resolve_duplex_spec(base)
+            "team_rules": {"enabled": True, "format": "jev"}}
+    spec = resolve_team_rules_spec(base)
     assert (spec["api_base"], spec["endpoint"], spec["model"], spec["api_key_env"]) == (
         "https://openrouter.ai/api/alpha", "/decisions", "typesafe/jev-1.13", "OPENROUTER_API_KEY",
     )
-    own = {**base, "duplex_router": {"enabled": True, "format": "jev", "api_base": "https://mcl.example/v1",
-                                     "model": "m", "api_key_env": KEY_ENV}}
-    spec = resolve_duplex_spec(own)
+    own = {**base, "team_rules": {"enabled": True, "format": "jev",
+                                  "api_base": "https://mcl.example/v1", "model": "m", "api_key_env": KEY_ENV}}
+    spec = resolve_team_rules_spec(own)
     assert spec["api_key_env"] == KEY_ENV and "endpoint" not in spec
 
 
-def test_loader_adds_duplex_only_when_sdk_declares_it(monkeypatch):
+def test_loader_adds_team_rules_only_when_sdk_declares_it(monkeypatch):
     from openjiuwen.agent_teams.schema import blueprint
 
-    base = {**TEAM, "duplex_router": {"enabled": True, "format": "openai", "api_base": "https://x.example/v1",
-                                      "model": "m", "api_key_env": KEY_ENV}}
-    if blueprint.TeamAgentSpec.model_fields.get("duplex") is None:
-        assert "duplex" not in load_team_spec_dict(config_base=base)
-        fake = SimpleNamespace(model_fields={"duplex": SimpleNamespace(annotation=dict)})
+    base = {**TEAM, "team_rules": {"enabled": True, "format": "openai",
+                                   "api_base": "https://x.example/v1", "model": "m", "api_key_env": KEY_ENV}}
+    if blueprint.TeamAgentSpec.model_fields.get("team_rules") is None:
+        assert "team_rules" not in load_team_spec_dict(config_base=base)
+        fake = SimpleNamespace(model_fields={"team_rules": SimpleNamespace(annotation=dict)})
         monkeypatch.setattr(blueprint, "TeamAgentSpec", fake)
-    assert load_team_spec_dict(config_base=base)["duplex"]["mode"] == "active"
-    off = {**base, "duplex_router": {**base["duplex_router"], "enabled": False}}
-    assert "duplex" not in load_team_spec_dict(config_base=off)
+    assert load_team_spec_dict(config_base=base)["team_rules"]["mode"] == "active"
+    off = {**base, "team_rules": {**base["team_rules"], "enabled": False}}
+    assert "team_rules" not in load_team_spec_dict(config_base=off)
