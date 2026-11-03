@@ -29,14 +29,31 @@ After installation, open an existing real conversation and refresh or re-enter i
 | `task.function` → `task.function.main` | Click "任务检查 / Inspect tasks" in the task area to open the task page (`Iframe` root); both use `task-inspector` |
 | `application.settings` | "天气详情 / Weather details" switch in the settings content area, scoped to the current conversation |
 | `conversation.input.above` | Token Weather demo with a hide/show button on the right, arranged horizontally in a `Box` with wrapping on narrow screens; the host provides a muted rounded strip above the activity panel in team mode |
-| `conversation.input.below` | Compact operation count |
+| `conversation.input.below` | Four quick actions for weekly reports, bug fixes, presentations, and idle tasks, using `file-text`, `wrench`, `presentation`, and `clock` icons respectively |
 | `conversation.panel.right` | "Workspace files" (`Panel` root, instance `workbench`) and "Web preview" (`Iframe` root, instance `iframe-preview`) tabs, mutually exclusive with native content |
-| `conversation.session.content.after` | State snapshot for a completed assistant round |
+| `conversation.session.content.after` | Real token usage for a completed assistant round, using the ghost Button style and database icon without a click action; round menu actions add a result row |
 | `conversation.turn.footer.actions` | A `👍` symbol button beside an icon-only `…` dropdown containing "Refresh round" and "Round details" |
 | `conversation.header.title.after` | Workbench status Tag |
-| `conversation.header.actions` | Button that refreshes the current conversation's workbench state |
+| `conversation.header.actions` | Icon-only refresh button declared by the plugin with `variant="ghost"`, `icon="refresh"`, and `iconOnly=true` |
 
-Turn slots use the actual `requestId` as `instance_key`. The first mount stores that round's snapshot; later ready events restore it. Changes in other rounds or sessions do not overwrite it; clicking "Refresh round" copies the current filter summary into that round.
+Normal buttons use `size="md"`: 32px height, 14px text, 16px horizontal padding, an 8px icon gap,
+8px corners, and no default shadow. The host theme owns these metrics; the plugin only selects size.
+The four quick actions below the input use this same normal size.
+
+Turn slots use the actual `requestId` as `instance_key`. Usage appears as a label such as `用量：22.8M tokens`,
+using `Button(variant="ghost", size="md", icon="database")` without a `ui.click` binding, for display only.
+The total comes from `turn.total_tokens` returned by `ops.session.usage()`.
+It represents the provider's round total, rather than context occupancy or a cumulative session bill.
+The plugin listens for `context.usage.updated`, reads the bound host snapshot, and updates only the matching session and requestId.
+Repeated notifications replace the value without adding it. Reported zero is displayed as `用量：0 tokens`;
+missing totals show "not reported", without fixed values or a total inferred from input and output counts.
+
+The first mount queries available usage; later ready events retain cached values. Notifications received before mounting are cached too.
+"Refresh round" queries usage again, saves the current filter summary, and displays that round's refresh count.
+"Round details" displays its requestId and saved summary. Other rounds and sessions do not overwrite these values.
+Reactivating the plugin clears its cache. The public query provides only the latest available round, so recovery requires a matching requestId;
+other historical rounds show "not reported". Host usage notifications or saved provider summaries are required;
+runtime modes that provide neither keep the "not reported" display.
 
 The round menu uses `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")` and keeps its muted background while open.
 A plugin-rendered `Button(label="👍", variant="ghost")` appears on its left in a horizontal Box. This symbol button is for display and has no like action binding.

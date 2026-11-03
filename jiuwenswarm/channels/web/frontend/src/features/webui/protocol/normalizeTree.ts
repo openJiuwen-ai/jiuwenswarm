@@ -88,6 +88,9 @@ function normalizeNode(
   if (component === 'Panel' && children.value.length === 0) {
     return protocolReject('SCHEMA_ERROR', 'Panel children are required');
   }
+  if (component === 'Dropdown' && Boolean(props.value.icon) === (children.value.length > 0)) {
+    return protocolReject('SCHEMA_ERROR', 'Dropdown requires exactly one trigger source: icon or non-empty children');
+  }
   if (rule.childComponents && children.value.some((child) => !rule.childComponents?.includes(child.component))) {
     return protocolReject('SCHEMA_ERROR', 'unsupported child component');
   }

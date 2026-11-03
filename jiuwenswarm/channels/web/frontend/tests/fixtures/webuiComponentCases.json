@@ -1,5 +1,8 @@
 {
   "invalid": [
+    ["Text", {"max_lines": -1.5}],
+    ["Text", {"max_lines": 0}],
+    ["Text", {"max_lines": 1.5}],
     ["Button", {"icon": "unknown"}],
     ["Button", {"iconOnly": true, "label": "More"}],
     ["Button", {"iconOnly": true, "icon": "ellipsis", "label": "  "}],
@@ -506,6 +509,13 @@
     ]
   ],
   "valid": [
+    ["Text", {"max_lines": 2, "size": "large"}],
+    ["Button", {"label": "Secondary", "variant": "secondary", "size": "medium"}],
+    ["Input", {"size": "lg"}],
+    ["Switch", {"size": "sm"}],
+    ["Card", {"size": "md"}],
+    ["Avatar", {"url": "/logo.svg", "size": "medium"}],
+    ["Button", {"label": "Refresh", "icon": "refresh", "iconOnly": true, "variant": "ghost"}],
     ["Button", {"label": "More", "icon": "ellipsis", "iconOnly": true, "variant": "ghost"}],
     ["Button", {"label": "More", "icon": "ellipsis", "iconOnly": false}],
     ["Dropdown", {"items": [{"key": "refresh", "label": "Refresh"}], "icon": "ellipsis", "ariaLabel": "More", "placement": "topRight"}],

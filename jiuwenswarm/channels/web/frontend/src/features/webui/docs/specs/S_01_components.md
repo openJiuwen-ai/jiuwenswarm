@@ -38,6 +38,8 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   事件 args 支持有规模限制的 JSON 对象，省略时补为 `{}`。
 - C-12：Tabs 的内容节点使用与普通子节点相同的遍历器和预算，路径形如 `0.items.1.children.0`。
   Panel/Iframe 只能作为目录允许槽位的根节点，右侧面板根组件必须匹配其 `rootComponents`。
+  其余槽位的 rootComponents 只声明可用的专用根组件，普通 Box/Card 等仍可作为根；
+  application.menu.main 和 task.function.main 均接受普通组件树。
 - C-13：交互绑定同时关联挂载句柄、实例、localFrameId 与节点。只有当前代次已确认显示、
   渲染成功且连接有效时才能发送；禁用或加载中的节点不能发送交互。
   Input 的 ui.click 携带当前编辑值 `{value}`；只读 Input 允许 ui.click，禁止 ui.change 和 ui.press_enter。
@@ -49,8 +51,12 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   Box/Button 的 unstyled 外观使用原生元素，Button 仍保留禁用、可访问标签与事件派发语义。
 - C-17：WebUI 主题配置仅作用于 Provider 子树，使用宿主语义 token 和语言设置；
   Button 逐字显示插件标签，不自动在两个中文字之间添加空格。
-  Button 接受受控的 `icon="ellipsis"`，`iconOnly=true` 时隐藏可见文字，并要求非空 label
-  作为可访问名称及悬停提示；`variant="ghost"` 使用无边框的 text 按钮。
+  普通尺寸使用 `size="medium"`（兼容 md，也为未指定时的尺寸）：高 32px、字号 14px、左右 padding 16px、
+  图文间距 8px、圆角 8px；纯图标为 32px 方形点击区。按钮无默认阴影，尺寸由宿主主题统一配置。
+  Button 的可选 icon 从[图标白名单](../../icons/whitelist.json)选择，例如 `search`、`file-text`、`refresh-cw`；
+  旧名称 `refresh` 保留为兼容别名。`iconOnly=true` 时隐藏可见文字，并要求非空 label
+  作为可访问名称及悬停提示；`variant="ghost"` 使用无边框的 text 按钮，hover 背景使用宿主的
+  `--color-action-secondary`。聊天头部保留插件声明的文字、图标和变体，不为所有按钮注入刷新图标。
 - C-18：Iframe 仅在内容激活且连接有效时持有浏览上下文；隐藏或断连时卸载 iframe，
   重新激活或 src 改变后重新加载，不保留旧文档。
   相对路径与 HTTP(S) 来源均使用不含 `allow-same-origin` 的固定 sandbox；加载提示不覆盖整页、不拦截鼠标。
@@ -64,7 +70,9 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   本地切换仅为已绑定的 ui.change 发送布尔值 `{checked}`；未绑定时仍可切换，disabled、loading 和断连时禁用。
   ui.click 独立绑定并携带切换后的 `{checked}`；同时绑定两项时，点击先派发 change，再派发 click。
 - C-22：Select 的 ui.select 发送本次选择的单个选项值 `{value}`，ui.search 发送 `{searchValue}`，ui.clear 发送 `{}`。
-  三项分别绑定，不额外派发 ui.change；未绑定事件时仍可本地操作。disabled 或断连时禁用。
+  可选 ui.change 发送完整选择值 `{value}`，单选为字符串或数值，多选/tags 为数组，清空后分别为 null 和空数组。
+  四项分别绑定，取消选项也发送 change；未绑定事件时仍可本地操作。disabled 或断连时禁用。
+  change 检查模式、选项、重复值和 maxCount；禁用选项只能保留下发的初始选择，不能通过事件新增。
   初始化与合法 replace 不派发事件，合法 replace 重新初始化选择，非法更新保留当前选择。
 - C-23：TreeSelect 的 ui.select 发送本次选中节点的单个 `{value}`；ui.change 发送整体选择值，
   单选为字符串，multiple 或 treeCheckable 为数组，清空后分别为 null 与空数组；ui.clear 发送 `{}`。
@@ -78,8 +86,9 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
   默认保留已挂载的隐藏页内容状态，destroyOnHidden 时切回后重新初始化。
 - C-26：Dropdown 的触发区由子节点提供，点击或键盘展开不派发事件；菜单项选中时只为已绑定的 `ui.select` 发送 `{key}`，
   key 必须存在于 `items` 且菜单项未禁用；初始化与合法 replace 不派发事件。`items` 为空、key 重复或 label 为空时规则拒绝。
-  可选 `icon="ellipsis"` 改用组件内置的纯图标 text 按钮，此时必须提供非空 ariaLabel，
-  children 不参与触发区渲染。展开时保留背景；选择可用项后关闭，禁用或断连时关闭且不可展开。
+  可选 icon 与 Button 共用图标白名单（例如 `ellipsis`、`settings`），改用组件内置的纯图标 text 按钮，此时必须提供非空 ariaLabel，
+  icon 与非空 children 必须且只能提供一个，空触发区或两种来源同时存在时前后端拒绝整棵树。
+  展开时保留背景；选择可用项后关闭，禁用或断连时关闭且不可展开。
 - C-27：FilePreview 的 file 可为 null；非空时 name/path 必填，content 与 downloadUrl 至少提供一个。
   downloadUrl 接受相对路径或 HTTP(S) URL，文本正文优先使用 content。文本 URL 的读取上限为 1 MiB，
   读取失败或内容不受支持时显示原有状态提示；切换文件时中止旧文本请求。
@@ -91,11 +100,16 @@ Empty、Avatar、Image、Divider、Card、Tag、Panel、FileTree、FilePreview�
 - C-28：FileTree 在同一挂载实例中按节点保存展开、选中、滚动位置及本地宽度，合法 replace 后恢复。
   右侧分界线支持拖拽和左右方向键，调整宽度不派发插件事件；宿主外观参数仍优先。
   节点移除或类型改变时丢弃状态；clear、断连或消费者更换时沿用实例状态端口的重置规则。
+- C-29：尺寸统一推荐 small/medium/large，sm/md/lg 为兼容别名并在前端准备阶段转换。
+  Switch/Card 只有 small/medium 两档；Avatar 还接受 default（medium 的别名）与原有像素数值。
+  Text 的 max_lines 只接受正整数，省略表示不限行；旧的 0 应改为省略该属性。
+- C-30：Text.variant 的 primary、secondary、danger、ghost 分别使用主题主色、次要文本色、错误色、弱化文本色。
+  显式 tone 优先于 variant，包括 neutral；宿主 appearance.style 最后覆盖外观。
+  Button.secondary 使用默认色的 filled 外观，与 default 的 outlined 外观区分。
 
 例如 Input 的 `ui.change` 接受 `{value: "北京", isComposing: false}`，
 缺少 `isComposing` 或传入额外字段时，事件数据规则返回错误。
-Select 只声明 ui.select、ui.search、ui.clear，不额外增加 ui.change。
-TreeSelect 另外声明 ui.change，用于承载整体选择值。
+Select 与 TreeSelect 的 ui.change 用于承载整体选择值，ui.select 仍表示本次选择的单个选项。
 
 ## 限制与验证入口
 

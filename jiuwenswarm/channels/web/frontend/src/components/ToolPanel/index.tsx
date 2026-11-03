@@ -15,6 +15,7 @@ import { useSessionArtifacts, useSessionArtifactsCount } from '../ArtifactsPanel
 import { useTaskPlanningMetrics } from '../teamArea';
 import { ExpandedPanel } from '../teamArea/ExpandedPanel';
 import { isEnterprise } from '../../edition';
+import { BUILTIN_PANEL_KEY, usePanelPages } from '../teamArea/usePanelPages';
 import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
 import { restoreOrganizationGroupHistory } from '../../features/teamOrganization/groupHistory';
 import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
@@ -365,7 +366,7 @@ export function ToolPanel({
     !browserHeadless &&
     !desktopBrowserTabFlags.closed &&
     (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
-  const handleTabClose = (tab: string) => {
+  const handleSectionTabClose = (tab: string) => {
     if (tab === 'browser') closeDesktopBrowserTab();
     if (tab === 'app') useSessionStore.getState().setAppMarketPreview(resolvedSessionId, undefined);
   };
@@ -524,30 +525,17 @@ export function ToolPanel({
     sessionId: resolvedSessionId && resolvedSessionId !== 'new' ? resolvedSessionId : null,
     styles: rightPanelStyles,
   });
-  const [pluginSelection, setPluginSelection] = useState<{
-    key: string; sessionId: string; mode: string; nativeTab: string;
-  } | null>(null);
   const pluginPanels = panels.map((panel) => ({
     key: `webui:${panel.key}`,
     label: panel.title,
     icon: <PluginIcon className="h-4 w-4 shrink-0" aria-hidden />,
     content: renderPanel(panel.key),
   }));
-  const selectedPluginPanel = pluginSelection?.sessionId === resolvedSessionId
-    && pluginSelection.mode === mode && pluginSelection.nativeTab === nativePanelTab
-    ? pluginPanels.find((panel) => panel.key === pluginSelection.key) : undefined;
-  const selectedPluginKey = selectedPluginPanel?.key;
-
-  useEffect(() => {
-    if (pluginSelection && !selectedPluginKey) setPluginSelection(null);
-  }, [pluginSelection, selectedPluginKey]);
+  const { visiblePages, activePage, selectPage, closePage } = usePanelPages(
+    pluginPanels, JSON.stringify([resolvedSessionId, mode, nativePanelTab]),
+  );
 
   const handlePanelTabChange = (key: string) => {
-    if (pluginPanels.some((panel) => panel.key === key)) {
-      setPluginSelection({ key, sessionId: resolvedSessionId, mode, nativeTab: nativePanelTab });
-      return;
-    }
-    setPluginSelection(null);
     if (mode === 'team') {
       setTeamAreaActiveTab(key as TabType);
       if (key === 'team') setTeamAreaSelectedMemberId('');
@@ -568,10 +556,13 @@ export function ToolPanel({
       >
         <div className="h-full bg-panel flex flex-col overflow-hidden">
           <ExpandedPanel
-            activeTab={selectedPluginPanel?.key ?? nativePanelTab}
+            activeTab={nativePanelTab}
             onTabChange={handlePanelTabChange}
-            additionalPanels={pluginPanels}
-            onTabClose={handleTabClose}
+            activePage={activePage}
+            onPageChange={selectPage}
+            additionalPanels={visiblePages}
+            onTabClose={closePage}
+            onSectionTabClose={handleSectionTabClose}
             onCollapse={
               isTeam
                 ? () => {
@@ -676,7 +667,7 @@ export function ToolPanel({
         expanded: planningExpanded,
       };
   const expandTo = (tab: TabType | SingleAgentToolTab, teamMemberId?: string) => {
-    setPluginSelection(null);
+    selectPage(BUILTIN_PANEL_KEY);
     if (isTeam) {
       setTeamAreaActiveTab(tab as TabType);
       if (tab === 'team') {

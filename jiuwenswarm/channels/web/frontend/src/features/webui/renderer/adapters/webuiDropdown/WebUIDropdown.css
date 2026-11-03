@@ -24,7 +24,7 @@
 .webui-dropdown__trigger--icon.ant-btn:not(:disabled):hover,
 .webui-dropdown__trigger--icon.ant-btn[aria-expanded='true'] {
   color: var(--color-text-primary);
-  background: var(--color-surface-muted);
+  background: var(--color-action-secondary);
 }
 
 .webui-dropdown__trigger[aria-disabled='true'] {

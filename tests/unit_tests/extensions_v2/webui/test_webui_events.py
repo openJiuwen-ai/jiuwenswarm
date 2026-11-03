@@ -10,6 +10,7 @@ from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBu
 
 from jiuwenswarm.extensions_v2.webui.action_validation import validate_upstream
 from jiuwenswarm.extensions_v2.webui.component_rules import COMPONENT_RULES, validate_event_data, validate_props
+from jiuwenswarm.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 from jiuwenswarm.extensions_v2.webui.constants import SESSION_SLOTS, UPSTREAM_EVENTS
 from jiuwenswarm.extensions_v2.webui.models import (
     RenderFrame, RenderMode, RenderNode, RenderTarget, UiActionInput, UiRenderInput, node_to_payload,
@@ -19,6 +20,24 @@ from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
 from jiuwenswarm.extensions_v2.webui.schema import validate_request, validate_root, validate_target
 
 TARGET = RenderTarget("s1", "conversation.input.below", "pkg.demo", "main")
+
+
+def test_icon_whitelist_matches_frontend_and_gates_both_components():
+    source = Path(__file__).resolve().parents[4] / (
+        "jiuwenswarm/channels/web/frontend/src/features/webui/icons/whitelist.json"
+    )
+    whitelist = json.loads(source.read_text(encoding="utf-8"))
+    names = (*whitelist["icons"], *whitelist["aliases"])
+    assert WEBUI_ICON_NAMES == names
+    for component in ("Button", "Dropdown"):
+        assert COMPONENT_RULES[component]["props"]["icon"]["values"] == names
+        props = {"label": "Action", "iconOnly": True} if component == "Button" else {
+            "items": [{"key": "action", "label": "Action"}], "ariaLabel": "Actions",
+        }
+        for name in names:
+            assert validate_props(component, {**props, "icon": name}) is None, name
+        for name in ("not-an-icon", "Camera", "constructor", "__proto__", "", None):
+            assert validate_props(component, {**props, "icon": name}) is not None
 
 
 def _button(*, args=None, disabled=False):
@@ -105,6 +124,38 @@ def test_request_enforces_slot_root_components():
     assert not validate_request(UiRenderInput(menu_main, panel)).ok
     assert not validate_request(UiRenderInput(TARGET, panel)).ok
     assert not validate_request(UiRenderInput(TARGET, iframe)).ok
+
+
+@pytest.mark.parametrize("icon,children,accepted", [
+    (False, (), False),
+    (False, (RenderNode("Text", {"value": "Menu"}),), True),
+    (True, (), True),
+    (True, (RenderNode("Text", {"value": "Ignored"}),), False),
+])
+def test_dropdown_requires_exactly_one_trigger_source(icon, children, accepted):
+    props = {"items": [{"key": "action", "label": "Action"}]}
+    if icon:
+        props.update({"icon": "ellipsis", "ariaLabel": "Actions"})
+    dropdown = RenderNode("Dropdown", props, children=children)
+    assert validate_root(dropdown).ok is accepted
+    tabs = RenderNode("Tabs", {"items": [{"key": "menu", "label": "Menu", "children": [dropdown]}]})
+    assert validate_root(tabs).ok is accepted
+
+
+@pytest.mark.parametrize("component,props", [
+    ("Text", {}), ("Button", {}), ("Input", {}), ("Switch", {}), ("Card", {}),
+    ("Select", {"options": []}), ("TreeSelect", {"treeData": []}),
+    ("Tabs", {"items": []}), ("Divider", {}), ("Avatar", {"url": "/logo.svg"}),
+])
+def test_size_aliases_match_frontend(component, props):
+    sizes = ("small", "medium", "sm", "md") if component in ("Switch", "Card") else (
+        "small", "medium", "large", "sm", "md", "lg",
+    )
+    for size in sizes:
+        assert validate_props(component, {**props, "size": size}) is None
+    if component in ("Switch", "Card"):
+        for size in ("large", "lg"):
+            assert validate_props(component, {**props, "size": size}) is not None
 
 
 def test_tab_content_serialization_and_hidden_node_budget():
@@ -221,6 +272,7 @@ async def test_registry_keeps_delivered_event_declarations_after_plugin_mutation
     ("Select", {"options": [], "showSearch": False}, "ui.search", {"searchValue": "x"}, False),
     ("Select", {"options": [], "showSearch": True}, "ui.search", {"searchValue": "Beijing"}, True),
     ("Select", {"options": [], "mode": "tags"}, "ui.select", {"value": "custom"}, True),
+    ("Select", {"options": [{"value": "a", "label": "A"}], "disabled": True}, "ui.change", {"value": "a"}, False),
     ("TreeSelect", {"treeData": [{"value": "a", "title": "A"}], "multiple": True}, "ui.change", {"value": ["a"]}, True),
     ("TreeSelect", {"treeData": [], "multiple": True}, "ui.change", {"value": ["forged"]}, False),
     ("Tabs", {"items": [{"key": "a", "label": "A"}]}, "ui.change", {"activeKey": "a"}, True),

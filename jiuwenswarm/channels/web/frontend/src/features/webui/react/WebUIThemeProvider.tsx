@@ -51,7 +51,24 @@ export function resolveWebUITheme(styles: Pick<CSSStyleDeclaration, 'getProperty
     const value = Number.parseFloat(styles.getPropertyValue(variable));
     if (Number.isFinite(value) && value > 0) token[name] = value;
   }
-  return { algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm, token };
+  const textHoverBg = styles.getPropertyValue('--color-action-secondary').trim();
+  return {
+    algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm,
+    token,
+    components: {
+      Button: {
+        controlHeight: 32,
+        contentFontSize: 14,
+        paddingInline: 16,
+        iconGap: 8,
+        borderRadius: 8,
+        defaultShadow: 'none',
+        primaryShadow: 'none',
+        dangerShadow: 'none',
+        ...(textHoverBg ? { textHoverBg } : {}),
+      },
+    },
+  };
 }
 
 /** Keep library tokens and built-in labels within the WebUI subtree. */

@@ -25,7 +25,6 @@ import {
   Sparkles,
   Table2,
   X,
-  RefreshCw,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -115,13 +114,7 @@ import {
 } from '../../features/topicStarterVisibility';
 
 const pluginHeaderActionStyles: WebUIStyleOverrides = {
-  Button: {
-    unstyled: true,
-    className: 'chat-header-icon-btn shrink-0',
-    icon: <RefreshCw size={16} strokeWidth={2} aria-hidden />,
-    iconClassName: 'flex items-center justify-center',
-    hideLabel: true,
-  },
+  Button: { className: 'shrink-0' },
   Box: { unstyled: true, className: 'flex min-w-0 items-center gap-2' },
 };
 
@@ -2647,7 +2640,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
-                <WebUIHost slotId="conversation.input.below" className="mt-1 px-1" />
+                <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
               </div>
               {topicStartersEnabled && <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
@@ -2766,7 +2759,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
-          <WebUIHost slotId="conversation.input.below" className="mt-1 px-1" />
+          <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
         </div>
       )}
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">

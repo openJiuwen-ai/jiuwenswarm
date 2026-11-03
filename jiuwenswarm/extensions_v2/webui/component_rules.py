@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from jiuwenswarm.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
+from jiuwenswarm.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 
 
 def token(*values: str) -> dict[str, Any]:
@@ -34,7 +35,8 @@ BOOL = {"kind": "boolean"}
 NUMBER = {"kind": "number"}
 NIL = {"kind": "null"}
 INTEGER = {"kind": "number", "integer": True, "min": 0}
-SIZE = token("small", "medium", "large")
+SIZE = token("small", "medium", "large", "sm", "md", "lg")
+COMPACT_SIZE = token("small", "medium", "sm", "md")
 VARIANT = token("outlined", "borderless", "filled", "underlined")
 INPUT_PROPS = {"disabled": BOOL, "ariaLabel": TEXT, "size": SIZE, "variant": VARIANT,
                "status": token("error", "warning")}
@@ -64,13 +66,13 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     "Text": {"props": {
         "value": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
         "tone": token("neutral", "info", "success", "warning", "danger"),
-        "size": token("sm", "md", "lg"), "weight": token("regular", "medium", "bold"),
-        "max_lines": NUMBER, "monospace": BOOL,
+        "size": SIZE, "weight": token("regular", "medium", "bold"),
+        "max_lines": {"kind": "number", "integer": True, "min": 1}, "monospace": BOOL,
     }},
     "Button": {"props": {
         "label": TEXT, "variant": token("default", "primary", "secondary", "danger", "ghost"),
-        "size": token("sm", "md", "lg"), "disabled": BOOL,
-        "icon": token("ellipsis"), "iconOnly": BOOL,
+        "size": SIZE, "disabled": BOOL,
+        "icon": token(*WEBUI_ICON_NAMES), "iconOnly": BOOL,
     }, "events": {"ui.click": NO_DATA}},
     "Input": {"props": {
         **INPUT_PROPS, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
@@ -82,7 +84,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }},
     "Switch": {"props": {
         "checked": BOOL, "defaultChecked": BOOL, "loading": BOOL, "disabled": BOOL,
-        "ariaLabel": TEXT, "size": token("medium", "small"), "checkedChildren": TEXT, "unCheckedChildren": TEXT,
+        "ariaLabel": TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
     }, "events": {name: obj({"checked": BOOL}, "checked") for name in ("ui.click", "ui.change")}},
     "Select": {"props": {
         **INPUT_PROPS, "options": array(obj({"value": OPTION_VALUE, "label": TEXT, "disabled": BOOL}, "value", "label")),
@@ -91,6 +93,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "mode": token("multiple", "tags"), "maxCount": {"kind": "number", "integer": True, "min": 1},
         "maxTagCount": union(INTEGER, token("responsive")), "showSearch": BOOL,
     }, "required": ("options",), "events": {
+        "ui.change": obj({"value": union(OPTION_VALUE, NIL, array(OPTION_VALUE))}, "value"),
         "ui.select": obj({"value": OPTION_VALUE}, "value"),
         "ui.search": obj({"searchValue": TEXT}, "searchValue"), "ui.clear": NO_DATA,
     }},
@@ -116,7 +119,8 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     "Empty": {"props": {"image": TEXT, "description": TEXT}},
     "Avatar": {"props": {
         "url": TEXT, "alt": TEXT,
-        "size": union(token("small", "default", "large"), {"kind": "number", "min": 1, "max": 4096}),
+        "size": union(token("small", "medium", "large", "sm", "md", "lg", "default"),
+                      {"kind": "number", "min": 1, "max": 4096}),
         "shape": token("circle", "square"),
     }, "required": ("url",)},
     "Image": {"props": {
@@ -129,7 +133,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }, "children": True, "childComponents": ("Text",)},
     "Card": {"props": {
         "title": TEXT, "extra": TEXT, "cover": TEXT, "hoverable": BOOL,
-        "size": token("medium", "small"), "variant": token("outlined", "borderless"),
+        "size": COMPACT_SIZE, "variant": token("outlined", "borderless"),
     }, "children": True},
     "Tag": {"props": {
         "children": TEXT, "color": token("default", "success", "processing", "warning", "error"),
@@ -171,7 +175,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
             "placement": token("bottomLeft", "bottomRight", "topLeft", "topRight"),
             "disabled": BOOL,
             "ariaLabel": TEXT,
-            "icon": token("ellipsis"),
+            "icon": token(*WEBUI_ICON_NAMES),
         },
         "required": ("items",),
         "children": True,
@@ -459,6 +463,18 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
             return props.get("showSearch", "mode" in props)
         options = props["options"] if component == "Select" else _tree_options(props["treeData"])
         value = data["value"]
+        if component == "Select" and event == "ui.change":
+            initial = props.get("value", props.get("defaultValue"))
+            retained = initial if isinstance(initial, (list, tuple)) else ([] if initial is None else [initial])
+            values = [item["value"] for item in options if not item.get("disabled") or item["value"] in retained]
+            if value is None and not props.get("allowClear"):
+                return False
+            if not _selection_allowed(value, values, "mode" in props,
+                                      tags=props.get("mode") == "tags", maximum=props.get("maxCount")):
+                return False
+            selected = value if isinstance(value, (list, tuple)) else ([] if value is None else [value])
+            return not any(item.get("disabled") and item["value"] in selected and item["value"] not in retained
+                           for item in options)
         if component == "Select" and props.get("mode") == "tags":
             return isinstance(value, str) and bool(value)
         values = [item["value"] for item in options if not item.get("disabled")

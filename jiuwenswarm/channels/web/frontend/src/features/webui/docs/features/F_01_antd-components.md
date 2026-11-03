@@ -50,6 +50,52 @@ flowchart LR
 
 ## 渲染与外观
 
+**普通按钮尺寸统一（2026-11-03）**
+
+WebUI Button 的普通尺寸为 `size="medium"`（兼容 md），未指定 size 时也使用此尺寸。宿主通过 Ant Design
+Button 组件 token 统一为高 32px、字号 14px、左右 padding 16px、图文间距 8px、圆角 8px，
+并取消按钮的默认阴影。纯文字与图文按钮共用内边距，纯图标按钮沿用 32px 方形点击区。
+小、大尺寸保留各自的尺寸语义；插件不直接配置 padding 或 CSS。Workbench 按钮辅助函数默认使用 md，
+因此输入框上下方的普通操作与其余普通按钮使用同一规格。
+
+验证：组件测试通过 69 项，Workbench 定向测试通过 7 项。独立浏览器预览使用真实 Provider 与
+Button 适配器，实测普通、图文、主要、危险、ghost、禁用按钮均为高 32px、字号 14px、
+左右 padding 16px、间距 8px、圆角 8px、无阴影，纯图标按钮为 32px 方形、图标为 16px。
+本次未执行完整应用构建或在运行中的聊天页面复验。
+
+**图标白名单单一维护入口（2026-11-03）**
+
+Button 与 Dropdown 共用前端 `src/features/webui/icons/whitelist.json`，包含约 100 个 Lucide
+图标及旧名称 `refresh` 的兼容别名。白名单记录协议名称与 Lucide 导出名称的对应关系，
+宿主继续控制尺寸、颜色与按钮交互外观。新增图标只编辑该 JSON，不再手工修改组件枚举。
+
+`scripts/generate-webui-icons.mjs` 校验名称、别名及已安装 Lucide 导出，生成前端静态导入表与
+后端 Python 名单。生成文件随源码提交，后端运行时无需 Node 或前端源码。前端 dev/build 和
+组件、契约测试自动执行生成，也可运行 `npm run generate:webui-icons`；
+`npm run check:webui-icons` 检查生成结果是否过期。生成表只命名导入白名单图标，不使用全库动态索引。
+
+验证结果：组件测试通过 69 项、契约测试通过 109 项、后端 WebUI 事件与 Workbench 测试通过 255 项。
+覆盖全部白名单图标的 SVG 输出、主题颜色与尺寸、别名一致性、Button 新图标的标签与事件、
+前后端名单一致性及非法名称拒绝。生成同步检查通过；本次未做完整应用构建或浏览器视觉复验。
+
+**文字按钮与头部操作的外观边界（2026-11-03）**
+
+聊天头部原来为所有插件 Button 注入刷新图标并隐藏标签，其他动作也会显示为刷新。
+本次移除该槽位的 Button 内容覆盖，由插件显式声明 `icon="refresh"`、`iconOnly=true`
+及 `variant="ghost"`；前后端同步扩展 Button 的图标白名单，Box 的槽位布局沿用现状。
+
+`variant="ghost"` 继续映射为 Ant Design `type="text"`。主题提供器把 Button 的
+`textHoverBg` 映射到 `--color-action-secondary`，与对话区原生按钮的 hover 一致；
+聊天头部原生按钮及图标 Dropdown 的 hover 也使用该 token。其他 Button 变体保留库的颜色语义。
+不通过重新实现原生文字按钮或向插件开放 style/className 达成外观统一。
+
+验证结果：`test:webui-components` 通过 67 项，覆盖 refresh 图标、文字按钮标签与事件、
+主题颜色更新；`test:webui-contracts` 通过 108 项；Python 的工作台轮次与 WebUI 事件测试
+通过 254 项，包含头部树声明及前后端共享属性用例。
+独立浏览器页加载真实组件、聊天 CSS、Tailwind 与浅色主题，确认顶部原生按钮、对话区复制按钮、
+插件文字按钮、刷新图标按钮及省略号 Dropdown 的实际 hover 背景均为 `rgb(244, 244, 245)`。
+当前 Chrome 聊天窗口访问授权超时，尚未在运行中的完整聊天页面复验；暗色仅有主题映射单元验证。
+
 **轮次操作的图标入口**
 
 Workbench 的轮次操作改用一个省略号菜单，保留刷新和详情两项业务行为。实现限定在 WebUI
@@ -59,7 +105,7 @@ Workbench 的轮次操作改用一个省略号菜单，保留刷新和详情两�
 展开状态只在组件本地保存，展开时保留浅灰背景，选择菜单项后关闭并派发一次 ui.select。
 
 采用 Dropdown 自带图标入口，避免额外嵌套可聚焦按钮；不向插件开放任意 SVG、style 或
-className。图标名称先限定为本次使用的 ellipsis。组件回归验证图标标签、展开/关闭、
+className。初版图标名称仅含 ellipsis，后续头部操作增加的 refresh 见上文。组件回归验证图标标签、展开/关闭、
 菜单派发和禁用行为；共享属性用例由前后端共同验证。
 
 2026-11-03 定向验证：`test:webui-components` 通过，新增纯图标 Button、Dropdown
@@ -111,7 +157,7 @@ disabled、loading 或断连时禁用；合法 replace 重新初始化状态，�
 Select 使用 Ant Design Select 管理本地选择值，value 优先于 defaultValue；合法 replace 重新初始化选择。
 选择选项为已绑定的 `ui.select` 发送单个选项值 `{value}`，多选模式也按本次选择的选项发送。
 搜索按 label 过滤，为已绑定的 `ui.search` 发送 `{searchValue}`；清空为已绑定的 `ui.clear` 发送 `{}`。
-选择值变化由组件本地更新，不额外派发 change；未绑定事件时保留默认操作，disabled 或断连时禁用。
+选择值变化由组件本地更新，可选 change 发送完整选择值，包含取消选项与清空；未绑定事件时保留默认操作，disabled 或断连时禁用。
 
 TreeSelect 使用 Ant Design TreeSelect 管理本地选择值，treeData 的 key 缺省取 value，搜索按 title 过滤。
 选中节点时为已绑定的 `ui.select` 发送该节点 `{value}`，为已绑定的 `ui.change` 发送整体选择值：
@@ -141,6 +187,22 @@ Dropdown 使用 Ant Design Dropdown 渲染触发区与菜单，触发区由子�
 主题初始化保持 Provider 子树挂载，不释放已有实例或重复上报 ready。
 
 ## 验证入口
+
+### 2026-11-03 组件接口修复
+
+本次修复范围为 Select 整体选择事件、文本和按钮变体、行数校验、Dropdown 触发区以及尺寸别名。
+Select 新增可选 `ui.change`，发送整体值，保留原有 select/search/clear 绑定；前后端共同检查模式、
+选项、重复值和 maxCount。已作为初始值下发的禁用选项可保留，但不能通过事件新增禁用选项。
+Text 的显式 tone 优先于 variant；primary、danger、ghost 分别映射主题主色、错误色、弱化文本色；
+Button.secondary 使用 filled 外观。max_lines 只接受正整数，省略表示不限行。
+Dropdown 必须在 icon 与非空 children 中选择一个触发区，避免空入口或静默丢弃子节点。
+size 统一推荐 small/medium/large，兼容 sm/md/lg；Switch/Card 只支持 small/medium 两档，
+Avatar 继续兼容 default 和像素数值。别名在组件准备阶段转换，后端接受相同取值。
+槽位 rootComponents 的说明明确区分专用根组件许可与右侧面板的完整根白名单，允许范围保持原样。
+采用兼容别名和可选事件，避免现有插件批量迁移；不通过放开任意样式解决变体问题。
+验证计划：组件属性、完整渲染树、真实适配器交互及后端交互门禁回归；页面由用户手工验证。
+实施状态：代码与文档已更新。前端组件、契约、事件测试共 286 项通过；后端规则测试共 291 项通过。
+未运行格式化与静态检查工具；未打开浏览器，实际页面效果由用户手工验证。
 
 `npm run test:webui-contracts` 检查属性合法与非法输入、组件事件数据、跨属性约束、
 默认值准备以及目录登记范围。协议、运行时、传输和渲染器分别由
