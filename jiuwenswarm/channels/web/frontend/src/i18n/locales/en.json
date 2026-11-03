@@ -717,6 +717,34 @@
       "test": "Test"
     },
     "agent": {
+      "a2aDuplex": {
+        "title": "Group team rules",
+        "description": "Off. When a busy agent gets a new message, the supervisor decides to interrupt, insert or queue it.",
+        "restartHint": "Restart the team after changes.",
+        "jevFallbackHint": "Optional. Leave empty to use the JEV URL and model from Browser settings",
+        "jevKeyHint": "Optional. Leave empty to use the key from Browser settings → JEV API key",
+        "formats": {
+          "openai": "OpenAI format",
+          "anthropic": "Anthropic format",
+          "jev": "JEV format"
+        },
+        "formatHints": {
+          "openai": "For DeepSeek, GLM, Kimi and OpenAI-format relays. The model must return logprobs.",
+          "anthropic": "For Anthropic-format relays. The model reports its own probability, which is not calibrated.",
+          "jev": "For JEV, MCL, Yale and similar. The server returns the choice and its probability."
+        },
+        "fields": {
+          "enabled": "Enable supervisor",
+          "format": "API format",
+          "api_base": "API Base URL",
+          "model": "Model",
+          "api_key": "API key"
+        },
+        "errors": {
+          "jevKey": "Enter an API key, or set the key in Browser settings → JEV API key",
+          "url": "Enter an http(s) URL"
+        }
+      },
       "skills": "Skills",
       "webSearch": "Web search",
       "mediaTools": "Tools",

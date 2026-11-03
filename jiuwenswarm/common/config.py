@@ -914,6 +914,15 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_duplex_router_in_config(updates: dict[str, Any]) -> None:
+    """Merge ``updates`` into the ``duplex_router`` section and write it back."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if not isinstance(data.get("duplex_router"), dict):
+        data["duplex_router"] = {}
+    data["duplex_router"].update(updates)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_browser_decision_in_config(updates: dict[str, Any]) -> None:
     """只更新 browser.decision 中给定的字段，保留阈值等其余字段。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

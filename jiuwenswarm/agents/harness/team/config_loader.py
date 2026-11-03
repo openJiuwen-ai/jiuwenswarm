@@ -16,6 +16,7 @@ from openjiuwen.agent_teams.paths import get_agent_teams_home
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
 from jiuwenswarm.common.config import coerce_subtask_depth, get_config, get_default_models
+from jiuwenswarm.common.duplex_router import resolve_duplex_spec
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.opencode_zen import get_zen_free_model_entries
 
@@ -554,6 +555,33 @@ def _apply_swarmflow_budget(spec_dict: dict[str, Any], raw_value: Any) -> None:
     spec_dict["swarmflow_budget"] = budget_value
 
 
+def _apply_duplex_router(spec_dict: dict[str, Any], config_base: dict[str, Any]) -> None:
+    """Pass ``duplex_router`` to ``TeamAgentSpec.duplex`` when the installed SDK supports it.
+
+    Off, an SDK without the field, or a value the SDK rejects: the key is left
+    out, so the team starts with the original delivery behavior.
+    """
+    duplex = resolve_duplex_spec(config_base)
+    if duplex is None:
+        return
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+
+    field = TeamAgentSpec.model_fields.get("duplex")
+    if field is None:
+        logger.warning(
+            "[TeamConfigLoader] duplex_router enabled but installed agent-core has no duplex support; ignored"
+        )
+        return
+    from pydantic import TypeAdapter, ValidationError
+
+    try:
+        TypeAdapter(field.annotation).validate_python(duplex)
+    except ValidationError as exc:
+        logger.warning("[TeamConfigLoader] duplex_router ignored, invalid for agent-core: %s", exc)
+        return
+    spec_dict["duplex"] = duplex
+
+
 def load_team_spec_dict(
     config_base: dict[str, Any] | None = None,
     *,
@@ -630,6 +658,7 @@ def load_team_spec_dict(
     spec_dict["leader"] = _build_leader_spec(team_raw)
     spec_dict["agents"] = agents
     spec_dict["language"] = str(config_base.get("preferred_language", "zh")).strip().lower()
+    _apply_duplex_router(spec_dict, config_base)
 
     workspace_spec = _build_workspace_spec(team_raw)
     if workspace_spec is not None:

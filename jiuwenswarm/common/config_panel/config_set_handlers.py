@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dotenv import dotenv_values
+
 from openjiuwen.core.foundation.llm import ProviderType
 
 from jiuwenswarm.common.permission_mode import is_auto_permission_mode
@@ -57,6 +59,7 @@ from jiuwenswarm.common.config import (
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
+    update_duplex_router_in_config,
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
@@ -107,6 +110,14 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     build_models_defaults_from_frontend,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
+from jiuwenswarm.common.duplex_router import (
+    DUPLEX_ROUTER_API_KEY_ENV,
+    DUPLEX_ROUTER_API_KEY_PARAM,
+    DUPLEX_ROUTER_PARAM_KEYS,
+    DuplexRouterSettingsError,
+    build_duplex_router_update,
+    duplex_router_panel_view,
+)
 from jiuwenswarm.common.moa_config import (
     MOA_CONFIG_KEYS,
     build_moa_config_from_frontend,
@@ -275,6 +286,16 @@ class ConfigApplyResult:
 ENV_FILE = get_env_file()
 
 
+def _saved_environment() -> dict[str, str]:
+    """os.environ overlaid with the saved .env, the source the settings panel shows.
+
+    Another process may have written .env since this one started, so os.environ alone can be stale.
+    """
+    environment = dict(os.environ)
+    environment.update({k: v for k, v in dotenv_values(get_env_file()).items() if v is not None})
+    return environment
+
+
 # --------------------------------------------------------------------------- #
 # 配置键映射（前端 param 名 -> 环境变量名 / config.yaml 路径）
 # --------------------------------------------------------------------------- #
@@ -348,6 +369,7 @@ CONFIG_SET_ENV_MAP = {
     "perplexity_api_key": "PERPLEXITY_API_KEY",
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
+    DUPLEX_ROUTER_API_KEY_PARAM: DUPLEX_ROUTER_API_KEY_ENV,
     "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
     "github_token": "GITHUB_TOKEN",
     "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
@@ -1452,6 +1474,13 @@ def apply_config_payload(
             build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
+    try:
+        # Validate before any write so a bad supervisor setting leaves .env and config.yaml untouched.
+        duplex_router_update = build_duplex_router_update(
+            params, resolve_env_vars(get_config_raw()), _saved_environment(),
+        )
+    except DuplexRouterSettingsError as exc:
+        raise ConfigPanelBadRequest(str(exc)) from exc
     # Collaboration writes only its switches and interval; Jev credentials use the shared env fields.
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
@@ -1702,6 +1731,14 @@ def apply_config_payload(
         except Exception as e:
             logger.warning("[config.set] 写回 skill_retrieval 失败: %s", e)
 
+    if duplex_router_update:
+        try:
+            update_duplex_router_in_config(duplex_router_update)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[config.set] 写回 duplex_router 失败: %s", exc)
+            raise ConfigPanelInternalError("failed to update duplex_router") from exc
+        yaml_updated.extend(sorted(DUPLEX_ROUTER_PARAM_KEYS.intersection(params)))
+
     if moa_params:
         try:
             save_moa_config_from_frontend(moa_params)
@@ -1901,6 +1938,7 @@ async def config_get_handler(
             proactive_cfg.get("max_rounds_per_tick", 20))
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
+        payload.update(duplex_router_panel_view(resolve_env_vars(raw), _saved_environment()))
     except Exception:  # noqa: BLE001
         for key, value in flatten_moa_for_config_panel({}).items():
             payload.setdefault(key, value)
@@ -1951,6 +1989,8 @@ async def config_get_handler(
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")
+        for key, value in duplex_router_panel_view({}, _saved_environment()).items():
+            payload.setdefault(key, value)
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 
 

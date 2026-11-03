@@ -710,6 +710,34 @@
       "test": "测试"
     },
     "agent": {
+      "a2aDuplex": {
+        "title": "Group 团队规则",
+        "description": "已关闭。Agent 忙时收到新消息，由监工决定打断、插入或排队。",
+        "restartHint": "修改后重启团队生效。",
+        "jevFallbackHint": "可选。留空则使用浏览器设置里的 JEV 地址和模型",
+        "jevKeyHint": "可选。留空则使用浏览器设置的 JEV 密钥",
+        "formats": {
+          "openai": "OpenAI 标准格式",
+          "anthropic": "Anthropic 格式",
+          "jev": "JEV 格式"
+        },
+        "formatHints": {
+          "openai": "适用 DeepSeek、GLM、Kimi 等模型和 OpenAI 格式中转站。模型必须返回 logprobs。",
+          "anthropic": "适用 Anthropic 格式中转站。概率由模型自报，未经校准。",
+          "jev": "适用 JEV、MCL、Yale 等。服务端直接返回选项和概率。"
+        },
+        "fields": {
+          "enabled": "启用监工",
+          "format": "接口格式",
+          "api_base": "API Base URL",
+          "model": "模型名",
+          "api_key": "API Key"
+        },
+        "errors": {
+          "jevKey": "请填写 API 密钥，或在浏览器设置的 JEV 密钥里配置",
+          "url": "请输入 http(s) 地址"
+        }
+      },
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",

@@ -1113,6 +1113,9 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       ),
       `${modality}_enabled`,
     ]),
+    ...findVariableArrayStrings(parseTsx('src/features/settings/modules/agent/A2ADuplexSettings.tsx'), 'FIELDS').map(
+      (field) => `duplex_router_${field}`,
+    ),
     ...['video_gen', 'visual_gen'].flatMap((slot) =>
       ['api_base', 'api_key', 'model', 'provider', 'protocol', 'context_window_tokens', 'enabled'].map(
         (suffix) => `${slot}_${suffix}`,
