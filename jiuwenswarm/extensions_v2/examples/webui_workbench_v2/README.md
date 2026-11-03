@@ -29,14 +29,27 @@
 | `task.function` → `task.function.main` | 点击任务区“任务检查 / Inspect tasks”打开任务主页面（`Iframe` 根）；两处实例均为 `task-inspector` |
 | `application.settings` | 设置内容区域显示“天气详情 / Weather details”开关，状态属于当前会话 |
 | `conversation.input.above` | Token 天气演示与右侧“隐藏／显示”按钮，使用 `Box` 横向排列、窄屏换行；宿主提供浅色圆角横条，集群模式下位于活动面板上方 |
-| `conversation.input.below` | 紧凑操作次数提示 |
+| `conversation.input.below` | 周报总结、报错修复、PPT 制作、闲时任务四个快捷按钮，图标分别为 `file-text`、`wrench`、`presentation`、`clock` |
 | `conversation.panel.right` | “工作区文件”（`Panel` 根，实例 `workbench`）与“网页预览”（`Iframe` 根，实例 `iframe-preview`）两个页签，与原生内容互斥 |
-| `conversation.session.content.after` | 已结束助手轮次的状态快照 |
+| `conversation.session.content.after` | 已结束助手轮次的真实 Token 用量，复用 ghost Button 样式和 database 图标，不绑定点击动作；执行轮次菜单操作后另显示结果行 |
 | `conversation.turn.footer.actions` | `👍` 单符号按钮与 `…` 下拉入口并排，菜单包含“刷新本轮 / Refresh round”和“本轮详情 / Round details” |
 | `conversation.header.title.after` | 工作台状态 Tag |
-| `conversation.header.actions` | 刷新当前会话工作台的按钮 |
+| `conversation.header.actions` | 刷新当前会话工作台的纯图标按钮；插件声明 `variant="ghost"`、`icon="refresh"` 和 `iconOnly=true` |
 
-轮次位置的 `instance_key` 来自实际 `requestId`。首次挂载保存该轮快照；后续 ready 恢复快照。其他轮次和其他会话的修改不会覆盖它；点击“刷新本轮”才把当前筛选摘要写入该轮。
+轮次位置的 `instance_key` 来自实际 `requestId`。用量显示为 `用量：22.8M tokens` 等文案，
+沿用 `Button(variant="ghost", size="md", icon="database")` 的外观，不声明 `ui.click`，仅用于展示。
+取自 `ops.session.usage()` 的本轮 `turn.total_tokens`，不是上下文占用量或会话累计账单。
+插件监听 `context.usage.updated` 并读取宿主快照，只更新对应会话、对应 requestId 的展示；重复通知覆盖数值，不累加。
+真实零值显示 `用量：0 tokens`；缺失显示“未上报”，不使用固定数字，也不从输入和输出推算总数。
+
+首次挂载查询可用用量，后续 ready 保留已缓存数值；通知早于挂载时也会缓存。
+“刷新本轮”重新查询用量、保存当前筛选摘要，并显示该轮刷新次数；“本轮详情”显示 requestId 和已保存的摘要。
+这些操作只更新当前轮次，其他轮次和会话的修改不会覆盖它。插件重新激活后缓存清空，
+公共查询只提供最近可用回合；只恢复 requestId 匹配的数值，其他历史轮次显示“未上报”。
+该能力依赖宿主发布用量或保存 provider 汇总；未提供数据的运行模式保持“未上报”。
+
+普通按钮统一使用 `size="md"`：高 32px、字号 14px、左右内边距 16px、图文间距 8px、圆角 8px，无默认阴影。
+这些尺寸由宿主主题提供，插件只声明 size；输入框下方的四个快捷按钮也使用该规格。
 
 轮次菜单使用 `Dropdown(icon="ellipsis", ariaLabel="本轮操作 / Round actions")`，展开期间保留浅灰背景。
 其左侧通过插件渲染树添加 `Button(label="👍", variant="ghost")`，仅展示符号，不绑定点赞业务动作；两者使用横向 Box 排列。

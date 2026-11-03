@@ -3,6 +3,7 @@ import { componentCatalog as contractCatalog } from '../../src/features/webui/ca
 import { componentRendererRegistry } from '../../src/features/webui/renderer/adapters/componentRegistry.ts';
 
 export { componentRendererRegistry };
+export { buttonIcon } from '../../src/features/webui/renderer/adapters/webuiButton/buttonIcon.tsx';
 export const componentCatalog = createCatalog({
   components: componentRendererRegistry.list().map((name) => {
     const rule = contractCatalog.getComponent(name);

@@ -20,7 +20,12 @@ export function WebUISelect({ node, context, emit, appearance }: WebUIAdapterPro
     showSearch={p.showSearch ? { optionFilterProp: 'label', onSearch: (searchValue) => {
       if (!disabled && node.events['ui.search']) void emit('ui.search', { searchValue });
     } } : false}
-    onChange={(next) => { if (!disabled) setValue(next ?? (p.mode ? [] : null)); }}
+    onChange={(next) => {
+      if (disabled) return;
+      const normalized = next ?? (p.mode ? [] : null);
+      setValue(normalized);
+      if (node.events['ui.change']) void emit('ui.change', { value: normalized });
+    }}
     onSelect={(next) => { if (!disabled && node.events['ui.select']) void emit('ui.select', { value: next }); }}
     onClear={() => { if (!disabled && node.events['ui.clear']) void emit('ui.clear', {}); }}
   />;

@@ -34,6 +34,17 @@ class TurnState:
     summary: str
     result: str
     refreshes: int = 0
+    total_tokens: int | float | None = None
+    result_visible: bool = False
+
+    def usage_label(self) -> str:
+        """Format the reported round total, keeping missing usage distinct from zero."""
+        if self.total_tokens is None:
+            return "用量：未上报 / Usage: not reported"
+        for scale, suffix in ((1_000_000, "M"), (1_000, "k")):
+            if self.total_tokens >= scale:
+                return f"用量：{self.total_tokens / scale:.1f}{suffix} tokens"
+        return f"用量：{self.total_tokens:g} tokens"
 
 
 @dataclass(slots=True)

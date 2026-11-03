@@ -3,6 +3,7 @@ import { useFullscreenPanel } from '../../hooks';
 import { useSessionArtifactsCount } from '../ArtifactsPanel';
 import { ArtifactExpandedPanel } from '../ArtifactsPanel';
 import { ExpandedPanelTabs, useExpandedPanelTabs, type PanelTabItem } from './ExpandedPanelTabs';
+import { BUILTIN_PANEL_KEY } from './usePanelPages';
 import { OrgInfoPanel } from './OrgInfoPanel';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 import { useSessionStore, useChatStore } from '../../stores';
@@ -16,7 +17,11 @@ export interface ExpandedPanelContribution extends PanelTabItem {
 export interface ExpandedPanelProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
+  activePage: string;
+  onPageChange: (page: string) => void;
   onTabClose?: (tab: string) => void;
+  /** Close entry for sections inside the builtin Tools page, e.g. the desktop browser tab. */
+  onSectionTabClose?: (tab: string) => void;
   onCollapse: () => void;
   shouldFullscreen?: boolean;
   reviewPanel?: ReactNode;
@@ -37,7 +42,10 @@ export interface ExpandedPanelProps {
 export function ExpandedPanel({
   activeTab,
   onTabChange,
+  activePage,
+  onPageChange,
   onTabClose,
+  onSectionTabClose,
   onCollapse,
   shouldFullscreen,
   reviewPanel,
@@ -85,9 +93,11 @@ export function ExpandedPanel({
     }
   }, [shouldFullscreen, onCollapse, toggleFullscreen]);
 
-  const selectedPanel = additionalPanels.find((panel) => panel.key === activeTab);
-  const resolvedTab = additionalTab?.key === activeTab ? activeTab : selectedPanel?.key ?? (activeTab === 'organization' && showOrganization ? 'organization' :
-    resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel));
+  const selectedPanel = additionalPanels.find((panel) => panel.key === activePage);
+  const resolvedPage = selectedPanel?.key ?? BUILTIN_PANEL_KEY;
+  const resolvedTab = additionalTab?.key === activeTab ? activeTab : activeTab === 'organization' && showOrganization
+    ? 'organization'
+    : resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel);
 
   const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel, showBrowserTab });
   if (additionalTab) tabs.push(additionalTab);
@@ -96,7 +106,6 @@ export function ExpandedPanel({
     label: t('team.org.tab'),
     icon: <Building2 size={16} aria-hidden="true" />,
   });
-  tabs.push(...additionalPanels);
 
   return (
     <div
@@ -105,10 +114,13 @@ export function ExpandedPanel({
       className="flex h-full flex-col overflow-hidden bg-card"
     >
       <ExpandedPanelTabs
-        actions={resolvedTab === additionalTab?.key ? additionalTab.actions : undefined}
-        tabs={tabs}
-        activeTab={resolvedTab}
-        onTabChange={onTabChange}
+        actions={!selectedPanel && resolvedTab === additionalTab?.key ? additionalTab.actions : undefined}
+        tabs={[
+          { key: BUILTIN_PANEL_KEY, label: t('team.builtinTools') },
+          ...additionalPanels.map((panel) => ({ ...panel, closable: true })),
+        ]}
+        activeTab={resolvedPage}
+        onTabChange={onPageChange}
         onTabClose={onTabClose}
         onCollapse={onCollapse}
         onToggleFullscreen={handleToggleFullscreen}
@@ -120,29 +132,54 @@ export function ExpandedPanel({
       <div
         data-testid={`${testIdPrefix}-expanded-content`}
         id={`${tabPanelId}-panel`}
-        className="flex min-h-0 flex-1 overflow-hidden"
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         role="tabpanel"
-        aria-labelledby={`${tabPanelId}-${encodeURIComponent(resolvedTab)}`}
+        aria-labelledby={`${tabPanelId}-${encodeURIComponent(resolvedPage)}`}
       >
-        {additionalTab?.key === resolvedTab ? additionalTab.content : selectedPanel ? selectedPanel.content : resolvedTab === 'organization' && showOrganization ? <OrgInfoPanel /> : resolvedTab === middleTab.key ? (
-          renderMiddleTabContent()
-        ) : resolvedTab === 'artifacts' ? (
-          <ArtifactExpandedPanel
-            selectedArtifactId={selectedArtifactId}
-            onSelectArtifact={onArtifactSelect ?? (() => {})}
-          />
-        ) : resolvedTab === 'review' && reviewPanel ? (
-          <div
-            data-testid={`${testIdPrefix}-review-pane`}
-            data-variant="review"
-            className="flex min-w-0 flex-1 overflow-hidden"
-          >
-            {reviewPanel}
-          </div>
-        ) : resolvedTab === 'browser' && renderBrowserContent ? (
-          renderBrowserContent()
+        {selectedPanel ? (
+          selectedPanel.content
         ) : (
-          renderPlanningContent()
+          <>
+            <ExpandedPanelTabs
+              tabs={tabs}
+              activeTab={resolvedTab}
+              onTabChange={onTabChange}
+              onTabClose={onSectionTabClose}
+              variant="sections"
+              testIdPrefix={`${testIdPrefix}-builtin`}
+              idPrefix={`${tabPanelId}-builtin`}
+            />
+            <div
+              data-testid={`${testIdPrefix}-builtin-content`}
+              id={`${tabPanelId}-builtin-panel`}
+              className="flex min-h-0 min-w-0 flex-1 overflow-hidden"
+              role="tabpanel"
+              aria-labelledby={`${tabPanelId}-builtin-${encodeURIComponent(resolvedTab)}`}
+            >
+              {additionalTab?.key === resolvedTab ? additionalTab.content : resolvedTab === 'organization' && showOrganization ? (
+                <OrgInfoPanel />
+              ) : resolvedTab === middleTab.key ? (
+                renderMiddleTabContent()
+              ) : resolvedTab === 'artifacts' ? (
+                <ArtifactExpandedPanel
+                  selectedArtifactId={selectedArtifactId}
+                  onSelectArtifact={onArtifactSelect ?? (() => {})}
+                />
+              ) : resolvedTab === 'review' && reviewPanel ? (
+                <div
+                  data-testid={`${testIdPrefix}-review-pane`}
+                  data-variant="review"
+                  className="flex min-w-0 flex-1 overflow-hidden"
+                >
+                  {reviewPanel}
+                </div>
+              ) : resolvedTab === 'browser' && renderBrowserContent ? (
+                renderBrowserContent()
+              ) : (
+                renderPlanningContent()
+              )}
+            </div>
+          </>
         )}
       </div>
     </div>

@@ -10,6 +10,11 @@ from dataclasses import replace
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventNext
 
+from jiuwenswarm.extensions_v2.event_types.context_usage import (
+    CONTEXT_USAGE_EVENT,
+    ContextUsageOutput,
+    ContextUsageUpdate,
+)
 from jiuwenswarm.extensions_v2.webui.models import (
     RenderMode,
     RenderTarget,
@@ -25,6 +30,7 @@ from .views import (
     IFRAME_PAGE_SLOTS,
     INSTANCE,
     PACKAGE_ID,
+    QUICK_LAUNCH_ACTION,
     SLOTS,
     TASK_INSTANCE,
     TURN_SLOTS,
@@ -53,10 +59,46 @@ class WorkbenchHandlers:
         self._signed_in: dict[str, bool] = {}
 
     def handlers(self) -> tuple:
-        return tuple(
+        return ((CONTEXT_USAGE_EVENT, self.on_usage, {}),) + tuple(
             (event, self.on_event, {"target.slot_id": slot})
             for slot in SLOTS for event in ("ui.ready", *EVENTS)
         )
+
+    async def on_usage(
+        self,
+        event: Event,
+        ops: EventHandlerOps | None,
+        next_handler: EventNext,
+    ) -> ContextUsageOutput:
+        update = event.event_input
+        if (not isinstance(update, ContextUsageUpdate) or ops is None
+                or ops.session_context is None or ops.session_context.session_id != update.session_id
+                or not update.request_id):
+            return await next_handler(event)
+        lock = self._locks.setdefault(update.session_id, asyncio.Lock())
+        async with lock:
+            state = self._sessions.setdefault(update.session_id, SessionState())
+            if await self._load_usage(ops, update.session_id, update.request_id, state):
+                slot = "conversation.session.content.after"
+                if (slot, update.request_id) in state.mounted:
+                    await self._render(ops, update.session_id, slot, update.request_id, state)
+        return await next_handler(event)
+
+    @staticmethod
+    async def _load_usage(
+        ops: EventHandlerOps,
+        session_id: str,
+        request_id: str,
+        state: SessionState,
+    ) -> bool:
+        usage = await ops.session.usage()
+        if not isinstance(usage, Mapping) or usage.get("session_id") != session_id:
+            return False
+        turn_usage = usage.get("turn")
+        if not isinstance(turn_usage, Mapping) or turn_usage.get("request_id") != request_id:
+            return False
+        state.turn(request_id).total_tokens = turn_usage.get("total_tokens")
+        return True
 
     async def on_event(
         self,
@@ -87,6 +129,8 @@ class WorkbenchHandlers:
                     return UiActionOutput(accepted=False, status="invalid_instance")
                 failed_status = None
                 for instance in instances:
+                    if target.slot_id in TURN_SLOTS and state.turn(instance).total_tokens is None:
+                        await self._load_usage(ops, target.session_id, instance, state)
                     if target.slot_id == "conversation.panel.right" and instance == INSTANCE:
                         await load_workspace(ops, state.workspace)
                     output = await self._render(ops, target.session_id, target.slot_id, instance, state)
@@ -126,6 +170,11 @@ class WorkbenchHandlers:
             result = self._apply(request, state)
             if result != "updated":
                 return UiActionOutput(accepted=result == "composing", status=result)
+            if target.slot_id in TURN_SLOTS and (
+                action == "workbench.turn.refresh"
+                or (action == TURN_SELECT_ACTION and request.payload.get("data", {}).get("key") == "refresh")
+            ):
+                await self._load_usage(ops, target.session_id, target.instance_key, state)
             state.operations += 1
             failed_status = None
             for slot, instance in sorted(state.mounted):
@@ -254,10 +303,11 @@ class WorkbenchHandlers:
                 turn.result = f"{request.target.instance_key} · {turn.summary}"
             else:
                 return "invalid"
+            turn.result_visible = True
             return "updated"
         if action == "workbench.option" and args.get("field") == "weather_visible" and type(data.get("checked")) is bool:
             state.weather_visible = data["checked"]
-        elif action not in ("workbench.open", "workbench.refresh"):
+        elif action not in ("workbench.open", "workbench.refresh", QUICK_LAUNCH_ACTION):
             return "invalid"
         state.last_result = f"已更新 / Updated · {state.operations + 1} · {state.summary()}"
         return "updated"

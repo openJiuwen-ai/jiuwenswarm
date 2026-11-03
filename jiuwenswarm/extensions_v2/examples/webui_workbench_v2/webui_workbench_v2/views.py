@@ -19,6 +19,13 @@ USER_LOGIN_ACTION = "workbench.user.login"
 WEATHER_HIDE_ACTION = "workbench.weather.hide"
 WEATHER_SHOW_ACTION = "workbench.weather.show"
 TURN_SLOTS = frozenset({"conversation.session.content.after", "conversation.turn.footer.actions"})
+QUICK_LAUNCH_ACTION = "workbench.quick.launch"
+QUICK_TASKS = (
+    ("周报总结", "weekly_report", "file-text"),
+    ("报错修复", "bug_fix", "wrench"),
+    ("PPT 制作", "ppt", "presentation"),
+    ("闲时任务", "idle_task", "clock"),
+)
 # Static Iframe roots for the two main pages; unrelated actions must not republish them.
 IFRAME_PAGE_SLOTS = frozenset({"application.menu.main", "task.function.main"})
 SLOTS = (
@@ -38,10 +45,13 @@ def text(value: str, *, secondary: bool = False, size: str = "md", weight: str =
 
 def button(
     label: str, action: str, *, args: dict | None = None, disabled: bool = False,
-    variant: str = "default", size: str = "sm",
+    variant: str = "default", size: str = "md", icon: str | None = None,
 ) -> RenderNode:
+    props: dict = {"label": label, "size": size, "variant": variant, "disabled": disabled}
+    if icon:
+        props["icon"] = icon
     return RenderNode(
-        "Button", {"label": label, "size": size, "variant": variant, "disabled": disabled},
+        "Button", props,
         events={"ui.click": {"id": action, "args": args or {}}},
     )
 
@@ -79,7 +89,7 @@ def workspace_files(state: SessionState) -> RenderNode:
         "file": workspace.preview_result.get("file"),
         "status": workspace.preview_result.get("status", "ready"),
     })
-    return RenderNode("Panel", {"title": "工作区文件 / Workspace files"}, children=(
+    return RenderNode("Panel", {"title": "工作区文件"}, children=(
         RenderNode("Box", {"direction": "row", "gap": "none", "align": "stretch", "flex": 1},
                    children=(tree, preview)),
     ))
@@ -165,23 +175,34 @@ def build_view(slot: str, state: SessionState, instance_key: str) -> RenderNode:
                    WEATHER_HIDE_ACTION if state.weather_visible else WEATHER_SHOW_ACTION),
         ))
     if slot == "conversation.input.below":
-        return text(f"工作台 / Workbench · {state.operations} 次操作 / operations", secondary=True)
+        return RenderNode("Box", {
+            "direction": "row", "gap": "sm", "wrap": True, "align": "center", "justify": "center",
+        }, children=tuple(
+            button(label, QUICK_LAUNCH_ACTION, args={"task": task}, icon=icon)
+            for label, task, icon in QUICK_TASKS
+        ))
     if slot == "conversation.panel.right":
         if instance_key == INSTANCE:
             return workspace_files(state)
         if instance_key == IFRAME_INSTANCE:
             return RenderNode("Iframe", {
-                "title": "网页预览 / Web preview",
-                "src": "https://httpbin.org/forms/post",
+                "title": "网页预览",
+                "src": "https://www.weather.com.cn/",
             })
         raise ValueError(f"undeclared right-panel instance: {instance_key}")
     if slot == "conversation.header.title.after":
         return RenderNode("Tag", {"children": "工作台 / Workbench", "color": "processing"})
     if slot == "conversation.header.actions":
-        return button("刷新工作台 / Refresh workbench", "workbench.refresh")
+        return RenderNode("Button", {
+            "label": "刷新工作台 / Refresh workbench", "variant": "ghost", "size": "md",
+            "icon": "refresh", "iconOnly": True,
+        }, events={"ui.click": {"id": "workbench.refresh", "args": {}}})
     turn = state.turn(instance_key)
     if slot == "conversation.session.content.after":
-        return column(text(turn.summary, secondary=True), text(turn.result, secondary=True))
+        usage = RenderNode("Button", {
+            "label": turn.usage_label(), "variant": "ghost", "size": "md", "icon": "database",
+        })
+        return column(usage, text(turn.result, secondary=True)) if turn.result_visible else usage
     if slot == "conversation.turn.footer.actions":
         return RenderNode("Box", {
             "direction": "row", "gap": "sm", "align": "center", "wrap": False,

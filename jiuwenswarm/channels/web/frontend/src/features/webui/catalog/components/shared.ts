@@ -10,7 +10,14 @@ export const union = (...choices: WebUIPropRule[]): WebUIPropRule => ({ kind: 'u
 export const object = (fields: Record<string, WebUIPropRule>, required: string[] = []): WebUIPropRule =>
   ({ kind: 'object', fields, required });
 export const integer = (min = 0): WebUIPropRule => ({ kind: 'number', min, integer: true });
-export const size = token('small', 'medium', 'large');
+export const size = token('small', 'medium', 'large', 'sm', 'md', 'lg');
+export const compactSize = token('small', 'medium', 'sm', 'md');
+export function prepareSize(props: Record<string, unknown>): Record<string, unknown> {
+  const aliases: Readonly<Record<string, string>> = { sm: 'small', md: 'medium', lg: 'large', default: 'medium' };
+  const value = props.size;
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(aliases, value)
+    ? { ...props, size: aliases[value] } : props;
+}
 export const variant = token('outlined', 'borderless', 'filled', 'underlined');
 export const status = token('error', 'warning');
 export const inputProps = { disabled: bool, ariaLabel: text, size, variant, status };
@@ -22,7 +29,9 @@ export function component(
   props: Record<string, WebUIPropRule>,
   options: Partial<Omit<WebUIComponentRule, 'name' | 'props'>> = {},
 ): WebUIComponentRule {
-  return { name, props, allowChildren: false, ...options };
+  return { name, props, allowChildren: false, ...options,
+    prepare: (p) => options.prepare ? options.prepare(prepareSize(p)) : prepareSize(p),
+  };
 }
 
 export function unique(values: unknown[]): boolean {

@@ -19,7 +19,7 @@ export function WebUIDropdown({ node, context, children, emit, appearance }: Web
     placement?: 'bottomLeft' | 'bottomRight' | 'topLeft' | 'topRight';
     disabled?: boolean;
     ariaLabel?: string;
-    icon?: 'ellipsis';
+    icon?: string;
   };
   const [open, setOpen] = useState(false);
   const disabled = Boolean(p.disabled) || !context.connected;

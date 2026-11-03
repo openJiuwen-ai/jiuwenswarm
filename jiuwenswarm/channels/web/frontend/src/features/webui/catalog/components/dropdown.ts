@@ -1,4 +1,5 @@
 import { array, bool, component, object, text, token } from './shared.ts';
+import { WEBUI_ICON_NAMES } from '../../icons/names.ts';
 
 /** Menu shell: the trigger area is supplied as children, menu items stay a bounded array. */
 export const dropdownRule = component('Dropdown', {
@@ -12,7 +13,7 @@ export const dropdownRule = component('Dropdown', {
   placement: token('bottomLeft', 'bottomRight', 'topLeft', 'topRight'),
   disabled: bool,
   ariaLabel: text,
-  icon: token('ellipsis'),
+  icon: token(...WEBUI_ICON_NAMES),
 }, {
   allowChildren: true,
   required: ['items'],

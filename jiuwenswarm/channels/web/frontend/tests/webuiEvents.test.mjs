@@ -181,6 +181,7 @@ test('event payload byte limits include trusted action metadata and respect runt
 test('the node walker enforces the shared component property cases', () => {
   const parse = (component, props) => {
     const frame = componentMockFrame({ component, props });
+    if (component === 'Dropdown' && !props.icon) frame.root.children = [{ component: 'Text', props: { value: 'Menu' } }];
     if (component === 'Panel' || component === 'Iframe') {
       frame.target.slot_id = 'conversation.panel.right';
       if (component === 'Panel') frame.root.children = [{ component: 'Text', props: { value: 'Content' } }];
@@ -239,7 +240,7 @@ test('component event declarations reject legacy actions, extra fields and unsup
   }
   assert.equal(protocol.processRenderFrame(componentMockFrame({
     component: 'Select', props: { options: [] }, events: { 'ui.change': { id: 'change' } },
-  })).ok, false);
+  })).ok, true);
 });
 
 test('event args accept bounded nested JSON objects and reject oversized collections', () => {
@@ -315,6 +316,7 @@ for (const [index, { component, props, event, data, allowed }] of eventCases.ent
       const owner = app.runtime.mountSlot(target.session_id, target.slot_id);
       app.transport.injectRenderFrame(componentMockFrame({
         component, props, events: { [event]: { id: 'update' } },
+        ...(component === 'Dropdown' && !props.icon ? { children: [{ component: 'Text', props: { value: 'Menu' } }] } : {}),
       }));
       const snapshot = app.runtime.getInstance(key);
       assert.ok(snapshot?.frame, 'case must have valid render props');
