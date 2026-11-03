@@ -66,8 +66,8 @@ async def host(tmp_path, monkeypatch):
         builder.add_method("probe", "record", record)
         return builder
 
-    def register(bus, webui, *, file_service=None):
-        original_build(bus, webui, file_service=file_service)
+    def register(bus, webui, *, file_service=None, compact_service=None):
+        original_build(bus, webui, file_service=file_service, compact_service=compact_service)
         bus.register_event_handler("ops.build", build, {}, HandlerLevel.BUILTIN)
 
     monkeypatch.setattr(assembly.bootstrap, "register_handlers", register)
@@ -341,3 +341,36 @@ async def test_empty_package_and_invalid_host_facts_have_explicit_results(host):
     assert (await host.manager.install([package]))[0].status == "SUCCESS"
     result = await _start(host)
     assert len(result) == 1 and host.manager.active_packages()[0].generation == 1
+
+
+@pytest.mark.asyncio
+async def test_installed_package_can_see_compact_ops_but_native_backend_is_not_integrated(host):
+    source = '''
+from openjiuwen.core.context_engine import CompactionError
+
+class InterfaceOnly:
+    def register(self, registrar):
+        registrar.register_event_handler("session.start", self.start, {})
+        registrar.register_event_handler("session.compact", self.compact, {})
+
+    async def start(self, event, ops, next_handler):
+        try:
+            await ops.session.compact(instructions="Keep pending work")
+        except CompactionError as error:
+            await ops.probe.record({"code": error.code, "session": ops.session_context.session_id})
+        else:
+            raise AssertionError("the default host must not run real compaction")
+        return await next_handler(event)
+
+    async def compact(self, event, ops, next_handler):
+        raise AssertionError("no native compact request should be dispatched")
+
+def create_extension():
+    return InterfaceOnly()
+'''
+    await _install(host, "compact.interface", source)
+    assert len(await _start(host)) == 1
+    assert len(host.records) == 1
+    assert host.records[0]["code"] == "COMPACT_NOT_INTEGRATED"
+    assert host.records[0]["session"] == "s1"
+    assert not host.assembly.compact.bindings and not host.assembly.compact.tasks

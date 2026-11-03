@@ -9581,6 +9581,16 @@ class AgentWebSocketServer:
                 execution_subject=execution_subject,
             )
             try:
+                # TODO(compact): Keep command.compact on its original path; extension integration is deferred.
+                # options = {"session_id": session_id, "return_state": True,
+                           # "processor_types": _MANUAL_COMPACT_PROCESSOR_TYPES}
+                # instructions = params.get("instructions")
+                # if instructions is not None:
+                    # if not isinstance(instructions, str):
+                        # raise ValueError("compact instructions must be a string")
+                    # options["instructions"] = instructions
+                # result_data = await agent.compress_context(**options)
+
                 result_data = await agent.compress_context(
                     session_id=session_id,
                     return_state=True,
@@ -9690,6 +9700,8 @@ class AgentWebSocketServer:
                     payload={
                         "result": result,
                         "stats": stats,
+                        # TODO(compact): Do not add extension decisions to the native command response yet.
+                        # **({"skip": result_data["skip"]} if result_data.get("skip") else {}),
                         **({"summary": summary} if summary else {}),
                         **({"compact_summary": summary} if summary else {}),
                     },

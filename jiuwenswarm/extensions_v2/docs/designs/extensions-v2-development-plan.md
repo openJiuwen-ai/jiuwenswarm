@@ -433,6 +433,15 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --no-cov tests/unit_tests/ag
 - **范围：** 宿主注入 `extension/store` 目录、装配 Core JsonStore、卸载/停机清理回调与调试包；CRUD 与文件契约由 Core 维护。
 - **必要前置：** EXTV2-03 管理门面；依赖本地/已合入的 agent-core store 能力。
 - **验证入口：** 见 F_27 第 4～5 节；状态和负责人统一见第 4 节。
+### EXTV2-26 会话压缩与压缩前扩展
+
+- **实现目录：** `session_compaction/dispatch.py` 与 `session_compaction/service.py`；事件定义、CORE 入口、Ops 登记沿用原目录，主流程仍未接入。
+
+- **特性文档：** [F_28 session.compact / ops.session.compact](../features/F_28_session-compact.md)。按 session.append 七节结构说明字段、调用链、用户案例；当前按用户要求收缩为接口阶段，主流程接入注释保留。
+- **Core 联合方案：** `D-20261103-1156-session-compaction-events`，位于 Core `.agents/agent-docs/designs/active/` 同名目录。2026-11-03 用户选择先完成完整 Core＋Server 方案，确认后开发；随后用户明确批准开发；完整实现验收作为历史保留；本轮用户明确要求只交付 Ops/Event 与 Handler 链，真实压缩暂不接入，Core 与 Server 分仓更新。
+- **范围：** 保留 compact Ops、同名事件、字段/校验和 USER→可选 BUILTIN→CORE 链；原生引擎绑定、手动/自动/溢出桥接与预计算调度已注释。生产 Ops 报 COMPACT_NOT_INTEGRATED；完整链只在独立受控绑定中验证。恢复主流程须重新完成真实业务验收，不介入 ui.render。
+- **硬依赖：** 新 Core 压缩前 Hook、Processor 安全候选/延迟副作用、Extension Runtime 当前包调用有效性校验；依赖 Core 新版本，不能作为 Server-only 功能交付。与 send/receive 或七查询无新增运行时硬依赖。
+- **编号登记：** 按用户要求接续当前目录：features/F_28_session-compact.md 与 specs/S_15_session-compact.md；负责人刘瑜。旧编号 F30/S17 已在本 PR 重命名并同步引用，已合入文档不重排。本次明确采用现存目录连续编号口径；合入前核对并行新增。不另建 designs/session-compact 文档。
 
 ## 3. 特性依赖关系与并行开发
 
@@ -480,6 +489,8 @@ flowchart TB
     B1 --> S23["EXTV2-23 跨会话发送前扩展"]
     S23 --> S24["EXTV2-24 跨会话接收入队前扩展"]
     A3 --> S25["EXTV2-25 store 持久化接入"]
+    CORE_COMPACT["Core 压缩 Hook / 候选提交 / Runtime 调用校验（已开发，待合入）"] --> S26["EXTV2-26 会话压缩接口（已开发；主流程未接入）"]
+    B1 --> S26
     A4 --> B3
     B3 --> C1
 
@@ -517,6 +528,7 @@ flowchart LR
 | C Web 前端 | EXTV2-08 | 模拟帧可先行，联调依赖 07 | M1、M2 |
 | Server 能力 | EXTV2-13～16 | 13、14、16 依赖已有装配 / Ops 接线；15 依赖 13 的可信 cwd | 各特性独立验收，不据此完成 M1～M3 |
 | Server 跨会话投递 | EXTV2-23 → 24 | 基于已合入平台基座；共享原服务调用封装，两项同 PR；无需新增生命周期或 Core API | send / receive / 原消息队列联合验收 |
+| 会话压缩扩展 | Core 压缩 Hook/候选提交/Runtime 调用校验 → EXTV2-26 | Core＋Server 机制保留，当前只接 Ops/Event；生产真实压缩接入点已注释，Server 仍依赖 Core 协议及 Runtime 调用校验 | 当前接口验证见 F_28 §6.3；恢复主流程后再验联合方案 C-01～C-13 |
 
 顺序限制：`ops.build` 必须先于任何包安装；候选发布必须先于界面项发现；渲染服务必须先于上行回执校验。软依赖不写入硬前置，只在节点验收中体现。
 
@@ -565,6 +577,7 @@ flowchart LR
 | EXTV2-23 跨会话发送前扩展 | 已开发 | 刘瑜 | 本 PR，待合入 | 42 项新增测试、1514 项相关回归通过（2 项平台跳过）；独立 ZIP/磁盘元数据/SQLite/后台回调及卸载验收通过，见 F_25 第 6 节 | 2026-11-02 |
 | EXTV2-24 跨会话接收入队前扩展 | 已开发 | 刘瑜 | 与 EXTV2-23 同 PR，待合入 | 同一组证据，覆盖改写/消费、目标上下文、来源保护和取消，不重复计数；见 F_26 第 6 节 | 2026-11-02 |
 | EXTV2-25 store 持久化接入 | 已开发 | 李志远 | 本 PR，待合入 | 宿主目录注入、清理回调、store_probe 与专项/全量回归见 F_27 | 2026-11-03 |
+| EXTV2-26 会话压缩与压缩前扩展 | 接口已开发；主流程未接入 | 刘瑜 | [Server !109](https://gitcode.com/huenrui_/jiuwenswarm/pull/109)；先合入 [Core !125](https://gitcode.com/huenrui_/agent-core/pull/125)，均待合入 | 当前接口阶段：Core 定向 31＋原生回归 139＝170 项通过；Server 85＋真实安装包 1＝86 项通过。默认 Ops 明确 NOT_INTEGRATED；独立受控绑定验证完整层级；旧真实模型证据仅为历史，见 F_28 §6.3 / S_15 | 2026-11-03 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
