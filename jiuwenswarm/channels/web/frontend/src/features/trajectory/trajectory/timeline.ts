@@ -518,14 +518,13 @@ function deriveTimedTimeline(
 }
 
 /**
- * Browse-only display realignment for wall-clock projections (`time` / `actual`).
+ * Display realignment for wall-clock projections (`time` / `actual`).
  *
  * Duration mode relocates inside `deriveTimedTimeline` because idle compression
- * already drops absolute wall identity. Wall-clock modes keep recorded span
- * times for shared-axis `toWall` brush selection; the overview may still slide
- * late prep for ledger-phase readability while left-drag is free to pan
- * (`lockViewport === false`). Diagnosis selection locks the viewport and must
- * keep the unrelocated model so brushed wall ranges cover real record times.
+ * already drops absolute wall identity. Wall-clock overviews still slide late
+ * prep for ledger-phase readability (including diagnosis selection). Brush
+ * selection uses pointer→domain coordinates on this display model; `toWall`
+ * converts those ends for the diagnosis scope.
  */
 export function alignPrepSpansBeforeModel(
   model: TrajectoryTimelineModel | null,

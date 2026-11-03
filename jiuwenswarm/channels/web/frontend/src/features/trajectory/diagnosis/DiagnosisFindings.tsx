@@ -163,11 +163,19 @@ function SubjectChips({ subjectIds, subjectLabels }: {
   subjectLabels: ReadonlyMap<string, string>;
 }) {
   if (subjectLabels.size <= 1) return null;
-  return subjectIds.map(subjectId => (
-    <span key={subjectId} className={css.chip} data-testid="trajectory-diagnosis-cause-agent">
-      {subjectLabels.get(subjectId) ?? subjectId}
-    </span>
-  ));
+  return subjectIds.map(subjectId => {
+    const label = subjectLabels.get(subjectId) ?? subjectId;
+    return (
+      <span
+        key={subjectId}
+        className={css.chip}
+        title={label}
+        data-testid="trajectory-diagnosis-cause-agent"
+      >
+        {label}
+      </span>
+    );
+  });
 }
 
 function CauseLocation({ causes, subjectLabels, focusedFindingId, onFocusFinding }: {
@@ -186,7 +194,11 @@ function CauseLocation({ causes, subjectLabels, focusedFindingId, onFocusFinding
         subjectLabels={subjectLabels}
       />
       {nodes === '' ? null : (
-        <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
+        <span
+          className={`${css.hint} ${css.causeAt}`}
+          title={nodes}
+          data-testid="trajectory-diagnosis-cause-nodes"
+        >
           {t('trajectory.diagnosis.causeAt', { nodes })}
         </span>
       )}
@@ -218,15 +230,10 @@ function CauseCard({ causes, subjectLabels, focusedFindingId, onFocusFinding }: 
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
       <div className={`${css.causeHead} ${css.causeHeadTop}`}>
         <KindBadge kind="artifact" />
-        {topic === '' ? null : (
-          <p className={css.causeDimension} data-testid="trajectory-diagnosis-cause-topic">
-            <span className={css.lineLabel}>{t('trajectory.diagnosis.findingDimension')}</span>
-            <span className={css.findingLineBody}>{topic}</span>
-          </p>
-        )}
         {typeof score === 'number' ? (
           <span className={css.hint}>{t('trajectory.diagnosis.signalScore', { score })}</span>
         ) : null}
+        <span className={css.spacer} />
         <CauseLocation
           causes={causes}
           subjectLabels={subjectLabels}
@@ -234,6 +241,12 @@ function CauseCard({ causes, subjectLabels, focusedFindingId, onFocusFinding }: 
           onFocusFinding={onFocusFinding}
         />
       </div>
+      {topic === '' ? null : (
+        <p className={css.causeTopic} data-testid="trajectory-diagnosis-cause-topic">
+          <span className={css.lineLabel}>{t('trajectory.diagnosis.findingDimension')}</span>
+          <span className={css.causeTopicText}>{topic}</span>
+        </p>
+      )}
       {hasBody ? (
         <div className={css.itemBody}>
           {comment === '' ? null : (
@@ -276,14 +289,14 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
 }) {
   const { t } = useTranslation();
   const skill = judge.category === 'skill';
+  const target = !skill || judge.target === null || judge.target === undefined
+    ? ''
+    : judge.target.trim();
   const nodes = evidenceNodeLabel(judge);
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
       <div className={`${css.causeHead} ${css.causeHeadTop}`}>
         <KindBadge kind={judge.category} />
-        {!skill || judge.target === null || judge.target === undefined || judge.target === '' ? null : (
-          <span className={css.badge} title={judge.target}>{judge.target}</span>
-        )}
         {skill ? (
           <span className={css.tag} data-testid="trajectory-diagnosis-evolution-score">
             {t('trajectory.diagnosis.confidence', { value: Math.round(judge.score * 100) })}
@@ -292,12 +305,17 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
         <span className={css.spacer} />
         <SubjectChips subjectIds={subjectIdsOf(judge.evidence)} subjectLabels={subjectLabels} />
         {nodes === '' ? null : (
-          <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
+          <span className={`${css.hint} ${css.causeAt}`} title={nodes} data-testid="trajectory-diagnosis-cause-nodes">
             {t('trajectory.diagnosis.causeAt', { nodes })}
           </span>
         )}
         <HighlightButton id={judge.id} focused={focused} onFocusFinding={onFocusFinding} />
       </div>
+      {target === '' ? null : (
+        <p className={css.causeTopic} data-testid="trajectory-diagnosis-evolution-target">
+          <span className={css.badge} title={target}>{target}</span>
+        </p>
+      )}
       {judge.summary.trim() === '' ? null : (
         <div className={css.itemBody}>
           <FoldedMarkdown text={judge.summary} />
@@ -326,7 +344,7 @@ function LegacyCauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
           </span>
         ) : null}
         {nodes === '' ? null : (
-          <span className={css.hint} data-testid="trajectory-diagnosis-cause-nodes">
+          <span className={`${css.hint} ${css.causeAt}`} title={nodes} data-testid="trajectory-diagnosis-cause-nodes">
             {t('trajectory.diagnosis.causeAt', { nodes })}
           </span>
         )}
