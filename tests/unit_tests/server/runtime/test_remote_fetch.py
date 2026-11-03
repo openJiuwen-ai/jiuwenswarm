@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import socket
+import threading
+import time
 
 import pytest
 
@@ -42,7 +44,10 @@ class _FakeResponse:
         self._clock = clock
         self._advance = advance
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, _size: int = -1) -> bytes:
+        raise AssertionError("read() can outlive the deadline; use read1()")
+
+    def read1(self, size: int = -1) -> bytes:
         self._reads += 1
         if self._clock is not None and self._advance:
             self._clock["now"] += self._advance
@@ -316,6 +321,26 @@ def test_download_rejects_oversize_content_length(monkeypatch, tmp_path) -> None
     assert list(tmp_path.iterdir()) == []
 
 
+def test_incomplete_body_keeps_the_original_file(monkeypatch, tmp_path) -> None:
+    original = tmp_path / "a.txt"
+    original.write_bytes(b"original")
+    _patch_transport(
+        monkeypatch,
+        [_FakeResponse(b"abc", {"Content-Length": "10"})],
+    )
+
+    with pytest.raises(RuntimeError, match="incomplete body"):
+        remote_fetch.download_url_to_workspace(
+            "http://example.com/a.txt",
+            tmp_path,
+            preferred_name="a.txt",
+            overwrite=True,
+        )
+
+    assert original.read_bytes() == b"original"
+    assert [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+
+
 def test_total_deadline_stops_a_slow_sender(monkeypatch, tmp_path) -> None:
     clock = {"now": 1000.0}
     monkeypatch.setattr(remote_fetch.time, "monotonic", lambda: clock["now"])
@@ -360,3 +385,115 @@ def test_https_connection_pins_address_and_keeps_sni(monkeypatch) -> None:
 
     assert calls["address"] == ("93.184.216.34", 443)
     assert calls["sni"] == "example.com"
+
+
+def test_dns_lookup_is_bounded(monkeypatch, tmp_path) -> None:
+    def slow_dns(*_args, **_kwargs):
+        time.sleep(0.2)
+        return _dns_public()
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow_dns)
+    monkeypatch.setattr(remote_fetch, "DNS_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(RuntimeError, match="dns resolution timed out"):
+        remote_fetch.download_url_to_workspace(
+            "http://example.com/a.txt",
+            tmp_path,
+            preferred_name="a.txt",
+            timeout=5.0,
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+class _TrickleServer:
+    """Tiny TCP server that sends a header, then one byte at a time."""
+
+    def __init__(self, header: bytes, trickle: bytes, interval: float = 0.05) -> None:
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(1)
+        self.port = self._socket.getsockname()[1]
+        self._header = header
+        self._trickle = trickle
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            self._socket.settimeout(2.0)
+            connection, _ = self._socket.accept()
+        except OSError:
+            return
+        with connection:
+            try:
+                connection.recv(65536)
+                connection.sendall(self._header)
+                for byte in self._trickle:
+                    if self._stop.wait(self._interval):
+                        return
+                    connection.sendall(bytes([byte]))
+            except OSError:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        try:
+            self._socket.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=2.0)
+
+
+def test_slow_body_is_bounded_by_deadline(monkeypatch, tmp_path) -> None:
+    server = _TrickleServer(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n",
+        b"x" * 1000,
+    )
+    monkeypatch.setattr(
+        remote_fetch,
+        "_resolve_public_addresses",
+        lambda parsed, deadline=None: ("127.0.0.1",),
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="timed out"):
+            remote_fetch.download_url_to_workspace(
+                f"http://example.com:{server.port}/a.txt",
+                tmp_path,
+                preferred_name="a.txt",
+                timeout=0.4,
+            )
+    finally:
+        elapsed = time.monotonic() - started
+        server.close()
+
+    assert elapsed < 2.0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_slow_headers_are_cut_by_watchdog(monkeypatch, tmp_path) -> None:
+    server = _TrickleServer(b"HTTP/1.1 200 OK\r\nX-Slow: ", b"a" * 1000)
+    monkeypatch.setattr(
+        remote_fetch,
+        "_resolve_public_addresses",
+        lambda parsed, deadline=None: ("127.0.0.1",),
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(RuntimeError, match="timed out"):
+            remote_fetch.download_url_to_workspace(
+                f"http://example.com:{server.port}/a.txt",
+                tmp_path,
+                preferred_name="a.txt",
+                timeout=0.4,
+            )
+    finally:
+        elapsed = time.monotonic() - started
+        server.close()
+
+    assert elapsed < 2.0
+    assert list(tmp_path.iterdir()) == []

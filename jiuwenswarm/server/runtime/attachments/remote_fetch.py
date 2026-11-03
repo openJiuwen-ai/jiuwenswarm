@@ -23,7 +23,10 @@ import shutil
 import socket
 import ssl
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path, PurePosixPath
 from typing import Final
 from urllib.parse import ParseResult, urljoin, urlparse, urlunsplit
@@ -48,6 +51,15 @@ DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
 #: Upper bound for a single connect or read wait. The total deadline above
 #: still applies.
 CONNECT_TIMEOUT_SECONDS: Final[float] = 15.0
+
+#: DNS has no timeout argument, so run it on a small bounded pool and wait
+#: with the remaining budget.
+DNS_TIMEOUT_SECONDS: Final[float] = 10.0
+
+_DNS_EXECUTOR: Final[ThreadPoolExecutor] = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="jiuwenswarm-dns",
+)
 
 MAX_REDIRECTS: Final[int] = 5
 
@@ -98,20 +110,32 @@ def _reject_non_public_address(address: str) -> None:
         )
 
 
-def _resolve_public_addresses(parsed: ParseResult) -> tuple[str, ...]:
+def _resolve_public_addresses(
+    parsed: ParseResult, *, deadline: float | None = None
+) -> tuple[str, ...]:
     """Return every resolved address after checking all of them.
 
     A host that resolves to one public and one private address is rejected,
-    because the connection may pick either result.
+    because the connection may pick either result. DNS has no timeout
+    argument, so the lookup runs on a bounded pool and the caller stops
+    waiting when the import deadline expires.
     """
     host = str(parsed.hostname or "").strip()
     default_port = 443 if parsed.scheme.lower() == "https" else 80
+    wait = DNS_TIMEOUT_SECONDS
+    if deadline is not None:
+        wait = min(wait, _remaining(deadline))
+    future = _DNS_EXECUTOR.submit(
+        socket.getaddrinfo,
+        host,
+        parsed.port or default_port,
+        type=socket.SOCK_STREAM,
+    )
     try:
-        infos = socket.getaddrinfo(
-            host,
-            parsed.port or default_port,
-            type=socket.SOCK_STREAM,
-        )
+        infos = future.result(timeout=wait)
+    except FuturesTimeout as exc:
+        future.cancel()
+        raise RuntimeError("dns resolution timed out") from exc
     except socket.gaierror as exc:
         raise UnsafeImportUrlError(f"url host does not resolve: {host}") from exc
     addresses = tuple(
@@ -287,12 +311,49 @@ def _commit_temp(temp_path: Path, target: Path, *, overwrite: bool) -> Path:
     raise RuntimeError("could not allocate a unique filename")
 
 
+def _arm_deadline(
+    connection: http.client.HTTPConnection,
+    deadline: float,
+) -> tuple[threading.Timer, threading.Event]:
+    """Close ``connection`` when the total deadline expires.
+
+    Socket timeouts bound one ``recv`` call. A peer that sends one byte just
+    before each timeout can keep ``getresponse()`` or ``readline()`` alive.
+    Shutting the socket down from a timer thread makes the blocked call fail.
+    """
+    expired = threading.Event()
+
+    def _expire() -> None:
+        expired.set()
+        sock = getattr(connection, "sock", None)
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    timer = threading.Timer(max(0.0, deadline - time.monotonic()), _expire)
+    timer.daemon = True
+    timer.start()
+    return timer, expired
+
+
 def _request_once(
     parsed: ParseResult,
     addresses: tuple[str, ...],
     *,
-    timeout: float,
-) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+    deadline: float,
+) -> tuple[
+    http.client.HTTPConnection,
+    http.client.HTTPResponse,
+    threading.Timer,
+    threading.Event,
+]:
     path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
     headers = {
         "User-Agent": "jiuwenswarm-agent",
@@ -302,13 +363,26 @@ def _request_once(
     }
     last_error: BaseException | None = None
     for address in addresses:
-        connection = _build_connection(parsed, address, timeout)
+        remaining = _remaining(deadline)
+        connect_timeout = min(remaining, CONNECT_TIMEOUT_SECONDS)
+        connection = _build_connection(parsed, address, connect_timeout)
+        timer: threading.Timer | None = None
+        expired = threading.Event()
+        success = False
         try:
             connection.request("GET", path, headers=headers)
-            return connection, connection.getresponse()
+            timer, expired = _arm_deadline(connection, deadline)
+            response = connection.getresponse()
+            success = True
+            return connection, response, timer, expired
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
-            connection.close()
+            if expired.is_set():
+                raise RuntimeError("download timed out") from exc
             last_error = exc
+        finally:
+            if timer is not None and not success:
+                timer.cancel()
+        connection.close()
     raise RuntimeError(f"download failed: {last_error}")
 
 
@@ -341,15 +415,10 @@ def download_url_to_workspace(
     temp_path: Path | None = None
     while True:
         parsed = _parsed_url(current_url)
-        addresses = _resolve_public_addresses(parsed)
-        remaining = _remaining(deadline)
-        connect_timeout = min(remaining, CONNECT_TIMEOUT_SECONDS)
-        try:
-            connection, response = _request_once(
-                parsed, addresses, timeout=connect_timeout
-            )
-        except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
-            raise RuntimeError(f"download failed: {exc}") from exc
+        addresses = _resolve_public_addresses(parsed, deadline=deadline)
+        connection, response, timer, expired = _request_once(
+            parsed, addresses, deadline=deadline
+        )
 
         try:
             if response.status in _REDIRECT_STATUSES:
@@ -366,7 +435,8 @@ def download_url_to_workspace(
                 raise RuntimeError(f"download failed: HTTP {response.status}")
 
             declared = response.getheader("Content-Length")
-            if declared and declared.isdigit() and int(declared) > max_bytes:
+            declared_length = int(declared) if declared and declared.isdigit() else None
+            if declared_length is not None and declared_length > max_bytes:
                 raise RuntimeError(f"remote file is too large: {declared} bytes")
 
             temp_path = _temp_file(target)
@@ -374,7 +444,10 @@ def download_url_to_workspace(
             with temp_path.open("wb") as out:
                 while True:
                     _set_read_timeout(connection, _remaining(deadline))
-                    chunk = response.read(_READ_CHUNK_BYTES)
+                    # ``read`` loops until the requested size or EOF, so one
+                    # call can outlive the deadline when the peer sends a
+                    # trickle. ``read1`` performs at most one socket read.
+                    chunk = response.read1(_READ_CHUNK_BYTES)
                     if not chunk:
                         break
                     written += len(chunk)
@@ -383,12 +456,19 @@ def download_url_to_workspace(
                             f"remote file exceeds the {max_bytes} byte limit"
                         )
                     out.write(chunk)
+            if expired.is_set():
+                raise RuntimeError("download timed out")
+            if declared_length is not None and written != declared_length:
+                raise RuntimeError("download failed: incomplete body")
             committed = _commit_temp(temp_path, target, overwrite=overwrite)
             temp_path = None
             return committed
         except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+            if expired.is_set():
+                raise RuntimeError("download timed out") from exc
             raise RuntimeError(f"download failed: {exc}") from exc
         finally:
+            timer.cancel()
             connection.close()
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
