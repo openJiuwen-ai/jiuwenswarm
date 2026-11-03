@@ -68,7 +68,7 @@ def test_replace_template_keeps_slots_when_the_new_policy_still_matches():
     runtime = _PoolRuntime()
     template = SecurityPolicy()
     pool = WarmPool(runtime, template, 1)
-    pool._slots.put("w-keep")
+    pool.stage_slot("w-keep")
     updated = template.model_copy(deep=True)
     updated.filesystem_policy.read_write.append("/tmp")
 
@@ -82,7 +82,7 @@ def test_replace_template_discards_slots_that_cannot_serve_the_new_policy():
     runtime = _PoolRuntime()
     template = SecurityPolicy()
     pool = WarmPool(runtime, template, 1)
-    pool._slots.put("w-old")
+    pool.stage_slot("w-old")
     updated = template.model_copy(deep=True)
     updated.network.mode = "host"
 
@@ -120,9 +120,12 @@ def test_launcher_parks_until_commit(tmp_path):
     os.set_inheritable(read_fd, True)
     env = os.environ.copy()
     env[WARM_COMMIT_FD_ENV] = str(read_fd)
-    launcher = (
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        + "/src/jiuwenbox/supervisor/landlock_launcher.py"
+    launcher = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "src",
+        "jiuwenbox",
+        "supervisor",
+        "landlock_launcher.py",
     )
     proc = subprocess.Popen(
         [sys.executable, launcher, encoded, "--daemon", str(daemon)],

@@ -542,6 +542,10 @@ _FASTPATH_PROBE_CACHE: dict[str, Any] = {}
 # needs an absolute bash path rather than a bare ``"bash"`` lookup (G.EDV.05).
 _BASH_BIN: str | None = None
 _DEFERRED_MODULES_LOADED = False
+# Bound here so ``global shutil, subprocess`` names exist before the first exec.
+# The heavy imports stay deferred until after the ready marker.
+shutil: Any = None
+subprocess: Any = None
 
 
 def _load_deferred_modules() -> None:
@@ -2771,10 +2775,9 @@ def main() -> int:
             logger.info(
                 "sandbox daemon adopted listener fd; entering accept loop",
             )
-            # Create polls this marker. Flush so a non-tty stderr (the
-            # server's startup log) does not hold it in a block buffer.
-            sys.stderr.write("JIUWENBOX_DAEMON_READY\n")
-            sys.stderr.flush()
+            # Create polls this marker. Write the fd directly so a block
+            # buffer cannot hold JIUWENBOX_DAEMON_READY.
+            os.write(sys.stderr.fileno(), b"JIUWENBOX_DAEMON_READY\n")
             _load_deferred_modules()
             try:
                 _accept_loop(listener, state)

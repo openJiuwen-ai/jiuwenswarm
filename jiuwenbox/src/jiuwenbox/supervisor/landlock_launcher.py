@@ -228,13 +228,26 @@ def _perf_enabled() -> bool:
     return os.environ.get(PERF_CHILD_ENV) == "1"
 
 
+def _write_stream(stream: object, text: str) -> None:
+    """Write one protocol line. Logging would add a prefix the parent cannot parse."""
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        buffer.write(text.encode())
+        buffer.flush()
+        return
+    write = getattr(stream, "write")
+    write(text)
+    flush = getattr(stream, "flush", None)
+    if flush is not None:
+        flush()
+
+
 def _mark(step: str, started: float) -> None:
     """Write one child-side duration. No-op unless the server asked for it."""
     if not _perf_enabled():
         return
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    sys.stderr.write(f"{PERF_MARK_PREFIX}\t{step}\t{elapsed_ms:.3f}\n")
-    sys.stderr.flush()
+    _write_stream(sys.stderr, f"{PERF_MARK_PREFIX}\t{step}\t{elapsed_ms:.3f}\n")
 
 
 def _drop_to(uid: int, gid: int) -> bool:
@@ -394,8 +407,7 @@ def _run_warm_daemon(daemon_path: str) -> int:
     exec(compiled, daemon_globals)
     _mark("daemon.enter_main", started)
 
-    sys.stderr.write(WARM_PARKED_MARKER + "\n")
-    sys.stderr.flush()
+    _write_stream(sys.stderr, WARM_PARKED_MARKER + "\n")
     commit = _read_warm_commit()
     if not commit:
         return 2

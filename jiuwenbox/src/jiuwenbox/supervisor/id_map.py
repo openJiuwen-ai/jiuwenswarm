@@ -32,7 +32,7 @@ def child_pid_from_bwrap_info(payload: bytes) -> int:
 
 
 def _write_proc_file(path: str, payload: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY)
+    fd = os.open(path, os.O_WRONLY, 0o644)
     try:
         written = os.write(fd, payload)
     finally:
