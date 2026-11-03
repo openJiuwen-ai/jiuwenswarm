@@ -37,6 +37,7 @@ export const JIUWENMATE_METHODS = {
   modelsList: 'jiuwenmate.models.list',
   chatSend: 'jiuwenmate.chat.send',
   chatHistory: 'jiuwenmate.chat.history',
+  artifactList: 'jiuwenmate.artifact.list',
   requestGet: 'jiuwenmate.request.get',
   requestAbort: 'jiuwenmate.request.abort',
   permissionDecide: 'jiuwenmate.permission.decide',
@@ -1228,6 +1229,10 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
         await request(JIUWENMATE_METHODS.chatHistory, { agent_id: agentId, conversation_id: conversationId }),
       );
       return (Array.isArray(listed.requests) ? listed.requests : []).map(toChatRequest);
+    },
+    async listArtifacts(agentId: string): Promise<JiuwenMateSharedFile[]> {
+      const listed = record(await request(JIUWENMATE_METHODS.artifactList, { agent_id: agentId }));
+      return toSharedFiles(listed.files);
     },
     /** The colleague's conversations, latest message first. */
     async listConversations(agentId: string): Promise<JiuwenMateConversation[]> {
