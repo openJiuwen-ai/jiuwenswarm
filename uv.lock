@@ -6955,7 +6955,7 @@ wheels = [
 
 [[package]]
 name = "workswarm"
-version = "0.2.5b1"
+version = "0.2.8"
 source = { editable = "." }
 dependencies = [
     { name = "a2ui-agent-sdk" },
@@ -7297,7 +7297,7 @@ test = [
 
 [[package]]
 name = "workswarm-tui"
-version = "0.2.5b1"
+version = "0.2.8"
 source = { directory = "packages/jiuwenswarm-tui" }
 
 [[package]]

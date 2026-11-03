@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workswarm"
-version = "0.2.5.beta1"
+version = "0.2.8"
 description = "WorkSwarm"
 requires-python = ">=3.11,<3.15"
 license = { text = "Apache-2.0" }
@@ -134,7 +134,7 @@ a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]
 desktop = ["pywebview>=5.4,<7"]
 dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
-tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
+tui = ["workswarm-tui==0.2.8"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
 codex = ["openjiuwen[codex]"]
