@@ -1,5 +1,6 @@
 import { webClient } from '../services/webClient';
 import type { Message } from '../types';
+import { mergeUniqueMessages, toOwnerTeamMessage } from '../components/ChatPanel/teamEventUtils';
 import type {
   HumanShareCommand,
   TeamTask,
@@ -67,6 +68,7 @@ export interface TeamHistoryPanelState {
   taskTimeline: TeamTaskTimelineEntry[];
   executionEvents: TeamMemberExecutionEvent[];
   organizationExecutionEvents?: Record<string, TeamMemberExecutionEvent[]>;
+  organizationTeamStates?: Record<string, TeamHistoryPanelState>;
   messages: Message[];
   humanShareCommands: HumanShareCommand[];
 }
@@ -824,7 +826,7 @@ export function parseTeamHistoryPanelRecords(records: unknown[], sessionId: stri
   return collectTeamState(records.filter(isRecord), sessionId);
 }
 
-/** Keep the Owner roster and member execution records scoped to their Team after a refresh. */
+/** Restore each Team's complete panel state into its own conversation projection. */
 export function parseOrganizationHistoryPanelRecords(records: unknown[], sessionId: string): TeamHistoryPanelState {
   const state = parseTeamHistoryPanelRecords(records, sessionId);
   if (!isTeamOrganizationUiEnabled()) return state;
@@ -835,7 +837,8 @@ export function parseOrganizationHistoryPanelRecords(records: unknown[], session
   if (!ownerId) return state;
   for (const record of records.filter(isRecord)) {
     const payload = isRecord(record.event_payload) ? { ...record, ...record.event_payload } : record;
-    const teamId = String(payload.team_id || payload.team_name || '').trim();
+    const event = extractTeamEvent(record);
+    const teamId = String(payload.team_id || payload.team_name || event?.team_id || event?.team_name || '').trim();
     if (!teamId || teamId === ownerId) {
       ownerRecords.push(record);
       continue;
@@ -846,12 +849,23 @@ export function parseOrganizationHistoryPanelRecords(records: unknown[], session
   }
   if (!teams.size) return state;
   const ownerState = parseTeamHistoryPanelRecords(ownerRecords, sessionId);
+  const organizationTeamStates = Object.fromEntries([...teams].map(([teamId, teamRecords]) => [
+    teamId, parseTeamHistoryPanelRecords(teamRecords, sessionId),
+  ]));
+  const userMessages = Object.entries(organizationTeamStates).flatMap(([teamId, teamState]) =>
+    teamState.messages.flatMap((message) => {
+      const ownerMessage = toOwnerTeamMessage({ ...message, teamId });
+      return ownerMessage ? [ownerMessage] : [];
+    }),
+  );
   return {
-    ...state,
-    members: ownerState.members,
-    executionEvents: ownerState.executionEvents,
-    organizationExecutionEvents: Object.fromEntries([...teams].map(([teamId, teamRecords]) => [
-      teamId, parseTeamHistoryPanelRecords(teamRecords, sessionId).executionEvents,
+    // Mirror only user-directed messages; boards, timelines and collaboration remain isolated.
+    ...ownerState,
+    messages: mergeUniqueMessages([...ownerState.messages, ...userMessages])
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)),
+    organizationTeamStates,
+    organizationExecutionEvents: Object.fromEntries(Object.entries(organizationTeamStates).map(([teamId, teamState]) => [
+      teamId, teamState.executionEvents,
     ])),
   };
 }
@@ -910,9 +924,12 @@ async function reconcileTasksFromSnapshot(
   signal?: AbortSignal
 ): Promise<TeamHistoryPanelState> {
   try {
+    const ownerId = isTeamOrganizationUiEnabled()
+      ? ownerTeamId(sessionId) || useTeamSelectorStore.getState().runtimes[sessionId]?.teams.find((team) => team.is_owner)?.team_id
+      : null;
     const response = await webClient.request<TeamSnapshotResponse>(
       'team.snapshot',
-      { session_id: sessionId },
+      { session_id: sessionId, ...(ownerId ? { team_name: ownerId } : {}) },
       { signal, timeoutMs: 5000 }
     );
     const snapshotTasks = Array.isArray(response?.tasks) ? response.tasks : [];
