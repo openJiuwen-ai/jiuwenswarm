@@ -13,6 +13,7 @@ from gateway.channel_manager.base import RobotMessageRouter
 from gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
+    _resolve_ws_auth_session,
 )
 
 
@@ -23,6 +24,13 @@ class _FakeWebSocket:
 
     async def send(self, data: str) -> None:
         self.sent_frames.append(json.loads(data))
+
+
+def test_ws_auth_session_falls_back_to_query_for_cookie_less_webviews():
+    ws = _FakeWebSocket()
+    ws.request_headers = {}
+
+    assert _resolve_ws_auth_session(ws, {"auth_session": ["query-session"]}) == "query-session"
 
 
 def _req(*, req_id: str, method: str, params: dict[str, Any] | None = None) -> str:

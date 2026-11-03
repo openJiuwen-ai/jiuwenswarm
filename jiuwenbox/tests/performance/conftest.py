@@ -15,6 +15,50 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
+def process_create_body() -> dict:
+    """Create body used by process-runtime performance tests.
+
+    Appended onto the server default policy: run as user and group ``app``,
+    and bind the two host build directories read-write. The host must already
+    contain ``/app/build`` and ``/app/dist``.
+    """
+    return {
+        "policy_mode": "append",
+        "policy": {
+            "process": {
+                "run_as_user": "app",
+                "run_as_group": "app",
+            },
+            "filesystem_policy": {
+                "read_write": ["/app/docker", "/app/src"],
+                "bind_mounts": [
+                    {
+                        "host_path": "/app/docker",
+                        "sandbox_path": "/app/docker",
+                        "mode": "rw",
+                    },
+                    {
+                        "host_path": "/app/src",
+                        "sandbox_path": "/app/src",
+                        "mode": "rw",
+                    },
+                ],
+            },
+            "cgroup": {
+                "memory_max": 536870912,
+                "cpu_max": [100000, 100000],
+            },
+            "environment": {
+                "CPU_COUNT": "1",
+                "MEMORY_SIZE": "536870912",
+            },
+            "namespace": {
+                "user": True,
+            }
+        },
+    }
+
+
 def _normalize_endpoint(endpoint: str) -> str:
     # http:// is used for local performance test server; use https:// for production
     return endpoint if "://" in endpoint else f"http://{endpoint}"

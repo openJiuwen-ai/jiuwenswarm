@@ -1,0 +1,22 @@
+{
+  "package_type": "plugin",
+  "id": "ttse",
+  "name": "TTSE Contract Test Fixture",
+  "version": "2.0.0",
+  "description": "Test-only TTSE plugin for native runtime contract verification",
+  "display_name": {"zh": "TTSE 测试夹具", "en": "TTSE Contract Test Fixture"},
+  "display_description": {"zh": "仅用于运行时契约测试。", "en": "For runtime contract tests only."},
+  "category": "Engineering",
+  "source": "local",
+  "metadata": {
+    "plugin_runtime": {
+      "contract_version": 1,
+      "profiles": ["code"],
+      "role_scope": "main",
+      "requires": ["trajectory", "main_model", "agent_data_workspace", "embedding_factory"],
+      "capabilities": ["ttse"],
+      "direct_tools": ["ttse_consult"]
+    }
+  },
+  "rails": [{"file": "rails/ttse_plugin_rail.py", "class": "TTSEPluginRail"}]
+}

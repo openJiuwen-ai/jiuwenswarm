@@ -63,6 +63,21 @@ export function normalizeTeamBootstrapMode(value: unknown): TeamBootstrapMode | 
 }
 
 /**
+ * Restore the dispatch mode from metadata.
+ *
+ * Older builds could persist bootstrap_mode but lose dispatch_mode when the
+ * two async metadata writes raced. bootstrap_mode is only valid for scheduled
+ * dispatch, so its presence is enough to recover the session after refresh.
+ */
+export function resolveRestoredTeamDispatchMode(
+  dispatchMode: unknown,
+  bootstrapMode: unknown,
+): TeamDispatchMode | undefined {
+  return normalizeTeamDispatchMode(dispatchMode)
+    ?? (normalizeTeamBootstrapMode(bootstrapMode) ? 'scheduled' : undefined);
+}
+
+/**
  * 欢迎页的调度模式在建会话时落成显式值，使首条 chat.send 带上 team_dispatch_mode 并由后端持久化。
  * 实验开关打开时团队配置为 scheduled，因此用户没拨过开关也要显式下发 autonomous，保证开关默认关闭；
  * 实验开关关闭且用户没拨过开关时返回 undefined：不下发，后端沿用团队配置。

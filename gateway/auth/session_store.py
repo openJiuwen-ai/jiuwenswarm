@@ -67,10 +67,31 @@ def _parse_install_key(text: str) -> bytes | None:
     return raw if len(raw) == 32 else None
 
 
+def _is_harmony_runtime() -> bool:
+    return os.getenv("JIUWENSWARM_RUNTIME_PLATFORM", "").strip().lower() == "harmony"
+
+
+def _publish_harmony_file(tmp: Path, target: Path) -> None:
+    """Publish a new file on HarmonyOS without relying on hard links."""
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as destination:
+            fd = -1
+            destination.write(tmp.read_bytes())
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        target.unlink(missing_ok=True)
+        raise
+    tmp.unlink()
+
+
 def _publish_new_file(tmp: Path, target: Path) -> bool:
     try:
         if os.name == "nt":
             os.rename(tmp, target)  # Windows 上目标已存在就失败，不会覆盖
+        elif _is_harmony_runtime():
+            _publish_harmony_file(tmp, target)
         else:
             os.link(tmp, target)  # 硬链接同样不覆盖已有文件
             tmp.unlink()

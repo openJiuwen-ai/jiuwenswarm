@@ -135,6 +135,19 @@ async def warm_image_modality_cache(
     """
     effective_config = config_base if isinstance(config_base, dict) else get_config()
 
+    # 企业版进程预热时尚无 request 路由，本地 yaml/env 往往仍是 .env.template
+    # 占位模型；此时视为「未配置好模型」，不做多模态探测，避免打到 example.com。
+    # 真正会话会按企业库模型在 DeepAgent auto 路径按需探测。
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if is_enterprise():
+        logger.info(
+            "[ImageModalityWarmup] skipped (%s): "
+            "enterprise edition has no process-level model yet",
+            reason,
+        )
+        return True if report_status else None
+
     if get_configured_read_image_multimodal(effective_config) is not None:
         logger.info(
             "[ImageModalityWarmup] skipped (%s): "

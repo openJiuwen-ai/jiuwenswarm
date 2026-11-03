@@ -51,6 +51,28 @@ from jiuwenswarm.server.runtime.session import session_history
 SESSION = "web_suggestion_session"
 
 
+def test_current_suggestions_recovers_only_latest_unconsumed_candidates(tmp_path, monkeypatch) -> None:
+    store = TopicStarterStore(tmp_path / "recovery.db")
+    monkeypatch.setattr(prompt_suggestion, "consent_epoch", lambda: 0.0)
+    monkeypatch.setattr(prompt_suggestion, "_latest_completed_request", lambda session_id: "request-1")
+    candidate = {"session_id": SESSION, "request_id": "request-1", "suggestion_id": "a" * 32,
+                 "text": "Compare these options", "outcome": "candidate"}
+    row = {"session_id": SESSION, "slate_id": "prompt-suggestion:request-1",
+           "topic_id": "prompt-suggestion:" + "a" * 32, "policy_id": POLICY_ID,
+           "event_type": "prompt_suggestion_generation", "created_at": 10.0, "payload": candidate}
+    assert store.record_event(row)
+    response = prompt_suggestion.current_suggestions(store, SESSION)
+    assert response["enabled"] is True
+    assert response["suggestions"][0]["text"] == "Compare these options"
+    assert prompt_suggestion.current_suggestions(store, "other-session")["suggestions"] == []
+    assert store.record_event({**row, "event_type": "prompt_suggestion_ignored"})
+    assert prompt_suggestion.current_suggestions(store, SESSION)["suggestions"] == []
+    monkeypatch.setattr(prompt_suggestion, "_latest_completed_request", lambda session_id: "request-2")
+    assert prompt_suggestion.current_suggestions(store, SESSION)["suggestions"] == []
+    monkeypatch.setattr(prompt_suggestion, "consent_epoch", lambda: None)
+    assert prompt_suggestion.current_suggestions(store, SESSION) == {"enabled": False, "suggestions": []}
+
+
 def _usage(prompt: int, cached: int, completion: int) -> UsageMetadata:
     return UsageMetadata(input_tokens=prompt, cache_tokens=cached, output_tokens=completion,
                          total_tokens=prompt + completion)

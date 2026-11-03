@@ -583,6 +583,34 @@ def _latest_completed_request(session_id: str) -> str | None:
     return None
 
 
+def current_suggestions(store: TopicStarterStore, session_id: str) -> dict[str, Any]:
+    """Recover unconsumed suggestions for the session's latest successful answer."""
+    epoch = consent_epoch()
+    if epoch is None:
+        return {"enabled": False, "suggestions": []}
+    request_id = _latest_completed_request(session_id)
+    if not request_id:
+        return {"enabled": True, "suggestions": []}
+    suggestions = []
+    rows = store.query_events(
+        event_type="prompt_suggestion_generation", policy_id=POLICY_ID,
+        slate_id=f"prompt-suggestion:{request_id}", limit=2,
+    )
+    for row in rows:
+        payload = row["payload"]
+        if row["session_id"] != session_id or row["created_at"] < epoch or payload.get("outcome") != "candidate":
+            continue
+        consumed = any(store.query_events(
+            event_type=f"prompt_suggestion_{outcome}", policy_id=POLICY_ID,
+            topic_id=row["topic_id"], limit=1,
+        ) for outcome in ("accepted", "ignored", "suppressed"))
+        if not consumed:
+            suggestions.append({key: payload[key] for key in ("session_id", "request_id", "suggestion_id", "text")})
+    if consent_epoch() != epoch or _latest_completed_request(session_id) != request_id:
+        return {"enabled": consent_epoch() is not None, "suggestions": []}
+    return {"enabled": True, "suggestions": suggestions}
+
+
 def record_page_outcome(store: TopicStarterStore, params: dict[str, Any]) -> bool | None:
     """Record what the page did with a suggestion it was sent: shown, accepted or ignored, or
     suppressed for ``timing`` when it arrived after the user had started typing (src-raw's timing).

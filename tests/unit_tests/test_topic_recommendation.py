@@ -493,20 +493,17 @@ def _resolved():
     )
     return recommendation_model_config()
 
-def test_by_default_topics_follow_the_model_new_chats_use(chat_config):
+@pytest.mark.parametrize("selection", [None, "", "follow_main", "removed-model"])
+def test_unconfigured_topics_do_not_inherit_a_chat_model(chat_config, selection):
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
         recommendation_model_options,
     )
 
-    config = _resolved()
-    assert config is not None
-    assert (config.model, config.base_url, config.api_key) == (
-        "chat-model", "https://chat.example/api/v3", "placeholder-test-key")
-    # The entry leaves its window unset; the chain does not take the chat list's 256K default.
-    assert config.context_window_tokens == 131072
-    assert (config.effective_temperature, config.effective_top_p) == (0, 1)
+    controls.update_config(lambda config: {**config, "recommendation": {"model": selection}})
+    assert _resolved() is None
     options = recommendation_model_options(None)
-    assert options["selected_model"] == "mdl_chat"
+    assert options["selected_model"] == ""
+    assert options["configured_model"] == ""
     assert "follow_main" not in {item["model_id"] for item in options["model_options"]}
 
 def test_a_chosen_model_is_kept_in_config_and_decides_the_model(chat_config):
@@ -525,6 +522,143 @@ def test_a_chosen_model_is_kept_in_config_and_decides_the_model(chat_config):
 
     assert save_recommendation_model("follow_main") is False
     assert _resolved().model == "long-model"
+
+def test_clearing_topic_model_turns_off_topics_and_preserves_chat_models(chat_config):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+        load_recommendation_controls, recommendation_model_options,
+        save_recommendation_model,
+    )
+
+    assert save_recommendation_model("mdl_long")
+    switches.save_recommendation_switches(topic_enabled=True, now=1234.0)
+    assert load_recommendation_controls()["enabled"] is True
+    assert recommendation_model_options(None)["configured_model"] == "mdl_long"
+    assert save_recommendation_model("")
+    assert load_recommendation_controls()["enabled"] is False
+    options = recommendation_model_options(None)
+    assert options["configured_model"] == ""
+    assert "mdl_long" in {item["model_id"] for item in options["model_options"]}
+
+
+def test_deleting_dedicated_topic_model_persists_disabled_state_on_disk(chat_config):
+    import yaml
+
+    assert controls.save_recommendation_model_configuration({
+        "provider": "OpenAI", "model": "dedicated-topic-model",
+        "api_base": "https://topics.example/v1", "api_key": "test-topic-key",
+    })
+    switches.save_recommendation_switches(topic_enabled=True, now=1234.0)
+    assert controls.save_recommendation_model("")
+    saved = yaml.safe_load(chat_config.read_text(encoding="utf-8"))
+    assert saved["recommendation"]["topic_enabled"] is False
+    assert "model_config" not in saved["recommendation"]
+    assert controls.recommendation_model_configuration() == {}
+    assert controls.load_recommendation_controls()["enabled"] is False
+    assert saved["models"], "deleting a dedicated topic model must preserve chat models"
+
+
+def test_clearing_topic_model_does_not_validate_the_model_catalog(settings, monkeypatch):
+    settings["recommendation"] = {"model": "removed-model", "topic_enabled": True}
+
+    def unavailable_catalog(config):
+        raise AssertionError("Clearing a binding must not read the model catalog")
+
+    monkeypatch.setattr(controls, "get_default_models", unavailable_catalog)
+    assert controls.save_recommendation_model("")
+    assert settings["recommendation"] == {"model": "", "topic_enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_delete_topic_model_rpc_disables_runtime_and_notifies_clients(settings, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from jiuwenswarm.server.runtime import recommendation_rpc
+
+    settings["recommendation"] = {"model": "removed-model", "topic_enabled": True}
+    service = SimpleNamespace(reload_config=AsyncMock(), set_enabled=AsyncMock())
+    host = SimpleNamespace(topic_service=service, ensure_services=Mock())
+    monkeypatch.setattr(recommendation_rpc, "_status_payload", AsyncMock(return_value={
+        "configured_model": "", "enabled": False,
+    }))
+    result = await recommendation_rpc.dispatch_recommendation(
+        host, action="select_model", params={"model": ""}, session_id="test", request_id="delete-model",
+    )
+    assert result.ok is True
+    assert result.payload["configured_model"] == ""
+    assert settings["recommendation"]["topic_enabled"] is False
+    service.set_enabled.assert_awaited_once_with(False, persist=False)
+    assert ("topic_starters.control_changed", {"enabled": False}) in result.events
+
+
+def test_dedicated_topic_configuration_does_not_add_chat_models(settings):
+    settings["models"] = [{"model_id": "original-chat-model"}]
+    values = {"model": "topic-only", "provider": "OpenAI", "api_base": "https://topics.example/v1",
+              "api_key": "test-key", "vendor_key": "", "plan": ""}
+    assert controls.save_recommendation_model_configuration(values)
+    assert settings["models"] == [{"model_id": "original-chat-model"}]
+    assert controls.recommendation_model_config(environ={}).model == "topic-only"
+    public = controls.recommendation_model_configuration()
+    assert public["has_api_key"] is True
+    assert "api_key" not in public
+    assert controls.recommendation_model_configuration(include_api_key=True)["api_key"] == "test-key"
+    assert controls.save_recommendation_model_configuration({**values, "model": "edited", "api_key": ""})
+    assert settings["recommendation"]["model_config"]["api_key"] == "test-key"
+    assert not controls.save_recommendation_model_configuration({**values, "api_key": "", "api_base": "https://other.example"})
+    assert controls.save_recommendation_model("")
+    assert controls.recommendation_model_configuration() == {}
+    assert settings["recommendation"]["topic_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_dedicated_model_rpc_saves_without_disabling_an_enabled_switch(settings, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from jiuwenswarm.server.runtime import recommendation_rpc
+
+    settings["recommendation"] = {"topic_enabled": True}
+    service = SimpleNamespace(reload_config=AsyncMock(), set_enabled=AsyncMock())
+    host = SimpleNamespace(topic_service=service, ensure_services=Mock())
+    monkeypatch.setattr(recommendation_rpc, "_status_payload", AsyncMock(return_value={"enabled": True}))
+    result = await recommendation_rpc.dispatch_recommendation(
+        host, action="select_model", params={"model": "", "configuration": {
+            "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1", "api_key": "test-key",
+        }}, session_id="test", request_id="configure-model",
+    )
+    assert result.ok is True
+    assert settings["recommendation"]["model_config"]["model"] == "topics"
+    assert settings["recommendation"]["topic_enabled"] is True
+    service.reload_config.assert_awaited_once()
+    service.set_enabled.assert_not_awaited()
+    assert result.events == []
+
+
+@pytest.mark.asyncio
+async def test_status_returns_saved_key_only_when_explicitly_requested(settings, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from jiuwenswarm.server.runtime import recommendation_rpc
+
+    settings["recommendation"] = {"model_config": {
+        "provider": "OpenAI", "model": "topics", "api_base": "https://topics.example/v1",
+        "api_key": "saved-test-key",
+    }}
+    monkeypatch.setattr(controls, "recommendation_model_options", Mock(return_value={}))
+    service = SimpleNamespace(configuration_status=Mock(return_value={"configured": True}))
+    host = SimpleNamespace(topic_service=service, ensure_services=Mock())
+    for params, includes_key in [({}, False), ({"include_api_key": "true"}, False), ({"include_api_key": True}, True)]:
+        result = await recommendation_rpc.dispatch_recommendation(
+            host, action="status", params=params, session_id="test", request_id="edit-model",
+        )
+        assert result.ok
+        assert ("api_key" in result.payload["model_config"]) is includes_key
+        if includes_key:
+            assert result.payload["model_config"]["api_key"] == "saved-test-key"
+
+
+def test_legacy_chat_binding_is_not_a_dedicated_configuration(settings):
+    settings["recommendation"] = {"model": "GLM-5.1"}
+    assert controls.recommendation_model_configuration() == {}
+
 
 def test_a_complete_ark_environment_still_overrides_the_choice(chat_config, monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
@@ -1593,7 +1727,10 @@ async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
 @pytest.mark.asyncio
 async def test_webchannel_reports_unavailable_when_service_is_disabled(
     enabled_recommendation_consent,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
+    monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "false")
     channel = WebChannel(
         WebChannelConfig(enabled=True), RobotMessageRouter()
     )
@@ -1759,6 +1896,34 @@ def test_gateway_builds_product_lane_when_native_search_chain_is_configured(
     assert isinstance(prepare_service, TopicPrepareService)
     assert isinstance(product_service, TopicService)
     assert product_service._search_provider_id == OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
+
+def test_recommendation_host_recovers_after_search_is_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("TOPIC_STARTER_SEARCH_PROVIDER", raising=False)
+    monkeypatch.delenv("TOPIC_STARTER_V6_SEARCH_PROVIDER", raising=False)
+    monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "false")
+    monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "false")
+    host = recommendation_host.RecommendationHost()
+    host.store = TopicStarterStore(tmp_path / "recovery.db")
+    host.ensure_services()
+    assert host.topic_service is None
+    prepare = host.topic_prepare_service
+    queue = host.topic_outcome_queue
+    host.ensure_services()
+    assert host.topic_prepare_service is prepare
+
+    monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", "true")
+    host.ensure_services()
+    assert host.topic_service is None
+    monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "true")
+    host.ensure_services()
+    assert isinstance(host.topic_service, TopicService)
+    assert host.topic_prepare_service is prepare
+    assert host.topic_outcome_queue is queue
+    assert host.topic_service.on_prepared is not None
+    service = host.topic_service
+    host.ensure_services()
+    assert host.topic_service is service
+
 
 def test_cold_start_serve_shows_corpus_cards_without_history(tmp_path):
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig

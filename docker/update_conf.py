@@ -89,6 +89,8 @@ def main() -> int:
     setpath(data, "gateway.session_map_scope", "${GATEWAY_SESSION_MAP_SCOPE:-per_chat_bot}")
     setpath(data, "react.max_iterations", "${AGENT_SERVER_REACT_MAX_ITER:-100}")
     setpath(data, "react.evolution.enabled", False)
+    # 用户面团队下拉框。个人版模板保持 false，企业版默认打开。
+    setpath(data, "experimental.team_organization_ui_enabled", True)
     # 沙箱可插拔：由部署工具 SANDBOX_TYPE 控制（jiuwenbox 才启用沙箱域）
     # 非 jiuwenbox 时整个 sandbox 域不写入，业务路由走 LOCAL 直跑
     sandbox_enabled = os.getenv("SANDBOX_TYPE", "jiuwenbox").strip().lower() == "jiuwenbox"

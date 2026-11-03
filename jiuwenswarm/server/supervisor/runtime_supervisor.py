@@ -34,6 +34,8 @@ from jiuwenswarm.server.ipc.protocol import (
     dump_agent_request,
 )
 from jiuwenswarm.server.ipc.stream import IpcConnection
+from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
+from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor.affinity import SessionAffinity
 from jiuwenswarm.server.supervisor.diagnostics import dump_runtime_state
@@ -104,7 +106,15 @@ class RuntimeSupervisor:
     ) -> None:
         self._readiness = readiness
         self._forwarder = forwarder
+        self._ipc_mode = runtime_ipc_mode()
+        if self._ipc_mode == FRONT_LOOPBACK and socket_path is None:
+            from jiuwenswarm.common.utils import get_user_workspace_dir
+
+            # A log location only; attached mode never resolves a resident
+            # socket endpoint, creates socket files or takes its locks.
+            socket_path = str(get_user_workspace_dir() / "run" / "runtime-attached")
         self._socket_path = socket_path or default_socket_path()
+        self._launch_generation: int | None = None
         self._host = host
         self._port = port
         self._stub = stub
@@ -402,10 +412,20 @@ class RuntimeSupervisor:
 
         ``terminate_worker=True`` explicitly exercises lifecycle authority for
         final exit or upgrade, including after a validated reattachment.
+        Front-attached mode always shuts down and reaps its Worker.
         """
+        terminate_worker = terminate_worker or self._ipc_mode == FRONT_LOOPBACK
         conn = self._conn
         deadline = time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT if terminate_worker else None
         shutdown_error: Exception | None = None
+        if self._ipc_mode == FRONT_LOOPBACK and conn is None:
+            # A Worker still authenticating cannot receive shutdown. Cancel
+            # bring-up so its listener and partially spawned child are reaped.
+            self._terminating = True
+            task = self._loop_task
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         if terminate_worker:
             self._terminating = True
             try:
@@ -453,6 +473,19 @@ class RuntimeSupervisor:
             try:
                 await self._bring_up()
             except Exception as exc:  # noqa: BLE001
+                if self._ipc_mode == FRONT_LOOPBACK:
+                    try:
+                        conn, self._conn = self._conn, None
+                        if conn is not None:
+                            await conn.close()
+                        await self._retire_unhealthy_worker()
+                    except Exception as cleanup_error:
+                        self._fatal = True
+                        self._fatal_reason = f"attached Worker startup cleanup failed: {cleanup_error}"
+                        self._readiness.mark_failed(self._fatal_reason)
+                        self._ipc_ready.set()
+                        logger.exception("[Supervisor] attached startup cleanup failed")
+                        break
                 logger.warning(
                     "[Supervisor] worker bring-up failed: %s",
                     exc if str(exc) else type(exc).__name__,
@@ -475,6 +508,7 @@ class RuntimeSupervisor:
                 await self._fail_pending("runtime worker stopped")
                 break
             async with self._session_lock:
+                retired_conn = self._conn
                 self._conn = None
                 self._ipc_ready.clear()
                 self._registry.mark_ready("primary", ready=False)
@@ -492,7 +526,10 @@ class RuntimeSupervisor:
                 # Complete requests only after publishing the recovery decision.
                 # Retirement can take seconds when a blocked loop ignores SIGTERM.
                 await self._fail_pending("runtime worker closed")
-                if unhealthy_reason:
+                if self._ipc_mode == FRONT_LOOPBACK:
+                    if retired_conn is not None:
+                        await retired_conn.close()
+                if unhealthy_reason or self._ipc_mode == FRONT_LOOPBACK:
                     try:
                         await self._retire_unhealthy_worker()
                     except Exception as exc:  # noqa: BLE001
@@ -508,15 +545,15 @@ class RuntimeSupervisor:
                 break
 
     async def _retire_unhealthy_worker(self) -> None:
-        """Replace a confirmed health failure rather than reattaching to it."""
+        """Reap the validated Worker before replacing its failed session."""
         if self._worker_pid is not None and self._worker_create_time is not None:
             await asyncio.to_thread(
                 self._reap_validated_worker, deadline=time.monotonic() + 5.0, terminate=True
             )
         await self._stop_spawned_process()
+        self._clear_attached_worker_identity()
 
-    async def _bring_up(self) -> None:
-        await self._cancel_side_tasks()
+    async def _connect_resident(self) -> str | None:
         launch_identity = None
         async with self._session_lock:
             from filelock import FileLock
@@ -563,6 +600,52 @@ class RuntimeSupervisor:
                         self._conn = await connect_with_retry(self._socket_path, timeout=self._connect_timeout)
             finally:
                 election.release()
+        return launch_identity
+
+    async def _connect_attached(self) -> str | None:
+        """Spawn a fresh Worker without endpoint election or reattachment."""
+        async with self._session_lock:
+            await self._stop_spawned_process()
+            self._clear_attached_worker_identity()
+            listener = FrontLoopbackListener(timeout=self._connect_timeout)
+            process = WorkerProcess(
+                self._socket_path, host=self._host, port=self._port,
+                stub=self._stub, stub_ready_delay=self._stub_ready_delay,
+                stub_exit_on_request=self._stub_exit_on_request, ipc_listener=listener,
+            )
+            self._process = process
+            self._owns_process = True
+            tasks: list[asyncio.Task] = []
+            try:
+                await process.spawn()
+                self._launch_generation = listener.generation
+                accepted = asyncio.create_task(listener.accept(), name="runtime-ipc-accept")
+                exited = asyncio.create_task(process.wait(), name="runtime-startup-exit")
+                tasks = [accepted, exited]
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                if accepted not in done:
+                    raise RuntimeError(
+                        f"runtime_ipc=front_loopback stage=auth worker exited code={exited.result()}"
+                    )
+                self._conn = accepted.result()
+                return process.launch_identity
+            except BaseException:
+                if self._conn is not None:
+                    await self._conn.close()
+                    self._conn = None
+                await self._stop_spawned_process()
+                raise
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await listener.close()
+
+    async def _bring_up(self) -> None:
+        await self._cancel_side_tasks()
+        launch_identity = (await self._connect_attached() if self._ipc_mode == FRONT_LOOPBACK
+                           else await self._connect_resident())
         conn = self._conn
         if conn is None:
             raise ConnectionError("runtime worker ipc missing after bring-up")
@@ -573,6 +656,10 @@ class RuntimeSupervisor:
                 raise RuntimeError(f"expected hello, got {kind!r}")
             if int(hello.get("protocol") or 0) != PROTOCOL_VERSION:
                 raise RuntimeError("runtime ipc protocol mismatch")
+            if self._ipc_mode == FRONT_LOOPBACK and (
+                type(hello.get("generation")) is not int or hello.get("generation") != self._launch_generation
+            ):
+                raise RuntimeError("runtime_ipc=front_loopback stage=hello generation mismatch")
             from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
 
             identity = launch_identity or await asyncio.to_thread(code_identity)
@@ -584,12 +671,14 @@ class RuntimeSupervisor:
                 self._fatal = True
                 self._fatal_reason = "resident Worker execution profile mismatch"
                 raise RuntimeError(self._fatal_reason)
-        except Exception:
+        except BaseException:
             self._conn = None
             try:
                 await conn.close()
             except Exception:  # noqa: BLE001
                 logger.debug("[Supervisor] ipc close after bad hello failed", exc_info=True)
+            if self._ipc_mode == FRONT_LOOPBACK:
+                await self._stop_spawned_process()
             raise
         self._generation += 1
         peer = hello.get("generation")
@@ -1203,29 +1292,56 @@ class RuntimeSupervisor:
         if self._worker_pid is not None and self._worker_create_time is not None:
             await asyncio.to_thread(self._reap_validated_worker, deadline=deadline)
         self._process = None
+        self._clear_attached_worker_identity()
+
+    def _clear_attached_worker_identity(self) -> None:
+        if self._ipc_mode == FRONT_LOOPBACK:
+            self._worker_pid = None
+            self._worker_create_time = None
+            self._worker_instance = None
+
+    def _ignore_reused_attached_pid(self) -> bool:
+        if self._ipc_mode != FRONT_LOOPBACK:
+            return False
+        logger.warning(
+            "[Supervisor] attached Worker PID was reused; skipping retired identity pid=%s", self._worker_pid,
+        )
+        self._clear_attached_worker_identity()
+        self._owns_process = False
+        return True
 
     def _reap_validated_worker(self, *, deadline: float, terminate: bool = False) -> None:
         """Final-exit authority is explicit; a reused PID must never be killed."""
         import psutil
+        worker_pid, worker_create_time = self._worker_pid, self._worker_create_time
+        if worker_pid is None or worker_create_time is None:
+            return
         try:
-            process = psutil.Process(self._worker_pid)
-            if process.create_time() != self._worker_create_time:
+            process = psutil.Process(worker_pid)
+            if process.create_time() != worker_create_time:
+                if self._ignore_reused_attached_pid():
+                    return
                 raise RuntimeError("Worker PID identity changed during final exit")
             if terminate:
                 process.terminate()
             try:
                 process.wait(timeout=max(0.0, deadline - time.monotonic()))
             except psutil.TimeoutExpired as exc:
-                if process.create_time() != self._worker_create_time:
+                if process.create_time() != worker_create_time:
+                    if self._ignore_reused_attached_pid():
+                        return
                     raise RuntimeError("Worker PID identity changed during final exit") from exc
                 logger.error("[Supervisor] Worker final exit timed out; forcing validated process termination")
                 process.kill()
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
-                except psutil.TimeoutExpired:
+                except psutil.TimeoutExpired as exit_error:
                     logger.error(
                         "[Supervisor] validated Worker exit could not be observed before the shutdown deadline"
                     )
+                    if self._ipc_mode == FRONT_LOOPBACK:
+                        detail = "attached Worker exit could not be observed before shutdown deadline"
+                        raise RuntimeError(detail) from exit_error
         except psutil.NoSuchProcess:
             pass
         self._owns_process = False
