@@ -481,7 +481,10 @@ def owner_identity_server(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pooled", [False, True])
-async def test_team_list_restores_owner_identity_from_session(owner_identity_server, pooled):
+@pytest.mark.parametrize("assembling", [False, True])
+async def test_team_list_restores_owner_identity_from_session(
+    owner_identity_server, pooled, assembling, monkeypatch,
+):
     server, metadata, live_teams = owner_identity_server
     identity = {
         "id": "business-asset", "name": "business-planning",
@@ -490,9 +493,18 @@ async def test_team_list_restores_owner_identity_from_session(owner_identity_ser
     metadata["session"] = {
         "team_name": "owner", "agent_group_name": identity["name"], "team_group_identity": identity,
     }
+    if assembling:
+        metadata["session"].pop("team_name")
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            lambda _: team_manager_marker(
+                snapshot={"session": {"team_name": "owner", "state": "pending"}},
+                pending={"session": "owner"},
+            ),
+        )
     if pooled:
         live_teams.append(SimpleNamespace(
-            team_name="owner", state=SimpleNamespace(value="paused"),
+            team_name="owner", state=SimpleNamespace(value="running" if assembling else "paused"),
             agent=SimpleNamespace(
                 card=SimpleNamespace(name="Team Leader"), team_backend=backend("org"),
                 spec=SimpleNamespace(metadata={"agent_group_name": identity["name"]}),
@@ -507,7 +519,7 @@ async def test_team_list_restores_owner_identity_from_session(owner_identity_ser
     assert teams[0]["agent_group_name"] == identity["name"]
     if pooled:
         assert teams[0]["display_name"] == "Team Leader"
-        assert teams[0]["state"] == "paused"
+        assert teams[0]["state"] == ("running" if assembling else "paused")
         assert teams[0]["source"] == "pool"
         assert teams[0]["organization_id"] == "org"
 
