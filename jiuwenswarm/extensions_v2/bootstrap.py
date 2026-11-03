@@ -76,15 +76,43 @@ def _register_team_event_types(bus: ExtensionEventBus) -> None:
 def _register_team_ops(bus: ExtensionEventBus) -> None:
     """Contribute the read-only ``ops.team`` namespace during ``ops.build``.
 
-    The resolver reads the global runner's team pool lazily: ``ops.build``
-    runs at process start, long before any team runtime exists. Same
+    The resolver answers from the team database via the host's shared
+    singleton factory: ``ops.build`` runs at process start, long before
+    any team exists, and teams stay queryable after they stop. Same
     soft-gate as the team events.
     """
 
     try:
-        from openjiuwen.agent_teams.extensions.resolver import GlobalRunnerPoolResolver
+        from openjiuwen.agent_teams.extensions.resolver import DatabaseResolver
         from openjiuwen.extensions.ops_build_handlers import team as team_ops
     except ImportError as exc:
         logger.warning("[ExtensionsV2] team ops unavailable (agent-core too old): %s", exc)
         return
-    team_ops.register(bus, GlobalRunnerPoolResolver())
+    team_ops.register(bus, DatabaseResolver(_team_db_factory))
+
+
+async def _team_db_factory():
+    """Return the initialized shared team database.
+
+    Follows the team monitor handler's pattern: the configured sqlite
+    path resolved through host config, handed to the process-wide shared
+    singleton. Only the static schema and the first bound session's
+    dynamic tables are initialized here — which session's dynamic tables
+    a query reads is the resolver's per-query concern, and the read path
+    never runs DDL. Hosts without team storage configured answer ``None``
+    (every team then resolves as not found, never a crash).
+    """
+
+    from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
+    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
+    from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+    from jiuwenswarm.common.config import get_config
+
+    db_path = resolve_team_sqlite_db_path(get_config())
+    if db_path is None:
+        return None
+    # The DAOs mount after initialize (idempotent).
+    db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
+    await db.initialize()
+    return db

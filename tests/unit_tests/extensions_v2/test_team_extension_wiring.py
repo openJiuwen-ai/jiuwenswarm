@@ -51,8 +51,17 @@ async def _noop_handler(event, ops, next_handler):  # pragma: no cover - registr
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_contributes_team_ops_namespace() -> None:
-    """ops.build carries the read-only ops.team namespace."""
+async def test_bootstrap_contributes_team_ops_namespace(tmp_path: Path, monkeypatch) -> None:
+    """One ops.build retains team Ops and event-backed session queries."""
+
+    async def _no_database():
+        """Host stand-in without team storage: every team is not found."""
+        return None
+
+    # Keep the unit test off the real host config and database: wiring
+    # only needs the namespace to exist and unknown teams to error.
+    monkeypatch.setattr(bootstrap, "_team_db_factory", _no_database)
+
     from openjiuwen.agent_teams.extensions.models import TeamMonitorEventInput
     from openjiuwen.agent_teams.monitor.models import MonitorEvent, MonitorEventType
 
@@ -61,8 +70,8 @@ async def test_bootstrap_contributes_team_ops_namespace() -> None:
     assert builder is not None
     ops = builder.build(None, SessionContext(session_id="session-1"))
 
-    # The namespace exists; before any team runs the resolver reports the
-    # team as not accessible (an explicit error, never a crash).
+    # The namespace exists; without team storage configured the resolver
+    # reports the team as not found (an explicit error, never a crash).
     from openjiuwen.core.common.exception.errors import BaseError
 
     with pytest.raises(BaseError):
