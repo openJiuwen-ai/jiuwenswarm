@@ -220,6 +220,7 @@ def register_session_ops(
     bus: ExtensionEventBus,
     *,
     file_service: SessionFileService | None = None,
+    compact_service=None,
 ) -> None:
     """Register workspace capabilities before Registry initializes Ops once."""
 
@@ -252,6 +253,12 @@ def register_session_ops(
         builder = await session_ops_build(event, ops, next_handler, bus=bus)
         builder.add_method("session", "files", files)
         builder.add_method("session", "read_file", read_file)
+        async def compact(ops, *, instructions=None):
+            if compact_service is None:
+                from openjiuwen.core.context_engine import CompactionError
+                raise CompactionError("COMPACT_UNSUPPORTED")
+            return await compact_service.compact(ops, instructions=instructions)
+        builder.add_method("session", "compact", compact)
         return builder
 
     bus.register_event_handler(
