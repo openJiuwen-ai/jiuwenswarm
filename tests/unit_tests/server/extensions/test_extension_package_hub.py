@@ -1307,32 +1307,78 @@ async def test_hub_asset_uuid_remains_external_while_package_name_drives_runtime
     ]
 
 @pytest.mark.asyncio
-async def test_hub_install_replaces_built_in_copy_whose_shelf_package_was_removed(
+@pytest.mark.parametrize("shelf_available", [False, True])
+@pytest.mark.parametrize("failure_stage", [None, "resolve", "download", "validation"])
+async def test_hub_install_preserves_built_in_copy_when_aliasing(
     extension_workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shelf_available: bool,
+    failure_stage: str | None,
 ) -> None:
+    """A same-named Hub install must not delete an existing built_in copy."""
+    if shelf_available:
+        # A discoverable shelf without this package is still not permission to delete it.
+        shelf = tmp_path / "resources" / "agent_templates"
+        shelf.mkdir(parents=True)
+        monkeypatch.setattr(
+            catalog, "get_equipment_resources_agent_templates_dir", lambda: shelf
+        )
+
     asset_id = "8c5a4c8a1bf0484a8027af89e12d13d4"
-    hub = FakeHubAssetPort(
-        _item(asset_id, "agent_template", package_name="sales-expert")
-    )
+    hub = FakeHubAssetPort(_item(asset_id, "agent_template", package_name="sales-expert"))
     root = extension_workspace / "plugins" / "agent_templates"
-    orphan = root / "built_in" / "sales-expert"
-    orphan.mkdir(parents=True)
-    (orphan / "manifest.json").write_text(
+    existing = root / "built_in" / "sales-expert"
+    existing.mkdir(parents=True)
+    manifest = existing / "manifest.json"
+    manifest.write_text(
         json.dumps({"package_type": "agent_template", "name": "sales-expert"}),
         encoding="utf-8",
     )
+    sentinel = existing / "user-note.txt"
+    sentinel.write_text("Keep the existing package", encoding="utf-8")
+    original_manifest = manifest.read_bytes()
+    catalog.upsert_agent_template_marketplace_entry("sales-expert", installed=True, source="builtin")
+    original_entries = catalog.read_agent_template_marketplace_entries()
+    downloader = FakeDownloader()
 
-    ok, payload = await catalog.install_equipment_from_hub_gated(
-        "agent_templates",
-        {"id": asset_id},
-        hub_port=hub,
-        downloader=FakeDownloader(),
-    )
+    if failure_stage == "resolve":
+        async def fail_resolve(_request: object) -> HubResolvedDownload:
+            raise OSError("resolve failed")
 
-    assert (ok, payload) == (True, {})
-    assert not orphan.exists()
-    assert (root / "local" / "sales-expert").is_dir()
-    assert catalog.is_agent_template_installed("sales-expert") is True
+        monkeypatch.setattr(hub, "resolve_download", fail_resolve)
+    elif failure_stage == "download":
+        async def fail_download(_artifact: HubResolvedDownload, _destination: Path) -> None:
+            raise OSError("download failed")
+
+        monkeypatch.setattr(downloader, "download_and_extract", fail_download)
+    elif failure_stage == "validation":
+        downloader = WrongIdDownloader()
+
+    if failure_stage is None:
+        ok, payload = await catalog.install_equipment_from_hub_gated(
+            "agent_templates", {"id": asset_id}, hub_port=hub, downloader=downloader
+        )
+        assert (ok, payload) == (True, {})
+        assert (root / "local" / "sales-expert-2").is_dir()
+        assert catalog.is_agent_template_installed("sales-expert-2") is True
+        record = HubInstallStateStore(root).get(asset_id)
+        assert record is not None and record.package_id == "sales-expert-2"
+    else:
+        message = "package id mismatch" if failure_stage == "validation" else f"{failure_stage} failed"
+        with pytest.raises((OSError, ValueError), match=message):
+            await catalog.install_equipment_from_hub_gated(
+                "agent_templates", {"id": asset_id}, hub_port=hub, downloader=downloader
+            )
+        assert not (root / "local" / "sales-expert-2").exists()
+        assert HubInstallStateStore(root).get(asset_id) is None
+
+    # Read both disk and marketplace state independently of the install result.
+    assert manifest.read_bytes() == original_manifest
+    assert sentinel.read_text(encoding="utf-8") == "Keep the existing package"
+    entries = catalog.read_agent_template_marketplace_entries()
+    assert [entry for entry in entries if entry["id"] == "sales-expert"] == original_entries
+    assert not (root / "local" / "sales-expert").exists()
 
 
 @pytest.mark.asyncio
