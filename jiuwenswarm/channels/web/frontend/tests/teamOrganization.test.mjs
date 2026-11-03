@@ -1209,6 +1209,54 @@ test('historical database names render in both the organization panel and select
   );
 });
 
+for (const catalogAvailable of [true, false]) {
+  test(`owner identity renders independently of the group catalog, available=${catalogAvailable}`, async () => {
+    const teams = organizationTeams.teams.map((team, index) => ({
+      ...team,
+      display_name: '团队领导',
+      team_group_identity: {
+        id: groupIdentities[index].id,
+        name: groupIdentities[index].name,
+        display_name: groupIdentities[index].displayName,
+        avatar: groupIdentities[index].avatarUrl,
+      },
+    }));
+    await withOrganizationPanel(
+      (method, params) => {
+        if (method === 'team.list') return { teams, default_team_id: 'owner' };
+        if (method === 'agent_groups.list') {
+          if (!catalogAvailable) {
+            throw Object.assign(new Error('AgentServer response exceeds WebSocket send budget'), {
+              code: 'response_too_large',
+            });
+          }
+          return { agentGroups: [] };
+        }
+        if (method === 'org.snapshot') return {
+          organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: teams }, tasks: [],
+        };
+        return { team_id: params.team_id, members: [], tasks: [] };
+      },
+      async () => {
+        assert.equal(
+          document.querySelector('[data-testid="team-area-org-info-owner-team"]').lastElementChild.textContent,
+          '商业策划专家团',
+        );
+        for (const [index, team] of teams.entries()) {
+          assert.equal(
+            document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent,
+            groupIdentities[index].displayName,
+          );
+          assert.equal(
+            document.querySelector(`[data-testid="team-area-org-info-team-avatar"][data-variant="${team.team_id}"]`).getAttribute('src'),
+            groupIdentities[index].avatarUrl,
+          );
+        }
+      },
+    );
+  });
+}
+
 test('organization identity uses the selected Team package, preserving the session binding', () => {
   seed();
   useSessionStore.getState().setAgentGroupBinding('session', 'business-planning');
