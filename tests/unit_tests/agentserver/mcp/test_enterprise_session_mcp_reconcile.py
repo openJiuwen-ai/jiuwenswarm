@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -129,6 +130,87 @@ async def test_enterprise_agent_sessions_keep_distinct_policies(enterprise):
     assert children["a"]._session_selected_mcp == {"only-a"}
     assert children["b"]._session_selected_mcp == set()
     children["b"].register_mcp_by_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [set(), {"existing-mcp"}])
+@pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError])
+async def test_enterprise_load_failure_preserves_session(enterprise, selected, error_type):
+    child = _child([])
+    child._session_selected_mcp.update(selected)
+    child._load_enterprise_config.side_effect = error_type("policy store unavailable")
+    original_base = child._config_base_cache
+    baseline = copy.deepcopy(original_base)
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
+
+    await adapter.reconcile_session_mcp(
+        "session-a", ["unauthorized-picker-entry"],
+        execution_request=SimpleNamespace(channel_id="web"),
+    )
+
+    assert child._session_selected_mcp == selected
+    assert child._config_base_cache is original_base
+    assert original_base == baseline
+    child.register_mcp_by_name.assert_not_awaited()
+    child.unregister_mcp_by_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enterprise_load_failure_returns_selection_copy():
+    child = _child([])
+    child._session_selected_mcp.add("existing-mcp")
+    child._load_enterprise_config.side_effect = RuntimeError("policy store unavailable")
+
+    names = await child.load_enterprise_mcp_names(SimpleNamespace(channel_id="web"))
+    names.clear()
+
+    assert child._session_selected_mcp == {"existing-mcp"}
+
+
+@pytest.mark.asyncio
+async def test_enterprise_load_retries_and_applies_recovered_policy(enterprise):
+    child = _child([])
+    child._session_selected_mcp.add("old-mcp")
+    child._load_enterprise_config.side_effect = [
+        RuntimeError("policy store unavailable"),
+        SimpleNamespace(config={"mcp": {"servers": [{"name": "new-mcp"}]}}),
+    ]
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
+    request = SimpleNamespace(channel_id="web")
+
+    await adapter.reconcile_session_mcp("session-a", None, execution_request=request)
+    assert child._session_selected_mcp == {"old-mcp"}
+    child.register_mcp_by_name.assert_not_awaited()
+    child.unregister_mcp_by_name.assert_not_awaited()
+
+    await adapter.reconcile_session_mcp("session-a", None, execution_request=request)
+
+    assert child._load_enterprise_config.await_count == 2
+    assert child._session_selected_mcp == {"new-mcp"}
+    child.register_mcp_by_name.assert_awaited_once_with("new-mcp")
+    child.unregister_mcp_by_name.assert_awaited_once_with("old-mcp")
+
+
+@pytest.mark.asyncio
+async def test_enterprise_load_cancellation_propagates(enterprise):
+    child = _child([])
+    child._session_selected_mcp.add("existing-mcp")
+    child._load_enterprise_config.side_effect = asyncio.CancelledError()
+    original_base = child._config_base_cache
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.reconcile_session_mcp(
+            "session-a", None, execution_request=SimpleNamespace(channel_id="web"),
+        )
+
+    assert child._session_selected_mcp == {"existing-mcp"}
+    assert child._config_base_cache is original_base
+    child.register_mcp_by_name.assert_not_awaited()
+    child.unregister_mcp_by_name.assert_not_awaited()
 
 
 @pytest.mark.asyncio

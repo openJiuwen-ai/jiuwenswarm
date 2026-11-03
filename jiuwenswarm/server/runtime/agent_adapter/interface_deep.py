@@ -6155,10 +6155,20 @@ class JiuWenSwarmDeepAdapter:
 
         Keep the resolved configuration local to this session adapter; do not
         persist enterprise templates to shared YAML or marketplace state.
+        On load failure, preserve the current selection and retry next turn.
         """
-        resolved = await self._load_enterprise_config(
-            request, base=dict(self._config_base_cache or {}),
-        )
+        try:
+            resolved = await self._load_enterprise_config(
+                request, base=dict(self._config_base_cache or {}),
+            )
+        except Exception:  # noqa: BLE001 - policy read failures must not abort chat
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] enterprise MCP policy load failed; "
+                "keeping current session selection",
+            )
+            # An empty fallback would unload live MCPs. Do not use local YAML
+            # or the message picker as an enterprise policy fallback either.
+            return set(self._session_selected_mcp)
         self._config_base_cache = resolved.config.copy()
         mcp_section = resolved.config.get("mcp") or {}
         names: set[str] = set()
