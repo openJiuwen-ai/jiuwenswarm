@@ -82,6 +82,9 @@ def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
         fields["input_request_id"] = "input-1"
     if event_type == "chat.output_phase":
         fields["applied_input_ids"] = ["input-1", "input-2"]
+        fields["delivery_reconciliation_pending"] = True
+    if event_type == "chat.final":
+        fields["delivery_reconciled"] = True
     chunk = AgentResponseChunk(request_id="original", channel_id="web", is_complete=False,
                                payload={"event_type": event_type, "content": "text", **fields})
     restored = e2a_response_to_agent_chunk(e2a_response_from_agent_chunk(chunk, response_id="original", sequence=42))
@@ -313,3 +316,16 @@ def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, e
     assert restored.request_id == "org-round:3"
     for key in ("team_id", "team_name", "source", "request_id", "rid", "member_name", "content"):
         assert restored.payload.get(key) == payload.get(key)
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"event_type": "chat.delta", "content": "plain"}])
+def test_non_organization_normalization_keeps_protocol_behavior(payload):
+    from openjiuwen_protocol.e2a import gateway_normalize as protocol
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+
+    chunk = AgentResponseChunk(request_id="plain", channel_id="web", payload=payload)
+    options = {"response_id": "plain", "sequence": 0, "timestamp": "2026-10-10T00:00:00Z"}
+    assert e2a_response_from_agent_chunk(chunk, **options).to_dict() == protocol.e2a_response_from_agent_chunk(
+        chunk, **options,
+    ).to_dict()

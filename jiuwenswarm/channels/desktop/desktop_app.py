@@ -791,6 +791,21 @@ class _WindowApi:
         return bool(webbrowser.open(url))
 
     @staticmethod
+    def open_app_link(url: str) -> bool:
+        """Open an MCP App's ``ui/open-link`` URL in the system browser.
+
+        Only plain http(s) URLs without embedded credentials are accepted.
+        """
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(str(url))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        return bool(webbrowser.open(parsed.geturl()))
+
+    @staticmethod
     def capture_oauth_token(options: dict) -> dict | None:
         """隐式授权一键授权（对齐 Electron 的 desktop:capture-oauth-token）。
 
@@ -1991,7 +2006,12 @@ class DesktopRuntime:
             if isinstance(url, str) and url.startswith("data:"):
                 temp_path.write_bytes(self._bytes_from_download_data_url(url))
             else:
-                urllib.request.urlretrieve(url, temp_path)
+                # urllib 的 HTTP 请求行只接受 ASCII：中文文件名/空格等非 ASCII 字符
+                # 必须先百分号编码，否则抛 UnicodeEncodeError，表现为桌面端下载失败。
+                # safe 保留 URL 结构字符与已有的 %xx 转义，避免二次编码。
+                urllib.request.urlretrieve(
+                    quote(url, safe=":/?#[]@!$&'()*+,;=%"), temp_path
+                )
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)

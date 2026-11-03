@@ -8,10 +8,13 @@ import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 const previousDocument = globalThis.document;
-const renderDom = new JSDOM('<!doctype html><html><body></body></html>');
+const previousWindow = globalThis.window;
+const renderDom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' });
 globalThis.document = renderDom.window.document;
+globalThis.window = renderDom.window;
 after(() => {
   globalThis.document = previousDocument;
+  globalThis.window = previousWindow;
   renderDom.window.close();
 });
 
@@ -570,7 +573,7 @@ test('group card actions keep uninstall in the detail page and install created g
   );
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
-  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id\)/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{ suppressInlineError: true \}\)/);
 });
 
 test('failed expert upload install rolls back the import and shows the backend error in the notice slot', () => {
@@ -639,7 +642,7 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
   assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
   assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
   assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
-  assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /\(agentSelectionDisabled \|\| externalSwitchBlocked\) && 'is-locked'/);
   assert.match(inputAreaSource, /agentGroupSelectionDisabled && 'is-locked'/);
   assert.match(inputAreaSource, /!isTeamMode \? \([\s\S]*chat-panel-agent-picker-agent-tab/);
   assert.match(inputAreaSource, /!isAgentMode \? \([\s\S]*chat-panel-agent-picker-agent-group-tab/);

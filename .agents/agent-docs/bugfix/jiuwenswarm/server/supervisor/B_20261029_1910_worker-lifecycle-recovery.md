@@ -60,6 +60,17 @@ design_note: 修复已确认的常驻与最终退出契约及回退前暴露的�
 
 身份、存活与完整关闭是不同证据：进程常驻属于正常设计；最后一次应用退出必须覆盖可验证归属的 Worker。未知旧进程的兼容策略应保留新部署可用性，并提供明确、可检查的清理入口。规约、中文及英文运维说明和回归同步维护。
 
+## 2026-11-03 develop 适配
+
+本次接入上游 `b8c8206c4ede7122f9ee3f81770b8f86dd5659ed`，续写同一修复，不替代原有最终退出、升级凭据和历史进程处置决策。
+
+- 保留主干 HarmonyOS `front_loopback` 的一次性鉴权、generation 校验、进程退出监听、连接断开清理及 PID 复用保护。resident 的选举、历史端点迁移和替换校验留在 resident 连接路径，附属模式不进入这些流程。
+- 两种模式共用完整关闭判定和有限重试后的自动恢复；附属模式 `stop()` 始终关闭自己的 Worker，桌面 resident 的普通 Front 重启继续保留 Worker。
+- 保留主干 `JIUWENSWARM_RUNTIME_INSTANCE` / `HOSTNAME` 的端点区分，并将实例纳入部署身份，避免共享数据目录中的其他 Pod 被误认为当前部署的历史进程。
+- Electron 装配同时包含主干新增的 `cdp_port.cjs` 和本修复的 `update_shutdown.cjs`；文档索引使用当前同步工具重建。
+
+回归新增两个共享目录真实实例的独立启动/退出、附属 Worker 的 ACK 后线程残留，以及 resident / front_loopback 两条链路的启动故障自动恢复。原生 HarmonyOS、macOS DMG 与 Windows EXE 安装/升级仍需对应平台验收；Windows 源码下的 loopback 行为不代替原生验证。
+
 ## 遗留与重验条件
 
 原生 DMG/EXE 的真实打包退出及升级，需要对应平台使用该 PR 当前提交构建后复验。#5964 原机器的物理内存/SDK 初始化触发原因仍需要同进程时间线与系统事件证据；本修复覆盖已复现的日志 sink 阻塞风险和不可自行恢复的状态机。

@@ -720,7 +720,7 @@ export interface SessionRuntime {
 }
 
 function createEmptyRuntime(
-  sessionId?: string,
+  sessionId: string,
   availableModels: ModelEntry[] = [],
   availableModelGroups: ModelGroup[] = [],
 ): SessionRuntime {
@@ -734,7 +734,9 @@ function createEmptyRuntime(
     ? availableModels.find((model) => model.model_id === restoredSelection.id)
     : null;
   return {
-    mode: loadModeFromStorage(),
+    // Only the new-conversation draft inherits the last selected mode.
+    // Existing Sessions restore their own mode from backend metadata.
+    mode: sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadModeFromStorage() : DEFAULT_MODE,
     selectedModelName: restoreLegacyName ? legacyName : restoredModel?.model_name ?? null,
     selectedModelSelection: restoreLegacyName
       ? legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null
@@ -779,6 +781,8 @@ interface SessionState {
   availableTools: string[];
   memoryUsage: MemoryUsage;
   availableModels: ModelEntry[];
+  /** A successful catalog snapshot has arrived, including an empty catalog. */
+  modelsLoaded: boolean;
   /** All configured models available to the chat picker, including non-default connections. */
   chatAvailableModels: ModelEntry[];
   /** models.list 返回的模型组目录，供选择器与设置页共用 */
@@ -925,6 +929,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     usedPercent: null,
   },
   availableModels: [],
+  modelsLoaded: false,
   chatAvailableModels: [],
   availableModelGroups: [],
   defaultModelName: null,
@@ -1551,7 +1556,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = skill.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (
         isAgentGroupSelected(
           runtime.mode,
@@ -1750,7 +1755,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = pluginId.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (runtime.enabledPlugins.includes(normalized)) return state;
       return {
         runtimes: {
@@ -1802,7 +1807,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = mcpName.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (runtime.enabledMcps.includes(normalized)) return state;
       return {
         runtimes: {
@@ -2159,7 +2164,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   applyWorkflowUpdate: (sessionId, workflow) => {
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       return {
         runtimes: {
           ...state.runtimes,
@@ -2291,7 +2296,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           state.availableModelGroups,
         );
       }
-      return { availableModels: models, chatAvailableModels: chatModels, defaultModelName: selected, runtimes };
+      return {
+        availableModels: models,
+        modelsLoaded: true,
+        chatAvailableModels: chatModels,
+        defaultModelName: selected,
+        runtimes,
+      };
     });
   },
 

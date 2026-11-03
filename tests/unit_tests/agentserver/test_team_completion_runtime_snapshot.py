@@ -132,7 +132,9 @@ async def test_returned_output_segment_stays_busy_while_its_control_is_waiting()
     record.last_execution_id = "team-execution"
     record.interactions["approval"] = {"control_id": "approval"}
     bridge.events.finish(record.dispatch_id)
-    execution = team_execution(request.request_id, "waiting_for_control", waiting_control_id="approval")
+    execution = team_execution(
+        request.request_id, "waiting_for_control", waiting_control_ids=frozenset({"approval"}),
+    )
     dispatcher._runtime = SimpleNamespace(
         get_session_snapshot=lambda _: SimpleNamespace(executions=(execution,)),
     )

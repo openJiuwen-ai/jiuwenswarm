@@ -137,6 +137,42 @@ def test_different_installations_do_not_share_runtime_endpoint(monkeypatch):
     assert default_socket_path() != first
 
 
+@pytest.mark.parametrize("instance_variable", ["HOSTNAME", "JIUWENSWARM_RUNTIME_INSTANCE"])
+async def test_shared_data_instances_keep_independent_resident_workers(monkeypatch, tmp_path, instance_variable):
+    from jiuwenswarm.server.supervisor.identity import deployment_scope
+
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_INSTANCE", raising=False)
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(get_user_workspace_dir()))
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
+    monkeypatch.setenv("PYTHONPATH", str(SOURCE))
+    monkeypatch.setenv(instance_variable, "pod-one")
+    first_scope = deployment_scope()
+    first = RuntimeSupervisor(Readiness(), stub=True, max_restarts=0)
+    second = None
+    try:
+        await asyncio.wait_for(first.run_until_ipc_ready(), 15)
+        assert await first._readiness.wait_agent_ready(5)
+        first_process = psutil.Process(first.worker_pid)
+        first_created = first_process.create_time()
+        monkeypatch.setenv(instance_variable, "pod-two")
+        assert deployment_scope() != first_scope
+        second = RuntimeSupervisor(Readiness(), stub=True, max_restarts=0)
+        assert first._socket_path != second._socket_path
+        await asyncio.wait_for(second.run_until_ipc_ready(), 15)
+        assert await second._readiness.wait_agent_ready(5)
+        assert second.worker_pid != first.worker_pid
+        second_pid = second.worker_pid
+        await second.stop(terminate_worker=True)
+        assert not psutil.pid_exists(second_pid)
+        assert first_process.create_time() == first_created and first_process.is_running()
+    finally:
+        if second is not None:
+            await second.stop(terminate_worker=True)
+        monkeypatch.setenv(instance_variable, "pod-one")
+        await first.stop(terminate_worker=True)
+
+
 @pytest.mark.asyncio
 async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch, tmp_path):
     shim = tmp_path / "blocked-exit"
@@ -174,13 +210,14 @@ async def test_shutdown_ack_does_not_hide_a_surviving_worker_thread(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_stop_does_not_claim_a_different_installations_historical_endpoint(monkeypatch, tmp_path):
+@pytest.mark.parametrize("foreign_identity_key", ["JIUWENSWARM_RUNTIME_PROFILE", "JIUWENSWARM_RUNTIME_INSTANCE"])
+async def test_stop_does_not_claim_a_different_installations_historical_endpoint(monkeypatch, tmp_path, foreign_identity_key):
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_SOCKET", raising=False)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     suffix = "pipe" if os.name == "nt" else "sock"
     path = get_user_workspace_dir() / "run" / f"runtime-worker.{suffix}"
     path.parent.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "PYTHONPATH": str(SOURCE), "JIUWENSWARM_RUNTIME_PROFILE": "foreign-installation"}
+    env = {**os.environ, "PYTHONPATH": str(SOURCE), foreign_identity_key: "foreign-installation"}
     with (tmp_path / "foreign.stderr.log").open("wb") as stderr:
         process = subprocess.Popen([sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", str(path), "--stub"],
             env=env, cwd=SOURCE, stdout=stderr, stderr=stderr)

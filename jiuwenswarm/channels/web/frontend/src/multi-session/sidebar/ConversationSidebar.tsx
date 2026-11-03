@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, Code2, Palette, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { isEnterprise } from '../../edition';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
@@ -12,6 +13,7 @@ import {
   filterJobsForProject,
   type SidebarCronJob,
 } from '../../stores';
+import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
   getProjectNewLabel,
@@ -746,6 +748,7 @@ export function ConversationSidebar({
   onMouseLeave,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
+  const enterprise = isEnterprise();
   const { tooltip: conversationsTooltip, handlers: conversationsTooltipHandlers } = useAdaptiveTooltip();
   const { tooltip: newProjectTooltip, handlers: newProjectTooltipHandlers } = useAdaptiveTooltip({ align: 'left' });
   const runtimes = useChatStore((state) => state.runtimes);
@@ -804,10 +807,15 @@ export function ConversationSidebar({
 
   const switchWorkMode = async (nextMode: WorkMode) => {
     setWorkModeMenuOpen(false);
+    if (enterprise && nextMode !== 'work') return;
     if (nextMode === workMode) return;
     await setWorkMode(nextMode);
     onNew();
   };
+
+  useEffect(() => {
+    if (enterprise && workMode !== 'work') void setWorkMode('work');
+  }, [enterprise, workMode, setWorkMode]);
 
   const cronJobs = useCronStore((s) => s.jobs);
   const loadCronJobs = useCronStore((s) => s.loadJobs);
@@ -823,6 +831,24 @@ export function ConversationSidebar({
   useEffect(() => {
     if (peek) return;
     void loadCronJobs();
+  }, [peek, loadCronJobs]);
+
+  // 企业 HTTP：轻量轮询 list，只为发现 active_session_id（到点跑起来），
+  // 再交给后台 live；不在这里根据 last_session_id 标未读。
+  useEffect(() => {
+    if (peek || !shouldDiscoverCronActiveSessions()) return;
+    const reload = () => {
+      void loadCronJobs();
+    };
+    const intervalId = window.setInterval(reload, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [peek, loadCronJobs]);
 
   // 监听 agent 工具调用结果：当 cron 相关工具执行后刷新侧边栏定时任务
@@ -1215,7 +1241,7 @@ export function ConversationSidebar({
     );
   }
 
-  const hasPinnedSection = pinnedProjects.length > 0 || orderedPinnedSessions.length > 0;
+  const hasPinnedSection = (!enterprise && pinnedProjects.length > 0) || orderedPinnedSessions.length > 0;
 
   // peek（hover 预览）不带蒙层：蒙层属于"固定展开"态，peek 的消失由指针移开驱动
   const showOverlay = floating && !collapsed && !peek;
@@ -1241,21 +1267,24 @@ export function ConversationSidebar({
             <button
               type="button"
               className="conversation-sidebar__mode-trigger"
-              onClick={() => setWorkModeMenuOpen((open) => !open)}
-              aria-haspopup="menu"
-              aria-expanded={workModeMenuOpen}
+              onClick={() => {
+                if (!enterprise) setWorkModeMenuOpen((open) => !open);
+              }}
+              aria-haspopup={enterprise ? undefined : 'menu'}
+              aria-expanded={enterprise ? undefined : workModeMenuOpen}
+              style={enterprise ? { cursor: 'default' } : undefined}
               data-testid="multi-session-work-mode-trigger"
             >
-              <span data-testid="multi-session-work-mode-label" data-variant={workMode}>
-                {workMode === 'code'
+              <span data-testid="multi-session-work-mode-label" data-variant={enterprise ? 'work' : workMode}>
+                {!enterprise && workMode === 'code'
                   ? t('codeMode.code')
-                  : workMode === 'design'
+                  : !enterprise && workMode === 'design'
                     ? t('nav.design')
                     : t('codeMode.work')}
               </span>
-              <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />
+              {!enterprise && <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />}
             </button>
-            {workModeMenuOpen ? (
+            {!enterprise && workModeMenuOpen ? (
               <div className="conversation-sidebar__mode-menu" role="menu" data-testid="multi-session-work-mode-menu">
                 <button
                   type="button"
@@ -1360,7 +1389,7 @@ export function ConversationSidebar({
                       projectMenu: Boolean(project && !isDefaultProject(project)),
                     });
                   })}
-                  {pinnedProjects.map((project) => renderProject(project))}
+                  {!enterprise && pinnedProjects.map((project) => renderProject(project))}
                 </div>
               </div>
             ) : null}
@@ -1379,6 +1408,7 @@ export function ConversationSidebar({
                 </div>
               </div>
             ) : null}
+            {!enterprise && (
             <div
               className="conversation-sidebar__group conversation-sidebar__project-add"
               ref={addMenuRef}
@@ -1430,6 +1460,7 @@ export function ConversationSidebar({
                 {regularProjects.map((project) => renderProject(project))}
               </div>
             </div>
+            )}
             <div
               className="conversation-sidebar__group conversation-sidebar__group--conversations"
               data-testid="multi-session-conversations-group"

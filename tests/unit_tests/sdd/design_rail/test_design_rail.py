@@ -1089,7 +1089,7 @@ def test_analysis_skill_constraint_has_chunked_write_hard_rule(tmp_path: Path) -
     constraint = payload[constraint_start:constraint_end]
 
     assert "HARD RULE" in constraint
-    assert "2000 characters" in constraint
+    assert "3000 characters" in constraint
     assert "Chunked file writes" in constraint
     assert "Unterminated string" in constraint
 
@@ -1106,6 +1106,6 @@ def test_design_skill_constraint_has_chunked_write_hard_rule(tmp_path: Path) -> 
     constraint = payload[constraint_start:constraint_end]
 
     assert "HARD RULE" in constraint
-    assert "2000 characters" in constraint
+    assert "3000 characters" in constraint
     assert "mermaid" in constraint.lower()
     assert "Unterminated string" in constraint

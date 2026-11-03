@@ -187,7 +187,11 @@ async def test_busy_ordinary_session_accepts_its_applied_stable_model(router, ki
     child.busy = True
     before = deepcopy(metadata)
 
-    assert await parent._get_or_create_session_adapter("chat-a", model_selection=selection) is child
+    if kind == "cron" and selection["type"] == "model_group":
+        with pytest.raises(ValueError, match="only support a single model"):
+            await parent._get_or_create_session_adapter("chat-a", model_selection=selection)
+    else:
+        assert await parent._get_or_create_session_adapter("chat-a", model_selection=selection) is child
     assert child._collaboration_model_selection is None
     assert metadata == before
     assert len(built) == 1
@@ -286,14 +290,18 @@ async def test_ordinary_model_never_enhances_and_bool_cannot_bypass_disabled_fla
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["team", "cron"])
-async def test_team_and_cron_group_continue_ordinary_routing(router, kind):
+async def test_team_group_routes_normally_and_cron_rejects_group(router, kind):
     parent, config, _, _, _ = router
     config["experimental"]["multi_model_collaboration_enabled"] = False
     if kind == "team":
         parent._session_instance_mode = "team"
     else:
         parent._is_cron_execution_session = lambda _: True
-    assert (await parent._get_or_create_session_adapter("ordinary", model_selection=GROUP))._moa_enabled is False
+    if kind == "cron":
+        with pytest.raises(ValueError, match="only support a single model"):
+            await parent._get_or_create_session_adapter("ordinary", model_selection=GROUP)
+    else:
+        assert (await parent._get_or_create_session_adapter("ordinary", model_selection=GROUP))._moa_enabled is False
 
 
 @pytest.mark.asyncio

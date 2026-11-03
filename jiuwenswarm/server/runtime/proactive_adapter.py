@@ -211,7 +211,7 @@ async def trigger_main_agent(
     )
 
     # fire-and-forget：主 agent 跑一轮 + 流式推前端这一段可能很慢（LLM + 工具调用 +
-    # post_run 持久化），如果串行 await 会把调用方（_handle_proactive_tick → cron）一起拖到
+    # post_run 持久化），如果串行 await 会把调用方（handle_proactive_tick → cron）一起拖到
     # 600 秒超时。这里把它丢后台 task，立即返回 True（表示"已触发"），让 cron 秒回。
     # 推荐内容本来就走 server.send_push 独立流式推前端，不依赖 cron 的请求-响应通道。
     inflight_key = f"{cid}:{session_id}"

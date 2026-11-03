@@ -1,8 +1,9 @@
 # Runtime Worker shutdown, upgrades, and recovery
 
-A resident Worker keeps Runtime loaded across Front restarts. The application or service owner controls final shutdown.
+A resident Worker keeps Runtime loaded across Front restarts for desktop and ordinary services. The application or service owner controls final shutdown. HarmonyOS defaults to `front_loopback`: its Worker exits when the Front disconnects and does not use resident endpoint election or reattachment. Both modes verify actual process exit at final shutdown.
 
-- A normal Front restart or Supervisor `stop()` detaches and preserves the Worker.
+- In resident mode, a normal Front restart or Supervisor `stop()` detaches and preserves the Worker.
+- In HarmonyOS's default `front_loopback` mode, Supervisor `stop()` shuts down and reaps its attached Worker.
 - Final desktop exit and upgrade stop the Front, then explicitly drain the current deployment's Worker, including a reattached Worker.
 - Closing a macOS window retains the existing hide/background behavior. Quit performs final cleanup.
 - OS termination, power loss, and interpreter crashes cannot guarantee cleanup. The next launch validates identity and handles old endpoints.
@@ -10,6 +11,8 @@ A resident Worker keeps Runtime loaded across Front restarts. The application or
 Endpoints are scoped by installation, Python environment, data directory, and runtime profile. HELLO validates code/build identity, installed dependencies, and process creation time. Changed source, dependencies, or native build instances cannot silently reuse old code. Each wheel or native backend build receives a fresh ID, even with identical inputs. Wheels validate contents at build time; startup reads the artifact manifest and observes installed dependencies. Source checkouts continue content validation.
 
 Successful shutdown requires a successful acknowledgement and observed PID exit. Forced termination, missing acknowledgements, and negative acknowledgements report failure. Install helpers also require this update attempt's successful shutdown receipt before replacing backend files. Legacy peers without acknowledgement support use verified process exit as their compatibility condition.
+
+Instances sharing a data directory retain distinct endpoint and deployment identities through `JIUWENSWARM_RUNTIME_INSTANCE` (preferred) or `HOSTNAME`. Stop commands must retain that instance's environment. Historical Workers owned by another instance are left running.
 
 `jiuwenswarm-stop` manages the state created by `jiuwenswarm-start debug`. Failed cleanup preserves that state for retry; no debug state remains a no-op. For a regular wheel service, stop its Front through its terminal/service manager, then use the same installation environment:
 

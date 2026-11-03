@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { transformSync } from 'esbuild';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import {
@@ -10,6 +11,7 @@ import {
 } from '../node_modules/.cache/agent-group-management/port.js';
 import {
   buildGroupCatalogViewModel,
+  collectCategories,
   mergeAgentGroupDetailWithCatalog,
 } from '../node_modules/.cache/agent-group-management/viewModel.js';
 import {
@@ -161,23 +163,36 @@ test('group view model separates catalog and mine scopes and excludes tags from 
     installed: false,
   }, 'zh');
   const item = normalizeAgentGroupListItem(rawGroup, 'zh');
+  // 分类页签改由已加载数据动态统计（#5902）：category 直接与后端自由字符串比对，
+  // 不再映射写死的 ProductDevelopment 等枚举别名；市场有几个分类出几个页签，
+  // 不截断、不自建 "Other" 聚合类型。
+  assert.deepEqual(collectCategories(['engineering', 'research', 'engineering', '']), ['engineering', 'research']);
+  assert.equal(
+    collectCategories(['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7']).length,
+    7,
+  );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'catalog',
-      category: 'ProductDevelopment',
+      category: 'engineering',
       query: '',
-      page: 1,
-      pageSize: 15,
     }).totalItems,
     1,
+  );
+  // 不存在的分类精确比对后为空，不再归入"其他"兜底分组。
+  assert.equal(
+    buildGroupCatalogViewModel([item, local], {
+      scope: 'catalog',
+      category: 'research',
+      query: '',
+    }).totalItems,
+    0,
   );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'mine',
       category: '',
       query: '本地团队',
-      page: 1,
-      pageSize: 15,
     }).totalItems,
     1,
   );
@@ -260,23 +275,38 @@ test('catalog filtering keeps description matches while mine excludes them', () 
   assert.equal(buildGroupCatalogViewModel([item], { ...options, scope: 'mine' }).totalItems, 0);
 });
 
-test('chat group picker submits runtime package names and keeps selection checked', () => {
+test('chat group picker submits runtime names only after runtime availability checks', async () => {
   const source = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
   const picker = source.slice(source.indexOf('filteredGroupOptions.map((item) => {'));
-  const handler = picker.match(/onClick=\{\(\) => \{([\s\S]*?)\}\}/)[1];
+  const body = picker.match(/onClick=\{async \(\) => \{([\s\S]*?)\}\}/)[1];
+  const handler = transformSync(`async function select() {${body}}`, { loader: 'ts' }).code;
   const selectedExpression = picker.match(/const isSelected = ([^;]+);/)[1];
-  for (const item of [
-    { id: 'hub-asset-uuid', name: 'presentation-generation' },
-    { id: 'local-team', name: 'local-team' },
-  ]) {
-    let intent;
-    new Function('item', 'agentGroupSelectionDisabled', 'activeSessionId', 'useSessionStore',
-      'setAgentGroupSelectionIntent', 'setAgentSelectionIntent', 'clearSelectedSkills', 'setAttachMenuOpen', handler)(
-      item, false, 'new', { getState: () => ({ setMode() {} }) },
-      (_session, value) => { intent = value; }, () => {}, () => {}, () => {},
-    );
-    assert.deepEqual(buildAgentGroupSelectionPayloadForMode('team', intent), { agent_group_name: item.name });
-    assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
+  for (const disabled of [[], ['codex']]) {
+    for (const item of [
+      { id: 'hub-asset-uuid', name: 'presentation-generation' },
+      { id: 'local-team', name: 'local-team' },
+    ]) {
+      let intent;
+      let notice;
+      const requests = [];
+      const select = new Function('item', 'agentGroupSelectionDisabled', 'activeSessionId', 'useSessionStore',
+        'setAgentGroupSelectionIntent', 'setAgentSelectionIntent', 'clearSelectedSkills', 'setAttachMenuOpen',
+        'webRequest', 'setGroupRuntimeNotice', 't', `${handler}; return select;`)(
+        item, false, 'new', { getState: () => ({ setMode() {} }) },
+        (_session, value) => { intent = value; }, () => {}, () => {}, () => {},
+        async (method, params) => { requests.push([method, params]); return { group: { disabledRuntimes: disabled } }; },
+        (value) => { notice = value; }, (key) => key,
+      );
+      await select();
+      assert.deepEqual(requests, [['agent_groups.show', { id: item.id }]]);
+      if (disabled.length) {
+        assert.equal(intent, undefined);
+        assert.equal(notice, 'chat.agentGroupRuntimeDisabled');
+      } else {
+        assert.deepEqual(buildAgentGroupSelectionPayloadForMode('team', intent), { agent_group_name: item.name });
+        assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
+      }
+    }
   }
 });
 

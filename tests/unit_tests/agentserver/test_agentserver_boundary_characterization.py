@@ -21,7 +21,6 @@ from jiuwenswarm.server.runtime.agent_adapter import (
     interface_deep as interface_deep_module,
 )
 
-
 RUNTIME_EXTRACTED = hasattr(AgentWebSocketServer, "_execution_runtime")
 
 
@@ -116,7 +115,10 @@ class CharacterizationServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_switch(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_switch
+
+        await handle_session_switch(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_session_fork_for_test(
         self,
@@ -124,7 +126,10 @@ class CharacterizationServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_fork(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.bootstrap import handle_session_fork
+
+        await handle_session_fork(build_ws_request_context(self, ws, request, send_lock))
 
 
 class RecordingAgent:
@@ -760,6 +765,45 @@ async def test_manual_cancel_sends_result_without_cleaning_session(
         "event_type": "chat.interrupt_result",
         "success": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_cancel_stops_a_streamed_answer_that_names_no_mode_to_a_plan_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace: list[str] = []
+    agent = RecordingAgent(trace)
+    server, _, runtime = make_server(trace, agent=agent)
+    configure_message_path(monkeypatch, server, trace, agent)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *_args, **_kwargs: {"mode": "agent.plan"},
+    )
+    resumed = asyncio.Event()
+
+    async def resumed_turn(*_args: Any, **_kwargs: Any):
+        resumed.set()
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
+
+    runtime.stream = resumed_turn
+    answer = AgentRequest(
+        request_id="plan-answer", channel_id="tui", session_id="plan-session", req_method=ReqMethod.CHAT_SEND,
+        is_stream=True, params={"request_id": "q-1", "source": "ask_user_interrupt",
+                                "answers": [{"selected_options": ["yes"]}]},
+    )
+    answering = asyncio.create_task(server._handle_stream_impl(RecordingWebSocket(trace), answer, asyncio.Lock()))
+    await asyncio.wait_for(resumed.wait(), 2)
+
+    await server.handle_message_for_test(
+        RecordingWebSocket(trace),
+        request_wire(request_id="stop", method=ReqMethod.CHAT_CANCEL, session_id="plan-session",
+                     params={"intent": "cancel", "session_id": "plan-session"}),
+        asyncio.Lock(),
+    )
+
+    assert answering.done()
+    answering.cancel()
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,7 @@ from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
 from gateway.common.scheduled_task_policy import is_scheduled_task_supported
 from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.cron_events import CRON_RUN_UPDATED_EVENT, CRON_SESSION_STREAM_KEY, cron_notification_scope
 from gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
     resolve_dingtalk_push_metadata,
@@ -32,25 +34,90 @@ from gateway.cron.models import (
 from gateway.cron.store_base import CronJobStoreBackend
 from gateway.message_handler.message_handler import MessageHandler
 from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
-from gateway.runtime.cron.cron_expr import next_cron_datetime
+from gateway.runtime.cron.cron_expr import is_croniter_no_next_date, next_cron_datetime
 from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
+from gateway.common.request_identity import apply_routing_metadata
 
 logger = logging.getLogger(__name__)
+
+
+def _cron_routing_metadata(
+    job: CronJob,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """把任务上的用户、群、机器人写进请求身份。
+
+    企业版执行聊天前会核对这三个值。用户放在身份顶层，群和机器人放在
+    routing 里。不写进聊天内容本身。
+    """
+    return apply_routing_metadata(
+        {**(metadata or {}), "app_id": _execution_app_id(job)},
+        {
+            "user_id": str(job.user_id or "").strip(),
+            "group_id": str(job.group_id or "").strip(),
+            "bot_id": str(job.bot_id or "").strip(),
+        },
+    )
+
+
+def _is_local_cron_path(path: Path) -> bool:
+    """库表记号 ``db://cron_job`` 会被拆成目录名 ``db:``，那不是本机上的任务文件。"""
+    for part in path.parts:
+        if part.endswith(":"):
+            return False
+    return True
+
+
+def _cron_lifecycle_source(store: object) -> Path:
+    """登记簿跟任务文件放在一起。库里的任务没有本机文件，就用默认的那份位置。"""
+    source = getattr(store, "path", None)
+    if isinstance(source, Path) and _is_local_cron_path(source):
+        return source
+    from gateway.common.paths import get_cron_jobs_path
+
+    return get_cron_jobs_path()
+
+
+def _is_web_cron_job(job: CronJob) -> bool:
+    """Only ordinary Web jobs use the shared chat lifecycle."""
+    return str(job.targets or "").strip() == "web" and job.mode != "proactive.tick"
+
+
+def _execution_app_id(job: CronJob) -> str:
+    return job.app_id or ("default" if _is_web_cron_job(job) else "")
 
 # 需要用户作答才能继续的中断事件。cron 执行会话是无人值守的（``common/cron_session.py``
 # 明确 cron 运行"另一端没有操作者"），这类事件一旦出现就没有人能回答，本轮不可能
 # 再产出结果，必须立刻以失败收场，而不是让 job 挂到超时。取值与 CLI/前端判定
 # "需要用户输入"的事件集合对齐（``channels/cli/events.py:needs_user_input``，
-# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点）。
+# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点；以及客户端工具调用：
+# cron 会话没有连接的客户端去执行它）。
 CRON_INTERRUPT_EVENT_TYPES = frozenset(
     {
         "chat.ask_user_question",
+        "chat.client_tool_request",
         "plan.approval_required",
         "harness.activate_interaction",
     }
 )
 
 CRON_INTERRUPT_RESULT_TEXT = "[cron] 任务执行遇到审批中断，未返回结果内容"
+
+# 调度器自己收智能体的流时，这些帧要进正在看的执行会话直播。
+# 终稿单独放：直播里先有终稿，页面再用它盖住逐字拼出来的正文。
+_CRON_LIVE_FORWARD_EVENTS = frozenset({
+    "chat.reasoning",
+    "chat.delta",
+    "chat.tool_call",
+    "chat.tool_update",
+    "chat.tool_result",
+    "chat.processing_status",
+    "chat.ask_user_question",
+    "chat.usage_summary",
+})
+_CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({
+    "chat.final", "chat.error", CRON_RUN_UPDATED_EVENT,
+})
 
 
 def _is_cron_interrupt_event(event_type: str) -> bool:
@@ -349,16 +416,13 @@ class CronSchedulerService:
         self._project_admission_revisions: dict[str, int] = {}
         self._lifecycle_owners: set[str] = {""}
         from gateway.cron.lifecycle_owners import LifecycleOwners
-        # Lifecycle ownership 是 Gateway 侧路由元数据，原本与 cron_jobs.json 同目录。
-        # etcd/HA 后端没有本地文件，退化为本机默认路径（每个 Gateway 各持一份）。
-        lifecycle_source = getattr(store, "path", None)
-        if lifecycle_source is None:
-            from gateway.common.paths import get_cron_jobs_path
-
-            lifecycle_source = get_cron_jobs_path()
-        self._lifecycle_owner_store = LifecycleOwners(lifecycle_source)
+        # 登记谁跑过任务，方便网关重启后还能找到这个人。跟任务文件放在一起。
+        # 企业版任务在数据库里，path 只是 ``db://cron_job`` 这个记号，不能当成文件夹。
+        self._lifecycle_owner_store = LifecycleOwners(_cron_lifecycle_source(store))
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
         self._run_tasks: dict[str, asyncio.Task] = {}
+        # 企业版库表认领成功的 run_id。推送时只放行这些，避免没抢到的机器也推结果。
+        self._claimed_run_ids: set[str] = set()
         # run_id -> job_id.  A run skipped during crash recovery must stay
         # suppressed across later store reloads; otherwise a reload after the
         # boot grace period could schedule the same orphaned wake again.
@@ -368,6 +432,367 @@ class CronSchedulerService:
         self._store_poll_interval: float = 5.0  # seconds
         self._boot_time: float = now_fn()
         self._watch_task: asyncio.Task | None = None
+        # 任务编号 -> (到期时间, 还在等的会话)。人还没点完时，到点不再开一轮。
+        # 三份网关同时在跑，本机这份记不住别的机器上停住的题，所以再抄一份到 Redis。
+        self._permission_hold: dict[str, tuple[float, str]] = {}
+
+    @staticmethod
+    def _redis_hold_required() -> bool:
+        """多份网关一起跑时，这张纸条必须以 Redis 为准。Redis 读不到就先别开新的一轮。"""
+        try:
+            from gateway.extensions.redis.redis_runtime import get_declared_deployment_mode
+
+            mode = str(get_declared_deployment_mode() or "").strip().lower()
+            return mode in {"distributed", "active-standby"}
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _should_park_manual_approval(state: CronRunState | None) -> bool:
+        """企业版里、人手点的「立即执行」遇到提问先停住。
+
+        到点自己跑、以及个人版，对面没有人点，仍然马上失败，不往 Redis 写纸条。
+        """
+        if state is None or not state.manually_triggered:
+            return False
+        from gateway.enterprise import is_enterprise
+
+        return is_enterprise()
+
+    @staticmethod
+    def _is_approval_pause_frame(event_type: str, payload: dict | None) -> bool:
+        if _is_cron_interrupt_event(event_type):
+            return True
+        if str(event_type or "").strip() == "chat.invocation_paused":
+            return True
+        return isinstance(payload, dict) and payload.get("awaiting_user_input") is True
+
+    def _get_active_permission_hold(self, job_id: str) -> tuple[float, str] | None:
+        item = self._permission_hold.get(job_id)
+        if item is None:
+            return None
+        until, session_id = item
+        if self._now_fn() >= until:
+            self._permission_hold.pop(job_id, None)
+            return None
+        return until, str(session_id or "").strip()
+
+    def _permission_hold_session(self, job_id: str) -> str:
+        held = self._get_active_permission_hold(job_id)
+        return held[1] if held is not None else ""
+
+    async def _permission_hold_session_async(self, job_id: str) -> tuple[str, str]:
+        """返回 ``(会话编号, 从哪读到的)``。
+
+        来源是空串、``local``、``redis``，或者 Redis 该读却读不到时的
+        ``__hold_unknown__``。本机有记录就用本机的；没有再问 Redis。
+        """
+        local = self._permission_hold_session(job_id)
+        if not self._redis_hold_required():
+            if local:
+                return local, "local"
+            return "", ""
+        # 三份网关里，人可能在另一份上点完。Redis 没了，本机这份也作废。
+        try:
+            from gateway.extensions.redis.redis_keys import cron_permission_hold_rel
+            from gateway.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                logger.warning(
+                    "[Cron] permission hold redis unavailable (fail-closed) job=%s",
+                    job_id,
+                )
+                return "__hold_unknown__", "__hold_unknown__"
+            raw = await client.get(cron_permission_hold_rel(job_id))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis read failed (fail-closed) job=%s",
+                job_id,
+                exc_info=True,
+            )
+            return "__hold_unknown__", "__hold_unknown__"
+        if raw is None:
+            if local:
+                self._permission_hold.pop(str(job_id or "").strip(), None)
+            return "", ""
+        if isinstance(raw, (bytes, bytearray)):
+            text = bytes(raw).decode("utf-8", errors="replace").strip()
+        else:
+            text = str(raw or "").strip()
+        if not text:
+            if local:
+                self._permission_hold.pop(str(job_id or "").strip(), None)
+            return "", ""
+        return text, "redis"
+
+    async def _permission_hold_blocks_new_run(self, job_id: str) -> bool:
+        """到点或再点一次立即执行时，这题是不是还停在等人点。"""
+        sid, source = await self._permission_hold_session_async(job_id)
+        if not sid:
+            return False
+        if sid == "__hold_unknown__":
+            return True
+        # 别的网关写进 Redis 的纸条，本机任务表里看不到，不能当成过期清掉。
+        # 过期靠 Redis 自己的倒计时。
+        if source == "local" and self._is_orphan_permission_hold(job_id, sid):
+            self._clear_permission_hold_for_job(
+                job_id, session_id=sid, reason="wake_orphan_hold",
+            )
+            return False
+        return True
+
+    def _find_awaiting_approval_run_id(self, job_id: str, session_id: str = "") -> str:
+        sid = str(session_id or "").strip()
+        for run_id, state in self._runs.items():
+            if state.job_id != job_id or state.status != "awaiting_approval":
+                continue
+            if sid and str(state.exec_session_id or "").strip() != sid:
+                continue
+            return run_id
+        return f"{job_id}:awaiting_approval"
+
+    def _is_orphan_permission_hold(self, job_id: str, held_session_id: str) -> bool:
+        """纸条还在，但这台机器上已经没有停住或还在跑的那一轮。
+
+        人已经点完、页面也跑完了，纸条却没擦掉时，再点立即执行会一直回到旧会话。
+        真还在等的时候，本机一定有一轮状态是 awaiting_approval，不能当成过期。
+        """
+        sid = str(held_session_id or "").strip()
+        jid = str(job_id or "").strip()
+        if not jid or not sid:
+            return False
+        for state in self._runs.values():
+            if str(getattr(state, "job_id", "") or "").strip() != jid:
+                continue
+            status = str(getattr(state, "status", "") or "")
+            exec_sid = str(getattr(state, "exec_session_id", "") or "").strip()
+            if status == "awaiting_approval" and (not sid or exec_sid == sid):
+                return False
+            if exec_sid == sid and status == "running":
+                return False
+        return True
+
+    def _clear_permission_hold_for_job(
+        self, job_id: str, *, session_id: str = "", reason: str = "",
+    ) -> None:
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        self._permission_hold.pop(jid, None)
+        self._schedule_hold_redis_clear(jid, session_id=session_id)
+        sid = str(session_id or "").strip()
+        if sid:
+            try:
+                from gateway.cron.live_bus import cron_live_bus
+
+                cron_live_bus.clear_session(sid)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Cron] clear live after hold clear failed session=%s",
+                    sid,
+                    exc_info=True,
+                )
+        if reason:
+            logger.info(
+                "[Cron] cleared permission hold job=%s session=%s reason=%s",
+                jid, sid or "-", reason,
+            )
+
+    def _hold_job_for_permission(self, job: CronJob, exec_session_id: str) -> None:
+        timeout = float(resolve_cron_job_timeout_seconds(job))
+        sid = str(exec_session_id or "")
+        self._permission_hold[job.id] = (self._now_fn() + timeout, sid)
+        self._schedule_hold_redis_write(job.id, sid, int(max(1, timeout)))
+
+    def _schedule_hold_redis_write(self, job_id: str, session_id: str, ttl: int) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._redis_write_permission_hold(job_id, session_id, ttl))
+
+    async def _redis_write_permission_hold(
+        self, job_id: str, session_id: str, ttl: int,
+    ) -> None:
+        if not self._redis_hold_required():
+            return
+        try:
+            from gateway.extensions.redis.redis_keys import (
+                cron_permission_hold_by_session_rel,
+                cron_permission_hold_rel,
+            )
+            from gateway.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                logger.warning(
+                    "[Cron] permission hold redis write skipped (no client) job=%s",
+                    job_id,
+                )
+                return
+            await client.set(
+                cron_permission_hold_rel(job_id),
+                session_id,
+                ttl_seconds=ttl,
+            )
+            if session_id:
+                await client.set(
+                    cron_permission_hold_by_session_rel(session_id),
+                    job_id,
+                    ttl_seconds=ttl,
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis write failed job=%s",
+                job_id,
+                exc_info=True,
+            )
+
+    def _schedule_hold_redis_clear(
+        self, job_id: str, *, session_id: str = "",
+    ) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            self._redis_clear_permission_hold(job_id, session_id=session_id)
+        )
+
+    async def _redis_clear_permission_hold(
+        self, job_id: str, *, session_id: str = "",
+    ) -> None:
+        if not self._redis_hold_required():
+            return
+        try:
+            from gateway.extensions.redis.redis_keys import (
+                cron_permission_hold_by_session_rel,
+                cron_permission_hold_rel,
+            )
+            from gateway.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                logger.warning(
+                    "[Cron] permission hold redis clear skipped (no client) job=%s",
+                    job_id,
+                )
+                return
+            await client.delete(cron_permission_hold_rel(job_id))
+            sid = str(session_id or "").strip()
+            if sid:
+                await client.delete(cron_permission_hold_by_session_rel(sid))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis clear failed job=%s",
+                job_id,
+                exc_info=True,
+            )
+
+    def _schedule_hold_redis_clear_by_session(self, session_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._redis_clear_permission_hold_by_session(session_id))
+
+    async def _redis_clear_permission_hold_by_session(self, session_id: str) -> None:
+        if not self._redis_hold_required():
+            return
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        try:
+            from gateway.extensions.redis.redis_keys import (
+                cron_permission_hold_by_session_rel,
+                cron_permission_hold_rel,
+            )
+            from gateway.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return
+            raw = await client.get(cron_permission_hold_by_session_rel(sid))
+            if raw is None:
+                return
+            if isinstance(raw, (bytes, bytearray)):
+                job_id = bytes(raw).decode("utf-8", errors="replace").strip()
+            else:
+                job_id = str(raw or "").strip()
+            if job_id:
+                await client.delete(cron_permission_hold_rel(job_id))
+            await client.delete(cron_permission_hold_by_session_rel(sid))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis clear-by-session failed session=%s",
+                sid,
+                exc_info=True,
+            )
+
+    def release_permission_hold_for_session(self, session_id: str) -> None:
+        """人点完、续跑也结束了：擦掉纸条，并清掉直播里还留着的提问卡回放。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        released_jobs: list[str] = []
+        for job_id, (_until, held_sid) in list(self._permission_hold.items()):
+            if held_sid == sid:
+                self._permission_hold.pop(job_id, None)
+                released_jobs.append(job_id)
+        for job_id in released_jobs:
+            self._schedule_hold_redis_clear(job_id, session_id=sid)
+        if not released_jobs:
+            for state in list(self._runs.values()):
+                if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
+                    continue
+                self._schedule_hold_redis_clear(state.job_id, session_id=sid)
+                released_jobs.append(state.job_id)
+            if not released_jobs:
+                self._schedule_hold_redis_clear_by_session(sid)
+        if not released_jobs and not self._redis_hold_required():
+            return
+        try:
+            from gateway.cron.live_bus import cron_live_bus
+
+            cron_live_bus.clear_session(sid)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] clear live replay after permission release failed session=%s",
+                sid,
+                exc_info=True,
+            )
+
+    def mark_permission_resume_succeeded(self, session_id: str) -> None:
+        """人点允许之后这一轮写完了：本机把状态改成已完成，并擦掉 Redis 上的纸条。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        finished_job_ids: set[str] = set()
+        for state in list(self._runs.values()):
+            if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
+                continue
+            if state.status == "awaiting_approval":
+                state.status = "succeeded"
+                state.finished_at = self._now_fn()
+                job_id = str(getattr(state, "job_id", "") or "").strip()
+                if job_id:
+                    finished_job_ids.add(job_id)
+                job = self._jobs.get(state.job_id)
+                if job is not None and _is_web_cron_job(job):
+                    asyncio.create_task(self._notify_web_run(job, state, phase="finished"))
+        # 审批续跑收尾：擦掉 active_session，避免多副本 list 一直当「进行中」
+        for job_id in finished_job_ids:
+            asyncio.create_task(self.clear_active_exec_session(job_id))
+        self.release_permission_hold_for_session(sid)
 
     async def _sync_store_revision(self) -> None:
         """Snapshot current store revision to avoid redundant reloads."""
@@ -484,6 +909,11 @@ class CronSchedulerService:
             "session_id": target_session_id,
             "cron": {"job_id": state.job_id, "run_id": state.run_id},
         }
+        if channel_id == "web" and reason in {"timeout", "interrupt"}:
+            cancel_params["target_request_id"] = state.exec_request_id or f"cron-{state.run_id}"
+            cancel_params["request_id"] = cancel_params["target_request_id"]
+            if state.exec_execution_id:
+                cancel_params["expected_execution_id"] = state.exec_execution_id
         if strict:
             cancel_params["wait_for_stop"] = True
         if project_id:
@@ -500,14 +930,22 @@ class CronSchedulerService:
                 is_stream=False,
                 timestamp=self._now_fn(),
                 user_id=user_id or None,
+                metadata=apply_routing_metadata(
+                    {"app_id": state.exec_app_id or getattr(job, "app_id", "") or ""},
+                    {"user_id": user_id, "group_id": state.exec_group_id or getattr(job, "group_id", ""),
+                     "bot_id": state.exec_bot_id or getattr(job, "bot_id", "")},
+                ),
             )
             response = (
                 await self._agent_client.send_request(interrupt_env, timeout=30)
                 if strict else await self._agent_client.send_request(interrupt_env)
             )
-            if strict:
-                payload = response.payload if isinstance(response.payload, dict) else {}
-                if not response.ok or payload.get("success") is not True:
+            payload = response.payload if isinstance(response.payload, dict) else {}
+            if strict or payload.get("stop_confirmed") is False:
+                if (
+                    not response.ok or payload.get("success") is not True
+                    or payload.get("stop_confirmed") is False
+                ):
                     raise RuntimeError(payload.get("error") or payload.get("message") or "cron stop was not confirmed")
             logger.info(
                 "[Cron] AgentServer interrupt sent (%s): "
@@ -689,6 +1127,7 @@ class CronSchedulerService:
             self._runs.pop(rid, None)
 
         now = self._now_fn()
+        use_db_schedule = self._use_db_schedule()
         # Retain a suppression for as long as its job exists.  The remote
         # AgentServer task can outlive its push deadline, and using that
         # deadline for cleanup would allow a later reload to duplicate it.
@@ -708,7 +1147,12 @@ class CronSchedulerService:
                 )
                 continue
             try:
-                push_dt, wake_dt, run_id = self._compute_next_run(job, now_ts=now)
+                if use_db_schedule:
+                    push_dt, wake_dt, run_id = await self._next_run_from_db(job)
+                    if push_dt is None:
+                        continue
+                else:
+                    push_dt, wake_dt, run_id = self._compute_next_run(job, now_ts=now)
             except Exception as exc:  # noqa: BLE001
                 if self._is_croniter_no_next_date(exc):
                     # A one-shot may be more than the missed-trigger window late
@@ -774,7 +1218,10 @@ class CronSchedulerService:
             in_boot_grace = (now - self._boot_time) < self._CRASH_RECOVERY_GRACE_SECONDS
             crash_recovery_skip = run_id in self._crash_recovery_skipped_runs
             crash_recovery_candidate = (
-                existing is None and wake_already_passed and in_boot_grace
+                not use_db_schedule
+                and existing is None
+                and wake_already_passed
+                and in_boot_grace
             )
             if not crash_recovery_skip and crash_recovery_candidate:
                 crash_recovery_skip = True
@@ -822,21 +1269,40 @@ class CronSchedulerService:
         )
         self._hiding_projects.discard(project_id)
 
-    async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
-        if not project_id or project_id in {"default", "default_code"}:
-            return True
+    async def project_execution_allowed(
+        self,
+        project_id: str | None,
+        user_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+    ) -> bool:
         # 默认项目没有可恢复的生命周期资源,不必为它做文件锁 + 读盘的属主
         # 登记;真实项目仍在准入查询前登记,保证重启后能路由回属主。
         self.remember_lifecycle_owner(user_id)
         if project_id in self._hiding_projects:
             return False
+        if not project_id or project_id in {"default", "default_code"}:
+            return True
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
         _t0 = time.monotonic()
+        # 企业版冷启动 Agent Pod 启动常超过 10s；超时会取消在飞部署并删除正在启动的 Agent Pod。
+        # 个人版保持 10s；企业版放宽到 60s 盖过冷启。
+        gate_timeout_s = 60.0 if is_enterprise() else 10.0
+        # 三个身份一起带上，Agent 才打开这个用户的工作区，而不是 default 空目录。
         ok, payload = await fetch_agent_unary(
             agent_client=self._agent_client, req_method=ReqMethod.PROJECT_LIFECYCLE,
             params={"project_id": project_id}, session_id=None, user_id=user_id,
-            channel_id="__cron__", timeout_seconds=10,
+            channel_id="__cron__", timeout_seconds=gate_timeout_s,
+            metadata=apply_routing_metadata(
+                None,
+                {
+                    "user_id": user_id or "",
+                    "group_id": group_id or "",
+                    "bot_id": bot_id or "",
+                },
+            ),
         )
         # 计时供 issue #4885 观察闸门 RPC 的耗时分布：>500ms 升 info，
         # 线上默认日志级别可见，作为是否需要准入缓存（第二步）的判断依据。
@@ -959,16 +1425,67 @@ class CronSchedulerService:
         info = await self.trigger_run_now_info(job_id)
         return str(info["run_id"])
 
-    async def trigger_run_now_info(self, job_id: str) -> dict[str, str]:
+    async def trigger_run_now_info(self, job_id: str) -> dict[str, Any]:
         job_id = str(job_id or "").strip()
+        # 上一轮还停在提问上：再点立即执行回到原来的会话，不要新开一个空的。
+        # 纸条在本机和 Redis 各有一份。Redis 该读却读不到时，拒绝再开一轮。
+        held_sid, hold_source = await self._permission_hold_session_async(job_id)
+        if held_sid == "__hold_unknown__":
+            raise RuntimeError(
+                "cron permission hold state unavailable; refusing new run (fail-closed)"
+            )
+        if held_sid:
+            if hold_source == "local" and self._is_orphan_permission_hold(
+                job_id, held_sid,
+            ):
+                self._clear_permission_hold_for_job(
+                    job_id,
+                    session_id=held_sid,
+                    reason="run_now_orphan_hold",
+                )
+            else:
+                held_run_id = self._find_awaiting_approval_run_id(job_id, held_sid)
+                logger.info(
+                    "[Cron] run_now reuses pending approval session job=%s "
+                    "run_id=%s session_id=%s source=%s",
+                    job_id,
+                    held_run_id,
+                    held_sid,
+                    hold_source,
+                )
+                return {
+                    "run_id": held_run_id,
+                    "session_id": held_sid,
+                    "awaiting_approval": True,
+                    "reused_pending_session": True,
+                }
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
+        # Reject before allocating a session: the wake handler drops disabled
+        # jobs, so accepting here would leave an empty execution session behind.
+        # The Web panel already disables these buttons; the API/TUI callers need
+        # the same contract.  proactive.tick stays manually runnable in both
+        # checks: its enable switch is owned by settings, and an expired
+        # schedule (no next fire time) stops the ticks, not a manual probe —
+        # the wake branch likewise gates it on enabled alone.
+        if job.expired and normalize_cron_job_mode(job.mode) != "proactive.tick":
+            raise ValueError("任务已过期，无法执行")
+        if not job.enabled and normalize_cron_job_mode(job.mode) != "proactive.tick":
+            raise ValueError("任务已暂停，无法执行")
         if not is_scheduled_task_supported(job.targets):
             raise ValueError(
                 f"scheduled tasks are not supported for target: {job.targets}"
             )
-        if not await self.project_execution_allowed(job.project_id, job.user_id):
+        # 新建任务后立刻「立即执行」：本机 _jobs 可能还没 reload。
+        # 先塞进字典，否则马上到期的 wake 会在 _handle_event 里因查不到而静默丢掉。
+        self._jobs[job.id] = job
+        if (
+            not self._use_db_schedule()
+            and not await self.project_execution_allowed(
+                job.project_id, job.user_id, job.group_id, job.bot_id
+            )
+        ):
             raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         now = datetime.now(tz=ZoneInfo(job.timezone))
         push_dt = now
@@ -989,6 +1506,9 @@ class CronSchedulerService:
             exec_channel_id=channel_id,
             exec_session_id=exec_session_id,
             exec_user_id=str(job.user_id or "").strip() or None,
+            exec_app_id=_execution_app_id(job) or None,
+            exec_group_id=job.group_id or None,
+            exec_bot_id=job.bot_id or None,
             exec_work_mode=job.work_mode or DEFAULT_WEB_WORK_MODE,
             exec_project_id=job.project_id or None,
             manually_triggered=True,
@@ -1014,12 +1534,20 @@ class CronSchedulerService:
                 mode=mode,
                 run_id=run_id,
             )
-            if not is_team_cron_mode(mode):
+            if not is_team_cron_mode(mode) and not _is_web_cron_job(job):
                 # team 的流式事件按 targets 渠道回传（SwarmFlow 直播到 Web/TUI），
                 # 执行渠道路由保留 targets；单 agent 恒走内部 ``__cron__`` 渠道。
                 state.exec_channel_id = "__cron__"
             state.execution_session_allocated = True
         self._runs[run_id] = state
+        # 仅真实 session.create 过的才写 Redis；proactive.tick 的占位 cron_{ts}_{job}
+        # 不是可订 live 的执行会话，写进去会让前端永久转圈。
+        if state.execution_session_allocated and state.exec_session_id:
+            await self.publish_active_exec_session(
+                job.id,
+                state.exec_session_id,
+                ttl_seconds=int(max(60, resolve_cron_job_timeout_seconds(job))),
+            )
         self._schedule_event(wake_dt, "wake", job.id, run_id)
         self._schedule_event(push_dt, "push", job.id, run_id)
         self._reload_event.set()
@@ -1028,6 +1556,8 @@ class CronSchedulerService:
     def _make_execution_context(self, job: CronJob) -> tuple[str, str]:
         ts = format(int(time.time() * 1000), "x")
         mode = normalize_cron_job_mode(job.mode)
+        if _is_web_cron_job(job):
+            return "web", f"cron_{ts}_{job.id}"
         if is_team_cron_mode(mode):
             return _resolve_cron_execution_context(
                 job,
@@ -1044,9 +1574,11 @@ class CronSchedulerService:
         run_id: str,
     ) -> str:
         cron_user_id = str(job.user_id or "").strip()
+        if (job.model_selection or {}).get("type") == "model_group":
+            raise ValueError("Scheduled tasks only support a single model")
         env = e2a_from_agent_fields(
             request_id=f"cron-session-create-{run_id}",
-            channel_id="__cron__",
+            channel_id="web" if _is_web_cron_job(job) else "__cron__",
             req_method=ReqMethod.SESSION_CREATE,
             params={
                 "create_token": f"cron:{run_id}",
@@ -1066,6 +1598,7 @@ class CronSchedulerService:
             },
             is_stream=False,
             timestamp=self._now_fn(),
+            metadata=_cron_routing_metadata(job),
             user_id=cron_user_id or None,
         )
         response = await self._agent_client.send_request(env)
@@ -1078,6 +1611,76 @@ class CronSchedulerService:
         if not session_id:
             raise RuntimeError("cron session.create returned empty session_id")
         return session_id
+
+    async def _notify_web_run(
+        self, job: CronJob, state: CronRunState, *, phase: str, notify: bool = False,
+    ) -> None:
+        """Publish an online hint without creating or replacing chat content."""
+        if not _is_web_cron_job(job):
+            return
+        state.notification_revision += 1
+        payload = {
+            "event_type": CRON_RUN_UPDATED_EVENT,
+            "event_id": f"{state.run_id}:{state.notification_revision}",
+            "revision": state.notification_revision,
+            "job_id": job.id,
+            "job_name": job.name,
+            "run_id": state.run_id,
+            "session_id": state.exec_session_id if state.execution_session_allocated else None,
+            "request_id": state.exec_request_id,
+            "execution_id": state.exec_execution_id,
+            "status": state.status,
+            "phase": phase,
+            "notify": notify,
+            # Interrupt failures (ask_user / approval pause) carry their reason
+            # in result_text, not state.error; surface it so the task list can
+            # show why the last run failed instead of an empty tooltip.
+            "error": (
+                state.error or state.result_text
+            ) if state.status == "failed" else None,
+            "mode": state.exec_mode or job.mode,
+            "project_id": job.project_id,
+            "user_id": str(job.user_id or "").strip(),
+            "timestamp": self._now_fn(),
+        }
+        try:
+            self._publish_cron_execution_live(state, CRON_RUN_UPDATED_EVENT, payload)
+            from gateway.cron.live_bus import cron_live_bus
+
+            cron_live_bus.publish(cron_notification_scope(
+                user_id=job.user_id, group_id=job.group_id, bot_id=job.bot_id,
+                app_id=_execution_app_id(job),
+            ), {"event": CRON_RUN_UPDATED_EVENT, "payload": payload})
+            await self._message_handler.publish_robot_messages(Message(
+                id=payload["event_id"], type="event", channel_id="web",
+                session_id=None, params={}, timestamp=payload["timestamp"],
+                ok=True, payload=payload, event_type=None, app_id=_execution_app_id(job) or None,
+                metadata=_cron_routing_metadata(job),
+            ))
+        except Exception:
+            logger.warning("[Cron] Web run notification failed run_id=%s phase=%s", state.run_id, phase, exc_info=True)
+
+    async def _publish_web_chunk(self, chunk: Any, state: CronRunState) -> bool:
+        """Forward one accepted execution event while retaining its identity."""
+        payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+        if payload.get("execution_id") and not state.exec_execution_id:
+            state.exec_execution_id = str(payload["execution_id"])
+        if payload.get("event_type") == "chat.error" and not payload.get("output_phase_id"):
+            if self._message_handler.background_stream_has_other_work(
+                state.exec_request_id or chunk.request_id, state.exec_session_id,
+            ):
+                chunk.payload = {**payload, "output_suppressed": True}
+        published = await self._message_handler.publish_stream_chunk(
+            chunk, session_id=state.exec_session_id,
+            request_metadata=apply_routing_metadata(
+                {CRON_SESSION_STREAM_KEY: True, "app_id": state.exec_app_id or ""},
+                {"user_id": state.exec_user_id or "", "group_id": state.exec_group_id or "",
+                 "bot_id": state.exec_bot_id or ""},
+            ),
+        )
+        if published and str(payload.get("event_type") or "") in {"chat.error", "runtime.error"}:
+            state.stream_error_seen = True
+        return published
 
     def _schedule_event(self, at_dt: datetime, kind: str, job_id: str, run_id: str) -> None:
         at_ts = float(at_dt.timestamp())
@@ -1158,10 +1761,106 @@ class CronSchedulerService:
     @staticmethod
     def _is_croniter_no_next_date(exc: Exception) -> bool:
         """croniter 找不到下一次日期（通常为单次 year 固定为过去）时视为过期。"""
-        return (
-            exc.__class__.__name__ == "CroniterBadDateError"
-            or "failed to find next date" in str(exc)
+        return is_croniter_no_next_date(exc)
+
+    @staticmethod
+    def _use_db_schedule() -> bool:
+        """企业版到点先向数据库认领。个人版仍按本机队列跑。"""
+        from gateway.cron.db_schedule import should_use_db_schedule
+
+        return should_use_db_schedule()
+
+    async def _next_run_from_db(
+        self, job: CronJob
+    ) -> tuple[datetime | None, datetime | None, str]:
+        """按库里的下一趟时间排唤醒和推送。没有这个时间时先算一次写回去。"""
+        from gateway.cron.db_schedule import (
+            ensure_job_next_run_at,
+            next_run_at_to_datetime,
         )
+
+        push_dt = next_run_at_to_datetime(job)
+        if push_dt is None:
+            push_dt = await ensure_job_next_run_at(job)
+        if push_dt is None:
+            return None, None, ""
+        if getattr(job, "mode", "") == "proactive.tick":
+            offset = 0
+        else:
+            offset = max(0, int(job.wake_offset_seconds or 0))
+        wake_dt = push_dt - timedelta(seconds=offset)
+        run_id = f"{job.id}:{int(push_dt.timestamp())}"
+        return push_dt, wake_dt, run_id
+
+    async def _claim_wake(self, job: CronJob, run_id: str) -> bool:
+        """这一趟能不能由本机开跑。
+
+        个人版直接可以。企业版向数据库抢 ``next_run_at``，抢到才跑。
+        用户点「立即执行」不抢，避免和到点那一趟互相挤掉。
+        """
+        if not self._use_db_schedule():
+            self._claimed_run_ids.add(run_id)
+            return True
+        state = self._runs.get(run_id)
+        if state is not None and state.manually_triggered:
+            self._claimed_run_ids.add(run_id)
+            logger.info(
+                "[Cron] db schedule claim bypassed (manual run_now) job=%s run_id=%s",
+                job.id,
+                run_id,
+            )
+            return True
+        from gateway.cron.db_schedule import (
+            claim_oneshot_run,
+            claim_periodic_run,
+            compute_next_push_after_fire,
+            fire_at_from_run_id,
+            is_oneshot_job,
+        )
+
+        fire_at = fire_at_from_run_id(run_id, job)
+        if fire_at is None:
+            logger.warning(
+                "[Cron] db schedule claim skipped: no fire_at job=%s run_id=%s",
+                job.id,
+                run_id,
+            )
+            return False
+        if is_oneshot_job(job):
+            ok = await claim_oneshot_run(job, fire_at)
+            if ok:
+                self._claimed_run_ids.add(run_id)
+                self._jobs.pop(job.id, None)
+            else:
+                logger.warning(
+                    "[Cron] db schedule oneshot claim failed job=%s run_id=%s fire_at=%s",
+                    job.id,
+                    run_id,
+                    fire_at.isoformat(),
+                )
+            return ok
+        ok = await claim_periodic_run(job, fire_at)
+        if ok:
+            self._claimed_run_ids.add(run_id)
+            next_push = compute_next_push_after_fire(job, fire_at)
+            if next_push is not None:
+                job.next_run_at = next_push.timestamp()
+        else:
+            logger.warning(
+                "[Cron] db schedule periodic claim failed job=%s run_id=%s fire_at=%s "
+                "db_next_run_at=%s",
+                job.id,
+                run_id,
+                fire_at.isoformat(),
+                getattr(job, "next_run_at", None),
+            )
+        return ok
+
+    def _push_allowed(self, run_id: str) -> bool:
+        """没抢到这一趟的机器不推结果。个人版始终可以推。"""
+        if not self._use_db_schedule():
+            return True
+        return run_id in self._claimed_run_ids
 
     async def _loop(self) -> None:
         while self._running:
@@ -1208,6 +1907,19 @@ class CronSchedulerService:
 
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
+        # 多副本 / 新建后立刻 run_now：事件堆里已有 wake，但本机 _jobs 还没
+        # reload。旧逻辑在下面「job is None 直接 return」，会静默丢掉整轮执行
+        # （会话已建、页面空白、last_run_at 仍空）。先回源读库再决定是否丢弃。
+        if job is None and ev.kind in ("wake", "push", "push_update"):
+            job = await self._store.get_job(ev.job_id)
+            if job is not None:
+                self._jobs[job.id] = job
+                logger.info(
+                    "[Cron] hydrated job from store into _jobs job=%s kind=%s run_id=%s",
+                    job.id,
+                    ev.kind,
+                    ev.run_id,
+                )
         if job is not None and not is_scheduled_task_supported(job.targets):
             logger.info(
                 "[Cron] dropping unsupported target event job=%s target=%s",
@@ -1217,7 +1929,10 @@ class CronSchedulerService:
             return
         if (
             job is not None
-            and not await self.project_execution_allowed(job.project_id, job.user_id)
+            and not self._use_db_schedule()
+            and not await self.project_execution_allowed(
+                job.project_id, job.user_id, job.group_id, job.bot_id
+            )
         ):
             return
 
@@ -1232,6 +1947,8 @@ class CronSchedulerService:
                     "[Cron] skipping disabled proactive.tick job=%s run_id=%s",
                     job.id, ev.run_id,
                 )
+                return
+            if not await self._claim_wake(job, ev.run_id):
                 return
             logger.info("[Cron] triggering proactive.tick for job=%s run_id=%s", job.id, ev.run_id)
             try:
@@ -1299,8 +2016,12 @@ class CronSchedulerService:
                 except Exception as exc:
                     logger.warning("[Cron] proactive result notification failed job=%s: %s", job.id, exc)
             # proactive.tick 走专属分支提前 return，跳过下方 643 通用 reschedule。
-            # 必须显式排下一次 wake，否则只在 reload 时才排，期间漏跑
+            # 企业版下一趟已经写进库里的 next_run_at，重新装入即可。
+            # 个人版必须在这里排下一次，否则只在 reload 时才排，期间漏跑
             # （实测：19:56 tick 完，20:00 整点不触发，因为没 reload）。
+            if self._use_db_schedule():
+                await self.reload()
+                return
             try:
                 push_dt, wake_dt, next_run_id = self._compute_next_run(job, now_ts=self._now_fn())
                 if push_dt.timestamp() <= self._now_fn():
@@ -1331,6 +2052,13 @@ class CronSchedulerService:
             return
 
         if job is None and ev.kind != "push_update":
+            # 上面已回源读库仍没有：任务确实不存在（或从未写进本机可见的 store）。
+            logger.info(
+                "[Cron] %s skipped: job %s not in memory or store run_id=%s",
+                ev.kind,
+                ev.job_id,
+                ev.run_id,
+            )
             return
         # For wake/push/push_update events: if the job no longer exists in the
         # persistent store (e.g. cron_jobs.json was deleted), skip execution.
@@ -1383,8 +2111,17 @@ class CronSchedulerService:
             return
 
         if ev.kind == "wake":
+            if not await self._claim_wake(job, ev.run_id):
+                return
             await self._on_wake(job, ev.run_id)
         elif ev.kind == "push":
+            if not self._push_allowed(ev.run_id):
+                logger.debug(
+                    "[Cron] push skipped: not claim owner job=%s run_id=%s",
+                    job.id,
+                    ev.run_id,
+                )
+                return
             await self._on_push(job, ev.run_id)
             if job.delete_after_run:
                 # 不删除，改为标记过期（与自然过期的一次性任务行为一致）
@@ -1406,6 +2143,9 @@ class CronSchedulerService:
             # reschedule→push 循环（实测每 6 秒反复 triggering 同一 run_id）。
             # proactive.tick 跳过 push 的 reschedule，由 wake 分支统一管调度。
             if getattr(job, "mode", "") == "proactive.tick":
+                return
+            if self._use_db_schedule():
+                await self.reload()
                 return
             try:
                 push_dt, wake_dt, next_run_id = self._compute_next_run(job, now_ts=self._now_fn())
@@ -1437,10 +2177,22 @@ class CronSchedulerService:
                 else:
                     logger.warning("[Cron] compute next run failed after push job=%s: %s", job.id, exc)
         elif ev.kind == "push_update":
+            if not self._push_allowed(ev.run_id):
+                logger.debug(
+                    "[Cron] push_update skipped: not claim owner job=%s run_id=%s",
+                    ev.job_id,
+                    ev.run_id,
+                )
+                return
             await self._on_push_update(job, ev.run_id)
 
     async def _on_wake(self, job: CronJob, run_id: str) -> None:
-        if not await self.project_execution_allowed(job.project_id, job.user_id):
+        if (
+            not self._use_db_schedule()
+            and not await self.project_execution_allowed(
+                job.project_id, job.user_id, job.group_id, job.bot_id
+            )
+        ):
             return
         state = self._runs.get(run_id)
         if state is None:
@@ -1468,7 +2220,7 @@ class CronSchedulerService:
 
         # 幂等保护：reload 可能对同一 run_id 重复排入 wake 事件。
         # 如果该 run 已完成（succeeded/failed）或已有结果文本，不再重复执行 agent。
-        if state.status in ("succeeded", "failed"):
+        if state.status in ("succeeded", "failed", "awaiting_approval"):
             logger.info(
                 "[Cron] _on_wake skipped: already %s run_id=%s job=%s",
                 state.status, run_id, job.id,
@@ -1481,6 +2233,23 @@ class CronSchedulerService:
             )
             return
         if run_id in self._run_tasks and not self._run_tasks[run_id].done():
+            return
+
+        if await self._permission_hold_blocks_new_run(job.id):
+            # 还有人没点完：这一趟到点先跳过，避免和停住的那一轮叠在一起。
+            # Redis 读不到时同样跳过。
+            state.status = "skipped"
+            state.finished_at = self._now_fn()
+            held_sid, hold_source = await self._permission_hold_session_async(job.id)
+            logger.info(
+                "[Cron] _on_wake skipped: permission card pending job=%s run_id=%s "
+                "manual=%s held_session=%s source=%s",
+                job.id,
+                run_id,
+                bool(state.manually_triggered),
+                held_sid,
+                hold_source,
+            )
             return
 
         try:
@@ -1500,16 +2269,22 @@ class CronSchedulerService:
         state.exec_mode = mode
         state.exec_project_id = job.project_id or None
         state.exec_user_id = str(job.user_id or "").strip() or None
+        state.exec_app_id = _execution_app_id(job) or None
+        state.exec_group_id = job.group_id or None
+        state.exec_bot_id = job.bot_id or None
 
         async def _run_agent() -> None:
             state.status = "running"
             state.started_at = self._now_fn()
             ok = False
             is_cancelled_ghost = False
+            is_cancelled_run = False
             mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
             channel_id = ""
             exec_session_id = ""
             envelope = None
+            registered_stream = False
+            state.exec_request_id = f"cron-{run_id}"
             try:
                 if state.exec_channel_id and state.exec_session_id:
                     channel_id = state.exec_channel_id
@@ -1537,12 +2312,20 @@ class CronSchedulerService:
                         mode=mode,
                         run_id=run_id,
                     )
-                    if not is_team_cron_mode(mode):
+                    if not is_team_cron_mode(mode) and not _is_web_cron_job(job):
                         # team 的流式事件按 targets 渠道回传，保留渠道路由；
                         # 单 agent 恒走内部 ``__cron__`` 渠道。
                         state.exec_channel_id = "__cron__"
                     state.exec_session_id = exec_session_id
                     state.execution_session_allocated = True
+                if state.exec_session_id:
+                    await self.publish_active_exec_session(
+                        job.id,
+                        state.exec_session_id,
+                        ttl_seconds=int(max(60, resolve_cron_job_timeout_seconds(job))),
+                    )
+                channel_id = state.exec_channel_id or channel_id
+                await self._notify_web_run(job, state, phase="started")
                 cron_meta = {
                     "job_id": job.id,
                     "job_name": job.name,
@@ -1594,21 +2377,28 @@ class CronSchedulerService:
                     params=params,
                     is_stream=is_team_cron_mode(mode),
                     timestamp=self._now_fn(),
-                    metadata={
-                        "cron": {
-                            "job_id": job.id,
-                            "run_id": run_id,
-                            # 传给 UserTurn 信封：让「打印当前时间」类任务按任务
-                            # 时区渲染 timezone/timestamp，而非固定 Asia/Shanghai。
-                            "timezone": job.timezone,
+                    metadata=_cron_routing_metadata(
+                        job,
+                        {
+                            CRON_SESSION_STREAM_KEY: _is_web_cron_job(job),
+                            "cron": {
+                                "job_id": job.id,
+                                "run_id": run_id,
+                                # 传给 UserTurn 信封：让「打印当前时间」类任务按任务
+                                # 时区渲染 timezone/timestamp，而非固定 Asia/Shanghai。
+                                "timezone": job.timezone,
+                            },
+                            # 真实推送渠道（普通模式 channel 是内部 "__cron__"）。
+                            # AgentServer 用它注册 send_file 等按渠道开关的工具，并作为
+                            # 文件推送的 channel_id，与 cron 文本结果推送到同一批渠道。
+                            "targets": str(job.targets or "").strip(),
                         },
-                        # 真实推送渠道（普通模式 channel 是内部 "__cron__"）。
-                        # AgentServer 用它注册 send_file 等按渠道开关的工具，并作为
-                        # 文件推送的 channel_id，与 cron 文本结果推送到同一批渠道。
-                        "targets": str(job.targets or "").strip(),
-                    },
+                    ),
                     user_id=job.user_id or None,
                 )
+                if _is_web_cron_job(job):
+                    await self._message_handler.register_background_stream(envelope, exec_session_id)
+                    registered_stream = True
                 if not str(job.user_id or "").strip():
                     logger.warning(
                         "[Cron] job has no user_id, faas X-Session-Context will be omitted: "
@@ -1623,6 +2413,7 @@ class CronSchedulerService:
                         cron_meta=cron_meta,
                         mode=mode,
                         timeout_seconds=timeout_seconds,
+                        state=state,
                     )
                     stream_completed = ok
                 else:
@@ -1639,19 +2430,39 @@ class CronSchedulerService:
                         timeout_seconds=timeout_seconds,
                         state=state,
                     )
-                # #4980：回写与文本产出解耦；失败、超时或中断不覆盖成功会话。
-                if stream_completed:
+                # 停在提问上时不把这一轮记成失败，也不取消智能体。
+                # 人点允许走这次点击自己的请求；写完后由消息处理擦掉纸条。
+                if state.status == "awaiting_approval":
                     await self._mark_last_session_ready(job, exec_session_id)
-                state.result_text = text
-                state.status = "succeeded" if ok else "failed"
+                    state.result_text = None
+                    state.error = None
+                    self._hold_job_for_permission(job, exec_session_id)
+                    await self._redis_write_permission_hold(
+                        job.id,
+                        exec_session_id,
+                        int(max(1, resolve_cron_job_timeout_seconds(job))),
+                    )
+                    logger.info(
+                        "[Cron] run paused for permission: job_id=%s exec_session_id=%s",
+                        job.id, exec_session_id,
+                    )
+                else:
+                    # Completion and visible output are independent: an empty
+                    # completed stream is still the latest resumable session.
+                    if stream_completed:
+                        await self._mark_last_session_ready(job, exec_session_id)
+                    state.result_text = text
+                    state.status = "succeeded" if ok else "failed"
             except asyncio.CancelledError:
                 state.status = "failed"
                 state.error = "cancelled"
-                is_cancelled_ghost = True
-                # Ghost task: cancelled by reload because job no longer in store.
-                # Do NOT schedule push_update — the user has removed this job and
-                # should not see any result from it. Raising CancelledError here
-                # so the finally block can skip push_update scheduling.
+                is_cancelled_ghost = await self._store.get_job(job.id) is None
+                # Gateway shutdown, project archive/hide and job deletion cancel
+                # this task. That is lifecycle teardown, not a model or tool
+                # failure: do not persist a chat error, schedule a reminder, or
+                # push a result. The in-memory run hint still reports that the
+                # run stopped. A removed job stays fully silent as before.
+                is_cancelled_run = True
                 raise
             except Exception as exc:  # noqa: BLE001
                 state.status = "failed"
@@ -1665,18 +2476,21 @@ class CronSchedulerService:
                     exc_info=True,
                 )
             finally:
-                state.finished_at = self._now_fn()
+                if state.status != "awaiting_approval":
+                    state.finished_at = self._now_fn()
+                    # 审批暂停仍算「进行中」，保留 active_session_id 给前端订 live
+                    await self.clear_active_exec_session(job.id)
+                cancelled_lifecycle = is_cancelled_ghost or is_cancelled_run
                 # Ensure failed runs also produce result_text so push logic can deliver it.
-                # But for cancelled ghost tasks, skip — no result should be pushed for
-                # a job the user has removed.
-                if (
-                    state.status == "failed"
-                    and not state.result_text
-                    and not is_cancelled_ghost
-                ):
+                # Cancelled lifecycle runs and removed jobs stay silent: neither
+                # should append a fake failure answer to the Session.
+                if state.status == "failed" and not state.result_text and not cancelled_lifecycle:
                     state.error = str(state.error or "").strip() or "未知错误"
                     state.result_text = f"[cron] 任务执行失败: {state.error}"
-                if state.result_text and not ok and not is_cancelled_ghost:
+                should_append_failure = (
+                    bool(state.result_text) and not ok and not cancelled_lifecycle
+                )
+                if should_append_failure and state.execution_session_allocated:
                     await self._append_failure_history_on_agentserver(
                         job=job,
                         session_id=exec_session_id,
@@ -1685,7 +2499,37 @@ class CronSchedulerService:
                         content=state.result_text,
                         mode=mode,
                     )
-                if not state.pushed_final and state.result_text and not is_cancelled_ghost:
+                    if (
+                        _is_web_cron_job(job) and not state.stream_error_seen
+                        and not self._message_handler.background_stream_has_other_work(
+                            state.exec_request_id, exec_session_id,
+                        )
+                    ):
+                        failure_payload = {
+                            "event_type": "chat.error", "request_id": state.exec_request_id,
+                            "execution_id": state.exec_execution_id,
+                            "error": state.result_text, "is_complete": True,
+                            CRON_SESSION_STREAM_KEY: True,
+                        }
+                        self._publish_cron_execution_live(state, "chat.error", failure_payload)
+                        await self._message_handler.publish_robot_messages(Message(
+                            id=f"cron-failure-{state.exec_request_id}", type="event",
+                            channel_id="web", session_id=exec_session_id, params={},
+                            timestamp=self._now_fn(), ok=False, event_type=EventType.CHAT_ERROR,
+                            app_id=_execution_app_id(job) or None,
+                            metadata=_cron_routing_metadata(job, {CRON_SESSION_STREAM_KEY: True}),
+                            payload=failure_payload,
+                        ))
+                if registered_stream:
+                    try:
+                        await self._message_handler.finish_background_stream(envelope, exec_session_id)
+                    except Exception:
+                        logger.warning("[Cron] background stream cleanup failed: run_id=%s", run_id, exc_info=True)
+                if not is_cancelled_ghost:
+                    await self._notify_web_run(
+                        job, state, phase="paused" if state.status == "awaiting_approval" else "finished",
+                    )
+                if not state.pushed_final and state.result_text and not cancelled_lifecycle:
                     logger.info(
                         "[Cron] scheduling push_update after agent finished "
                         "job=%s run_id=%s text_len=%d",
@@ -1724,7 +2568,8 @@ class CronSchedulerService:
                 "request_id": request_id,
                 "channel_id": channel_id,
                 "role": "assistant",
-                "event_type": "chat.final",
+                "event_type": "chat.error" if _is_web_cron_job(job) else "chat.final",
+                "cron_failure_record": _is_web_cron_job(job),
                 "content": content,
                 "timestamp": self._now_fn(),
                 "mode": mode,
@@ -1736,6 +2581,7 @@ class CronSchedulerService:
             is_stream=False,
             timestamp=self._now_fn(),
             user_id=str(job.user_id or "").strip() or None,
+            metadata=_cron_routing_metadata(job),
         )
         try:
             response = await self._agent_client.send_request(envelope)
@@ -1762,14 +2608,178 @@ class CronSchedulerService:
                 "[Cron] update last_session_id failed job=%s: %s", job.id, lsid_exc,
             )
 
+    _ACTIVE_EXEC_STATUSES = frozenset({"pending", "running", "awaiting_approval"})
+
+    def list_active_exec_sessions(self) -> dict[str, str]:
+        """本进程里还在跑的 cron 执行会话：job_id → exec_session_id。
+
+        仅企业版使用；个人版靠 WebSocket 推送，不需要这张表。
+        """
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return {}
+        out: dict[str, str] = {}
+        for state in self._runs.values():
+            status = str(getattr(state, "status", "") or "").strip()
+            if status and status not in self._ACTIVE_EXEC_STATUSES:
+                continue
+            sid = str(getattr(state, "exec_session_id", "") or "").strip()
+            job_id = str(getattr(state, "job_id", "") or "").strip()
+            if not job_id or not sid:
+                continue
+            # 统一会话未必带 cron_ 前缀；只要本机认定仍在跑就暴露给 list。
+            out[job_id] = sid
+        return out
+
+    async def publish_active_exec_session(
+        self, job_id: str, exec_session_id: str, *, ttl_seconds: int = 0,
+    ) -> None:
+        """把「正在跑」的会话号写进 Redis，多副本 list 才能被前端发现。
+
+        每个 job 独立 String key + 独立 TTL，避免短超时任务 EXPIRE 整表把长任务刷掉。
+        仅企业版；个人版不写 Redis。
+        """
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return
+        jid = str(job_id or "").strip()
+        sid = str(exec_session_id or "").strip()
+        if not jid or not sid:
+            return
+        try:
+            from gateway.extensions.redis.redis_keys import (
+                cron_active_session_rel,
+                cron_active_sessions_hash_rel,
+            )
+            from gateway.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return
+            expire_s = int(ttl_seconds) if int(ttl_seconds or 0) > 0 else 3600
+            await client.set(
+                cron_active_session_rel(jid),
+                sid,
+                ttl_seconds=max(60, expire_s),
+            )
+            # 清理旧版整表 Hash 字段，避免双写期读到过期脏数据
+            try:
+                await client.hdel(cron_active_sessions_hash_rel(), jid)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[Cron] publish active_session failed job=%s session=%s",
+                jid, sid, exc_info=True,
+            )
+
+    async def clear_active_exec_session(self, job_id: str) -> None:
+        """执行收尾（非审批暂停）后擦掉 active 标记。仅企业版。"""
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        try:
+            from gateway.extensions.redis.redis_keys import (
+                cron_active_session_rel,
+                cron_active_sessions_hash_rel,
+            )
+            from gateway.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return
+            await client.delete(cron_active_session_rel(jid))
+            try:
+                await client.hdel(cron_active_sessions_hash_rel(), jid)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            logger.debug("[Cron] clear active_session failed job=%s", jid, exc_info=True)
+
+    async def collect_active_exec_sessions(self) -> dict[str, str]:
+        """本机 _runs ∪ Redis，给 list 接口挂 active_session_id。仅企业版。"""
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return {}
+        out = self.list_active_exec_sessions()
+        try:
+            from gateway.extensions.redis.redis_keys import (
+                cron_active_session_scan_rel,
+                cron_active_sessions_hash_rel,
+            )
+            from gateway.extensions.redis.redis_runtime import get_gateway_redis_client_if_open
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return out
+            prefix = "gateway:cron_active_session:"
+            keys = await client.scan_iter(cron_active_session_scan_rel())
+            if keys:
+                values = await client.mget(list(keys))
+                for key, value in zip(keys, values):
+                    rel = str(key or "").strip()
+                    if not rel.startswith(prefix):
+                        continue
+                    job_id = rel[len(prefix):].strip()
+                    if isinstance(value, (bytes, bytearray)):
+                        sid = bytes(value).decode("utf-8", errors="replace").strip()
+                    else:
+                        sid = str(value or "").strip()
+                    if job_id and sid:
+                        out[job_id] = sid
+            # 双写过渡：仍兼容旧整表 Hash（若尚未迁完）
+            raw = await client.hgetall(cron_active_sessions_hash_rel())
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    if isinstance(key, (bytes, bytearray)):
+                        job_id = bytes(key).decode("utf-8", errors="replace").strip()
+                    else:
+                        job_id = str(key or "").strip()
+                    if isinstance(value, (bytes, bytearray)):
+                        sid = bytes(value).decode("utf-8", errors="replace").strip()
+                    else:
+                        sid = str(value or "").strip()
+                    if job_id and sid and job_id not in out:
+                        out[job_id] = sid
+        except Exception:  # noqa: BLE001
+            logger.debug("[Cron] collect active_sessions from redis failed", exc_info=True)
+        return out
+
     async def _cancel_cron_team_agent_session(
         self,
         *,
         envelope: Any,
         exec_session_id: str,
         mode: str = "team",
+        expected_execution_id: str | None = None,
     ) -> None:
         """Stop lingering AgentServer team work after cron stream ends or times out."""
+        if str(getattr(envelope, "channel", "") or "") == "web":
+            params = {
+                "intent": "cancel", "mode": mode, "session_id": exec_session_id,
+                "target_request_id": envelope.request_id, "request_id": envelope.request_id,
+            }
+            if expected_execution_id:
+                params["expected_execution_id"] = expected_execution_id
+            response = e2a_from_agent_fields(
+                request_id=f"cron-cancel-{envelope.request_id}", channel_id="web",
+                session_id=exec_session_id, req_method=ReqMethod.CHAT_CANCEL,
+                params=params,
+                is_stream=False, timestamp=self._now_fn(), user_id=envelope.user_id,
+                metadata=dict(envelope.channel_context or {}),
+            )
+            try:
+                await self._agent_client.send_request(response)
+            except Exception:
+                logger.warning("[Cron] team cancellation failed: request_id=%s", envelope.request_id, exc_info=True)
+            return
         cancel_fn = getattr(self._message_handler, "_cancel_agent_work_for_session", None)
         if not callable(cancel_fn):
             logger.warning(
@@ -1884,20 +2894,39 @@ class CronSchedulerService:
         """Return ``(text, ok, completed)``; completion does not require text."""
         stream_gen = self._agent_client.send_request_stream(envelope)
         interrupted = False
+        paused = False
+        park_for_approval = self._should_park_manual_approval(state)
+        rid = str(getattr(envelope, "request_id", "") or "")
+        sid = str(getattr(state, "exec_session_id", "") or "")
 
         async def _consume() -> tuple[str, bool, bool]:
-            nonlocal interrupted
+            nonlocal interrupted, paused
             result_text = ""
             error_text = ""
             saw_complete = False
+            self._publish_cron_execution_live(
+                state,
+                "chat.processing_status",
+                {
+                    "event_type": "chat.processing_status",
+                    "is_processing": True,
+                    "current_task": "thinking",
+                    "session_id": sid,
+                    "request_id": rid,
+                },
+            )
             try:
                 async for chunk in stream_gen:
+                    if state.exec_channel_id == "web":
+                        await self._publish_web_chunk(chunk, state)
                     # Terminal markers can have no payload; EOF alone is insufficient.
                     saw_complete = saw_complete or bool(chunk.is_complete)
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     if not payload:
                         continue
                     event_type = str(payload.get("event_type") or "").strip()
+                    if event_type in _CRON_LIVE_MIRROR_EVENTS or event_type.startswith(("team.", "workflow.")):
+                        self._publish_cron_execution_live(state, event_type, payload)
                     text = _extract_text_from_stream_payload(payload)
                     if event_type == "chat.error":
                         error_text = text or "任务执行失败"
@@ -1905,6 +2934,12 @@ class CronSchedulerService:
                         error_text = str(payload.get("error") or payload.get("message") or "").strip() or "任务执行失败"
                     elif text:
                         result_text = text
+                    if park_for_approval and self._is_approval_pause_frame(
+                        event_type, payload,
+                    ):
+                        # 人还在这个页面上。停掉调度器这条读取，智能体停在原处等点击。
+                        paused = True
+                        break
                     if _is_cron_interrupt_event(event_type):
                         # 无人可答 ⇒ 本轮已卡在中断点上，立即收尾。继续消费只会
                         # 等到流关闭（或挂满 timeout）后仍以空结果失败。
@@ -1915,6 +2950,29 @@ class CronSchedulerService:
                     stream_gen, getattr(envelope, "request_id", "")
                 )
 
+            if not paused:
+                self._publish_cron_execution_live(
+                    state,
+                    "chat.processing_status",
+                    {
+                        "event_type": "chat.processing_status",
+                        "is_processing": False,
+                        "session_id": sid,
+                        "request_id": rid,
+                    },
+                )
+            if paused:
+                state.status = "awaiting_approval"
+                logger.info(
+                    "[Cron] single-agent stream paused for approval request_id=%s "
+                    "session_id=%s",
+                    rid,
+                    sid,
+                )
+                # 与函数约定一致：返回 (text, ok, completed)。少一个值会被上层
+                # unpack 成 ValueError，status 被改成 failed，Redis 纸条写不上，
+                # 再点「立即执行」就会新开会话，而不是复用等待确认的那个。
+                return "", True, False
             if interrupted:
                 logger.warning(
                     "[Cron] single-agent stream hit interrupt event, failing fast "
@@ -1933,7 +2991,7 @@ class CronSchedulerService:
 
         try:
             result = await asyncio.wait_for(_consume(), timeout=timeout_seconds)
-            if interrupted:
+            if interrupted and not paused:
                 # Closing the Gateway stream only drops its receive queue; the
                 # AgentServer session still needs an explicit interrupt.
                 await self._cancel_agent_session(state, reason="interrupt")
@@ -1946,6 +3004,16 @@ class CronSchedulerService:
                 getattr(envelope, "request_id", ""),
             )
             await self._cancel_agent_session(state, reason="timeout")
+            self._publish_cron_execution_live(
+                state,
+                "chat.processing_status",
+                {
+                    "event_type": "chat.processing_status",
+                    "is_processing": False,
+                    "session_id": sid,
+                    "request_id": rid,
+                },
+            )
             return f"[cron] 任务执行超时（>{timeout_min}min）", False, False
 
     async def _run_team_stream_job(
@@ -1956,6 +3024,7 @@ class CronSchedulerService:
         cron_meta: dict[str, Any],
         mode: str,
         timeout_seconds: float,
+        state: CronRunState | None = None,
     ) -> tuple[str, bool]:
         """Run a team-mode cron job via streaming so SwarmFlow events reach the TUI."""
         request_metadata = dict(envelope.channel_context or {})
@@ -1987,10 +3056,24 @@ class CronSchedulerService:
                     "team stream chunks will not be forwarded request_id=%s",
                     getattr(envelope, "request_id", ""),
                 )
+            if state is not None:
+                self._publish_cron_execution_live(
+                    state,
+                    "chat.processing_status",
+                    {
+                        "event_type": "chat.processing_status",
+                        "is_processing": True,
+                        "current_task": "thinking",
+                        "session_id": exec_session_id,
+                        "request_id": str(getattr(envelope, "request_id", "") or ""),
+                    },
+                )
             try:
                 async for chunk in stream_gen:
                     published = True
-                    if callable(publish_chunk):
+                    if state is not None and state.exec_channel_id == "web":
+                        published = await self._publish_web_chunk(chunk, state)
+                    elif callable(publish_chunk):
                         published = await publish_chunk(
                             chunk,
                             session_id=exec_session_id,
@@ -1998,6 +3081,10 @@ class CronSchedulerService:
                         )
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     event_type = str((payload or {}).get("event_type") or "").strip()
+                    if state is not None and (
+                        event_type in _CRON_LIVE_MIRROR_EVENTS or event_type.startswith(("team.", "workflow."))
+                    ):
+                        self._publish_cron_execution_live(state, event_type, payload)
                     note_seen_event(event_type)
                     auto_accepts = getattr(
                         self._message_handler, "auto_accepts_evolution_approval", None
@@ -2006,17 +3093,28 @@ class CronSchedulerService:
                         if callable(auto_accepts) and auto_accepts(payload):
                             # MessageHandler queued an automatic evolution answer.
                             continue
-                    if _is_cron_interrupt_event(event_type):
-                        # leader 的 ask_user/审批中断同样无人可答：本轮不可能再产出
-                        # 报告，立即停止消费并取消团队会话，而不是一直等到超时。
-                        consume_meta["interrupted"] = True
-                        consume_meta["ended_early"] = not chunk.is_complete
-                        logger.warning(
-                            "[Cron] team stream hit interrupt event=%s request_id=%s",
-                            event_type,
-                            getattr(envelope, "request_id", ""),
-                        )
-                        break
+                    if self._is_approval_pause_frame(event_type, payload):
+                        if state is not None and self._should_park_manual_approval(state):
+                            consume_meta["paused"] = True
+                            state.status = "awaiting_approval"
+                            logger.info(
+                                "[Cron] team stream paused for approval event=%s "
+                                "request_id=%s",
+                                event_type,
+                                getattr(envelope, "request_id", ""),
+                            )
+                            break
+                        if _is_cron_interrupt_event(event_type):
+                            # leader 的 ask_user/审批中断同样无人可答：本轮不可能再产出
+                            # 报告，立即停止消费并取消团队会话，而不是一直等到超时。
+                            consume_meta["interrupted"] = True
+                            consume_meta["ended_early"] = not chunk.is_complete
+                            logger.warning(
+                                "[Cron] team stream hit interrupt event=%s request_id=%s",
+                                event_type,
+                                getattr(envelope, "request_id", ""),
+                            )
+                            break
                     if payload:
                         apply_cron_team_round_event(round_state, payload)
                         # team.error 由团队运行时直接抛出，不会经 gateway 归一化成
@@ -2060,7 +3158,20 @@ class CronSchedulerService:
                 await _safe_aclose(
                     stream_gen, getattr(envelope, "request_id", "")
                 )
+                if state is not None and not consume_meta.get("paused"):
+                    self._publish_cron_execution_live(
+                        state,
+                        "chat.processing_status",
+                        {
+                            "event_type": "chat.processing_status",
+                            "is_processing": False,
+                            "session_id": exec_session_id,
+                            "request_id": str(getattr(envelope, "request_id", "") or ""),
+                        },
+                    )
 
+            if consume_meta.get("paused"):
+                return "", True
             if consume_meta.get("interrupted"):
                 # 中断意味着本轮已停在等人回答的点上，leader/workflow 的部分输出
                 # 不能冒充报告，直接以中断文案失败收场（ended_early 已置位，
@@ -2093,11 +3204,14 @@ class CronSchedulerService:
                 _consume(),
                 timeout=timeout_seconds,
             )
+            if consume_meta.get("paused"):
+                return text, ok
             if consume_meta.get("ended_early"):
                 await self._cancel_cron_team_agent_session(
                     envelope=envelope,
                     exec_session_id=exec_session_id,
                     mode=mode,
+                    expected_execution_id=state.exec_execution_id if state is not None else None,
                 )
             return text, ok
         except asyncio.TimeoutError:
@@ -2113,6 +3227,7 @@ class CronSchedulerService:
                 envelope=envelope,
                 exec_session_id=exec_session_id,
                 mode=mode,
+                expected_execution_id=state.exec_execution_id if state is not None else None,
             )
             timeout_min = max(1, int(timeout_seconds // 60))
             return _resolve_cron_team_timeout_result(
@@ -2134,6 +3249,7 @@ class CronSchedulerService:
                 envelope=envelope,
                 exec_session_id=exec_session_id,
                 mode=mode,
+                expected_execution_id=state.exec_execution_id if state is not None else None,
             )
             raise
 
@@ -2168,6 +3284,12 @@ class CronSchedulerService:
             self._runs[run_id] = state
 
         if state.pushed_final:
+            return
+        if state.status in ("awaiting_approval", "skipped"):
+            logger.info(
+                "[Cron] _on_push skipped: %s job=%s run_id=%s",
+                state.status, job.id, run_id,
+            )
             return
 
         if state.result_text:
@@ -2210,6 +3332,10 @@ class CronSchedulerService:
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
+        if _is_web_cron_job(job):
+            if not is_placeholder:
+                await self._notify_web_run(job, state, phase="reminder", notify=True)
+            return
         if not is_scheduled_task_supported(job.targets):
             logger.info(
                 "[Cron] push skipped: unsupported target job=%s target=%s",
@@ -2498,4 +3624,51 @@ class CronSchedulerService:
             group_digital_avatar=_group_digital_avatar,
             app_id=_msg_app_id,
         )
+        # 企业版页面是普通 HTTP，收不到上面这条 Web 推送。再抄一份到执行会话的
+        # 实时流上，打开「立即执行」页面的浏览器才能看到正文。
+        self._mirror_cron_live(state, payload_extra)
         await self._message_handler.publish_robot_messages(msg)
+
+    @staticmethod
+    def _publish_cron_execution_live(
+        state: CronRunState,
+        event_name: str,
+        payload: dict | None,
+    ) -> None:
+        """把执行过程中的一帧放进这条会话已经有的直播。
+
+        浏览器只连 ``/sessions/{执行会话}/live``。思考、逐字正文、工具调用
+        和终稿都进同一个盒子。占位句不放：页面用「正在写」和逐字正文表示过程。
+        终稿已经放过时，后面的推送不再放第二遍。
+        """
+        name = str(event_name or "").strip()
+        if not isinstance(payload, dict) or (
+            name not in _CRON_LIVE_MIRROR_EVENTS and not name.startswith(("team.", "workflow."))
+        ):
+            return
+        sid = str(getattr(state, "exec_session_id", "") or "").strip()
+        if not sid or (
+            state.exec_channel_id != "web" and not sid.startswith(("cron_", "__cron__"))
+        ):
+            return
+        cron_meta = payload.get("cron")
+        if isinstance(cron_meta, dict) and cron_meta.get("is_placeholder"):
+            return
+        if name == "chat.final" and state.live_final_forwarded:
+            return
+        state.live_seq += 1
+        body = dict(payload)
+        body["session_id"] = sid
+        body["event_type"] = name
+        body["live_seq"] = state.live_seq
+        if state.exec_channel_id == "web":
+            body[CRON_SESSION_STREAM_KEY] = True
+        if name == "chat.final":
+            state.live_final_forwarded = True
+        from gateway.cron.live_bus import cron_live_bus
+
+        cron_live_bus.publish(sid, {"event": name, "payload": body})
+
+    def _mirror_cron_live(self, state: CronRunState, payload: dict | None) -> None:
+        """推送路径上的终稿也进同一条直播。占位和已经放过的终稿不再重复放。"""
+        self._publish_cron_execution_live(state, "chat.final", payload)

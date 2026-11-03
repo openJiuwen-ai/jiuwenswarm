@@ -618,6 +618,7 @@ New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 Write-Host "  Copying Electron desktop shell..." -ForegroundColor Gray
 Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "update_shutdown.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "cdp_port.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
@@ -725,6 +726,7 @@ $RequiredFiles = @(
     (Join-Path $ElectronAppDir $ShellExeName),
     (Join-Path $AppDir "main.cjs"),
     (Join-Path $AppDir "update_shutdown.cjs"),
+    (Join-Path $AppDir "cdp_port.cjs"),
     (Join-Path $AppDir "browser_downloads.cjs"),
     (Join-Path $AppDir "browser_download_bubble.cjs"),
     (Join-Path $AppDir "preload.cjs"),
@@ -762,6 +764,9 @@ if ($DoSign) {
         -ForceResignPaths @($ShellExePath)
 } else {
     Write-Host "  Skipping PE signing (unsigned local build)." -ForegroundColor Yellow
+}
+if ((-not $FrontendOnly) -and (Test-Truthy $BundleNode)) {
+    Write-NodeRuntimeManifest -DistDir $BackendDir
 }
 $TotalSize = [math]::Round((Get-ChildItem $ElectronAppDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host "  Assembled app size: $TotalSize MB" -ForegroundColor Gray

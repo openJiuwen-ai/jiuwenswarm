@@ -258,11 +258,9 @@ def test_ordinary_ask_appends_exact_clarification(
         expected_tool_call_id="ask-1",
     )
     assert continuation is not None
-    incoming = InteractiveInput()
-    incoming.update("ask-1", {"answers": {question: answer}})
     prepared = prepare_ask_user_resume(
         continuation=continuation,
-        user_input=incoming,
+        answer={"answers": {question: answer}},
     )
     assert prepared is not None
     resumed = apply_ask_user_resume(prepared)
@@ -284,12 +282,8 @@ def test_ordinary_ask_missing_or_foreign_answer_fails_closed() -> None:
         expected_tool_call_id="ask-1",
     )
     assert continuation is not None
-    missing = InteractiveInput()
-    missing.update("ask-1", {"answers": {}})
-    foreign = InteractiveInput()
-    foreign.update("ask-2", {"answers": {"Continue?": "yes"}})
-    assert prepare_ask_user_resume(continuation=continuation, user_input=missing) is None
-    assert prepare_ask_user_resume(continuation=continuation, user_input=foreign) is None
+    assert prepare_ask_user_resume(continuation=continuation, answer={"answers": {}}) is None
+    assert prepare_ask_user_resume(continuation=continuation, answer="yes") is None
 
 
 @pytest.mark.asyncio
@@ -311,7 +305,7 @@ async def test_ordinary_ask_resume_reaches_next_inner_tool_callback() -> None:
     incoming.update("ask-1", {"answers": {"Which project?": "JiuwenSwarm"}})
     prepared = prepare_ask_user_resume(
         continuation=continuation,
-        user_input=incoming,
+        answer=incoming.user_inputs["ask-1"],
     )
     assert prepared is not None
 

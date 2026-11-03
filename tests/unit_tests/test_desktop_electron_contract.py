@@ -1009,7 +1009,7 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
 def test_electron_module_map_matches_python_entry_points() -> None:
     """开发模式 serviceCommand 的 -m 模块映射须与 pyproject 入口点一致。
 
-    M0-c 盲区回归：main.cjs 曾长期残留 jiuwenswarm.gateway.app_gateway
+    M0-c 盲区回归：main.cjs 曾长期残留 gateway.app_gateway
     （Python 侧与打包模式都已改 gateway.app_gateway），契约测试不覆盖
     该映射导致 CI 抓不到开发模式启动断链。
     """

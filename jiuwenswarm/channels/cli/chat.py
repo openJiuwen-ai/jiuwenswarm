@@ -17,6 +17,8 @@ import uuid as uuid_module
 from pathlib import Path
 from typing import Any
 
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+
 # Importing ``readline`` transparently upgrades the builtin ``input()`` with
 # line editing: left/right cursor movement, history, and correct multi-byte
 # UTF-8 deletion (so backspacing a Chinese character removes the whole glyph
@@ -271,15 +273,6 @@ VALID_MODES = frozenset({
     "agent", "agent.plan", "agent.fast", "code.plan", "code.normal", "code.team", "team",
     "team.plan", "team.plan.normal", "team.plan.code",
 }) | set(NEW_CANONICAL_MODES)
-
-# Sources that require the answer to be sent via ``chat.send`` (streaming) to
-# resume the paused agent task.  Other sources use ``chat.user_answer``.
-_INTERRUPT_RESUME_SOURCES = frozenset({
-    "confirm_interrupt",
-    "permission_interrupt",
-    "ask_user_interrupt",
-    "evolution_interrupt",
-})
 
 
 def _permission_answer_for_card(
@@ -774,6 +767,7 @@ async def _run_interactive_loop(
                 renderer.clear_loading()
                 if supports_user_interaction and sys.stdin.isatty():
                     request_id = payload.get("request_id", "")
+                    interrupt_id = str(payload.get("interrupt_id") or "")
                     source = payload.get("source", "")
                     questions = payload.get("questions", [])
                     primary = (
@@ -832,7 +826,7 @@ async def _run_interactive_loop(
                     )
 
                     try:
-                        if source in _INTERRUPT_RESUME_SOURCES and request_id:
+                        if source in INTERRUPT_RESUME_SOURCES and request_id:
                             # Interrupt resume: send via chat.send (streaming)
                             # to resume the paused agent task. Using
                             # chat.user_answer here would NOT resume the task.
@@ -848,6 +842,7 @@ async def _run_interactive_loop(
                                     "session_id": request["params"]["session_id"],
                                     "query": "",
                                     "request_id": request_id,
+                                    **({"interrupt_id": interrupt_id} if interrupt_id else {}),
                                     "answers": answers,
                                     "source": source,
                                     "mode": request["params"]["mode"],

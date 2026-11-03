@@ -1536,6 +1536,7 @@ async def test_session_rebind_project_falls_back_to_shared_dir_when_agent_offlin
     pytest.skip("A2g deleted legacy local rebind fallback; E2A-only")
 
 
+@pytest.mark.asyncio
 async def test_session_rebind_project_does_not_read_gateway_state_for_remote_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1577,10 +1578,10 @@ class _DictOwnedCronController:
         }
         self.update_calls: list[tuple[str, dict]] = []
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **_kwargs):
         return dict(self.job) if job_id == self.job["id"] else None
 
-    async def update_job(self, job_id, patch):
+    async def update_job(self, job_id, patch, **_kwargs):
         self.update_calls.append((job_id, dict(patch)))
         return {"id": job_id, **self.job, **patch}
 
@@ -1645,10 +1646,10 @@ async def test_cron_job_update_accepts_matching_owner_with_object_job() -> None:
             self.job = SimpleNamespace(id="cron-obj-owner", user_id="user-owner")
             self.update_calls = 0
 
-        async def get_job(self, job_id):
+        async def get_job(self, job_id, **_kwargs):
             return self.job if job_id == self.job.id else None
 
-        async def update_job(self, job_id, patch):
+        async def update_job(self, job_id, patch, **_kwargs):
             self.update_calls += 1
             return {"id": job_id, **patch}
 

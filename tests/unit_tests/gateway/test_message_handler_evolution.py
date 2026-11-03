@@ -505,6 +505,41 @@ def test_attach_only_stream_does_not_emit_processing_status() -> None:
     assert handler.should_emit_processing_status_for_stream(attach_message) is False
 
 
+def test_steer_stream_does_not_emit_processing_status() -> None:
+    """STEER is a receipt-only inject; session busy stays owned by the parent turn."""
+    handler = _TestMessageHandler.create()
+    steer_message = _message(ReqMethod.CHAT_SEND)
+    steer_message.params = {
+        "query": "111",
+        "input_mode": "steer",
+        "expected_execution_id": "exec-1",
+    }
+    follow_up = _message(ReqMethod.CHAT_SEND)
+    follow_up.params = {"query": "next", "input_mode": "follow_up"}
+    ordinary = _message(ReqMethod.CHAT_SEND)
+    ordinary.params = {"query": "hello"}
+
+    assert handler.should_emit_processing_status_for_stream(steer_message) is False
+    # follow_up may become an owning turn; keep emitting unless product says otherwise.
+    assert handler.should_emit_processing_status_for_stream(follow_up) is True
+    assert handler.should_emit_processing_status_for_stream(ordinary) is True
+
+
+def test_steer_stream_does_not_block_processing_false() -> None:
+    """A live STEER receipt stream must not strand parent is_processing=false."""
+    handler = _TestMessageHandler.create()
+    handler._stream_sessions["steer-1"] = "sess-1"
+    handler._stream_emits_processing_status["steer-1"] = False
+    handler._stream_methods["steer-1"] = ReqMethod.CHAT_SEND.value
+    handler._stream_sessions["parent-1"] = "sess-1"
+    handler._stream_emits_processing_status["parent-1"] = True
+    handler._stream_methods["parent-1"] = ReqMethod.CHAT_SEND.value
+
+    assert handler._session_has_streams_blocking_processing_false(
+        "sess-1", exclude_rid="parent-1"
+    ) is False
+
+
 @pytest.mark.asyncio
 async def test_attach_only_stream_does_not_block_processing_false() -> None:
     """A terminal is_processing=false must pass while an attach stream is live."""
@@ -1110,10 +1145,10 @@ async def test_fire_and_forget_cancel_forwards_cancelled_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_forward_loop_cancel_intent_uses_fire_and_forget(
+async def test_forward_loop_cancel_intent_awaits_agent_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """CHAT_CANCEL intent=cancel 必须 fire_and_forget，避免堵 _forward_loop。"""
+    """CHAT_CANCEL intent=cancel 必须 await AS，避免先推假成功、亲和漂走时 killed=0。"""
     handler = _TestMessageHandler.create()
     notify_modes: list[str] = []
 
@@ -1124,7 +1159,7 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
     await handler.start_forwarding()
     try:
         cancel_msg = Message(
-            id="cancel-fire-and-forget",
+            id="cancel-await-interrupt",
             type="req",
             channel_id="web",
             session_id="sess-1",
@@ -1133,12 +1168,13 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
             ok=True,
             req_method=ReqMethod.CHAT_CANCEL,
             is_stream=False,
+            metadata={"ws_id": "ws-stop-1"},
         )
         await handler.publish_user_messages(cancel_msg)
         deadline = asyncio.get_running_loop().time() + 2.0
         while not notify_modes and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.01)
-        assert notify_modes == ["fire_and_forget"]
+        assert notify_modes == ["await"]
     finally:
         await handler.stop_forwarding()
 

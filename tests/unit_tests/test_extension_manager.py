@@ -61,9 +61,42 @@ def test_registry_type_hints_resolve_without_transport_imports() -> None:
         ExtensionRegistry.get_agent_server_client,
         ExtensionRegistry.register_third_agent,
         ExtensionRegistry.get_third_agent,
+        ExtensionRegistry.register_skill_source_extension,
+        ExtensionRegistry.list_skill_source_extensions,
+        ExtensionRegistry.get_skill_source_extension,
     )
 
     assert all(get_type_hints(method) for method in methods)
+
+
+def test_skill_source_extension_registry_roundtrip() -> None:
+    """Skill Source factories register by provider_type for SkillManager lookup."""
+    ExtensionRegistry.reset_instance()
+    registry = ExtensionRegistry.create_instance(
+        callback_framework=object(),  # type: ignore[arg-type]
+        config={},
+        logger=None,
+    )
+    try:
+        class _Factory:
+            provider_type = "swarmskillhub"
+
+        factory = _Factory()
+        registry.register_skill_source_extension(factory)
+        assert registry.list_skill_source_extensions() == [factory]
+        assert registry.get_skill_source_extension("swarmskillhub") is factory
+        assert registry.get_skill_source_extension("missing") is None
+
+        with pytest.raises(ValueError, match="already registered"):
+            registry.register_skill_source_extension(_Factory())
+
+        class _Blank:
+            provider_type = "  "
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            registry.register_skill_source_extension(_Blank())
+    finally:
+        ExtensionRegistry.reset_instance()
 
 
 @pytest.mark.asyncio

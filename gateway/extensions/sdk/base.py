@@ -1,3 +1,16 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+"""扩展 SDK 基类（契约层）。
+
+``initialize``/``shutdown`` 为抽象契约；metadata/config 的 YAML 读取为自包含实现，
+函数内惰性 import 仅延迟加载 pyyaml。
+
+归属：``openjiuwen_protocol`` 只含纯数据结构，扩展基类与接口 ABC 由 gateway /
+AgentServer 实现侧各持一份副本（见协议包 ``__init__`` 的边界说明）；
+``jiuwenswarm.extensions.sdk`` 惰性转发本模块，两仓共享同一份类身份。
+"""
+
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -136,3 +149,6 @@ class BaseExtension(ABC):
             self._config_cache = yaml.safe_load(f) or {}
 
         return self._config_cache
+
+
+__all__ = ["MANIFEST_FILENAME", "BaseExtension"]

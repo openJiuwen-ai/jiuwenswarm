@@ -96,7 +96,8 @@ def _patch_project_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     """项目绑定桩：模拟入口已在目标 AgentServer 完成解析并打 marker。
 
     A3g 后 controller 不再本地反查项目表；无项目字段的请求本就无需 marker，
-    保留该 helper 以最小改动既有用例。"""
+    保留该 helper 以最小改动既有用例。
+    """
     del monkeypatch
 
 

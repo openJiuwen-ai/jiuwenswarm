@@ -1166,3 +1166,54 @@ async def test_shutdown_eof_resolves_ack_waiter_during_failed_recovery(monkeypat
     outcome = supervisor._shutdown_done.result()
     assert outcome["ok"] is False
     assert "closed before shutdown acknowledgement" in outcome["error"]
+
+@pytest.mark.asyncio
+async def test_reconnect_drops_old_generation_output() -> None:
+    holder = ConnHolder()
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    runtime = _BlockingRuntime()
+    first = _RecordingConn()
+    second = _RecordingConn()
+    holder.open_session(first)
+    await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
+    request = _request(ReqMethod.CHAT_SEND, is_stream=True)
+    dispatcher._spawn(dispatcher._run_request(request, holder.generation), holder.generation)
+    await asyncio.wait_for(runtime.started.wait(), 1)
+    old = holder.close_session()
+    await dispatcher.retire_generation(old)
+    holder.open_session(second)
+    runtime.release.set()
+    await asyncio.gather(*list(dispatcher._tasks))
+    assert runtime.cancelled is False
+    assert second.sent == []
+    assert first.sent == []
+
+@pytest.mark.asyncio
+async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
+    path = _socket_path()
+    server = IpcServer(path)
+    await server.start()
+    holder = ConnHolder()
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    runtime = _FakeRuntime()
+    await dispatcher.bind_runtime(runtime)
+    serve = asyncio.create_task(_serve_one_session(server, holder, dispatcher))
+    try:
+        client = await connect(path)
+        await client.send({"kind": KIND_GATEWAY_ATTACH})
+        for _ in range(50):
+            if runtime.attached:
+                break
+            await asyncio.sleep(0.01)
+        assert runtime.attached is True
+        await client.close()
+        await asyncio.wait_for(serve, 2)
+        assert runtime.disconnects == []
+    finally:
+        if not serve.done():
+            serve.cancel()
+            await asyncio.gather(serve, return_exceptions=True)
+        await server.close()

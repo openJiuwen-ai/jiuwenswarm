@@ -3,6 +3,7 @@ import { MediaItem } from '../../types';
 import { FileIcon, getFileExtensionLabel } from '../FileIcon';
 import { displayFileName, normalizePath } from '../../features/sessionAssets/sessionAssets';
 import { stripUploadDocumentBlocks } from '../../utils/documentMessage';
+import { uploadFileUrl } from '../../services/uploadFileUrl';
 
 export { stripUploadDocumentBlocks };
 
@@ -42,9 +43,9 @@ function mediaSrc(item: MediaItem): string | undefined {
     return `data:${mimeType};base64,${base64Data}`;
   }
   if (item.url) return item.url;
-  // Documents keep local absolute paths for agent @path refs; raw-file is project-scoped.
+  // Persisted images may retain only a path; build its edition-specific read URL.
   if (item.path && isImageItem(item)) {
-    return `/file-api/raw-file?path=${encodeURIComponent(item.path)}`;
+    return uploadFileUrl(item.path);
   }
   return undefined;
 }

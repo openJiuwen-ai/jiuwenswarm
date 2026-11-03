@@ -530,7 +530,8 @@ class RuntimeSessionProvisioner:
         participant_registry: RuntimeParticipantRegistry | None = None,
         team_execution_controller: object | None = None,
     ) -> None:
-        self._agent_manager = agent_manager
+        # 默认槽；有请求时经 get_current_agent_manager() 覆盖（见 _agent_manager）。
+        self._default_agent_manager = agent_manager
         self._plan_controller = plan_controller
         self._delete_lifecycle = delete_lifecycle
         self._prepared_session_deletes: dict[str, SessionDeleteLifecycle] = {}
@@ -544,6 +545,20 @@ class RuntimeSessionProvisioner:
         self._background_create_kvc_tasks: set[asyncio.Task[None]] = set()
         self._completed_session_deletes = _RecentDeleteResults[SessionDeleteResult]()
         self._completed_team_deletes = _RecentDeleteResults[TeamDeleteResult]()
+
+    @property
+    def _agent_manager(self) -> AgentManager:
+        """优先用当前请求绑定的 Manager，避免 create/fork 钉死默认槽."""
+        from jiuwenswarm.runtime.context import get_current_agent_manager
+
+        bound = get_current_agent_manager()
+        if bound is not None:
+            return bound
+        return self._default_agent_manager
+
+    @_agent_manager.setter
+    def _agent_manager(self, manager: AgentManager) -> None:
+        self._default_agent_manager = manager
 
     def set_delete_lifecycle(
         self,
@@ -768,6 +783,8 @@ class RuntimeSessionProvisioner:
             selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
             try:
                 if provision_input.cron_id and selection is not None:
+                    if selection.type != "model":
+                        raise ValueError("Scheduled task sessions only support a single model")
                     from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                     selection = ModelSelectionResolver().restore(selection)
@@ -782,6 +799,7 @@ class RuntimeSessionProvisioner:
                 raise SessionProvisionError(str(exc), code=getattr(exc, "code", "BAD_REQUEST")) from exc
             prewarm_eligible = (
                 not is_swarm
+                and not (provision_input.cron_id and channel_id == "web")
                 and not moa_enabled
                 and canonical_mode
                 in {

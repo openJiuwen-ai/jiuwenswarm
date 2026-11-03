@@ -616,9 +616,18 @@ def _find_interaction_payloads(
         if obj.get("type") == "__interaction__":
             return [obj.get("payload")]
         if obj.get("event_type") == "chat.ask_user_question":
+            questions = obj.get("questions") or []
+            first = questions[0] if questions and isinstance(questions[0], dict) else {}
+            # An approval's kind keeps it out of the question projection, which
+            # then renders it from the message: keep the question's wording.
             return [{
                 "id": obj.get("request_id", ""),
-                "value": {"questions": obj.get("questions", [])},
+                "value": {
+                    "questions": questions,
+                    "message": first.get("question", ""),
+                    "interrupt_id": obj.get("interrupt_id", ""),
+                    "interrupt_kind": obj.get("kind", ""),
+                },
             }]
         found: list[Any] = []
         for value in obj.values():

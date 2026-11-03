@@ -14,7 +14,10 @@ from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypatch, tmp_path):
+@pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
+async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypatch, tmp_path, ipc_mode):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", ipc_mode)
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path))
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     monkeypatch.setattr(module, "_RECOVERY_BACKOFF_INITIAL", .1)
@@ -84,11 +87,14 @@ async def test_identity_failure_does_not_start_automatic_recovery():
 
 
 @pytest.mark.asyncio
-async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkeypatch, tmp_path):
+@pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
+async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkeypatch, tmp_path, ipc_mode):
     import os
     from pathlib import Path
     import psutil
 
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", ipc_mode)
     shim = tmp_path / "bootstrap"
     shim.mkdir()
     blocked = tmp_path / "blocked"

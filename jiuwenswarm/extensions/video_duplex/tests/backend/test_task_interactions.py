@@ -308,6 +308,7 @@ def test_answer_input_preserves_permission_card_id():
         "resume_answer": True,
         "interaction": {
             "request_id": "core-approval",
+            "interrupt_id": "intr-approval",
             "source": "permission_interrupt",
             "operation_id": "op-1",
             "answers": [{
@@ -324,6 +325,24 @@ def test_answer_input_preserves_permission_card_id():
         "selected_options": ["allow_once"],
         "card_id": "card-1",
     },)
+    assert request.interrupt_id == "intr-approval"
+    assert request.to_agent_request().params["interrupt_id"] == "intr-approval"
+
+
+def test_projected_questions_keep_the_interrupt_id_of_the_event():
+    voice = information_question(dict(
+        request_id="q", interrupt_id="intr-q", source="ask_user_interrupt",
+        questions=[{"question": "预算？"}],
+    ))
+    native = native_approval_question({
+        "request_id": "core-approval", "interrupt_id": "intr-approval", "source": "permission_interrupt",
+        "questions": [{"question": "允许执行？"}],
+    })
+    legacy = information_question(dict(request_id="q", source="ask_user_interrupt", questions=[{"question": "预算？"}]))
+
+    assert voice["interrupt_id"] == "intr-q"
+    assert native["interrupt_id"] == "intr-approval"
+    assert legacy["interrupt_id"] == ""
 
 
 async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path):
@@ -425,8 +444,8 @@ async def test_native_permission_card_replays_and_closes_on_resolution():
         "id": "job", "session": "task-duplex:web-session", "status": "waiting_user",
         "interaction": {
             **native_approval_question({
-                "request_id": "core-approval", "source": "permission_interrupt",
-                "questions": [{"question": "允许执行？"}],
+                "request_id": "core-approval", "interrupt_id": "intr-approval",
+                "source": "permission_interrupt", "questions": [{"question": "允许执行？"}],
             }),
             "id": "interaction-1",
         },
@@ -438,6 +457,7 @@ async def test_native_permission_card_replays_and_closes_on_resolution():
     assert [name for _, name, _ in events] == ["chat.ask_user_question"]
     assert events[0][2]["session_id"] == "web-session"
     assert events[0][2]["duplex_job_id"] == "job"
+    assert events[0][2]["interrupt_id"] == "intr-approval"
     task["interaction"]["state"] = "accepted"
     await manager._sync_approval_card(ws, task, key)  # pylint: disable=protected-access
     assert events[-1][1] == "video.search.confirmation_closed"

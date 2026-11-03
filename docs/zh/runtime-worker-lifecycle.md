@@ -1,15 +1,18 @@
 # Runtime Worker 停止、升级与故障恢复
 
-Worker 常驻用于在 Front 重启后复用已加载的 Runtime。最终退出的责任属于启动它的应用或服务管理者。
+桌面与普通服务使用 resident 模式，让 Worker 在 Front 重启后复用已加载的 Runtime。最终退出的责任属于启动它的应用或服务管理者。HarmonyOS 默认使用 `front_loopback`，其 Worker 随 Front 断开退出，不参与常驻端点选举或重连；两种模式的最终关闭都要核验进程实际退出。
 
 | 操作 | 行为 |
 | --- | --- |
-| 普通 Front 重启或 Supervisor `stop()` | 断开连接，保留 Worker |
+| resident 模式普通 Front 重启或 Supervisor `stop()` | 断开连接，保留 Worker |
+| HarmonyOS 默认 `front_loopback` 的 Supervisor `stop()` | 关闭并回收当前 Front 启动的 Worker |
 | 应用正式退出或升级 | 先停止 Front，再显式关闭当前部署的 Worker，包括重新连接的 Worker |
 | macOS 关闭窗口 | 遵循桌面隐藏到后台的既有行为；正式 Quit 才执行最终清理 |
 | 进程被系统强杀、断电或解释器崩溃 | 无法保证运行清理；下次启动执行身份检查与兼容处理 |
 
 IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。Worker HELLO 还携带代码/构建身份、实际安装依赖身份及进程创建时间；版本、依赖或构建改变后不复用旧代码进程。WHL 和原生桌面每次后端构建获得独立构建 ID，即使输入源码相同也会更换 ID。WHL 在构建时写入成品身份，启动读取该身份并检查实际依赖；源码 checkout 继续校验内容。
+
+共享数据目录中的不同服务实例继续通过 `JIUWENSWARM_RUNTIME_INSTANCE`（优先）或 `HOSTNAME` 区分端点和部署身份。停止命令须使用对应实例的相同环境；不得将其他实例的历史 Worker 当成当前实例的进程回收。
 
 关闭成功需要同时确认完整关闭应答和实际 PID 退出。强制结束、负应答或缺少应答会报告失败；升级安装器还检查本次退出产生的结果文件，清理失败时停止替换后端。旧协议没有应答能力时，以验证后的进程退出作为兼容条件。
 

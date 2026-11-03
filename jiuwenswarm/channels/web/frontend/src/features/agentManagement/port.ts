@@ -58,6 +58,8 @@ export interface AgentCatalogListOptions {
   filter?: 'builtin+hub' | 'mine';
   includeTeamCompatibility?: boolean;
   query?: string;
+  /** 企业版列表遇到 Pod 冷启动时回调。个人版不会触发。 */
+  onPodStarting?: () => void;
 }
 
 export interface SkillListOptions {

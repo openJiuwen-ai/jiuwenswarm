@@ -789,66 +789,35 @@ class SessionMessageService:
             await self._notify(record)
         return record is not None
 
-    async def complete_waiting_after_resume(
+    async def rebind_waiting_question(
         self,
-        target_session_id: str,
+        message_id: str,
         *,
         interrupt_request_id: str,
         interrupt_source: str,
-        waiting_user: bool,
-        failed: bool,
-        error: str = "",
-        next_interrupt_request_id: str = "",
-        next_interrupt_source: str = "",
     ) -> bool:
-        """Advance the mailbox item resumed by a target user's interrupt answer."""
-
-        record = await self.find_waiting_for_resume(
-            target_session_id,
-            interrupt_request_id,
-            interrupt_source,
+        updated = await self._store_call(
+            self._store.replace_waiting_correlation,
+            message_id,
+            interrupt_request_id=interrupt_request_id,
+            interrupt_source=interrupt_source,
         )
-        if record is None:
-            return False
-        if waiting_user:
-            next_request_id = str(next_interrupt_request_id or "").strip()
-            next_source = str(next_interrupt_source or "").strip()
-            if not next_request_id or not next_source:
-                return False
-            updated = await self._store_call(
-                self._store.replace_waiting_correlation,
-                record.message_id,
-                expected_interrupt_request_id=interrupt_request_id,
-                expected_interrupt_source=interrupt_source,
-                interrupt_request_id=next_request_id,
-                interrupt_source=next_source,
-            )
-        else:
-            return await self.finalize_waiting_message(
-                message_id=record.message_id,
-                target_session_id=target_session_id,
-                status="failed" if failed else "succeeded",
-                error_code="EXECUTION_FAILED" if failed else "",
-                error=error,
-            )
         if updated is not None:
             await self._notify(updated)
         return updated is not None
 
-    async def find_waiting_for_resume(
+    async def find_waiting_for_pause(
         self,
         target_session_id: str,
-        interrupt_request_id: str,
-        interrupt_source: str,
+        interaction_ids: frozenset[str],
     ) -> SessionMessageRecord | None:
-        """Return the exact mailbox item addressed by an interrupt answer."""
+        """Return the mailbox item an answer resumes: it waits on an interaction of that pause."""
 
         await self.start()
         return await self._store_call(
-            self._store.waiting_for_resume,
+            self._store.waiting_for_pause,
             target_session_id,
-            interrupt_request_id,
-            interrupt_source,
+            interaction_ids,
         )
 
     async def finalize_waiting_message(

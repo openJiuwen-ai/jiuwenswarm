@@ -151,6 +151,7 @@ export interface Question {
   options: QuestionOption[];
   multi_select?: boolean;
   card_id?: string;
+  matched_rule?: string;
   tool_payload?: unknown;
   reviewer_metadata?: AutoReviewerMetadata;
 }
@@ -160,6 +161,7 @@ export interface Question {
  */
 export interface AskUserQuestionPayload {
   duplexJobId?: string;
+  interruptId?: string;
   request_id: string;
   questions: Question[];
   source?: string; // 来源标识，用于区分自进化确认和工具权限确认

@@ -169,7 +169,7 @@ Use `read_file` to load `workflows/sop-generation.md` (absolute path in the "Ski
 
 <constraint>
 
-- **HARD RULE — Chunked file writes**: a single `write_file` content MUST NOT exceed 2000 characters. If the document is longer, write the first section with `write_file` (≤2000 chars), then `read_file` + `edit_file` for each subsequent section (≤2000 chars each). A single oversized `write_file` will be truncated by the model's output token budget, producing `Unterminated string` JSON that the harness rejects — the file is NEVER written. This rule overrides any impulse to write the whole document at once.
+- **HARD RULE — Chunked file writes**: a single `write_file` content MUST NOT exceed 3000 characters. If the document is longer, write the first section with `write_file` (≤3000 chars), then `read_file` + `edit_file` for each subsequent section (≤3000 chars each). A single oversized `write_file` will be truncated by the model's output token budget, producing `Unterminated string` JSON that the harness rejects — the file is NEVER written. This rule overrides any impulse to write the whole document at once.
 - ALWAYS follow the [A] sequence strictly — no skipping between stages, except user-optional (e.g. [A3]).
 - NEVER run without the workflow SOPs loaded.
 - NEVER enter a stage without completing the preceding stage first.
