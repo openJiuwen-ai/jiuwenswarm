@@ -28,7 +28,7 @@ import { useWebUIPanels, type WebUIStyleOverrides } from '../../features/webui';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
 
 const rightPanelStyles: WebUIStyleOverrides = {
-  Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto' },
+  Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto p-3' },
   Box: { style: { minWidth: 0, minHeight: 0 } },
 };
 import type { TeamMemberExecutionEvent, TeamTask, TeamTaskStatus } from '../../stores/sessionStore';
