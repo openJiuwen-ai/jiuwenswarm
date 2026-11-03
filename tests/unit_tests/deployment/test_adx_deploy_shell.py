@@ -105,5 +105,41 @@ web_start_systemd 127.0.0.1
         self.assertNotIn("8888", trace)
 
 
+    def test_cleanup_actions_do_not_require_startup_bindings(self):
+        settings = self.root / "settings.yaml"
+        settings.write_text("business_env_file: ${ADX_BUSINESS_ENV_FILE}\ngateway: {}\n")
+        runner = self.root / "python-wrapper"
+        runner.write_text('#!/bin/sh\nif [ "$1" = -m ] && [ "$2" = pip ]; then echo pip-uninstall >> "$TRACE"; exit 0; fi\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+        runner.chmod(0o755)
+        result = self.run_script('''
+BUSINESS_PYTHON="$OUTPUT/python-wrapper"
+SWARM_SETTINGS="$OUTPUT/settings.yaml"
+SWARM_BINDINGS="$OUTPUT/missing.env"
+export SWARM_HOME="$OUTPUT" SWARM_INSTANCE_NAME=cleanup-fixture
+get_local_ip() { echo 127.0.0.1; }
+gateway_has_systemd() { return 0; }
+web_has_systemd() { return 0; }
+exec_on_host() {
+    case "$*" in
+        *LoadState*) echo loaded;;
+        *"systemctl stop"*) echo "$*" >> "$TRACE";;
+        *) return 90;;
+    esac
+}
+pgrep() { return 1; }
+swarm_disable_systemd() { echo "disable=$(gateway_service_name)" >> "$TRACE"; }
+parse_args down
+process_down
+process_status
+process_uninstall
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        trace = self.trace.read_text()
+        self.assertIn("systemctl stop jiuwenswarm-web-cleanup-fixture", trace)
+        self.assertIn("systemctl stop jiuwenswarm-gateway-cleanup-fixture", trace)
+        self.assertIn("disable=jiuwenswarm-gateway-cleanup-fixture", trace)
+        self.assertIn("pip-uninstall", trace)
+
+
 if __name__ == "__main__":
     unittest.main()
