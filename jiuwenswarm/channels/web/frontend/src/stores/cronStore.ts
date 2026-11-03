@@ -154,11 +154,17 @@ export const useCronStore = create<CronState>((set, get) => ({
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
       set({ jobs: webJobs, isLoading: false });
       // 到点触发：list 带上 active_session_id → 记入 lastRunSessionId → App 后台 live
-      adoptActiveCronSessions(
+      // 同时刷侧栏 cronSessions，否则已展开分组仍是旧缓存，要收起再展开才看见新会话。
+      const adopted = adoptActiveCronSessions(
         webJobs,
         get().setLastRunSessionId,
         () => get().lastRunSessionId,
       );
+      for (const jobId of adopted) {
+        const job = webJobs.find((j) => j.id === jobId);
+        if (!job) continue;
+        void get().loadCronSessions(job.project_id || 'default', jobId);
+      }
       return true;
     } catch {
       // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，
