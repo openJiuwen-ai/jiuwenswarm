@@ -313,6 +313,22 @@ def test_build_agent_mode_rail_code_returns_code_rail() -> None:
     assert set(rail._allowed_tools) == set(_CODE_PLAN_ALLOWED_TOOLS)
 
 
+@pytest.mark.parametrize(("profile", "expected"), [("code", "code"), ("design", "design"), ("work", "code")])
+def test_todo_progress_rail_mode_follows_prompt_profile(profile: str, expected: str) -> None:
+    """TodoProgressRail logs the actual mode; design must not be recorded as code,
+    including on the hot-reload path which always passes ``mode="code"``. Team members
+    never switch modes, so their profile keeps the base default and counts as code."""
+    from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import TodoProgressRail
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._static_prompt_profile = profile
+    rails = adapter._build_agent_rails({}, {}, mode="code")
+    assert [r._mode for r in rails if isinstance(r, TodoProgressRail)] == [expected]
+
+
 def test_code_subagents_general_agent_enabled_sets_flag() -> None:
     """``subagents.general_agent.enabled: true`` must return
     ``should_add_general=True`` — mirroring office DeepAdapter, so that

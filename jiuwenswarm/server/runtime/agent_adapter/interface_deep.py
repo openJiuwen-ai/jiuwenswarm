@@ -177,6 +177,7 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
 from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.xiaoyi_reference import resolve_append_reference_enabled
 from jiuwenswarm.agents.harness.common.rails.cspl import CsplConfig, CsplSentinelRail
+from jiuwenswarm.agents.harness.common.rails.todo_progress_rail import TodoProgressRail
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.server.runtime.agent_adapter.assembly_hooks import (
@@ -1307,6 +1308,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # In-flight asyncio tasks per session (stream/non-stream agent runs).
         self._session_agent_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._task_planning_rail: TaskPlanningRail | None = None
+        self._todo_progress_rail: TodoProgressRail | None = None
         self._context_assemble_rail: ContextAssembleRail | None = None
         self._context_assemble_mode: str | None = None
         self._context_processor_rail: ContextProcessorRail | None = None
@@ -5089,6 +5091,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             task_planning_rail = None
         return task_planning_rail
 
+    @staticmethod
+    def _build_todo_progress_rail(mode: str = "agent") -> TodoProgressRail | None:
+        """Build TodoProgressRail（主 agent 的 todo 进度度量，只观测）。"""
+        try:
+            return TodoProgressRail(mode=mode)
+        except Exception as exc:
+            logger.error("[JiuWenSwarmDeepAdapter] TodoProgressRail create failed: %s", type(exc).__name__)
+            return None
+
     def _build_subagent_rail(self) -> SubagentRail | None:
         """Build SubagentRail for subagent delegation."""
         try:
@@ -5727,6 +5738,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 else []
             ),
             _RailBuildInfo("_task_planning_rail", self._build_task_planning_rail),
+            _RailBuildInfo("_todo_progress_rail", self._build_todo_progress_rail, {"mode": mode}),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo(
@@ -7018,6 +7030,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             if self._task_planning_rail is not None:
                 await self._instance.register_rail(self._task_planning_rail)
                 logger.info("[JiuWenSwarmDeepAdapter] TaskPlanningRail registered for agent mode")
+        if self._todo_progress_rail is None:
+            self._todo_progress_rail = self._build_todo_progress_rail("agent")
+            if self._todo_progress_rail is not None:
+                await self._instance.register_rail(self._todo_progress_rail)
+                logger.info("[JiuWenSwarmDeepAdapter] TodoProgressRail registered for agent mode")
         if self._is_xiaoyi_channel():
             if self._ask_user_rail is not None:
                 await self._instance.unregister_rail(self._ask_user_rail)
