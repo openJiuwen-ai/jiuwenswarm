@@ -99,14 +99,12 @@ import {
   buildDynamicTopicStarterSlate,
   buildDirectInputEvent,
   buildExposureEvent,
-  buildNotInterestedEvent,
   buildPageLeftEvent,
   buildSessionBoundEvent,
   buildTopicClickEvent,
   buildTopicStarterRequest,
   topicStarterShowsProviderRefusal,
   topicStarterShowsRetryAction,
-  topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
   type TopicStarterEvent,
@@ -127,7 +125,7 @@ export interface ChatHistoryPagerProps {
 
 interface ChatPanelProps {
   promptSuggestionBox: PromptSuggestionBox;
-  onOpenRecommendationSettings?: () => void;
+  onOpenGeneralSettings?: () => void;
   onSendMessage: (
     content: string,
     mediaItems?: MediaItem[],
@@ -243,14 +241,10 @@ const HUMAN_SHARE_IDENTITY: TeamMemberIdentity = { role: 'human_agent' };
 function SuggestionCard({
   topic,
   onClick,
-  onNotInterested,
-  dislikeLabel,
   disabled = false,
 }: {
   topic: TopicStarterTopic;
   onClick: () => void;
-  onNotInterested?: () => void;
-  dislikeLabel: string;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
@@ -333,20 +327,6 @@ function SuggestionCard({
       <button data-testid="chat-panel-topic-open" data-variant={topic.title} className="chat-suggestion-card__main" type="button" onClick={onClick} disabled={disabled}>
         <span className="chat-suggestion-card__text">{topic.title}</span>
       </button>
-      {onNotInterested && (
-        <button
-          className="chat-suggestion-card__dismiss"
-          data-testid="chat-panel-topic-dismiss"
-          data-variant={topic.title}
-          type="button"
-          aria-label={dislikeLabel}
-          title={dislikeLabel}
-          onClick={onNotInterested}
-          disabled={disabled}
-        >
-          <X size={15} strokeWidth={2} />
-        </button>
-      )}
     </div>
   );
 }
@@ -1190,7 +1170,7 @@ function BeeBanner({
  */
 export const ChatPanel = React.memo(function ChatPanel({
   promptSuggestionBox,
-  onOpenRecommendationSettings,
+  onOpenGeneralSettings,
   onSendMessage,
   onEnsureSession,
   onForkSession,
@@ -1356,14 +1336,13 @@ export const ChatPanel = React.memo(function ChatPanel({
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
   const readyWhileHiddenRef = useRef(false);
   const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
-  const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId ? dynamicSlate.slate : null;
+  const visibleTopicSlate = recommendationState !== 'disabled' && dynamicSlate?.visitId === topicStarterVisitId
+    ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
   const acceptingDynamicRef = useRef(false);
   const interactedRecommendationVisitRef = useRef<string | null>(null);
   const topicStarterClickLatchRef = useRef<string | null>(null);
   const [topicStarterClickLatch, setTopicStarterClickLatch] = useState<string | null>(null);
-  const topicStarterDismissPendingRef = useRef(new Set<string>());
-  const [topicStarterDismissPending, setTopicStarterDismissPending] = useState(new Set<string>());
   const topicStarterVisitIdRef = useRef(topicStarterVisitId);
   const visibleTopicSlateRef = useRef<TopicStarterVisibleSlate | null>(null);
   const topicStarterExposureAcknowledgementsRef = useRef(new Map<string, Promise<unknown>>());
@@ -1381,8 +1360,6 @@ export const ChatPanel = React.memo(function ChatPanel({
     text: nextInputSuggestion,
     suggestions: nextInputSuggestions,
     accept: acceptNextInputSuggestion,
-    acceptForSend: acceptSuggestionForSend,
-    dismiss: dismissNextInputSuggestion,
     takeSubmission: takeNextInputSubmission,
     markShown: markNextInputSuggestionShown,
   } = promptSuggestionBox;
@@ -1615,57 +1592,19 @@ export const ChatPanel = React.memo(function ChatPanel({
     return null;
   }, [continuedFromSessionId, messages]);
 
-  // The reply the suggestion chip follows: the session's last assistant message in the timeline.
-  const latestAssistantMessageKey = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.role === 'assistant') return message.renderKey ?? message.id;
-    }
-    return null;
-  }, [messages]);
-
-  // Whether at least half of the suggestion chip is inside the timeline's scroll viewport. While it
-  // is not, the empty composer shows the suggestion as its placeholder, as src-raw shows every
-  // suggestion, so the suggestion is in view from the moment it appears.
-  const [promptSuggestionChipOnScreen, setPromptSuggestionChipOnScreen] = useState(false);
-  const promptSuggestionChipObserverRef = useRef<IntersectionObserver | null>(null);
-  const observePromptSuggestionChip = useCallback((row: HTMLDivElement | null) => {
-    promptSuggestionChipObserverRef.current?.disconnect();
-    promptSuggestionChipObserverRef.current = null;
-    if (!row) {
-      setPromptSuggestionChipOnScreen(false);
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      // A chip a quarter in view still intersects; only the ratio says whether half of it is in view.
-      setPromptSuggestionChipOnScreen(entries[entries.length - 1].intersectionRatio >= 0.5);
-    }, { root: scrollContainerRef.current, threshold: 0.5 });
-    observer.observe(row);
-    promptSuggestionChipObserverRef.current = observer;
-  }, []);
-  const nextInputSuggestionPlaceholder = nextInputSuggestion && !promptSuggestionChipOnScreen
-    ? t('chat.promptSuggestionBox.placeholder', { label: t('chat.promptSuggestionBox.label'), text: nextInputSuggestion })
+  // Keep the next question in the empty composer regardless of timeline scroll position.
+  const nextInputSuggestionPlaceholder = nextInputSuggestion
+    ? t('chat.promptSuggestionBox.placeholder', { text: nextInputSuggestion })
     : null;
   useEffect(() => {
     if (nextInputSuggestions.length) markNextInputSuggestionShown();
   }, [nextInputSuggestionKey, markNextInputSuggestionShown, nextInputSuggestions.length]);
 
-  // The chip's send and close live in a ref: they close over callbacks defined further down.
-  const promptSuggestionChipRef = useRef<{ send: (suggestionId?: string) => void; dismiss: (suggestionId?: string) => void }>({
-    send: () => {},
-    dismiss: () => {},
-  });
-
   const renderAfterMessage = useCallback(
     (message: Message) => {
       const codeChanges = renderCodeChangesAfterMessage(message);
       const messageKey = message.renderKey ?? message.id;
-      const showSuggestionChip =
-        nextInputSuggestion !== null &&
-        latestAssistantMessageKey !== null &&
-        messageKey === latestAssistantMessageKey;
       if (
-        !showSuggestionChip &&
         (!forkBoundaryMessageKey ||
           messageKey !== forkBoundaryMessageKey ||
           !continuedFromSessionId ||
@@ -1691,50 +1630,12 @@ export const ChatPanel = React.memo(function ChatPanel({
               </span>
             </button>
           ) : null}
-          {showSuggestionChip && nextInputSuggestions.length ? (
-            <div
-              ref={observePromptSuggestionChip}
-              className="chat-prompt-suggestion-chip-row"
-              data-testid="chat-panel-prompt-suggestion-chip"
-            >
-              {nextInputSuggestions.map((suggestion) => (
-                <div className="chat-prompt-suggestion-chip" key={suggestion.suggestionId}>
-                  <button
-                    type="button"
-                    className="chat-prompt-suggestion-chip__send"
-                    title={t('chat.promptSuggestionBox.sendHint')}
-                    onClick={() => promptSuggestionChipRef.current.send(suggestion.suggestionId)}
-                    data-testid="chat-panel-prompt-suggestion-chip-send"
-                    data-variant={suggestion.suggestionId}
-                  >
-                    <span className="chat-prompt-suggestion-chip__label">{t('chat.promptSuggestionBox.label')}</span>
-                    <span className="chat-prompt-suggestion-chip__text">{suggestion.text}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="chat-prompt-suggestion-chip__dismiss"
-                    aria-label={t('chat.promptSuggestionBox.dismiss', { text: suggestion.text })}
-                    title={t('chat.promptSuggestionBox.dismiss', { text: suggestion.text })}
-                    onClick={() => promptSuggestionChipRef.current.dismiss(suggestion.suggestionId)}
-                    data-testid="chat-panel-prompt-suggestion-chip-dismiss"
-                    data-variant={suggestion.suggestionId}
-                  >
-                    <X size={14} strokeWidth={2} aria-hidden="true" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
         </>
       );
     },
     [
       continuedFromSessionId,
       forkBoundaryMessageKey,
-      latestAssistantMessageKey,
-      nextInputSuggestion,
-      nextInputSuggestions,
-      observePromptSuggestionChip,
       onOpenContinuedFromSession,
       renderCodeChangesAfterMessage,
       t,
@@ -2094,7 +1995,8 @@ export const ChatPanel = React.memo(function ChatPanel({
         return;
       }
       acceptingDynamicRef.current = true;
-      if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      if (payload.enabled && visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      if (!payload.enabled) setDynamicSlate(null);
       recommendationSwitchStateRef.current = payload.enabled ? 'preparing' : 'disabled';
       setRecommendationState(recommendationSwitchStateRef.current);
       setRecommendationRefresh(value => value + 1);
@@ -2262,18 +2164,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     [activeSessionId, ensureTopicStarterExposureAcknowledged, onSendMessage, sendTopicStarterEvent, takeNextInputSubmission],
   );
 
-  const handleDismissNextInputSuggestion = useCallback((suggestionId?: string) => {
-    dismissNextInputSuggestion(suggestionId);
-    composeRef.current?.querySelector<HTMLElement>('[data-testid="chat-panel-input"]')?.focus();
-  }, [dismissNextInputSuggestion]);
   const handleEmptyComposerTab = useCallback(() => acceptNextInputSuggestion('tab'), [acceptNextInputSuggestion]);
-  promptSuggestionChipRef.current = {
-    send: (suggestionId?: string) => {
-      const taken = acceptSuggestionForSend(suggestionId);
-      if (taken) void handleSendMessage(taken.text);
-    },
-    dismiss: handleDismissNextInputSuggestion,
-  };
 
   // 当发送消息时强制滚动到底部
   useEffect(() => {
@@ -2360,81 +2251,6 @@ export const ChatPanel = React.memo(function ChatPanel({
   );
 
   // Keep only the shown cards of this slate that pass; an empty page falls back to the static entrances.
-  const keepShownCards = useCallback((slateId: string, keep: (item: TopicStarterTopic) => boolean) => setDynamicSlate(current => {
-    if (!current || current.slate.slateId !== slateId) return current;
-    const topics = current.slate.topics.filter(keep);
-    return topics.length === 0 ? null : { ...current, slate: { ...current.slate, topics } };
-  }), []);
-
-  // After a dismissal, a pause or an undo the page reads the pool again. The read keeps the
-  // cards of the issued slate it names, the one on screen unless the caller names another.
-  const rereadTopicStarterPool = useCallback((issuedSlateId?: string) => {
-    const shown = visibleTopicSlateRef.current;
-    if (acceptingDynamicRef.current) {
-      // The new read replaces the page and fills the freed places by rank.
-      if (shown) keepSlateOnRefreshRef.current = true;
-      refillSlateIdRef.current = issuedSlateId ?? shown?.slateId ?? null;
-      setRecommendationRefresh(value => value + 1);
-      return;
-    }
-    if (!shown) return;
-    // The user has started typing, so nothing new appears: the page only takes off the
-    // shown cards the pool no longer serves, keeping the order and lineage of the rest.
-    void webRequest<TopicStarterResponse>(
-      'topic_starters.get',
-      { ...buildTopicStarterRequest(shown.sessionId, shown.projectId), visit_id: topicStarterVisitIdRef.current },
-      { timeoutMs: 60_000 },
-    )
-      .then(response => {
-        // The read shows one window of the pool, possibly of a successor written while the user typed;
-        // a shown card stays while the pool still serves its card_id under any revision.
-        if (response?.available !== false && !Array.isArray(response?.served_card_ids)) return;
-        const served = new Set(response.served_card_ids ?? []);
-        keepShownCards(shown.slateId, item => served.has(item.card_id ?? ''));
-      })
-      .catch(error => console.error('topic_starters.get after typed-page feedback failed:', error));
-  }, [keepShownCards]);
-
-  const handleNotInterested = useCallback(
-    (topic: TopicStarterTopic) => {
-      const slate = visibleTopicSlateRef.current;
-      if (!slate) return;
-      const interactionKey = `${topicStarterVisitIdRef.current}\u0000${slate.slateId}\u0000${topic.id}`;
-      if (topicStarterDismissPendingRef.current.has(interactionKey)) return;
-      topicStarterDismissPendingRef.current.add(interactionKey);
-      setTopicStarterDismissPending(current => {
-        const next = new Set(current);
-        next.add(interactionKey);
-        return next;
-      });
-
-      const releaseDismissPending = () => {
-        topicStarterDismissPendingRef.current.delete(interactionKey);
-        setTopicStarterDismissPending(current => {
-          if (!current.has(interactionKey)) return current;
-          const next = new Set(current);
-          next.delete(interactionKey);
-          return next;
-        });
-      };
-      void ensureTopicStarterExposureAcknowledged(slate)
-        .then(() => sendTopicStarterEvent(buildNotInterestedEvent(slate, topic.id)))
-        .then(() => {
-          // 先在本地移除，再重新读同一池补上空出的位置。
-          if (slate.policyId === 'topic-starter-mvp-v6' && visibleTopicSlateRef.current?.slateId === slate.slateId) {
-            rereadTopicStarterPool();
-          }
-          keepShownCards(slate.slateId, item => item.id !== topic.id);
-        })
-        .catch(error => {
-          setTopicStarterErrorKey('network.requestFailed');
-          console.error('topic_starters not-interested lineage was not recorded:', error);
-        })
-        .finally(releaseDismissPending);
-    },
-    [ensureTopicStarterExposureAcknowledged, keepShownCards, rereadTopicStarterPool, sendTopicStarterEvent],
-  );
-
   const markDesktopFileDropZoneActive = useCallback(() => {
     desktopFileDropAcceptUntilRef.current = Date.now() + 1200;
   }, []);
@@ -2868,27 +2684,42 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
-                  {t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate)))}
+                {recommendationState === 'disabled' ? (
+                  <p className="w-full text-sm text-text-muted" data-testid="chat-panel-topic-disabled-hint">
+                    {t('chat.topicStarter.disabledHint')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-general-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
+                  </p>
+                ) : recommendationState === 'missing_configuration' ? (
+                  <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-topic-configuration-hint">
+                    {t('chat.topicStarter.statusMissingConfiguration')}
+                    <button type="button" className="ml-2 text-text-link underline" data-testid="chat-panel-topic-settings" onClick={() => onOpenGeneralSettings?.()}>
+                      {t('chat.topicStarter.openSettings')}
+                    </button>
+                  </div>
+                ) : topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
+                  {recommendationState !== 'provider_unavailable' ? t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate))) : null}
                   {topicStarterShowsProviderRefusal(recommendationState) ? ` ${t('chat.topicStarter.providerRefusal')}` : null}
-                  {topicStarterShowsSettingsAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-settings" onClick={() => onOpenRecommendationSettings?.()} className="ml-2 text-text-link underline">{t('chat.topicStarter.openSettings')}</button> : null}
                   {topicStarterShowsRetryAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-retry" onClick={() => { manualRecommendationRetry.current = true; if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true; setRecommendationRefresh(value => value + 1); }} className="ml-2 text-text-link underline">{t('chat.topicStarter.retryPreparation')}</button> : null}
                 </div> : null}
-                {topicStarterErrorKey && (
+                {recommendationState !== 'disabled' && topicStarterErrorKey && topicStarterErrorKey !== 'network.requestFailed' && (
                   <p role="alert" data-testid="chat-panel-welcome-topic-starter-error">
                     {t(topicStarterErrorKey)}
                   </p>
                 )}
+                {Boolean(visibleTopicSlate?.topics.length) && (
+                  <h2 className="chat-suggestions__title" data-testid="chat-panel-topic-heading">
+                    {t('chat.topicStarter.recommendedForYou')}
+                  </h2>
+                )}
                 {(visibleTopicSlate?.topics ?? []).map(topic => {
-                  const dismissInteractionKey = visibleTopicSlate ? `${topicStarterVisitId}\u0000${visibleTopicSlate.slateId}\u0000${topic.id}` : null;
                   return (
                     <SuggestionCard
                       key={topic.id}
                       topic={topic}
                       onClick={() => handleSuggestion(topic)}
-                      onNotInterested={() => handleNotInterested(topic)}
-                      dislikeLabel={t('chat.topicStarter.notInterested')}
-                      disabled={topicStarterSuggestionsDisabled || Boolean(dismissInteractionKey && topicStarterDismissPending.has(dismissInteractionKey))}
+                      disabled={topicStarterSuggestionsDisabled}
                     />
                   );
                 })}

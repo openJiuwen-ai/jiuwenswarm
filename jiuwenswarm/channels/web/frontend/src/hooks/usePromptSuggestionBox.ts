@@ -26,6 +26,9 @@ function record(event_type: 'shown' | 'accepted' | 'ignored' | 'suppressed', sug
 export function usePromptSuggestionBox(activeSessionId: string | null, hasConversation: boolean, pageActive: boolean) {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const current = useRef<Suggestion[]>([]);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const controlRevision = useRef(0);
+  const receiveReady = useRef<(payload: ReadyPayload) => void>(() => {});
   // Which chips the page has already recorded as shown, and when that first happened.
   const shownAtById = useRef(new Map<string, number>());
   const shownIds = useRef(new Set<string>());
@@ -71,22 +74,29 @@ export function usePromptSuggestionBox(activeSessionId: string | null, hasConver
   }, [finish, replace]);
 
   const setEnabled = useCallback((next: boolean) => {
+    if (enabled.current !== next) controlRevision.current += 1;
     enabled.current = next;
+    if (next) setRefreshVersion(value => value + 1);
     if (next) return;
     unshown.current.clear();
     for (const sessionId of completedRequests.current.keys()) completedRequests.current.set(sessionId, null);
     close(null);
   }, [close]);
 
+  useEffect(() => webClient.onStateChange(state => {
+    if (state === 'ready') setRefreshVersion(value => value + 1);
+  }), []);
+
   useEffect(() => {
     const stopFinal = webClient.on<CompletedPayload>('chat.final', ({ payload }) => {
       const { session_id: sessionId, request_id: requestId } = payload;
       if (typeof sessionId !== 'string' || typeof requestId !== 'string') return;
       completedRequests.current.set(sessionId, requestId);
+      setRefreshVersion(value => value + 1);
       if (unshown.current.get(sessionId)?.[0]?.requestId !== requestId) unshown.current.delete(sessionId);
       if (current.current[0]?.sessionId === sessionId && current.current[0]?.requestId !== requestId) close(null);
     });
-    const stopReady = webClient.on<ReadyPayload>('prompt_suggestion.ready', ({ payload }) => {
+    receiveReady.current = (payload: ReadyPayload) => {
       const { session_id: sessionId, request_id: requestId, suggestion_id: suggestionId, text } = payload;
       if (typeof sessionId !== 'string' || typeof requestId !== 'string' || typeof suggestionId !== 'string'
         || typeof text !== 'string' || !text.trim()) return;
@@ -113,6 +123,13 @@ export function usePromptSuggestionBox(activeSessionId: string | null, hasConver
       completedRequests.current.set(sessionId, requestId);
       unshown.current.set(sessionId, next);
       if (pageActive && state.activeSessionId === sessionId) replace(next);
+    };
+    const stopReady = webClient.on<ReadyPayload>('prompt_suggestion.ready', ({ payload }) => {
+      if (!enabled.current) {
+        setRefreshVersion(value => value + 1);
+        return;
+      }
+      receiveReady.current(payload);
     });
     // A new request in the session, from anywhere, ends the suggestion for the one before it. The
     // page also turns a session busy for late output of the request it just completed; that only
@@ -135,13 +152,38 @@ export function usePromptSuggestionBox(activeSessionId: string | null, hasConver
     if (next && completedRequests.current.get(activeSessionId) === next[0]?.requestId) replace(next);
   }, [activeSessionId, hasConversation, isProcessing, composerEmpty, pageActive, replace]);
 
+  // Reconcile the server switch and recover a missed push when entering a completed conversation.
+  useEffect(() => {
+    if (!activeSessionId || !hasConversation || !pageActive || isProcessing || !composerEmpty) return;
+    let active = true;
+    const revision = controlRevision.current;
+    void webRequest<{ enabled: boolean; suggestions: ReadyPayload[] }>('prompt_suggestion.get', {
+      session_id: activeSessionId,
+    }).then(response => {
+      if (!active || controlRevision.current !== revision) return;
+      enabled.current = response.enabled === true;
+      if (!enabled.current) {
+        close(null);
+        return;
+      }
+      for (const suggestion of response.suggestions ?? []) {
+        if (suggestion.session_id !== activeSessionId) continue;
+        if (!completedRequests.current.get(activeSessionId) && typeof suggestion.request_id === 'string') {
+          completedRequests.current.set(activeSessionId, suggestion.request_id);
+        }
+        receiveReady.current(suggestion);
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [activeSessionId, hasConversation, pageActive, isProcessing, composerEmpty, refreshVersion, close]);
+
   // The page displayed these chips. They stay with the session until the user closes them, sends,
   // or types, so leaving the page and coming back shows the same ones again.
   const markShown = useCallback(() => {
     const showing = current.current;
     if (!showing.length || !visibleRef.current) return;
     const now = Date.now();
-    for (const item of showing) {
+    for (const item of showing.slice(0, 1)) {
       if (shownIds.current.has(item.suggestionId)) continue;
       shownIds.current.add(item.suggestionId);
       shownAtById.current.set(item.suggestionId, now);
