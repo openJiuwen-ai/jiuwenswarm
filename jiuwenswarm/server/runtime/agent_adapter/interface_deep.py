@@ -17013,7 +17013,10 @@ class JiuWenSwarmDeepAdapter:
             skip,
             len(answer) if isinstance(answer, str) else 0,
         )
-        if not session_id or not corr or (answer == "" and not skip):
+        # skip=true is a valid payload without an answer; otherwise the answer
+        # must be non-empty.
+        has_payload = skip or answer != ""
+        if not session_id or not corr or not has_payload:
             logger.warning(
                 "[WF_DBG] chat.swarmflow_reply res ok=False session_id=%s correlation_id=%s error=missing_params",
                 session_id,
