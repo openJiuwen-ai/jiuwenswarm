@@ -12371,18 +12371,6 @@ class JiuWenSwarmDeepAdapter:
 
 
     @staticmethod
-    def _extract_request_system_prompt(request: AgentRequest | None) -> str | None:
-        """Read non-empty request.params.system_prompt."""
-        if request is None or not isinstance(request.params, dict):
-            return None
-        raw = request.params.get("system_prompt")
-        if isinstance(raw, str):
-            value = raw.strip()
-            if value:
-                return value
-        return None
-
-    @staticmethod
     def _extract_task_request_text(value: Any) -> str | None:
         if isinstance(value, dict):
             for key in ("content", "text", "query", "message"):
