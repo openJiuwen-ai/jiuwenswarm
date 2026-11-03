@@ -627,6 +627,10 @@ class SkillSleepRunner:
         with self._lock:
             return self._inflight
 
+    def current_skills_dirs(self) -> list[Path]:
+        """Public accessor for rails: the currently registered skills dirs."""
+        return self._current_skills_dirs()
+
     def _current_skills_dirs(self) -> list[Path]:
         """Re-resolve registered skills dirs (they may change after startup)."""
         if self._skills_dirs_provider is None:

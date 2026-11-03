@@ -279,6 +279,28 @@ async def test_handle_skills_team_skills_hub_install_rejects_untrusted_download_
     assert payload["detail_key"] == "skills.teamskillshub.errors.installFailed"
 
 
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8080/demo.zip", "http://localhost/demo.zip"])
+def test_team_skills_hub_default_hosts_reject_loopback(monkeypatch, url):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    with pytest.raises(RuntimeError, match="白名单"):
+        manager.call_assert_team_skills_hub_download_url_allowed(url)
+
+
+def test_team_skills_hub_loopback_needs_explicit_host_config(monkeypatch):
+    monkeypatch.setenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", "127.0.0.1")
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    manager.call_assert_team_skills_hub_download_url_allowed("http://127.0.0.1:8080/demo.zip")
+
+
+def test_team_skills_hub_default_hosts_keep_official_bucket(monkeypatch):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    manager.call_assert_team_skills_hub_download_url_allowed(
+        "https://openjiuwen-market.obs.cn-north-4.myhuaweicloud.com/plugins/demo.zip"
+    )
+
+
 def test_team_skills_hub_allowed_download_hosts_support_suffix_rule(monkeypatch):
     monkeypatch.setenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", ".myhuaweicloud.com")
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")

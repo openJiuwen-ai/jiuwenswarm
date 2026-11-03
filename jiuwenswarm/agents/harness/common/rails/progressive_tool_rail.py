@@ -161,6 +161,7 @@ class ProgressiveToolRail(DeepAgentRail):
             if str(item).strip()
         ]
         self._cached_model_name = ""
+        self._bypass_logged_model: str | None = None
         self._deepresearch_context_provider = deepresearch_context_provider
         self._active_skill_provider = active_skill_provider
         self._disabled_tools: set[str] = {
@@ -484,13 +485,16 @@ class ProgressiveToolRail(DeepAgentRail):
             return False
         model_name = self._resolve_model_name_for_ctx(ctx)
         if not self._is_lazy_load_enabled_for_model(model_name):
-            logger.info(
-                "%s lazy load bypassed for model=%s enable_for_models=%s",
-                _LOG_PREFIX,
-                model_name,
-                self._enable_for_models,
-            )
+            if model_name != self._bypass_logged_model:
+                self._bypass_logged_model = model_name
+                logger.info(
+                    "%s lazy load bypassed for model=%s enable_for_models=%s",
+                    _LOG_PREFIX,
+                    model_name,
+                    self._enable_for_models,
+                )
             return False
+        self._bypass_logged_model = None
         return True
 
     # ------------------------------------------------------------------
@@ -522,6 +526,7 @@ class ProgressiveToolRail(DeepAgentRail):
 
     def uninit(self, agent: Any) -> None:
         self._set_meta_tools_active(False)
+        self._remove_navigation_section(agent)
         self._deep_agent = None
         self._runtime_agent = None
         self._meta_tools = None
@@ -757,6 +762,8 @@ class ProgressiveToolRail(DeepAgentRail):
         agent = self._resolve_runtime_agent(ctx)
         if lazy_load_active:
             await self._refresh_deferred_tool_cache_if_stale()
+        else:
+            self._remove_navigation_section(agent)
         disabled = self._current_disabled_tools()
         if lazy_load_active and any(
             str(getattr(tool, "name", "") or "") in disabled
@@ -909,6 +916,21 @@ class ProgressiveToolRail(DeepAgentRail):
         if spb is not None and hasattr(spb, "add_section"):
             spb.add_section(navigation_section)
             self._navigation_name_fingerprint = name_fp
+
+    def _remove_navigation_section(self, agent: Any) -> None:
+        """Drop TOOL_NAVIGATION once lazy load stops applying to this agent.
+
+        The builder outlives the invoke, so the section would keep telling the
+        model to use tools_search after the meta tools were unregistered.
+        """
+        spb = getattr(agent, "system_prompt_builder", None)
+        if spb is None or not hasattr(spb, "has_section"):
+            return
+        if not spb.has_section(SectionName.TOOL_NAVIGATION):
+            return
+        if hasattr(spb, "remove_section"):
+            spb.remove_section(SectionName.TOOL_NAVIGATION)
+            self._navigation_name_fingerprint = None
 
     async def _build_navigation_section(self) -> PromptSection | None:
         """Build navigation prompt section for deferred tools."""

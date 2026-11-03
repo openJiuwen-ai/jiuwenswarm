@@ -20,6 +20,8 @@ SUPPORTED_DEEPSEEK_V4_MODELS = {
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-0731",
+    "deepseek-v4.1-flash",
+    "deepseek-v4.1-flash-1017",
 }
 
 LEVEL_MAPPING: dict[ReasoningLevel, ReasoningEffort] = {

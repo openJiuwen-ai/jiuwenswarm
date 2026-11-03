@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / market-sources-and-distribution |
 | 关联模块 | jiuwenswarm/server/runtime/skill/{source_registry.py, artifact_security.py} + skill_manager.py 市场渠道段 |
-| 最近一次修订日期 | 2026-10-16 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联 feature | 暂无（初版建档） |
 
 ## 范围 / 边界
@@ -68,6 +68,8 @@ SPI 协议（`jiuwenswarm/extensions/sdk/skill_source.py`）：`SkillSourceProvi
 | `_assert_import_local_download_url_allowed` | `_get_import_local_allowed_download_hosts()` | import_local 的 URL 形态 |
 
 host 匹配走 `_team_skills_hub_host_matches_rule`（支持规则式匹配）；`_is_http_download_target` 判定是否走 HTTP 下载；`_is_github_skill_folder_url` 识别 github 文件夹 URL（转 SkillNet 链路）。**绕过断言直接 `_download_http_archive_bytes_sync` 是违规**。
+
+`TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS` 为空时使用内置默认 `openjiuwen-market.obs.*.myhuaweicloud.com`，不含回环地址；本地 mock Hub 显式配置该变量。
 
 ### 安全解压（zip-slip 防护）
 
