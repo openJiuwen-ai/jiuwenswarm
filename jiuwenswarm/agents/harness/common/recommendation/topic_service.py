@@ -34,7 +34,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
     TERMINAL_INTERACTION_EVENT_TYPES,
-    UNDONE_EVENT_TYPES,
     NewPageOutcomeQueue,
     NewPageOutcomeSignal,
 )
@@ -1378,23 +1377,6 @@ class TopicService:
             slot.candidate_task = None
             raise asyncio.CancelledError
 
-    def _give_way_to_feedback(self, context_scope: str) -> None:
-        """The scope's running replenishment read the feedback before an undo or a pause, so it
-        left out what the undo restores or keeps what the pause withholds: it gives way to the
-        request queued behind it."""
-
-        slot = self._runs.get(context_scope)
-        if slot is None:
-            return
-        if slot.queued is None:
-            return
-        if slot.queued.done():
-            return
-        if slot.candidate_task is None or slot.candidate_task.done():
-            slot.feedback_changed_before_candidates = True
-        elif not slot.candidate_task.cancelling():
-            slot.candidate_task.cancel()
-
     def schedule_successor(
         self,
         *,
@@ -1509,6 +1491,34 @@ class TopicService:
             "selection_mode": str(rows[0].get("selection_mode") or ""),
         }
 
+    def _opened_cold_start_card_filter(self) -> Callable[[dict[str, Any]], bool]:
+        """A preset card the user already opened stays out of a rebuilt pool."""
+
+        opened_cards: set[str] = set()
+        opened_starters: set[str] = set()
+        for row in self.store.query_events(
+            event_type="topic_click", policy_id=POLICY_ID, limit=100_000,
+        ):
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("context_scope") not in (None, GLOBAL_NEW_CHAT_SCOPE):
+                continue
+            card_id = str(payload.get("card_id") or "")
+            starter_id = str(payload.get("source_starter_id") or "")
+            if card_id:
+                opened_cards.add(card_id)
+            if starter_id:
+                opened_starters.add(starter_id)
+
+        def is_opened(card: dict[str, Any]) -> bool:
+            return (
+                str(card.get("card_id") or "") in opened_cards
+                or str(card.get("source_starter_id") or "") in opened_starters
+            )
+
+        return is_opened
+
     def _serve_cold_start(
         self,
         *,
@@ -1531,8 +1541,14 @@ class TopicService:
         existing_is_preset = bool(empty["cards"]) and all(
             is_cold_start_card(card) for card in empty["cards"]
         )
-        if empty["cards"] and (not preset_only or existing_is_preset):
-            return empty
+        if empty["cards"]:
+            if not preset_only:
+                return empty
+            # With recommendations off the packaged pool is the whole page: a card
+            # the user dismissed leaves the screen short, so the corpus is sampled
+            # again instead of showing one card fewer.
+            if existing_is_preset and len(empty["cards"]) >= FIRST_SCREEN_CARD_TARGET:
+                return empty
         if not preset_only and self.configuration_status().get("provider_refused"):
             return empty
         cards = build_cold_start_cards(
@@ -1540,8 +1556,15 @@ class TopicService:
             now=self._now(),
             hot_list_pull=None if preset_only else self._hot_list.cached_pull(),
             feedback=feedback,
+            exclude=self._opened_cold_start_card_filter(),
         )
         if not cards:
+            return empty
+        # Compare like with like: the rebuilt pool against what the current pool
+        # can still serve, not against the one window it currently exposes.
+        current_serviceable = len(empty.get("served_card_ids") or empty["cards"])
+        if preset_only and existing_is_preset and len(cards) <= current_serviceable:
+            # The corpus cannot fill the screen again; keep what the page has.
             return empty
         written = write_cold_start_pool(
             self.store,
@@ -1763,11 +1786,7 @@ class TopicService:
         outcome_queue: NewPageOutcomeQueue,
         created_at: float | None = None,
     ) -> dict[str, bool]:
-        """Record an exact shown card's outcome and request its scope's refill.
-
-        A dismissal answers whether the card's interest may be paused: only a
-        global regular card's may.
-        """
+        """Record an exact shown card's outcome and request its scope's refill."""
 
         event_type = str(event.get("event_type") or "").strip()
         payload = event["payload"]
@@ -1831,15 +1850,11 @@ class TopicService:
         ))
         reply = {"recorded": status == "recorded"}
         if reply["recorded"]:
-            if event_type == "not_interested":
-                reply["pausable"] = context_scope == GLOBAL_NEW_CHAT_SCOPE and not card_is_news(card)
             self.schedule_successor(
                 context_scope=context_scope,
                 project_id=project_id,
                 visit_id=exposure_id,
             )
-            if event_type in UNDONE_EVENT_TYPES or event_type == "interest_paused":
-                self._give_way_to_feedback(context_scope)
             if context_scope == GLOBAL_NEW_CHAT_SCOPE and self._news_refresh_task is not None:
                 self._news_refresh_task.cancel()
         return reply

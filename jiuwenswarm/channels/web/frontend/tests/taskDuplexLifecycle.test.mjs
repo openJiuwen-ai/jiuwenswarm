@@ -1,3 +1,4 @@
+import './fixtures/browserGlobals.mjs';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -37,7 +38,7 @@ await build({
   external: ['react', 'react/*'],
   jsx: 'automatic',
   loader: { '.css': 'empty' },
-  define: { 'import.meta.env.DEV': 'false' },
+  define: { 'import.meta.env': '{}', 'import.meta.env.DEV': 'false' },
   plugins: [
     {
       name: 'task-runtime-ports',

@@ -19,6 +19,7 @@ import {
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
+import { isEnterprise } from '../../edition';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
@@ -34,7 +35,7 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
 }
 
 export default function ChatModelSelector({
-  disabled = false,
+  disabled: disabledByParent = false,
   sessionId,
   allowModelGroups = true,
 }: {
@@ -45,6 +46,7 @@ export default function ChatModelSelector({
   sessionId?: string;
   allowModelGroups?: boolean;
 }): JSX.Element | null {
+  const disabled = disabledByParent || isEnterprise();
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
@@ -76,8 +78,9 @@ export default function ChatModelSelector({
   );
   const collaborationEnabled = useMultiModelCollaborationEnabled();
   const singleAgent = supportsMultiModelCollaboration(mode, cronId);
-  const includeModelGroups = allowModelGroups && (!singleAgent || collaborationEnabled);
-  const selectableGroups = allowModelGroups ? modelGroups : [];
+  const groupsAllowed = allowModelGroups && !cronId;
+  const includeModelGroups = groupsAllowed && (!singleAgent || collaborationEnabled);
+  const selectableGroups = groupsAllowed ? modelGroups : [];
   const groupBlocked = isConversationModelGroupBlocked({
     mode,
     cronId,
@@ -89,7 +92,7 @@ export default function ChatModelSelector({
   useEffect(() => {
     if (selectedChildTeam) return;
     if (!boundSessionId || disabled) return;
-    if (groupBlocked && allowModelGroups) return;
+    if (groupBlocked && groupsAllowed) return;
     if (!selectedModelSelection) return;
     // Empty catalog means models.list has not arrived yet — not that the selection
     // was deleted. Clearing here races metadata restore on refresh (#5860).
@@ -115,7 +118,7 @@ export default function ChatModelSelector({
     });
   }, [
     boundSessionId,
-    allowModelGroups,
+    groupsAllowed,
     disabled,
     groupBlocked,
     selectedModelSelection,
@@ -182,7 +185,7 @@ export default function ChatModelSelector({
           void persistSelection(next);
         }}
         disabled={disabled || Boolean(selectedChildTeam)}
-        onAddModel={openModelSettings}
+        onAddModel={disabled ? undefined : openModelSettings}
       />
       {selectionError ? (
         <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">

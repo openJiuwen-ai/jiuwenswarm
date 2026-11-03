@@ -74,3 +74,19 @@ flowchart LR
 合入官方 develop `b1301d04a`。协议文件冲突保留官方向 `openjiuwen_protocol.message` 的类型迁移，只额外注册全双工 receipts 和 pending_interrupt 方法。测试环境协议依赖同步到官方锁定的 `2a0457e5`。
 
 合并候选验证：全双工后端、协议契约、Gateway 图片归一化及中断状态回归共 654 passed（87.34 秒）；Qwen 前端 136 passed，全双工生命周期 62 passed，JoyAI 工作流 27 passed。新增用例验证权限卡语音拒绝后仍能手动完成、旧卡状态不会串用、执行确认使用真实选项。真实供应商和跨平台实机测试未执行。
+
+
+## 2026-11-03 再次同步 develop 并解决 PR 冲突
+
+合入官方 develop `b825ac938`，在现有 PR 提交上普通合并，不新建分支、不改写历史。
+
+- 续接请求合并官方 `interrupt_id` 与全双工 execution_target，保留 Design 模式及项目定位；回归同时检查中断标识、卡片标识和执行目标。
+- Runtime 沿用官方租户 scoped_manager 与 interaction_ids 协议；全双工回执清理在该作用域的 finally 内执行。
+- ChatPanel 保留企业版心跳入口限制，全双工仍由 App 的 ApplicationConversationRuntimes 承载，删除局部重复运行组件与无调用的旧回调。
+- Electron 打包同时保留官方 cdp_port 与全双工 display_media_picker；不恢复官方已删除的 update_shutdown。
+- 修复自动合并后的语义冲突：permission_continuation 清理函数引用了重构前的局部 state_signature，异常被捕获后导致旧中断状态恢复。改为从当前已校验的 state.ai_message.tool_calls 获取名称，并验证真实 Core 中断清理、取消及语音任务不消费权限卡的行为。
+- 测试使用迁移后的 server/runtime/video_task 路径；前端夹具同步浏览器传输初始化、路由负责选择 Design 会话及历史写入屏障。
+
+测试环境使用独立 worktree 依赖：Core `c8c621b2`、protocol `5201ca86`；前端按官方 package-lock 安装独立 node_modules，未改动 Desktop 主工作区依赖。官方 uv.lock 保持原样。
+前端 Qwen 136、全双工生命周期 62、JoyAI 27、Design 入口 20、Electron 共享选择器 4 项通过，共 249 项；Vite 生产构建通过（1m07s，仅有 chunk 体积警告）。
+后端最终回归 1145 passed（162.34 秒），包括全双工完整后端、协议与 Gateway、Runtime 及租户作用域、交互续接、真实 Core 权限卡取消/恢复、桌面打包契约。后端与前端本轮共 1394 项自动化测试通过。未执行真实供应商及跨平台实机音视频测试。

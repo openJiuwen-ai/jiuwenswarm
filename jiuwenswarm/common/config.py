@@ -46,9 +46,12 @@ DEFAULT_SWARMFLOW_ENABLED = False
 TEAM_DISPATCH_MODE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 TEAM_TASK_VERIFICATION_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
 TEAM_MEMBER_MESSAGING_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
+TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
 DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
 DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
 DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED = False
+# Depth written when the member-subtask switch is turned on with no depth yet.
+DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH = 2
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
@@ -2854,6 +2857,34 @@ def update_team_member_messaging_in_config(enabled: bool) -> None:
     _set_config_path(TEAM_MEMBER_MESSAGING_CONFIG_PATH, bool(enabled))
 
 
+def coerce_subtask_depth(value: Any) -> int:
+    """Read ``max_subtask_depth`` leniently: a non-negative int, anything else is 0 (off)."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        depth = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(depth, 0)
+
+
+def update_team_member_subtasks_in_config(enabled: bool) -> None:
+    """Switch member subtasks via ``modes.team.jiuwen_team.max_subtask_depth``.
+
+    The depth doubles as the switch (core F_128: ``0`` = off). Turning it on
+    keeps a depth the user already configured and writes
+    ``DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH`` otherwise; turning it off writes 0.
+    """
+    if not enabled:
+        _set_config_path(TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, 0)
+        return
+    current: Any = get_config_raw()
+    for segment in TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH:
+        current = current.get(segment) if isinstance(current, dict) else None
+    depth = coerce_subtask_depth(current) or DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH
+    _set_config_path(TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, depth)
+
+
 def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> None:
     """Keep the configured built-in model catalog of each CLI kind.
 
@@ -4191,6 +4222,12 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         result["url"] = url or _DEFAULT_YUANRONG_URL
         result["executor"] = _normalize_yuanrong_executor(sandbox.get("executor"))
         for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
+            if key in sandbox:
+                result[key] = sandbox[key]
+    if sandbox_type == "adx-environment":
+        for key in ("image", "runtime", "workdir", "mounts", "cpu", "cpu_limit", "memory", "mem_limit",
+                    "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
+                    "schedule_timeout"):
             if key in sandbox:
                 result[key] = sandbox[key]
     if sandbox_type == "jiuwenbox-conch":

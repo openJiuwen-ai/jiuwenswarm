@@ -8,7 +8,8 @@ r"""JiuwenSwarm PyInstaller 打包配置。
 3. 执行平台 wrapper: .\scripts\build-exe.ps1 或 bash scripts/build-macos.sh
 """
 
-import glob
+import hashlib
+import json
 import os
 import runpy
 import shutil
@@ -21,9 +22,8 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 block_cipher = None
 
 SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
-packaging_root = os.path.abspath(os.environ.get("WORKSWARM_PACKAGING_ROOT", os.path.join(SPEC_DIR, os.pardir)))
-project_root = os.path.abspath(os.environ.get("WORKSWARM_SOURCE_ROOT", packaging_root))
-build_config_module = runpy.run_path(os.path.join(packaging_root, "scripts", "build_config.py"))
+project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
+build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
 runtime_config_path = Path(project_root, "jiuwenswarm", "common", "_build_config.py")
 expected_runtime_config = build_config_module["render_runtime_python"](build_config)
@@ -31,13 +31,9 @@ if not runtime_config_path.is_file() or runtime_config_path.read_text(encoding="
     raise SystemExit(
         "错误: Python 运行时构建配置未同步，请通过 build.sh、build-macos.sh 或 build-exe wrapper 构建"
     )
-symphony_root = os.path.join(project_root, "jiuwenswarm", "symphony")
-if symphony_root not in sys.path:
-    sys.path.insert(0, symphony_root)
 
 DATA_FILE_PATTERNS = ["**/*.yaml", "**/*.yml", "**/*.json", "**/*.md"]
 EXTENSION_DATA_FILE_PATTERNS = ["**/*.py", *DATA_FILE_PATTERNS]
-DISPATCH_PACKAGE_ROOTS = ("indexing", "models", "orchestration", "retrieval", "shared")
 EXCLUDED_RESOURCE_DIRS = (
     os.path.join("agent", "workspace", "skills", "project-maintainer"),
 )
@@ -52,17 +48,6 @@ OPENJIUWEN_DATA_EXCLUDES = [
 ]
 
 
-def collect_tree_data_files(source_dir, target_dir, patterns):
-    data_files = []
-    for pattern in patterns:
-        full_pattern = os.path.join(source_dir, pattern)
-        for path in glob.glob(full_pattern, recursive=True):
-            if not os.path.isfile(path):
-                continue
-            rel_dir = os.path.dirname(os.path.relpath(path, source_dir))
-            dest_dir = os.path.normpath(os.path.join(target_dir, rel_dir))
-            data_files.append((path, dest_dir))
-    return data_files
 
 
 def collect_resources_data_files(source_dir, target_dir):
@@ -93,17 +78,6 @@ def collect_resources_data_files(source_dir, target_dir):
     return data_files
 
 
-def collect_tree_python_modules(source_dir, package_roots):
-    modules = []
-    for package_root in package_roots:
-        package_dir = os.path.join(source_dir, *package_root.split("."))
-        for path in glob.glob(os.path.join(package_dir, "**", "*.py"), recursive=True):
-            rel_path = os.path.relpath(path, source_dir)
-            module_name = os.path.splitext(rel_path)[0].replace(os.sep, ".")
-            if module_name.endswith(".__init__"):
-                module_name = module_name[: -len(".__init__")]
-            modules.append(module_name)
-    return sorted(set(modules))
 
 try:
     webview_datas = collect_data_files("webview")
@@ -148,18 +122,22 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-# The backend artifact owns its ID, independently of source/release repository
-# layout. Repackaging this backend must preserve the embedded file unchanged.
-_identity_helper = runpy.run_path(os.path.join(project_root, "jiuwenswarm", "common", "worker_build_identity.py"))
-_identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-",
-    dir=os.environ.get("WORKSWARM_BUILD_ROOT") or None)
-_identity_file = Path(_identity_directory.name, _identity_helper["IDENTITY_FILENAME"])
-_identity_input = os.environ.get("WORKSWARM_WORKER_IDENTITY")
-_identity_helper["write_build_identity"](_identity_file, Path(project_root), packaging_root=Path(packaging_root),
-    identity_input=Path(_identity_input) if _identity_input else None)
+# A controlled package embeds its immutable Runtime build identity. Computing
+# it belongs to the build, so frozen Front/Worker startup only reads this small
+# payload. Source execution still validates dirty code and dependency locks.
+_identity_helper = runpy.run_path(os.path.join(
+    project_root, "jiuwenswarm", "server", "supervisor", "identity_cache.py"))
+_source_identity = _identity_helper["full_source_fingerprint"](Path(project_root, "jiuwenswarm"))
+_build_recipe = hashlib.sha256()
+_build_recipe.update(_source_identity.encode())
+for _build_source in ("scripts/jiuwenswarm.spec", "scripts/jiuwenswarm_exe_entry.py"):
+    _build_recipe.update(Path(project_root, _build_source).read_bytes())
+_identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
+_identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
+_identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
 datas.append((str(_identity_file), "jiuwenswarm"))
 _build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
-_identity_helper["write_build_metadata"](_build_metadata_file, build_config.version)
+build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
 datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
 _playwright_mcp_resource_dir = os.path.join(
     project_root,
@@ -223,11 +201,6 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
-datas += collect_data_files(
-    "jiuwenswarm.symphony",
-    include_py_files=False,
-    includes=DATA_FILE_PATTERNS,
-)
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
 datas += collect_data_files(
@@ -235,16 +208,10 @@ datas += collect_data_files(
     include_py_files=False,
     includes=["**/*.yaml", "**/*.yml", "**/*.json", "**/*.md", "**/*.mjs"],
 )
-for package_root in DISPATCH_PACKAGE_ROOTS:
-    datas += collect_tree_data_files(
-        os.path.join(symphony_root, package_root),
-        package_root,
-        DATA_FILE_PATTERNS,
-    )
 
 # openjiuwen 使用动态导入，需要收集全部子模块
 openjiuwen_submodules = collect_submodules("openjiuwen")
-symphony_submodules = collect_submodules("jiuwenswarm.symphony")
+symphony_submodules = collect_submodules("jiuwenswarm.runtime.symphony")
 # Gateway adapters are re-exported through package-level __getattr__ and
 # import_module(), so PyInstaller cannot discover them from the import graph.
 gateway_adapter_submodules = collect_submodules(
@@ -268,7 +235,6 @@ cli_channel_submodules = collect_submodules(
 team_kv_cache_hiddenimports = [
     "jiuwenswarm.agents.harness.team.kv_cache_team_delete_guard",
 ]
-dispatch_submodules = collect_tree_python_modules(symphony_root, DISPATCH_PACKAGE_ROOTS)
 http2_submodules = [
     *collect_submodules("h2"),
     *collect_submodules("hpack"),
@@ -318,7 +284,7 @@ hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_s
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -339,8 +305,8 @@ excludes = [
 ]
 
 # 入口脚本位于 scripts 目录
-entry_script = os.path.join(packaging_root, "scripts", "jiuwenswarm_exe_entry.py")
-mcp_entry_script = os.path.join(packaging_root, "scripts", "openjiuwen_team_mcp_exe_entry.py")
+entry_script = os.path.join(project_root, "scripts", "jiuwenswarm_exe_entry.py")
+mcp_entry_script = os.path.join(project_root, "scripts", "openjiuwen_team_mcp_exe_entry.py")
 
 # 图标路径（Windows 用 .ico，macOS 用 .icns）
 icon_path = os.path.join(
@@ -494,7 +460,7 @@ _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=[project_root],
     binaries=_bundled_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -510,7 +476,7 @@ a = Analysis(
 
 mcp_a = Analysis(
     [mcp_entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=[project_root],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,

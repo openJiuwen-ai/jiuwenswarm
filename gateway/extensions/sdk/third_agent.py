@@ -1,4 +1,11 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+"""ThirdAgent 扩展入口契约。
+
+归属：接口 ABC 不进 ``openjiuwen_protocol``（协议仓只含纯数据），由 gateway
+实现侧持有；``ThirdAgent`` 的真源在 ``gateway.common.client.third_agent``。
+"""
+
+from __future__ import annotations
 
 from abc import abstractmethod
 
@@ -17,3 +24,6 @@ class ThirdAgentExtension(BaseExtension):
     async def shutdown(self) -> None:
         """扩展关闭"""
         pass
+
+
+__all__ = ["ThirdAgentExtension"]

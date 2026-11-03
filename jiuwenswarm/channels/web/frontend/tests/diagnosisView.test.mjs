@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  artifactCauseGroups,
+  mergedCauseReason,
   artifactSuggestion,
   artifactSuggestionItems,
   causeNodeLabel,
@@ -312,6 +314,42 @@ test('findingCounts separates reward causes, skill suggestions and experience ve
     findingCounts({ root_causes: [cause('a'), cause('b', { category: 'ttse_fail' })], reward_failure_causes: [], evolution_judge: [] }),
     { causes: 1, skill: 0, experience: 1, legacy: true },
   );
+});
+
+test('mergedCauseReason joins the summaries of one problem into a single reason', () => {
+  assert.equal(mergedCauseReason([
+    { summary: '最终回复未列技能，因此也没有为每个技能附一句用途说明。' },
+    { summary: '首轮清单只给 blog-post-team 写了用途。' },
+    { summary: '首轮清单只给 blog-post-team 写了用途。' },
+    { summary: '   ' },
+  ]), '1. 最终回复未列技能，因此也没有为每个技能附一句用途说明。\n2. 首轮清单只给 blog-post-team 写了用途。');
+  assert.equal(mergedCauseReason([{ summary: '派发时放宽了章节数' }, { summary: '提纲铺成五个小标题' }]), '1. 派发时放宽了章节数\n2. 提纲铺成五个小标题');
+  assert.equal(mergedCauseReason([{ summary: '只有一条' }]), '只有一条');
+});
+
+test('artifact causes of one signal share a group and keep their own reasons', () => {
+  const signal = { id: 'sig-1', source: 'reward', text: '篇幅简洁：[要求] 短篇\n终稿仍被切成多节。' };
+  const groups = artifactCauseGroups([
+    { id: 'rfc-1', dimension: '篇幅简洁', summary: '派发时放宽了章节数', signal, evidence: [] },
+    { id: 'rfc-2', dimension: '篇幅简洁', summary: '提纲铺成五个小标题', signal, evidence: [] },
+    { id: 'rfc-3', dimension: '技能清单', summary: '最终回复未列技能', signal: { id: 'sig-2', source: 'reward', text: '未列技能' }, evidence: [] },
+    { id: 'rfc-4', dimension: '孤立', summary: '没有信号正文', evidence: [] },
+    { id: 'rfc-5', dimension: '孤立', summary: '另一条没有信号正文', evidence: [] },
+  ]);
+  assert.deepEqual(groups.map(group => [group.id, group.causes.map(cause => cause.id)]), [
+    ['rfc-1', ['rfc-1', 'rfc-2']],
+    ['rfc-3', ['rfc-3']],
+    ['rfc-4', ['rfc-4']],
+    ['rfc-5', ['rfc-5']],
+  ]);
+  assert.equal(findingCounts({
+    reward_failure_causes: [
+      { id: 'rfc-1', dimension: '篇幅简洁', summary: '派发', signal },
+      { id: 'rfc-2', dimension: '篇幅简洁', summary: '提纲', signal },
+      { id: 'rfc-3', dimension: '技能清单', summary: '未列技能', signal: { id: 'sig-2', source: 'reward', text: '未列技能' } },
+    ],
+    evolution_judge: [],
+  }).causes, 2);
 });
 
 test('findingItems puts artifact causes first, then skill, then experience', () => {

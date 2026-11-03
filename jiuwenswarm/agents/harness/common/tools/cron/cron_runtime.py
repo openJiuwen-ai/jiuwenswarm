@@ -104,6 +104,14 @@ class _CronToolsCronBackend(CronToolBackend):
         # 发起会话的用户路由键：AgentOS 下由 CronToolContext.user_id 透传
         # （deep adapter 从 E2A 请求 user_id 注入），供 job 归属创建者。
         user_id = str(getattr(context, "user_id", "") or "").strip()
+        # 企业版群/机器人：与 Gateway 一致，读顶层 user_id + metadata.routing。
+        from jiuwenswarm.common.request_identity import web_routing_identity
+
+        identity = web_routing_identity(metadata)
+        if not user_id:
+            user_id = str(identity.get("user_id") or "").strip()
+        group_id = str(identity.get("group_id") or "").strip()
+        bot_id = str(identity.get("bot_id") or "").strip()
         return CronToolRoute(
             request_id=request_id,
             channel_id=channel_id,
@@ -115,6 +123,8 @@ class _CronToolsCronBackend(CronToolBackend):
             model_name=model_name,
             app_id=app_id,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
         )
 
     @staticmethod
@@ -146,11 +156,17 @@ class _CronToolsCronBackend(CronToolBackend):
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
-            from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
-                resolve_agent_cron_model,
-            )
+            from jiuwenswarm.enterprise import is_enterprise
 
-            canonical = resolve_agent_cron_model(inherited)
+            # 企业版不在本机核对：名单在 Gateway 企业库。这里只把会话模型带上。
+            if is_enterprise():
+                canonical = inherited
+            else:
+                from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
+                    resolve_agent_cron_model,
+                )
+
+                canonical = resolve_agent_cron_model(inherited)
             if canonical:
                 out = dict(payload)
                 out["model_name"] = canonical

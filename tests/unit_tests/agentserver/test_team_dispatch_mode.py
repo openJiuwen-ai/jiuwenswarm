@@ -70,6 +70,7 @@ async def _build_spec(
         bootstrap_mode=config_bootstrap_mode,
         enable_task_verification=True,
         enable_member_messaging=True,
+        max_subtask_depth=2,
     )
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
@@ -96,6 +97,7 @@ async def test_autonomous_session_overrides_spec_and_drops_verification(monkeypa
     assert spec.dispatch_mode == "autonomous"
     assert spec.enable_task_verification is False
     assert spec.enable_member_messaging is False
+    assert spec.max_subtask_depth == 0
 
 
 @pytest.mark.asyncio
@@ -105,6 +107,7 @@ async def test_unspecified_dispatch_mode_keeps_team_config(monkeypatch: pytest.M
     assert spec.dispatch_mode == "scheduled"
     assert spec.enable_task_verification is True
     assert spec.enable_member_messaging is True
+    assert spec.max_subtask_depth == 2
 
 
 # ---------------------------------------------------------------------------

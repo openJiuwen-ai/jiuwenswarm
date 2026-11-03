@@ -128,7 +128,10 @@ class SessionCreateServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_create(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.bootstrap import handle_session_create
+
+        await handle_session_create(build_ws_request_context(self, ws, request, send_lock))
 
 
 def make_server(runtime: CreateRuntime) -> SessionCreateServer:
@@ -171,9 +174,9 @@ def create_request() -> AgentRequest:
 def test_session_create_handler_is_runtime_adapter_only() -> None:
     """Prevent Session business ownership from returning to AgentServer."""
 
-    source = textwrap.dedent(
-        inspect.getsource(AgentWebSocketServer._handle_session_create)
-    )
+    from jiuwenswarm.server.handlers.bootstrap import handle_session_create
+
+    source = textwrap.dedent(inspect.getsource(handle_session_create))
     handler = ast.parse(source).body[0]
     assert isinstance(handler, ast.AsyncFunctionDef)
 
@@ -195,18 +198,20 @@ def test_session_create_handler_is_runtime_adapter_only() -> None:
     }
 
     assert {
-        "_execution_runtime",
+        "execution_runtime",
         "prepare_session_create",
         "commit_session_provision",
         "abort_session_provision",
+        "send_response",
     } <= called_attributes
     assert {
         "SessionCreateInput",
         "SessionProvisionCommitContext",
-        "encode_agent_response_for_wire",
-        "send_wire_payload",
     } <= called_names
-    assert {"SessionProvisionCommitTiming", "send_lock"} <= referenced_names
+    assert "SessionProvisionCommitTiming" in referenced_names
+    assert "send_lock" not in referenced_names
+    assert "encode_agent_response_for_wire" not in called_names
+    assert "send_wire_payload" not in called_names
     assert "AFTER_RESULT_DELIVERY" in referenced_attributes
 
     forbidden = {

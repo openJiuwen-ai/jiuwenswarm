@@ -680,11 +680,11 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
 @pytest.mark.parametrize("ipc_opens", [True, False])
 async def test_resident_worker_startup_window_retries_without_spawning(monkeypatch, tmp_path, ipc_opens):
     from jiuwenswarm.server.lifecycle import Readiness
-    from jiuwenswarm.server.supervisor import resident_lifecycle, runtime_supervisor as module
+    from jiuwenswarm.server.supervisor import runtime_supervisor as module
 
     conn = SimpleNamespace(recv=AsyncMock(return_value={
         "kind": KIND_HELLO, "protocol": module.PROTOCOL_VERSION,
-        "data_scope": "scope", "deployment_scope": "deployment", "code_identity": "code", "stub": False,
+        "data_scope": "scope", "code_identity": "code", "stub": False,
         "instance": "original-worker",
     }))
     connect = AsyncMock(return_value=conn) if ipc_opens else AsyncMock(side_effect=TimeoutError("IPC stayed busy"))
@@ -694,10 +694,7 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     monkeypatch.setattr(module, "connect_with_retry", connect)
     monkeypatch.setattr(module, "WorkerProcess", process)
     monkeypatch.setattr(identity, "data_scope", lambda: "scope")
-    monkeypatch.setattr(identity, "deployment_scope", lambda: "deployment")
     monkeypatch.setattr(identity, "code_identity", lambda: "code")
-    ownership = Mock(return_value=(SimpleNamespace(pid=123), 1.0))
-    monkeypatch.setattr(resident_lifecycle, "worker_process", ownership)
     supervisor = module.RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), connect_timeout=.5)
     monkeypatch.setattr(supervisor, "_cancel_side_tasks", AsyncMock())
     monkeypatch.setattr(supervisor, "_start_side_tasks", Mock())
@@ -705,12 +702,10 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
         await supervisor._bring_up()
         assert supervisor._conn is conn
         assert supervisor._worker_instance == "original-worker"
-        ownership.assert_called_once_with(conn.recv.return_value, str(tmp_path / "worker"), allow_legacy=True)
     else:
         with pytest.raises(TimeoutError, match="IPC stayed busy"):
             await supervisor._bring_up()
         assert supervisor._conn is None
-        ownership.assert_not_called()
     process.assert_not_called()
     connect.assert_awaited_once()
     assert 0 < connect.call_args.kwargs["timeout"] <= .5

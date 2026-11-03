@@ -153,7 +153,7 @@ function buildMockTree(): RsiTreeGetResult {
       'H-04',
       'PROVISIONAL',
       null,
-      '【正在分析实验】节点默认最小宽度180px，开发评估下能不能根据内容适配，最大宽度280px，并且内容支持多行展示。评测中…',
+      '【正在分析 RSI 任务】节点默认最小宽度180px，开发评估下能不能根据内容适配，最大宽度280px，并且内容支持多行展示。评测中…',
       [{ group: 'skill', operation: 'modify', function: 'plan', target: 'planner', summary: '调整规划技能' }],
     ),
     // iteration 4

@@ -278,6 +278,7 @@ class AgentTaskExecutor:
                 for a in interaction["answers"]
             ),
             source=interaction["source"],
+            interrupt_id=str(interaction.get("interrupt_id") or ""),
             mode=target["mode"],
             work_mode="" if target["mode"] == "team.design" else target.get("work_mode", "work"),
             project_dir=target.get("project_dir", ""),
@@ -839,6 +840,8 @@ class VideoSearchManager:
                 "source": interaction["source"],
                 "questions": interaction["questions"],
             }
+            if interaction.get("interrupt_id"):
+                payload["interrupt_id"] = interaction["interrupt_id"]
             if interaction.get("approval_schema"):
                 payload["approval_schema"] = interaction["approval_schema"]
             await asyncio.wait_for(

@@ -1,4 +1,15 @@
 {
+  "enterpriseEntry": {
+    "invalidIdentity": "Identity returned no user ID.",
+    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "loadFailed": "Failed to load Agent contexts.",
+    "switchFailed": "Failed to switch context.",
+    "errorTitle": "Unable to enter workspace",
+    "loadingTitle": "Loading workspace",
+    "loading": "Loading the Agents available to this account.",
+    "retry": "Retry",
+    "login": "Go to login"
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -47,7 +58,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
-    "experiments": "Experiments",
+    "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -57,6 +68,10 @@
     "logs": "Logs",
     "update": "Updates",
     "personalContext": "Knowledge"
+  },
+  "experts": {
+    "podStarting": "Starting the expert runtime, please wait",
+    "podStartTimeout": "The expert runtime did not start in time. Try again later"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -744,8 +759,7 @@
       "title": "Personalized recommendations",
       "description": "Suggests topics and next prompts from your conversations.",
       "model": "Topic recommendation model",
-      "modelDescription": "Recommendations are prepared again after a switch.",
-      "followMainModel": "Follow the chat model",
+      "modelDescription": "Recommendations are prepared again after a switch. This uses the model selected here, not the model in the chat box.",
       "modelIncompatible": "incompatible API",
       "modelLoginRequired": "sign-in required",
       "modelFree": "free model",
@@ -956,38 +970,101 @@
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
       },
-      "free_search_bing_enabled": { "title": "Bing search", "description": "Enable the free Bing search source." },
-      "jina_api_key": { "title": "Jina API key" },
-      "bocha_api_key": { "title": "Bocha API key" },
-      "perplexity_api_key": { "title": "Perplexity API key" },
-      "serper_api_key": { "title": "Serper API key" },
-      "github_token": { "title": "GitHub access token" },
-      "vision_api_base": { "title": "API URL" },
-      "vision_api_key": { "title": "API key" },
-      "vision_model": { "title": "Model name" },
-      "vision_provider": { "title": "Model provider" },
-      "audio_api_base": { "title": "API URL" },
-      "audio_api_key": { "title": "API key" },
-      "audio_model": { "title": "Model name" },
-      "audio_provider": { "title": "Model provider" },
-      "video_api_base": { "title": "API URL" },
-      "video_api_key": { "title": "API key" },
-      "video_model": { "title": "Model name" },
-      "video_provider": { "title": "Model provider" },
-      "video_gen_provider": { "title": "Model provider" },
-      "video_gen_protocol": { "title": "Protocol" },
-      "video_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
-      "video_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
-      "video_gen_model": { "title": "Model name", "placeholder": "e.g. bytedance/seedance-2.0-fast" },
+      "free_search_bing_enabled": {
+        "title": "Bing search",
+        "description": "Enable the free Bing search source."
+      },
+      "jina_api_key": {
+        "title": "Jina API key"
+      },
+      "bocha_api_key": {
+        "title": "Bocha API key"
+      },
+      "perplexity_api_key": {
+        "title": "Perplexity API key"
+      },
+      "serper_api_key": {
+        "title": "Serper API key"
+      },
+      "github_token": {
+        "title": "GitHub access token"
+      },
+      "vision_api_base": {
+        "title": "API URL"
+      },
+      "vision_api_key": {
+        "title": "API key"
+      },
+      "vision_model": {
+        "title": "Model name"
+      },
+      "vision_provider": {
+        "title": "Model provider"
+      },
+      "audio_api_base": {
+        "title": "API URL"
+      },
+      "audio_api_key": {
+        "title": "API key"
+      },
+      "audio_model": {
+        "title": "Model name"
+      },
+      "audio_provider": {
+        "title": "Model provider"
+      },
+      "video_api_base": {
+        "title": "API URL"
+      },
+      "video_api_key": {
+        "title": "API key"
+      },
+      "video_model": {
+        "title": "Model name"
+      },
+      "video_provider": {
+        "title": "Model provider"
+      },
+      "video_gen_provider": {
+        "title": "Model provider"
+      },
+      "video_gen_protocol": {
+        "title": "Protocol"
+      },
+      "video_gen_api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://openrouter.ai/api/v1"
+      },
+      "video_gen_api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "video_gen_model": {
+        "title": "Model name",
+        "placeholder": "e.g. bytedance/seedance-2.0-fast"
+      },
       "video_gen_enabled": {
         "title": "Video generation",
         "description": "Enable video generation tools (text-to-video); disabling it keeps the saved model configuration."
       },
-      "visual_gen_provider": { "title": "Model provider" },
-      "visual_gen_protocol": { "title": "Protocol" },
-      "visual_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
-      "visual_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
-      "visual_gen_model": { "title": "Model name", "placeholder": "e.g. google/gemini-3.1-flash-image" },
+      "visual_gen_provider": {
+        "title": "Model provider"
+      },
+      "visual_gen_protocol": {
+        "title": "Protocol"
+      },
+      "visual_gen_api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://openrouter.ai/api/v1"
+      },
+      "visual_gen_api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "visual_gen_model": {
+        "title": "Model name",
+        "placeholder": "e.g. google/gemini-3.1-flash-image"
+      },
       "visual_gen_enabled": {
         "title": "Visual generation",
         "description": "Enable image generation tools (text-to-image); disabling it keeps the saved model configuration."
@@ -996,18 +1073,21 @@
         "title": "Global permission mode",
         "description": "Choose the shared guardrail mode for ordinary Agents and Teams."
       },
-      "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
+      "a2ui_enabled": {
+        "title": "Enable A2UI",
+        "description": "Render supported results as interactive interfaces."
+      },
       "rsi_enabled": {
         "title": "Enable RSI",
-        "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
+        "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
       },
       "team_organization_ui_enabled": {
-        "title": "Enable Team Organization",
-        "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+        "title": "Enable Team Organization UI",
+        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
@@ -1028,6 +1108,10 @@
       "team_member_messaging_enabled": {
         "title": "Enable member-to-member messaging",
         "description": "Members can message each other directly (point-to-point, multicast, broadcast) instead of routing through the Leader. Task assignment and handoffs stay with the Leader and the scheduler."
+      },
+      "team_member_subtasks_enabled": {
+        "title": "Allow members to split tasks",
+        "description": "Members can split the task they are working on into subtasks for themselves or other existing members. The task pauses until its subtasks finish, then resumes with their results. Subtasks can nest up to 2 levels."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -1124,7 +1208,53 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members"
+      "members": "Members",
+      "schedule": {
+        "title": "Dispatch control",
+        "collapse": "Collapse dispatch control",
+        "expand": "Expand dispatch control",
+        "summary": "{{tasks}} tasks · {{completed}} completed · {{reviews}} reviews · {{reworks}} reworks",
+        "controlRecords": "{{count}} main control records",
+        "anomalies": "{{count}} dispatch anomalies",
+        "assignee": "Assignee",
+        "unassigned": "Unassigned",
+        "unknownMember": "Unknown member",
+        "closeTask": "Close task details",
+        "noReviews": "No reviews yet",
+        "reviewCount_one": "{{count}} Review",
+        "reviewCount_other": "{{count}} Reviews",
+        "phase": {
+          "pending": "Pending",
+          "running": "Running",
+          "in_review": "In review",
+          "rework": "Rework",
+          "completed": "Completed",
+          "escalated": "Escalated",
+          "cancelled": "Cancelled",
+          "unknown": "Unknown"
+        },
+        "decision": {
+          "pass": "Pass",
+          "fail": "Fail",
+          "score": "Score {{value}}",
+          "pending": "Pending",
+          "pendingScore": "Pending score"
+        },
+        "event": {
+          "created": "Task created",
+          "updated": "Task updated",
+          "unblocked": "Dependencies unblocked",
+          "started": "Task started",
+          "submitted": "Submitted for review",
+          "vote": "Review vote",
+          "revision": "Rework requested",
+          "verified": "Review passed",
+          "cancelled": "Task cancelled",
+          "escalated": "Review escalated",
+          "anomaly": "Dispatch anomaly",
+          "team_completed": "Team completed"
+        }
+      }
     },
     "analysis": {
       "back": "Back to chat",
@@ -1148,6 +1278,7 @@
         "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
       "summary": "{{agents}} Agents · {{spans}} OTel spans",
+      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} spans",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1531,13 +1662,52 @@
     },
     "org": {
       "tab": "Organization",
-      "title": "Task Pool & Organization",
+      "title": "Organization",
+      "details": "Details",
+      "taskTree": "Organization tasks",
+      "treeProgress": "Completed {{completed}} / {{total}}",
+      "descriptionExcerpt": "Task description (excerpt)",
+      "requiredCapabilities": "Required capabilities",
+      "capabilities": "Team capabilities",
+      "assignedBy": "Assigned by",
+      "updatedAt": "Last updated",
+      "aggregationMode": "Aggregation",
+      "executionModel": "Execution model",
+      "failureReason": "Failure reason",
+      "rootTask": "Root task",
+      "recreatedFrom": "Recreated from",
+      "requiredChanges": "Required changes",
+      "aggregation": {
+        "HIERARCHICAL": "Hierarchical",
+        "SUMMARY_TEAM": "Summary Team"
+      },
+      "failure": {
+        "EXECUTION_FAILED": "Execution failed",
+        "SOURCE_FAILED": "Source task failed",
+        "SUMMARY_PROVISION_FAILED": "Summary Team provisioning failed",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired"
+      },
+      "ownerLabel": "Owner",
+      "stateRunning": "Running",
+      "stateIdle": "Standby",
+      "status": {
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired",
+        "OPEN": "Unclaimed",
+        "DELEGATED": "Delegated",
+        "WAITING_SOURCES": "Awaiting results",
+        "CLAIMED": "Claimed",
+        "IN_PROGRESS": "In progress",
+        "COMPLETED": "Completed",
+        "FAILED": "Failed"
+      },
       "refresh": "Refresh",
       "loading": "Loading…",
-      "empty": "This Team is not bound to an organization",
+      "empty": "No organization yet",
       "noOrganization": "No organization bound",
       "noTeam": "No Team is available in this session",
-      "loadFailed": "Failed to load organization information",
+      "loadFailed": "Failed to load organization",
       "organizationId": "Organization ID",
       "displayName": "Name",
       "description": "Description",
@@ -1546,7 +1716,7 @@
       "leadTeam": "Team",
       "leadMember": "Leader",
       "metadata": "Metadata",
-      "taskPool": "Task Pool",
+      "taskPool": "Tasks",
       "taskPoolEmpty": "Task pool is empty",
       "taskId": "Task ID",
       "taskTitle": "Title",
@@ -1663,6 +1833,7 @@
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
+    "modelNameAmbiguousHint": "Multiple model entries share this name, so the target model cannot be determined. For a conversation, re-select a specific model in the model picker. For a scheduled task, edit the task and re-pick its model, or delete and recreate the task (changing the model inside the run session does not update the task).",
     "sessionArchived": "This session has been archived. Restore it or start a new session to continue.",
     "sessionDeleted": "This session has been deleted and can no longer be used.",
     "sessionOperationInProgress": "An archive or delete operation is in progress for this session. Please try again later.",
@@ -1698,12 +1869,7 @@
     },
     "topicStarter": {
       "heading": "What would you like to explore today?",
-      "recommendations": "Start with one of these",
       "notInterested": "Skip for now",
-      "cardRemoved": "Skipped for now",
-      "pauseInterest": "Show this less for a week",
-      "interestPaused": "Okay, showing this less",
-      "undoDismissal": "Undo",
       "dateAndVersion": "See this day",
       "openDateAndVersion": "Open the background for this day",
       "weiboHotList": "Weibo hot searches",
@@ -1890,6 +2056,11 @@
       "currentRound": "Compacting current round…",
       "roundLevel": "Full compaction…"
     },
+    "contextCompressionElapsed": {
+      "seconds": "{{seconds}}s elapsed",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s elapsed",
+      "hoursMinutes": "{{hours}}h {{minutes}}m elapsed"
+    },
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
       "loadingMore": "Loading...",
@@ -1942,6 +2113,9 @@
     },
     "uploading": "Uploading...",
     "uploadFailed": "Upload failed",
+    "steerImagesOnly": "Immediate input supports uploaded images only. Wait for image uploads to finish; other files must remain queued.",
+    "steerImageUnavailable": "This Agent cannot read images yet. Enable image input for the main model or configure an image understanding tool, then try again.",
+    "steerDeliveryFailed": "Could not combine the original task and supplemental input into a complete answer. Please try again.",
     "retry": "Retry",
     "deleteLongPress": "Delete, long press for more actions",
     "deleteAttachment": "Delete attachment",
@@ -2098,7 +2272,26 @@
     }
   },
   "sessionSidebar": {
-    "newSession": "New session"
+    "newSession": "New session",
+    "enterpriseContext": {
+      "user": "User",
+      "userContext": "User context",
+      "modeAria": "Context mode",
+      "selectAgent": "Select agent",
+      "custom": "Custom",
+      "agentOrgLabel": "Agent | organization | cluster",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "jiuwenclawId": "jiuwenclaw_id",
+      "apply": "Apply",
+      "switching": "Switching...",
+      "logout": "Log out",
+      "switchToManager": "Open manager",
+      "customRequired": "bot_id, group_id, user_id and jiuwenclaw_id are required",
+      "noMatch": "No matches",
+      "pleaseSelect": "Select"
+    }
   },
   "offloadFiles": {
     "title": "Offload Files",
@@ -2421,6 +2614,14 @@
     }
   },
   "cron": {
+    "execution": {
+      "pending": "Waiting to run",
+      "running": "Executing",
+      "awaiting_approval": "Awaiting approval",
+      "succeeded": "Last run completed",
+      "failed": "Last run failed",
+      "startFailed": "Scheduled task “{{name}}” could not start: {{reason}}"
+    },
     "title": "Scheduled Task Management",
     "subtitle": "Manage scheduled tasks with cron expressions, including creating, enabling, and deleting tasks",
     "create": "Create",
@@ -2524,6 +2725,7 @@
       "placeholderProject": "-",
       "placeholderEffectiveDate": "Select effective date",
       "missingFieldsHint": "Still needed: {{fields}}",
+      "modelUnavailable": "The selected model “{{model}}” is unavailable. Check the model configuration.",
       "scheduleAlreadyExpiredHint": "The selected run time is already in the past, please choose another",
       "charCount": "{{count}}/{{max}}",
       "maxLengthReachedHint": "Maximum length reached ({{max}} characters)"
@@ -2689,6 +2891,7 @@
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
+      "sessionOpenFailed": "The task was triggered, but its session could not be opened. Open it from the task's session list.",
       "expiredCannotRunNow": "Task has expired and cannot be run",
       "disabledCannotRunNow": "Task is stopped and cannot be run",
       "expiredCannotEnable": "Task has expired and cannot be enabled",
@@ -3084,6 +3287,7 @@
     "tabs": {
       "mySkills": "My Skills",
       "marketplace": "Marketplace",
+      "enterpriseSources": "Enterprise sources",
       "skillRetrieval": "Skill Retrieval",
       "skillGraph": "Skill Graph"
     },
@@ -3091,13 +3295,21 @@
       "all": "All",
       "enabled": "Enabled",
       "disabled": "Disabled",
-      "builtin": "Builtin"
+      "builtin": "Builtin",
+      "prebuilt": "Prebuilt",
+      "user": "User-installed",
+      "local": "Local"
     },
     "mySkillsGroups": {
       "added": "Added Skills",
+      "prebuilt": "Prebuilt Skills",
       "builtin": "Built-in Skills",
+      "local": "Local Skills",
       "skillPack": "Skill Packs"
     },
+    "noPrebuiltSkills": "No prebuilt skills",
+    "noUserSkills": "No user-installed skills",
+    "noLocalSkills": "No local skills",
     "skillTypes": {
       "skill": "Skill Pack",
       "skillpack": "Skill Pack",
@@ -3257,6 +3469,7 @@
       "cancel": "Cancel"
     },
     "builtIn": "Built-in",
+    "enterprisePrebuilt": "Prebuilt",
     "status": {
       "installed": "Installed",
       "notInstalled": "Not installed",
@@ -3269,7 +3482,31 @@
       "clawhub": "ClawHub",
       "skillnet": "SkillNet",
       "teamskillshub": "TeamSkillsHub",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "swarmskillhub": "SwarmSkillHub",
+      "author": "Author",
+      "rating": "Rating",
+      "downloads": "Downloads",
+      "localVersion": "Local version",
+      "updatedAt": "Updated",
+      "searchPlaceholder": "Search skills",
+      "noResults": "No matching skills",
+      "noSources": "No skill sources available. Contact your administrator.",
+      "checkUpdates": "Check updates",
+      "prev": "Previous",
+      "next": "Next",
+      "replaceConfirm": "Skill {{name}} is already installed. Overwrite?",
+      "replaceConfirmTitle": "Confirm overwrite",
+      "errors": {
+        "loadFailed": "Failed to load skill sources",
+        "searchFailed": "Search failed",
+        "installFailed": "Install failed",
+        "updateFailed": "Update failed"
+      },
+      "messages": {
+        "installed": "Installed: {{name}}",
+        "updated": "Updated: {{name}}"
+      }
     },
     "sourceLabel": "Source",
     "statusLabel": "Status",
@@ -3305,6 +3542,7 @@
     "detailError": "Failed to load details",
     "detail": {
       "basicInfo": "Basic Info",
+      "version": "Version",
       "versionManage": "Version Management",
       "versionsLoadFailed": "Failed to load versions",
       "noVersions": "No version records",
@@ -3772,8 +4010,7 @@
       "Communication": "Communication",
       "Engineering": "Engineering",
       "Life": "Life",
-      "Custom": "Custom",
-      "Other": "Other"
+      "Custom": "Custom"
     },
     "actions": {
       "working": "Working",
@@ -3976,7 +4213,10 @@
         "delete": "Delete",
         "saving": "Saving…"
       },
-      "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}" },
+      "card": {
+        "open": "Open {{name}} details",
+        "actions": "Actions for {{name}}"
+      },
       "states": {
         "loadError": "Unable to load the Expert Team list. Try again.",
         "detailError": "Unable to load Expert Team details. Try again.",
@@ -4075,6 +4315,8 @@
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
   },
   "chatUi": {
+    "toggleOverview": "Overview",
+    "expandDetails": "Details panel",
     "copyMessage": "Copy message",
     "copied": "Copied",
     "usageInput": "Input",
@@ -4411,6 +4653,9 @@
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
     "builtOn": "Built on",
+    "buildSource": "Current build source",
+    "branch": "Branch",
+    "packageVersion": "Package version",
     "latestVersion": "Latest version",
     "state": "Update state",
     "publishedAt": "Published at",
@@ -4697,6 +4942,7 @@
   },
   "authPrompt": {
     "title": "Authorization",
+    "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
@@ -5021,8 +5267,15 @@
       "expired": "Expired"
     },
     "schedule": {
-      "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
-      "interval": { "label": "Every", "unit": "minutes, return to this session" },
+      "tab": {
+        "interval": "Interval",
+        "cron": "Cron expression",
+        "once": "Once"
+      },
+      "interval": {
+        "label": "Every",
+        "unit": "minutes, return to this session"
+      },
       "cron": {
         "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)."
       },
@@ -5138,17 +5391,17 @@
     }
   },
   "rsi": {
-    "title": "Experiments",
-    "createExperiment": "Create Experiment",
+    "title": "RSI",
+    "createExperiment": "Create RSI Task",
     "empty": {
-      "title": "No experiment tasks",
-      "hint": "We support creating Harness, paper, and program optimization experiments"
+      "title": "No RSI tasks",
+      "hint": "Create RSI tasks for Harness, paper, and program optimization"
     },
     "intro": {
       "title": "RSI · Recursive Self-Improvement",
       "lead": "Make AI stronger with use—from simply working to working better",
       "stepsTitle": "How it works",
-      "step1Title": "Step 1: Create an experiment",
+      "step1Title": "Step 1: Create an RSI task",
       "step1Body": "Choose Harness Optimization or Artifact Optimization (paper or program), fill in the required parameters, and click Create to start automatic optimization.",
       "step2Title": "Step 2: Visualize the optimization",
       "step2Body": "Track training progress and score curves in real time. Explore the RSI tree search and let the process iterate automatically without manual intervention.",
@@ -5161,15 +5414,15 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
-      "title": "RSI experiments",
+      "title": "RSI Tasks",
       "loading": "Loading…",
-      "error": "Failed to load experiments"
+      "error": "Failed to load RSI tasks"
     },
     "createDialog": {
-      "title": "Create Experiment",
-      "nameLabel": "Experiment name",
-      "namePlaceholder": "Enter experiment name",
-      "typeLabel": "Experiment type",
+      "title": "Create RSI Task",
+      "nameLabel": "Task name",
+      "namePlaceholder": "Enter task name",
+      "typeLabel": "Task type",
       "typeHarness": "Harness Optimization",
       "typeArtifact": "Artifact Optimization",
       "artifactSubtypeLabel": "Artifact subtype",
@@ -5214,7 +5467,7 @@
       "cancel": "Cancel",
       "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
       "validation": {
-        "nameRequired": "Please enter experiment name",
+        "nameRequired": "Please enter task name",
         "datasetRequired": "Please select dataset file",
         "optimizerRequired": "Please select optimizer model",
         "testerRequired": "Please select tester model",
@@ -5307,7 +5560,7 @@
       "failureReason": "Failure reason",
       "rejectionReason": "Why it was not adopted",
       "inheritFrom": "Inherited from",
-      "baselineDescription": "This is the starting version for the experiment.",
+      "baselineDescription": "This is the starting version for the optimization.",
       "noChangeSummary": "Inherited from the parent; no structured change summary is available.",
       "nodeArtifact": "Node artifact",
       "processing": "Processing…",
@@ -5315,13 +5568,13 @@
       "nodeId": "Node ID",
       "nodeType": "Lifecycle",
       "close": "Close",
-      "deleteTitle": "Delete experiment",
-      "deleteBody": "Experiment data cannot be restored after deletion. Delete this experiment?",
-      "pauseTitle": "Pause experiment",
-      "pauseBody": "The current optimization will stop. Pause this experiment?",
-      "stopTitle": "Stop task",
-      "stopBody": "Stopping will terminate the current optimization task. Stop this experiment?",
-      "queuedTitle": "This experiment is queued",
+      "deleteTitle": "Delete RSI task",
+      "deleteBody": "RSI task data cannot be restored after deletion. Delete this task?",
+      "pauseTitle": "Pause RSI task",
+      "pauseBody": "The current optimization will stop. Pause this RSI task?",
+      "stopTitle": "Stop RSI task",
+      "stopBody": "Stopping will terminate the current optimization task. Stop this RSI task?",
+      "queuedTitle": "This RSI task is queued",
       "queuedHint": "1 more task is optimizing. Please wait."
     },
     "stage": {
@@ -5443,5 +5696,17 @@
     "reject": "Reject",
     "approve": "Authorize",
     "waiting": "Processing..."
+  },
+  "mcpApp": {
+    "loading": "Loading app…",
+    "loadFailed": "Could not load app",
+    "approvalPrompt": "The app wants to run",
+    "messagePrompt": "{{app}} wants to send this message to the Agent",
+    "sendMessage": "Send",
+    "cancelMessage": "Cancel",
+    "allow": "Allow",
+    "deny": "Deny",
+    "allowAlways": "Always allow in this app",
+    "readOnlyHint": "The server marks this tool as read-only (not verified)."
   }
 }

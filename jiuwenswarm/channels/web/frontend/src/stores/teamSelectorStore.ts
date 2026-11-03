@@ -65,7 +65,10 @@ export interface TeamSnapshotTask {
 }
 
 export interface TeamSnapshotPayload {
+  /** 在册成员（新后端已排除 shut_down；旧后端可能混有离队成员）。 */
   members?: TeamSnapshotMember[];
+  /** 已离队成员，只用于按 member_id 查名字 / 头像，不进名册。 */
+  departed_members?: TeamSnapshotMember[];
   tasks?: TeamSnapshotTask[];
   team_id?: string | null;
 }

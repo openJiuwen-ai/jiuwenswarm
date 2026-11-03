@@ -256,7 +256,10 @@ def build_enabled_mcp_server_configs(
 
 
 async def preflight_mcp_server_reachable(
-    cfg: McpServerConfig, *, timeout: float | None = None
+    cfg: McpServerConfig,
+    *,
+    timeout: float | None = None,
+    dynamic_token_url: str | None = None,
 ) -> tuple[bool, str]:
     """Reachability + auth probe for HTTP-based MCP servers.
 
@@ -270,6 +273,13 @@ async def preflight_mcp_server_reachable(
     Non-HTTP transports report reachable (no cheap probe). Shared by the
     config-time ``_pre_check_mcp_http_auth`` and cold-start
     ``_register_mcp_server`` so both gates stay identical.
+
+    ``dynamic_token_url`` 非空时（条目携带动态 token 端点 + 实例凭据已下发），
+    先实时取一次凭证并入探活头；**取不到不判失败**——动态头置空照常探活，
+    由网关响应决定可达性（与运行时"取不到照样调用、头置空"语义一致）。
+    同条件下本轮请求级 ext 带 ``X-User-Token`` 时也用它覆盖静态
+    ``Authorization``（仅双 token 网关；普通 MCP 服务的静态凭据不覆盖）。
+    默认 None：请求级/未启用路径行为与原来完全一致。
     """
     transport = (getattr(cfg, "client_type", "") or "").strip().lower()
     if transport not in _HTTP_MCP_TRANSPORTS:
@@ -328,6 +338,44 @@ async def preflight_mcp_server_reachable(
             },
         }
     )
+
+    if dynamic_token_url:
+        # 动态 token（mcp_dynamic_token_patch）：先实时取一次凭证并入探活头。
+        # 取不到不阻断：动态头置空照常探活（与运行时语义一致），网关响应决定
+        # 可达性；token 服务自身的不可达不会让网关被误判为不可注册。
+        from jiuwenswarm.common.mcp_dynamic_token_patch import (
+            TOKEN_HEADER_NAME,
+            TOKEN_HEADER_PREFIX,
+            TOKEN_TIMEOUT_S,
+            fetch_dynamic_token,
+            read_instance_credentials,
+        )
+
+        creds = read_instance_credentials()
+        if creds is not None:
+            # 用户授权逐轮覆盖——**仅双 token 网关**（dynamic_token_url +
+            # 实例凭据已下发，即运行时走 DynamicTokenProvider 的同一批网关）。
+            # 会话内注册发生在本轮对话栈内，探活与真实调用同源；普通 MCP
+            # 服务的静态凭据绝不能被本进程残留的请求级 ext 覆盖（覆盖会
+            # 把服务原有鉴权换成 Keycloak 用户令牌 → 401）。读不到（冷启动
+            # / 后台 / 非企业）保持条目静态头。
+            from jiuwenswarm.common.mcp_dynamic_token_patch import (
+                _current_user_authorization,
+            )
+
+            user_authorization = _current_user_authorization()
+            if user_authorization:
+                headers["Authorization"] = user_authorization
+            try:
+                token = await fetch_dynamic_token(
+                    token_url=dynamic_token_url,
+                    creds=creds,
+                    timeout_s=min(TOKEN_TIMEOUT_S, read_t),
+                )
+            except Exception:  # noqa: BLE001 - 探活不因 token 服务失败而失败
+                headers[TOKEN_HEADER_NAME] = ""
+            else:
+                headers[TOKEN_HEADER_NAME] = TOKEN_HEADER_PREFIX + token
 
     try:
         async with httpx.AsyncClient(timeout=http_timeout, follow_redirects=False) as http:

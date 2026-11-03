@@ -71,6 +71,35 @@ def test_fixture_assembles_into_expert_table():
     assert snapshot["tools"] and snapshot["rails"]
 
 
+@pytest.mark.parametrize(
+    ("dispatch_mode", "roster", "team_mode"),
+    [
+        ("autonomous", ["echo"], "hybrid"),
+        ("scheduled", [], None),
+    ],
+)
+def test_scheduled_teams_start_with_an_empty_roster(
+    dispatch_mode: str, roster: list[str], team_mode: str | None
+):
+    spec = TeamAgentSpec(
+        team_name="fixture-team",
+        dispatch_mode=dispatch_mode,
+        agents={"leader": DeepAgentSpec(), "teammate": DeepAgentSpec(tools=[])},
+    )
+
+    _apply_agent_group(
+        spec, "swarmflow-expert-fixture", load_agent_group_package_bundle(FIXTURE)
+    )
+
+    assert [member.member_name for member in spec.predefined_members] == roster
+    assert spec.team_mode == team_mode
+    assert spec.agent_group_name == "swarmflow-expert-fixture"
+    assert spec.agents["leader"].agent_template_spec, "the leader template applies in every mode"
+    # Under scheduled dispatch the members are loaded on demand from the
+    # package, so the spec carries none of them.
+    assert ("echo" in spec.agents) is (dispatch_mode != "scheduled")
+
+
 def test_fixture_is_not_on_the_user_shelf():
     shelf = (
         Path(__file__).resolve().parents[4]

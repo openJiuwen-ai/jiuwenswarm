@@ -29,22 +29,6 @@ class _TestRail(JiuSwarmStreamEventRail):
     async def emit_todo_updated(self, session, session_id: str):
         await self._emit_todo_updated(session, session_id)
 
-    async def emit_ask_user_question_if_interrupted(
-        self,
-        session,
-        tool_call,
-        tool_name,
-        result,
-        exception=None,
-    ):
-        await self._emit_ask_user_question_if_interrupted(
-            session,
-            tool_call,
-            tool_name,
-            result,
-            exception,
-        )
-
     async def emit_context_usage(self, ctx):
         await self._emit_context_usage(ctx)
 
@@ -142,7 +126,12 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot():
 
     await _TestRail().after_model_call(ctx)
 
-    assert session.outputs == []
+    # after_model_call always emits the llm_call_end "thinking" marker, but it
+    # must NOT re-emit the legacy context.usage frame when core already
+    # reported the full snapshot.
+    assert not [
+        o for o in session.outputs if getattr(o, "type", "") == "context.usage"
+    ]
 
 
 @pytest.mark.asyncio
@@ -159,7 +148,11 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot_without_repor
 
     await _TestRail().after_model_call(ctx)
 
-    assert session.outputs == []
+    # The core-emitted marker suppresses the rail's legacy context.usage frame;
+    # only the new llm_call_end marker is expected.
+    assert not [
+        o for o in session.outputs if getattr(o, "type", "") == "context.usage"
+    ]
 
 
 @pytest.mark.asyncio
@@ -200,7 +193,10 @@ async def test_after_model_call_persists_cumulative_usage_without_emitting_an_ev
     rail.init(SimpleNamespace(_build_context=SimpleNamespace(role="leader", session_id="sess_usage")))
     await rail.after_model_call(ctx)
 
-    assert session.outputs == []
+    # after_model_call always emits the llm_call_end "thinking" marker; the
+    # cumulative usage is persisted, not streamed as a separate event, and the
+    # legacy context.usage frame stays suppressed because core reported it.
+    assert [getattr(o, "type", "") for o in session.outputs] == ["llm_call_end"]
     assert get_session_token_usage("sess_usage")["main"] == {
         "input_tokens": 100,
         "output_tokens": 20,
@@ -210,12 +206,13 @@ async def test_after_model_call_persists_cumulative_usage_without_emitting_an_ev
     }
     from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import SessionTokenUsageRail
 
+    outputs_before_child_usage = list(session.outputs)
     ctx.inputs.context_usage_request_id = "call-child"
     ctx.inputs.context_usage_attribution["product_session_id"] = "sess_usage"
     await SessionTokenUsageRail().after_model_call(ctx)
     assert get_session_token_usage("sess_usage")["main"]["input_tokens"] == 100
     assert get_session_token_usage("sess_usage")["others"]["input_tokens"] == 100
-    assert session.outputs == []
+    assert session.outputs == outputs_before_child_usage
 
 
 @pytest.mark.asyncio
@@ -339,80 +336,3 @@ async def test_context_usage_keeps_runtime_context_limit_fallback(monkeypatch):
 
     assert captured_kwargs["context_engine_config"]["context_window_tokens"] == 1048576
     assert session.outputs[0].payload["context_max"] == 1000000
-
-
-@pytest.mark.asyncio
-async def test_ask_user_interrupt_emits_question_event_from_tool_args():
-    class ToolInterruptException(Exception):
-        def __init__(self):
-            super().__init__()
-            self.request = SimpleNamespace(
-                tool_call_id="tool-ask-1",
-                tool_args={
-                    "questions": [
-                        {
-                            "question": "请选择方案",
-                            "header": "方案",
-                            "options": [
-                                {"label": "A", "description": "方案 A"},
-                            ],
-                        }
-                    ]
-                },
-            )
-
-    session = _FakeSession()
-    tool_call = SimpleNamespace(id="tool-ask-1", arguments="{}")
-    rail = _TestRail()
-
-    await rail.emit_ask_user_question_if_interrupted(
-        session,
-        tool_call,
-        "ask_user",
-        ToolInterruptException(),
-    )
-
-    assert len(session.outputs) == 1
-    output = session.outputs[0]
-    assert output.type == "chat.ask_user_question"
-    assert output.payload["request_id"] == "tool-ask-1"
-    assert output.payload["source"] == "ask_user_interrupt"
-    assert output.payload["questions"][0]["question"] == "请选择方案"
-
-
-@pytest.mark.asyncio
-async def test_ask_user_interrupt_emits_question_event_from_exception_cause():
-    class ToolInterruptException(Exception):
-        def __init__(self):
-            super().__init__()
-            self.request = SimpleNamespace(
-                tool_call_id="tool-ask-2",
-                questions=[
-                    {
-                        "question": "是否继续",
-                        "header": "确认",
-                        "options": [
-                            {"label": "继续", "description": "继续执行"},
-                        ],
-                    }
-                ],
-            )
-
-    session = _FakeSession()
-    tool_call = SimpleNamespace(id="tool-ask-2", arguments="{}")
-    exception = SimpleNamespace(cause=ToolInterruptException())
-    rail = _TestRail()
-
-    await rail.emit_ask_user_question_if_interrupted(
-        session,
-        tool_call,
-        "ask_user",
-        None,
-        exception,
-    )
-
-    assert len(session.outputs) == 1
-    output = session.outputs[0]
-    assert output.type == "chat.ask_user_question"
-    assert output.payload["request_id"] == "tool-ask-2"
-    assert output.payload["questions"][0]["question"] == "是否继续"

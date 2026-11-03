@@ -80,44 +80,6 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
 
-### 后端构建身份与服务生命周期
-
-每次重新构建后端都会生成独立的 `backend_build_id`，以
-`jiuwenswarm/_worker_build_identity.json` 注入冻结产物或 WHL；文件仅写入构建目录。
-原样复用后端、重新组装 Electron 或安装器时保留原身份。`-ReuseBackend` 会验证源码、
-依赖锁及出包脚本摘要，输入不匹配时拒绝复用。
-
-当前脚本仍在同仓。PowerShell 入口支持 `-SourceRoot`、`-BuildRoot` 和
-`-WorkerIdentityFile`；跨平台接口为 `WORKSWARM_SOURCE_ROOT`、
-`WORKSWARM_PACKAGING_ROOT`、`WORKSWARM_BUILD_ROOT`、`WORKSWARM_WORKER_IDENTITY`。
-默认沿用当前目录布局，显式输入允许源码与出包脚本位于不同目录。
-身份输入可由 `jiuwenswarm/common/worker_build_identity.py --source-root <源码目录>
---packaging-root <脚本仓目录> --output <构建目录中的文件>` 创建。输入文件只提供构建来源，
-其 ID 记录为 `input_build_id`；每次重新构建冻结后端或 WHL 都另生成新的 `backend_build_id`。
-只有原样复用已有后端时才保留其内嵌身份。TUI 嵌套构建从出包目录读取脚本，
-从指定源码目录读取入口及写入产物，默认仍使用同仓布局。
-
-Worker 在启动时核验并固定身份，Supervisor 每次连接都核对代码与部署归属。
-只有同一部署的旧 Worker 可以在启动锁内收尾退出、确认进程结束后被替换；其他安装、
-无法确认归属的进程和未知协议会被拒绝。DMG 只处理自身部署的残留，不清理 WHL 或源码服务。
-旧 Python Worker 的 HELLO 若缺少部署身份，同一解释器或工作目录不足以确认其包来源，
-启动及重连均拒绝接纳，完整停止也拒绝自动终止；请先使用它原来的源码或 WHL 服务入口停止，再启动新版。
-旧冻结桌面 Worker 仍须通过实际可执行文件、用户、端点和进程身份校验。
-完整停止与启动并发时，只有当前连接通过 HELLO 归属验证后才可发送退出指令；
-验证未完成则拒绝终止并清理连接，不复用上一连接的验证结果。Supervisor 自己创建的子进程
-仍可通过持有的进程句柄收尾，不向未验证的对端发送退出指令。
-完整停止会取消尚未验证的启动任务；创建、连接和 HELLO 任一阶段失败或取消，都回收本次创建的子进程。
-保存的 PID 创建时间来自同一次归属验证，不再用后续 PID 查询替换，强制回收仍检查该已验证身份。
-源码服务不要求身份文件，按源码内容与实际依赖环境
-计算指纹；WHL 服务将包身份与实际依赖环境一起校验，旧 WHL 缺少文件时采用内容指纹。
-损坏的身份文件不会静默回退。
-
-普通 Front 重启可复用兼容的 Worker。完整停止服务使用 `jiuwenswarm-stop` 或
-`jiuwenswarm-start --stop <实例名>`。部署升级应先停止服务，再更新源码、WHL 或依赖。
-桌面更新为本次退出创建独立的结果文件；父进程完成服务退出及 Worker 持久化后才记录成功。
-更新助手必须先验证该结果，再调用生命周期接口确认 Worker 退出。失败、未完成或结果缺失
-都会阻止覆盖安装，即使此时 Worker 端点已经消失也不能继续。
-
 ### Windows 升级时保全用户安装的 CLI 和 SDK
 
 两套 Windows 安装器在清理安装目录或调用旧管理员版卸载器前，使用内嵌的 `preserve-windows-cli.ps1` 保全旧 `runtime/node-runtime` 和 `resources/backend/runtime/node-runtime`。整个 Node 前缀连同依赖、入口和未知文件进行离线复制与 SHA256 校验；源文件变化、运行中的 CLI、链接目录或复制失败会停止后续清理。恢复副本位于用户数据目录的 `runtime/npm/preserved`，运行副本位于 `runtime/npm/installed`，二者均不随应用卸载删除，也不会自动清除。完整复制会增加磁盘占用，空间不足会报错并保留原文件。
@@ -242,13 +204,19 @@ CDP 端点仅回环但**无认证**，本机任意进程理论上可连接并控
 - preload 暴露 `window.jiuwenDesktop`（browser.* / desktop.* IPC，全部 `trustedSender` 校验），同时保留 `window.pywebview.api` 兼容层
 - `DesktopBrowserPane`（`src/components/DesktopBrowserPane/`）：工具栏 + 地址栏 + 视口；`ResizeObserver` + `zoom-changed` 重算 bounds，主进程按 `zoomFactor` 换算 CSS px → DIP 后 setBounds
 - **模态遮挡规避**：原生 WebContentsView 永远盖在页面 DOM 之上（z-index 无效）；pane 监听到 `role="dialog"[aria-modal="true"]` 弹窗挂载时临时隐藏视图，关闭后恢复显示（`browser:set-visible` 的 focus=false 不抢主窗口焦点）
-- **tab 显示条件**（重要）：`isElectron && (useBrowserAgentActivity(sessionId) || useDesktopBrowserTabFlags(sessionId).requested) && !closed`
+- **tab 显示条件**（重要）：`isElectron && !headless && (useBrowserAgentActivity(sessionId) || useDesktopBrowserTabFlags(sessionId).requested) && !closed`
   - 单 agent 模式：subagentStore 中出现 `subagent_type === 'browser_agent'` 的子代理（spawn 即算，含历史恢复）
-  - team 模式：`teamMemberExecutionEvents` 中出现过 `browser_*` 工具调用（team 的浏览器子代理挂在成员内部，不进主会话 subagentStore）
+  - team 模式：Electron 实际创建过当前会话的成员面板；外部 Chrome 工具事件不生成内置空白面板
   - 或本会话点开过 .html/.md 聊天文件（`openFileInDesktopBrowser`，按会话持久化于 localStorage）；页签右上 close.svg 显式关闭后隐藏（`closeDesktopBrowserTab`）
   - 信号实现在 `src/features/browserAgentActivity.ts` 与 `src/features/desktopBrowserFile.ts`；web 端短路，走原逻辑
-- **每会话隔离**：browser.* IPC 全部携带 sessionId，主进程按会话维护独立 WebContentsView（独立 partition）；状态广播带 sessionId，pane 只响应当前会话
-- 自动展开：每会话仅一次（`App.tsx` 的 ref 门控），用户手动收起后不再强制弹回；team 模式不抢 tab
+- **每会话隔离**：browser.* IPC 携带会话或成员 panelId，主进程维护独立 WebContentsView；使用共享 `persist:jiuwenswarm-browser` partition 保留登录态，页面导航和显示独立
+- **关闭与新任务**：关闭只隐藏页签和原生视图，不关闭页面或 MCP。新的 MCP 任务绑定使面板从 idle 变为 busy 时，`useDesktopBrowserAutoOpen` 清除当前会话的 `closed`，并展开、选中 Browser 页签（单 Agent 和团队模式均适用）。同一 busy 状态的重复通知、导航和历史恢复不会反复弹出；后台会话不抢当前会话的面板
+- **初始化与异常**：按会话读取一次 busy 基线；IPC 返回前仅暂存不同的忙闲状态，再与基线对照，其他会话的事件不会使本会话基线失效。晚到响应不能覆盖用户刚执行的关闭；期间已完成的新任务不展开。活动基线读取失败时，首次观察仅作基线，后续新任务仍可触发展开；面板自身列表读取失败则告警并回退到默认会话页面，不永久留白，也不覆盖较新事件选中的成员页面
+- **无头模式**：不展示页签、也不自动展开。无头启动且仍在运行的任务切回前台后可以显示；已经结束的隐藏任务不会事后弹出
+- **页面复用**：面板挂载先读取已有页面，优先显示活跃成员；不先创建空白主页面。用户已选定页面后，普通通知不抢选中页；恢复显示不触发浏览器/MCP 重启、刷新或清理 Cookie
+- English: Closing a pane hides it without closing its page or MCP connection. A new headed task reopens the current conversation's Browser tab and expands its panel. Repeated busy notifications do not undo a manual close; background conversations do not steal the active panel. Headless tasks remain hidden. Reopening selects an existing active page and preserves page state and login data without restarting the browser or MCP
+- English: Each session establishes its own activity baseline before classifying buffered busy transitions. Late replies cannot undo a manual close or reveal a task that already finished. A failed activity read uses the first observation as its baseline; a failed pane-list read logs a warning and falls back to the session page unless a newer event already selected a member page
+- 回归：前端 `npm run test:browser-reopen`；真实 Electron/MCP 测试 `tests/electron/browser_integration.cjs` 使用独立临时 profile 和本地测试网页，不访问用户登录资料
 - tab 状态持久化：`singleAgentPanelState.ts` 与 `teamPanelStateNormalize.ts` 的合法 tab 集合均已含 `'browser'`
 - Electron 下前端跳过 IAM 鉴权探测（`AppWithAuth` 直接 `noIam`）
 - 地址栏导航非法 URL → 主进程 reject → 前端 catch 后恢复地址栏

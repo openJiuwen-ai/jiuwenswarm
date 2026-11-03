@@ -631,3 +631,25 @@ async def test_finalize_assistant_response_if_a2ui_bypasses_non_web_channel(monk
     )
 
     assert result == content
+
+
+@pytest.mark.parametrize("section", [{}, {"enabled": True}, {"enabled": "off"}, {"protocol_version": "9"}])
+@pytest.mark.parametrize("env_enabled", [None, "true", "false", "invalid"])
+@pytest.mark.parametrize("env_protocol", [None, "0.8", "9"])
+def test_web_config_matches_runtime_parser(monkeypatch, section, env_enabled, env_protocol):
+    from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
+
+    for key, value in [("JIUWENSWARM_A2UI_ENABLED", env_enabled),
+                       ("JIUWENSWARM_A2UI_PROTOCOL_VERSION", env_protocol)]:
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    raw = {"a2ui": section}
+    try:
+        expected = get_a2ui_config(raw)
+    except ValueError:
+        with pytest.raises(ValueError, match="Unsupported A2UI protocol"):
+            get_a2ui_config_payload(raw)
+    else:
+        assert get_a2ui_config_payload(raw) == {"a2ui_enabled": str(expected.enabled).lower()}

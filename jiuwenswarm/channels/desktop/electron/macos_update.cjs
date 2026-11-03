@@ -1,7 +1,6 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { createShutdownReceipt } = require('./update_shutdown.cjs');
 
 function installedBundle(executable) {
   const bundle = path.dirname(path.dirname(path.dirname(executable)));
@@ -17,13 +16,9 @@ function installedBundle(executable) {
 
 // The detached helper first stages and validates the new app. Only its READY
 // acknowledgement allows Electron to quit; verification errors leave it running.
-async function launchMacUpdate({ installerPath, executable, backendExecutable, parentPid, childPids, ports,
+async function launchMacUpdate({ installerPath, executable, parentPid, childPids, ports,
   updatesDir, logDir, arch }, spawnProcess = spawn) {
   const bundle = installedBundle(await fs.realpath(executable));
-  const backend = await fs.realpath(backendExecutable);
-  if (path.dirname(backend) !== path.join(bundle, 'Contents', 'Resources', 'backend')) {
-    throw new Error('The updater requires the installed backend lifecycle helper');
-  }
   const installer = await fs.realpath(installerPath);
   const root = await fs.realpath(updatesDir);
   if (path.dirname(installer) !== root || !installer.endsWith('.dmg')
@@ -40,11 +35,10 @@ async function launchMacUpdate({ installerPath, executable, backendExecutable, p
   // Copy outside the old .app: the script must survive the bundle swap.
   const helperDir = await fs.mkdtemp(path.join(root, 'electron-update-'));
   const helperPath = path.join(helperDir, 'install.sh');
-  const shutdownReceipt = await createShutdownReceipt(helperDir);
   await fs.copyFile(path.join(__dirname, 'install_macos_update.sh'), helperPath);
   const args = [helperPath, installer, bundle, String(parentPid), childPids.join(','),
     ports.join(','), path.join(logDir, 'electron-update.log'),
-    arch === 'x64' ? 'x86_64' : arch, backend, shutdownReceipt];
+    arch === 'x64' ? 'x86_64' : arch];
   return new Promise((resolve, reject) => {
     let ready = false;
     let settled = false;
@@ -77,7 +71,7 @@ async function launchMacUpdate({ installerPath, executable, backendExecutable, p
         clearTimeout(timeout);
         child.stdout.destroy();
         child.unref();
-        resolve({ shutdownReceipt });
+        resolve(true);
       }
     });
   });

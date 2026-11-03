@@ -80,7 +80,6 @@ uv() { echo "compile progress: no path on stdout"; }
     result = subprocess.run(
         [bash, "-c", script],
         env={**os.environ, "FRONTEND_ONLY": "false", "PROJECT_ROOT": str(tmp_path),
-             "PACKAGING_ROOT": str(tmp_path / "release"),
              "BUILD_ARCH": architecture, "EXPECTED_BINARY": str(binary)},
         capture_output=True, text=True, check=False,
     )

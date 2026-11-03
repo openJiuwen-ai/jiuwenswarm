@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -12,8 +14,21 @@ AGENT_SERVER_TIMEOUT_CODE = "AGENT_SERVER_TIMEOUT"
 AGENT_SERVER_TIMEOUT_ERROR = "AgentServer request timed out"
 
 _TUI_CHANNEL_ID = "tui"
-_TUI_DEFAULT_UNARY_TIMEOUT_SECONDS = 25.0
 _TUI_MAX_UNARY_TIMEOUT_SECONDS = 55.0
+
+
+def _load_default_tui_timeout_seconds() -> float:
+    name = "GATEWAY_TUI_UNARY_TIMEOUT_SECONDS"
+    try:
+        timeout = float(os.environ.get(name, "25"))
+    except ValueError:
+        raise ValueError(f"{name} must be between 1 and 55 seconds") from None
+    if not math.isfinite(timeout) or not 1 <= timeout <= _TUI_MAX_UNARY_TIMEOUT_SECONDS:
+        raise ValueError(f"{name} must be between 1 and 55 seconds")
+    return timeout
+
+
+_TUI_DEFAULT_UNARY_TIMEOUT_SECONDS = _load_default_tui_timeout_seconds()
 _TUI_CLIENT_TIMEOUT_GRACE_SECONDS = 5.0
 _TUI_EXTENDED_UNARY_METHOD_PREFIXES = (
     "permissions.tools.",

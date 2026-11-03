@@ -231,7 +231,7 @@ async def _managed_voice_delegation(h, monkeypatch, query):
     """
     from contextlib import asynccontextmanager
 
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    from jiuwenswarm.server.runtime.video_task import execution
 
     @asynccontextmanager
     async def no_binding(_request, _adapter, _inputs):

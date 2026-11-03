@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 
-ROOT = Path(os.environ.get("WORKSWARM_SOURCE_ROOT", str(Path(__file__).resolve().parents[1]))).resolve()
+ROOT = Path(__file__).resolve().parents[1]
 TUI_ENTRY = ROOT / "jiuwenswarm" / "channels" / "tui" / "frontend" / "src" / "index.ts"
 OUTPUT_ROOT = ROOT / "packages" / "jiuwenswarm-tui" / "jiuwenswarm_tui" / "resources" / "tui-bin"
 

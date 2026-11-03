@@ -47,7 +47,8 @@ test('Design duplex creates and binds an empty saved canvas without sending a us
   const state = fixture();
   try {
     assert.deepEqual(await createDesignerConversation(), {projectId: 'default', sessionId: 'design-new'});
-    assert.deepEqual(state.events, [['create', {projectId: 'default', title: ''}], ['ensure', 'design-new'], ['mode', 'design-new', 'team'], ['active', 'design-new']]);
+    // The app route selects the active session after the saved canvas is bound.
+    assert.deepEqual(state.events, [['create', {projectId: 'default', title: ''}], ['ensure', 'design-new'], ['mode', 'design-new', 'team']]);
     assert.equal(state.applied[0].metadata.session_id, 'design-new');
     assert.deepEqual(state.history, [['canvas', []]]);
   } finally { delete globalThis.designCreate; }

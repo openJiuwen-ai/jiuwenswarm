@@ -46,6 +46,8 @@ class CronJobStoreBackend(Protocol):
         app_id: str = "",
         work_mode: str = "work",
         user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
         credential_ref: str = "",
     ) -> CronJob:
         ...

@@ -4,6 +4,8 @@ import {
   formatArtifactScore,
   nodeChangeDisplayLabel,
   nodeScoreLines,
+  nodeMetrics,
+  nodeHeight,
   nodeStageLabel,
   nodeStageLocalizedLabel,
   nodeStageSpec,
@@ -407,6 +409,63 @@ test('program scores are shown out of 100; other scenarios are unchanged', () =>
   assert.equal(formatArtifactScore(null, 'PROGRAM'), '--');
   assert.equal(scoreScale('PROGRAM'), 100);
   assert.equal(scoreScale('PAPER'), 1);
+});
+
+test('Harness cards show only the node score and reserve no space for reference scores', () => {
+  const node = {
+    node_id: 'H-01',
+    iteration: 1,
+    parent_id: 'ROOT',
+    type: 'REJECTED',
+    adopted: false,
+    score: 0.7,
+    changes: [],
+    extra: { best_reference_score: 0.9, latest_evaluated_score: 0.7, potential_score: 0.8 },
+  };
+  const withoutReferences = { ...node, extra: {} };
+
+  assert.deepEqual(nodeScoreLines(node, null, 'HARNESS'), [{ value: '0.700', label: '分数' }]);
+  assert.deepEqual(nodeScoreLines({ ...node, score: null }, null, 'HARNESS'), []);
+  for (const kind of ['best-path', 'evaluated']) {
+    for (const expanded of [false, true]) {
+      assert.deepEqual(
+        nodeMetrics(node, kind, expanded, 'HARNESS'),
+        nodeMetrics(withoutReferences, kind, false, 'HARNESS'),
+      );
+    }
+  }
+  assert.equal(nodeScoreLines(node, 'PROGRAM', 'ARTIFACT').length, 4);
+});
+
+test('only Harness scores keep three decimal places across score displays', () => {
+  const cases = [
+    { score: 0.73456, artifactType: null, scenario: 'HARNESS', expected: '0.735' },
+    { score: 0.73444, artifactType: null, scenario: 'HARNESS', expected: '0.734' },
+    { score: 0, artifactType: null, scenario: 'HARNESS', expected: '0.000' },
+    { score: 1, artifactType: null, scenario: 'HARNESS', expected: '1.000' },
+    { score: null, artifactType: null, scenario: 'HARNESS', expected: '--' },
+    { score: 0.73456, artifactType: 'PAPER', scenario: 'ARTIFACT', expected: '0.7' },
+    { score: 0.73456, artifactType: 'PROGRAM', scenario: 'ARTIFACT', expected: '73.5' },
+    { score: 0.73456, artifactType: null, scenario: undefined, expected: '0.7' },
+  ];
+  for (const { score, artifactType, scenario, expected } of cases) {
+    assert.equal(formatArtifactScore(score, artifactType, scenario), expected);
+  }
+  const node = { score: 0.73456, extra: {} };
+  assert.deepEqual(nodeScoreLines(node, null, 'HARNESS'), [{ value: '0.735', label: '分数' }]);
+  assert.deepEqual(nodeScoreLines(node, 'PAPER', 'ARTIFACT'), [{ value: '0.7', label: '分数' }]);
+  assert.deepEqual(nodeScoreLines(node, 'PROGRAM', 'ARTIFACT'), [{ value: '73.5', label: '分数' }]);
+});
+
+test('nodeHeight uses the scenario when measuring Harness score rows', () => {
+  const node = { score: 0.7, extra: { potential_score: 0.8, best_reference_score: 0.9 } };
+  for (const kind of ['best-path', 'evaluated']) {
+    for (const expanded of [false, true]) {
+      const metrics = nodeMetrics(node, kind, expanded, 'HARNESS');
+      assert.equal(nodeHeight(node, kind, expanded, 'HARNESS'), metrics.barH + metrics.bodyH);
+      assert(nodeHeight(node, kind, expanded) > nodeHeight(node, kind, expanded, 'HARNESS'));
+    }
+  }
 });
 
 test('program candidates skipped after a sibling reached the target render as neutral skips', () => {

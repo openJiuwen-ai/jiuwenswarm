@@ -1122,3 +1122,22 @@ async def test_new_execution_rejects_foreign_active_or_persisted_session() -> No
     assert runtime.get_session.call_count == 1
     runtime.invoke.assert_not_awaited()
     await runtime.close()
+
+
+@pytest.mark.parametrize("interrupt_id", ["intr-1", ""])
+def test_interaction_answer_input_carries_the_interrupt_id_only_when_given(interrupt_id: str) -> None:
+    answer = InteractionAnswerInput(
+        request_id="answer-1",
+        channel_id="process_cli",
+        session_id="session-1",
+        interaction_id="call-1",
+        answers=({"selected_options": ["allow_once"]},),
+        source="permission_interrupt",
+        interrupt_id=interrupt_id,
+    )
+
+    params = answer.to_agent_request().params
+
+    assert params["request_id"] == "call-1"
+    assert params.get("interrupt_id", "") == interrupt_id
+    assert ("interrupt_id" in params) is bool(interrupt_id)

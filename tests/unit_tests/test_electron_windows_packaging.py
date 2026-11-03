@@ -74,8 +74,7 @@ def test_gateway_build_gate_runs_frozen_exe_and_stops_on_failure(tmp_path, exit_
     script.write_text(
         "$ErrorActionPreference = 'Stop'\n"
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()\n"
-        "$ProjectRoot = 'C:\\application sources'\n"
-        "$PackagingRoot = 'C:\\build with spaces'\n"
+        "$ProjectRoot = 'C:\\build with spaces'\n"
         "$FrozenExe = 'C:\\frozen backend\\workswarm.exe'\n"
         "$BuildErrorLogName = 'error.log'\n"
         "function Start-Process {\n"
@@ -161,8 +160,6 @@ def test_normal_upgrade_does_not_run_uninstall_config_cleanup():
 
 
 def test_windows_update_helper_waits_then_launches_interactive_installer(tmp_path):
-    from jiuwenswarm.common.update_shutdown import create_shutdown_receipt, complete_shutdown_receipt, require_clean_shutdown
-
     # Isolate the real helper function from optional GUI imports.
     source = (ROOT / "jiuwenswarm/channels/desktop/desktop_app.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -174,37 +171,11 @@ def test_windows_update_helper_waits_then_launches_interactive_installer(tmp_pat
         "BACKEND_PORT": 19000, "FRONTEND_PORT": 5173,
         "BACKEND_HOST": "127.0.0.1", "FRONTEND_HOST": "127.0.0.1",
         "wait_for_pid_exit": lambda pid: events.append(("parent", pid)),
-        "require_clean_shutdown": require_clean_shutdown,
-        "_shutdown_runtime_before_update": lambda: events.append(("worker-stopped",)),
-        "_wait_for_port_release": lambda host, port, **kw: events.append(("port", port)) or True,
+        "_wait_for_port_release": lambda host, port, **kw: events.append(("port", port)),
         "subprocess": SimpleNamespace(DEVNULL=-3, Popen=lambda args, **kw: events.append(("launch", args, kw))),
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), "helper", "exec"), env)
     target = tmp_path / "WorkSwarm setup.exe"
-    receipt = create_shutdown_receipt(tmp_path)
-    complete_shutdown_receipt(receipt, ok=True)
-    env[function.name](str(target), "WorkSwarm.exe", 123, 19001, 5174, str(receipt))
-    assert events[:4] == [("parent", 123), ("worker-stopped",), ("port", 19001), ("port", 5174)]
-    assert events[4] == ("launch", [str(target.resolve())], {"stdout": -3, "stderr": -3})
-    events.clear()
-
-    def incomplete_worker():
-        raise RuntimeError("Worker persistence incomplete")
-
-    env["_shutdown_runtime_before_update"] = incomplete_worker
-    with pytest.raises(RuntimeError, match="persistence incomplete"):
-        env[function.name](str(target), "WorkSwarm.exe", 123, shutdown_receipt=str(receipt))
-    assert not any(event[0] == "launch" for event in events)
-
-    # An absent Worker on the second check must not erase the parent's failure.
-    env["_shutdown_runtime_before_update"] = lambda: events.append(("absent-worker",))
-    for state in ("pending", "failed", "missing"):
-        events.clear()
-        receipt = create_shutdown_receipt(tmp_path)
-        if state == "failed":
-            complete_shutdown_receipt(receipt, ok=False)
-        elif state == "missing":
-            receipt.unlink()
-        with pytest.raises(RuntimeError, match="Update refused"):
-            env[function.name](str(target), "WorkSwarm.exe", 123, shutdown_receipt=str(receipt))
-        assert events == [("parent", 123)]
+    env[function.name](str(target), "WorkSwarm.exe", 123, 19001, 5174)
+    assert events[:3] == [("parent", 123), ("port", 19001), ("port", 5174)]
+    assert events[3] == ("launch", [str(target.resolve())], {"stdout": -3, "stderr": -3})

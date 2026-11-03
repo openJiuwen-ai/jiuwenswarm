@@ -184,6 +184,7 @@ class DuplexController:
             ),
             answers=answers,
             source=str(payload.get("source") or ""),
+            interrupt_id=str(payload.get("interrupt_id") or ""),
             approval_schema=str(payload.get("approval_schema") or ""),
             evolution_meta=payload.get("evolution_meta"),
             mode=str(params.get("mode") or ""),

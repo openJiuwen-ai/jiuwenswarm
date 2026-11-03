@@ -53,6 +53,10 @@ import yaml
 
 from jiuwenswarm.common.utils import get_config_file
 from jiuwenswarm.instance_manager import is_process_alive, stop_process_by_pid
+from jiuwenswarm.server.supervisor.worker_process import (
+    default_socket_path,
+    request_resident_worker_shutdown,
+)
 
 # Package source root: <repo>/jiuwenswarm in source mode.
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -840,14 +844,25 @@ def _stop_resident_worker(timeout: float = DEFAULT_STOP_TIMEOUT) -> bool:
     Returns:
         True when no Worker is left running.
     """
-    from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
-
+    socket_path = default_socket_path()
     try:
-        result = asyncio.run(shutdown_resident_worker(timeout=timeout))
+        pid = asyncio.run(request_resident_worker_shutdown(socket_path))
     except (OSError, RuntimeError, asyncio.TimeoutError) as exc:
-        logging.info(f"[debug] WARNING: resident Worker shutdown incomplete: {exc}")
+        logging.info(f"[debug] WARNING: cannot reach runtime worker at {socket_path}: {exc}")
         return False
-    return result.get("ok") is True
+    if pid is None:
+        return True
+
+    logging.info(f"[debug] Stopping resident runtime worker (PID={pid})...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not is_process_alive(pid):
+            return True
+        time.sleep(0.3)
+
+    logging.info(f"[debug] Runtime worker (PID={pid}) did not exit within {timeout}s; killing it.")
+    stop_process_by_pid(pid, timeout=5.0)
+    return not is_process_alive(pid)
 
 
 def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:

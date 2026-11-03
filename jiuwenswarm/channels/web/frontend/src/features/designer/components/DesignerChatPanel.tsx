@@ -288,6 +288,8 @@ export function DesignerChatPanel() {
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
       if (!sessionId) return false;
       const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
+      const interruptId =
+        pendingQuestion?.request_id === requestId ? pendingQuestion.interruptId : undefined;
       try {
         if (pendingQuestion?.duplexJobId && pendingQuestion.request_id === requestId) {
           await webClient.request('video.search.answer', {
@@ -308,6 +310,7 @@ export function DesignerChatPanel() {
             selectedModelSelection,
           }),
           ...(source ? { source } : {}),
+          ...(interruptId ? { interrupt_id: interruptId } : {}),
         });
         if (pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
