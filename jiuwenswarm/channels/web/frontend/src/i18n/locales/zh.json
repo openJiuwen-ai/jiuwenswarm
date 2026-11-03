@@ -6235,7 +6235,7 @@
       "catalogEmptySkills": "没有可装载的已安装技能",
       "catalogEmptyConnectors": "没有可装载的已连接连接器",
       "catalogEmptyPlugins": "没有可装载的已安装插件",
-      "catalogEmptyKnowledge": "没有可装载的已发布知识页面。请先在左侧「知识」中添加内容并完成发布。",
+      "catalogEmptyKnowledge": "没有可装载的已发布知识页面。请先在左侧「资产」中添加内容并完成发布。",
       "modelSelection": "选择模型",
       "knowledgeSource": "来源",
       "knowledgeUpdatedAt": "更新时间",
