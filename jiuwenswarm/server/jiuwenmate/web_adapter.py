@@ -356,6 +356,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 self._service = self._service_factory()
             return self._service
 
+    async def start(self) -> None:
+        """Start Web schedules and recovery without waiting for a browser connection."""
+        await self._runtime()
+
     async def _runtime(self) -> AgentManager:
         """Start the runtime on first use and recover the Requests a previous process left unfinished.
 
